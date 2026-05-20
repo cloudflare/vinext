@@ -14,7 +14,12 @@ import { Text } from "@cloudflare/kumo/components/text";
 import { ArrowSquareOutIcon } from "@phosphor-icons/react/dist/ssr";
 import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "@/app/lib/db/client";
-import { compatRuns, compatFileResults } from "@/app/lib/db/schema";
+import {
+  compatRuns,
+  compatFileResults,
+  compatSuiteMeta,
+  type RouterKind,
+} from "@/app/lib/db/schema";
 import { ContributionGrid, type GridCell } from "./contribution-grid";
 import { CompatibilityLineChart, type LineSeriesPoint } from "./compatibility-line-chart";
 
@@ -113,25 +118,30 @@ async function runQueries(
 
   const latestRun = latestRows[0] ?? null;
 
+  // Result rows JOIN-ed against the suite-meta classification table.
+  // Suites without a meta row (test added between classifier runs, or
+  // classifier hasn't run yet on a fresh DB) render as "unknown". The
+  // LEFT JOIN keeps this query a single round-trip to D1.
   const latestFiles: GridCell[] = latestRun
     ? (
         await db
           .select({
             suite: compatFileResults.suite,
             status: compatFileResults.status,
-            router: compatFileResults.router,
+            router: compatSuiteMeta.router,
             total: compatFileResults.total,
             passed: compatFileResults.passed,
             failed: compatFileResults.failed,
             skipped: compatFileResults.skipped,
           })
           .from(compatFileResults)
+          .leftJoin(compatSuiteMeta, eq(compatFileResults.suite, compatSuiteMeta.suite))
           .where(and(eq(compatFileResults.kind, kind), eq(compatFileResults.runId, latestRun.id)))
           .orderBy(compatFileResults.suite)
       ).map((r) => ({
         suite: r.suite,
         status: r.status,
-        router: r.router,
+        router: (r.router ?? "unknown") as RouterKind,
         total: r.total,
         passed: r.passed,
         failed: r.failed,

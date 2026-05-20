@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "b0bed3b7-f6a6-4ff3-823d-0426a2ef6df0",
+  "id": "c2048bb8-338c-455c-9e22-af54dd4773ed",
   "prevId": "88f6f138-c8cc-4997-ad87-bc9076e7ea80",
   "tables": {
     "compat_file_results": {
@@ -41,14 +41,6 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
-        },
-        "router": {
-          "name": "router",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'unknown'"
         },
         "total": {
           "name": "total",
@@ -92,11 +84,6 @@
         "idx_compat_file_results_kind_suite": {
           "name": "idx_compat_file_results_kind_suite",
           "columns": ["kind", "suite"],
-          "isUnique": false
-        },
-        "idx_compat_file_results_kind_router": {
-          "name": "idx_compat_file_results_kind_router",
-          "columns": ["kind", "router"],
           "isUnique": false
         }
       },
@@ -209,6 +196,50 @@
         "idx_compat_runs_kind_created": {
           "name": "idx_compat_runs_kind_created",
           "columns": ["kind", "created_at"],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "compat_suite_meta": {
+      "name": "compat_suite_meta",
+      "columns": {
+        "suite": {
+          "name": "suite",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "router": {
+          "name": "router",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "next_ref": {
+          "name": "next_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "classified_at": {
+          "name": "classified_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idx_compat_suite_meta_router": {
+          "name": "idx_compat_suite_meta_router",
+          "columns": ["router"],
           "isUnique": false
         }
       },

@@ -94,30 +94,88 @@ jobs:
           node scripts/nextjs-deploy-manifest.mjs "${args[@]}"
 
       # Classify every Next.js e2e test file by which router(s) its fixture
-      # exercises. We do this once at build time (so the heavy directory
-      # walk happens with the Next.js checkout still on disk) and ship the
-      # resulting map to the report job as an artifact. The report job
-      # joins it onto each per-file result before POSTing to /api/compatibility.
+      # exercises. The classification is independent of the test results —
+      # it describes the Next.js checkout itself — so we POST it to its own
+      # endpoint here in the build job and don't pass it through the test /
+      # report jobs. The /compatibility UI joins it onto each result row at
+      # query time.
       - name: Classify Next.js test suites by router
         env:
           NEXTJS_DIR: ${{ github.workspace }}/next.js
         run: |
           # 1) Enumerate every *.test.{ts,tsx,js,jsx} under next.js/test/e2e/.
-          #    This is the universe of suites that could possibly show up in
-          #    any shard's results. Doing this once lets the report job do
-          #    a pure lookup with no filesystem dependency.
-          # 2) Classify each one by which router(s) its fixture exercises.
+          # 2) Run the classifier (walks each fixture dir, decides router kind).
           node scripts/list-nextjs-e2e-suites.mjs "$NEXTJS_DIR" nextjs-all-suites.json
           node scripts/classify-nextjs-suites.mjs \
             "$NEXTJS_DIR" \
             nextjs-all-suites.json \
             nextjs-suite-routers.json
 
+      # Submit the classification to the worker. Decoupled from results
+      # ingestion so a re-classify can happen without re-running tests, and
+      # so a partial test run still publishes fresh classifications.
+      #
+      # Guardrails mirror the results-ingest step at the end of the report
+      # job: only the full suite (suite-filter=all), only against main.
+      # A filtered run still produces a complete classification (the
+      # classifier walks the whole Next.js checkout regardless of which
+      # tests will actually run), so the partial-data argument from the
+      # results endpoint doesn't apply here — but we keep the same gates
+      # for consistency and to avoid surprising the operator running a
+      # one-off workflow_dispatch.
+      - name: Submit suite classification to worker
+        if: |
+          (inputs.suite-filter == 'all' || inputs.suite-filter == '' || github.event_name == 'schedule')
+          && (inputs.test-path == '' || github.event_name == 'schedule')
+          && (
+            (github.event_name == 'schedule' && github.ref == 'refs/heads/main')
+            || (github.event_name == 'workflow_dispatch' && (inputs.vinext-ref == 'main' || inputs.vinext-ref == ''))
+          )
+        env:
+          COMPAT_INGEST_URL: ${{ vars.COMPAT_INGEST_URL || 'https://vinext-web.vinext.workers.dev/api/compatibility' }}
+          COMPAT_INGEST_SECRET: ${{ secrets.COMPAT_INGEST_SECRET }}
+          NEXT_REF: ${{ inputs.next-ref || 'v16.2.6' }}
+        run: |
+          if [ -z "${COMPAT_INGEST_SECRET:-}" ]; then
+            echo "COMPAT_INGEST_SECRET not configured; skipping classification submission."
+            exit 0
+          fi
+          # Convert the suite → router map (object) into the endpoint's
+          # expected `{ nextRef, suites: [{ suite, router }, ...] }` shape.
+          # Done with node to avoid a jq dependency and to keep the JSON
+          # construction safely string-typed.
+          node -e '
+            const fs = require("node:fs");
+            const map = JSON.parse(fs.readFileSync("nextjs-suite-routers.json", "utf8"));
+            const body = {
+              nextRef: process.env.NEXT_REF,
+              classifiedAt: Date.now(),
+              suites: Object.entries(map).map(([suite, router]) => ({ suite, router })),
+            };
+            fs.writeFileSync("nextjs-classify-payload.json", JSON.stringify(body));
+            console.log("Classify payload:", body.suites.length, "suites");
+          '
+          CLASSIFY_URL="${COMPAT_INGEST_URL%/api/compatibility}/api/compatibility/classify"
+          echo "Submitting classifications to ${CLASSIFY_URL}"
+          if ! curl --silent --show-error --fail-with-body \
+            -X POST "${CLASSIFY_URL}" \
+            -H "Content-Type: application/json" \
+            -H "X-Compat-Secret: ${COMPAT_INGEST_SECRET}" \
+            --data-binary @nextjs-classify-payload.json; then
+            echo "::warning::Suite classification POST failed (non-fatal)."
+          fi
+
+      # Kept as an artifact even after submission so the classification can
+      # be re-submitted manually (e.g. if the live POST hiccupped) or
+      # inspected when debugging misclassifications.
       - name: Upload suite router classification
         uses: actions/upload-artifact@v7
         with:
           name: nextjs-suite-routers
-          path: nextjs-suite-routers.json
+          path: |
+            nextjs-suite-routers.json
+            nextjs-classify-payload.json
+          if-no-files-found: ignore
           retention-days: 14
 
       - name: Save build artifacts
@@ -238,19 +296,6 @@ jobs:
           path: results
           merge-multiple: true
 
-      # Pre-computed in the build job: `{ "test/e2e/foo/foo.test.ts": "app", ... }`.
-      # Used by the next step to attach a `router` field to each ingested file
-      # so the /compatibility UI can split the grid by App Router vs Pages Router.
-      # If the artifact is missing (older builds, partial cache, etc.) the
-      # report still posts; all files just default to "unknown".
-      - name: Download suite router classification
-        if: always()
-        continue-on-error: true
-        uses: actions/download-artifact@v7
-        with:
-          name: nextjs-suite-routers
-          path: classification
-
       - name: Generate report
         id: report
         uses: actions/github-script@v7
@@ -290,39 +335,19 @@ jobs:
               return;
             }
 
-            // Load the suite → router classification map built in the build
-            // job. Missing file is non-fatal — `router` just won't be attached
-            // to ingest rows, which the worker treats as "unknown".
-            let routerMap = {};
-            try {
-              const buf = fs.readFileSync(
-                path.join('classification', 'nextjs-suite-routers.json'),
-                'utf8',
-              );
-              routerMap = JSON.parse(buf);
-              core.info(`Loaded ${Object.keys(routerMap).length} suite classifications`);
-            } catch (e) {
-              core.warning(
-                `Could not load suite router classification (ingest will use "unknown" for all): ${e.message}`,
-              );
-            }
-
             const passed = [];
             const failed = [];
             const skipped = [];
-            // Per-test-file counts for the /compatibility page ingest.
+            // Per-test-file counts for the /compatibility page ingest. Router
+            // classification is NOT attached here — it's submitted separately
+            // by the build job to /api/compatibility/classify, and the UI
+            // joins it onto each result row at query time. See the
+            // "Submit suite classification" step earlier in this workflow.
             const fileCounts = new Map();
             function bumpFile(suite, key) {
               let cur = fileCounts.get(suite);
               if (!cur) {
-                cur = {
-                  suite,
-                  router: routerMap[suite] || 'unknown',
-                  total: 0,
-                  passed: 0,
-                  failed: 0,
-                  skipped: 0,
-                };
+                cur = { suite, total: 0, passed: 0, failed: 0, skipped: 0 };
                 fileCounts.set(suite, cur);
               }
               cur.total++;

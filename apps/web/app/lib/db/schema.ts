@@ -54,27 +54,10 @@ export const compatFileResults = sqliteTable(
       .notNull()
       .references(() => compatRuns.id, { onDelete: "cascade" }),
     kind: text("kind").notNull(),
-    /** Test file path, e.g. test/e2e/app-dir/foo.test.ts */
+    /** Test file path, e.g. test/e2e/app-dir/foo.test.ts — joins to compat_suite_meta.suite. */
     suite: text("suite").notNull(),
     /** "pass" | "fail" | "partial" | "skip" */
     status: text("status", { enum: ["pass", "fail", "partial", "skip"] }).notNull(),
-    /**
-     * Which Next.js router(s) the test fixture exercises:
-     *   - "app"     — App Router only (fixture has app/ with real routes, no pages/)
-     *   - "pages"   — Pages Router only (fixture has pages/ with real routes, no app/)
-     *   - "both"    — Parity / interop test: fixture has real routes in both
-     *   - "unknown" — Test has no fixture or we couldn't classify it (config tests,
-     *                 edge runtime tests, build-only tests, or pre-classifier rows)
-     *
-     * Populated by `scripts/classify-nextjs-suites.mjs` at ingest time from the
-     * Next.js checkout used to run the suite. Stored denormalised on the file
-     * row (alongside `kind`) so the UI can filter / group with a single index
-     * scan, and so historical rows keep their classification even if the
-     * heuristic changes later.
-     */
-    router: text("router", { enum: ["app", "pages", "both", "unknown"] })
-      .notNull()
-      .default("unknown"),
     total: integer("total").notNull().default(0),
     passed: integer("passed").notNull().default(0),
     failed: integer("failed").notNull().default(0),
@@ -83,7 +66,50 @@ export const compatFileResults = sqliteTable(
   (table) => ({
     runIdx: index("idx_compat_file_results_run").on(table.runId),
     kindSuiteIdx: index("idx_compat_file_results_kind_suite").on(table.kind, table.suite),
-    kindRouterIdx: index("idx_compat_file_results_kind_router").on(table.kind, table.router),
+  }),
+);
+
+/**
+ * Per-test-file metadata. One row per Next.js test file, globally —
+ * classifications are conceptually about the test file, not about a run.
+ *
+ * Populated independently of result ingestion by the workflow's
+ * "Classify Next.js suites" step (which POSTs to /api/compatibility/classify
+ * after building the suite → router map from the Next.js checkout). This
+ * decouples classification cadence from result cadence:
+ *   - Bumping the Next.js ref can re-classify everything in one POST.
+ *   - Fixing a heuristic bug or adding an override can update the table
+ *     without re-running tests.
+ *   - The /compatibility UI joins on `suite` to colour each result row.
+ *
+ * Trade-off: classification changes are retroactive (historical pass
+ * rates split-by-router shift when a suite is reclassified). This is
+ * usually what you want — corrections heal the whole history — but means
+ * the chart isn't a strict point-in-time record. Run-time provenance
+ * lives in `next_ref` / `classified_at` so a reclassification can be
+ * tied back to a specific Next.js ref bump.
+ */
+export const compatSuiteMeta = sqliteTable(
+  "compat_suite_meta",
+  {
+    /** Test file path, e.g. test/e2e/app-dir/foo.test.ts. */
+    suite: text("suite").primaryKey(),
+    /**
+     * Which Next.js router(s) the test fixture exercises:
+     *   - "app"     — App Router only (fixture has app/ with real routes, no pages/)
+     *   - "pages"   — Pages Router only (fixture has pages/ with real routes, no app/)
+     *   - "both"    — Parity / interop test: fixture has real routes in both
+     *   - "unknown" — Test has no on-disk fixture (config / build / edge-runtime
+     *                 tests, or pre-classifier rows that haven't been ingested yet)
+     */
+    router: text("router", { enum: ["app", "pages", "both", "unknown"] }).notNull(),
+    /** Next.js ref this classification was produced against, e.g. "v16.2.6". */
+    nextRef: text("next_ref").notNull(),
+    /** Unix millis the classification was last (re)computed. */
+    classifiedAt: integer("classified_at").notNull(),
+  },
+  (table) => ({
+    routerIdx: index("idx_compat_suite_meta_router").on(table.router),
   }),
 );
 
@@ -91,6 +117,8 @@ export type CompatRun = typeof compatRuns.$inferSelect;
 export type NewCompatRun = typeof compatRuns.$inferInsert;
 export type CompatFileResult = typeof compatFileResults.$inferSelect;
 export type NewCompatFileResult = typeof compatFileResults.$inferInsert;
+export type CompatSuiteMeta = typeof compatSuiteMeta.$inferSelect;
+export type NewCompatSuiteMeta = typeof compatSuiteMeta.$inferInsert;
 
 export type FileStatus = "pass" | "fail" | "partial" | "skip";
 export type RouterKind = "app" | "pages" | "both" | "unknown";

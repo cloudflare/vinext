@@ -4,10 +4,14 @@
  * Ingests a compatibility test run. Called from the Next.js deploy-suite
  * GitHub Actions workflow (and any future compat suites).
  *
+ * This endpoint only carries result counts. Router classification is
+ * submitted separately via POST /api/compatibility/classify so that
+ * classification updates aren't coupled to test runs (e.g. an override
+ * fix or a Next.js ref bump can re-classify everything without re-running
+ * the suite, and a fresh classification is available even when tests fail).
+ *
  * Auth: requires `X-Compat-Secret` header matching the `COMPAT_INGEST_SECRET`
- * worker secret (set via `wrangler secret put COMPAT_INGEST_SECRET`). The
- * comparison is constant-time to avoid leaking timing information about
- * the secret's prefix on a low-latency edge runtime.
+ * worker secret (set via `wrangler secret put COMPAT_INGEST_SECRET`).
  *
  * Body:
  *   {
@@ -17,8 +21,7 @@
  *     nextRef?: string,
  *     commitSha?: string,
  *     files: Array<{
- *       suite: string,        // test file path
- *       router?: "app" | "pages" | "both" | "unknown",  // optional; defaults to "unknown"
+ *       suite: string,        // test file path; joins to compat_suite_meta.suite
  *       total: number,
  *       passed: number,
  *       failed: number,
@@ -29,14 +32,10 @@
  * `status` per file is derived: all-pass => "pass", all-fail (or any-fail with
  * 0 pass) => "fail", mixed => "partial", all-skip/zero => "skip".
  */
-import { getDb, getIngestSecret } from "@/app/lib/db/client";
-import {
-  compatRuns,
-  compatFileResults,
-  type FileStatus,
-  type RouterKind,
-} from "@/app/lib/db/schema";
+import { getDb } from "@/app/lib/db/client";
+import { compatRuns, compatFileResults, type FileStatus } from "@/app/lib/db/schema";
 import { eq } from "drizzle-orm";
+import { requireIngestAuth } from "./_auth";
 
 type SubmitFile = {
   suite: string;
@@ -44,15 +43,7 @@ type SubmitFile = {
   passed: number;
   failed: number;
   skipped: number;
-  /**
-   * Which Next.js router(s) the test fixture exercises. Optional in the
-   * payload for backward compatibility — pre-classifier workflow runs don't
-   * send it. Missing or invalid values default to "unknown".
-   */
-  router?: RouterKind;
 };
-
-const VALID_ROUTERS: ReadonlySet<RouterKind> = new Set(["app", "pages", "both", "unknown"]);
 
 type SubmitBody = {
   kind: string;
@@ -92,58 +83,13 @@ function isValidBody(body: unknown): body is SubmitBody {
     if (typeof fr.passed !== "number") return false;
     if (typeof fr.failed !== "number") return false;
     if (typeof fr.skipped !== "number") return false;
-    // `router` is optional; if present it must be a known kind.
-    if (fr.router !== undefined) {
-      if (typeof fr.router !== "string") return false;
-      if (!VALID_ROUTERS.has(fr.router as RouterKind)) return false;
-    }
   }
   return true;
 }
 
-function normaliseRouter(r: unknown): RouterKind {
-  if (typeof r === "string" && VALID_ROUTERS.has(r as RouterKind)) {
-    return r as RouterKind;
-  }
-  return "unknown";
-}
-
-/**
- * Constant-time string comparison. Avoids leaking secret length / prefix
- * via timing differences in `!==`. Workers expose `crypto.subtle` but not
- * Node's `crypto.timingSafeEqual`, so we hand-roll a fixed-cost compare.
- *
- * Inputs are first run through SHA-256 to normalise length (otherwise an
- * attacker could distinguish "wrong-length" from "wrong-content" via the
- * fast-path check). HMAC isn't necessary here because both sides go
- * through the same hash with no key.
- */
-async function safeEqual(a: string, b: string): Promise<boolean> {
-  const enc = new TextEncoder();
-  const [ha, hb] = await Promise.all([
-    crypto.subtle.digest("SHA-256", enc.encode(a)),
-    crypto.subtle.digest("SHA-256", enc.encode(b)),
-  ]);
-  const ua = new Uint8Array(ha);
-  const ub = new Uint8Array(hb);
-  let diff = 0;
-  for (let i = 0; i < ua.length; i++) diff |= ua[i] ^ ub[i];
-  return diff === 0;
-}
-
 export async function POST(request: Request): Promise<Response> {
-  const expected = getIngestSecret();
-  if (!expected) {
-    return Response.json(
-      { error: "COMPAT_INGEST_SECRET is not configured on the worker" },
-      { status: 503 },
-    );
-  }
-
-  const provided = request.headers.get("x-compat-secret") ?? "";
-  if (!(await safeEqual(provided, expected))) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const denied = await requireIngestAuth(request);
+  if (denied) return denied;
 
   let body: unknown;
   try {
@@ -223,9 +169,9 @@ async function writeRun(body: SubmitBody): Promise<Response> {
   // files (visible as an empty grid until the next successful ingest).
   //
   // D1 enforces SQLite's 100-variable cap per statement; each row binds
-  // 9 columns (runId, kind, suite, status, router, total, passed, failed,
-  // skipped), so we can fit at most 11 rows per INSERT.
-  const COLUMNS_PER_ROW = 9;
+  // 8 columns (runId, kind, suite, status, total, passed, failed,
+  // skipped), so we can fit at most 12 rows per INSERT.
+  const COLUMNS_PER_ROW = 8;
   const MAX_VARS = 100;
   const CHUNK = Math.floor(MAX_VARS / COLUMNS_PER_ROW);
 
@@ -234,7 +180,6 @@ async function writeRun(body: SubmitBody): Promise<Response> {
     kind: body.kind,
     suite: f.suite,
     status: deriveStatus(f),
-    router: normaliseRouter(f.router),
     total: f.total,
     passed: f.passed,
     failed: f.failed,
