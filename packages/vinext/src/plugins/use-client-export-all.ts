@@ -122,6 +122,49 @@ async function collectNamedExports(
   const names = new Set<string>();
   let unresolved = false;
 
+  // Walk a binding pattern (Identifier / ObjectPattern / ArrayPattern /
+  // AssignmentPattern / RestElement) and collect every bound identifier name.
+  // Lets us pick up destructured exports like
+  //   `export const { Provider, Consumer } = createContext()`
+  // or `export const [first, second] = tuple`.
+  const collectPatternNames = (
+    pattern: { type: string; [key: string]: unknown } | null | undefined,
+  ): void => {
+    if (!pattern) return;
+    switch (pattern.type) {
+      case "Identifier": {
+        const name = (pattern as { name?: unknown }).name;
+        if (typeof name === "string") names.add(name);
+        return;
+      }
+      case "ObjectPattern": {
+        const props = (pattern as { properties?: unknown[] }).properties ?? [];
+        for (const prop of props) {
+          const p = prop as { type?: string; value?: unknown; argument?: unknown };
+          if (p.type === "RestElement") {
+            collectPatternNames(p.argument as { type: string });
+          } else {
+            collectPatternNames(p.value as { type: string });
+          }
+        }
+        return;
+      }
+      case "ArrayPattern": {
+        const elements = (pattern as { elements?: unknown[] }).elements ?? [];
+        for (const el of elements) collectPatternNames(el as { type: string });
+        return;
+      }
+      case "RestElement": {
+        collectPatternNames((pattern as { argument?: unknown }).argument as { type: string });
+        return;
+      }
+      case "AssignmentPattern": {
+        collectPatternNames((pattern as { left?: unknown }).left as { type: string });
+        return;
+      }
+    }
+  };
+
   for (const node of ast.body) {
     if (node.type === "ExportNamedDeclaration") {
       if (node.declaration) {
@@ -133,7 +176,7 @@ async function collectNamedExports(
           names.add(decl.id.name);
         } else if (decl.type === "VariableDeclaration") {
           for (const d of decl.declarations) {
-            if (d.id?.type === "Identifier") names.add(d.id.name);
+            collectPatternNames(d.id as { type: string });
           }
         }
       } else {

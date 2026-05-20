@@ -195,4 +195,64 @@ export default function HomePage() {
       expect(fs.existsSync(path.join(root, "dist", "server", "index.js"))).toBe(true);
     });
   }, 60_000);
+
+  // Regression: destructured `export const { ... } = ...` declarations in the
+  // re-exported module produce ObjectPattern / ArrayPattern declarator ids
+  // rather than Identifier. The export collector must walk those patterns,
+  // otherwise the rewritten `export { ... } from` clause silently drops
+  // names and consumers see `undefined` at runtime.
+  it("builds a 'use client' barrel that re-exports destructured bindings", async () => {
+    await withTempDir("vinext-export-all-destructure-", async (root) => {
+      writeBaseProject(root);
+
+      writeFixtureFile(
+        root,
+        "components/export-destructure/inner.tsx",
+        `"use client";
+
+function makePair() {
+  const First = () => <span data-testid="first">first</span>;
+  const Second = () => <span data-testid="second">second</span>;
+  return { First, Second } as const;
+}
+
+function makeTuple() {
+  const Third = () => <span data-testid="third">third</span>;
+  return [Third] as const;
+}
+
+export const { First, Second } = makePair();
+export const [Third] = makeTuple();
+`,
+      );
+      writeFixtureFile(
+        root,
+        "components/export-destructure/index.tsx",
+        `"use client";
+
+export * from "./inner";
+`,
+      );
+      writeFixtureFile(
+        root,
+        "app/page.tsx",
+        `import { First, Second, Third } from "../components/export-destructure";
+
+export default function HomePage() {
+  return (
+    <main>
+      <First />
+      <Second />
+      <Third />
+    </main>
+  );
+}
+`,
+      );
+
+      await buildApp(root);
+
+      expect(fs.existsSync(path.join(root, "dist", "server", "index.js"))).toBe(true);
+    });
+  }, 60_000);
 });
