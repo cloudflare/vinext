@@ -1318,6 +1318,44 @@ describe("Virtual server entry generation", () => {
       await testServer.close();
     }
   });
+
+  // Issue #1329 — `window.next = { version, router, ... }` must be exposed
+  // before the Next.js deploy test suite can run `next.router.push(...)`
+  // via `browser.eval()`. The installer (shims/router.ts → installWindowNext)
+  // only runs once next/router is imported, so the client entry must
+  // statically import next/router at the top, not lazily inside hydrate().
+  //
+  // Mirrors Next.js: .nextjs-ref/packages/next/src/client/next.ts (line 5),
+  // which statically imports the router from './' before initialize/hydrate.
+  it("client entry statically imports next/router so window.next.router is set before hydration", async () => {
+    const testServer = await createServer({
+      root: FIXTURE_DIR,
+      configFile: false,
+      plugins: [vinext()],
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    try {
+      const resolved = await testServer.pluginContainer.resolveId("virtual:vinext-client-entry");
+      expect(resolved).toBeTruthy();
+      const loaded = await testServer.pluginContainer.load(resolved!.id);
+      expect(loaded).toBeTruthy();
+      const code = typeof loaded === "string" ? loaded : ((loaded as any)?.code ?? "");
+
+      // Static import — module-level side effect installs window.next.router.
+      expect(code).toMatch(
+        /^import\s+\{[^}]*\bwrapWithRouterContext\b[^}]*\}\s+from\s+["']next\/router["']/m,
+      );
+
+      // Defense-in-depth: the original lazy `await import("next/router")`
+      // inside hydrate() must NOT remain, otherwise the static import is
+      // dead-code and the side effect can be tree-shaken or deferred.
+      expect(code).not.toMatch(/await\s+import\(\s*["']next\/router["']\s*\)/);
+    } finally {
+      await testServer.close();
+    }
+  });
 });
 
 describe("Plugin config", () => {
