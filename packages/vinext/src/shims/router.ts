@@ -47,6 +47,7 @@ import {
 import { matchRoutePattern, routePatternParts } from "../routing/route-pattern.js";
 import { scrollToHashTarget } from "./hash-scroll.js";
 import { setPagesRouterPopStateHandler } from "./pages-router-runtime.js";
+import { assertSafeNavigationUrl } from "./url-safety.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
@@ -840,6 +841,19 @@ async function performNavigation(
   mode: "push" | "replace",
   onStateUpdate?: () => void,
 ): Promise<boolean> {
+  // Block dangerous URI schemes (javascript:, data:, vbscript:) before any
+  // navigation work happens. Mirrors Next.js's Pages Router guard at
+  // packages/next/src/shared/lib/router/router.ts:1020-1028,1052-1060, which
+  // throws and (via React's event-handler runtime) surfaces a console.error
+  // that the `test/e2e/app-dir/javascript-urls/javascript-urls.test.ts` suite
+  // asserts on. `assertSafeNavigationUrl` emits the matching console.error
+  // before throwing so the same observable behaviour holds when the throw is
+  // swallowed by an async event handler (e.g. Link's click delegation).
+  assertSafeNavigationUrl(resolveUrl(url));
+  if (as !== undefined) {
+    assertSafeNavigationUrl(String(as));
+  }
+
   const navigationLocale = resolveTransitionLocale(options?.locale);
   let resolved = resolveNavigationTarget(url, as, navigationLocale);
 

@@ -1215,4 +1215,58 @@ describe("Link prefetch scheduling", () => {
       result.restoreNodeEnv();
     }
   });
+
+  // Ported from Next.js: test/e2e/app-dir/javascript-urls/javascript-urls.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/javascript-urls/javascript-urls.test.ts
+  // The Next.js test asserts a console.error log appears whose message
+  // includes "has blocked a javascript: URL as a security precaution.".
+  it("emits a console.error matching Next.js when a dangerous Link is clicked", async () => {
+    const userOnClick = vi.fn();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = await renderIsolatedLink({
+      href: "javascript:alert(1)",
+      nodeEnv: "development",
+      props: {
+        onClick: userOnClick,
+      },
+      requireRef: false,
+    });
+
+    try {
+      const onClick = result.capturedAnchorProps.onClick;
+      expect(onClick).toBeTypeOf("function");
+      const clickEvent = {
+        button: 0,
+        currentTarget: { hasAttribute: () => false, target: "" },
+        defaultPrevented: false,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      } satisfies CapturedClickEvent;
+
+      await onClick?.(clickEvent);
+
+      // User onClick still fires so callers can run analytics/preventDefault.
+      expect(userOnClick).toHaveBeenCalledWith(clickEvent);
+      // Navigation never happens.
+      expect(result.navigate).not.toHaveBeenCalled();
+      expect(result.fetch).not.toHaveBeenCalled();
+      // Next.js parity: a console.error is emitted that includes the block
+      // message — the E2E suite asserts on `.includes(...)` against this text.
+      expect(
+        consoleError.mock.calls.some((call) =>
+          call.some(
+            (arg) =>
+              typeof arg === "string" &&
+              arg.includes("has blocked a javascript: URL as a security precaution."),
+          ),
+        ),
+      ).toBe(true);
+    } finally {
+      consoleError.mockRestore();
+      consoleWarn.mockRestore();
+      result.restoreNodeEnv();
+    }
+  });
 });
