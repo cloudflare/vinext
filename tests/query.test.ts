@@ -57,6 +57,17 @@ describe("mergeRewriteQuery", () => {
     const params = new URLSearchParams(result.slice(result.indexOf("?") + 1));
     expect(params.getAll("tag")).toEqual(["rw1", "rw2"]);
   });
+
+  it("normalizes URL-encoded space (%20) to + via URLSearchParams", () => {
+    // URLSearchParams.toString() emits `+` for spaces. Downstream consumers all
+    // re-parse via URLSearchParams or new URL(), so this normalization is safe
+    // and lossless. This test documents the intentional behavior.
+    const result = mergeRewriteQuery("http://localhost/path?foo=hello%20world", "/target");
+    expect(result).toBe("/target?foo=hello+world");
+    expect(new URLSearchParams(result.slice(result.indexOf("?") + 1)).get("foo")).toBe(
+      "hello world",
+    );
+  });
 });
 
 describe("appendSearchParamsToUrl", () => {

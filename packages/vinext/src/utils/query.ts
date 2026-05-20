@@ -120,7 +120,7 @@ export function mergeRewriteQuery(originalUrl: string, rewriteUrl: string): stri
   const originalSearchIndex = originalUrl.indexOf("?");
   if (originalSearchIndex === -1) return rewriteUrl;
 
-  const originalQuery = originalUrl.slice(originalSearchIndex + 1).split("#")[0] ?? "";
+  const originalQuery = originalUrl.slice(originalSearchIndex + 1).split("#")[0];
   if (!originalQuery) return rewriteUrl;
 
   // Find the rewrite URL's pathname/search/hash boundaries without needing
