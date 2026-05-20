@@ -2958,6 +2958,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   middlewareRequest,
                   nextConfig?.i18n,
                   nextConfig?.basePath,
+                  nextConfig?.trailingSlash,
                 );
 
                 // Settle waitUntil promises — no ctx.waitUntil() in dev, but

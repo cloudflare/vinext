@@ -94,6 +94,7 @@ export class NextRequest extends Request {
       nextConfig?: {
         basePath?: string;
         i18n?: { locales: string[]; defaultLocale: string };
+        trailingSlash?: boolean;
       };
     },
   ) {
@@ -116,7 +117,10 @@ export class NextRequest extends Request {
           ? input
           : new URL(input.url, "http://localhost");
     const urlConfig: NextURLConfig | undefined = _nextConfig
-      ? { basePath: _nextConfig.basePath, nextConfig: { i18n: _nextConfig.i18n } }
+      ? {
+          basePath: _nextConfig.basePath,
+          nextConfig: { i18n: _nextConfig.i18n, trailingSlash: _nextConfig.trailingSlash },
+        }
       : undefined;
     this._nextUrl = new NextURL(url, undefined, urlConfig);
     this._url = process.env.__NEXT_NO_MIDDLEWARE_URL_NORMALIZE
@@ -194,7 +198,7 @@ export class NextRequest extends Request {
 /** Valid HTTP redirect status codes, matching Next.js's REDIRECTS set. */
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
-function validateURL(url: string | URL): string {
+function validateURL(url: string | URL | NextURL): string {
   assertSafeNavigationUrl(String(url));
   try {
     return String(new URL(String(url)));
@@ -237,7 +241,7 @@ export class NextResponse<_Body = unknown> extends Response {
   /**
    * Create a redirect response.
    */
-  static redirect(url: string | URL, init?: number | ResponseInit): NextResponse {
+  static redirect(url: string | URL | NextURL, init?: number | ResponseInit): NextResponse {
     const status = typeof init === "number" ? init : (init?.status ?? 307);
     if (!REDIRECT_STATUSES.has(status)) {
       throw new RangeError(`Failed to execute "redirect" on "response": Invalid status code`);
@@ -251,7 +255,7 @@ export class NextResponse<_Body = unknown> extends Response {
    * Create a rewrite response (middleware pattern).
    * Sets the x-middleware-rewrite header.
    */
-  static rewrite(destination: string | URL, init?: MiddlewareResponseInit): NextResponse {
+  static rewrite(destination: string | URL | NextURL, init?: MiddlewareResponseInit): NextResponse {
     const headers = new Headers(init?.headers);
     headers.set(MIDDLEWARE_REWRITE_HEADER, validateURL(destination));
     if (init?.request?.headers) {
@@ -285,6 +289,13 @@ export type NextURLConfig = {
       locales: string[];
       defaultLocale: string;
     };
+    /**
+     * When true, `href`/`toString()` formats non-root, non-file-like pathnames
+     * with a trailing slash. Matches Next.js's `formatNextPathnameInfo` so that
+     * `NextResponse.redirect(request.nextUrl)` and `NextResponse.rewrite(url)`
+     * honour the user's `trailingSlash` config.
+     */
+    trailingSlash?: boolean;
   };
 };
 
@@ -292,6 +303,7 @@ export class NextURL {
   /** Internal URL stores the pathname WITHOUT basePath or locale prefix. */
   private _url: URL;
   private _basePath: string;
+  private _trailingSlash: boolean;
   private _locale: string | undefined;
   private _defaultLocale: string | undefined;
   private _locales: string[] | undefined;
@@ -299,6 +311,7 @@ export class NextURL {
   constructor(input: string | URL, base?: string | URL, config?: NextURLConfig) {
     this._url = new URL(input.toString(), base);
     this._basePath = config?.basePath ?? "";
+    this._trailingSlash = config?.nextConfig?.trailingSlash ?? false;
     this._stripBasePath();
     const i18n = config?.nextConfig?.i18n;
     if (i18n) {
@@ -328,8 +341,9 @@ export class NextURL {
   }
 
   /**
-   * Reconstruct the full pathname with basePath + locale prefix.
-   * Mirrors Next.js's internal formatPathname().
+   * Reconstruct the full pathname with basePath + locale prefix and apply
+   * the configured trailingSlash policy.
+   * Mirrors Next.js's internal formatNextPathnameInfo().
    */
   private _formatPathname(): string {
     // Build prefix: basePath + locale (skip defaultLocale — Next.js omits it)
@@ -337,9 +351,24 @@ export class NextURL {
     if (this._locale && this._locale !== this._defaultLocale) {
       prefix += "/" + this._locale;
     }
-    if (!prefix) return this._url.pathname;
     const inner = this._url.pathname;
-    return inner === "/" ? prefix : prefix + inner;
+    const composed = !prefix ? inner : inner === "/" ? prefix : prefix + inner;
+    return this._applyTrailingSlash(composed);
+  }
+
+  /**
+   * Apply the configured trailingSlash policy to a composed pathname. Matches
+   * Next.js's `formatNextPathnameInfo`: when `trailingSlash` is true, add a
+   * trailing slash unless the path is empty/root; when false, strip a trailing
+   * slash unless the path is empty/root.
+   */
+  private _applyTrailingSlash(pathname: string): string {
+    // Never strip or add a slash to the root path.
+    if (pathname === "" || pathname === "/") return pathname;
+    if (this._trailingSlash) {
+      return pathname.endsWith("/") ? pathname : pathname + "/";
+    }
+    return pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
   }
 
   get href(): string {
@@ -463,11 +492,16 @@ export class NextURL {
   }
 
   clone(): NextURL {
+    const nextConfig: NonNullable<NextURLConfig["nextConfig"]> = {};
+    if (this._locales) {
+      nextConfig.i18n = { locales: [...this._locales], defaultLocale: this._defaultLocale! };
+    }
+    if (this._trailingSlash) {
+      nextConfig.trailingSlash = true;
+    }
     const config: NextURLConfig = {
       basePath: this._basePath,
-      nextConfig: this._locales
-        ? { i18n: { locales: [...this._locales], defaultLocale: this._defaultLocale! } }
-        : undefined,
+      nextConfig: Object.keys(nextConfig).length > 0 ? nextConfig : undefined,
     };
     // Pass the full href (with locale/basePath re-added) so the constructor
     // can re-analyze and extract locale correctly.

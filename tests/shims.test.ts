@@ -7320,6 +7320,142 @@ describe("NextURL basePath and locale properties", () => {
 });
 
 // ---------------------------------------------------------------------------
+// NextURL trailingSlash policy (regression for issue #1332)
+//
+// The trailingSlash config must reach NextURL so that
+// `NextResponse.redirect(request.nextUrl)` and friends emit a Location header
+// that honours the user's slash policy. Mirrors Next.js's
+// `formatNextPathnameInfo` behaviour.
+
+describe("NextURL trailingSlash policy", () => {
+  it("appends a trailing slash to href when trailingSlash is true", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about", undefined, {
+      nextConfig: { trailingSlash: true },
+    });
+    expect(url.href).toBe("http://localhost/about/");
+    expect(url.toString()).toBe("http://localhost/about/");
+  });
+
+  it("does not add a trailing slash to the root path", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/", undefined, {
+      nextConfig: { trailingSlash: true },
+    });
+    expect(url.href).toBe("http://localhost/");
+  });
+
+  it("preserves trailing slash when trailingSlash is true and input already has one", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about/", undefined, {
+      nextConfig: { trailingSlash: true },
+    });
+    expect(url.href).toBe("http://localhost/about/");
+  });
+
+  it("strips trailing slash when trailingSlash is false", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about/", undefined, {
+      nextConfig: { trailingSlash: false },
+    });
+    expect(url.href).toBe("http://localhost/about");
+  });
+
+  it("defaults to no trailing slash when trailingSlash is not configured", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about/");
+    expect(url.href).toBe("http://localhost/about");
+  });
+
+  it("applies trailingSlash after setting pathname", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/x", undefined, {
+      nextConfig: { trailingSlash: true },
+    });
+    url.pathname = "/somewhere";
+    expect(url.href).toBe("http://localhost/somewhere/");
+  });
+
+  it("applies trailingSlash with basePath", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard", undefined, {
+      basePath: "/app",
+      nextConfig: { trailingSlash: true },
+    });
+    expect(url.pathname).toBe("/dashboard");
+    expect(url.href).toBe("http://localhost/app/dashboard/");
+  });
+
+  it("applies trailingSlash with locale", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, {
+      nextConfig: {
+        i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+        trailingSlash: true,
+      },
+    });
+    expect(url.locale).toBe("fr");
+    expect(url.href).toBe("http://localhost/fr/about/");
+  });
+
+  it("preserves search and hash when adding trailing slash", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about?q=1#top", undefined, {
+      nextConfig: { trailingSlash: true },
+    });
+    expect(url.href).toBe("http://localhost/about/?q=1#top");
+  });
+
+  it("clone() preserves the trailingSlash config", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about", undefined, {
+      nextConfig: { trailingSlash: true },
+    });
+    const cloned = url.clone();
+    cloned.pathname = "/contact";
+    expect(cloned.href).toBe("http://localhost/contact/");
+  });
+});
+
+describe("NextRequest plumbs trailingSlash into nextUrl", () => {
+  it("forwards trailingSlash from nextConfig into the NextURL", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost/about", {
+      nextConfig: { trailingSlash: true },
+    });
+    expect(req.nextUrl.href).toBe("http://localhost/about/");
+  });
+
+  it("NextResponse.redirect(request.nextUrl) emits a Location that honours trailingSlash", async () => {
+    const { NextRequest, NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost/redirect", {
+      nextConfig: { trailingSlash: true },
+    });
+    const url = req.nextUrl.clone();
+    url.pathname = "/somewhere";
+    const res = NextResponse.redirect(url);
+    expect(res.status).toBe(307);
+    const location = res.headers.get("location");
+    expect(location).not.toBeNull();
+    // Location is fully-qualified per the spec; the pathname must include the slash.
+    expect(new URL(location!).pathname).toBe("/somewhere/");
+  });
+
+  it("NextResponse.redirect(request.nextUrl) drops trailing slash when trailingSlash is false", async () => {
+    const { NextRequest, NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost/redirect/", {
+      nextConfig: { trailingSlash: false },
+    });
+    const url = req.nextUrl.clone();
+    url.pathname = "/somewhere/";
+    const res = NextResponse.redirect(url);
+    const location = res.headers.get("location");
+    expect(location).not.toBeNull();
+    expect(new URL(location!).pathname).toBe("/somewhere");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // NextResponse.next() with request header forwarding
 
 describe("NextResponse.next() request header forwarding", () => {
