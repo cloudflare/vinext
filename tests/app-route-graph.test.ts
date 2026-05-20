@@ -1034,5 +1034,53 @@ describe("App Router route graph builder", () => {
         expect(interceptionsBySlotId).toEqual([["slot:modal:/[locale]/feed", interceptions]]);
       });
     });
+
+    it("ignores interception marker directories that live outside a parallel slot", async () => {
+      // Ported from Next.js: test/e2e/app-dir/interception-routes-multiple-catchall
+      // and test/e2e/app-dir/interception-segments-two-levels-above. Next.js
+      // allows interception marker directories anywhere — they should not be
+      // treated as standalone routes (the marker is not a real URL segment),
+      // so the build must not register `/templates/(..)showcase` as a page
+      // and must not throw while validating its pattern.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "showcase/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "templates/layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "templates/[...catchAll]/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "templates/(..)showcase/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "templates/(..)showcase/[...catchAll]/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const patterns = graph.routes.map((route) => route.pattern);
+
+        // The marker directory itself is not a route — it must never surface
+        // as `/templates/(..)showcase` or similar.
+        for (const pattern of patterns) {
+          expect(pattern).not.toMatch(/\(\.{1,3}\)/);
+        }
+      });
+    });
+
+    it("ignores `(..)(..)` interception marker outside a parallel slot", async () => {
+      // Ported from Next.js: test/e2e/app-dir/interception-segments-two-levels-above
+      // app/foo/bar/(..)(..)hoge/page.tsx is a sibling-style interception
+      // marker (no @slot). Build must not throw and must not register a
+      // route with the literal marker in its pattern.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "hoge/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "foo/bar/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "foo/bar/(..)(..)hoge/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const patterns = graph.routes.map((route) => route.pattern);
+
+        for (const pattern of patterns) {
+          expect(pattern).not.toMatch(/\(\.{1,3}\)/);
+        }
+      });
+    });
   });
 });

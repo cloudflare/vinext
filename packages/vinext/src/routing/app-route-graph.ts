@@ -823,9 +823,20 @@ export async function buildAppRouteGraph(
   // Find all page.tsx and route.ts files, excluding @slot directories
   // (slot pages are not standalone routes — they're rendered as props of their parent layout)
   // and _private folders (Next.js convention for colocated non-route files).
+  //
+  // Interception marker directories (e.g. `(.)photo`, `(..)showcase`,
+  // `(..)(..)hoge`, `(...)photos`) are also excluded from the global page
+  // scan because the marker is not a real URL segment — Next.js treats these
+  // as a separate route family resolved via interception rewrites. Without
+  // this exclusion the scanner would register patterns like
+  // `/templates/(..)showcase` as standalone routes, breaking the build (and
+  // any URL containing the marker).
+  //
+  // See https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/interception-routes.ts
   const routes: AppRouteGraphRoute[] = [];
 
-  const excludeDir = (name: string) => name.startsWith("@") || name.startsWith("_");
+  const excludeDir = (name: string) =>
+    name.startsWith("@") || name.startsWith("_") || isInterceptionMarkerDir(name);
 
   // Process page files in a single pass
   // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14)
@@ -1885,6 +1896,19 @@ const INTERCEPT_PATTERNS = [
   { prefix: "(..)", convention: ".." },
   { prefix: "(.)", convention: "." },
 ] as const;
+
+/**
+ * Check whether a directory name begins with an interception route marker.
+ *
+ * Matches the prefixes listed in {@link INTERCEPT_PATTERNS}: `(.)`, `(..)`,
+ * `(...)`, `(..)(..)"`. The marker is not a real URL segment, so the global
+ * page/route scanner must skip these directories to avoid materialising
+ * literal patterns like `/templates/(..)showcase`. Interception target
+ * registration happens separately via {@link discoverInterceptingRoutes}.
+ */
+function isInterceptionMarkerDir(name: string): boolean {
+  return matchInterceptConvention(name) !== null;
+}
 
 /**
  * Discover intercepting routes inside a parallel slot directory.
