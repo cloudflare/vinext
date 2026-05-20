@@ -31,10 +31,51 @@ type ExportAllDecl = {
   namespaceName: string | null;
 };
 
-const HAS_USE_CLIENT_RE = /^\s*(?:\/\*[\s\S]*?\*\/\s*|\/\/[^\n]*\n\s*)*['"]use client['"]/;
-
+/**
+ * Returns true if `code` begins with a `"use client"` (or `'use client'`)
+ * directive, allowing leading whitespace, line comments, and block comments.
+ *
+ * Implemented as a manual scan rather than a regex to avoid catastrophic
+ * backtracking on adversarial inputs (e.g. CodeQL js/redos on patterns of the
+ * form `(?:\/\*[\s\S]*?\*\/\s*|...)*`). Each character is visited at most once.
+ */
 function quickHasUseClient(code: string): boolean {
-  return HAS_USE_CLIENT_RE.test(code);
+  const len = code.length;
+  let i = 0;
+  while (i < len) {
+    const c = code.charCodeAt(i);
+    // Skip ASCII whitespace (space, tab, LF, CR, FF, VT).
+    if (c === 0x20 || c === 0x09 || c === 0x0a || c === 0x0d || c === 0x0c || c === 0x0b) {
+      i++;
+      continue;
+    }
+    // Skip `// line comment` to end of line.
+    if (c === 0x2f && i + 1 < len && code.charCodeAt(i + 1) === 0x2f) {
+      i += 2;
+      while (i < len && code.charCodeAt(i) !== 0x0a) i++;
+      continue;
+    }
+    // Skip `/* block comment */`.
+    if (c === 0x2f && i + 1 < len && code.charCodeAt(i + 1) === 0x2a) {
+      i += 2;
+      while (i < len) {
+        if (code.charCodeAt(i) === 0x2a && i + 1 < len && code.charCodeAt(i + 1) === 0x2f) {
+          i += 2;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    // First non-whitespace/non-comment token: must be a `"use client"` string.
+    if (c !== 0x22 && c !== 0x27) return false;
+    const quote = c;
+    const rest = code.slice(i + 1, i + 1 + "use client".length);
+    if (rest !== "use client") return false;
+    const after = code.charCodeAt(i + 1 + "use client".length);
+    return after === quote;
+  }
+  return false;
 }
 
 /**
