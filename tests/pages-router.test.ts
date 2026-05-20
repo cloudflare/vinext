@@ -989,6 +989,9 @@ describe("Pages Router integration", () => {
       const res = await fetch(`${started.baseUrl}/rewrite-me/`);
       expect(res.status).toBe(200);
       const html = await res.text();
+      // `id="home"` is unique to `pages/index.tsx`; ssr-page also says
+      // "Hello World" so this disambiguates that the index rendered.
+      expect(html).toContain('id="home"');
       expect(html).toContain("Hello World");
       expect(html).not.toContain("Dynamic route");
     } finally {
@@ -1034,6 +1037,10 @@ describe("Pages Router integration", () => {
       const res = await fetch(`${started.baseUrl}/rewrite-1/`);
       expect(res.status).toBe(200);
       const html = await res.text();
+      // `id="ssr"` only lives on the rewrite target (`pages/ssr-page.tsx`) —
+      // `pages/index.tsx` also says "Hello World" so this disambiguates that
+      // the rewrite target is what rendered.
+      expect(html).toContain('id="ssr"');
       expect(html).toContain("Hello World");
       expect(html).not.toContain("Dynamic route");
     } finally {
@@ -2939,6 +2946,9 @@ describe("Production server middleware (Pages Router)", () => {
       const indexRes = await fetch(`${tempProdUrl}/rewrite-me/`);
       expect(indexRes.status).toBe(200);
       const indexHtml = await indexRes.text();
+      // `id="home"` is unique to `pages/index.tsx`; ssr-page also says
+      // "Hello World" so this disambiguates that the index rendered.
+      expect(indexHtml).toContain('id="home"');
       expect(indexHtml).toContain("Hello World");
       expect(indexHtml).not.toContain("Dynamic route");
 
@@ -2955,6 +2965,10 @@ describe("Production server middleware (Pages Router)", () => {
       const cfgRes = await fetch(`${tempProdUrl}/rewrite-1/`);
       expect(cfgRes.status).toBe(200);
       const cfgHtml = await cfgRes.text();
+      // `id="ssr"` is unique to `pages/ssr-page.tsx`; `pages/index.tsx`
+      // also says "Hello World" so this disambiguates that the rewrite
+      // target rendered (not the index, not the dynamic [id]).
+      expect(cfgHtml).toContain('id="ssr"');
       expect(cfgHtml).toContain("Hello World");
       expect(cfgHtml).not.toContain("Dynamic route");
     } finally {
