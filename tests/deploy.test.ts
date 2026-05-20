@@ -530,7 +530,9 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("applies next.config.js redirects before middleware", () => {
     const content = generatePagesRouterWorkerEntry();
-    const redirectPos = content.indexOf("matchRedirect(pathname, configRedirects, reqCtx)");
+    const redirectPos = content.indexOf(
+      "matchRedirect(pathname, configRedirects, reqCtx, basePathState)",
+    );
     const middlewarePos = content.indexOf("runMiddleware(request, ctx)");
     expect(redirectPos).toBeGreaterThan(-1);
     expect(middlewarePos).toBeGreaterThan(-1);
@@ -592,7 +594,11 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("configRewrites.beforeFiles");
     expect(content).toContain("configRewrites.afterFiles");
     expect(content).toContain("configRewrites.fallback");
-    expect(content).toContain("matchRewrite(resolvedPathname");
+    // matchRewrite is invoked with the basePath-gated 4-arg signature.
+    // Across the three rewrite buckets the arg list is now formatted on
+    // multiple lines, so assert on the call expression itself.
+    expect(content).toMatch(/matchRewrite\(\s*resolvedPathname/);
+    expect(content).toContain("basePathState");
     expect(content).toContain("matchPageRoute");
     expect(content).toContain("matchPageRoute(resolvedPathname, request)");
   });

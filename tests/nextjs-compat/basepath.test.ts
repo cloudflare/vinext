@@ -335,9 +335,7 @@ describe("basePath: rewrite/redirect/header gating", () => {
 
   it("default redirect rule does not match when request is outside basePath", async () => {
     const { matchRedirect } = await import("../../packages/vinext/src/config/config-matchers.js");
-    const redirects = [
-      { source: "/redirect-1", destination: "/somewhere-else", permanent: false },
-    ];
+    const redirects = [{ source: "/redirect-1", destination: "/somewhere-else", permanent: false }];
     const result = matchRedirect("/redirect-1", redirects, emptyCtx(), {
       basePath: "/docs",
       hadBasePath: false,
@@ -347,9 +345,7 @@ describe("basePath: rewrite/redirect/header gating", () => {
 
   it("default redirect rule matches when request is under basePath", async () => {
     const { matchRedirect } = await import("../../packages/vinext/src/config/config-matchers.js");
-    const redirects = [
-      { source: "/redirect-1", destination: "/somewhere-else", permanent: false },
-    ];
+    const redirects = [{ source: "/redirect-1", destination: "/somewhere-else", permanent: false }];
     const result = matchRedirect("/redirect-1", redirects, emptyCtx(), {
       basePath: "/docs",
       hadBasePath: true,
@@ -376,9 +372,7 @@ describe("basePath: rewrite/redirect/header gating", () => {
 
   it("default header rule does not match when request is outside basePath", async () => {
     const { matchHeaders } = await import("../../packages/vinext/src/config/config-matchers.js");
-    const headers = [
-      { source: "/add-header", headers: [{ key: "x-hello", value: "world" }] },
-    ];
+    const headers = [{ source: "/add-header", headers: [{ key: "x-hello", value: "world" }] }];
     const result = matchHeaders("/add-header", headers, emptyCtx(), {
       basePath: "/docs",
       hadBasePath: false,
@@ -388,9 +382,7 @@ describe("basePath: rewrite/redirect/header gating", () => {
 
   it("default header rule matches when request is under basePath", async () => {
     const { matchHeaders } = await import("../../packages/vinext/src/config/config-matchers.js");
-    const headers = [
-      { source: "/add-header", headers: [{ key: "x-hello", value: "world" }] },
-    ];
+    const headers = [{ source: "/add-header", headers: [{ key: "x-hello", value: "world" }] }];
     const result = matchHeaders("/add-header", headers, emptyCtx(), {
       basePath: "/docs",
       hadBasePath: true,
@@ -419,20 +411,19 @@ describe("basePath: rewrite/redirect/header gating", () => {
     // basePath flag — there is nothing to gate against.
     const { matchRewrite } = await import("../../packages/vinext/src/config/config-matchers.js");
     const rewrites = [{ source: "/x", destination: "/y" }];
-    expect(
-      matchRewrite("/x", rewrites, emptyCtx(), { basePath: "", hadBasePath: false }),
-    ).toBe("/y");
-    expect(
-      matchRewrite("/x", rewrites, emptyCtx(), { basePath: "", hadBasePath: true }),
-    ).toBe("/y");
+    expect(matchRewrite("/x", rewrites, emptyCtx(), { basePath: "", hadBasePath: false })).toBe(
+      "/y",
+    );
+    expect(matchRewrite("/x", rewrites, emptyCtx(), { basePath: "", hadBasePath: true })).toBe(
+      "/y",
+    );
   });
 
   it("matchers without explicit basePathState default to permissive (back-compat)", async () => {
     // Callers that haven't been updated to pass basePathState should behave
     // exactly as before this change.
-    const { matchRewrite, matchRedirect, matchHeaders } = await import(
-      "../../packages/vinext/src/config/config-matchers.js"
-    );
+    const { matchRewrite, matchRedirect, matchHeaders } =
+      await import("../../packages/vinext/src/config/config-matchers.js");
     const rewrites = [{ source: "/x", destination: "/y" }];
     expect(matchRewrite("/x", rewrites, emptyCtx())).toBe("/y");
     const redirects = [{ source: "/x", destination: "/y", permanent: false }];
