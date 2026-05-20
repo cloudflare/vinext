@@ -77,6 +77,13 @@ export type NextRedirect = {
   permanent: boolean;
   has?: HasCondition[];
   missing?: HasCondition[];
+  /**
+   * When `false`, the rule is NOT prefixed with `basePath`. Source and
+   * destination are matched/applied verbatim. Mirrors Next.js's
+   * `Redirect.basePath: false` opt-out — see
+   * `.nextjs-ref/packages/next/src/lib/load-custom-routes.ts:26`.
+   */
+  basePath?: false;
 };
 
 export type NextRewrite = {
@@ -84,6 +91,8 @@ export type NextRewrite = {
   destination: string;
   has?: HasCondition[];
   missing?: HasCondition[];
+  /** See {@link NextRedirect.basePath}. */
+  basePath?: false;
 };
 
 export type NextHeader = {
@@ -91,6 +100,8 @@ export type NextHeader = {
   has?: HasCondition[];
   missing?: HasCondition[];
   headers: Array<{ key: string; value: string }>;
+  /** See {@link NextRedirect.basePath}. */
+  basePath?: false;
 };
 
 export type NextI18nConfig = {

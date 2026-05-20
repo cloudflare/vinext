@@ -454,6 +454,49 @@ export type RequestContext = {
 };
 
 /**
+ * basePath gating state passed alongside the pathname to every matcher.
+ *
+ * Rewrites/redirects/headers run with default `basePath: true` semantics in
+ * Next.js: the rule only matches when the inbound request was under the
+ * configured `basePath`. Rules with `basePath: false` opt out and match
+ * the original (un-stripped) pathname regardless of prefix.
+ *
+ * When `basePath` is empty (not configured) every rule is treated as
+ * basePath-defaulted: every request matches.
+ *
+ * @see .nextjs-ref/packages/next/src/lib/load-custom-routes.ts:198-220
+ */
+export type BasePathMatchState = {
+  /** Configured `basePath` (without trailing slash) or "" when unset. */
+  basePath: string;
+  /**
+   * True when the inbound request was originally under `basePath` (i.e.
+   * the prod-server/handler stripped the prefix before the matcher runs).
+   * Ignored when `basePath` is empty.
+   */
+  hadBasePath: boolean;
+};
+
+const _BASEPATH_DEFAULT: BasePathMatchState = { basePath: "", hadBasePath: true };
+
+/**
+ * Decide whether a rule should be evaluated at all given the current
+ * basePath-gating state.
+ *
+ * Encodes the Next.js rules:
+ *   - basePath: false rule → only when the request was NOT under basePath
+ *     (i.e. it's the explicit opt-out path). When `basePath` itself is
+ *     empty, basePath: false rules are still allowed to match — there's
+ *     just no basePath to gate them.
+ *   - default rule (basePath !== false) → only when the request WAS under
+ *     basePath (or no basePath is configured).
+ */
+function shouldEvaluateRule(ruleBasePath: false | undefined, state: BasePathMatchState): boolean {
+  if (!state.basePath) return true;
+  return ruleBasePath === false ? !state.hadBasePath : state.hadBasePath;
+}
+
+/**
  * Parse a Cookie header string into a key-value record.
  */
 export function parseCookies(cookieHeader: string | null): Record<string, string> {
@@ -833,6 +876,7 @@ export function matchRedirect(
   pathname: string,
   redirects: NextRedirect[],
   ctx: RequestContext,
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
 ): { destination: string; permanent: boolean } | null {
   if (redirects.length === 0) return null;
 
@@ -861,6 +905,7 @@ export function matchRedirect(
       for (const entry of noLocaleBucket) {
         if (entry.originalIndex >= localeMatchIndex) continue; // already have a better match
         const redirect = entry.redirect;
+        if (!shouldEvaluateRule(redirect.basePath, basePathState)) continue;
         const conditionParams =
           redirect.has || redirect.missing
             ? collectConditionParams(redirect.has, redirect.missing, ctx)
@@ -891,6 +936,7 @@ export function matchRedirect(
           // Validate that `localePart` is one of the allowed alternation values.
           if (!entry.altRe.test(localePart)) continue;
           const redirect = entry.redirect;
+          if (!shouldEvaluateRule(redirect.basePath, basePathState)) continue;
           const conditionParams =
             redirect.has || redirect.missing
               ? collectConditionParams(redirect.has, redirect.missing, ctx)
@@ -918,6 +964,7 @@ export function matchRedirect(
       // the locale-static match wins. Stop scanning.
       break;
     }
+    if (!shouldEvaluateRule(redirect.basePath, basePathState)) continue;
     const params = matchConfigPattern(pathname, redirect.source);
     if (params) {
       const conditionParams =
@@ -950,8 +997,10 @@ export function matchRewrite(
   pathname: string,
   rewrites: NextRewrite[],
   ctx: RequestContext,
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
 ): string | null {
   for (const rewrite of rewrites) {
+    if (!shouldEvaluateRule(rewrite.basePath, basePathState)) continue;
     const params = matchConfigPattern(pathname, rewrite.source);
     if (params) {
       const conditionParams =
@@ -1166,9 +1215,11 @@ export function matchHeaders(
   pathname: string,
   headers: NextHeader[],
   ctx: RequestContext,
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
 ): Array<{ key: string; value: string }> {
   const result: Array<{ key: string; value: string }> = [];
   for (const rule of headers) {
+    if (!shouldEvaluateRule(rule.basePath, basePathState)) continue;
     // Cache the compiled source regex — escapeHeaderSource() + safeRegExp() are
     // pure functions of rule.source and the result never changes between requests.
     const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, rule.source, () =>

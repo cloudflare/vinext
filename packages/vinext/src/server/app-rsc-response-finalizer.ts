@@ -4,7 +4,7 @@ import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { applyConfigHeadersToResponse } from "./request-pipeline.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
-import { stripBasePath } from "../utils/base-path.js";
+import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizePath } from "./normalize-path.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 
@@ -66,12 +66,14 @@ export function finalizeAppRscResponse(
   // Config header sources are defined without basePath prefix. Strip basePath
   // at a segment boundary (not a string prefix) so /app2/page with basePath
   // /app is not incorrectly treated as /app with suffix /2/page.
+  const hadBasePath = !options.basePath || hasBasePath(pathname, options.basePath);
   pathname = stripBasePath(pathname, options.basePath);
 
   applyConfigHeadersToResponse(response.headers, {
     configHeaders: options.configHeaders,
     pathname,
     requestContext: options.requestContext,
+    basePathState: { basePath: options.basePath, hadBasePath },
   });
 
   return response;

@@ -615,6 +615,10 @@ export default {
       }
 
       // ── 1. Strip basePath ─────────────────────────────────────────
+      // Track basePath presence on the original request so the matcher
+      // gating below can distinguish requests inside basePath (default
+      // rules apply) from requests outside it (only opt-out rules apply).
+      const hadBasePath = !basePath || hasBasePath(pathname, basePath);
       {
         const stripped = stripBasePath(pathname, basePath);
         if (stripped !== pathname) {
@@ -622,6 +626,7 @@ export default {
           pathname = stripped;
         }
       }
+      const basePathState = { basePath, hadBasePath };
 
       // ── Image optimization via Cloudflare Images binding ──────────
       // Checked after basePath stripping so /<basePath>/_vinext/image works.
@@ -670,10 +675,14 @@ export default {
 
       // ── 3. Apply redirects from next.config.js ────────────────────
       if (configRedirects.length) {
-        const redirect = matchRedirect(pathname, configRedirects, reqCtx);
+        const redirect = matchRedirect(pathname, configRedirects, reqCtx, basePathState);
         if (redirect) {
+          // Only prepend basePath when the request was actually under basePath.
+          // Opt-out rules running on out-of-basepath requests must not receive
+          // a basePath prefix.
           const dest = sanitizeDestination(
             basePath &&
+              hadBasePath &&
               !isExternalUrl(redirect.destination) &&
               !hasBasePath(redirect.destination, basePath)
               ? basePath + redirect.destination
@@ -769,6 +778,7 @@ export default {
           configHeaders,
           pathname,
           requestContext: reqCtx,
+          basePathState,
         });
       }
 
@@ -778,15 +788,31 @@ export default {
       }
 
       // ── 6. Apply beforeFiles rewrites from next.config.js ─────────
+      let configRewriteFired = false;
       if (configRewrites.beforeFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
+        const rewritten = matchRewrite(
+          resolvedPathname,
+          configRewrites.beforeFiles,
+          postMwReqCtx,
+          basePathState,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
           }
           resolvedUrl = rewritten;
           resolvedPathname = rewritten.split("?")[0];
+          configRewriteFired = true;
         }
+      }
+
+      // Reject out-of-basePath requests that no rule rewrote. See the
+      // matching comment in prod-server.ts step 7b.
+      if (basePath && !hadBasePath && !configRewriteFired) {
+        return new Response("This page could not be found", {
+          status: 404,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
       }
 
       // ── 7. API routes ─────────────────────────────────────────────
@@ -803,7 +829,12 @@ export default {
       // ── 8. Apply afterFiles rewrites from next.config.js ──────────
       // These run after non-dynamic page routes but before dynamic routes.
       if ((!pageMatch || pageMatch.route.isDynamic) && configRewrites.afterFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, postMwReqCtx);
+        const rewritten = matchRewrite(
+          resolvedPathname,
+          configRewrites.afterFiles,
+          postMwReqCtx,
+          basePathState,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
@@ -820,7 +851,12 @@ export default {
 
         // ── 10. Fallback rewrites (if SSR returned 404) ─────────────
         if (response && response.status === 404 && configRewrites.fallback?.length) {
-          const fallbackRewrite = matchRewrite(resolvedPathname, configRewrites.fallback, postMwReqCtx);
+          const fallbackRewrite = matchRewrite(
+            resolvedPathname,
+            configRewrites.fallback,
+            postMwReqCtx,
+            basePathState,
+          );
           if (fallbackRewrite) {
             if (isExternalUrl(fallbackRewrite)) {
               return proxyExternalRequest(request, fallbackRewrite);
