@@ -77,6 +77,21 @@ export type NextRedirect = {
   permanent: boolean;
   has?: HasCondition[];
   missing?: HasCondition[];
+  /**
+   * When true (the default with i18n configured), Next.js prepends an internal
+   * locale alternation to the source so the rule matches locale-prefixed paths.
+   * When `false`, the source is left untouched and matches the raw path,
+   * letting user-supplied `:locale` segments capture the prefix themselves.
+   * See https://nextjs.org/docs/app/api-reference/config/next-config-js/redirects#locale
+   */
+  locale?: false;
+  /**
+   * When `false`, Next.js does not prepend `basePath` to the rule's source.
+   * Currently parsed for forward compatibility but not yet applied — vinext
+   * strips basePath before matching, so all rules behave as if `basePath:false`
+   * is implicit. Tracking parity in a follow-up.
+   */
+  basePath?: false;
 };
 
 export type NextRewrite = {
@@ -84,6 +99,10 @@ export type NextRewrite = {
   destination: string;
   has?: HasCondition[];
   missing?: HasCondition[];
+  /** See {@link NextRedirect.locale}. */
+  locale?: false;
+  /** See {@link NextRedirect.basePath}. */
+  basePath?: false;
 };
 
 export type NextHeader = {
@@ -1085,6 +1104,22 @@ export async function resolveNextConfig(
   // Resolve cacheMaxMemorySize
   const cacheMaxMemorySize: number | undefined =
     typeof config.cacheMaxMemorySize === "number" ? config.cacheMaxMemorySize : undefined;
+
+  // Apply Next.js i18n locale-prefix transformation to redirects/rewrites.
+  // When i18n is configured and a rule does NOT carry `locale: false`, the
+  // source is rewritten to match locale-prefixed URLs. Rules with
+  // `locale: false` are left untouched so user-supplied `:locale` segments
+  // can capture the prefix themselves. Mirrors processRoutes() in
+  // packages/next/src/lib/load-custom-routes.ts.
+  if (i18n) {
+    const { applyLocaleToRoutes } = await import("./config-matchers.js");
+    redirects = applyLocaleToRoutes(redirects, i18n, "redirect");
+    rewrites = {
+      beforeFiles: applyLocaleToRoutes(rewrites.beforeFiles, i18n, "rewrite"),
+      afterFiles: applyLocaleToRoutes(rewrites.afterFiles, i18n, "rewrite"),
+      fallback: applyLocaleToRoutes(rewrites.fallback, i18n, "rewrite"),
+    };
+  }
 
   const resolved: ResolvedNextConfig = {
     env: config.env ?? {},

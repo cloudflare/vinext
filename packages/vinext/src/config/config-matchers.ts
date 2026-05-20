@@ -5,7 +5,13 @@
  * (prod-server.ts) so both apply next.config.js rules identically.
  */
 
-import type { NextRedirect, NextRewrite, NextHeader, HasCondition } from "./next-config.js";
+import type {
+  NextI18nConfig,
+  NextRedirect,
+  NextRewrite,
+  NextHeader,
+  HasCondition,
+} from "./next-config.js";
 import {
   MIDDLEWARE_HEADER_PREFIX,
   VINEXT_MW_CTX_HEADER,
@@ -691,11 +697,23 @@ export function matchConfigPattern(
   // The last condition catches simple params with literal suffixes (e.g. "/:slug.md")
   // where the param name is followed by a dot — the simple matcher would treat
   // "slug.md" as the param name and match any single segment regardless of suffix.
+  // Enter the full regex branch when:
+  //   - the pattern uses explicit regex groups or escapes,
+  //   - a catch-all (`:foo*` / `:foo+`) is followed by a literal suffix that
+  //     the simple catch-all branch cannot express,
+  //   - a named param is followed by a dot (the simple branch would treat
+  //     "slug.md" as the whole param name),
+  //   - the pattern has multiple named params and any of them is a catch-all
+  //     (e.g. `/:locale/files/:path*`). The simple catch-all branch only
+  //     handles trailing-catch-all-with-static-prefix; mixed cases need regex.
+  const catchAllAnchor = /:[\w-]+[*+]/.test(pattern);
+  const namedParamCount = (pattern.match(/:[\w-]+/g) || []).length;
   if (
     pattern.includes("(") ||
     pattern.includes("\\") ||
     /:[\w-]+[*+][^/]/.test(pattern) ||
-    /:[\w-]+\./.test(pattern)
+    /:[\w-]+\./.test(pattern) ||
+    (catchAllAnchor && namedParamCount > 1)
   ) {
     try {
       // Look up the compiled regex in the module-level cache. Patterns come
@@ -1184,4 +1202,106 @@ export function matchHeaders(
     }
   }
   return result;
+}
+
+/**
+ * Escape a string for inclusion in a regex character class / alternation.
+ * Mirrors `escape-string-regexp` semantics used by Next.js's processRoutes.
+ */
+function _escapeRegexString(value: string): string {
+  return value.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&");
+}
+
+/**
+ * Apply Next.js i18n locale-prefix transformation to a set of redirect or
+ * rewrite rules. Mirrors the relevant slice of Next.js's `processRoutes`
+ * (load-custom-routes.ts) with one deliberate divergence noted below.
+ *
+ * For each rule:
+ *   - If `locale === false` or no i18n is configured, the rule is emitted
+ *     untouched. This is the core of issue #1336 item 1: with `locale: false`
+ *     the user-supplied source is matched against the raw locale-prefixed
+ *     URL so a `:locale` segment in the source captures the prefix itself.
+ *   - Otherwise an internal locale-capture variant is produced whose source
+ *     starts with `/:nextInternalLocale(en|sv|nl)` so that locale-prefixed
+ *     URLs match. For redirects only, a second variant prefixed with
+ *     `/${defaultLocale}` is also emitted, matching Next.js exactly.
+ *   - **Vinext divergence**: we ALSO retain the original (unprefixed) source
+ *     so that requests for the default locale that arrive without a prefix
+ *     still match. Next.js solves this upstream by path-normalising every
+ *     incoming default-locale request to include the prefix
+ *     (`resolve-routes.ts` lines ~251-263); vinext currently does that
+ *     normalisation only inside the pages-server-entry route matcher, so
+ *     the rewrite/redirect matcher would otherwise miss unprefixed paths.
+ *     Keeping the unprefixed variant gives functionally identical behaviour
+ *     without requiring a server-wide path normalisation pass. The original
+ *     source is appended LAST so the locale-aware variants win when both
+ *     forms could match.
+ *
+ * Destinations that are local (start with `/`) are similarly rewritten with
+ * `/:nextInternalLocale` for the locale-capture variant so the locale
+ * survives the rewrite/redirect target.
+ *
+ * Mirrors the Next.js reference in
+ * packages/next/src/lib/load-custom-routes.ts — see `processRoutes`.
+ */
+export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite>(
+  routes: T[],
+  i18n: NextI18nConfig | null | undefined,
+  type: "redirect" | "rewrite",
+): T[] {
+  if (!i18n || routes.length === 0) return routes;
+
+  const localesAlternation = i18n.locales.map(_escapeRegexString).join("|");
+  const internalLocale = `/:nextInternalLocale(${localesAlternation})`;
+
+  // For redirects, Next.js emits a per-default-locale literal variant
+  // (so that `/${defaultLocale}/old` redirects to the unprefixed destination
+  // and the default locale is implicitly stripped). For rewrites Next.js
+  // emits only the `:nextInternalLocale` form. We mirror that distinction.
+  const defaultLocales: string[] = type === "redirect" ? [...new Set([i18n.defaultLocale])] : [];
+
+  const out: T[] = [];
+  for (const r of routes) {
+    if (r.locale === false) {
+      out.push(r);
+      continue;
+    }
+
+    // Destinations may be absolute URLs (external) — Next.js skips the
+    // locale-prefix injection on external destinations.
+    const isExternal = !!r.destination && !r.destination.startsWith("/");
+
+    // For each default locale, emit a literal `/${locale}/...` variant
+    // whose destination does NOT carry a locale prefix (Next.js parity).
+    if (!isExternal) {
+      for (const locale of defaultLocales) {
+        const localizedSource = `/${locale}${r.source === "/" ? "" : r.source}`;
+        out.push({
+          ...r,
+          source: localizedSource,
+        });
+      }
+    }
+
+    // Emit the `:nextInternalLocale` variant that matches all locales.
+    const internalSource = `${internalLocale}${r.source === "/" ? "" : r.source}`;
+    let internalDestination = r.destination;
+    if (internalDestination && internalDestination.startsWith("/") && !isExternal) {
+      internalDestination = `/:nextInternalLocale${
+        internalDestination === "/" ? "" : internalDestination
+      }`;
+    }
+    out.push({
+      ...r,
+      source: internalSource,
+      destination: internalDestination,
+    });
+
+    // Retain the original unprefixed source as a fallback so default-locale
+    // requests that arrive without a prefix (e.g. `/old`) still match.
+    // See the docblock above for why this differs from upstream Next.js.
+    out.push(r);
+  }
+  return out;
 }
