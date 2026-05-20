@@ -123,14 +123,26 @@ function getCachedRegex<K, V>(cache: Map<K, V | null>, key: K, compile: () => V 
  * in the array are still checked first.
  */
 
-/** Matches `/:param(alternation)?/static/suffix` — the locale-static pattern. */
-const _LOCALE_STATIC_RE = /^\/:[\w-]+\(([^)]+)\)\?\/([a-zA-Z0-9_~.%@!$&'*+,;=:/-]+)$/;
+/**
+ * Matches `/:param(alternation)?/static/suffix` — the locale-static pattern.
+ *
+ * The `?` after the capture group is itself optional so that both forms are
+ * detected:
+ *   - `/:locale(en|fr)?/foo` (locale segment optional — user-written rules)
+ *   - `/:nextInternalLocale(en|fr)/foo` (locale segment mandatory — emitted
+ *      by `applyLocaleToRoutes` for the locale-capture variant)
+ * Both forms benefit from O(1) suffix lookup; the optionality is recorded
+ * on the entry so we know whether to try the no-locale-prefix bucket.
+ */
+const _LOCALE_STATIC_RE = /^\/:[\w-]+\(([^)]+)\)(\??)\/([a-zA-Z0-9_~.%@!$&'*+,;=:/-]+)$/;
 
 type LocaleStaticEntry = {
   /** The param name extracted from the source (e.g. "locale"). */
   paramName: string;
   /** The compiled regex matching just the alternation, used at match time. */
   altRe: RegExp;
+  /** Whether the locale segment is optional (the source had `?` after the group). */
+  optional: boolean;
   /** The original redirect rule. */
   redirect: NextRedirect;
   /** Position of this rule in the original redirects array. */
@@ -169,7 +181,8 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
     if (m) {
       const paramName = redirect.source.slice(2, redirect.source.indexOf("("));
       const alternation = m[1];
-      const suffix = "/" + m[2]; // e.g. "/security"
+      const optional = m[2] === "?";
+      const suffix = "/" + m[3]; // e.g. "/security"
       // Build a small regex to validate the captured locale value against the
       // alternation. Using anchored match to avoid partial matches.
       // The alternation comes from user config; run it through safeRegExp to
@@ -180,7 +193,13 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
         linear.push([i, redirect]);
         continue;
       }
-      const entry: LocaleStaticEntry = { paramName, altRe, redirect, originalIndex: i };
+      const entry: LocaleStaticEntry = {
+        paramName,
+        altRe,
+        optional,
+        redirect,
+        originalIndex: i,
+      };
       const bucket = localeStatic.get(suffix);
       if (bucket) {
         bucket.push(entry);
@@ -874,9 +893,14 @@ export function matchRedirect(
 
   if (index.localeStatic.size > 0) {
     // Case 1: no locale prefix — pathname IS the suffix.
+    // Only valid for entries whose source had `?` after the alternation
+    // (the locale segment was optional). Mandatory-locale entries — emitted
+    // by `applyLocaleToRoutes` as `/:nextInternalLocale(en|fr)/foo` — must
+    // not match here because they require the locale segment to be present.
     const noLocaleBucket = index.localeStatic.get(pathname);
     if (noLocaleBucket) {
       for (const entry of noLocaleBucket) {
+        if (!entry.optional) continue; // mandatory-locale rule — skip
         if (entry.originalIndex >= localeMatchIndex) continue; // already have a better match
         const redirect = entry.redirect;
         const conditionParams =
@@ -1249,17 +1273,30 @@ export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite>(
   routes: T[],
   i18n: NextI18nConfig | null | undefined,
   type: "redirect" | "rewrite",
+  options: { trailingSlash?: boolean } = {},
 ): T[] {
   if (!i18n || routes.length === 0) return routes;
 
+  const trailingSlash = options.trailingSlash ?? false;
   const localesAlternation = i18n.locales.map(_escapeRegexString).join("|");
   const internalLocale = `/:nextInternalLocale(${localesAlternation})`;
+
+  // Mirrors Next.js: the root source `"/"` is collapsed to `""` only when
+  // `trailingSlash` is unset. With `trailingSlash: true` the source is
+  // preserved so the emitted variant is `/:nextInternalLocale(en|fr)/`
+  // rather than `/:nextInternalLocale(en|fr)`.
+  const suffixFor = (source: string): string => (source === "/" && !trailingSlash ? "" : source);
 
   // For redirects, Next.js emits a per-default-locale literal variant
   // (so that `/${defaultLocale}/old` redirects to the unprefixed destination
   // and the default locale is implicitly stripped). For rewrites Next.js
   // emits only the `:nextInternalLocale` form. We mirror that distinction.
-  const defaultLocales: string[] = type === "redirect" ? [...new Set([i18n.defaultLocale])] : [];
+  //
+  // The list is a single-element array today; domain-locale support (which
+  // Next.js wires up alongside `i18n.domains`) will append each domain's
+  // `defaultLocale` here once vinext mirrors that branch — tracked as part
+  // of #1336's follow-ups.
+  const defaultLocales: string[] = type === "redirect" ? [i18n.defaultLocale] : [];
 
   const out: T[] = [];
   for (const r of routes) {
@@ -1276,7 +1313,7 @@ export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite>(
     // whose destination does NOT carry a locale prefix (Next.js parity).
     if (!isExternal) {
       for (const locale of defaultLocales) {
-        const localizedSource = `/${locale}${r.source === "/" ? "" : r.source}`;
+        const localizedSource = `/${locale}${suffixFor(r.source)}`;
         out.push({
           ...r,
           source: localizedSource,
@@ -1285,11 +1322,11 @@ export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite>(
     }
 
     // Emit the `:nextInternalLocale` variant that matches all locales.
-    const internalSource = `${internalLocale}${r.source === "/" ? "" : r.source}`;
+    const internalSource = `${internalLocale}${suffixFor(r.source)}`;
     let internalDestination = r.destination;
     if (internalDestination && internalDestination.startsWith("/") && !isExternal) {
       internalDestination = `/:nextInternalLocale${
-        internalDestination === "/" ? "" : internalDestination
+        internalDestination === "/" && !trailingSlash ? "" : internalDestination
       }`;
     }
     out.push({

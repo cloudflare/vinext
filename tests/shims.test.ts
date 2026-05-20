@@ -16077,6 +16077,62 @@ describe("locale: false on rewrites/redirects (issue #1336)", () => {
     expect(matchRewrite("/old", rules, emptyCtx)).toBe("/new");
   });
 
+  it("matchRedirect uses the locale-static fast path for nextInternalLocale variants", async () => {
+    // The `_LOCALE_STATIC_RE` detection regex must accept both
+    //   `/:locale(en|fr)?/foo` (optional, user-written)
+    // and
+    //   `/:nextInternalLocale(en|fr)/foo` (mandatory, emitted by
+    //                                       applyLocaleToRoutes)
+    // — otherwise the locale-capture variants emitted by this PR would fall
+    // into the linear scan, regressing the O(1) lookup performance of i18n
+    // apps with many redirects.
+    const { matchRedirect, applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const i18n = { locales: ["en", "sv", "nl"], defaultLocale: "en" };
+    const rules = applyLocaleToRoutes(
+      [{ source: "/security", destination: "/security-dest", permanent: false as const }],
+      i18n,
+      "redirect",
+    );
+    // Locale-capture (mandatory) variant must hit the fast path AND substitute
+    // the captured locale into the destination.
+    expect(matchRedirect("/sv/security", rules, emptyCtx)?.destination).toBe("/sv/security-dest");
+    // Default-locale-literal variant strips the prefix.
+    expect(matchRedirect("/en/security", rules, emptyCtx)?.destination).toBe("/security-dest");
+    // No-locale-prefix path must not be matched by the mandatory variant —
+    // the original (unprefixed) source matches and produces the unprefixed
+    // destination.
+    expect(matchRedirect("/security", rules, emptyCtx)?.destination).toBe("/security-dest");
+  });
+
+  it("applyLocaleToRoutes preserves trailing slash when trailingSlash is true", async () => {
+    const { applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const i18n = { locales: ["en", "fr"], defaultLocale: "en" };
+
+    // trailingSlash: false (default) — root source collapses to "".
+    const noTrailing = applyLocaleToRoutes(
+      [{ source: "/", destination: "/home" }],
+      i18n,
+      "rewrite",
+      { trailingSlash: false },
+    );
+    const internalNoTrailing = noTrailing.find((r) => r.source.startsWith("/:nextInternalLocale("));
+    expect(internalNoTrailing?.source).toBe("/:nextInternalLocale(en|fr)");
+
+    // trailingSlash: true — root source is preserved.
+    const withTrailing = applyLocaleToRoutes(
+      [{ source: "/", destination: "/home" }],
+      i18n,
+      "rewrite",
+      { trailingSlash: true },
+    );
+    const internalWithTrailing = withTrailing.find((r) =>
+      r.source.startsWith("/:nextInternalLocale("),
+    );
+    expect(internalWithTrailing?.source).toBe("/:nextInternalLocale(en|fr)/");
+  });
+
   it("matchRedirect emits both default-locale-literal and locale-capture variants", async () => {
     // For redirects, Next.js emits two source variants per rule:
     //   1. `/${defaultLocale}/old` with destination `/new` (no locale prefix

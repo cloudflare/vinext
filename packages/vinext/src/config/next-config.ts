@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
-import { isExternalUrl } from "./config-matchers.js";
+import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigPathAliasesForRoot } from "./tsconfig-paths.js";
 
 /**
@@ -1112,12 +1112,12 @@ export async function resolveNextConfig(
   // can capture the prefix themselves. Mirrors processRoutes() in
   // packages/next/src/lib/load-custom-routes.ts.
   if (i18n) {
-    const { applyLocaleToRoutes } = await import("./config-matchers.js");
-    redirects = applyLocaleToRoutes(redirects, i18n, "redirect");
+    const opts = { trailingSlash: config.trailingSlash ?? false };
+    redirects = applyLocaleToRoutes(redirects, i18n, "redirect", opts);
     rewrites = {
-      beforeFiles: applyLocaleToRoutes(rewrites.beforeFiles, i18n, "rewrite"),
-      afterFiles: applyLocaleToRoutes(rewrites.afterFiles, i18n, "rewrite"),
-      fallback: applyLocaleToRoutes(rewrites.fallback, i18n, "rewrite"),
+      beforeFiles: applyLocaleToRoutes(rewrites.beforeFiles, i18n, "rewrite", opts),
+      afterFiles: applyLocaleToRoutes(rewrites.afterFiles, i18n, "rewrite", opts),
+      fallback: applyLocaleToRoutes(rewrites.fallback, i18n, "rewrite", opts),
     };
   }
 
