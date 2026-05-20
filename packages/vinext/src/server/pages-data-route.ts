@@ -21,7 +21,7 @@
 const NEXT_DATA_PREFIX = "/_next/data/";
 const NEXT_DATA_SUFFIX = ".json";
 
-export type NextDataMatch = {
+type NextDataMatch = {
   /**
    * The normalized page pathname (with leading slash, no trailing slash,
    * `.json` stripped, buildId stripped). For locale-prefixed requests like
