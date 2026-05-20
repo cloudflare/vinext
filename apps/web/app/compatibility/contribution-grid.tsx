@@ -22,9 +22,11 @@
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FileStatus, RouterKind } from "@/app/lib/db/schema";
+import { cellMatchesFilter, type RouterFilter } from "./router-buckets";
 
 // (Tabs / filter UI now lives in compatibility-views.tsx; the grid receives
-// the active filter as a prop.)
+// the active filter as a prop. Filter semantics — what each value means and
+// how Mixed cells are counted — live in ./router-buckets.ts.)
 
 // useLayoutEffect would log a warning during SSR. Fall through to useEffect
 // on the server (where there is nothing to measure anyway).
@@ -39,30 +41,6 @@ export type GridCell = {
   failed: number;
   skipped: number;
 };
-
-/**
- * Router-filter values for the segmented control above the chart + grid.
- *   - "all"     — every test file in the latest run
- *   - "app"     — App Router fixtures + parity tests (since they exercise app)
- *   - "pages"   — Pages Router fixtures + parity tests
- *   - "both"    — only parity / mixed tests (real `app/` and `pages/` in same fixture)
- *   - "unknown" — config/build/edge-runtime tests with no router fixture
- *
- * Note: "app" and "pages" both include "both" cells. This is intentional —
- * a parity test failure is a real failure for both routers. Adding the
- * pass counts of "app" and "pages" therefore exceeds the total.
- *
- * The active filter is owned by the parent (CompatibilityViews) so it can
- * be shared with the line chart. The grid takes it as a prop.
- */
-export type RouterFilter = "all" | RouterKind;
-
-function cellMatchesFilter(cell: GridCell, filter: RouterFilter): boolean {
-  if (filter === "all") return true;
-  if (filter === "app") return cell.router === "app" || cell.router === "both";
-  if (filter === "pages") return cell.router === "pages" || cell.router === "both";
-  return cell.router === filter;
-}
 
 const COLORS: Record<FileStatus, string> = {
   pass: "#2da44e", // green

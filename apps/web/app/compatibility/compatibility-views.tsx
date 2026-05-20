@@ -17,7 +17,8 @@
 import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { useMemo, useState } from "react";
 import { CompatibilityLineChart, type TrendPoint } from "./compatibility-line-chart";
-import { ContributionGrid, type GridCell, type RouterFilter } from "./contribution-grid";
+import { ContributionGrid, type GridCell } from "./contribution-grid";
+import { countByFilter, type RouterFilter } from "./router-buckets";
 
 /**
  * Tab definitions for the router filter. Mirrors the bucket logic in
@@ -42,29 +43,9 @@ export function CompatibilityViews({ cells, trend }: { cells: GridCell[]; trend:
 
   // Count per filter — fed into the tab labels so users can see how many
   // files each filter would show before clicking. Recomputed only when
-  // cells changes, not when filter changes.
-  const counts = useMemo(() => {
-    const c: Record<RouterFilter, number> = {
-      all: cells.length,
-      app: 0,
-      pages: 0,
-      both: 0,
-      unknown: 0,
-    };
-    for (const cell of cells) {
-      if (cell.router === "app") c.app++;
-      else if (cell.router === "pages") c.pages++;
-      else if (cell.router === "both") {
-        c.both++;
-        // Parity / mixed cells count toward both router buckets — a failure
-        // in a mixed test is a real failure for both routers, so showing it
-        // under either filter is correct.
-        c.app++;
-        c.pages++;
-      } else c.unknown++;
-    }
-    return c;
-  }, [cells]);
+  // cells changes, not when filter changes. Counting rules (Mixed cells
+  // counted toward both `app` and `pages`) live in ./router-buckets.
+  const counts = useMemo(() => countByFilter(cells), [cells]);
 
   const tabItems = useMemo(
     () =>

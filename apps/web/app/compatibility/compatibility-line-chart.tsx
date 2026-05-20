@@ -15,7 +15,7 @@
  * grid's filters work. See compatibility-views.tsx for the rationale.
  */
 import { useMemo, useState } from "react";
-import type { RouterFilter } from "./contribution-grid";
+import type { RouterFilter } from "./router-buckets";
 
 type SeriesCounts = {
   total: number;
@@ -61,11 +61,16 @@ function formatDateTime(ms: number): string {
 }
 
 /**
- * Pass rate excludes skipped tests: skipped → "not relevant", not "failure".
- * Denominator is passed + failed (the tests that actually ran a verdict).
- * Returns 0 when nothing ran (rather than NaN).
+ * Pass rate as a 0..1 ratio (NOT a percentage). Excludes skipped tests:
+ * skipped → "not relevant", not "failure". Denominator is passed + failed
+ * (the tests that actually ran a verdict). Returns 0 when nothing ran
+ * (rather than NaN).
+ *
+ * Distinct name from `bucketPassRate` (in router-buckets.ts) which returns
+ * 0..100 — the chart needs a ratio for plotting Y coordinates, while the
+ * stat cards need a percentage for display.
  */
-function passRate(c: SeriesCounts): number {
+function computePassRateRatio(c: SeriesCounts): number {
   const denom = c.passed + c.failed;
   return denom > 0 ? c.passed / denom : 0;
 }
@@ -90,7 +95,7 @@ export function CompatibilityLineChart({
     () =>
       points.map((p) => {
         const counts = p.byRouter[filter];
-        return { createdAt: p.createdAt, counts, passRate: passRate(counts) };
+        return { createdAt: p.createdAt, counts, passRate: computePassRateRatio(counts) };
       }),
     [points, filter],
   );

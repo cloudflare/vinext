@@ -23,6 +23,7 @@ import {
 import { CompatibilityViews } from "./compatibility-views";
 import type { GridCell } from "./contribution-grid";
 import type { TrendPoint } from "./compatibility-line-chart";
+import { bucketByRouter, bucketPassRate } from "./router-buckets";
 
 // ISR: rebuild this page at most every 5 minutes. Compat data only changes
 // when a nightly deploy-suite run lands, so 5 minutes of staleness is fine
@@ -136,6 +137,14 @@ async function runQueries(
     // drizzle's `.all()` over a raw SQL fragment returns `unknown[]` by
     // default — we cast through TrendRow because the column list is
     // fixed and audited here.
+    //
+    // Note: we select `r.created_at` alongside SUM() aggregates while
+    // grouping only by `r.id`. SQLite permits this and returns the
+    // correct value because `r.created_at` is functionally dependent
+    // on the PK — every row in a group shares the same `r.id`, so it
+    // shares the same `r.created_at`. Standard SQL (e.g. PostgreSQL
+    // with default settings) rejects this; if the query is ever ported,
+    // add `r.created_at` to the GROUP BY or wrap it in `MIN()`/`MAX()`.
     db.all(sql`
       SELECT
         r.created_at AS created_at,
@@ -247,46 +256,6 @@ async function runQueries(
     }));
 
   return { latestRun, latestFiles, trend };
-}
-
-/**
- * Per-router test-count breakdown. Each cell contributes to its own bucket
- * AND, for parity (`both`) cells, to both `app` and `pages` — see the
- * RouterFilter comment in contribution-grid.tsx for why.
- */
-function bucketByRouter(
-  files: GridCell[],
-): Record<
-  "app" | "pages" | "parity" | "other",
-  { files: number; passed: number; failed: number; skipped: number }
-> {
-  const empty = () => ({ files: 0, passed: 0, failed: 0, skipped: 0 });
-  const out = { app: empty(), pages: empty(), parity: empty(), other: empty() };
-
-  for (const f of files) {
-    const bumpInto = (b: { files: number; passed: number; failed: number; skipped: number }) => {
-      b.files++;
-      b.passed += f.passed;
-      b.failed += f.failed;
-      b.skipped += f.skipped;
-    };
-    if (f.router === "app") bumpInto(out.app);
-    else if (f.router === "pages") bumpInto(out.pages);
-    else if (f.router === "both") {
-      // Parity tests are counted in their own bucket AND in both router
-      // buckets, so the App Router / Pages Router pass rates accurately
-      // reflect "tests that exercise this router".
-      bumpInto(out.parity);
-      bumpInto(out.app);
-      bumpInto(out.pages);
-    } else bumpInto(out.other);
-  }
-  return out;
-}
-
-function bucketPassRate(b: { passed: number; failed: number }): number {
-  const denom = b.passed + b.failed;
-  return denom > 0 ? (b.passed / denom) * 100 : 0;
 }
 
 export default async function CompatibilityPage() {
@@ -404,10 +373,10 @@ export default async function CompatibilityPage() {
           </div>
           <div className={CARD}>
             <div className="text-3xl font-semibold tracking-tight text-kumo-default">
-              {bucketPassRate(byRouter.parity).toFixed(1)}%
+              {bucketPassRate(byRouter.both).toFixed(1)}%
             </div>
             <div className="text-sm text-kumo-subtle">
-              Mixed pass rate · {byRouter.parity.files} files
+              Mixed pass rate · {byRouter.both.files} files
             </div>
           </div>
         </div>
