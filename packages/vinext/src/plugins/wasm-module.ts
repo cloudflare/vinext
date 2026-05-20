@@ -153,7 +153,7 @@ export function wasmModulePlugin(): Plugin {
           `    import("node:fs/promises"),`,
           `    import("node:url"),`,
           `  ]);`,
-          `  const bytes = await readFile(fileURLToPath(new URL(__vinext_wasm_url)));`,
+          `  const bytes = await readFile(fileURLToPath(__vinext_wasm_url));`,
           `  return WebAssembly.compile(bytes);`,
           `}`,
           `export default await __vinext_load_wasm_module();`,
