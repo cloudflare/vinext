@@ -216,6 +216,10 @@ function isExecutionContextLike(value: unknown): value is ExecutionContextLike {
   return hasProperty(value, "waitUntil") && typeof value.waitUntil === "function";
 }
 
+// TODO(#1333): once App Router supports `basePath: false` rules (see
+// `normalizeRscRequest` — it 404s out-of-basePath requests before they
+// reach this code), pass `hadBasePath` here and skip the prefix when
+// false, mirroring the same guard in `prod-server.ts` and `deploy.ts`.
 function redirectDestinationWithBasePath(destination: string, basePath: string): string {
   if (!basePath || isExternalUrl(destination) || hasBasePath(destination, basePath)) {
     return destination;

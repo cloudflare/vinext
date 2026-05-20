@@ -370,6 +370,26 @@ describe("basePath: rewrite/redirect/header gating", () => {
     expect(result).toEqual({ destination: "/another-destination", permanent: false });
   });
 
+  it("basePath: false redirect rule does NOT match when request is under basePath", async () => {
+    // Symmetric to the rewrite case: the opt-out rule must not fire when
+    // the request is inside basePath — otherwise both buckets would match
+    // on `/docs/redirect-no-basepath`.
+    const { matchRedirect } = await import("../../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      {
+        source: "/redirect-no-basepath",
+        destination: "/another-destination",
+        permanent: false,
+        basePath: false as const,
+      },
+    ];
+    const result = matchRedirect("/redirect-no-basepath", redirects, emptyCtx(), {
+      basePath: "/docs",
+      hadBasePath: true,
+    });
+    expect(result).toBeNull();
+  });
+
   it("default header rule does not match when request is outside basePath", async () => {
     const { matchHeaders } = await import("../../packages/vinext/src/config/config-matchers.js");
     const headers = [{ source: "/add-header", headers: [{ key: "x-hello", value: "world" }] }];
@@ -404,6 +424,23 @@ describe("basePath: rewrite/redirect/header gating", () => {
       hadBasePath: false,
     });
     expect(result).toEqual([{ key: "x-hello", value: "world" }]);
+  });
+
+  it("basePath: false header rule does NOT match when request is under basePath", async () => {
+    // Symmetric to the rewrite/redirect cases.
+    const { matchHeaders } = await import("../../packages/vinext/src/config/config-matchers.js");
+    const headers = [
+      {
+        source: "/add-header-no-basepath",
+        headers: [{ key: "x-hello", value: "world" }],
+        basePath: false as const,
+      },
+    ];
+    const result = matchHeaders("/add-header-no-basepath", headers, emptyCtx(), {
+      basePath: "/docs",
+      hadBasePath: true,
+    });
+    expect(result).toEqual([]);
   });
 
   it("rules behave like default when basePath is empty (back-compat)", async () => {
