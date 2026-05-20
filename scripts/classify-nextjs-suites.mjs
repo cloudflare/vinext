@@ -320,13 +320,14 @@ function scanFixture(fixtureRoot) {
         if (e.name === "app") {
           if (!hasApp && appDirHasRealRoute(childPath)) {
             hasApp = true;
-            if (hasApp && hasPages) return { hasApp, hasPages };
+            // `hasApp` is now true; short-circuit if pages was already set
+            if (hasPages) return { hasApp, hasPages };
             continue; // covered by the route checker
           }
         } else {
           if (!hasPages && pagesDirHasRealRoute(childPath)) {
             hasPages = true;
-            if (hasApp && hasPages) return { hasApp, hasPages };
+            if (hasApp) return { hasApp, hasPages };
             continue;
           }
         }

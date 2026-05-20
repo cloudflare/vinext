@@ -444,6 +444,11 @@ export default async function CompatibilityPage() {
             <code>kind</code> so additional suites (e.g. ecosystem apps, Vitest) can be added later
             without schema changes.
           </p>
+          <p className="text-sm leading-relaxed text-kumo-subtle">
+            Per-router trend lines use the latest classification snapshot, so reclassifying a suite
+            (when the Next.js ref bumps, or when the heuristic improves) updates how it appears
+            across every historical run. The aggregate &quot;All&quot; line is unaffected.
+          </p>
           <LinkButton
             variant="outline"
             size="sm"

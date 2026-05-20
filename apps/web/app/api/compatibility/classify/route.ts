@@ -54,10 +54,24 @@ const MAX_SUITES = 5000;
 
 const VALID_ROUTERS: ReadonlySet<RouterKind> = new Set(["app", "pages", "both", "unknown"]);
 
+/**
+ * Minimum acceptable `classifiedAt` value. Anything earlier almost certainly
+ * indicates a unit mistake (seconds instead of milliseconds) or a buggy
+ * caller sending `0`/`-1`. Set to 2023-01-01 UTC — comfortably in the past
+ * for any legitimate ingest while still rejecting both common mistakes.
+ *
+ * Documented on the wire as "unix millis"; this is the runtime guard.
+ */
+const MIN_CLASSIFIED_AT_MS = Date.UTC(2023, 0, 1);
+
 function isValidBody(body: unknown): body is SubmitBody {
   if (!body || typeof body !== "object") return false;
   const b = body as Record<string, unknown>;
-  if (b.classifiedAt !== undefined && typeof b.classifiedAt !== "number") return false;
+  if (b.classifiedAt !== undefined) {
+    if (typeof b.classifiedAt !== "number") return false;
+    if (!Number.isFinite(b.classifiedAt)) return false;
+    if (b.classifiedAt < MIN_CLASSIFIED_AT_MS) return false;
+  }
   if (!Array.isArray(b.suites)) return false;
   if (b.suites.length === 0) return false;
   if (b.suites.length > MAX_SUITES) return false;
@@ -145,14 +159,23 @@ async function writeClassifications(body: SubmitBody): Promise<Response> {
 }
 
 /**
+ * Columns of `compat_suite_meta` that we want to update on conflict.
+ * The PK (`suite`) is intentionally excluded — by definition it can't
+ * change on conflict, and including it here would let a refactor
+ * accidentally feed it into `sqlExcluded` below.
+ */
+type ExcludedColumn = "router" | "classified_at";
+
+/**
  * Helper to reference `excluded.<col>` inside an ON CONFLICT ... DO UPDATE
  * SET clause. SQLite's `excluded` pseudo-table holds the values that would
  * have been inserted, which is what we want for an upsert.
  *
- * Drizzle exposes this via `sql.raw`; wrap it for readability. `column` is
- * a fixed string literal at every call site below (no user input), so the
- * raw fragment is safe.
+ * Drizzle exposes this via `sql.raw`. Because `sql.raw` bypasses parameter
+ * binding, we restrict `column` to a closed union of known schema columns
+ * so the safety invariant ("no user input ever reaches `sql.raw`") is
+ * compiler-enforced rather than relying on a comment.
  */
-function sqlExcluded(column: string) {
+function sqlExcluded(column: ExcludedColumn) {
   return sql.raw(`excluded.${column}`);
 }

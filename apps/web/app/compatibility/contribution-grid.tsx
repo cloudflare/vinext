@@ -195,10 +195,17 @@ export function ContributionGrid({
     );
   }
 
+  // Grid dimensions: clamp to >= 0 to avoid emitting an SVG with negative
+  // width/height when `visibleCells` is empty (`rows * STRIDE - GAP` is
+  // -GAP when rows = 0). Browsers silently coerce negative dimensions to
+  // 0, but it's still invalid SVG. We also branch on emptiness below so
+  // the SVG isn't rendered at all in that case — both checks are cheap
+  // and the explicit clamp protects future callers that might bypass the
+  // empty-state branch.
   const effectiveCols = Math.max(1, Math.min(cols, Math.max(visibleCells.length, 1)));
-  const rows = Math.max(1, Math.ceil(visibleCells.length / effectiveCols));
-  const svgWidth = effectiveCols * STRIDE - GAP;
-  const svgHeight = rows * STRIDE - GAP;
+  const rows = Math.ceil(visibleCells.length / effectiveCols);
+  const svgWidth = Math.max(0, effectiveCols * STRIDE - GAP);
+  const svgHeight = Math.max(0, rows * STRIDE - GAP);
 
   return (
     <div ref={containerRef} className="relative w-full">
@@ -206,48 +213,49 @@ export function ContributionGrid({
         <div className="py-8 text-center text-sm text-kumo-subtle">
           No test files in this category.
         </div>
-      ) : null}
-      <svg
-        role="img"
-        aria-label={`Compatibility grid: ${visibleCells.length} test files`}
-        width={svgWidth}
-        height={svgHeight}
-        style={{ display: "block", maxWidth: "100%" }}
-      >
-        {visibleCells.map((cell, i) => {
-          const col = i % effectiveCols;
-          const row = Math.floor(i / effectiveCols);
-          const x = col * STRIDE;
-          const y = row * STRIDE;
-          return (
-            <rect
-              key={cell.suite}
-              x={x}
-              y={y}
-              width={CELL_SIZE}
-              height={CELL_SIZE}
-              rx={2}
-              ry={2}
-              fill={COLORS[cell.status]}
-              onMouseEnter={(e) => {
-                const container = containerRef.current;
-                if (!container) return;
-                const cRect = container.getBoundingClientRect();
-                const tRect = (e.currentTarget as SVGRectElement).getBoundingClientRect();
-                setHover({
-                  cell,
-                  x: tRect.left - cRect.left + tRect.width / 2,
-                  y: tRect.top - cRect.top + tRect.height + 6,
-                });
-              }}
-              onMouseLeave={() => setHover(null)}
-              style={{ cursor: "pointer" }}
-            >
-              <title>{summarize(cell)}</title>
-            </rect>
-          );
-        })}
-      </svg>
+      ) : (
+        <svg
+          role="img"
+          aria-label={`Compatibility grid: ${visibleCells.length} test files`}
+          width={svgWidth}
+          height={svgHeight}
+          style={{ display: "block", maxWidth: "100%" }}
+        >
+          {visibleCells.map((cell, i) => {
+            const col = i % effectiveCols;
+            const row = Math.floor(i / effectiveCols);
+            const x = col * STRIDE;
+            const y = row * STRIDE;
+            return (
+              <rect
+                key={cell.suite}
+                x={x}
+                y={y}
+                width={CELL_SIZE}
+                height={CELL_SIZE}
+                rx={2}
+                ry={2}
+                fill={COLORS[cell.status]}
+                onMouseEnter={(e) => {
+                  const container = containerRef.current;
+                  if (!container) return;
+                  const cRect = container.getBoundingClientRect();
+                  const tRect = (e.currentTarget as SVGRectElement).getBoundingClientRect();
+                  setHover({
+                    cell,
+                    x: tRect.left - cRect.left + tRect.width / 2,
+                    y: tRect.top - cRect.top + tRect.height + 6,
+                  });
+                }}
+                onMouseLeave={() => setHover(null)}
+                style={{ cursor: "pointer" }}
+              >
+                <title>{summarize(cell)}</title>
+              </rect>
+            );
+          })}
+        </svg>
+      )}
       {hover
         ? (() => {
             const group = deriveSuiteGroup(hover.cell.suite);
