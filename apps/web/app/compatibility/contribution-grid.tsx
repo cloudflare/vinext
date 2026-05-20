@@ -57,7 +57,7 @@ export type GridCell = {
  */
 export type RouterFilter = "all" | RouterKind;
 
-export function cellMatchesFilter(cell: GridCell, filter: RouterFilter): boolean {
+function cellMatchesFilter(cell: GridCell, filter: RouterFilter): boolean {
   if (filter === "all") return true;
   if (filter === "app") return cell.router === "app" || cell.router === "both";
   if (filter === "pages") return cell.router === "pages" || cell.router === "both";
