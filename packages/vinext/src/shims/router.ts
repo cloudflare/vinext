@@ -823,6 +823,25 @@ function updateHistory(mode: "push" | "replace", url: string): void {
 }
 
 /**
+ * Throw the canonical "no router instance" error used when a Pages Router
+ * navigation method (push/replace/back/reload/prefetch/beforePopState) is
+ * invoked during SSR or prerendering.
+ *
+ * Mirrors Next.js's `ServerRouter.push`/`replace`/etc. which all call
+ * `noRouter()` in `packages/next/src/server/render.tsx`. The error message
+ * matches Next.js verbatim so userland error handling and docs links work
+ * unchanged.
+ *
+ * Ported from Next.js: packages/next/src/server/render.tsx
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+ */
+function throwNoRouterInstance(): never {
+  throw new Error(
+    'No router instance found. you should only use "next/router" inside the client side of your app. https://nextjs.org/docs/messages/no-router-instance',
+  );
+}
+
+/**
  * Shared client-side navigation flow used by both `useRouter()` and the
  * `Router` singleton. The only differences between push/replace are the
  * history method (`pushState` vs `replaceState`), the external-URL fallback
@@ -840,6 +859,17 @@ async function performNavigation(
   mode: "push" | "replace",
   onStateUpdate?: () => void,
 ): Promise<boolean> {
+  // SSR / prerender guard. Calling Router.push or Router.replace from a
+  // Pages Router component during server rendering would otherwise crash
+  // with `ReferenceError: window is not defined` (window.location is
+  // accessed unconditionally below). Match Next.js's `ServerRouter.push`
+  // behaviour and throw the documented "no router instance" error so the
+  // failure surfaces as a normal render error instead of a ReferenceError
+  // that takes down the request pipeline.
+  if (typeof window === "undefined") {
+    throwNoRouterInstance();
+  }
+
   const navigationLocale = resolveTransitionLocale(options?.locale);
   let resolved = resolveNavigationTarget(url, as, navigationLocale);
 
@@ -1113,16 +1143,38 @@ export function withRouter<P extends WithRouterProps>(
 // Note: `withRouter` is exposed only as a named export from `next/router`.
 // The default export of that module is the Router singleton declared below.
 
-// Also export a default Router singleton for `import Router from 'next/router'`
+// Also export a default Router singleton for `import Router from 'next/router'`.
+//
+// Every navigation method is guarded against SSR/prerender execution. Matches
+// Next.js's `ServerRouter` (packages/next/src/server/render.tsx) which throws
+// `noRouter()` from push/replace/back/reload/prefetch/beforePopState so that
+// invoking them during server rendering surfaces as a documented render error
+// rather than a `ReferenceError: window is not defined`. The throws are
+// synchronous (not via the returned Promise) so render-time callers see the
+// error inline — matching Next.js behaviour and avoiding unhandled rejections.
 const Router = {
-  push: (url: string | UrlObject, as?: string, options?: TransitionOptions) =>
-    performNavigation(url, as, options, "push"),
-  replace: (url: string | UrlObject, as?: string, options?: TransitionOptions) =>
-    performNavigation(url, as, options, "replace"),
-  back: () => window.history.back(),
-  reload: () => window.location.reload(),
-  prefetch: prefetchUrl,
+  push: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
+    if (typeof window === "undefined") throwNoRouterInstance();
+    return performNavigation(url, as, options, "push");
+  },
+  replace: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
+    if (typeof window === "undefined") throwNoRouterInstance();
+    return performNavigation(url, as, options, "replace");
+  },
+  back: () => {
+    if (typeof window === "undefined") throwNoRouterInstance();
+    window.history.back();
+  },
+  reload: () => {
+    if (typeof window === "undefined") throwNoRouterInstance();
+    window.location.reload();
+  },
+  prefetch: (url: string) => {
+    if (typeof window === "undefined") throwNoRouterInstance();
+    return prefetchUrl(url);
+  },
   beforePopState: (cb: BeforePopStateCallback) => {
+    if (typeof window === "undefined") throwNoRouterInstance();
     _beforePopStateCb = cb;
   },
   events: routerEvents,
