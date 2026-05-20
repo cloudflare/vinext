@@ -410,4 +410,151 @@ describe("Form client GET interception", () => {
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
   });
+
+  it("respects onSubmit calling preventDefault — no client-side navigation", async () => {
+    // Mirrors Next.js's `with-onsubmit-preventdefault` test:
+    // .nextjs-ref/test/e2e/next-form/default/shared-tests.util.ts:235
+    // When the user's onSubmit handler calls preventDefault(), we must NOT
+    // intercept for soft-navigation — let the user's logic own the submit.
+    const { navigate } = installClientGlobals({ supportsSubmitter: true });
+    const userOnSubmit = vi.fn((event: { preventDefault: () => void }) => {
+      event.preventDefault();
+    });
+    const { onSubmit } = renderClientForm({ action: "/search", onSubmit: userOnSubmit });
+    const event = createSubmitEvent({ entries: [["q", "react"]] });
+
+    await onSubmit(event);
+
+    expect(userOnSubmit).toHaveBeenCalledOnce();
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    // Form's own preventDefault path (and navigate) should be skipped.
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("uses replace mode when `replace` prop is set", async () => {
+    const { navigate } = installClientGlobals({ supportsSubmitter: true });
+    const { onSubmit } = renderClientForm({ action: "/search", replace: true });
+    const event = createSubmitEvent({ entries: [["q", "react"]] });
+
+    await onSubmit(event);
+
+    expect(navigate).toHaveBeenCalledWith(
+      "/search?q=react",
+      0,
+      "navigate",
+      "replace",
+      undefined,
+      false,
+    );
+  });
+});
+
+describe("Form Pages Router soft navigation", () => {
+  // When no App Router navigation runtime is present, the form must route via
+  // the Pages Router singleton (`next/router`) so it triggers a real soft
+  // navigation rather than a full MPA reload. This is the regression that
+  // sub-issue #1355 calls out.
+  //
+  // We can't realistically boot the full Pages Router singleton inside a unit
+  // test (it depends on `window.__VINEXT_ROOT__` and a Vite-generated route
+  // manifest). Instead, we assert the contract that matters at the shim
+  // boundary: `preventDefault` was called, so the browser's native form
+  // submission (which would be a hard MPA reload) is suppressed.
+
+  function createPagesWindowStub() {
+    const pushState = vi.fn();
+    const replaceState = vi.fn();
+    const scrollTo = vi.fn();
+    const dispatched: Event[] = [];
+
+    return {
+      pushState,
+      replaceState,
+      scrollTo,
+      dispatched,
+      window: {
+        // Intentionally NO `vinext.navigationRuntime` — Pages Router context.
+        history: {
+          pushState,
+          replaceState,
+          state: null,
+        },
+        location: {
+          origin: "http://localhost:3000",
+          href: "http://localhost:3000/current",
+          pathname: "/current",
+          search: "",
+          hash: "",
+          hostname: "localhost",
+        },
+        scrollTo,
+        scrollX: 0,
+        scrollY: 0,
+        addEventListener: () => {},
+        dispatchEvent: (event: Event) => {
+          dispatched.push(event);
+          return true;
+        },
+      },
+    };
+  }
+
+  function installPagesGlobals() {
+    const stub = createPagesWindowStub();
+    vi.stubGlobal("window", stub.window);
+    vi.stubGlobal("Element", FakeElement);
+    vi.stubGlobal("HTMLButtonElement", FakeButtonElement);
+    vi.stubGlobal("HTMLInputElement", FakeInputElement);
+    vi.stubGlobal("FormData", createFormDataClass({ supportsSubmitter: true }));
+    vi.stubGlobal("PopStateEvent", class PopStateEvent extends Event {});
+    return stub;
+  }
+
+  it("calls preventDefault to suppress the browser's hard MPA submit", async () => {
+    // Regression for #1355: without interception, the browser would submit
+    // the form and trigger a full page reload (`didMpaNavigate` -> true).
+    // Calling preventDefault is the only thing that can stop that.
+    installPagesGlobals();
+    const { onSubmit } = renderClientForm({ action: "/results" });
+    const event = createSubmitEvent({ entries: [["q", "react"]] });
+
+    await onSubmit(event);
+
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+  });
+
+  it("does not call preventDefault for non-GET forms (lets native submit run)", async () => {
+    // POST forms (e.g. server actions) must not be intercepted by the Form's
+    // navigation logic — React's own form-action handling owns them.
+    installPagesGlobals();
+    const { onSubmit } = renderClientForm({ action: "/results", method: "POST" });
+    const event = createSubmitEvent({ entries: [["q", "react"]] });
+
+    await onSubmit(event);
+
+    expect(event.preventDefault).not.toHaveBeenCalled();
+  });
+});
+
+describe("Form function action (client/server action)", () => {
+  it("passes a function `action` through to React for action handling", () => {
+    // Mirrors Next.js's `with-function/action-client` test path:
+    // the action function must be wired up to the rendered <form>, not
+    // intercepted as a navigation. The shim's job is just to thread it
+    // through; React owns the FormData dispatch.
+    const actionFn = vi.fn(async (_formData: FormData) => {});
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Form,
+        { action: actionFn as any, id: "search-form" },
+        React.createElement("input", { name: "query" }),
+        React.createElement("button", { type: "submit" }, "Submit"),
+      ),
+    );
+    expect(html).toContain("<form");
+    expect(html).toContain('id="search-form"');
+    // We never invoke the action during SSR — but we did successfully render
+    // a form with the function attached (React will bind it client-side).
+    expect(actionFn).not.toHaveBeenCalled();
+  });
 });
