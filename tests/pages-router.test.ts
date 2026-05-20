@@ -31,6 +31,99 @@ function getBuildBundlerOptions(result: any) {
   return result.build?.rolldownOptions ?? result.build?.rollupOptions;
 }
 
+/**
+ * Fixture: a Pages Router app with both `pages/index.tsx` (static) and
+ * `pages/[id].tsx` (dynamic root catch). Models the
+ * `test/e2e/middleware-trailing-slash` Next.js fixture: a static `ssr-page`
+ * route, a `[id]` dynamic root, plus next.config.js afterFiles rewrites
+ * (`/rewrite-1` → `/ssr-page?from=config`) and a middleware that rewrites
+ * `/rewrite-me` to `/`. After any rewrite the rewrite target must go
+ * through full route resolution — static routes must beat the `[id]`
+ * dynamic root.
+ */
+function writeMiddlewareRewritePriorityFixture(rootDir: string): void {
+  fs.mkdirSync(path.join(rootDir, "pages"), { recursive: true });
+  const nmLink = path.join(rootDir, "node_modules");
+  if (!fs.existsSync(nmLink)) {
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), nmLink);
+  }
+  fs.writeFileSync(path.join(rootDir, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
+  fs.writeFileSync(
+    path.join(rootDir, "pages", "index.tsx"),
+    `export default function Home() {
+  return <p id="home">Hello World</p>;
+}
+`,
+  );
+  fs.writeFileSync(
+    path.join(rootDir, "pages", "[id].tsx"),
+    `export const getServerSideProps = ({ params, query }) => ({
+  props: { id: params.id ?? null, q: query.id ?? null },
+});
+export default function Dynamic({ id, q }: { id: string | null; q: string | null }) {
+  return (
+    <div>
+      <p id="dynamic">Dynamic route</p>
+      <p id="id">{id}</p>
+      <p id="q">{q}</p>
+    </div>
+  );
+}
+`,
+  );
+  fs.writeFileSync(
+    path.join(rootDir, "pages", "about.tsx"),
+    `export default function About() {
+  return <p id="about">About Page</p>;
+}
+`,
+  );
+  fs.writeFileSync(
+    path.join(rootDir, "pages", "ssr-page.tsx"),
+    `export const getServerSideProps = ({ query }) => ({
+  props: { from: query.from ?? null },
+});
+export default function SsrPage({ from }: { from: string | null }) {
+  return (
+    <div>
+      <p id="ssr">Hello World</p>
+      <p id="from">{from ?? ""}</p>
+    </div>
+  );
+}
+`,
+  );
+  fs.writeFileSync(
+    path.join(rootDir, "next.config.js"),
+    `module.exports = {
+  trailingSlash: true,
+  rewrites() {
+    return [
+      { source: "/rewrite-1", destination: "/ssr-page?from=config" },
+    ];
+  },
+};
+`,
+  );
+  fs.writeFileSync(
+    path.join(rootDir, "middleware.ts"),
+    `import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+
+export default function middleware(request: NextRequest) {
+  const url = new URL(request.url);
+  if (url.pathname === "/rewrite-me" || url.pathname === "/rewrite-me/") {
+    return NextResponse.rewrite(new URL("/", request.url));
+  }
+  if (url.pathname === "/rewrite-to-about" || url.pathname === "/rewrite-to-about/") {
+    return NextResponse.rewrite(new URL("/about", request.url));
+  }
+  return NextResponse.next();
+}
+`,
+  );
+}
+
 function writeEncodedSlashPagesFixture(rootDir: string): void {
   fs.mkdirSync(path.join(rootDir, "pages", "a"), { recursive: true });
   const nmLink = path.join(rootDir, "node_modules");
@@ -878,6 +971,75 @@ describe("Pages Router integration", () => {
     const res = await fetch(`${baseUrl}/old-page`, { redirect: "manual" });
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("/about");
+  });
+
+  // Regression for #1331: after a middleware rewrite, the rewrite target
+  // must go through full route resolution where static routes win over
+  // dynamic catch-alls. Without the fix the `[id]` dynamic page captures
+  // the rewrite target and renders "Dynamic route" with id="rewrite-me".
+  it("middleware rewrite to / resolves to static index over [id] dynamic route (dev)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-mw-rewrite-priority-dev-"));
+    writeMiddlewareRewritePriorityFixture(tmpDir);
+
+    let tempServer: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir);
+      tempServer = started.server;
+
+      const res = await fetch(`${started.baseUrl}/rewrite-me/`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("Hello World");
+      expect(html).not.toContain("Dynamic route");
+    } finally {
+      await tempServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("middleware rewrite to /about resolves to static about over [id] dynamic route (dev)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-mw-rewrite-priority-dev-about-"));
+    writeMiddlewareRewritePriorityFixture(tmpDir);
+
+    let tempServer: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir);
+      tempServer = started.server;
+
+      const res = await fetch(`${started.baseUrl}/rewrite-to-about/`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("About Page");
+      expect(html).not.toContain("Dynamic route");
+    } finally {
+      await tempServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Regression for #1331: next.config.js rewrites with `trailingSlash: true`
+  // and a `[id].tsx` dynamic root catch — the `[id]` route is also matched
+  // by the rewrite source, so afterFiles rewrites must still be considered
+  // (the matched route is dynamic), and the rewrite target must resolve to
+  // the static page, not back into `[id]`.
+  it("config afterFiles rewrite target resolves static page over [id] dynamic root (dev)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-mw-rewrite-priority-dev-cfg-"));
+    writeMiddlewareRewritePriorityFixture(tmpDir);
+
+    let tempServer: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir);
+      tempServer = started.server;
+
+      const res = await fetch(`${started.baseUrl}/rewrite-1/`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("Hello World");
+      expect(html).not.toContain("Dynamic route");
+    } finally {
+      await tempServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("middleware rewrites /rewritten to /ssr", async () => {
@@ -2727,6 +2889,78 @@ describe("Production server middleware (Pages Router)", () => {
     const res = await fetch(`${prodUrl}/old-page`, { redirect: "manual" });
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("/about");
+  });
+
+  // Regression for #1331: after a middleware rewrite, the rewrite target
+  // must go through full route resolution where static routes win over
+  // dynamic catch-alls. Without the fix the `[id]` dynamic page captures
+  // the rewrite target and renders "Dynamic route" with id="rewrite-me".
+  it("middleware rewrite resolves static index over [id] dynamic route in production", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-mw-rewrite-priority-prod-"));
+    writeMiddlewareRewritePriorityFixture(tmpDir);
+
+    let prodServer: import("node:http").Server | undefined;
+    try {
+      await build({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(tmpDir, "dist", "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: { output: { entryFileNames: "entry.js" } },
+        },
+      });
+      await build({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(tmpDir, "dist", "client"),
+          manifest: true,
+          ssrManifest: true,
+          rollupOptions: { input: "virtual:vinext-client-entry" },
+        },
+      });
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir: path.join(tmpDir, "dist"),
+        }),
+      );
+      const addr = prodServer.address() as { port: number };
+      const tempProdUrl = `http://127.0.0.1:${addr.port}`;
+
+      const indexRes = await fetch(`${tempProdUrl}/rewrite-me/`);
+      expect(indexRes.status).toBe(200);
+      const indexHtml = await indexRes.text();
+      expect(indexHtml).toContain("Hello World");
+      expect(indexHtml).not.toContain("Dynamic route");
+
+      const aboutRes = await fetch(`${tempProdUrl}/rewrite-to-about/`);
+      expect(aboutRes.status).toBe(200);
+      const aboutHtml = await aboutRes.text();
+      expect(aboutHtml).toContain("About Page");
+      expect(aboutHtml).not.toContain("Dynamic route");
+
+      // Next.js parity: with trailingSlash: true and a [id] dynamic root,
+      // `/rewrite-1/` matches `[id]` but afterFiles config rewrites must
+      // still rewrite it to /ssr-page, and the rewrite target must resolve
+      // to the static ssr-page rather than back into [id].
+      const cfgRes = await fetch(`${tempProdUrl}/rewrite-1/`);
+      expect(cfgRes.status).toBe(200);
+      const cfgHtml = await cfgRes.text();
+      expect(cfgHtml).toContain("Hello World");
+      expect(cfgHtml).not.toContain("Dynamic route");
+    } finally {
+      await new Promise<void>((resolve) => prodServer?.close(() => resolve()) ?? resolve());
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("does not collapse encoded slashes onto nested routes in production", async () => {

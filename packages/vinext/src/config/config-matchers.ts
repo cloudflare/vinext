@@ -683,6 +683,18 @@ export function matchConfigPattern(
   pathname: string,
   pattern: string,
 ): Record<string, string> | null {
+  // Trailing slashes on the incoming pathname don't carry meaning for config
+  // source matching. Next.js makes its source regex tolerate them
+  // (`source + '(/)?'`) under `trailingSlash: true`; equivalently we strip a
+  // single trailing slash from the pathname before matching so that, for
+  // example, a source `/rewrite-1` still matches a request `/rewrite-1/`. The
+  // source pattern itself is left unchanged because catch-all patterns
+  // (`:param*` / `:param+`) and the root `/` already consume any trailing
+  // slash; stripping the pattern would change those semantics.
+  if (pathname.length > 1 && pathname.endsWith("/")) {
+    pathname = pathname.slice(0, -1);
+  }
+
   // If the pattern contains regex groups like (\d+) or (.*), use regex matching.
   // Also enter this branch when a catch-all parameter (:param* or :param+) is
   // followed by a literal suffix (e.g. "/:path*.md"). Without this, the suffix
