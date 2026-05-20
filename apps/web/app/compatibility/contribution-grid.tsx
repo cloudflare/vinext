@@ -23,6 +23,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FileStatus, RouterKind } from "@/app/lib/db/schema";
 
+// (Tabs / filter UI now lives in compatibility-views.tsx; the grid receives
+// the active filter as a prop.)
+
 // useLayoutEffect would log a warning during SSR. Fall through to useEffect
 // on the server (where there is nothing to measure anyway).
 const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
@@ -38,29 +41,23 @@ export type GridCell = {
 };
 
 /**
- * Router-filter values for the chip bar above the grid.
+ * Router-filter values for the segmented control above the chart + grid.
  *   - "all"     — every test file in the latest run
  *   - "app"     — App Router fixtures + parity tests (since they exercise app)
  *   - "pages"   — Pages Router fixtures + parity tests
- *   - "both"    — only parity tests (real `app/` and `pages/` in same fixture)
+ *   - "both"    — only parity / mixed tests (real `app/` and `pages/` in same fixture)
  *   - "unknown" — config/build/edge-runtime tests with no router fixture
  *
  * Note: "app" and "pages" both include "both" cells. This is intentional —
  * a parity test failure is a real failure for both routers. Adding the
- * pass counts of "app" and "pages" therefore exceeds the total; the
- * stat-card labels make this explicit.
+ * pass counts of "app" and "pages" therefore exceeds the total.
+ *
+ * The active filter is owned by the parent (CompatibilityViews) so it can
+ * be shared with the line chart. The grid takes it as a prop.
  */
-type RouterFilter = "all" | RouterKind;
+export type RouterFilter = "all" | RouterKind;
 
-const ROUTER_FILTERS: ReadonlyArray<{ key: RouterFilter; label: string }> = [
-  { key: "all", label: "All" },
-  { key: "app", label: "App Router" },
-  { key: "pages", label: "Pages Router" },
-  { key: "both", label: "Parity (both)" },
-  { key: "unknown", label: "Other" },
-];
-
-function cellMatchesFilter(cell: GridCell, filter: RouterFilter): boolean {
+export function cellMatchesFilter(cell: GridCell, filter: RouterFilter): boolean {
   if (filter === "all") return true;
   if (filter === "app") return cell.router === "app" || cell.router === "both";
   if (filter === "pages") return cell.router === "pages" || cell.router === "both";
@@ -84,7 +81,7 @@ const LABELS: Record<FileStatus, string> = {
 const ROUTER_LABELS: Record<RouterKind, string> = {
   app: "App Router",
   pages: "Pages Router",
-  both: "Parity (App + Pages)",
+  both: "Mixed (App + Pages)",
   unknown: "No router fixture",
 };
 
@@ -136,39 +133,25 @@ function deriveSuiteGroup(suite: string): string | null {
   return first;
 }
 
-export function ContributionGrid({ cells }: { cells: GridCell[] }) {
+export function ContributionGrid({
+  cells,
+  filter = "all",
+}: {
+  cells: GridCell[];
+  /**
+   * Router filter to apply. Owned by the parent (CompatibilityViews) so the
+   * line chart and grid can share state. Defaults to "all" so the component
+   * still works standalone (e.g. in storybook).
+   */
+  filter?: RouterFilter;
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [cols, setCols] = useState(SSR_COLS);
-  const [filter, setFilter] = useState<RouterFilter>("all");
   const [hover, setHover] = useState<{
     cell: GridCell;
     x: number; // pixels relative to containerRef
     y: number;
   } | null>(null);
-
-  // Per-filter counts for the chip labels. Recomputed only when `cells`
-  // changes — filter changes don't need to re-bucket.
-  const filterCounts = useMemo(() => {
-    const counts: Record<RouterFilter, number> = {
-      all: cells.length,
-      app: 0,
-      pages: 0,
-      both: 0,
-      unknown: 0,
-    };
-    for (const c of cells) {
-      if (c.router === "app") counts.app++;
-      else if (c.router === "pages") counts.pages++;
-      else if (c.router === "both") {
-        counts.both++;
-        // Parity tests count toward both router buckets (see comment on
-        // RouterFilter above).
-        counts.app++;
-        counts.pages++;
-      } else counts.unknown++;
-    }
-    return counts;
-  }, [cells]);
 
   const visibleCells = useMemo(
     () => (filter === "all" ? cells : cells.filter((c) => cellMatchesFilter(c, filter))),
@@ -219,31 +202,6 @@ export function ContributionGrid({ cells }: { cells: GridCell[] }) {
 
   return (
     <div ref={containerRef} className="relative w-full">
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        {ROUTER_FILTERS.map((f) => {
-          const count = filterCounts[f.key];
-          const active = filter === f.key;
-          const disabled = count === 0;
-          return (
-            <button
-              key={f.key}
-              type="button"
-              onClick={() => setFilter(f.key)}
-              disabled={disabled}
-              aria-pressed={active}
-              className={[
-                "rounded-full px-3 py-1 text-xs font-medium ring transition-colors",
-                active
-                  ? "bg-kumo-default text-kumo-base ring-kumo-default"
-                  : "bg-kumo-base text-kumo-default ring-kumo-hairline hover:bg-kumo-elevated",
-                disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
-              ].join(" ")}
-            >
-              {f.label} <span className="opacity-70">({count})</span>
-            </button>
-          );
-        })}
-      </div>
       {visibleCells.length === 0 ? (
         <div className="py-8 text-center text-sm text-kumo-subtle">
           No test files in this category.

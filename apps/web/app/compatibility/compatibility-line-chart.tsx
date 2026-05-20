@@ -3,16 +3,35 @@
 /**
  * Pass-rate over time. One point per recorded run, oldest left to newest right.
  * Pure SVG — no ECharts dependency. Hover shows date + pass rate.
+ *
+ * The chart respects a router filter, owned by the parent (CompatibilityViews).
+ * Each TrendPoint carries per-router rollups (`all` / `app` / `pages` / `both`
+ * / `unknown`); the active filter picks which slice to plot. That keeps the
+ * query work on the server (one round-trip producing all five series) and the
+ * filter switch on the client (instant — just a re-selection from existing
+ * data, no fetch).
+ *
+ * "app" and "pages" series include parity ("both") tests, mirroring how the
+ * grid's filters work. See compatibility-views.tsx for the rationale.
  */
 import { useMemo, useState } from "react";
+import type { RouterFilter } from "./contribution-grid";
 
-export type LineSeriesPoint = {
-  createdAt: number;
-  passRate: number; // 0..1
+type SeriesCounts = {
   total: number;
   passed: number;
   failed: number;
   skipped: number;
+};
+
+export type TrendPoint = {
+  createdAt: number;
+  /**
+   * Counts per router bucket for this run. "app" and "pages" include parity
+   * suites; "both" is parity-only; "all" is the run-level totals (matches
+   * compat_runs.{total,passed,failed,skipped}).
+   */
+  byRouter: Record<RouterFilter, SeriesCounts>;
 };
 
 const W = 800;
@@ -41,29 +60,61 @@ function formatDateTime(ms: number): string {
   return FULL_DATETIME.format(new Date(ms));
 }
 
-export function CompatibilityLineChart({ points }: { points: LineSeriesPoint[] }) {
+/**
+ * Pass rate excludes skipped tests: skipped → "not relevant", not "failure".
+ * Denominator is passed + failed (the tests that actually ran a verdict).
+ * Returns 0 when nothing ran (rather than NaN).
+ */
+function passRate(c: SeriesCounts): number {
+  const denom = c.passed + c.failed;
+  return denom > 0 ? c.passed / denom : 0;
+}
+
+export function CompatibilityLineChart({
+  points,
+  filter = "all",
+}: {
+  points: TrendPoint[];
+  /**
+   * Which router series to plot. Defaults to "all" (run-level totals) so the
+   * component still works standalone.
+   */
+  filter?: RouterFilter;
+}) {
   const [hover, setHover] = useState<{ index: number; x: number; y: number } | null>(null);
 
+  // Reduce TrendPoint → { createdAt, counts, passRate } for the selected
+  // filter. Recomputed when filter changes, but that's a cheap O(n) over
+  // ≤90 points so no measurable cost.
+  const series = useMemo(
+    () =>
+      points.map((p) => {
+        const counts = p.byRouter[filter];
+        return { createdAt: p.createdAt, counts, passRate: passRate(counts) };
+      }),
+    [points, filter],
+  );
+
   const view = useMemo(() => {
-    if (points.length === 0) return null;
-    const xs = points.map((p) => p.createdAt);
+    if (series.length === 0) return null;
+    const xs = series.map((p) => p.createdAt);
     const minX = Math.min(...xs);
     const maxX = Math.max(...xs);
     const xRange = maxX - minX || 1;
     const plotW = W - PADDING.left - PADDING.right;
     const plotH = H - PADDING.top - PADDING.bottom;
-    const xy = points.map((p, i) => {
+    const xy = series.map((p, i) => {
       const x =
-        points.length === 1
+        series.length === 1
           ? PADDING.left + plotW / 2
           : PADDING.left + ((p.createdAt - minX) / xRange) * plotW;
       const y = PADDING.top + (1 - p.passRate) * plotH;
       return { x, y, index: i };
     });
     return { xy, minX, maxX, plotW, plotH };
-  }, [points]);
+  }, [series]);
 
-  if (!view || points.length === 0) {
+  if (!view || series.length === 0) {
     return (
       <div className="text-sm text-kumo-subtle">
         No historical data yet. Once multiple runs are recorded, a trend line will appear here.
@@ -129,7 +180,7 @@ export function CompatibilityLineChart({ points }: { points: LineSeriesPoint[] }
                 fill="currentColor"
                 fillOpacity={0.55}
               >
-                {formatDate(points[idx].createdAt)}
+                {formatDate(series[idx].createdAt)}
               </text>
             );
           })}
@@ -140,7 +191,7 @@ export function CompatibilityLineChart({ points }: { points: LineSeriesPoint[] }
         {/* Points */}
         {view.xy.map((p, i) => (
           <circle
-            key={points[i].createdAt}
+            key={series[i].createdAt}
             cx={p.x}
             cy={p.y}
             r={4}
@@ -164,13 +215,13 @@ export function CompatibilityLineChart({ points }: { points: LineSeriesPoint[] }
           }}
         >
           {(() => {
-            const p = points[hover.index];
+            const p = series[hover.index];
             // Pass rate is computed against tests that ran a verdict, so
             // the denominator the user sees should match: passed + failed.
-            const denom = p.passed + p.failed;
-            const parts = [`${p.passed}/${denom} passed`];
-            if (p.failed > 0) parts.push(`${p.failed} failed`);
-            if (p.skipped > 0) parts.push(`${p.skipped} skipped`);
+            const denom = p.counts.passed + p.counts.failed;
+            const parts = [`${p.counts.passed}/${denom} passed`];
+            if (p.counts.failed > 0) parts.push(`${p.counts.failed} failed`);
+            if (p.counts.skipped > 0) parts.push(`${p.counts.skipped} skipped`);
             return (
               <>
                 <div className="font-medium">{(p.passRate * 100).toFixed(1)}% pass rate</div>

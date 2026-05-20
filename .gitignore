@@ -15,6 +15,9 @@ out-e2e
 .env
 .env.*
 !.env.example
+# wrangler convention for local-only secrets passed to `wrangler dev`
+.dev.vars
+.dev.vars.*
 
 # Logs / coverage
 *.log
