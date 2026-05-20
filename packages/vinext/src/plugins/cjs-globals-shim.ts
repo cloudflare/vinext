@@ -1,4 +1,5 @@
 import type { Plugin } from "vite";
+import { maskStringsAndComments } from "../utils/mask-source.js";
 
 /**
  * Detect whether the source contains a bare reference to `__dirname` or
@@ -23,10 +24,7 @@ export function detectCjsGlobalReferences(source: string): {
     return { __dirname: false, __filename: false };
   }
 
-  const masked = source.replace(
-    /\/\*[\s\S]*?\*\/|\/\/[^\n]*|`(?:[^`\\$]|\\.|\$(?!\{))*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g,
-    (m) => " ".repeat(m.length),
-  );
+  const masked = maskStringsAndComments(source);
 
   return {
     __dirname: /\b__dirname\b/.test(masked),
@@ -128,9 +126,9 @@ export const cjsGlobalsShimPlugin: Plugin = {
       const envName = this.environment?.name;
       if (envName !== "ssr" && envName !== "rsc") return null;
 
-      // Strip any query suffix before the filter recheck. Vite passes ids
-      // with `?v=…` cache busters that the filter regex already allows
-      // through, but downstream logic only cares about the source text.
+      // `id` is consumed by the Vite filter (the regex above admits ids
+      // with optional `?…` cache busters) and is not used inside the
+      // handler body — the transform only operates on the source text.
       void id;
 
       const needs = detectCjsGlobalReferences(code);

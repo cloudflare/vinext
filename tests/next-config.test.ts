@@ -406,6 +406,28 @@ describe("findUserDeclaredCjsGlobals", () => {
       ),
     ).toEqual({ __dirname: true, __filename: true });
   });
+
+  it("does not treat object-key __dirname as a declaration", () => {
+    // `__dirname` here is the *key* of an object literal initializer, not
+    // a top-level declaration. The actual binding is `cfg`. Skipping the
+    // shim because of this match would turn the user's intended runtime
+    // reference into a ReferenceError.
+    expect(findUserDeclaredCjsGlobals(`const cfg = { __dirname: 1 };`)).toEqual({
+      __dirname: false,
+      __filename: false,
+    });
+  });
+
+  it("does not treat object-pattern alias key as a declaration", () => {
+    // In `const { __dirname: alias } = src`, the literal `__dirname` is
+    // the source-side key and `alias` is what binds. The injected shim's
+    // top-level `const __dirname = ...` does not collide with `alias`,
+    // so no skip is warranted.
+    expect(findUserDeclaredCjsGlobals(`const { __dirname: alias } = src;`)).toEqual({
+      __dirname: false,
+      __filename: false,
+    });
+  });
 });
 
 describe("reassignsModuleExports", () => {

@@ -16,6 +16,7 @@ import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigPathAliasesForRoot } from "./tsconfig-paths.js";
+import { maskStringsAndComments } from "../utils/mask-source.js";
 
 /**
  * Parse a body size limit value (string or number) into bytes.
@@ -608,13 +609,10 @@ export function findUserDeclaredCjsGlobals(source: string): {
   const declared = { __dirname: false, __filename: false };
 
   // First pass: blank out comments / strings / template literals so
-  // identifiers inside them aren't matched. Replace each masked span with
-  // an equal number of spaces so indices stay aligned with the original
-  // source — useful if this function later returns positions.
-  const masked = source.replace(
-    /\/\*[\s\S]*?\*\/|\/\/[^\n]*|`(?:[^`\\$]|\\.|\$(?!\{))*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g,
-    (m) => " ".repeat(m.length),
-  );
+  // identifiers inside them aren't matched. Indices stay aligned with the
+  // original source so the second-pass statement extraction can rely on
+  // positions when needed.
+  const masked = maskStringsAndComments(source);
 
   // Second pass: for each `const|let|var` declarator statement, look at
   // the head of the statement (up to the next `;` or top-level statement
@@ -624,11 +622,17 @@ export function findUserDeclaredCjsGlobals(source: string): {
   // keyword itself, a comma, an opening brace, or a colon (object-pattern
   // alias). Anything preceded by `=` is the initializer side and ignored,
   // so `const x = __dirname;` does NOT count as declaring `__dirname`.
+  //
+  // The trailing negative lookahead `(?!\s*:)` ensures we do not treat the
+  // *property key* of an object-pattern alias as a binding. In
+  // `const { __dirname: localAlias } = ...`, the actual bound identifier
+  // is `localAlias`; the literal text `__dirname` is the source-side key,
+  // not a top-level declaration that would collide with the injector.
   const declStmt = /\b(const|let|var)\b([^;]*)/g;
   let stmt: RegExpExecArray | null;
   while ((stmt = declStmt.exec(masked)) !== null) {
     const body = stmt[2];
-    const bindingRegex = /(?:^|[,{:]|\b(?:const|let|var)\b)\s*(__dirname|__filename)\b/g;
+    const bindingRegex = /(?:^|[,{:]|\b(?:const|let|var)\b)\s*(__dirname|__filename)\b(?!\s*:)/g;
     let bind: RegExpExecArray | null;
     while ((bind = bindingRegex.exec(body)) !== null) {
       const name = bind[1];
