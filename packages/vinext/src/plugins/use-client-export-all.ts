@@ -197,7 +197,7 @@ function quickHasExportAll(code: string): boolean {
  * declaration to an explicit `export { a, b, c } from '...'` form that the
  * RSC plugin already understands.
  *
- * Tracked upstream: https://github.com/vitejs/vite-plugin-react/issues/...
+ * Tracked upstream: https://github.com/vitejs/vite-plugin-react/issues/1233
  *
  * Reference: Next.js's flight loader treats `export *` similarly (it sets the
  * module source type back to `module` so webpack handles the re-export, rather
