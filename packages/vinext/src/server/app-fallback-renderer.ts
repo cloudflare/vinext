@@ -5,6 +5,7 @@ import {
   renderAppPageHttpAccessFallback,
   type AppPageBoundaryRoute,
 } from "./app-page-boundary-render.js";
+import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
@@ -130,6 +131,15 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
   const { rootForbiddenModule, rootLayouts, rootNotFoundModule, rootUnauthorizedModule } =
     rootBoundaries;
 
+  // When the app does not define `app/global-error.tsx`, fall back to vinext's
+  // built-in default global error component so that uncaught render errors
+  // produce the same UI Next.js ships out of the box (matching markup, inline
+  // styles, theme CSS, and the "ERROR <digest>" footer for server errors).
+  // See packages/vinext/src/shims/default-global-error.tsx and
+  // packages/vinext/src/server/default-global-error-module.ts.
+  const effectiveGlobalErrorModule: TModule | null =
+    globalErrorModule ?? (DEFAULT_GLOBAL_ERROR_MODULE as unknown as TModule);
+
   return {
     renderHttpAccessFallback(
       route,
@@ -165,7 +175,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
             getFontPreloads: fontProviders.getFontPreloads,
             getFontStyles: fontProviders.getFontStyles,
             getNavigationContext,
-            globalErrorModule,
+            globalErrorModule: effectiveGlobalErrorModule,
             isRscRequest,
             layoutModules: [],
             loadSsrHandler: ssrLoader,
@@ -200,7 +210,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         getFontPreloads: fontProviders.getFontPreloads,
         getFontStyles: fontProviders.getFontStyles,
         getNavigationContext,
-        globalErrorModule,
+        globalErrorModule: effectiveGlobalErrorModule,
         isRscRequest,
         layoutModules: opts?.layouts ?? null,
         loadSsrHandler: ssrLoader,
@@ -254,7 +264,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         getFontPreloads: fontProviders.getFontPreloads,
         getFontStyles: fontProviders.getFontStyles,
         getNavigationContext,
-        globalErrorModule,
+        globalErrorModule: effectiveGlobalErrorModule,
         isRscRequest,
         loadSsrHandler: ssrLoader,
         makeThenableParams,
