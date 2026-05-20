@@ -88,6 +88,7 @@ import {
 } from "./utils/asset-prefix.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
+import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
@@ -948,6 +949,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         middlewarePath ? (tryRealpathSync(middlewarePath) ?? middlewarePath) : null,
       serverOnlyShimPath: resolveShimModulePath(shimsDir, "server-only"),
     }),
+    // Resolve `data:text/css[+module],...` imports into virtual CSS files so
+    // Vite's CSS pipeline (LightningCSS, CSS modules) processes them instead
+    // of leaving the data URL as a runtime import that Node/workerd cannot
+    // load. Matches Turbopack's behaviour for the Next.js
+    // `css-modules-data-urls` fixture. See plugins/css-data-url.ts.
+    dataUrlCssPlugin(),
     {
       name: "vinext:config",
       enforce: "pre",
