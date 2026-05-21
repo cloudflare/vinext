@@ -38,6 +38,7 @@ import {
   toBrowserNavigationHref,
   toSameOriginAppPath,
   getWindowOrigin,
+  withBasePath as withBasePathPrefix,
 } from "./url-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import {
@@ -335,13 +336,32 @@ export function isHashOnlyChange(href: string): boolean {
   return isHashOnlyBrowserUrlChange(href, window.location.href, __basePath);
 }
 
-/** Save current scroll position into history state for back/forward restoration */
+/** Save current scroll position into history state for back/forward restoration.
+ *
+ * Merging into the existing state preserves any router-owned fields (`__N`,
+ * `url`, `as`, `options`, `key`). The initial document entry has `null`
+ * state — in that case we add the router markers ourselves so a subsequent
+ * back-navigation popstate is not mistaken for a foreign history entry.
+ */
 function saveScrollPosition(): void {
-  const state = window.history.state ?? {};
-  window.history.replaceState(
-    { ...state, __vinext_scrollX: window.scrollX, __vinext_scrollY: window.scrollY },
-    "",
-  );
+  const existing =
+    typeof window.history.state === "object" && window.history.state !== null
+      ? (window.history.state as Record<string, unknown>)
+      : null;
+  const scroll = {
+    __vinext_scrollX: window.scrollX,
+    __vinext_scrollY: window.scrollY,
+  };
+  const base: Record<string, unknown> = existing ?? {
+    // Mint router state for the initial document entry so the back-navigation
+    // popstate carries `__N: true` and can pass the foreign-state filter.
+    url: stripBasePath(window.location.pathname, __basePath) + window.location.search,
+    as: stripBasePath(window.location.pathname, __basePath) + window.location.search,
+    options: {} as { locale?: string; shallow?: boolean },
+    __N: true,
+    key: createHistoryKey(),
+  };
+  window.history.replaceState({ ...base, ...scroll }, "");
 }
 
 /** Restore scroll position from history state */
@@ -1646,18 +1666,30 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     return;
   }
 
-  // Safari-replay filter: when the first popstate carries the same locale
-  // and `as` we already render, the browser is just replaying the current
-  // entry (tab restore, BFCache, or duplicate event). Ignore it so we don't
-  // re-fetch the page we're already on.
+  // Safari-replay filter: the browser sometimes fires a synthetic popstate
+  // for the current entry on tab restore / BFCache. Ignore it when the
+  // entry's locale matches the active locale AND the entry's `as` matches
+  // the URL the router last actively navigated to. We compare against the
+  // router-internal tracker (`_lastPathnameAndSearch`, browser-shaped, with
+  // basePath) rather than the live `window.location` — after a real
+  // back/forward the browser URL has already changed but the router tracker
+  // still points at the entry we were on, so a genuine navigation is *not*
+  // misidentified as a replay.
+  //
+  // `state.as` is the canonical app-relative path (no basePath); compose the
+  // basePath back on for the comparison.
   //
   // Mirrors Next.js's:
   //   if (isFirstPopStateEvent && this.locale === state.options.locale
   //       && state.as === this.asPath) return
+  // .nextjs-ref/packages/next/src/shared/lib/router/router.ts (around L935).
   if (wasFirst && isNextRouterState(state)) {
     const currentLocale = window.__VINEXT_LOCALE__;
-    const currentAs = appUrl;
-    if (state.options?.locale === currentLocale && state.as === currentAs) {
+    if (
+      state.options?.locale === currentLocale &&
+      typeof state.as === "string" &&
+      withBasePathPrefix(state.as, __basePath) === _lastPathnameAndSearch
+    ) {
       return;
     }
   }
