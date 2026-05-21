@@ -36,7 +36,7 @@ import {
 import { AppElementsWire } from "../server/app-elements.js";
 import { createRscRequestHeaders, createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "../server/headers.js";
-import { isDangerousScheme } from "./url-safety.js";
+import { isDangerousScheme, reportBlockedDangerousNavigation } from "./url-safety.js";
 import {
   canLinkIntentPrefetch,
   canLinkPrefetch,
@@ -560,7 +560,17 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     let navigateHref = normalizedHref;
     if (isAbsoluteOrProtocolRelativeUrl(resolvedHref)) {
       const localPath = toSameOriginAppPath(resolvedHref, __basePath);
-      if (localPath == null) return; // truly external
+      if (localPath == null) {
+        // Truly external. Mirror Next.js `linkClicked`: when `replace` is set
+        // we have to take over because the browser's default click navigation
+        // pushes to history rather than replacing the current entry.
+        // See `.nextjs-ref/packages/next/src/client/link.tsx` `linkClicked`.
+        if (replace) {
+          e.preventDefault();
+          window.location.replace(resolvedHref);
+        }
+        return;
+      }
       navigateHref = localPath;
     }
 
@@ -646,11 +656,20 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     if (process.env.NODE_ENV !== "production") {
       console.warn(`<Link> blocked dangerous href: ${resolvedHref}`);
     }
+    // Match Next.js parity: when a user clicks a Link whose href has a
+    // dangerous scheme, emit the same `console.error` that Next.js surfaces
+    // via React's event-handler runtime when `router.push` throws.
+    // Ported from Next.js: test/e2e/app-dir/javascript-urls/javascript-urls.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/javascript-urls/javascript-urls.test.ts
+    const handleDangerousClick = (event: MouseEvent<HTMLAnchorElement>) => {
+      if (onClick) onClick(event);
+      reportBlockedDangerousNavigation();
+    };
     return (
       <LinkStatusContext.Provider value={linkStatusValue}>
         <a
           ref={setRefs}
-          onClick={onClick}
+          onClick={handleDangerousClick}
           onMouseEnter={handleMouseEnter}
           onTouchStart={handleTouchStart}
           {...anchorProps}

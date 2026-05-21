@@ -31,9 +31,20 @@ import {
 export type AppRouteParams = Record<string, string | string[]>;
 export type AppRouteDynamicUsageFn = () => boolean;
 export type MarkAppRouteDynamicUsageFn = () => void;
+/**
+ * Route handler context.
+ *
+ * `params` is `null` for non-dynamic routes (no `[param]` segments) so that
+ * user code like `params ? await params : null` resolves to `null`, matching
+ * Next.js behavior. For dynamic routes it's a thenable that resolves to the
+ * matched params object.
+ *
+ * See: test/e2e/app-dir/app-routes/app-custom-routes.test.ts in Next.js for
+ * the authoritative assertion (`expect(meta.params).toEqual(null)`).
+ */
 export type AppRouteHandlerFunction = (
   request: NextRequest,
-  context: { params: AppRouteParams },
+  context: { params: AppRouteParams | null },
 ) => Response | Promise<Response>;
 export type RouteHandlerCacheSetter = (
   key: string,
@@ -57,7 +68,11 @@ type RunAppRouteHandlerOptions = {
   i18n?: NextI18nConfig | null;
   markDynamicUsage: MarkAppRouteDynamicUsageFn;
   middlewareRequestHeaders?: Headers | null;
-  params: AppRouteParams;
+  /**
+   * `null` for non-dynamic routes. Passed through to the handler context
+   * unchanged — callers are expected to compute this from `route.isDynamic`.
+   */
+  params: AppRouteParams | null;
   request: Request;
   routePattern?: string;
   setHeadersAccessPhase?: (phase: HeadersAccessPhase) => HeadersAccessPhase;

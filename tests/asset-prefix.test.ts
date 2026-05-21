@@ -10,8 +10,10 @@
  *    qualified — runtime serving on the deployment origin is a no-op.
  *  - Combined with `basePath`: routes stay under `basePath`, assets under
  *    `assetPrefix`. They are independent.
- *  - Unset (default): URLs continue to live under `/assets/` for backward
- *    compatibility.
+ *  - Unset (default): URLs live under `/_next/static/` — the Next.js
+ *    canonical convention. On-disk layout mirrors the URL so the
+ *    static-file layer can serve hits and naturally return plain-text
+ *    `404 + "Not Found"` on misses.
  *
  * Ported from Next.js: test/e2e/app-dir/asset-prefix/asset-prefix.test.ts
  * https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/asset-prefix/asset-prefix.test.ts
@@ -27,6 +29,7 @@ import { build, createBuilder } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import {
   isAbsoluteAssetPrefix,
+  isNextStaticPath,
   resolveAssetUrlPrefix,
   resolveAssetsDir,
   assetPrefixPathname,
@@ -90,8 +93,8 @@ describe("isAbsoluteAssetPrefix", () => {
 });
 
 describe("resolveAssetsDir", () => {
-  it("keeps the historical `assets/` default when no prefix is configured", () => {
-    expect(resolveAssetsDir("")).toBe("assets");
+  it("returns `_next/static` when no prefix is configured (Next.js canonical default)", () => {
+    expect(resolveAssetsDir("")).toBe(ASSET_PREFIX_URL_DIR);
   });
 
   it("returns `<prefix>/_next/static` for path prefixes so disk and URL align", () => {
@@ -141,9 +144,18 @@ describe("assetPrefixPathname", () => {
 });
 
 describe("resolveAppRouterAssetPath", () => {
-  it("falls back to /assets/ when no prefix is configured", () => {
-    expect(resolveAppRouterAssetPath("/assets/foo-abc.js", "", "")).toBe("/assets/foo-abc.js");
+  it("accepts `/_next/static/<file>` when no prefix is configured", () => {
+    expect(resolveAppRouterAssetPath("/_next/static/foo-abc.js", "", "")).toBe(
+      "/_next/static/foo-abc.js",
+    );
     expect(resolveAppRouterAssetPath("/about", "", "")).toBeNull();
+  });
+
+  it("does not match the legacy /assets/ layout (hard cutover)", () => {
+    // The historical Vite default `/assets/` is no longer emitted or served.
+    // Requests under that prefix fall through to the RSC handler (which
+    // renders the 404 page) — not the static-file layer.
+    expect(resolveAppRouterAssetPath("/assets/foo-abc.js", "", "")).toBeNull();
   });
 
   it("recognises `<prefix>/_next/static/<file>` for path-prefix configs", () => {
@@ -184,18 +196,41 @@ describe("resolveAppRouterAssetPath", () => {
       ),
     ).toBeNull();
   });
+});
 
-  it("keeps the historical /assets/ branch working alongside an asset prefix", () => {
-    // Backward compatibility: a project that turns on assetPrefix and still
-    // has plugins emitting under /assets/ (e.g. legacy outputs) should keep
-    // working in the same server process.
-    expect(
-      resolveAppRouterAssetPath(
-        "/assets/foo-abc.js",
-        "/custom-asset-prefix",
-        "/custom-asset-prefix",
-      ),
-    ).toBe("/assets/foo-abc.js");
+describe("isNextStaticPath", () => {
+  it("matches `/_next/static/*` at the root", () => {
+    expect(isNextStaticPath("/_next/static/foo-abc.js", "", "")).toBe(true);
+    expect(isNextStaticPath("/_next/static/chunks/main.js", "", "")).toBe(true);
+  });
+
+  it("does not match unrelated paths", () => {
+    expect(isNextStaticPath("/", "", "")).toBe(false);
+    expect(isNextStaticPath("/about", "", "")).toBe(false);
+    expect(isNextStaticPath("/_next/data/foo.json", "", "")).toBe(false);
+    // `/_next/static` alone (no trailing slash) is not a static-asset path.
+    expect(isNextStaticPath("/_next/static", "", "")).toBe(false);
+  });
+
+  it("strips basePath before matching", () => {
+    expect(isNextStaticPath("/docs/_next/static/foo.js", "/docs", "")).toBe(true);
+    expect(isNextStaticPath("/docs/about", "/docs", "")).toBe(false);
+    // basePath set but request without basePath — still matches the root form.
+    expect(isNextStaticPath("/_next/static/foo.js", "/docs", "")).toBe(true);
+  });
+
+  it("strips assetPathPrefix before matching", () => {
+    expect(isNextStaticPath("/cdn/_next/static/foo.js", "", "/cdn")).toBe(true);
+    expect(isNextStaticPath("/cdn/other", "", "/cdn")).toBe(false);
+  });
+
+  it("strips basePath then assetPathPrefix (independent prefixes)", () => {
+    expect(isNextStaticPath("/docs/cdn/_next/static/foo.js", "/docs", "/cdn")).toBe(true);
+  });
+
+  it("does not partial-match prefixes", () => {
+    // `/baseball` should NOT be stripped by `basePath: "/base"`.
+    expect(isNextStaticPath("/baseball/_next/static/foo.js", "/base", "")).toBe(false);
   });
 });
 
@@ -464,17 +499,20 @@ describe("assetPrefix end-to-end build", () => {
     }
   }, 180_000);
 
-  it("unset: continues to emit URLs under /assets/ (backward compatibility)", async () => {
-    // Smoke-check the baseline — no assetPrefix is set, so behaviour must
-    // be unchanged from before this feature landed.
+  it("unset: emits URLs under /_next/static/ (Next.js canonical default)", async () => {
+    // Default behaviour — no assetPrefix set. URLs and on-disk layout both
+    // use Next.js's canonical `_next/static/` path so requests for valid
+    // chunks succeed and invalid ones produce a plain-text 404 from the
+    // static-file layer (matching Next.js's router-server.ts).
     const built = await buildFixtureWithConfig(`// no assetPrefix`, register);
 
-    // Historical layout preserved.
-    const onDiskAssets = path.join(built.outDir, "client", "assets");
-    expect(
-      fs.existsSync(onDiskAssets),
-      `expected historical on-disk layout under ${onDiskAssets}`,
-    ).toBe(true);
+    // On-disk layout mirrors the URL.
+    const onDiskStatic = path.join(built.outDir, "client", "_next", "static");
+    expect(fs.existsSync(onDiskStatic), `expected on-disk layout under ${onDiskStatic}`).toBe(true);
+    // Legacy `/assets/` directory should NOT exist — the hard cutover
+    // removes Vite's historical default in favour of Next.js parity.
+    const legacyAssets = path.join(built.outDir, "client", "assets");
+    expect(fs.existsSync(legacyAssets)).toBe(false);
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
     const { server } = await startProdServer({
@@ -493,9 +531,19 @@ describe("assetPrefix end-to-end build", () => {
 
       const bootstrapMatch = html.match(/<script[^>]+type="module"[^>]+src="([^"]+\.js)"/);
       expect(bootstrapMatch).not.toBeNull();
-      expect(bootstrapMatch![1]).toMatch(/^\/assets\//);
+      expect(bootstrapMatch![1]).toMatch(/^\/_next\/static\//);
+      // No emitted URL should leak the legacy `/assets/` default.
+      expect(html).not.toMatch(/<script[^>]+src="\/assets\//);
+
       const bundleRes = await fetch(`${baseUrl}${bootstrapMatch![1]}`);
       expect(bundleRes.status).toBe(200);
+
+      // Invalid `_next/static/*` paths return plain-text 404 (Next.js
+      // parity — see packages/next/src/server/lib/router-server.ts).
+      const invalidRes = await fetch(`${baseUrl}/_next/static/does-not-exist.js`);
+      expect(invalidRes.status).toBe(404);
+      expect(invalidRes.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+      expect(await invalidRes.text()).toBe("Not Found");
     } finally {
       server.close();
     }

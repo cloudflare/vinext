@@ -5,8 +5,9 @@
  * static asset URL emitted in the page. It is distinct from `basePath`, which
  * affects route URLs.
  *
- *  - A `assetPrefix` of `""` (empty) means "no prefix" — behaviour matches the
- *    historical default.
+ *  - A `assetPrefix` of `""` (empty) means "no prefix". URLs are emitted as
+ *    `/_next/static/...` (Next.js's canonical convention) and assets are
+ *    written to `dist/client/_next/static/...` so the on-disk layout matches.
  *  - A path prefix like `"/custom-asset-prefix"` is applied as a URL prefix
  *    relative to the deployment origin. The prod server must also serve assets
  *    under that prefix.
@@ -41,11 +42,17 @@ export function isAbsoluteAssetPrefix(assetPrefix: string): boolean {
  *    server) serves them directly without a runtime rewrite.
  *  - Absolute URL (with or without path component): write to `_next/static/`.
  *    Runtime serving is best-effort — the CDN is expected to serve these.
- *  - Empty: keep the historical default of `assets/`, preserving disk layout
- *    for projects that haven't opted into `assetPrefix`.
+ *  - Empty: write to `_next/static/` so the on-disk layout matches the URL
+ *    Next.js itself emits (and that the Next.js client runtime + upstream
+ *    test suites assert against). This makes `assetPrefix` consistent in
+ *    both the configured and unconfigured cases — the URL contract is
+ *    always `/<prefix?>/_next/static/...`, and the on-disk layout mirrors
+ *    it 1:1 so the static-file layer can serve hits and return
+ *    `404 + "Not Found"` on misses without any URL-shape special-casing
+ *    upstream of it.
  */
 export function resolveAssetsDir(assetPrefix: string): string {
-  if (!assetPrefix) return "assets";
+  if (!assetPrefix) return ASSET_PREFIX_URL_DIR;
   if (isAbsoluteAssetPrefix(assetPrefix)) {
     // Files on disk land at `_next/static/...`. The absolute URL is applied
     // at URL-rendering time via renderBuiltUrl; on-disk path is irrelevant
@@ -96,4 +103,39 @@ export function assetPrefixPathname(assetPrefix: string): string {
   } catch {
     return "";
   }
+}
+
+/**
+ * Whether the incoming request pathname targets the canonical `_next/static/`
+ * tree, after stripping any configured `basePath` and `assetPrefix` path
+ * component.
+ *
+ * Used by the Cloudflare worker entry to recognise asset-shaped requests
+ * that the ASSETS binding didn't serve, so they can short-circuit with a
+ * plain-text 404 instead of falling through to the RSC handler (which
+ * would render the full HTML 404 page). Mirrors Next.js's behaviour in
+ * `packages/next/src/server/lib/router-server.ts` where
+ * `realRequestPathname` is stripped of basePath/assetPrefix/i18n locale
+ * before the `startsWith('/_next/static/')` check.
+ *
+ *  - `pathname`: incoming request pathname (with leading slash, no query).
+ *  - `basePath`: configured `basePath` (e.g. `"/docs"`) or `""`.
+ *  - `assetPathPrefix`: path component of `assetPrefix` (e.g. `"/cdn"`) or
+ *    `""`. Use `assetPrefixPathname()` to derive this from a raw assetPrefix.
+ *
+ * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-server.ts
+ */
+export function isNextStaticPath(
+  pathname: string,
+  basePath: string,
+  assetPathPrefix: string,
+): boolean {
+  let p = pathname;
+  if (basePath && (p === basePath || p.startsWith(basePath + "/"))) {
+    p = p.slice(basePath.length) || "/";
+  }
+  if (assetPathPrefix && (p === assetPathPrefix || p.startsWith(assetPathPrefix + "/"))) {
+    p = p.slice(assetPathPrefix.length) || "/";
+  }
+  return p.startsWith(`/${ASSET_PREFIX_URL_DIR}/`);
 }

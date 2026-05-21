@@ -1,6 +1,6 @@
 import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
 import type { NextHeader } from "../config/next-config.js";
-import type { RequestContext } from "../config/config-matchers.js";
+import type { BasePathMatchState, RequestContext } from "../config/config-matchers.js";
 import { matchHeaders } from "../config/config-matchers.js";
 import {
   INTERNAL_HEADERS,
@@ -115,6 +115,12 @@ type ApplyConfigHeadersOptions = {
   configHeaders: NextHeader[];
   pathname: string;
   requestContext: RequestContext;
+  /**
+   * basePath gating state. When omitted, every rule is treated as a default
+   * (basePath: true) rule for backward compatibility — callers that need to
+   * support `basePath: false` headers must pass this in.
+   */
+  basePathState?: BasePathMatchState;
 };
 
 type StaticFileSignalContext = {
@@ -182,7 +188,12 @@ export function applyConfigHeadersToResponse(
   responseHeaders: Headers,
   options: ApplyConfigHeadersOptions,
 ): void {
-  const matched = matchHeaders(options.pathname, options.configHeaders, options.requestContext);
+  const matched = matchHeaders(
+    options.pathname,
+    options.configHeaders,
+    options.requestContext,
+    options.basePathState,
+  );
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     if (lowerName === "vary" || lowerName === "set-cookie") {
@@ -201,7 +212,12 @@ export function applyConfigHeadersToHeaderRecord(
   headers: HeaderRecord,
   options: ApplyConfigHeadersOptions,
 ): void {
-  const matched = matchHeaders(options.pathname, options.configHeaders, options.requestContext);
+  const matched = matchHeaders(
+    options.pathname,
+    options.configHeaders,
+    options.requestContext,
+    options.basePathState,
+  );
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     if (lowerName === "set-cookie") {

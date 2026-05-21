@@ -55,11 +55,36 @@ declare module "next/head" {
 }
 
 declare module "next/document" {
-  import { ComponentType, ReactNode } from "react";
+  import { Component, ComponentType, ReactElement, ReactNode } from "react";
   export const Html: ComponentType<{ lang?: string; children?: ReactNode; [key: string]: unknown }>;
   export const Head: ComponentType<{ children?: ReactNode }>;
   export const Main: ComponentType;
   export const NextScript: ComponentType;
+  export type DocumentInitialProps = {
+    html: string;
+    head?: ReadonlyArray<ReactElement>;
+    styles?: ReactElement[] | Iterable<ReactNode> | ReactElement;
+  };
+  export type DocumentContext = {
+    renderPage?: (options?: {
+      enhanceApp?: (App: ComponentType<{ children?: ReactNode }>) => unknown;
+      enhanceComponent?: (Comp: ComponentType<unknown>) => unknown;
+    }) => { html: string; head?: ReadonlyArray<ReactElement> };
+    defaultGetInitialProps?: (
+      ctx: DocumentContext,
+      options?: { nonce?: string },
+    ) => Promise<DocumentInitialProps>;
+    pathname?: string;
+    query?: Record<string, string | string[] | undefined>;
+    asPath?: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    err?: any;
+  };
+  // eslint-disable-next-line @typescript-eslint/no-empty-object-type
+  export default class Document<P = {}> extends Component<P & { children?: ReactNode }> {
+    static getInitialProps(ctx: DocumentContext): Promise<DocumentInitialProps>;
+    render(): ReactNode;
+  }
 }
 
 declare module "next/dynamic" {

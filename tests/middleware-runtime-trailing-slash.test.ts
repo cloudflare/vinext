@@ -32,7 +32,7 @@ describe("executeMiddleware propagates trailingSlash to NextURL", () => {
     expect(result.continue).toBe(false);
     expect(result.redirectStatus).toBe(307);
     expect(result.redirectUrl).not.toBeUndefined();
-    expect(new URL(result.redirectUrl!).pathname).toBe("/somewhere/");
+    expect(new URL(result.redirectUrl!, "http://localhost").pathname).toBe("/somewhere/");
   });
 
   it("emits Location without trailing slash when trailingSlash: false", async () => {
@@ -51,7 +51,7 @@ describe("executeMiddleware propagates trailingSlash to NextURL", () => {
 
     expect(result.continue).toBe(false);
     expect(result.redirectUrl).not.toBeUndefined();
-    expect(new URL(result.redirectUrl!).pathname).toBe("/somewhere");
+    expect(new URL(result.redirectUrl!, "http://localhost").pathname).toBe("/somewhere");
   });
 
   it("does not touch the root path regardless of trailingSlash", async () => {
@@ -69,7 +69,7 @@ describe("executeMiddleware propagates trailingSlash to NextURL", () => {
     });
 
     expect(result.redirectUrl).not.toBeUndefined();
-    expect(new URL(result.redirectUrl!).pathname).toBe("/");
+    expect(new URL(result.redirectUrl!, "http://localhost").pathname).toBe("/");
   });
 
   it("preserves search params when applying trailingSlash to redirect Location", async () => {
@@ -93,7 +93,7 @@ describe("executeMiddleware propagates trailingSlash to NextURL", () => {
     });
 
     expect(result.redirectUrl).not.toBeUndefined();
-    const loc = new URL(result.redirectUrl!);
+    const loc = new URL(result.redirectUrl!, "http://localhost");
     expect(loc.pathname).toBe("/dest/");
     expect(loc.searchParams.get("foo")).toBe("bar");
   });

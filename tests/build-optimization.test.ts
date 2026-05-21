@@ -9,6 +9,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
+import { parseAst } from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import { stripServerExports as _stripServerExports } from "../packages/vinext/src/plugins/strip-server-exports.js";
 import {
@@ -1851,6 +1852,11 @@ export const getServerSideProps = async function fetchData() {
 
   it("handles export { name } re-export syntax", () => {
     // This pattern was completely unhandled by the old regex approach.
+    //
+    // Regression test for #1354: emitting `export const getServerSideProps =
+    // undefined;` here collides with the existing local `const
+    // getServerSideProps` binding and triggers a parse error under
+    // OXC/Rolldown. We must drop the specifier without adding a stub.
     const code = `
 const getServerSideProps = async () => {
   return { props: { data: 'secret' } };
@@ -1864,9 +1870,16 @@ export { getServerSideProps };
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export const getServerSideProps = undefined;");
-    // The original local declaration remains (dead code, tree-shaken later)
+    // The `export { getServerSideProps }` statement must be removed entirely
+    // — no stub declaration is added.
     expect(result).not.toContain("export { getServerSideProps }");
+    expect(result).not.toContain("export const getServerSideProps");
+    // The unused local declaration becomes dead code and is tree-shaken
+    // later. It must not be duplicated by the transform.
+    const constMatches = result!.match(/const getServerSideProps\b/g) ?? [];
+    expect(constMatches).toHaveLength(1);
+    // The transformed code must be valid JS (no redeclaration).
+    expect(() => parseAst(result!)).not.toThrow();
   });
 
   it("handles export { name } with other specifiers", () => {
@@ -1884,9 +1897,84 @@ export { getServerSideProps, config };
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    // config should be preserved
+    // config should be preserved, getServerSideProps specifier dropped.
     expect(result).toContain("export { config }");
-    expect(result).toContain("export const getServerSideProps = undefined;");
+    expect(result).not.toContain("export { getServerSideProps");
+    expect(result).not.toContain("export const getServerSideProps");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  // Regression test for #1354: every supported declaration form must
+  // produce parseable output when combined with `export { name }`.
+  it("does not redeclare identifiers for function-declaration + named export", () => {
+    const code = `
+async function getServerSideProps() {
+  return { props: {} };
+}
+
+export default function Page() {
+  return null;
+}
+
+export { getServerSideProps };
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("export const getServerSideProps");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("does not redeclare identifiers when both getServerSideProps and getStaticProps use named export", () => {
+    const code = `
+const getServerSideProps = async () => ({ props: {} });
+const getStaticProps = async () => ({ props: {} });
+
+export default function Page() {
+  return null;
+}
+
+export { getServerSideProps, getStaticProps };
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("export const getServerSideProps");
+    expect(result).not.toContain("export const getStaticProps");
+    expect(result).not.toContain("export {");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("does not redeclare identifiers when local `let` binding is re-exported", () => {
+    const code = `
+let getStaticPaths = async () => ({ paths: [], fallback: false });
+
+export default function Page() {
+  return null;
+}
+
+export { getStaticPaths };
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("export const getStaticPaths");
+    // Must not introduce a `const getStaticPaths` next to the `let`.
+    expect(result).not.toMatch(/const\s+getStaticPaths/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("handles aliased named export (export { local as getServerSideProps })", () => {
+    const code = `
+const fetchData = async () => ({ props: {} });
+
+export default function Page() {
+  return null;
+}
+
+export { fetchData as getServerSideProps };
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("getServerSideProps");
+    expect(() => parseAst(result!)).not.toThrow();
   });
 
   it("handles strings containing braces", () => {

@@ -46,7 +46,7 @@ describe("StaticFileCache", () => {
   // ── Creation and scanning ──────────────────────────────────────
 
   it("creates a cache by scanning the client directory", async () => {
-    await writeFile(clientDir, "assets/app-abc123.js", "const x = 1;");
+    await writeFile(clientDir, "_next/static/app-abc123.js", "const x = 1;");
     const cache = await StaticFileCache.create(clientDir);
 
     expect(cache).toBeDefined();
@@ -55,7 +55,7 @@ describe("StaticFileCache", () => {
   it("handles empty client directory", async () => {
     const cache = await StaticFileCache.create(clientDir);
 
-    expect(cache.lookup("/assets/nope.js")).toBeUndefined();
+    expect(cache.lookup("/_next/static/nope.js")).toBeUndefined();
   });
 
   it("handles non-existent client directory gracefully", async () => {
@@ -67,30 +67,30 @@ describe("StaticFileCache", () => {
   // ── Lookup ─────────────────────────────────────────────────────
 
   it("returns cached metadata for an existing file", async () => {
-    await writeFile(clientDir, "assets/index-abc123.js", "const x = 1;");
+    await writeFile(clientDir, "_next/static/index-abc123.js", "const x = 1;");
 
     const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/assets/index-abc123.js");
+    const entry = cache.lookup("/_next/static/index-abc123.js");
 
     expect(entry).toBeDefined();
     expect(entry!.original.headers["Content-Type"]).toBe("application/javascript");
     expect(entry!.original.headers["Content-Length"]).toBe("12"); // "const x = 1;"
-    expect(entry!.original.path).toBe(path.join(clientDir, "assets/index-abc123.js"));
+    expect(entry!.original.path).toBe(path.join(clientDir, "_next/static/index-abc123.js"));
   });
 
   it("returns undefined for non-existent files", async () => {
-    await writeFile(clientDir, "assets/real-abc123.js", "x");
+    await writeFile(clientDir, "_next/static/real-abc123.js", "x");
 
     const cache = await StaticFileCache.create(clientDir);
 
-    expect(cache.lookup("/assets/missing-xyz789.js")).toBeUndefined();
+    expect(cache.lookup("/_next/static/missing-xyz789.js")).toBeUndefined();
   });
 
   it("sets immutable cache-control for hashed assets under /assets/", async () => {
-    await writeFile(clientDir, "assets/bundle-abc123.js", "x".repeat(100));
+    await writeFile(clientDir, "_next/static/bundle-abc123.js", "x".repeat(100));
 
     const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/assets/bundle-abc123.js");
+    const entry = cache.lookup("/_next/static/bundle-abc123.js");
 
     expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
   });
@@ -105,10 +105,10 @@ describe("StaticFileCache", () => {
   });
 
   it("generates weak etag from filename hash for hashed assets", async () => {
-    await writeFile(clientDir, "assets/app-abc123.css", ".body { margin: 0; }");
+    await writeFile(clientDir, "_next/static/app-abc123.css", ".body { margin: 0; }");
 
     const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/assets/app-abc123.css");
+    const entry = cache.lookup("/_next/static/app-abc123.css");
 
     // Hashed assets use the content hash from the filename
     expect(entry!.etag).toBe('W/"abc123"');
@@ -124,20 +124,20 @@ describe("StaticFileCache", () => {
   });
 
   it("falls back to mtime etag for assets without hash suffix", async () => {
-    await writeFile(clientDir, "assets/logo.svg", "<svg></svg>");
+    await writeFile(clientDir, "_next/static/logo.svg", "<svg></svg>");
 
     const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/assets/logo.svg");
+    const entry = cache.lookup("/_next/static/logo.svg");
 
     // No hash in filename — falls back to mtime-based ETag
     expect(entry!.etag).toMatch(/^W\/"\d+-\d+"$/);
   });
 
   it("does not treat non-hash suffixes as hashed asset etags", async () => {
-    await writeFile(clientDir, "assets/my-library-v2.0.0.js", "export {};");
+    await writeFile(clientDir, "_next/static/my-library-v2.0.0.js", "export {};");
 
     const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/assets/my-library-v2.0.0.js");
+    const entry = cache.lookup("/_next/static/my-library-v2.0.0.js");
 
     expect(entry!.etag).toMatch(/^W\/"\d+-\d+"$/);
   });
@@ -146,55 +146,55 @@ describe("StaticFileCache", () => {
 
   it("detects brotli precompressed variant", async () => {
     const content = "const x = 1;\n".repeat(200);
-    await writeFile(clientDir, "assets/app-abc123.js", content);
+    await writeFile(clientDir, "_next/static/app-abc123.js", content);
     // Simulate build-time precompression
     const brContent = zlib.brotliCompressSync(Buffer.from(content));
-    await writeFile(clientDir, "assets/app-abc123.js.br", brContent);
+    await writeFile(clientDir, "_next/static/app-abc123.js.br", brContent);
 
     const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/assets/app-abc123.js");
+    const entry = cache.lookup("/_next/static/app-abc123.js");
 
-    expect(entry!.br?.path).toBe(path.join(clientDir, "assets/app-abc123.js.br"));
+    expect(entry!.br?.path).toBe(path.join(clientDir, "_next/static/app-abc123.js.br"));
     expect(entry!.br?.headers["Content-Length"]).toBe(String(brContent.length));
   });
 
   it("detects gzip precompressed variant", async () => {
     const content = "body { margin: 0; }\n".repeat(200);
-    await writeFile(clientDir, "assets/styles-def456.css", content);
+    await writeFile(clientDir, "_next/static/styles-def456.css", content);
     const gzContent = zlib.gzipSync(Buffer.from(content));
-    await writeFile(clientDir, "assets/styles-def456.css.gz", gzContent);
+    await writeFile(clientDir, "_next/static/styles-def456.css.gz", gzContent);
 
     const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/assets/styles-def456.css");
+    const entry = cache.lookup("/_next/static/styles-def456.css");
 
-    expect(entry!.gz?.path).toBe(path.join(clientDir, "assets/styles-def456.css.gz"));
+    expect(entry!.gz?.path).toBe(path.join(clientDir, "_next/static/styles-def456.css.gz"));
     expect(entry!.gz?.headers["Content-Length"]).toBe(String(gzContent.length));
   });
 
   it("detects zstandard precompressed variant", async () => {
     const content = "const zstd = true;\n".repeat(200);
-    await writeFile(clientDir, "assets/app-zstd.js", content);
+    await writeFile(clientDir, "_next/static/app-zstd.js", content);
     const zstdContent = zlib.zstdCompressSync(Buffer.from(content));
-    await writeFile(clientDir, "assets/app-zstd.js.zst", zstdContent);
+    await writeFile(clientDir, "_next/static/app-zstd.js.zst", zstdContent);
 
     const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/assets/app-zstd.js");
+    const entry = cache.lookup("/_next/static/app-zstd.js");
 
-    expect(entry!.zst?.path).toBe(path.join(clientDir, "assets/app-zstd.js.zst"));
+    expect(entry!.zst?.path).toBe(path.join(clientDir, "_next/static/app-zstd.js.zst"));
     expect(entry!.zst?.headers["Content-Length"]).toBe(String(zstdContent.length));
   });
 
   it("sets Vary: Accept-Encoding on original variant when compressed siblings exist", async () => {
     const content = "const x = 1;\n".repeat(200);
-    await writeFile(clientDir, "assets/app-abc123.js", content);
+    await writeFile(clientDir, "_next/static/app-abc123.js", content);
     await writeFile(
       clientDir,
-      "assets/app-abc123.js.br",
+      "_next/static/app-abc123.js.br",
       zlib.brotliCompressSync(Buffer.from(content)),
     );
 
     const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/assets/app-abc123.js");
+    const entry = cache.lookup("/_next/static/app-abc123.js");
 
     expect(entry!.original.headers["Vary"]).toBe("Accept-Encoding");
   });
@@ -210,25 +210,29 @@ describe("StaticFileCache", () => {
 
   it("does not expose .br/.gz/.zst files as standalone entries", async () => {
     const content = "const x = 1;\n".repeat(200);
-    await writeFile(clientDir, "assets/app-abc123.js", content);
+    await writeFile(clientDir, "_next/static/app-abc123.js", content);
     await writeFile(
       clientDir,
-      "assets/app-abc123.js.br",
+      "_next/static/app-abc123.js.br",
       zlib.brotliCompressSync(Buffer.from(content)),
     );
-    await writeFile(clientDir, "assets/app-abc123.js.gz", zlib.gzipSync(Buffer.from(content)));
     await writeFile(
       clientDir,
-      "assets/app-abc123.js.zst",
+      "_next/static/app-abc123.js.gz",
+      zlib.gzipSync(Buffer.from(content)),
+    );
+    await writeFile(
+      clientDir,
+      "_next/static/app-abc123.js.zst",
       zlib.zstdCompressSync(Buffer.from(content)),
     );
 
     const cache = await StaticFileCache.create(clientDir);
 
     // .br, .gz, .zst should not be independently servable
-    expect(cache.lookup("/assets/app-abc123.js.br")).toBeUndefined();
-    expect(cache.lookup("/assets/app-abc123.js.gz")).toBeUndefined();
-    expect(cache.lookup("/assets/app-abc123.js.zst")).toBeUndefined();
+    expect(cache.lookup("/_next/static/app-abc123.js.br")).toBeUndefined();
+    expect(cache.lookup("/_next/static/app-abc123.js.gz")).toBeUndefined();
+    expect(cache.lookup("/_next/static/app-abc123.js.zst")).toBeUndefined();
   });
 
   // ── HTML fallbacks ─────────────────────────────────────────────
@@ -276,17 +280,17 @@ describe("StaticFileCache", () => {
   // ── Content type detection ─────────────────────────────────────
 
   it("detects content types from file extensions", async () => {
-    await writeFile(clientDir, "assets/style-aaa.css", "body{}");
-    await writeFile(clientDir, "assets/data-bbb.json", "{}");
+    await writeFile(clientDir, "_next/static/style-aaa.css", "body{}");
+    await writeFile(clientDir, "_next/static/data-bbb.json", "{}");
     await writeFile(clientDir, "logo.svg", "<svg/>");
     await writeFile(clientDir, "photo.webp", "webp-data");
 
     const cache = await StaticFileCache.create(clientDir);
 
-    expect(cache.lookup("/assets/style-aaa.css")!.original.headers["Content-Type"]).toBe(
+    expect(cache.lookup("/_next/static/style-aaa.css")!.original.headers["Content-Type"]).toBe(
       "text/css",
     );
-    expect(cache.lookup("/assets/data-bbb.json")!.original.headers["Content-Type"]).toBe(
+    expect(cache.lookup("/_next/static/data-bbb.json")!.original.headers["Content-Type"]).toBe(
       "application/json",
     );
     expect(cache.lookup("/logo.svg")!.original.headers["Content-Type"]).toBe("image/svg+xml");
@@ -294,11 +298,11 @@ describe("StaticFileCache", () => {
   });
 
   it("falls back to application/octet-stream for unknown extensions", async () => {
-    await writeFile(clientDir, "assets/data-ccc.xyz", "unknown-data");
+    await writeFile(clientDir, "_next/static/data-ccc.xyz", "unknown-data");
 
     const cache = await StaticFileCache.create(clientDir);
 
-    expect(cache.lookup("/assets/data-ccc.xyz")!.original.headers["Content-Type"]).toBe(
+    expect(cache.lookup("/_next/static/data-ccc.xyz")!.original.headers["Content-Type"]).toBe(
       "application/octet-stream",
     );
   });
@@ -306,12 +310,12 @@ describe("StaticFileCache", () => {
   // ── Nested directory scanning ──────────────────────────────────
 
   it("scans nested directories recursively", async () => {
-    await writeFile(clientDir, "assets/chunks/vendor-aaa.js", "vendor code");
-    await writeFile(clientDir, "assets/chunks/lazy/page-bbb.js", "page code");
+    await writeFile(clientDir, "_next/static/chunks/vendor-aaa.js", "vendor code");
+    await writeFile(clientDir, "_next/static/chunks/lazy/page-bbb.js", "page code");
 
     const cache = await StaticFileCache.create(clientDir);
 
-    expect(cache.lookup("/assets/chunks/vendor-aaa.js")).toBeDefined();
-    expect(cache.lookup("/assets/chunks/lazy/page-bbb.js")).toBeDefined();
+    expect(cache.lookup("/_next/static/chunks/vendor-aaa.js")).toBeDefined();
+    expect(cache.lookup("/_next/static/chunks/lazy/page-bbb.js")).toBeDefined();
   });
 });

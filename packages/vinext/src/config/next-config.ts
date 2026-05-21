@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
-import { isExternalUrl } from "./config-matchers.js";
+import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigPathAliasesForRoot } from "./tsconfig-paths.js";
 
 /**
@@ -77,6 +77,21 @@ export type NextRedirect = {
   permanent: boolean;
   has?: HasCondition[];
   missing?: HasCondition[];
+  /**
+   * When true (the default with i18n configured), Next.js prepends an internal
+   * locale alternation to the source so the rule matches locale-prefixed paths.
+   * When `false`, the source is left untouched and matches the raw path,
+   * letting user-supplied `:locale` segments capture the prefix themselves.
+   * See https://nextjs.org/docs/app/api-reference/config/next-config-js/redirects#locale
+   */
+  locale?: false;
+  /**
+   * When `false`, the rule is NOT prefixed with `basePath`. Source and
+   * destination are matched/applied verbatim. Mirrors Next.js's
+   * `Redirect.basePath: false` opt-out — see
+   * `.nextjs-ref/packages/next/src/lib/load-custom-routes.ts:26`.
+   */
+  basePath?: false;
 };
 
 export type NextRewrite = {
@@ -84,6 +99,10 @@ export type NextRewrite = {
   destination: string;
   has?: HasCondition[];
   missing?: HasCondition[];
+  /** See {@link NextRedirect.locale}. */
+  locale?: false;
+  /** See {@link NextRedirect.basePath}. */
+  basePath?: false;
 };
 
 export type NextHeader = {
@@ -91,6 +110,8 @@ export type NextHeader = {
   has?: HasCondition[];
   missing?: HasCondition[];
   headers: Array<{ key: string; value: string }>;
+  /** See {@link NextRedirect.basePath}. */
+  basePath?: false;
 };
 
 export type NextI18nConfig = {
@@ -1086,6 +1107,22 @@ export async function resolveNextConfig(
   const cacheMaxMemorySize: number | undefined =
     typeof config.cacheMaxMemorySize === "number" ? config.cacheMaxMemorySize : undefined;
 
+  // Apply Next.js i18n locale-prefix transformation to redirects/rewrites.
+  // When i18n is configured and a rule does NOT carry `locale: false`, the
+  // source is rewritten to match locale-prefixed URLs. Rules with
+  // `locale: false` are left untouched so user-supplied `:locale` segments
+  // can capture the prefix themselves. Mirrors processRoutes() in
+  // packages/next/src/lib/load-custom-routes.ts.
+  if (i18n) {
+    const opts = { trailingSlash: config.trailingSlash ?? false };
+    redirects = applyLocaleToRoutes(redirects, i18n, "redirect", opts);
+    rewrites = {
+      beforeFiles: applyLocaleToRoutes(rewrites.beforeFiles, i18n, "rewrite", opts),
+      afterFiles: applyLocaleToRoutes(rewrites.afterFiles, i18n, "rewrite", opts),
+      fallback: applyLocaleToRoutes(rewrites.fallback, i18n, "rewrite", opts),
+    };
+  }
+
   const resolved: ResolvedNextConfig = {
     env: config.env ?? {},
     basePath: config.basePath ?? "",
@@ -1124,11 +1161,11 @@ export async function resolveNextConfig(
   detectNextIntlConfig(root, resolved);
 
   // Parity with Next.js: when `basePath` is configured but `assetPrefix` is
-  // not, fall back to using `basePath` as the asset prefix. Without this, an
-  // app deployed under a basePath would serve its routes correctly but emit
-  // its assets from `<basePath>/assets/...` (Vite's default `base + assetsDir`
-  // composition) rather than from the Next.js-canonical
-  // `<basePath>/_next/static/...`.
+  // not, fall back to using `basePath` as the asset prefix. This ensures the
+  // on-disk layout under `dist/client` is rooted at `<basePath>/_next/static/`
+  // (matching the URL Vite emits via `base + assetsDir`), so Cloudflare's
+  // ASSETS binding and the prod-server static layer can serve requests
+  // verbatim without any runtime path rewriting.
   //
   // Mirrors Next.js: packages/next/src/server/config.ts:509-532
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/config.ts

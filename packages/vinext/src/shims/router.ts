@@ -47,6 +47,7 @@ import {
 import { matchRoutePattern, routePatternParts } from "../routing/route-pattern.js";
 import { scrollToHashTarget } from "./hash-scroll.js";
 import { setPagesRouterPopStateHandler } from "./pages-router-runtime.js";
+import { assertSafeNavigationUrl } from "./url-safety.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
@@ -823,6 +824,25 @@ function updateHistory(mode: "push" | "replace", url: string): void {
 }
 
 /**
+ * Throw the canonical "no router instance" error used when a Pages Router
+ * navigation method (push/replace/back/reload/prefetch/beforePopState) is
+ * invoked during SSR or prerendering.
+ *
+ * Mirrors Next.js's `ServerRouter.push`/`replace`/etc. which all call
+ * `noRouter()` in `packages/next/src/server/render.tsx`. The error message
+ * matches Next.js verbatim so userland error handling and docs links work
+ * unchanged.
+ *
+ * Ported from Next.js: packages/next/src/server/render.tsx
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+ */
+function throwNoRouterInstance(): never {
+  throw new Error(
+    'No router instance found. you should only use "next/router" inside the client side of your app. https://nextjs.org/docs/messages/no-router-instance',
+  );
+}
+
+/**
  * Shared client-side navigation flow used by both `useRouter()` and the
  * `Router` singleton. The only differences between push/replace are the
  * history method (`pushState` vs `replaceState`), the external-URL fallback
@@ -840,6 +860,30 @@ async function performNavigation(
   mode: "push" | "replace",
   onStateUpdate?: () => void,
 ): Promise<boolean> {
+  // SSR / prerender guard. Calling Router.push or Router.replace from a
+  // Pages Router component during server rendering would otherwise crash
+  // with `ReferenceError: window is not defined` (window.location is
+  // accessed unconditionally below). Match Next.js's `ServerRouter.push`
+  // behaviour and throw the documented "no router instance" error so the
+  // failure surfaces as a normal render error instead of a ReferenceError
+  // that takes down the request pipeline.
+  if (typeof window === "undefined") {
+    throwNoRouterInstance();
+  }
+
+  // Block dangerous URI schemes (javascript:, data:, vbscript:) before any
+  // navigation work happens. Mirrors Next.js's Pages Router guard at
+  // packages/next/src/shared/lib/router/router.ts:1020-1028,1052-1060, which
+  // throws and (via React's event-handler runtime) surfaces a console.error
+  // that the `test/e2e/app-dir/javascript-urls/javascript-urls.test.ts` suite
+  // asserts on. `assertSafeNavigationUrl` emits the matching console.error
+  // before throwing so the same observable behaviour holds when the throw is
+  // swallowed by an async event handler (e.g. Link's click delegation).
+  assertSafeNavigationUrl(resolveUrl(url));
+  if (as !== undefined) {
+    assertSafeNavigationUrl(String(as));
+  }
+
   const navigationLocale = resolveTransitionLocale(options?.locale);
   let resolved = resolveNavigationTarget(url, as, navigationLocale);
 
@@ -1113,24 +1157,127 @@ export function withRouter<P extends WithRouterProps>(
 // Note: `withRouter` is exposed only as a named export from `next/router`.
 // The default export of that module is the Router singleton declared below.
 
-// Also export a default Router singleton for `import Router from 'next/router'`
-const Router = {
-  push: (url: string | UrlObject, as?: string, options?: TransitionOptions) =>
-    performNavigation(url, as, options, "push"),
-  replace: (url: string | UrlObject, as?: string, options?: TransitionOptions) =>
-    performNavigation(url, as, options, "replace"),
-  back: () => window.history.back(),
-  reload: () => window.location.reload(),
-  prefetch: prefetchUrl,
+// Also export a default Router singleton for `import Router from 'next/router'`.
+//
+// State fields (`pathname`, `route`, `query`, `asPath`, etc.) are exposed as
+// live getters so `window.next.router.pathname` reflects the current URL
+// without callers needing to know about React render cycles. Mirrors
+// Next.js's `singletonRouter` shape from
+// .nextjs-ref/packages/next/src/client/router.ts (lines 32–47), which uses
+// `Object.defineProperty` to forward `urlPropertyFields` to the active
+// router instance. The Next.js deploy test suite drives navigations through
+// `browser.eval('next.router.push(...)')` and then reads
+// `browser.eval('next.router.pathname')` to assert success, so the fields
+// must be readable, not just the methods.
+//
+// Every navigation method is also guarded against SSR/prerender execution.
+// Matches Next.js's `ServerRouter` (packages/next/src/server/render.tsx) which
+// throws `noRouter()` from push/replace/back/reload/prefetch/beforePopState so
+// that invoking them during server rendering surfaces as a documented render
+// error rather than a `ReferenceError: window is not defined`. The throws are
+// synchronous (not via the returned Promise) so render-time callers see the
+// error inline — matching Next.js behaviour and avoiding unhandled rejections.
+const RouterMethods = {
+  push: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
+    if (typeof window === "undefined") throwNoRouterInstance();
+    return performNavigation(url, as, options, "push");
+  },
+  replace: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
+    if (typeof window === "undefined") throwNoRouterInstance();
+    return performNavigation(url, as, options, "replace");
+  },
+  back: () => {
+    if (typeof window === "undefined") throwNoRouterInstance();
+    window.history.back();
+  },
+  reload: () => {
+    if (typeof window === "undefined") throwNoRouterInstance();
+    window.location.reload();
+  },
+  prefetch: (url: string) => {
+    if (typeof window === "undefined") throwNoRouterInstance();
+    return prefetchUrl(url);
+  },
   beforePopState: (cb: BeforePopStateCallback) => {
+    if (typeof window === "undefined") throwNoRouterInstance();
     _beforePopStateCb = cb;
   },
   events: routerEvents,
 };
 
+const Router: typeof RouterMethods & Omit<NextRouter, keyof typeof RouterMethods> =
+  Object.defineProperties(RouterMethods, {
+    pathname: {
+      enumerable: true,
+      get(): string {
+        return getPathnameAndQuery().pathname;
+      },
+    },
+    route: {
+      enumerable: true,
+      get(): string {
+        const { pathname } = getPathnameAndQuery();
+        if (typeof window === "undefined") return pathname;
+        const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
+        return nextData?.page ?? pathname;
+      },
+    },
+    query: {
+      enumerable: true,
+      get(): Record<string, string | string[]> {
+        return getPathnameAndQuery().query;
+      },
+    },
+    asPath: {
+      enumerable: true,
+      get(): string {
+        return getPathnameAndQuery().asPath;
+      },
+    },
+    basePath: { enumerable: true, value: __basePath, writable: false },
+    locale: {
+      enumerable: true,
+      get(): string | undefined {
+        if (typeof window === "undefined") return _getSSRContext()?.locale;
+        return window.__VINEXT_LOCALE__;
+      },
+    },
+    locales: {
+      enumerable: true,
+      get(): string[] | undefined {
+        if (typeof window === "undefined") return _getSSRContext()?.locales;
+        return window.__VINEXT_LOCALES__;
+      },
+    },
+    defaultLocale: {
+      enumerable: true,
+      get(): string | undefined {
+        if (typeof window === "undefined") return _getSSRContext()?.defaultLocale;
+        return window.__VINEXT_DEFAULT_LOCALE__;
+      },
+    },
+    domainLocales: {
+      enumerable: true,
+      get(): VinextNextData["domainLocales"] | undefined {
+        if (typeof window === "undefined") return _getSSRContext()?.domainLocales;
+        return (window.__NEXT_DATA__ as VinextNextData | undefined)?.domainLocales;
+      },
+    },
+    isReady: { enumerable: true, value: true, writable: false },
+    isPreview: { enumerable: true, value: false, writable: false },
+    isFallback: {
+      enumerable: true,
+      get(): boolean {
+        if (typeof window === "undefined") return false;
+        return (window.__NEXT_DATA__ as VinextNextData | undefined)?.isFallback === true;
+      },
+    },
+  }) as typeof RouterMethods & Omit<NextRouter, keyof typeof RouterMethods>;
+
 // Expose `window.next.router` for Next.js parity. Pages Router test suites,
 // userland scripts, and third-party libraries reach for this global directly
-// (e.g. `window.next.router.push(...)`, `window.next.router.events.on(...)`).
+// (e.g. `window.next.router.push(...)`, `window.next.router.events.on(...)`,
+// `window.next.router.pathname`).
 // Without this assignment, those callers crash with
 // `TypeError: Cannot read properties of undefined (reading 'router')`.
 //

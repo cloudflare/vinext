@@ -255,3 +255,220 @@ describe("basePath: server-action redirect", () => {
     expect(applyActionRedirectBasePath("/another", "")).toBe("/another");
   });
 });
+
+// Ported from Next.js: test/e2e/basepath/redirect-and-rewrite.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/redirect-and-rewrite.test.ts
+//
+// Covers the basePath gating semantics on rewrite/redirect/header rules:
+//
+//   - Default rules (no `basePath: false`) only match requests that were
+//     under the configured basePath. A request to `/rewrite-1` without the
+//     `/docs` prefix must NOT match a rule whose source is `/rewrite-1`.
+//   - Rules opting out via `basePath: false` only match requests OUTSIDE
+//     the basePath (per Next.js they evaluate against the raw pathname).
+//
+// Matches `.nextjs-ref/packages/next/src/lib/load-custom-routes.ts:530-580`.
+describe("basePath: rewrite/redirect/header gating", () => {
+  const emptyHeaders = () => new Headers();
+  const emptyCtx = () => ({
+    headers: emptyHeaders(),
+    cookies: {},
+    query: new URLSearchParams(),
+    host: "localhost",
+  });
+
+  it("default rewrite rule does not match when request is outside basePath", async () => {
+    const { matchRewrite } = await import("../../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [{ source: "/rewrite-1", destination: "/gssp" }];
+    const result = matchRewrite("/rewrite-1", rewrites, emptyCtx(), {
+      basePath: "/docs",
+      hadBasePath: false,
+    });
+    expect(result).toBeNull();
+  });
+
+  it("default rewrite rule matches when request is under basePath", async () => {
+    const { matchRewrite } = await import("../../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [{ source: "/rewrite-1", destination: "/gssp" }];
+    // Pathname passed in is the basePath-stripped form, mirroring how the
+    // prod-server hands it to the matcher.
+    const result = matchRewrite("/rewrite-1", rewrites, emptyCtx(), {
+      basePath: "/docs",
+      hadBasePath: true,
+    });
+    expect(result).toBe("/gssp");
+  });
+
+  it("basePath: false rewrite rule matches when request is outside basePath", async () => {
+    const { matchRewrite } = await import("../../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [
+      {
+        source: "/rewrite-no-basepath",
+        destination: "https://example.vercel.sh",
+        basePath: false as const,
+      },
+    ];
+    const result = matchRewrite("/rewrite-no-basepath", rewrites, emptyCtx(), {
+      basePath: "/docs",
+      hadBasePath: false,
+    });
+    expect(result).toBe("https://example.vercel.sh");
+  });
+
+  it("basePath: false rewrite rule does NOT match when request is under basePath", async () => {
+    // Mirrors Next.js: rewriting `/docs/rewrite-no-basePath` falls through to
+    // the dynamic `[slug]` route, not the opt-out rule.
+    const { matchRewrite } = await import("../../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [
+      {
+        source: "/rewrite-no-basepath",
+        destination: "https://example.vercel.sh",
+        basePath: false as const,
+      },
+    ];
+    const result = matchRewrite("/rewrite-no-basepath", rewrites, emptyCtx(), {
+      basePath: "/docs",
+      hadBasePath: true,
+    });
+    expect(result).toBeNull();
+  });
+
+  it("default redirect rule does not match when request is outside basePath", async () => {
+    const { matchRedirect } = await import("../../packages/vinext/src/config/config-matchers.js");
+    const redirects = [{ source: "/redirect-1", destination: "/somewhere-else", permanent: false }];
+    const result = matchRedirect("/redirect-1", redirects, emptyCtx(), {
+      basePath: "/docs",
+      hadBasePath: false,
+    });
+    expect(result).toBeNull();
+  });
+
+  it("default redirect rule matches when request is under basePath", async () => {
+    const { matchRedirect } = await import("../../packages/vinext/src/config/config-matchers.js");
+    const redirects = [{ source: "/redirect-1", destination: "/somewhere-else", permanent: false }];
+    const result = matchRedirect("/redirect-1", redirects, emptyCtx(), {
+      basePath: "/docs",
+      hadBasePath: true,
+    });
+    expect(result).toEqual({ destination: "/somewhere-else", permanent: false });
+  });
+
+  it("basePath: false redirect rule matches when request is outside basePath", async () => {
+    const { matchRedirect } = await import("../../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      {
+        source: "/redirect-no-basepath",
+        destination: "/another-destination",
+        permanent: false,
+        basePath: false as const,
+      },
+    ];
+    const result = matchRedirect("/redirect-no-basepath", redirects, emptyCtx(), {
+      basePath: "/docs",
+      hadBasePath: false,
+    });
+    expect(result).toEqual({ destination: "/another-destination", permanent: false });
+  });
+
+  it("basePath: false redirect rule does NOT match when request is under basePath", async () => {
+    // Symmetric to the rewrite case: the opt-out rule must not fire when
+    // the request is inside basePath — otherwise both buckets would match
+    // on `/docs/redirect-no-basepath`.
+    const { matchRedirect } = await import("../../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      {
+        source: "/redirect-no-basepath",
+        destination: "/another-destination",
+        permanent: false,
+        basePath: false as const,
+      },
+    ];
+    const result = matchRedirect("/redirect-no-basepath", redirects, emptyCtx(), {
+      basePath: "/docs",
+      hadBasePath: true,
+    });
+    expect(result).toBeNull();
+  });
+
+  it("default header rule does not match when request is outside basePath", async () => {
+    const { matchHeaders } = await import("../../packages/vinext/src/config/config-matchers.js");
+    const headers = [{ source: "/add-header", headers: [{ key: "x-hello", value: "world" }] }];
+    const result = matchHeaders("/add-header", headers, emptyCtx(), {
+      basePath: "/docs",
+      hadBasePath: false,
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("default header rule matches when request is under basePath", async () => {
+    const { matchHeaders } = await import("../../packages/vinext/src/config/config-matchers.js");
+    const headers = [{ source: "/add-header", headers: [{ key: "x-hello", value: "world" }] }];
+    const result = matchHeaders("/add-header", headers, emptyCtx(), {
+      basePath: "/docs",
+      hadBasePath: true,
+    });
+    expect(result).toEqual([{ key: "x-hello", value: "world" }]);
+  });
+
+  it("basePath: false header rule matches when request is outside basePath", async () => {
+    const { matchHeaders } = await import("../../packages/vinext/src/config/config-matchers.js");
+    const headers = [
+      {
+        source: "/add-header-no-basepath",
+        headers: [{ key: "x-hello", value: "world" }],
+        basePath: false as const,
+      },
+    ];
+    const result = matchHeaders("/add-header-no-basepath", headers, emptyCtx(), {
+      basePath: "/docs",
+      hadBasePath: false,
+    });
+    expect(result).toEqual([{ key: "x-hello", value: "world" }]);
+  });
+
+  it("basePath: false header rule does NOT match when request is under basePath", async () => {
+    // Symmetric to the rewrite/redirect cases.
+    const { matchHeaders } = await import("../../packages/vinext/src/config/config-matchers.js");
+    const headers = [
+      {
+        source: "/add-header-no-basepath",
+        headers: [{ key: "x-hello", value: "world" }],
+        basePath: false as const,
+      },
+    ];
+    const result = matchHeaders("/add-header-no-basepath", headers, emptyCtx(), {
+      basePath: "/docs",
+      hadBasePath: true,
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("rules behave like default when basePath is empty (back-compat)", async () => {
+    // When basePath is not configured, every rule should match regardless of
+    // basePath flag — there is nothing to gate against.
+    const { matchRewrite } = await import("../../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [{ source: "/x", destination: "/y" }];
+    expect(matchRewrite("/x", rewrites, emptyCtx(), { basePath: "", hadBasePath: false })).toBe(
+      "/y",
+    );
+    expect(matchRewrite("/x", rewrites, emptyCtx(), { basePath: "", hadBasePath: true })).toBe(
+      "/y",
+    );
+  });
+
+  it("matchers without explicit basePathState default to permissive (back-compat)", async () => {
+    // Callers that haven't been updated to pass basePathState should behave
+    // exactly as before this change.
+    const { matchRewrite, matchRedirect, matchHeaders } =
+      await import("../../packages/vinext/src/config/config-matchers.js");
+    const rewrites = [{ source: "/x", destination: "/y" }];
+    expect(matchRewrite("/x", rewrites, emptyCtx())).toBe("/y");
+    const redirects = [{ source: "/x", destination: "/y", permanent: false }];
+    expect(matchRedirect("/x", redirects, emptyCtx())).toEqual({
+      destination: "/y",
+      permanent: false,
+    });
+    const headers = [{ source: "/x", headers: [{ key: "a", value: "b" }] }];
+    expect(matchHeaders("/x", headers, emptyCtx())).toEqual([{ key: "a", value: "b" }]);
+  });
+});
