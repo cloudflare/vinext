@@ -13,6 +13,7 @@ import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
 import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
+import { stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
@@ -3149,15 +3150,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 return;
               }
 
-              // Handle API routes first (pages/api/*)
-              const resolvedPathname = resolvedUrl.split("?")[0];
+              // Handle API routes first (pages/api/*).
+              // Strip the i18n locale prefix before the `/api/` check so
+              // `/fr/api/ok` resolves to the `pages/api/ok` handler (Next.js
+              // parity — see base-server.ts's normalizeLocalePath call).
+              const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, nextConfig?.i18n);
+              const resolvedPathname = apiLookupUrl.split("?")[0];
               if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
                 const apiRoutes = await apiRouter(
                   pagesDir,
                   nextConfig?.pageExtensions,
                   fileMatcher,
                 );
-                const apiMatch = matchRoute(resolvedUrl, apiRoutes);
+                const apiMatch = matchRoute(apiLookupUrl, apiRoutes);
                 if (apiMatch) {
                   applyDeferredMwHeaders();
                   if (middlewareRequestHeaders) {
@@ -3168,7 +3173,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   getPagesRunner(),
                   req,
                   res,
-                  resolvedUrl,
+                  apiLookupUrl,
                   apiRoutes,
                 );
                 if (handled) return;

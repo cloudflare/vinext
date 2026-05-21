@@ -547,6 +547,7 @@ import {
   normalizeTrailingSlash,
 } from "vinext/server/request-pipeline";
 import { mergeRewriteQuery } from "vinext/utils/query";
+import { stripI18nLocaleForApiRoute } from "vinext/server/pages-i18n";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { renderPage, handleApiRoute, runMiddleware, vinextConfig, matchPageRoute } from "virtual:vinext-server-entry";
@@ -800,9 +801,15 @@ export default {
       // Forward ctx so handlePagesApiRoute can wrap the user handler in
       // runWithExecutionContext, making ctx.waitUntil() reachable from
       // after() and other shims that schedule deferred work.
-      if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
+      //
+      // Strip the i18n locale prefix before the /api/ check so
+      // /fr/api/ok resolves to the pages/api/ok handler (Next.js
+      // parity -- see base-server.ts's normalizeLocalePath call).
+      const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, vinextConfig?.i18n ?? null);
+      const apiLookupPathname = apiLookupUrl.split("?")[0];
+      if (apiLookupPathname.startsWith("/api/") || apiLookupPathname === "/api") {
         const response = typeof handleApiRoute === "function"
-          ? await handleApiRoute(request, resolvedUrl, ctx)
+          ? await handleApiRoute(request, apiLookupUrl, ctx)
           : new Response("404 - API route not found", { status: 404 });
         return mergeHeaders(response, middlewareHeaders, middlewareRewriteStatus);
       }

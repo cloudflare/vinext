@@ -121,3 +121,62 @@ describe("Pages i18n domain helpers", () => {
     ).toBe("http://example.fr/?utm=campaign&next=%2Fcheckout");
   });
 });
+
+// Ported from Next.js: test/e2e/middleware-redirects/test/index.test.ts
+// (the "should redirect to api route with locale" case)
+// https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-redirects/test/index.test.ts
+//
+// Reference Next.js implementation:
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/i18n/normalize-locale-path.ts
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/get-next-pathname-info.ts
+describe("stripI18nLocaleForApiRoute (issue #1336 item 3)", () => {
+  const i18n = {
+    locales: ["en", "fr", "nl-NL"],
+    defaultLocale: "en",
+    localeDetection: true,
+  };
+  let stripI18nLocaleForApiRoute: typeof import("../packages/vinext/src/server/pages-i18n.js").stripI18nLocaleForApiRoute;
+
+  beforeAll(async () => {
+    ({ stripI18nLocaleForApiRoute } = await import("../packages/vinext/src/server/pages-i18n.js"));
+  });
+
+  it("strips a single-segment locale prefix from an API path", () => {
+    expect(stripI18nLocaleForApiRoute("/fr/api/ok", i18n)).toBe("/api/ok");
+  });
+
+  it("strips a region-tagged locale prefix from an API path", () => {
+    expect(stripI18nLocaleForApiRoute("/nl-NL/api/ok", i18n)).toBe("/api/ok");
+  });
+
+  it("preserves the query string when stripping the locale prefix", () => {
+    expect(stripI18nLocaleForApiRoute("/fr/api/ok?id=1&tag=a&tag=b", i18n)).toBe(
+      "/api/ok?id=1&tag=a&tag=b",
+    );
+  });
+
+  it("returns the URL unchanged when no locale prefix is present", () => {
+    expect(stripI18nLocaleForApiRoute("/api/ok", i18n)).toBe("/api/ok");
+  });
+
+  it("returns the URL unchanged when the first segment is not a configured locale", () => {
+    // "es" is NOT in locales; this must NOT be treated as a locale prefix.
+    expect(stripI18nLocaleForApiRoute("/es/api/ok", i18n)).toBe("/es/api/ok");
+  });
+
+  it("returns the URL unchanged when i18nConfig is null/undefined", () => {
+    expect(stripI18nLocaleForApiRoute("/fr/api/ok", null)).toBe("/fr/api/ok");
+    expect(stripI18nLocaleForApiRoute("/fr/api/ok", undefined)).toBe("/fr/api/ok");
+  });
+
+  it("strips locale even on non-API paths (caller decides what to do with the result)", () => {
+    // The helper is locale-strip only; callers branch on the resulting
+    // pathname's /api/ prefix. This isolates the helper's behaviour from
+    // any caller-specific routing decisions.
+    expect(stripI18nLocaleForApiRoute("/fr/about", i18n)).toBe("/about");
+  });
+
+  it("leaves the root path untouched", () => {
+    expect(stripI18nLocaleForApiRoute("/", i18n)).toBe("/");
+  });
+});

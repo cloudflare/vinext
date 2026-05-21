@@ -520,9 +520,12 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("runs middleware before routing", () => {
     const content = generatePagesRouterWorkerEntry();
-    // Middleware should appear before API route check
+    // Middleware should appear before API route check.
+    // The API check now uses apiLookupPathname (post-locale-strip), but the
+    // ordering invariant still holds (issue #1336 item 3 only changes the
+    // variable name, not the relative position).
     const middlewarePos = content.indexOf("runMiddleware(request, ctx, { isDataRequest })");
-    const apiRoutePos = content.indexOf('resolvedPathname.startsWith("/api/")');
+    const apiRoutePos = content.indexOf('apiLookupPathname.startsWith("/api/")');
     expect(middlewarePos).toBeGreaterThan(-1);
     expect(apiRoutePos).toBeGreaterThan(-1);
     expect(middlewarePos).toBeLessThan(apiRoutePos);
@@ -566,7 +569,8 @@ describe("generatePagesRouterWorkerEntry", () => {
     const content = generatePagesRouterWorkerEntry();
     const middlewareRewritePos = content.indexOf("resolvedUrl = result.rewriteUrl");
     const externalCheckPos = content.indexOf("isExternalUrl(resolvedUrl)", middlewareRewritePos);
-    const localApiRoutePos = content.indexOf('resolvedPathname.startsWith("/api/")');
+    // API check uses apiLookupPathname (post-locale-strip) since #1336 item 3.
+    const localApiRoutePos = content.indexOf('apiLookupPathname.startsWith("/api/")');
 
     expect(middlewareRewritePos).toBeGreaterThan(-1);
     expect(externalCheckPos).toBeGreaterThan(middlewareRewritePos);
@@ -626,11 +630,15 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("routes /api/ to handleApiRoute using resolved URL and forwards ctx", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain('resolvedPathname.startsWith("/api/")');
+    // Locale prefix is stripped before the /api/ check so /fr/api/ok matches
+    // pages/api/ok (issue #1336 item 3). The resulting URL (apiLookupUrl) is
+    // then used both for the prefix check and for the handleApiRoute call.
+    expect(content).toContain("stripI18nLocaleForApiRoute");
+    expect(content).toContain('apiLookupPathname.startsWith("/api/")');
     // Forwarding ctx lets handlePagesApiRoute wrap the handler in
     // runWithExecutionContext so after() and other shims can reach
     // ctx.waitUntil(). See #1365.
-    expect(content).toContain("handleApiRoute(request, resolvedUrl, ctx)");
+    expect(content).toContain("handleApiRoute(request, apiLookupUrl, ctx)");
   });
 
   it("includes error handling", () => {

@@ -67,6 +67,7 @@ import { readPrerenderSecret } from "../build/server-manifest.js";
 import { VINEXT_PRERENDER_SECRET_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { seedMemoryCacheFromPrerender } from "./seed-cache.js";
 import { installSocketErrorBackstop } from "./socket-error-backstop.js";
+import { stripI18nLocaleForApiRoute } from "./pages-i18n.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -1769,13 +1770,18 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
 
       // ── 8. API routes ─────────────────────────────────────────────
-      if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
+      // Strip the i18n locale prefix before the `/api/` check so
+      // `/fr/api/ok` resolves to the `pages/api/ok` handler (Next.js
+      // parity — see base-server.ts's normalizeLocalePath call).
+      const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, vinextConfig?.i18n ?? null);
+      const apiLookupPathname = apiLookupUrl.split("?")[0];
+      if (apiLookupPathname.startsWith("/api/") || apiLookupPathname === "/api") {
         let response: Response;
         if (typeof handleApi === "function") {
           // Pass a Node-shaped ExecutionContext so any after() calls in the
           // API handler still get a working waitUntil (which fires
           // background work without blocking the response).
-          response = await handleApi(webRequest, resolvedUrl, createNodeExecutionContext());
+          response = await handleApi(webRequest, apiLookupUrl, createNodeExecutionContext());
         } else {
           response = new Response("404 - API route not found", { status: 404 });
         }

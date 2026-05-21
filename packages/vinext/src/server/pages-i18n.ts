@@ -71,6 +71,30 @@ export function extractLocaleFromUrl(
 }
 
 /**
+ * Strip a leading i18n locale segment from a URL so the result can be used for
+ * API route matching. Mirrors Next.js's base-server behaviour for Pages
+ * Router API routes: `normalizeLocalePath(pathname, i18n.locales).pathname`
+ * runs before the `/api/*` check so `/fr/api/ok` resolves to the
+ * `pages/api/ok` handler instead of 404'ing.
+ *
+ * Returns the original URL untouched when:
+ * - `i18nConfig` is null/undefined (no i18n configured)
+ * - the URL does not start with a configured locale
+ *
+ * The query string is preserved verbatim — only the path segment is stripped.
+ *
+ * Reference: packages/next/src/shared/lib/i18n/normalize-locale-path.ts.
+ */
+export function stripI18nLocaleForApiRoute(
+  url: string,
+  i18nConfig: NextI18nConfig | null | undefined,
+): string {
+  if (!i18nConfig) return url;
+  const { url: stripped, hadPrefix } = extractLocaleFromUrl(url, i18nConfig);
+  return hadPrefix ? stripped : url;
+}
+
+/**
  * Detect the preferred locale from the Accept-Language header.
  * Returns the best matching locale or null.
  */
