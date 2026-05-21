@@ -12,6 +12,7 @@ import {
 import { internalServerErrorResponse } from "./http-error-responses.js";
 import { isEdgeApiRuntime } from "./edge-api-runtime.js";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
+import { NextRequest } from "vinext/shims/server";
 
 type PagesApiRouteConfig = {
   runtime?: string;
@@ -25,9 +26,24 @@ type PagesNodeApiRouteHandler = (
 type PagesEdgeApiRouteHandler = (request: Request) => Response | Promise<Response>;
 
 type PagesApiRouteModule = {
+  /**
+   * `export const config = { runtime: 'edge' }` — historical Pages Router form.
+   */
   config?: PagesApiRouteConfig;
+  /**
+   * `export const runtime = 'edge'` — bare export form. Next.js resolves the
+   * effective runtime as `config.runtime ?? config.config?.runtime`, so a
+   * top-level `runtime` export takes precedence over the nested config form.
+   *
+   * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/build/analysis/get-page-static-info.ts
+   */
+  runtime?: string;
   default?: PagesNodeApiRouteHandler | PagesEdgeApiRouteHandler;
 };
+
+function resolveModuleRuntime(module: PagesApiRouteModule): string | undefined {
+  return module.runtime ?? module.config?.runtime;
+}
 
 export type PagesApiRouteMatch = {
   params: PagesRequestQuery;
@@ -58,13 +74,13 @@ function buildPagesApiQuery(url: string, params: PagesRequestQuery): PagesReques
 function isEdgeApiRouteModule(
   module: PagesApiRouteModule,
 ): module is PagesApiRouteModule & { default: PagesEdgeApiRouteHandler } {
-  return typeof module.default === "function" && isEdgeApiRuntime(module.config?.runtime);
+  return typeof module.default === "function" && isEdgeApiRuntime(resolveModuleRuntime(module));
 }
 
 function isNodeApiRouteModule(
   module: PagesApiRouteModule,
 ): module is PagesApiRouteModule & { default: PagesNodeApiRouteHandler } {
-  return typeof module.default === "function" && !isEdgeApiRuntime(module.config?.runtime);
+  return typeof module.default === "function" && !isEdgeApiRuntime(resolveModuleRuntime(module));
 }
 
 export async function handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {
@@ -83,7 +99,11 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
 
   try {
     if (isEdgeApiRouteModule(route.module)) {
-      const response = await route.module.default(options.request);
+      // Next.js wraps the incoming Request in a NextRequest before invoking
+      // edge API handlers, so handlers can use `req.nextUrl.searchParams`,
+      // `req.cookies`, etc. (Cf. NextRequestHint in next/src/server/web/adapter.ts.)
+      const nextRequest = new NextRequest(options.request);
+      const response = await route.module.default(nextRequest);
       if (response instanceof Response) {
         return response;
       }

@@ -15848,3 +15848,99 @@ describe("next/offline shim", () => {
     expect(offline.useOffline()).toBe(false);
   });
 });
+
+// Regression for cloudflare/vinext#1353. The Pages Router navigation shim
+// referenced `window` unconditionally inside `performNavigation()`, so any
+// component calling `router.push()` during SSR or prerendering
+// (VINEXT_PRERENDER=1) crashed the render pipeline with
+// `ReferenceError: window is not defined`. Next.js's `ServerRouter`
+// (packages/next/src/server/render.tsx) instead throws a documented
+// "No router instance found" error from every navigation method. We mirror
+// that here so the failure mode is a recoverable render error rather than
+// a global ReferenceError.
+//
+// Ported from Next.js: test/e2e/with-router/pages/router-method-ssr.js +
+// test/e2e/with-router/index.test.ts (the "router-method-ssr" SSR case).
+describe("next/router SSR guard (issue #1353)", () => {
+  let previousWindow: unknown;
+
+  beforeEach(() => {
+    previousWindow = (globalThis as any).window;
+    delete (globalThis as any).window;
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    if (previousWindow === undefined) {
+      delete (globalThis as any).window;
+    } else {
+      (globalThis as any).window = previousWindow;
+    }
+    vi.resetModules();
+  });
+
+  it("Router.push throws the documented 'no router instance' error during SSR (no ReferenceError)", async () => {
+    const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+    expect(() => Router.push("/a")).toThrow(/No router instance found/);
+  });
+
+  it("Router.replace throws the documented 'no router instance' error during SSR", async () => {
+    const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+    expect(() => Router.replace("/a")).toThrow(/No router instance found/);
+  });
+
+  it("Router.back throws during SSR instead of touching window.history", async () => {
+    const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+    expect(() => Router.back()).toThrow(/No router instance found/);
+  });
+
+  it("Router.reload throws during SSR instead of touching window.location", async () => {
+    const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+    expect(() => Router.reload()).toThrow(/No router instance found/);
+  });
+
+  it("Router.prefetch throws during SSR instead of touching document", async () => {
+    const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+    expect(() => Router.prefetch("/a")).toThrow(/No router instance found/);
+  });
+
+  it("Router.beforePopState throws during SSR", async () => {
+    const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+    expect(() => Router.beforePopState(() => true)).toThrow(/No router instance found/);
+  });
+
+  // Render a `withRouter`-wrapped page that calls `router.push()` during SSR
+  // (the exact pattern from Next.js's `router-method-ssr.js` fixture).
+  // Before the fix this crashed with `ReferenceError: window is not defined`
+  // from `performNavigation`. After the fix the render throws the documented
+  // "No router instance found" error, which is what Next.js does too.
+  it("withRouter component that calls router.push() during SSR throws a render error, not a ReferenceError", async () => {
+    const { withRouter, wrapWithRouterContext } =
+      await import("../packages/vinext/src/shims/router.js");
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const RouterMethodSSR = ({ router }: { router: NextRouter }) => {
+      // Mirrors Next.js's `router-method-ssr.js` fixture, which calls
+      // `router.push('/a')` synchronously during SSR. The push must throw
+      // synchronously for the test to observe the error; we ignore the
+      // returned Promise type via `void` to satisfy the lint rule (the
+      // Promise is never produced because the sync throw happens first).
+      void router.push("/a");
+      return React.createElement("p", null, "Navigating...");
+    };
+    const Wrapped = withRouter(RouterMethodSSR as React.ComponentType<{ router: NextRouter }>);
+
+    let caught: unknown = null;
+    try {
+      renderToStaticMarkup(wrapWithRouterContext(React.createElement(Wrapped)));
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/No router instance found/);
+    expect((caught as Error).message).not.toMatch(/window is not defined/);
+    expect(caught as Error).not.toBeInstanceOf(ReferenceError);
+  });
+});

@@ -947,6 +947,62 @@ describe("handleApiRoute", () => {
       }
     });
 
+    it("passes a NextRequest with nextUrl.searchParams to edge handlers", async () => {
+      // Ported from Next.js: test/e2e/edge-pages-support/app/pages/api/hello.js
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-pages-support/app/pages/api/hello.js
+      // Next.js wraps the incoming Request in a NextRequest before invoking
+      // edge API handlers, so handlers can use `req.nextUrl.searchParams`.
+      const handler = vi.fn((request: Request) => {
+        const nextUrl = (request as { nextUrl?: URL }).nextUrl;
+        if (!nextUrl) return new Response("missing nextUrl", { status: 500 });
+        return Response.json({
+          hello: "world",
+          query: Object.fromEntries(nextUrl.searchParams),
+        });
+      });
+      const server = mockServer({
+        config: { runtime: "edge" },
+        default: handler,
+      });
+      const req = mockReq("GET", "/api/hello?a=b", undefined, {
+        host: "example.com",
+      });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/hello?a=b", [route("/api/hello")]);
+
+      expect(res._statusCode).toBe(200);
+      expect(JSON.parse(res._body.toString())).toEqual({
+        hello: "world",
+        query: { a: "b" },
+      });
+    });
+
+    it("recognises bare \"export const runtime = 'edge'\" as an edge API route", async () => {
+      // Ported from Next.js: packages/next/src/build/analysis/get-page-static-info.ts
+      // Both `export const runtime = "edge"` and `export const config = { runtime: "edge" }`
+      // are valid ways to mark a Pages Router API route as edge. Next.js resolves
+      // via `config.runtime ?? config.config?.runtime`, so a bare `runtime` export
+      // takes precedence over the nested config form.
+      const handler = vi.fn((request: Request) =>
+        Response.json({ id: request.headers.get("req-id") }),
+      );
+      const server = mockServer({
+        runtime: "edge",
+        default: handler,
+      });
+      const req = mockReq("GET", "/api/users", undefined, {
+        host: "example.com",
+        "req-id": "req-7",
+      });
+      const res = mockRes();
+
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
+
+      expect(res._statusCode).toBe(200);
+      expect(JSON.parse(res._body.toString())).toEqual({ id: "req-7" });
+    });
+
     it("streams edge API request bodies into the handler before the client finishes sending", async () => {
       const decoder = new TextDecoder();
       const handler = vi.fn(async (request: Request) => {

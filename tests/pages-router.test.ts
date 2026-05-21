@@ -304,6 +304,19 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Rendered at:");
   });
 
+  // Regression test for #1354: when a page declares `getServerSideProps` as
+  // a local `const` and exports it via `export { getServerSideProps }`, the
+  // client-bundle transform must strip the export specifier without
+  // redeclaring the identifier. Prior to the fix, the build failed with
+  // `Identifier 'getServerSideProps' has already been declared` under OXC.
+  it("renders a page that exports gSSP via `export { ... }` named re-export", async () => {
+    const res = await fetch(`${baseUrl}/gssp-named-export`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("gSSP via named export");
+    expect(html).toContain("Hello from named-export gSSP");
+  });
+
   it("getServerSideProps headers and status are applied to the response", async () => {
     const res = await fetch(`${baseUrl}/ssr-headers`);
     // gSSP sets statusCode = 201
@@ -2463,6 +2476,18 @@ export default function CounterPage() {
       expect(ssrRes.status).toBe(200);
       const ssrHtml = await ssrRes.text();
       expect(ssrHtml).toContain("Server-Side Rendered");
+
+      // Regression test for #1354: a page that exports `getServerSideProps`
+      // via a separate `export { getServerSideProps }` re-export must build
+      // and render in production. Previously, the client bundle transform
+      // emitted a stub `export const getServerSideProps = undefined;` that
+      // collided with the user's local `const getServerSideProps = ...`
+      // binding and broke the Rolldown/OXC parse step.
+      const gsspNamedRes = await fetch(`${prodUrl}/gssp-named-export`);
+      expect(gsspNamedRes.status).toBe(200);
+      const gsspNamedHtml = await gsspNamedRes.text();
+      expect(gsspNamedHtml).toContain("gSSP via named export");
+      expect(gsspNamedHtml).toContain("Hello from named-export gSSP");
 
       // Test: API route
       const apiRes = await fetch(`${prodUrl}/api/hello`);

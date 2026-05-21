@@ -62,6 +62,14 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.rewrite(new URL("/", request.url));
   }
 
+  // Used by Vitest: nextjs-compat/hooks.test.ts — verifies usePathname()
+  // returns the CANONICAL URL (the one the user sees) after a middleware
+  // rewrite, not the internal rewrite target. Mirrors the Next.js test
+  // semantics for `/rewritten-use-pathname` via a middleware rewrite.
+  if (pathname === "/middleware-rewritten-use-pathname") {
+    return NextResponse.rewrite(new URL("/nextjs-compat/hooks-search", request.url));
+  }
+
   // Ported from Next.js: test/e2e/middleware-rewrites/app/middleware.js
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/app/middleware.js
   if (pathname === "/middleware-external-rewrite") {
@@ -290,6 +298,7 @@ export const config = {
     "/about",
     "/middleware-redirect",
     "/middleware-rewrite",
+    "/middleware-rewritten-use-pathname",
     "/middleware-external-rewrite",
     "/middleware-rewrite-query",
     "/middleware-rewrite-status",
