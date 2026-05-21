@@ -76,7 +76,7 @@ describe("emitStandaloneOutput", () => {
       ),
     );
 
-    writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
     writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
     // The externals manifest is written by vinext:server-externals-manifest at build time.
     // It contains only the packages the server bundle actually imports at runtime.
@@ -138,9 +138,9 @@ describe("emitStandaloneOutput", () => {
     ) as { type: string };
     expect(standalonePkg.type).toBe("module");
 
-    expect(fs.existsSync(path.join(appRoot, "dist/standalone/dist/client/assets/main.js"))).toBe(
-      true,
-    );
+    expect(
+      fs.existsSync(path.join(appRoot, "dist/standalone/dist/client/_next/static/main.js")),
+    ).toBe(true);
     expect(fs.existsSync(path.join(appRoot, "dist/standalone/dist/server/entry.js"))).toBe(true);
     expect(fs.existsSync(path.join(appRoot, "dist/standalone/public/robots.txt"))).toBe(true);
 
@@ -170,7 +170,7 @@ describe("emitStandaloneOutput", () => {
     fs.mkdirSync(appRoot, { recursive: true });
 
     writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
-    writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
     writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
     // dep-a is in the manifest; dep-b is dep-a's dependency (transitive).
     writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["dep-a"]));
@@ -212,7 +212,7 @@ describe("emitStandaloneOutput", () => {
     fs.mkdirSync(appRoot, { recursive: true });
 
     writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
-    writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
     writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
     // No vinext-externals.json written.
 
@@ -271,7 +271,7 @@ describe("emitStandaloneOutput", () => {
         2,
       ),
     );
-    writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
     writeFile(appRoot, "dist/server/entry.js", "import 'dep-hidden';\n");
     writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["dep-hidden"]));
 
@@ -320,7 +320,7 @@ describe("emitStandaloneOutput", () => {
         2,
       ),
     );
-    writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
     writeFile(appRoot, "dist/server/entry.js", "console.log('server');\n");
     // missing-required is in the manifest but not installed in node_modules.
     writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["missing-required"]));
@@ -351,7 +351,7 @@ describe("emitStandaloneOutput", () => {
     fs.mkdirSync(appRoot, { recursive: true });
 
     writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
-    writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
     writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
     // No app-level externals; the manifest is empty.
     writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify([]));
@@ -403,7 +403,7 @@ describe("emitStandaloneOutput", () => {
     fs.mkdirSync(appRoot, { recursive: true });
 
     writeFile(appRoot, "package.json", JSON.stringify({ name: "app" }, null, 2));
-    writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
     writeFile(appRoot, "dist/server/entry.js", 'console.log("server");\n');
     writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify([]));
 
@@ -465,7 +465,7 @@ describe("emitStandaloneOutput", () => {
         2,
       ),
     );
-    writeFile(appRoot, "dist/client/assets/main.js", "console.log('client');\n");
+    writeFile(appRoot, "dist/client/_next/static/main.js", "console.log('client');\n");
     writeFile(appRoot, "dist/server/entry.js", "import 'dep-link';\n");
     writeFile(appRoot, "dist/server/vinext-externals.json", JSON.stringify(["dep-link"]));
 

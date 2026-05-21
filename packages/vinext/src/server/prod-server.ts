@@ -1115,7 +1115,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       // Fall through to the RSC handler below.
     }
 
-    // Serve hashed build assets (Vite output in /assets/) directly.
+    // Serve hashed build assets (Vite output in /_next/static/) directly.
     // Public directory files fall through to the RSC handler, which runs
     // middleware before serving them.
     //
