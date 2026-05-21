@@ -540,9 +540,9 @@ async function tryServeStatic(
   const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
   // Mirror the StaticFileCache's `isHashed` rule: assets under Vite's
   // `assetsDir` carry a content hash. `pathname` always has a leading `/`,
-  // so a single `includes` covers both the root-level `/_next/static/...`
-  // case and any `/<prefix>/_next/static/...` assetPrefix layout.
-  const isHashed = pathname.includes("/_next/static/");
+  // so a single `includes` covers both the root-level `/<ASSET_PREFIX_URL_DIR>/...`
+  // case and any `/<prefix>/<ASSET_PREFIX_URL_DIR>/...` assetPrefix layout.
+  const isHashed = pathname.includes(`/${ASSET_PREFIX_URL_DIR}/`);
   const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
   // Use a filename-hash ETag for hashed assets (matches the fast-path cache
   // behaviour and survives deploys). Use resolved.path (not pathname) so that
@@ -1788,7 +1788,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       if (
         staticLookupPath !== "/" &&
         !staticLookupPath.startsWith("/api/") &&
-        !staticLookupPath.startsWith("/_next/static/") &&
+        !staticLookupPath.startsWith(`/${ASSET_PREFIX_URL_DIR}/`) &&
         (await tryServeStatic(
           req,
           res,
