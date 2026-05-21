@@ -41,6 +41,7 @@ import { makeThenableParams } from "vinext/shims/thenable-params";
 import { reportRequestError } from "./instrumentation.js";
 
 type AppRouteHandlerDispatchRoute = {
+  isDynamic?: boolean;
   pattern: string;
   routeHandler: AppRouteHandlerModule;
   routeSegments: string[];
@@ -81,6 +82,13 @@ type DispatchAppRouteHandlerOptions = {
 
 function isAppRouteHandlerFunction(value: unknown): value is AppRouteHandlerFunction {
   return typeof value === "function";
+}
+
+function hasPublicRouteParams(
+  params: AppRouteParams,
+  route: AppRouteHandlerDispatchRoute,
+): boolean {
+  return route.isDynamic ?? Object.keys(params).length > 0;
 }
 
 function buildRouteHandlerPageCacheTags(
@@ -202,6 +210,7 @@ export async function dispatchAppRouteHandler(
       revalidateSearchParams: options.searchParams,
       expireSeconds: options.expireSeconds,
       revalidateSeconds,
+      routeIsDynamic: route.isDynamic,
       routePattern: route.pattern,
       runInRevalidationContext(renderFn) {
         return runInRouteHandlerRevalidationContext(
@@ -230,6 +239,10 @@ export async function dispatchAppRouteHandler(
   }
 
   if (resolvedHandlerFn) {
+    const publicParams = hasPublicRouteParams(options.params, route)
+      ? makeThenableParams(options.params)
+      : null;
+
     return executeAppRouteHandler({
       basePath: options.basePath,
       buildPageCacheTags(pathname, extraTags) {
@@ -254,7 +267,7 @@ export async function dispatchAppRouteHandler(
       method,
       middlewareContext: options.middlewareContext,
       middlewareRequestHeaders: options.middlewareRequestHeaders,
-      params: makeThenableParams(options.params),
+      params: publicParams,
       reportRequestError(error, request, context) {
         void reportRequestError(error, request, context);
       },

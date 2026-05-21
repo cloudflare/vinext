@@ -29,11 +29,12 @@ import {
 } from "./app-route-handler-runtime.js";
 
 export type AppRouteParams = Record<string, string | string[]>;
+export type AppRouteHandlerParams = AppRouteParams | null;
 export type AppRouteDynamicUsageFn = () => boolean;
 export type MarkAppRouteDynamicUsageFn = () => void;
 export type AppRouteHandlerFunction = (
   request: NextRequest,
-  context: { params: AppRouteParams },
+  context: { params: AppRouteHandlerParams },
 ) => Response | Promise<Response>;
 export type RouteHandlerCacheSetter = (
   key: string,
@@ -57,7 +58,7 @@ type RunAppRouteHandlerOptions = {
   i18n?: NextI18nConfig | null;
   markDynamicUsage: MarkAppRouteDynamicUsageFn;
   middlewareRequestHeaders?: Headers | null;
-  params: AppRouteParams;
+  params: AppRouteHandlerParams;
   request: Request;
   routePattern?: string;
   setHeadersAccessPhase?: (phase: HeadersAccessPhase) => HeadersAccessPhase;

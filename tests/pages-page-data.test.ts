@@ -159,6 +159,31 @@ describe("pages page data", () => {
     await expect(result.response.text()).resolves.toBe('{"ok":true}');
   });
 
+  it("passes null params to getServerSideProps for non-dynamic pages", async () => {
+    let seenParams: unknown = "unset";
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        params: {},
+        query: {},
+        route: { isDynamic: false },
+        routePattern: "/status",
+        routeUrl: "/status",
+        pageModule: {
+          async getServerSideProps(context) {
+            seenParams = context.params;
+            return {
+              props: { ok: true },
+            };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("render");
+    expect(seenParams).toBeNull();
+  });
+
   it("serves stale ISR entries immediately and regenerates them through typed helpers", async () => {
     let regenPromise: Promise<void> | null = null;
     const applyRequestContexts = vi.fn();

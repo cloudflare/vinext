@@ -46,6 +46,7 @@ type ReadAppRouteHandlerCacheOptions = {
   revalidateSearchParams: URLSearchParams;
   expireSeconds?: number;
   revalidateSeconds: number;
+  routeIsDynamic?: boolean;
   routePattern: string;
   runInRevalidationContext: RouteHandlerRevalidationContextRunner;
   scheduleBackgroundRegeneration: RouteHandlerBackgroundRegenerator;
@@ -61,6 +62,10 @@ type ReadAppRouteHandlerCacheOptions = {
 
 function getCachedAppRouteValue(entry: ISRCacheEntry | null) {
   return entry?.value.value && entry.value.value.kind === "APP_ROUTE" ? entry.value.value : null;
+}
+
+function hasPublicRouteParams(params: AppRouteParams, routeIsDynamic?: boolean): boolean {
+  return routeIsDynamic ?? Object.keys(params).length > 0;
 }
 
 export async function readAppRouteHandlerCacheResponse(
@@ -106,7 +111,9 @@ export async function readAppRouteHandlerCacheResponse(
             handlerFn: options.handlerFn,
             i18n: options.i18n,
             markDynamicUsage: options.markDynamicUsage,
-            params: makeThenableParams(options.params),
+            params: hasPublicRouteParams(options.params, options.routeIsDynamic)
+              ? makeThenableParams(options.params)
+              : null,
             request: new Request(options.requestUrl, { method: "GET" }),
             routePattern: options.routePattern,
             setHeadersAccessPhase: options.setHeadersAccessPhase,

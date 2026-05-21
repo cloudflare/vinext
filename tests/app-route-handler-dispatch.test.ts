@@ -25,6 +25,45 @@ function buildISRCacheEntry(value: CachedRouteValue, isStale = false): ISRCacheE
 }
 
 describe("app route handler dispatch", () => {
+  it("passes null params to non-dynamic route handlers", async () => {
+    let seenParams: unknown = "unset";
+
+    const response = await dispatchAppRouteHandler({
+      cleanPathname: "/api/status",
+      clearRequestContext() {},
+      i18n: null,
+      isDevelopment: false,
+      isProduction: false,
+      async isrGet() {
+        return null;
+      },
+      isrRouteKey(pathname) {
+        return "route:" + pathname;
+      },
+      async isrSet() {},
+      middlewareContext: { headers: null, status: null },
+      middlewareRequestHeaders: null,
+      params: {},
+      request: new Request("https://example.com/api/status"),
+      route: {
+        isDynamic: false,
+        pattern: "/api/status",
+        routeHandler: {
+          async GET(_request: Request, context: { params: unknown }) {
+            seenParams = await context.params;
+            return Response.json({ ok: true });
+          },
+        },
+        routeSegments: ["api", "status"],
+      },
+      scheduleBackgroundRegeneration() {},
+      searchParams: new URLSearchParams(),
+    });
+
+    expect(response.status).toBe(200);
+    expect(seenParams).toBeNull();
+  });
+
   it("rejects invalid HTTP methods with 400 before auto-OPTIONS/405 logic", async () => {
     // Ported from Next.js: test/e2e/app-dir/app-routes/app-custom-routes.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L531-L538

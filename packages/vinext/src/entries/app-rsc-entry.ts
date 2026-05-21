@@ -645,6 +645,7 @@ export default __createAppRscHandler({
       params,
       request,
       route: {
+        isDynamic: route.isDynamic,
         pattern: route.pattern,
         routeHandler: route.routeHandler,
         routeSegments: route.routeSegments,

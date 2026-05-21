@@ -31,6 +31,9 @@ type PagesStaticPathsResult = {
   paths?: PagesStaticPathsEntry[];
 };
 
+type PagesRouteParams = Record<string, unknown>;
+type PagesPublicRouteParams = PagesRouteParams | null;
+
 type PagesPagePropsResult = {
   props?: Record<string, unknown>;
   redirect?: PagesRedirectResult;
@@ -55,7 +58,7 @@ export type PagesPageModule = {
     defaultLocale: string;
   }) => Promise<PagesStaticPathsResult> | PagesStaticPathsResult;
   getServerSideProps?: (context: {
-    params: Record<string, unknown>;
+    params: PagesPublicRouteParams;
     req: unknown;
     res: PagesMutableGsspResponse;
     query: Record<string, unknown>;
@@ -148,6 +151,13 @@ function buildPagesDataNotFoundResponse(): Response {
 
 function resolvePagesRedirectStatus(redirect: PagesRedirectResult): number {
   return redirect.statusCode != null ? redirect.statusCode : redirect.permanent ? 308 : 307;
+}
+
+function resolvePagesPublicParams(
+  params: PagesRouteParams,
+  route: Pick<Route, "isDynamic">,
+): PagesPublicRouteParams {
+  return route.isDynamic ? params : null;
 }
 
 /**
@@ -300,7 +310,7 @@ export async function resolvePagesPageData(
   if (typeof options.pageModule.getServerSideProps === "function") {
     const { req, res, responsePromise } = options.createGsspReqRes();
     const result = await options.pageModule.getServerSideProps({
-      params: options.params,
+      params: resolvePagesPublicParams(options.params, options.route),
       req,
       res,
       query: options.query,
