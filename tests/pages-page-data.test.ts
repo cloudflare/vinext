@@ -295,6 +295,7 @@ describe("pages page data", () => {
       gsspRes: null,
       isrRevalidateSeconds: 30,
       pageProps: { title: "hello" },
+      isFallback: false,
     });
   });
 
