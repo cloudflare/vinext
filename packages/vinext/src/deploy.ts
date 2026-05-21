@@ -546,6 +546,7 @@ import {
   isOpenRedirectShaped,
   normalizeTrailingSlash,
 } from "vinext/server/request-pipeline";
+import { normalizeDefaultLocalePathname } from "vinext/server/pages-i18n";
 import { mergeRewriteQuery } from "vinext/utils/query";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -570,6 +571,7 @@ interface ExecutionContext {
 // Extract config values (embedded at build time in the server entry)
 const basePath: string = vinextConfig?.basePath ?? "";
 const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
+const i18nConfig = vinextConfig?.i18n ?? null;
 const configRedirects = vinextConfig?.redirects ?? [];
 const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
 const configHeaders = vinextConfig?.headers ?? [];
@@ -674,9 +676,20 @@ export default {
       // x-middleware-request-* headers are unpacked into request.
       const reqCtx = requestContextFromRequest(request);
 
+      // Default-locale path normalisation (issue #1336, item 4). Mirrors
+      // Next.js's resolve-routes.ts: every request without a locale prefix
+      // gets the (domain-aware) default locale prepended before config rule
+      // matching so that locale-aware rules with :locale placeholders or
+      // locale: false overrides still match default-locale URLs.
+      const matchPathname = i18nConfig
+        ? normalizeDefaultLocalePathname(pathname, i18nConfig, {
+            hostname: url.hostname,
+          })
+        : pathname;
+
       // ── 3. Apply redirects from next.config.js ────────────────────
       if (configRedirects.length) {
-        const redirect = matchRedirect(pathname, configRedirects, reqCtx);
+        const redirect = matchRedirect(matchPathname, configRedirects, reqCtx);
         if (redirect) {
           const dest = sanitizeDestination(
             basePath &&
@@ -773,7 +786,7 @@ export default {
       if (configHeaders.length) {
         applyConfigHeadersToHeaderRecord(middlewareHeaders, {
           configHeaders,
-          pathname,
+          pathname: matchPathname,
           requestContext: reqCtx,
         });
       }
@@ -783,9 +796,20 @@ export default {
         return mergeHeaders(proxyResponse, middlewareHeaders, undefined);
       }
 
+      // Default-locale-normalised form of resolvedPathname for matching
+      // against next.config.js rewrites (beforeFiles, afterFiles, fallback).
+      const matchResolvedPathname = (p: string): string =>
+        i18nConfig
+          ? normalizeDefaultLocalePathname(p, i18nConfig, { hostname: url.hostname })
+          : p;
+
       // ── 6. Apply beforeFiles rewrites from next.config.js ─────────
       if (configRewrites.beforeFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
+        const rewritten = matchRewrite(
+          matchResolvedPathname(resolvedPathname),
+          configRewrites.beforeFiles,
+          postMwReqCtx,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
@@ -813,7 +837,11 @@ export default {
       // ── 8. Apply afterFiles rewrites from next.config.js ──────────
       // These run after non-dynamic page routes but before dynamic routes.
       if ((!pageMatch || pageMatch.route.isDynamic) && configRewrites.afterFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, postMwReqCtx);
+        const rewritten = matchRewrite(
+          matchResolvedPathname(resolvedPathname),
+          configRewrites.afterFiles,
+          postMwReqCtx,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
@@ -830,7 +858,11 @@ export default {
 
         // ── 10. Fallback rewrites (if SSR returned 404) ─────────────
         if (response && response.status === 404 && configRewrites.fallback?.length) {
-          const fallbackRewrite = matchRewrite(resolvedPathname, configRewrites.fallback, postMwReqCtx);
+          const fallbackRewrite = matchRewrite(
+            matchResolvedPathname(resolvedPathname),
+            configRewrites.fallback,
+            postMwReqCtx,
+          );
           if (fallbackRewrite) {
             if (isExternalUrl(fallbackRewrite)) {
               return proxyExternalRequest(request, fallbackRewrite);

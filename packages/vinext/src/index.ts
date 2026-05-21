@@ -76,6 +76,7 @@ import {
   type RequestContext,
 } from "./config/config-matchers.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
+import { normalizeDefaultLocalePathname } from "./server/pages-i18n.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-request-headers.js";
 import { detectPackageManager } from "./utils/project.js";
 import { manifestFileWithBase, manifestFilesWithBase } from "./utils/manifest-paths.js";
@@ -2921,11 +2922,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }),
               );
 
+              // Default-locale path normalisation (issue #1336, item 4).
+              // Next.js prepends `/${defaultLocale}` to every unprefixed
+              // request before any config rule or filesystem match runs so
+              // that locale-aware rules with `:locale` placeholders still
+              // match default-locale URLs. Mirrors resolve-routes.ts.
+              const matchPathname = nextConfig?.i18n
+                ? normalizeDefaultLocalePathname(pathname, nextConfig.i18n, {
+                    hostname: preMiddlewareReqUrl.hostname,
+                  })
+                : pathname;
+
               // Config redirects run before middleware, but still match against
               // the original normalized pathname and request headers/cookies.
               if (nextConfig?.redirects.length) {
                 const redirected = applyRedirects(
-                  pathname,
+                  matchPathname,
                   res,
                   nextConfig.redirects,
                   preMiddlewareReqCtx,
@@ -3127,13 +3139,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // pre-middleware request state; middleware response headers win
               // later because they are already on the outgoing response.
               if (nextConfig?.headers.length) {
-                applyHeaders(pathname, res, nextConfig.headers, preMiddlewareReqCtx);
+                applyHeaders(matchPathname, res, nextConfig.headers, preMiddlewareReqCtx);
               }
 
               // Apply rewrites from next.config.js (beforeFiles)
               let resolvedUrl = url;
               if (nextConfig?.rewrites.beforeFiles.length) {
-                const rewritten = applyRewrites(pathname, nextConfig.rewrites.beforeFiles, reqCtx);
+                const rewritten = applyRewrites(
+                  matchPathname,
+                  nextConfig.rewrites.beforeFiles,
+                  reqCtx,
+                );
                 if (rewritten) {
                   // Preserve original query params across the rewrite — Next.js
                   // semantics: `Object.assign(parsedUrl.query, rewriteQuery)`.
@@ -3190,7 +3206,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // chance to win, but before dynamic route matching.
               if ((!match || match.route.isDynamic) && nextConfig?.rewrites.afterFiles.length) {
                 const afterRewrite = applyRewrites(
-                  resolvedUrl.split("?")[0],
+                  nextConfig?.i18n
+                    ? normalizeDefaultLocalePathname(resolvedUrl.split("?")[0], nextConfig.i18n, {
+                        hostname: preMiddlewareReqUrl.hostname,
+                      })
+                    : resolvedUrl.split("?")[0],
                   nextConfig.rewrites.afterFiles,
                   reqCtx,
                 );
@@ -3233,7 +3253,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // No route matched — try fallback rewrites
               if (nextConfig?.rewrites.fallback.length) {
                 const fallbackRewrite = applyRewrites(
-                  resolvedUrl.split("?")[0],
+                  nextConfig?.i18n
+                    ? normalizeDefaultLocalePathname(resolvedUrl.split("?")[0], nextConfig.i18n, {
+                        hostname: preMiddlewareReqUrl.hostname,
+                      })
+                    : resolvedUrl.split("?")[0],
                   nextConfig.rewrites.fallback,
                   reqCtx,
                 );

@@ -52,6 +52,7 @@ import {
   normalizeTrailingSlash,
 } from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { mergeRewriteQuery } from "../utils/query.js";
 import {
@@ -1337,6 +1338,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const pagesAssetPathPrefix = assetPrefixPathname(assetPrefix);
   const assetBase = basePath ? `${basePath}/` : "/";
   const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
+  const i18nConfig = vinextConfig?.i18n ?? null;
   const configRedirects = vinextConfig?.redirects ?? [];
   const configRewrites = vinextConfig?.rewrites ?? {
     beforeFiles: [],
@@ -1583,9 +1585,23 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // Next.js execution order, so they use postMwReqCtx below.
       const reqCtx: RequestContext = requestContextFromRequest(webRequest);
 
-      // ── 4. Apply redirects from next.config.js ────────────────────
+      // ── 4. Default-locale path normalisation (issue #1336, item 4) ──
+      // Next.js normalises every request that arrives without a locale
+      // prefix by splicing in the (domain-aware) default locale before any
+      // config rule or filesystem match runs. Without this, a rule like
+      // `source: '/:locale/to-sv'` with `locale: false` does not match a
+      // request for `/to-sv` because there is no segment for `:locale`.
+      // Mirrors packages/next/src/server/lib/router-utils/resolve-routes.ts
+      // (lines ~250-263).
+      const matchPathname = i18nConfig
+        ? normalizeDefaultLocalePathname(pathname, i18nConfig, {
+            hostname: new URL(webRequest.url).hostname,
+          })
+        : pathname;
+
+      // ── 5. Apply redirects from next.config.js ────────────────────
       if (configRedirects.length) {
-        const redirect = matchRedirect(pathname, configRedirects, reqCtx);
+        const redirect = matchRedirect(matchPathname, configRedirects, reqCtx);
         if (redirect) {
           // Guard against double-prefixing: only add basePath if destination
           // doesn't already start with it.
@@ -1704,6 +1720,16 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // Config header matching must keep using the original normalized pathname
       // even if middleware rewrites the downstream route/render target.
       let resolvedPathname = resolvedUrl.split("?")[0];
+      // Default-locale-normalised form of resolvedPathname for matching against
+      // next.config.js rewrites (beforeFiles, afterFiles, fallback). Mirrors
+      // Next.js's resolve-routes.ts behaviour where the post-middleware
+      // pathname is also locale-prefixed before rewrite matching.
+      const matchResolvedPathname = (p: string): string =>
+        i18nConfig
+          ? normalizeDefaultLocalePathname(p, i18nConfig, {
+              hostname: new URL(webRequest.url).hostname,
+            })
+          : p;
 
       // ── 6. Apply custom headers from next.config.js ───────────────
       // Config headers are additive for multi-value headers (Vary,
@@ -1716,7 +1742,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       if (configHeaders.length) {
         applyConfigHeadersToHeaderRecord(middlewareHeaders, {
           configHeaders,
-          pathname,
+          pathname: matchPathname,
           requestContext: reqCtx,
         });
       }
@@ -1754,7 +1780,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       // ── 7. Apply beforeFiles rewrites from next.config.js ─────────
       if (configRewrites.beforeFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
+        const rewritten = matchRewrite(
+          matchResolvedPathname(resolvedPathname),
+          configRewrites.beforeFiles,
+          postMwReqCtx,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             const proxyResponse = await proxyExternalRequest(webRequest, rewritten);
@@ -1813,7 +1843,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // ── 9. Apply afterFiles rewrites from next.config.js ──────────
       // These run after non-dynamic page routes but before dynamic routes.
       if ((!pageMatch || pageMatch.route.isDynamic) && configRewrites.afterFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, postMwReqCtx);
+        const rewritten = matchRewrite(
+          matchResolvedPathname(resolvedPathname),
+          configRewrites.afterFiles,
+          postMwReqCtx,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             const proxyResponse = await proxyExternalRequest(webRequest, rewritten);
@@ -1840,7 +1874,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         // ── 11. Fallback rewrites (if SSR returned 404) ─────────────
         if (response && response.status === 404 && configRewrites.fallback?.length) {
           const fallbackRewrite = matchRewrite(
-            resolvedPathname,
+            matchResolvedPathname(resolvedPathname),
             configRewrites.fallback,
             postMwReqCtx,
           );

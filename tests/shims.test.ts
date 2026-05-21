@@ -16155,3 +16155,197 @@ describe("locale: false on rewrites/redirects (issue #1336)", () => {
     expect(matchRedirect("/nl/old", rules, emptyCtx)?.destination).toBe("/nl/new");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Default-locale path normalisation before route matching (issue #1336, item 4).
+//
+// Next.js normalises every request that arrives without a locale prefix by
+// prepending the (domain-aware) defaultLocale before any redirect, rewrite,
+// header, or filesystem route match runs. The issue body claims the desired
+// behaviour is a 308 from `/en/page` → `/page`, but Next.js does NOT redirect:
+// it serves the same content under both URLs and lets the application normalise
+// the path internally.
+//
+// Ported from Next.js:
+//   - test/e2e/i18n-default-locale-redirect/i18n-default-locale-redirect.test.ts
+//     https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-default-locale-redirect/i18n-default-locale-redirect.test.ts
+//   - test/e2e/i18n-ignore-redirect-source-locale/redirects.test.ts
+//     https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-ignore-redirect-source-locale/redirects.test.ts
+//   - packages/next/src/server/lib/router-utils/resolve-routes.ts (lines ~250-263)
+//     https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+//
+describe("default-locale path normalisation (issue #1336, item 4)", () => {
+  const emptyCtx = {
+    headers: new Headers(),
+    cookies: {},
+    query: new URLSearchParams(),
+    host: "localhost",
+  };
+
+  it("normalizeDefaultLocalePathname prepends the default locale when path has none", async () => {
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = { locales: ["en", "sv", "nl"], defaultLocale: "en" };
+    expect(normalizeDefaultLocalePathname("/about", i18n)).toBe("/en/about");
+    expect(normalizeDefaultLocalePathname("/", i18n)).toBe("/en");
+    expect(normalizeDefaultLocalePathname("/api/health", i18n)).toBe("/en/api/health");
+  });
+
+  it("normalizeDefaultLocalePathname leaves locale-prefixed paths untouched", async () => {
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = { locales: ["en", "sv", "nl"], defaultLocale: "en" };
+    expect(normalizeDefaultLocalePathname("/en/about", i18n)).toBe("/en/about");
+    expect(normalizeDefaultLocalePathname("/sv/about", i18n)).toBe("/sv/about");
+    expect(normalizeDefaultLocalePathname("/nl", i18n)).toBe("/nl");
+  });
+
+  it("normalizeDefaultLocalePathname is a no-op when i18n is not configured", async () => {
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    expect(normalizeDefaultLocalePathname("/about", null)).toBe("/about");
+    expect(normalizeDefaultLocalePathname("/", undefined)).toBe("/");
+    expect(normalizeDefaultLocalePathname("/about", null, { hostname: "example.com" })).toBe(
+      "/about",
+    );
+  });
+
+  it("normalizeDefaultLocalePathname skips internal Next.js / vinext paths", async () => {
+    // Next.js's resolve-routes.ts explicitly excludes /_next/* from
+    // default-locale normalisation. Build assets and prerender manifests must
+    // not get a locale prefix.
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = { locales: ["en", "sv", "nl"], defaultLocale: "en" };
+    expect(normalizeDefaultLocalePathname("/_next/static/chunks/main.js", i18n)).toBe(
+      "/_next/static/chunks/main.js",
+    );
+    expect(normalizeDefaultLocalePathname("/_next/data/build-id/index.json", i18n)).toBe(
+      "/_next/data/build-id/index.json",
+    );
+    // vinext-internal endpoints (prerender, image optimisation) likewise.
+    expect(normalizeDefaultLocalePathname("/__vinext/prerender/pages-static-paths", i18n)).toBe(
+      "/__vinext/prerender/pages-static-paths",
+    );
+  });
+
+  it("normalizeDefaultLocalePathname prefers the domain-mapped default locale", async () => {
+    // Next.js's resolve-routes.ts picks `domainLocale.defaultLocale` over the
+    // global default when the inbound host matches an i18n.domains entry.
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = {
+      locales: ["en", "sv", "nl"],
+      defaultLocale: "en",
+      domains: [{ domain: "example.nl", defaultLocale: "nl" }],
+    };
+    expect(normalizeDefaultLocalePathname("/about", i18n, { hostname: "example.nl" })).toBe(
+      "/nl/about",
+    );
+    // Unknown host falls back to the global default.
+    expect(normalizeDefaultLocalePathname("/about", i18n, { hostname: "example.com" })).toBe(
+      "/en/about",
+    );
+    // Domain-mapped path that already carries a locale stays untouched.
+    expect(normalizeDefaultLocalePathname("/sv/about", i18n, { hostname: "example.nl" })).toBe(
+      "/sv/about",
+    );
+  });
+
+  it("matchRedirect honours :locale capture on locale:false rules after normalisation", async () => {
+    // Ported from Next.js: test/e2e/i18n-ignore-redirect-source-locale/redirects.test.ts
+    // A user-supplied source like `/:locale/to-sv` with `locale: false` is
+    // matched against the POST-normalisation pathname, so requests that
+    // arrive without a locale prefix get the default locale spliced in and
+    // the `:locale` segment captures it.
+    const { matchRedirect, applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = { locales: ["en", "sv", "nl"], defaultLocale: "en" };
+    const rules = applyLocaleToRoutes(
+      [
+        {
+          source: "/:locale/to-sv",
+          destination: "/sv/newpage",
+          permanent: false as const,
+          locale: false as const,
+        },
+        {
+          source: "/:locale/to-en",
+          destination: "/en/newpage",
+          permanent: false as const,
+          locale: false as const,
+        },
+        {
+          source: "/:locale/to-slash",
+          destination: "/newpage",
+          permanent: false as const,
+          locale: false as const,
+        },
+        {
+          source: "/:locale/to-same",
+          destination: "/:locale/newpage",
+          permanent: false as const,
+          locale: false as const,
+        },
+      ],
+      i18n,
+      "redirect",
+    );
+
+    // Unprefixed paths get normalised to the default locale first.
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/to-sv", i18n), rules, emptyCtx)?.destination,
+    ).toBe("/sv/newpage");
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/to-en", i18n), rules, emptyCtx)?.destination,
+    ).toBe("/en/newpage");
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/to-slash", i18n), rules, emptyCtx)
+        ?.destination,
+    ).toBe("/newpage");
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/to-same", i18n), rules, emptyCtx)?.destination,
+    ).toBe("/en/newpage");
+
+    // Locale-prefixed paths are passed through unchanged.
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/sv/to-sv", i18n), rules, emptyCtx)
+        ?.destination,
+    ).toBe("/sv/newpage");
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/nl/to-same", i18n), rules, emptyCtx)
+        ?.destination,
+    ).toBe("/nl/newpage");
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/en/to-en", i18n), rules, emptyCtx)
+        ?.destination,
+    ).toBe("/en/newpage");
+  });
+
+  it("matchRedirect on default-locale paths matches the literal default-locale variant", async () => {
+    // For redirects WITHOUT `locale: false`, applyLocaleToRoutes already emits
+    // a literal `/${defaultLocale}/...` variant. Normalisation routes unprefixed
+    // requests through that variant.
+    const { matchRedirect, applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = { locales: ["en", "sv", "nl"], defaultLocale: "en" };
+    const rules = applyLocaleToRoutes(
+      [{ source: "/old", destination: "/new", permanent: false as const }],
+      i18n,
+      "redirect",
+    );
+
+    // `/old` (unprefixed) → normalised to `/en/old` → matches default-locale variant.
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/old", i18n), rules, emptyCtx)?.destination,
+    ).toBe("/new");
+    // `/sv/old` already prefixed → matches the locale-capture variant.
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/sv/old", i18n), rules, emptyCtx)?.destination,
+    ).toBe("/sv/new");
+  });
+});

@@ -40,6 +40,7 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { finalizeAppRscResponse } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
+import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
@@ -329,7 +330,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   );
   if (trailingSlashRedirect) return trailingSlashRedirect;
 
-  const redirectPathname = stripRscSuffix(pathname);
+  // Default-locale path normalisation (issue #1336, item 4). Next.js
+  // splices in the (domain-aware) default locale on every request that
+  // arrives without a locale prefix before running config redirect / rewrite
+  // / header matching. Mirrors resolve-routes.ts lines ~250-263.
+  const redirectPathname = normalizeDefaultLocalePathname(
+    stripRscSuffix(pathname),
+    options.i18nConfig,
+    { hostname: url.hostname },
+  );
   const redirect = matchRedirect(
     redirectPathname,
     options.configRedirects,
@@ -389,6 +398,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareContext.headers);
   const postMiddlewareRequestContext = buildPostMwRequestContext(request);
 
+  // Default-locale-normalised form of `cleanPathname` used only for matching
+  // against next.config.js rewrites (beforeFiles, afterFiles, fallback).
+  // Route matching itself continues to use the un-prefixed `cleanPathname`
+  // because App Router files live under `app/...` with no locale segment.
+  // See issue #1336 item 4 / pages-i18n.normalizeDefaultLocalePathname.
+  const rewriteMatchPathname = (p: string): string =>
+    normalizeDefaultLocalePathname(p, options.i18nConfig, { hostname: url.hostname });
+
   const beforeFilesRewrite = await applyRewrite(
     {
       clearRequestContext: options.clearRequestContext,
@@ -396,7 +413,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       requestContext: postMiddlewareRequestContext,
       rewrites: options.configRewrites.beforeFiles,
     },
-    cleanPathname,
+    rewriteMatchPathname(cleanPathname),
   );
   if (beforeFilesRewrite instanceof Response) return beforeFilesRewrite;
   if (beforeFilesRewrite) cleanPathname = beforeFilesRewrite;
@@ -479,7 +496,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         requestContext: postMiddlewareRequestContext,
         rewrites: options.configRewrites.afterFiles,
       },
-      cleanPathname,
+      rewriteMatchPathname(cleanPathname),
     );
     if (afterFilesRewrite instanceof Response) return afterFilesRewrite;
     if (afterFilesRewrite) {
@@ -496,7 +513,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         requestContext: postMiddlewareRequestContext,
         rewrites: options.configRewrites.fallback,
       },
-      cleanPathname,
+      rewriteMatchPathname(cleanPathname),
     );
     if (fallbackRewrite instanceof Response) return fallbackRewrite;
     if (fallbackRewrite) {
