@@ -11422,7 +11422,11 @@ describe("Pages Router router helpers", () => {
         { shallow: true },
       );
 
-      expect(pushState).toHaveBeenCalledWith({}, "", "/search?tag=a&tag=b&q=x");
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/search?tag=a&tag=b&q=x",
+      );
     } finally {
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
@@ -11478,7 +11482,7 @@ describe("Pages Router router helpers", () => {
       );
 
       expect(pushState).toHaveBeenCalledWith(
-        {},
+        expect.objectContaining({ __N: true }),
         "",
         "/search?page=2&draft=false&empty=&missing=&tag=a&tag=b",
       );
@@ -11933,7 +11937,13 @@ describe("Pages Router concurrent navigation", () => {
       const result = await Router.push(target, undefined, { shallow: true });
 
       expect(result).toBe(true);
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", expectedBrowserUrl);
+      // History state now follows Next.js shape ({ url, as, options, __N, key });
+      // assert via partial match so test stays focused on URL normalization.
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        expectedBrowserUrl,
+      );
     } finally {
       if (previousTrailingSlash === undefined) {
         delete process.env.__VINEXT_TRAILING_SLASH;
@@ -12475,7 +12485,14 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).toHaveBeenCalledWith("/en", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/");
+      // Next.js-shaped history state (`{ url, as, options, __N, key }`) is now
+      // written on every router push; assert via partial match so this test
+      // stays focused on the locale-qualified fetch / browser-URL contract.
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true, options: expect.objectContaining({ locale: "en" }) }),
+        "",
+        "/",
+      );
       expect(win.location.href).toBe("http://localhost/");
       expect(win.__VINEXT_LOCALE__).toBe("en");
     } finally {
@@ -12718,7 +12735,12 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).toHaveBeenCalledWith("/fr/about", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/fr/about");
+      // Next.js-shaped history state — assert partially.
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/fr/about",
+      );
       expect(win.location.href).toBe("http://localhost/fr/about");
       expect(win.__VINEXT_LOCALE__).toBe("fr");
     } finally {
@@ -13038,7 +13060,12 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).not.toHaveBeenCalled();
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", expectedBrowserUrl);
+      // Hash-only push now records Next.js-shaped history state too.
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        expectedBrowserUrl,
+      );
       expect(hashEvents).toEqual([`start:${expectedEventUrl}`, `complete:${expectedEventUrl}`]);
       expect(routeEvents).toEqual([]);
     } finally {

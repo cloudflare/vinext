@@ -1320,11 +1320,61 @@ function dispatchNavigateEvent(): void {
 /**
  * Update history with the new URL and refresh the hash-only-detection tracker.
  * Centralises the `pushState`/`replaceState` branch so callers don't repeat it.
+ *
+ * Writes a Next.js-compatible state shape so popstate can detect non-router
+ * entries, ignore stale Safari-style replays, and recover the active locale
+ * across browser back/forward. Mirrors `Router.changeState` in
+ * .nextjs-ref/packages/next/src/shared/lib/router/router.ts (around L1916).
+ *
+ * @param mode push or replace
+ * @param fullUrl absolute URL committed to the browser (with basePath)
+ * @param navState router-level metadata (`url`, `as`, `options`) the popstate
+ *        handler needs to honour stickiness — most importantly the active
+ *        locale and the canonical app-relative `as` path.
  */
-function updateHistory(mode: "push" | "replace", url: string): void {
-  if (mode === "push") window.history.pushState({}, "", url);
-  else window.history.replaceState({}, "", url);
+function updateHistory(
+  mode: "push" | "replace",
+  fullUrl: string,
+  navState?: { url?: string; as?: string; options?: { locale?: string; shallow?: boolean } },
+): void {
+  const previousState =
+    typeof window.history.state === "object" && window.history.state !== null
+      ? (window.history.state as { key?: string })
+      : null;
+  const key = mode === "push" ? createHistoryKey() : (previousState?.key ?? createHistoryKey());
+  const stateUrl = navState?.url ?? fullUrl;
+  const stateAs = navState?.as ?? fullUrl;
+  const options = navState?.options ?? {};
+  const state: VinextHistoryState = {
+    url: stateUrl,
+    as: stateAs,
+    options,
+    __N: true,
+    key,
+  };
+  if (mode === "push") window.history.pushState(state, "", fullUrl);
+  else window.history.replaceState(state, "", fullUrl);
   _lastPathnameAndSearch = window.location.pathname + window.location.search;
+}
+
+/**
+ * Minimal Next.js-compatible history state shape. We deliberately keep this
+ * narrow: only the fields popstate and the i18n stickiness machinery read.
+ */
+type VinextHistoryState = {
+  url: string;
+  as: string;
+  options: { locale?: string; shallow?: boolean };
+  __N: true;
+  key: string;
+};
+
+let _historyKeyCounter = 0;
+function createHistoryKey(): string {
+  _historyKeyCounter += 1;
+  // Same intent as Next.js's createKey() — opaque, monotonic-ish, fine for
+  // identifying history entries client-side.
+  return `vinext_${_historyKeyCounter.toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
 /**
@@ -1414,11 +1464,18 @@ async function performNavigation(
   const shallow = options?.shallow ?? false;
   const doScroll = options?.scroll !== false;
 
+  // History state metadata — surfaces the active locale to popstate and the
+  // Safari-replay filter. `as` is the canonical app-relative path (no
+  // basePath) so it can be compared against router/state in handlers.
+  const navStateOptions: { locale?: string; shallow: boolean } = { shallow };
+  if (navigationLocale !== undefined) navStateOptions.locale = navigationLocale;
+  const navState = { url: resolved, as: resolved, options: navStateOptions };
+
   // Hash-only change — no page fetch needed
   if (isHashOnlyChange(full)) {
     const eventUrl = resolveHashUrl(full);
     routerEvents.emit("hashChangeStart", eventUrl, { shallow });
-    updateHistory(mode, resolved.startsWith("#") ? resolved : full);
+    updateHistory(mode, resolved.startsWith("#") ? resolved : full, navState);
     if (doScroll) scrollToHashTarget(extractHash(resolved));
     onStateUpdate?.();
     routerEvents.emit("hashChangeComplete", eventUrl, { shallow });
@@ -1429,7 +1486,7 @@ async function performNavigation(
   if (mode === "push") saveScrollPosition();
   routerEvents.emit("routeChangeStart", resolved, { shallow });
   routerEvents.emit("beforeHistoryChange", resolved, { shallow });
-  updateHistory(mode, full);
+  updateHistory(mode, full, navState);
   if (!shallow) {
     const result = await runNavigateClient(full, resolved, htmlFetchUrl, navigateOptions);
     if (result === "cancelled") return true;
@@ -1544,9 +1601,66 @@ let _beforePopStateCb: BeforePopStateCallback | undefined;
 let _lastPathnameAndSearch =
   typeof window !== "undefined" ? window.location.pathname + window.location.search : "";
 
+// Tracks whether we have observed at least one popstate event in this
+// document. Safari fires a synthetic popstate on tab reopen / restore which
+// must be ignored when the carried state matches the page we're already on.
+//
+// Ported from Next.js: packages/next/src/shared/lib/router/router.ts
+// (the `isFirstPopStateEvent` flag around the `onPopState` handler, ~L935).
+let _isFirstPopStateEvent = true;
+
+function isNextRouterState(state: unknown): state is {
+  url?: string;
+  as?: string;
+  options?: { locale?: string; shallow?: boolean };
+  __N: true;
+  key?: string;
+} {
+  return (
+    typeof state === "object" &&
+    state !== null &&
+    "__N" in state &&
+    (state as { __N?: unknown }).__N === true
+  );
+}
+
 function handlePagesRouterPopState(e: PopStateEvent): void {
   const browserUrl = window.location.pathname + window.location.search;
   const appUrl = stripBasePath(window.location.pathname, __basePath) + window.location.search;
+
+  const state = e.state as unknown;
+  const wasFirst = _isFirstPopStateEvent;
+  _isFirstPopStateEvent = false;
+
+  // History entries written by third-party code (state without `__N: true`)
+  // are not owned by the router. Mirror Next.js's `if (!state.__N) return`
+  // early-exit so a non-router pushState doesn't trigger a spurious page
+  // fetch.
+  //
+  // The `null` state case (e.g. the initial document load, scroll-restoration
+  // popstate, or tests that fire popstate without state) keeps the legacy
+  // behaviour where we treat it as a back/forward navigation so existing
+  // popstate tests stay green. Only an *object* state without `__N` is
+  // treated as foreign.
+  if (state !== null && state !== undefined && !isNextRouterState(state)) {
+    return;
+  }
+
+  // Safari-replay filter: when the first popstate carries the same locale
+  // and `as` we already render, the browser is just replaying the current
+  // entry (tab restore, BFCache, or duplicate event). Ignore it so we don't
+  // re-fetch the page we're already on.
+  //
+  // Mirrors Next.js's:
+  //   if (isFirstPopStateEvent && this.locale === state.options.locale
+  //       && state.as === this.asPath) return
+  if (wasFirst && isNextRouterState(state)) {
+    const currentLocale = window.__VINEXT_LOCALE__;
+    const currentAs = appUrl;
+    if (state.options?.locale === currentLocale && state.as === currentAs) {
+      return;
+    }
+  }
 
   // Detect hash-only back/forward: pathname+search unchanged, only hash differs.
   const isHashOnly = browserUrl === _lastPathnameAndSearch;
@@ -1576,6 +1690,12 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     return;
   }
 
+  // If the restored history entry carries an explicit locale, honour it
+  // when computing the fetch URL so default-locale roots still go through
+  // their locale-qualified HTML endpoint (parity with the push path).
+  const stateLocale = isNextRouterState(state) ? state.options?.locale : undefined;
+  const effectiveLocale = stateLocale ?? window.__VINEXT_LOCALE__;
+
   const fullAppUrl = appUrl + window.location.hash;
   routerEvents.emit("routeChangeStart", fullAppUrl, { shallow: false });
   // Note: The browser has already updated window.location by the time popstate
@@ -1588,7 +1708,7 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     const result = await runNavigateClient(
       browserUrl,
       fullAppUrl,
-      getPagesHtmlFetchUrl(browserUrl, window.__VINEXT_LOCALE__),
+      getPagesHtmlFetchUrl(browserUrl, effectiveLocale),
     );
     if (result === "completed") {
       routerEvents.emit("routeChangeComplete", fullAppUrl, { shallow: false });
