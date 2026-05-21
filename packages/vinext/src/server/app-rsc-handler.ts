@@ -106,7 +106,13 @@ type DispatchMatchedPageOptions<TRoute> = {
 type DispatchMatchedRouteHandlerOptions<TRoute> = {
   cleanPathname: string;
   middlewareContext: AppRscMiddlewareContext;
-  params: AppPageParams;
+  /**
+   * `null` for non-dynamic routes. Mirrors Next.js' route handler context
+   * shape: user code that does `params ? await params : null` resolves to
+   * `null` for routes without dynamic segments. Dynamic routes receive the
+   * matched params object.
+   */
+  params: AppPageParams | null;
   request: Request;
   route: TRoute;
   searchParams: URLSearchParams;
@@ -294,6 +300,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
   request: Request,
   preMiddlewareRequestContext: RequestContext,
+  isDataRequest: boolean,
 ): Promise<Response> {
   const handlerStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
 
@@ -308,6 +315,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const { url, isRscRequest, interceptionContextHeader, mountedSlotsHeader, renderMode } =
     normalized;
   let { pathname, cleanPathname } = normalized;
+  // Canonical (external) pathname the user requested. Middleware rewrites and
+  // next.config.js rewrites mutate `cleanPathname` so internal route matching
+  // can find the destination page, but hooks like `usePathname()` must reflect
+  // the original URL the user sees in the address bar.
+  // Matches Next.js: test/e2e/app-dir/hooks/hooks.test.ts —
+  //   "should have the canonical url pathname on rewrite"
+  const canonicalPathname = cleanPathname;
 
   // The request reached this point so it was either under basePath (stripped
   // by normalizeRscRequest) or basePath is empty. In both cases the matcher
@@ -375,6 +389,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       cleanPathname,
       context: middlewareContext,
       i18nConfig: options.i18nConfig,
+      isDataRequest,
       isProxy: options.isMiddlewareProxy,
       module: options.middlewareModule,
       request,
@@ -440,7 +455,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   options.setNavigationContext({
-    pathname: cleanPathname,
+    pathname: canonicalPathname,
     searchParams: url.searchParams,
     params: {},
   });
@@ -545,7 +560,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   const { route, params } = match;
   options.setNavigationContext({
-    pathname: cleanPathname,
+    pathname: canonicalPathname,
     searchParams: url.searchParams,
     params,
   });
@@ -559,7 +574,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return options.dispatchMatchedRouteHandler({
       cleanPathname,
       middlewareContext,
-      params,
+      // Non-dynamic routes report params as `null` to match Next.js. Internal
+      // bookkeeping above (navigation context, root params) keeps the matched
+      // object (always `{}` for non-dynamic) so `useParams()` etc. still see
+      // an object shape; only the user-facing handler context surfaces null.
+      params: route.isDynamic ? params : null,
       request,
       route,
       searchParams: url.searchParams,
@@ -606,6 +625,10 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     // visible to .get() but lost when filterInternalHeaders iterates. Read it
     // BEFORE iterating so applyForwardedMiddlewareContext can skip middleware.
     const mwCtx = rawRequest.headers.get(VINEXT_MW_CTX_HEADER);
+    // Capture `x-nextjs-data` before filtering — the middleware redirect
+    // protocol needs to know whether the inbound request was a `_next/data`
+    // fetch to emit `x-nextjs-redirect` instead of an HTTP redirect.
+    const isDataRequest = rawRequest.headers.get("x-nextjs-data") === "1";
     const filteredHeaders = filterInternalHeaders(rawRequest.headers);
     if (mwCtx !== null) {
       filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
@@ -630,7 +653,12 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
           let response: Response;
 
           try {
-            response = await handleAppRscRequest(options, request, preMiddlewareRequestContext);
+            response = await handleAppRscRequest(
+              options,
+              request,
+              preMiddlewareRequestContext,
+              isDataRequest,
+            );
           } catch (error) {
             if (process.env.NODE_ENV !== "production") {
               flattenErrorCauses(error);

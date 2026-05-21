@@ -560,7 +560,17 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     let navigateHref = normalizedHref;
     if (isAbsoluteOrProtocolRelativeUrl(resolvedHref)) {
       const localPath = toSameOriginAppPath(resolvedHref, __basePath);
-      if (localPath == null) return; // truly external
+      if (localPath == null) {
+        // Truly external. Mirror Next.js `linkClicked`: when `replace` is set
+        // we have to take over because the browser's default click navigation
+        // pushes to history rather than replacing the current entry.
+        // See `.nextjs-ref/packages/next/src/client/link.tsx` `linkClicked`.
+        if (replace) {
+          e.preventDefault();
+          window.location.replace(resolvedHref);
+        }
+        return;
+      }
       navigateHref = localPath;
     }
 

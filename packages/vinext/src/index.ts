@@ -80,6 +80,7 @@ import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-r
 import { detectPackageManager } from "./utils/project.js";
 import { manifestFileWithBase, manifestFilesWithBase } from "./utils/manifest-paths.js";
 import { hasBasePath } from "./utils/base-path.js";
+import { mergeRewriteQuery } from "./utils/query.js";
 import {
   ASSET_PREFIX_URL_DIR,
   resolveAssetUrlPrefix,
@@ -87,8 +88,10 @@ import {
 } from "./utils/asset-prefix.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
+import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
+import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
 import { generateRouteTypes } from "./typegen.js";
@@ -934,6 +937,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           } satisfies Plugin,
         ]
       : []),
+    // Allow `import 'server-only'` from middleware (and any module reachable
+    // from it) in non-RSC environments. Registered before `vinext:config` so
+    // its `enforce: "pre"` resolveId runs ahead of @vitejs/plugin-rsc's
+    // `rsc:validate-imports` (which rejects bare `server-only` outside RSC).
+    // See packages/vinext/src/plugins/middleware-server-only.ts for the
+    // import-chain taint design.
+    createMiddlewareServerOnlyPlugin({
+      getMiddlewarePath: () => middlewarePath,
+      getCanonicalMiddlewarePath: () =>
+        middlewarePath ? (tryRealpathSync(middlewarePath) ?? middlewarePath) : null,
+      serverOnlyShimPath: resolveShimModulePath(shimsDir, "server-only"),
+    }),
+    // Resolve `data:text/css[+module],...` imports into virtual CSS files so
+    // Vite's CSS pipeline (LightningCSS, CSS modules) processes them instead
+    // of leaving the data URL as a runtime import that Node/workerd cannot
+    // load. Matches Turbopack's behaviour for the Next.js
+    // `css-modules-data-urls` fixture. See plugins/css-data-url.ts.
+    dataUrlCssPlugin(),
     {
       name: "vinext:config",
       enforce: "pre",
@@ -2878,6 +2899,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]),
                 ),
               );
+              // Capture `x-nextjs-data` before filterInternalHeaders strips it
+              // — the middleware redirect protocol needs to know whether the
+              // inbound request was a `_next/data` fetch to emit
+              // `x-nextjs-redirect` instead of a 3xx.
+              const isDataRequest = rawHeaders.get("x-nextjs-data") === "1";
               // Strip internal headers from inbound requests so they cannot be
               // forged to influence routing or impersonate internal state.
               // Both the middleware Request (built below) and the SSR handler
@@ -2958,6 +2984,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   middlewareRequest,
                   nextConfig?.i18n,
                   nextConfig?.basePath,
+                  isDataRequest,
                 );
 
                 // Settle waitUntil promises — no ctx.waitUntil() in dev, but
@@ -3106,8 +3133,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // Apply rewrites from next.config.js (beforeFiles)
               let resolvedUrl = url;
               if (nextConfig?.rewrites.beforeFiles.length) {
-                resolvedUrl =
-                  applyRewrites(pathname, nextConfig.rewrites.beforeFiles, reqCtx, bp) ?? url;
+                const rewritten = applyRewrites(
+                  pathname,
+                  nextConfig.rewrites.beforeFiles,
+                  reqCtx,
+                  bp,
+                );
+                if (rewritten) {
+                  // Preserve original query params across the rewrite — Next.js
+                  // semantics: `Object.assign(parsedUrl.query, rewriteQuery)`.
+                  resolvedUrl = mergeRewriteQuery(url, rewritten);
+                }
               }
 
               // External rewrite from beforeFiles — proxy to external URL
@@ -3165,7 +3201,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   bp,
                 );
                 if (afterRewrite) {
-                  resolvedUrl = afterRewrite;
+                  resolvedUrl = mergeRewriteQuery(resolvedUrl, afterRewrite);
                   match = matchRoute(resolvedUrl.split("?")[0], routes);
                 }
               }

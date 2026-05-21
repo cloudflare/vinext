@@ -48,6 +48,19 @@ import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
 import { installPagesRouterRuntime } from "vinext/pages-router-runtime";
+// Statically import next/router as the very first vinext shim so that
+// (a) installWindowNext runs at top-level — \`window.next.router\` is
+//     available to test harnesses and third-party scripts BEFORE
+//     hydrate() resolves (see .nextjs-ref/packages/next/src/client/next.ts
+//     line 13, which also sets window.next as a top-level side effect),
+// and (b) the popstate handler is registered before
+//     installPagesRouterRuntime() runs, removing the race window where a
+//     popstate event could fire between hydration and runtime install.
+//
+// Mirrors Next.js's bootstrap order: client/next.ts statically imports
+// from './' before calling initialize/hydrate, so window.next is set up
+// before any async work.
+import { wrapWithRouterContext } from "next/router";
 
 const pageLoaders = {
 ${loaderEntries.join(",\n")}
@@ -93,7 +106,6 @@ async function hydrate() {
   }
 
   // Wrap with RouterContext.Provider so next/router and next/compat/router work during hydration.
-  const { wrapWithRouterContext } = await import("next/router");
   element = wrapWithRouterContext(element);
 
   const container = document.getElementById("__next");

@@ -53,6 +53,7 @@ import {
 } from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { mergeRewriteQuery } from "../utils/query.js";
 import {
   ASSET_PREFIX_URL_DIR,
   assetPrefixPathname,
@@ -1306,7 +1307,7 @@ function readPagesServerEntryPageRoutes(value: unknown): PagesServerEntryPageRou
  *
  * Uses the server entry (dist/server/entry.js) which exports:
  * - renderPage(request, url, manifest, ctx?, middlewareHeaders?) — SSR rendering (Web Request → Response)
- * - handleApiRoute(request, url) — API route handling (Web Request → Response)
+ * - handleApiRoute(request, url, ctx?) — API route handling (ctx optional; pass for ctx.waitUntil() on Workers)
  * - runMiddleware(request, ctx?) — middleware execution (ctx optional; pass for ctx.waitUntil() on Workers)
  * - vinextConfig — embedded next.config.js settings
  */
@@ -1563,6 +1564,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         if (v) h.set(k, Array.isArray(v) ? v.join(", ") : v);
         return h;
       }, new Headers());
+      // Capture `x-nextjs-data` before filterInternalHeaders strips it — the
+      // middleware redirect protocol needs to know whether the inbound request
+      // was a `_next/data` fetch to emit `x-nextjs-redirect` instead of a 3xx.
+      const isDataRequest = rawReqHeaders.get("x-nextjs-data") === "1";
       // Strip internal headers from inbound requests before any handler or
       // middleware sees them.
       const reqHeaders = filterInternalHeaders(rawReqHeaders);
@@ -1615,7 +1620,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       const middlewareHeaders: Record<string, string | string[]> = {};
       let middlewareStatus: number | undefined;
       if (typeof runMiddleware === "function") {
-        const result = await runMiddleware(webRequest, undefined);
+        const result = await runMiddleware(webRequest, undefined, { isDataRequest });
 
         // Settle waitUntil promises immediately — in Node.js there's no ctx.waitUntil().
         // Must run BEFORE the !result.continue check so promises survive redirect/response paths
@@ -1775,8 +1780,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             await sendWebResponse(proxyResponse, req, res, compress);
             return;
           }
-          resolvedUrl = rewritten;
-          resolvedPathname = rewritten.split("?")[0];
+          // Preserve the original request's query params across the config
+          // rewrite. Matches Next.js `Object.assign(parsedUrl.query, ...)`.
+          resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
+          resolvedPathname = resolvedUrl.split("?")[0];
           configRewriteFired = true;
         }
       }
@@ -1797,7 +1804,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
         let response: Response;
         if (typeof handleApi === "function") {
-          response = await handleApi(webRequest, resolvedUrl);
+          // Pass a Node-shaped ExecutionContext so any after() calls in the
+          // API handler still get a working waitUntil (which fires
+          // background work without blocking the response).
+          response = await handleApi(webRequest, resolvedUrl, createNodeExecutionContext());
         } else {
           response = new Response("404 - API route not found", { status: 404 });
         }
@@ -1847,8 +1857,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             await sendWebResponse(proxyResponse, req, res, compress);
             return;
           }
-          resolvedUrl = rewritten;
-          resolvedPathname = rewritten.split("?")[0];
+          resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
+          resolvedPathname = resolvedUrl.split("?")[0];
         }
       }
 
@@ -1880,7 +1890,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             }
             response = await renderPage(
               webRequest,
-              fallbackRewrite,
+              mergeRewriteQuery(resolvedUrl, fallbackRewrite),
               ssrManifest,
               undefined,
               middlewareResponseHeaders,

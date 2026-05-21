@@ -282,6 +282,61 @@ describe("pages api route", () => {
     await expect(response.json()).resolves.toEqual({ id: "req-42" });
   });
 
+  it("passes a NextRequest with nextUrl.searchParams to edge API handlers", async () => {
+    // Ported from Next.js: test/e2e/edge-pages-support/app/pages/api/hello.js
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-pages-support/app/pages/api/hello.js
+    // Next.js wraps the request in a NextRequest before invoking the user's
+    // edge API handler, so handlers can use `req.nextUrl.searchParams`.
+    const response = await handlePagesApiRoute({
+      match: createMatch(
+        (request: Request) => {
+          const nextUrl = (request as Request & { nextUrl?: URL }).nextUrl;
+          if (!nextUrl) {
+            return new Response("missing nextUrl", { status: 500 });
+          }
+          return Response.json({
+            hello: "world",
+            query: Object.fromEntries(nextUrl.searchParams),
+          });
+        },
+        {},
+        { runtime: "edge" },
+      ),
+      request: new Request("https://example.com/api/hello?a=b"),
+      url: "/api/hello?a=b",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      hello: "world",
+      query: { a: "b" },
+    });
+  });
+
+  it("recognises bare \"export const runtime = 'edge'\" as an edge API route", async () => {
+    // Ported from Next.js: packages/next/src/build/analysis/get-page-static-info.ts
+    // Both `export const runtime = "edge"` and `export const config = { runtime: "edge" }`
+    // are valid ways to mark a Pages Router API route as edge. Next.js resolves
+    // via `config.runtime ?? config.config?.runtime`.
+    const response = await handlePagesApiRoute({
+      match: {
+        params: {},
+        route: {
+          pattern: "/api/edge-bare",
+          module: {
+            runtime: "edge",
+            default: (request: Request) => Response.json({ ok: true, kind: typeof request }),
+          } as unknown as PagesApiRouteModule,
+        },
+      },
+      request: new Request("https://example.com/api/edge-bare"),
+      url: "/api/edge-bare",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true, kind: "object" });
+  });
+
   it("preserves nested AsyncLocalStorage state across concurrent edge API requests", async () => {
     // Ported from Next.js: test/e2e/edge-async-local-storage/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-async-local-storage/index.test.ts

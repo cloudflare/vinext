@@ -41,7 +41,8 @@ type ReadAppRouteHandlerCacheOptions = {
   isrSet: RouteHandlerCacheSetter;
   markDynamicUsage: MarkAppRouteDynamicUsageFn;
   middlewareContext: RouteHandlerMiddlewareContext;
-  params: AppRouteParams;
+  /** `null` for non-dynamic routes. See `AppRouteHandlerFunction` for details. */
+  params: AppRouteParams | null;
   requestUrl: string;
   revalidateSearchParams: URLSearchParams;
   expireSeconds?: number;
@@ -58,6 +59,12 @@ type ReadAppRouteHandlerCacheOptions = {
     } | null,
   ) => void;
 };
+
+// Navigation context expects a plain object (used for `useParams()` etc),
+// not `null`. For non-dynamic routes there are no params to expose, so we
+// pass an empty object — only the user-visible handler context surfaces
+// `null` for non-dynamic routes.
+const EMPTY_PARAMS: AppRouteParams = Object.freeze({}) as AppRouteParams;
 
 function getCachedAppRouteValue(entry: ISRCacheEntry | null) {
   return entry?.value.value && entry.value.value.kind === "APP_ROUTE" ? entry.value.value : null;
@@ -96,7 +103,7 @@ export async function readAppRouteHandlerCacheResponse(
           options.setNavigationContext({
             pathname: options.cleanPathname,
             searchParams: revalidateSearchParams,
-            params: options.params,
+            params: options.params ?? EMPTY_PARAMS,
           });
 
           const { dynamicUsedInHandler, response } = await runAppRouteHandler({
@@ -106,7 +113,7 @@ export async function readAppRouteHandlerCacheResponse(
             handlerFn: options.handlerFn,
             i18n: options.i18n,
             markDynamicUsage: options.markDynamicUsage,
-            params: makeThenableParams(options.params),
+            params: options.params === null ? null : makeThenableParams(options.params),
             request: new Request(options.requestUrl, { method: "GET" }),
             routePattern: options.routePattern,
             setHeadersAccessPhase: options.setHeadersAccessPhase,

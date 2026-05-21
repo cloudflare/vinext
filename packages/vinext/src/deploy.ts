@@ -546,6 +546,7 @@ import {
   isOpenRedirectShaped,
   normalizeTrailingSlash,
 } from "vinext/server/request-pipeline";
+import { mergeRewriteQuery } from "vinext/utils/query";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { renderPage, handleApiRoute, runMiddleware, vinextConfig, matchPageRoute } from "virtual:vinext-server-entry";
@@ -605,6 +606,11 @@ export default {
       if (isOpenRedirectShaped(pathname)) {
         return new Response("This page could not be found", { status: 404 });
       }
+
+      // Capture x-nextjs-data before filterInternalHeaders strips it -- the
+      // middleware redirect protocol needs to know whether the inbound request
+      // was a _next/data fetch to emit x-nextjs-redirect instead of a 3xx.
+      const isDataRequest = request.headers.get("x-nextjs-data") === "1";
 
       // Strip internal headers from inbound requests so they cannot be
       // forged to influence routing or impersonate internal state.
@@ -700,7 +706,7 @@ export default {
       const middlewareHeaders: Record<string, string | string[]> = {};
       let middlewareRewriteStatus: number | undefined;
       if (typeof runMiddleware === "function") {
-        const result = await runMiddleware(request, ctx);
+        const result = await runMiddleware(request, ctx, { isDataRequest });
 
         // Bubble up waitUntil promises (e.g. Clerk telemetry/session sync)
         if (result.waitUntilPromises?.length) {
@@ -800,8 +806,9 @@ export default {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
           }
-          resolvedUrl = rewritten;
-          resolvedPathname = rewritten.split("?")[0];
+          // Preserve original query params across rewrites (Next.js parity).
+          resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
+          resolvedPathname = resolvedUrl.split("?")[0];
           configRewriteFired = true;
         }
       }
@@ -816,9 +823,12 @@ export default {
       }
 
       // ── 7. API routes ─────────────────────────────────────────────
+      // Forward ctx so handlePagesApiRoute can wrap the user handler in
+      // runWithExecutionContext, making ctx.waitUntil() reachable from
+      // after() and other shims that schedule deferred work.
       if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
         const response = typeof handleApiRoute === "function"
-          ? await handleApiRoute(request, resolvedUrl)
+          ? await handleApiRoute(request, resolvedUrl, ctx)
           : new Response("404 - API route not found", { status: 404 });
         return mergeHeaders(response, middlewareHeaders, middlewareRewriteStatus);
       }
@@ -839,8 +849,8 @@ export default {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
           }
-          resolvedUrl = rewritten;
-          resolvedPathname = rewritten.split("?")[0];
+          resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
+          resolvedPathname = resolvedUrl.split("?")[0];
         }
       }
 
@@ -861,7 +871,12 @@ export default {
             if (isExternalUrl(fallbackRewrite)) {
               return proxyExternalRequest(request, fallbackRewrite);
             }
-            response = await renderPage(request, fallbackRewrite, null, ctx);
+            response = await renderPage(
+              request,
+              mergeRewriteQuery(resolvedUrl, fallbackRewrite),
+              null,
+              ctx,
+            );
           }
         }
       }

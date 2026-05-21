@@ -213,6 +213,50 @@ describe("app route handler dispatch", () => {
     expect(didClearRequestContext).toBe(true);
   });
 
+  // Matches Next.js behavior: route handlers on non-dynamic routes receive
+  // `context.params` as null (not `{}`). User code typically does
+  // `const resolved = params ? await params : null`, and the resolved value
+  // is observable through tests like `expect(meta.params).toEqual(null)`.
+  // Ported from Next.js: test/e2e/app-dir/app-routes/app-custom-routes.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L424-L431
+  it("passes params: null to route handlers on non-dynamic routes", async () => {
+    let receivedParams: unknown = "untouched";
+    const route = {
+      pattern: "/api/static",
+      routeHandler: {
+        GET(_request: Request, context: { params: unknown }) {
+          receivedParams = context.params;
+          return new Response("ok");
+        },
+      },
+      routeSegments: ["api", "static"],
+    };
+
+    await dispatchAppRouteHandler({
+      cleanPathname: "/api/static",
+      clearRequestContext() {},
+      i18n: null,
+      isDevelopment: false,
+      isProduction: true,
+      async isrGet() {
+        return null;
+      },
+      isrRouteKey(pathname) {
+        return "route:" + pathname;
+      },
+      async isrSet() {},
+      middlewareContext: { headers: null, status: null },
+      middlewareRequestHeaders: null,
+      params: null,
+      request: new Request("https://example.com/api/static"),
+      route,
+      scheduleBackgroundRegeneration() {},
+      searchParams: new URLSearchParams(),
+    });
+
+    expect(receivedParams).toBeNull();
+  });
+
   it("attaches App Router route context when stale route handler cache schedules regeneration", async () => {
     const handlerSpy = vi.fn(() => new Response("regenerated"));
     let scheduledContext:

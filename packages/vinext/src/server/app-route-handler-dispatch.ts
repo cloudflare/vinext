@@ -72,7 +72,12 @@ type DispatchAppRouteHandlerOptions = {
   isrSet: RouteHandlerCacheSetter;
   middlewareContext: RouteHandlerMiddlewareContext;
   middlewareRequestHeaders?: Headers | null;
-  params: AppRouteParams;
+  /**
+   * `null` for non-dynamic routes, matching Next.js semantics. The dispatch
+   * layer threads this through to the handler context unchanged so user code
+   * (`params ? await params : null`) resolves to `null`.
+   */
+  params: AppRouteParams | null;
   request: Request;
   route: AppRouteHandlerDispatchRoute;
   scheduleBackgroundRegeneration: RouteHandlerBackgroundRegenerator;
@@ -254,7 +259,7 @@ export async function dispatchAppRouteHandler(
       method,
       middlewareContext: options.middlewareContext,
       middlewareRequestHeaders: options.middlewareRequestHeaders,
-      params: makeThenableParams(options.params),
+      params: options.params === null ? null : makeThenableParams(options.params),
       reportRequestError(error, request, context) {
         void reportRequestError(error, request, context);
       },

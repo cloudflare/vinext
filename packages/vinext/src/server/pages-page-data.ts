@@ -54,8 +54,19 @@ export type PagesPageModule = {
     locales: string[];
     defaultLocale: string;
   }) => Promise<PagesStaticPathsResult> | PagesStaticPathsResult;
+  /**
+   * Pages Router data-fetching context.
+   *
+   * `params` is `null` for non-dynamic routes (no `[param]` segments) to
+   * match Next.js. User code typically falls back via `params || null`, so
+   * passing `null` (rather than `{}`) is required for the value to be
+   * observable as `null` once the data flows through to the page props.
+   *
+   * See: test/e2e/edge-pages-support/index.test.ts in Next.js for the
+   * authoritative assertion (`expect(props.params).toBe(null)`).
+   */
   getServerSideProps?: (context: {
-    params: Record<string, unknown>;
+    params: Record<string, unknown> | null;
     req: unknown;
     res: PagesMutableGsspResponse;
     query: Record<string, unknown>;
@@ -65,7 +76,7 @@ export type PagesPageModule = {
     defaultLocale?: string;
   }) => Promise<PagesPagePropsResult> | PagesPagePropsResult;
   getStaticProps?: (context: {
-    params: Record<string, unknown>;
+    params: Record<string, unknown> | null;
     locale?: string;
     locales?: string[];
     defaultLocale?: string;
@@ -272,6 +283,15 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
 export async function resolvePagesPageData(
   options: ResolvePagesPageDataOptions,
 ): Promise<ResolvePagesPageDataResult> {
+  // Next.js passes `params: null` (effectively) to gSSP/gSP context for
+  // non-dynamic routes — see render.tsx's `...(pageIsDynamic ? { params } : undefined)`.
+  // Internal bookkeeping (route param hydration, ISR HTML, getStaticPaths
+  // validation) still uses the matched-but-empty object — only user-facing
+  // data-fetching contexts surface `null`.
+  const userFacingParams: Record<string, unknown> | null = options.route.isDynamic
+    ? options.params
+    : null;
+
   if (typeof options.pageModule.getStaticPaths === "function" && options.route.isDynamic) {
     const pathsResult = await options.pageModule.getStaticPaths({
       locales: options.i18n.locales ?? [],
@@ -300,7 +320,7 @@ export async function resolvePagesPageData(
   if (typeof options.pageModule.getServerSideProps === "function") {
     const { req, res, responsePromise } = options.createGsspReqRes();
     const result = await options.pageModule.getServerSideProps({
-      params: options.params,
+      params: userFacingParams,
       req,
       res,
       query: options.query,
@@ -369,7 +389,7 @@ export async function resolvePagesPageData(
         async function () {
           return options.runInFreshUnifiedContext(async () => {
             const freshResult = await options.pageModule.getStaticProps?.({
-              params: options.params,
+              params: userFacingParams,
               locale: options.i18n.locale,
               locales: options.i18n.locales,
               defaultLocale: options.i18n.defaultLocale,
@@ -424,7 +444,7 @@ export async function resolvePagesPageData(
     }
 
     const result = await options.pageModule.getStaticProps({
-      params: options.params,
+      params: userFacingParams,
       locale: options.i18n.locale,
       locales: options.i18n.locales,
       defaultLocale: options.i18n.defaultLocale,

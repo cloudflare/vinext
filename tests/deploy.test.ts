@@ -521,7 +521,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("runs middleware before routing", () => {
     const content = generatePagesRouterWorkerEntry();
     // Middleware should appear before API route check
-    const middlewarePos = content.indexOf("runMiddleware(request, ctx)");
+    const middlewarePos = content.indexOf("runMiddleware(request, ctx, { isDataRequest })");
     const apiRoutePos = content.indexOf('resolvedPathname.startsWith("/api/")');
     expect(middlewarePos).toBeGreaterThan(-1);
     expect(apiRoutePos).toBeGreaterThan(-1);
@@ -533,7 +533,7 @@ describe("generatePagesRouterWorkerEntry", () => {
     const redirectPos = content.indexOf(
       "matchRedirect(pathname, configRedirects, reqCtx, basePathState)",
     );
-    const middlewarePos = content.indexOf("runMiddleware(request, ctx)");
+    const middlewarePos = content.indexOf("runMiddleware(request, ctx, { isDataRequest })");
     expect(redirectPos).toBeGreaterThan(-1);
     expect(middlewarePos).toBeGreaterThan(-1);
     expect(redirectPos).toBeLessThan(middlewarePos);
@@ -630,10 +630,13 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain('from "vinext/server/request-pipeline"');
   });
 
-  it("routes /api/ to handleApiRoute using resolved URL", () => {
+  it("routes /api/ to handleApiRoute using resolved URL and forwards ctx", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain('resolvedPathname.startsWith("/api/")');
-    expect(content).toContain("handleApiRoute(request, resolvedUrl)");
+    // Forwarding ctx lets handlePagesApiRoute wrap the handler in
+    // runWithExecutionContext so after() and other shims can reach
+    // ctx.waitUntil(). See #1365.
+    expect(content).toContain("handleApiRoute(request, resolvedUrl, ctx)");
   });
 
   it("includes error handling", () => {
@@ -887,7 +890,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("builds reqCtx before middleware runs", () => {
     const content = generatePagesRouterWorkerEntry();
     const reqCtxPos = content.indexOf("requestContextFromRequest(request)");
-    const middlewarePos = content.indexOf("runMiddleware(request, ctx)");
+    const middlewarePos = content.indexOf("runMiddleware(request, ctx, { isDataRequest })");
     expect(reqCtxPos).toBeGreaterThan(-1);
     expect(middlewarePos).toBeGreaterThan(-1);
     expect(reqCtxPos).toBeLessThan(middlewarePos);
