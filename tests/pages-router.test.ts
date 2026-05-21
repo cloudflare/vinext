@@ -3333,6 +3333,102 @@ describe("Production server middleware (Pages Router)", () => {
   });
 
   // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // ('should handle middleware rewrite with body correctly').
+  // Refs #1331: POST bodies must reach the upstream when middleware
+  // externally rewrites the request.
+  it("forwards the POST body to the upstream on external middleware rewrites", async () => {
+    const { createServer: createHttpServer } = await import("node:http");
+    const upstream = createHttpServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        const received = Buffer.concat(chunks);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(received);
+      });
+    });
+
+    try {
+      await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+      const addr = upstream.address();
+      if (typeof addr === "string" || addr === null) throw new Error("Expected upstream port");
+
+      const body = JSON.stringify({ hello: "world" });
+      const res = await fetch(`${prodUrl}/external-middleware-rewrite-body`, {
+        method: "POST",
+        body,
+        headers: {
+          "content-type": "application/json",
+          "x-middleware-test-rewrite-target": `http://127.0.0.1:${addr.port}/echo-body`,
+        },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe(body);
+    } finally {
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // ('should handle middleware rewrite with body and headers correctly').
+  // Refs #1331: `NextResponse.rewrite(url, { request: { headers } })` request
+  // header overrides must propagate to the proxied upstream request.
+  it("forwards middleware-overridden request headers on external middleware rewrites", async () => {
+    const { createServer: createHttpServer } = await import("node:http");
+    const upstream = createHttpServer((req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ headers: req.headers }));
+    });
+
+    try {
+      await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+      const addr = upstream.address();
+      if (typeof addr === "string" || addr === null) throw new Error("Expected upstream port");
+
+      const res = await fetch(`${prodUrl}/external-middleware-rewrite-with-headers`, {
+        headers: {
+          "x-middleware-test-rewrite-target": `http://127.0.0.1:${addr.port}/echo-headers`,
+        },
+      });
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { headers: Record<string, string> };
+      expect(json.headers["x-hello-from-middleware1"]).toBe("hello");
+    } finally {
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // ('should rewrite to the external url for incoming data request
+  //  externally rewritten'). Refs #1331: a `_next/data/<buildId>/<page>.json`
+  // request whose middleware rewrites to an external URL must proxy through
+  // — the data-request path is not allowed to short-circuit external rewrites.
+  it("proxies through to upstream when an external middleware rewrite hits a data request", async () => {
+    const { createServer: createHttpServer } = await import("node:http");
+    const upstream = createHttpServer((_, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<!doctype html><html><body>External Domain</body></html>");
+    });
+
+    try {
+      await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+      const addr = upstream.address();
+      if (typeof addr === "string" || addr === null) throw new Error("Expected upstream port");
+
+      const res = await fetch(`${prodUrl}/_next/data/test-build-id/data-external-rewrite.json`, {
+        headers: {
+          "x-nextjs-data": "1",
+          "x-middleware-test-rewrite-target": `http://127.0.0.1:${addr.port}/data`,
+        },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("External Domain");
+    } finally {
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
   it("preserves upstream status for external middleware rewrites in production", async () => {
     const { createServer: createHttpServer } = await import("node:http");
