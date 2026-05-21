@@ -22,7 +22,14 @@ import { forwardRef, useActionState, type FormHTMLAttributes, type ForwardedRef 
 import { hasAppNavigationRuntime } from "../client/navigation-runtime.js";
 import { navigateClientSide } from "./navigation.js";
 import { isDangerousScheme } from "./url-safety.js";
-import { toSameOriginPath } from "./url-utils.js";
+import { toSameOriginPath, withBasePath } from "./url-utils.js";
+
+// Mirrors `__NEXT_ROUTER_BASEPATH` exposure in `next/link` / `next/router`.
+// `addBasePath` is only applied to the form-level `action` prop. A submitter's
+// `formAction` is intentionally untouched, matching Next.js (the comment in
+// upstream `form.tsx` notes "this should not have basePath added, because we
+// can't add it before hydration").
+const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 
 // Re-export useActionState from React 19 to match Next.js's next/form module
 export { useActionState };
@@ -192,6 +199,12 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     return <form ref={ref} onSubmit={onSubmit} {...rest} />;
   }
 
+  // Prefix basePath to the navigating `action` prop (matches Next.js's
+  // `addBasePath(actionProp)` in `client/form.tsx` and `client/app-dir/form.tsx`).
+  // This becomes both the rendered `action=` attribute (so JS-disabled
+  // submissions still hit the right URL) and the soft-navigation target.
+  const actionHref = withBasePath(action, __basePath);
+
   async function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
     // Call user's onSubmit first
     if (onSubmit) {
@@ -208,7 +221,10 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     const method = getEffectiveMethod(submitter, rest.method);
     if (method !== "GET") return;
 
-    const effectiveAction = getEffectiveAction(submitter, action as string);
+    // NOTE: a submitter's `formAction` is intentionally NOT base-path-prefixed
+    // here, matching Next.js. Upstream `form.tsx` notes: "this should not have
+    // `basePath` added, because we can't add it before hydration".
+    const effectiveAction = getEffectiveAction(submitter, actionHref);
     if (process.env.NODE_ENV !== "production" && submitter?.getAttribute("formaction") !== null) {
       checkFormActionUrl(effectiveAction, "formAction");
     }
@@ -229,26 +245,37 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
       // aligned with the committed RSC tree.
       await navigateClientSide(url, replace ? "replace" : "push", scroll);
     } else {
-      // Pages Router: use router or fallback
-      if (replace) {
-        window.history.replaceState({}, "", url);
-      } else {
-        window.history.pushState({}, "", url);
+      // Pages Router: delegate to the Router singleton so navigation flows
+      // through `performNavigation` (route events, HTML fetch, scroll
+      // handling). Mirrors what `<Link>` does at link.tsx:619-623.
+      try {
+        const routerModule = await import("./router.js");
+        const Router = routerModule.default;
+        if (replace) {
+          await Router.replace(url, undefined, { scroll });
+        } else {
+          await Router.push(url, undefined, { scroll });
+        }
+      } catch {
+        // Fallback: pushState + popstate keeps the URL in sync even if the
+        // Router singleton import fails (e.g. in test/SSR-only contexts).
+        if (replace) {
+          window.history.replaceState({}, "", url);
+        } else {
+          window.history.pushState({}, "", url);
+        }
+        window.dispatchEvent(new PopStateEvent("popstate"));
+        if (scroll) {
+          window.scrollTo(0, 0);
+        }
       }
-      window.dispatchEvent(new PopStateEvent("popstate"));
-    }
-
-    // App Router: scroll is handled inside navigateClientSide (called above).
-    // Pages Router: scroll manually since pushState/popstate doesn't auto-scroll.
-    if (!hasAppNavigationRuntime() && scroll) {
-      window.scrollTo(0, 0);
     }
   }
 
   return (
     <form
       ref={ref}
-      action={action}
+      action={actionHref}
       onSubmit={(event) => {
         void handleSubmit(event);
       }}

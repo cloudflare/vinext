@@ -392,6 +392,100 @@ describe("app page head resolution", () => {
     });
   });
 
+  it("uses parallel route slot page title when no primary page module is present", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming-parallel-routes/metadata-streaming-parallel-routes.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming-parallel-routes/metadata-streaming-parallel-routes.test.ts
+    //
+    // Reproduces:
+    //   "should change metadata when navigating between two pages under a slot
+    //   when children is not rendered"
+    //
+    // The route has no `pageModule` (the layout doesn't render children and there
+    // is no children-slot default to fill in). The active title must come from
+    // the parallel slot's page metadata.
+    const rootLayout = {
+      metadata: {
+        title: "Root",
+      },
+    };
+    const parallelLayout = {
+      metadata: {
+        title: "parallel-routes-no-children layout title",
+      },
+    };
+    const slotPage = {
+      metadata: {
+        title: "first page - @bar",
+      },
+    };
+
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [rootLayout, parallelLayout],
+      layoutTreePositions: [0, 1],
+      metadataRoutes: [],
+      pageModule: null,
+      parallelRoutes: [
+        {
+          layoutModules: [],
+          pageModule: slotPage,
+          routeSegments: ["parallel-routes-no-children", "@bar", "first"],
+        },
+      ],
+      params: {},
+      routePath: "/parallel-routes-no-children/first",
+      routeSegments: ["parallel-routes-no-children", "first"],
+    });
+
+    expect(result.metadata?.title).toBe("first page - @bar");
+  });
+
+  it("uses parallel layout title when neither primary page nor slot page set a title", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming-parallel-routes/metadata-streaming-parallel-routes.test.ts
+    //
+    // Reproduces:
+    //   "should still render metadata if children is not rendered in parallel
+    //   routes layout"
+    //
+    // The route has only a `default.tsx` (no `metadata`) at the children slot and
+    // the parallel slots render their default fallbacks (no `metadata`). The
+    // active title must come from the parallel layout's metadata.
+    const rootLayout = {
+      metadata: {
+        title: "Root",
+      },
+    };
+    const parallelLayout = {
+      metadata: {
+        title: "parallel-routes-default layout title",
+      },
+    };
+    const defaultPage = {
+      // default.tsx with no metadata
+    };
+    const slotDefault = {
+      // @bar/default.tsx with no metadata
+    };
+
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [rootLayout, parallelLayout],
+      layoutTreePositions: [0, 1],
+      metadataRoutes: [],
+      pageModule: defaultPage,
+      parallelRoutes: [
+        {
+          layoutModules: [],
+          pageModule: slotDefault,
+          routeSegments: ["parallel-routes-default"],
+        },
+      ],
+      params: {},
+      routePath: "/parallel-routes-default",
+      routeSegments: ["parallel-routes-default"],
+    });
+
+    expect(result.metadata?.title).toBe("parallel-routes-default layout title");
+  });
+
   it("bubbles active parallel page metadata errors", async () => {
     await expect(
       resolveAppPageHead<Record<string, unknown>>({

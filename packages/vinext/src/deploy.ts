@@ -790,9 +790,12 @@ export default {
       }
 
       // ── 7. API routes ─────────────────────────────────────────────
+      // Forward ctx so handlePagesApiRoute can wrap the user handler in
+      // runWithExecutionContext, making ctx.waitUntil() reachable from
+      // after() and other shims that schedule deferred work.
       if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
         const response = typeof handleApiRoute === "function"
-          ? await handleApiRoute(request, resolvedUrl)
+          ? await handleApiRoute(request, resolvedUrl, ctx)
           : new Response("404 - API route not found", { status: 404 });
         return mergeHeaders(response, middlewareHeaders, middlewareRewriteStatus);
       }
