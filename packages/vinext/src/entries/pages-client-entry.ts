@@ -65,6 +65,28 @@ import { wrapWithRouterContext } from "next/router";
 const pageLoaders = {
 ${loaderEntries.join(",\n")}
 };
+${
+  hasApp
+    ? `
+const appLoader = () => import(${JSON.stringify(appFileBase!)});
+`
+    : `
+const appLoader = undefined;
+`
+}
+// Expose the code-split loader manifest on window so client-side
+// _next/data navigations in shims/router.ts can resolve the correct page
+// chunk for any route. Without this, navigateClient() would have to extract
+// the chunk URL from an HTML response — the whole point of switching to the
+// JSON data endpoint is to avoid that round trip.
+//
+// Keys are route patterns in Next.js bracket format (matching __NEXT_DATA__.page
+// and the keys of pageLoaders above). The patterns list is the same as
+// Object.keys(pageLoaders) but exposed separately so the router can sort it
+// once (longest match first) without re-keying the loader map.
+window.__VINEXT_PAGE_LOADERS__ = pageLoaders;
+window.__VINEXT_PAGE_PATTERNS__ = Object.keys(pageLoaders);
+window.__VINEXT_APP_LOADER__ = appLoader;
 
 async function hydrate() {
   const nextData = window.__NEXT_DATA__;
@@ -92,7 +114,7 @@ async function hydrate() {
     hasApp
       ? `
   try {
-    const appModule = await import(${JSON.stringify(appFileBase!)});
+    const appModule = await appLoader();
     const AppComponent = appModule.default;
     window.__VINEXT_APP__ = AppComponent;
     element = React.createElement(AppComponent, { Component: PageComponent, pageProps });

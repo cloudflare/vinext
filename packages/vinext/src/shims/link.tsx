@@ -58,6 +58,7 @@ import type { VinextLinkPrefetchRoute, VinextNextData } from "../client/vinext-n
 import { navigatePagesRouterLink } from "../client/pages-router-link-navigation.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../routing/route-matching.js";
 import { stripBasePath } from "../utils/base-path.js";
+import { buildPagesDataHref, matchPagesPattern } from "./internal/pages-data-url.js";
 
 type NavigateEvent = {
   url: URL;
@@ -243,16 +244,58 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
           interceptionContext,
           mountedSlotsHeader,
         );
-      } else if ((window.__NEXT_DATA__ as VinextNextData | undefined)?.__vinext?.pageModuleUrl) {
-        // Pages Router: inject a prefetch link for the target page module
-        // We can't easily resolve the target page's module URL from the Link,
-        // so we create a <link rel="prefetch"> for the HTML page which helps
-        // the browser's preload scanner.
-        const link = document.createElement("link");
-        link.rel = "prefetch";
-        link.href = fullHref;
-        link.as = "document";
-        document.head.appendChild(link);
+      } else if (window.__NEXT_DATA__) {
+        // Pages Router prefetch. When a code-split loader is registered for
+        // the target route (prod builds expose them on window via the
+        // generated client entry), prefetch the data JSON + warm the page
+        // chunk in parallel — matching the actual navigation, so the click
+        // is a double cache hit. Otherwise (dev, or unmapped route) fall
+        // back to the legacy `<link rel="prefetch" as="document">` so the
+        // browser still preloads the HTML.
+        //
+        // The data-URL + matcher helper lives in shims/internal/ so this
+        // file does not pull in the router shim at module init time, which
+        // would create a circular import and grow the SSR module graph.
+        const loaders = window.__VINEXT_PAGE_LOADERS__;
+        const patterns = window.__VINEXT_PAGE_PATTERNS__;
+        const buildId = (window.__NEXT_DATA__ as VinextNextData | undefined)?.buildId;
+
+        let prefetchedViaData = false;
+        if (loaders && patterns && patterns.length > 0 && buildId) {
+          try {
+            const parsed = new URL(fullHref, window.location.href);
+            if (parsed.origin === window.location.origin) {
+              const pagePath = stripBasePath(parsed.pathname, __basePath);
+              const match = matchPagesPattern(pagePath, patterns);
+              if (match && loaders[match.pattern]) {
+                const dataHref = buildPagesDataHref(__basePath, buildId, pagePath, parsed.search);
+                const link = document.createElement("link");
+                link.rel = "prefetch";
+                link.as = "fetch";
+                link.crossOrigin = "anonymous";
+                link.href = dataHref;
+                document.head.appendChild(link);
+                // Warm the code-split chunk. Errors are best-effort and
+                // intentionally ignored — prefetch must never break Link.
+                void loaders[match.pattern]().catch(() => {});
+                prefetchedViaData = true;
+              }
+            }
+          } catch {
+            // Fall through to legacy prefetch below.
+          }
+        }
+
+        if (!prefetchedViaData) {
+          // Legacy fallback: hint the browser to preload the HTML document.
+          // Used in dev (no loader map populated) and for routes not in the
+          // client loader map.
+          const link = document.createElement("link");
+          link.rel = "prefetch";
+          link.href = fullHref;
+          link.as = "document";
+          document.head.appendChild(link);
+        }
       }
     })().catch((error) => {
       console.error("[vinext] RSC prefetch setup error:", error);
