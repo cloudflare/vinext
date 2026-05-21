@@ -1161,11 +1161,11 @@ export async function resolveNextConfig(
   detectNextIntlConfig(root, resolved);
 
   // Parity with Next.js: when `basePath` is configured but `assetPrefix` is
-  // not, fall back to using `basePath` as the asset prefix. Without this, an
-  // app deployed under a basePath would serve its routes correctly but emit
-  // its assets from `<basePath>/assets/...` (Vite's default `base + assetsDir`
-  // composition) rather than from the Next.js-canonical
-  // `<basePath>/_next/static/...`.
+  // not, fall back to using `basePath` as the asset prefix. This ensures the
+  // on-disk layout under `dist/client` is rooted at `<basePath>/_next/static/`
+  // (matching the URL Vite emits via `base + assetsDir`), so Cloudflare's
+  // ASSETS binding and the prod-server static layer can serve requests
+  // verbatim without any runtime path rewriting.
   //
   // Mirrors Next.js: packages/next/src/server/config.ts:509-532
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/config.ts

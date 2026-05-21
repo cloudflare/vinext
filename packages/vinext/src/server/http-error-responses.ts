@@ -64,6 +64,27 @@ export function notFoundResponse(init?: ErrorResponseInit): Response {
 }
 
 /**
+ * Build a 404 plain-text response for invalid `_next/static/*` paths.
+ *
+ * Next.js short-circuits invalid `_next/static/*` requests with a plain-text
+ * `"Not Found"` body (NOT the rendered HTML 404 page) — saves bandwidth on
+ * what is almost certainly a misbehaving client requesting a stale chunk.
+ *
+ * Body and content-type match Next.js exactly:
+ *   res.statusCode = 404
+ *   res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+ *   res.end('Not Found')
+ *
+ * @see packages/next/src/server/lib/router-server.ts in `.nextjs-ref`
+ */
+export function notFoundStaticAssetResponse(): Response {
+  return new Response("Not Found", {
+    status: 404,
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
+}
+
+/**
  * Build a 405 Method Not Allowed plain-text response with the `Allow` header set.
  *
  * `allowedMethods` is rendered as the comma-separated `Allow` header value.

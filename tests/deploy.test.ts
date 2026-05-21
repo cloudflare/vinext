@@ -1834,7 +1834,7 @@ describe("detectProject on real fixtures", () => {
 
 describe("Cloudflare _headers file generation", () => {
   /** Replicates the _headers generation logic from the closeBundle hook. */
-  function generateHeaders(clientDir: string, assetsDir = "assets"): void {
+  function generateHeaders(clientDir: string, assetsDir = "_next/static"): void {
     const headersPath = path.join(clientDir, "_headers");
     if (!fs.existsSync(headersPath)) {
       const headersContent = [
@@ -1854,11 +1854,11 @@ describe("Cloudflare _headers file generation", () => {
     generateHeaders(clientDir);
 
     const content = fs.readFileSync(path.join(clientDir, "_headers"), "utf-8");
-    expect(content).toContain("/assets/*");
+    expect(content).toContain("/_next/static/*");
     expect(content).toContain("Cache-Control: public, max-age=31536000, immutable");
     // Verify Cloudflare _headers format: path on its own line, indented header below
     const lines = content.split("\n");
-    const pathLine = lines.findIndex((l) => l === "/assets/*");
+    const pathLine = lines.findIndex((l) => l === "/_next/static/*");
     expect(pathLine).toBeGreaterThanOrEqual(0);
     expect(lines[pathLine + 1]).toBe("  Cache-Control: public, max-age=31536000, immutable");
   });
@@ -1874,7 +1874,7 @@ describe("Cloudflare _headers file generation", () => {
 
     const content = fs.readFileSync(path.join(clientDir, "_headers"), "utf-8");
     expect(content).toBe(userContent);
-    expect(content).not.toContain("/assets/*");
+    expect(content).not.toContain("/_next/static/*");
   });
 
   it("respects custom assetsDir", () => {
@@ -1885,7 +1885,7 @@ describe("Cloudflare _headers file generation", () => {
 
     const content = fs.readFileSync(path.join(clientDir, "_headers"), "utf-8");
     expect(content).toContain("/static/*");
-    expect(content).not.toContain("/assets/*");
+    expect(content).not.toContain("/_next/static/*");
   });
 
   it("ends with a trailing newline", () => {

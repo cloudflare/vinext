@@ -2212,8 +2212,9 @@ export const config = { matcher: ["/protected"] };
       },
     });
 
-    // Verify client output exists
-    const assetsDir = path.join(outDir, "client", "assets");
+    // Verify client output exists under Next.js's canonical `_next/static/`
+    // directory (matches `resolveAssetsDir("")`).
+    const assetsDir = path.join(outDir, "client", "_next", "static");
     expect(fs.existsSync(assetsDir)).toBe(true);
 
     // Verify SSR manifest was produced

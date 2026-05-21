@@ -2223,8 +2223,9 @@ describe("App Router Production build", () => {
     // Client bundle should exist
     expect(fs.existsSync(path.join(outDir, "client"))).toBe(true);
 
-    // Client should have hashed JS assets
-    const clientAssets = fs.readdirSync(path.join(outDir, "client", "assets"));
+    // Client should have hashed JS assets under Next.js's canonical
+    // `_next/static/` directory (matches `resolveAssetsDir("")`).
+    const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static"));
     expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
 
     // RSC bundle should contain route handling code
@@ -2259,7 +2260,7 @@ describe("App Router Production build", () => {
       expect(homeHtml).toContain("<script");
       // Production bootstrap is emitted as a real <script type="module" src=…>
       // tag (via React's bootstrapModules option) referencing hashed assets.
-      expect(homeHtml).toMatch(/<script[^>]+type="module"[^>]+src="\/assets\/[^"]+\.js"/);
+      expect(homeHtml).toMatch(/<script[^>]+type="module"[^>]+src="\/_next\/static\/[^"]+\.js"/);
 
       // Dynamic route works
       const blogRes = await fetch(`${previewUrl}/blog/test-post`);
@@ -2428,13 +2429,14 @@ describe("App Router Production server (startProdServer)", () => {
   });
 
   it("serves static assets with cache headers", async () => {
-    // Find an actual hashed asset from the build
-    const assetsDir = path.join(outDir, "client", "assets");
+    // Find an actual hashed asset from the build (on disk under
+    // `_next/static/`, matching `resolveAssetsDir("")`).
+    const assetsDir = path.join(outDir, "client", "_next", "static");
     const assets = fs.readdirSync(assetsDir);
     const jsFile = assets.find((f: string) => f.endsWith(".js"));
     expect(jsFile).toBeDefined();
 
-    const res = await fetch(`${baseUrl}/assets/${jsFile}`);
+    const res = await fetch(`${baseUrl}/_next/static/${jsFile}`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("javascript");
     expect(res.headers.get("cache-control")).toContain("immutable");
@@ -3148,7 +3150,7 @@ describe("App Router Production server self-hosted next/font/google headers", ()
     // Every preload in the Link header must reference the served URL
     // namespace created by the fix. Before the fix, the header value was
     // `</home/user/project/.vinext/fonts/geist-<hash>/geist-<hash>.woff2>`.
-    expect(link).toContain("/assets/_vinext_fonts/");
+    expect(link).toContain("/_next/static/_vinext_fonts/");
     expect(link).toMatch(/rel=preload/);
     expect(link).toMatch(/as=font/);
     expect(link).toMatch(/type=font\/woff2/);
@@ -3162,7 +3164,7 @@ describe("App Router Production server self-hosted next/font/google headers", ()
     const res = await fetch(`${fontBaseUrl}/`);
     const html = await res.text();
     expect(html).toMatch(
-      /<link rel="preload"[^>]*href="\/assets\/_vinext_fonts\/[^"]+\.woff2"[^>]*as="font"/,
+      /<link rel="preload"[^>]*href="\/_next\/static\/_vinext_fonts\/[^"]+\.woff2"[^>]*as="font"/,
     );
     expect(html).not.toContain(FONT_FIXTURE_DIR);
     expect(html).not.toContain(".vinext/fonts");
@@ -3178,7 +3180,7 @@ describe("App Router Production server self-hosted next/font/google headers", ()
     const styleMatch = html.match(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/);
     expect(styleMatch).not.toBeNull();
     const styleContent = styleMatch![1];
-    expect(styleContent).toMatch(/url\(\/assets\/_vinext_fonts\/[^)]+\.woff2\)/);
+    expect(styleContent).toMatch(/url\(\/_next\/static\/_vinext_fonts\/[^)]+\.woff2\)/);
     expect(styleContent).not.toContain(FONT_FIXTURE_DIR);
     expect(styleContent).not.toContain(".vinext/fonts");
   });
@@ -3189,7 +3191,7 @@ describe("App Router Production server self-hosted next/font/google headers", ()
     // time because the font files never leave `<root>/.vinext/fonts/`.
     const res = await fetch(`${fontBaseUrl}/`);
     const html = await res.text();
-    const match = html.match(/\/assets\/_vinext_fonts\/[^"]+\.woff2/);
+    const match = html.match(/\/_next\/static\/_vinext_fonts\/[^"]+\.woff2/);
     expect(match).not.toBeNull();
     const fontPath = match![0];
     const fontRes = await fetch(`${fontBaseUrl}${fontPath}`);

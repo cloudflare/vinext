@@ -110,15 +110,22 @@ describe("tryServeStatic (with StaticFileCache)", () => {
 
   it("serves precompressed brotli for hashed assets when client accepts br", async () => {
     const jsContent = "const app = () => {};\n".repeat(200);
-    await writeFile(clientDir, "assets/app-abc123.js", jsContent);
+    await writeFile(clientDir, "_next/static/app-abc123.js", jsContent);
     const brContent = zlib.brotliCompressSync(Buffer.from(jsContent));
-    await writeFile(clientDir, "assets/app-abc123.js.br", brContent);
+    await writeFile(clientDir, "_next/static/app-abc123.js.br", brContent);
 
     const cache = await StaticFileCache.create(clientDir);
     const req = mockReq("gzip, deflate, br");
     const { res, captured } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/assets/app-abc123.js", true, cache);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/_next/static/app-abc123.js",
+      true,
+      cache,
+    );
 
     await captured.ended;
     expect(served).toBe(true);
@@ -132,9 +139,9 @@ describe("tryServeStatic (with StaticFileCache)", () => {
 
   it("serves precompressed gzip when client accepts gzip but not br", async () => {
     const cssContent = ".app { display: flex; }\n".repeat(200);
-    await writeFile(clientDir, "assets/styles-def456.css", cssContent);
+    await writeFile(clientDir, "_next/static/styles-def456.css", cssContent);
     const gzContent = zlib.gzipSync(Buffer.from(cssContent));
-    await writeFile(clientDir, "assets/styles-def456.css.gz", gzContent);
+    await writeFile(clientDir, "_next/static/styles-def456.css.gz", gzContent);
 
     const cache = await StaticFileCache.create(clientDir);
     const req = mockReq("gzip, deflate");
@@ -144,7 +151,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
       req,
       res,
       clientDir,
-      "/assets/styles-def456.css",
+      "/_next/static/styles-def456.css",
       true,
       cache,
     );
@@ -157,7 +164,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
 
   it("serves original file with Content-Length when no encoding accepted", async () => {
     const jsContent = "const x = 1;\n".repeat(200);
-    await writeFile(clientDir, "assets/plain-ghi789.js", jsContent);
+    await writeFile(clientDir, "_next/static/plain-ghi789.js", jsContent);
 
     const cache = await StaticFileCache.create(clientDir);
     const req = mockReq(); // no Accept-Encoding
@@ -167,7 +174,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
       req,
       res,
       clientDir,
-      "/assets/plain-ghi789.js",
+      "/_next/static/plain-ghi789.js",
       true,
       cache,
     );
@@ -180,7 +187,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
 
   it("preserves a non-200 status override for cached static files", async () => {
     const jsContent = "export const blocked = true;\n";
-    await writeFile(clientDir, "assets/status-override-abc123.js", jsContent);
+    await writeFile(clientDir, "_next/static/status-override-abc123.js", jsContent);
 
     const cache = await StaticFileCache.create(clientDir);
     const req = mockReq(undefined, { "if-none-match": 'W/"abc123"' });
@@ -190,7 +197,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
       req,
       res,
       clientDir,
-      "/assets/status-override-abc123.js",
+      "/_next/static/status-override-abc123.js",
       true,
       cache,
       { "x-middleware": "blocked" },
@@ -212,7 +219,14 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     const req = mockReq("br");
     const { res } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/assets/nope-xxx999.js", true, cache);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/_next/static/nope-xxx999.js",
+      true,
+      cache,
+    );
 
     expect(served).toBe(false);
   });
@@ -220,13 +234,13 @@ describe("tryServeStatic (with StaticFileCache)", () => {
   // ── immutable cache-control on hashed assets ───────────────────
 
   it("sets immutable cache-control for /assets/ files", async () => {
-    await writeFile(clientDir, "assets/chunk-aaa111.js", "code".repeat(100));
+    await writeFile(clientDir, "_next/static/chunk-aaa111.js", "code".repeat(100));
 
     const cache = await StaticFileCache.create(clientDir);
     const req = mockReq();
     const { res, captured } = mockRes();
 
-    await tryServeStatic(req, res, clientDir, "/assets/chunk-aaa111.js", true, cache);
+    await tryServeStatic(req, res, clientDir, "/_next/static/chunk-aaa111.js", true, cache);
 
     await captured.ended;
     expect(captured.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
@@ -253,10 +267,10 @@ describe("tryServeStatic (with StaticFileCache)", () => {
 
   it("sets Vary: Accept-Encoding when serving precompressed content", async () => {
     const jsContent = "code\n".repeat(500);
-    await writeFile(clientDir, "assets/vary-bbb222.js", jsContent);
+    await writeFile(clientDir, "_next/static/vary-bbb222.js", jsContent);
     await writeFile(
       clientDir,
-      "assets/vary-bbb222.js.br",
+      "_next/static/vary-bbb222.js.br",
       zlib.brotliCompressSync(Buffer.from(jsContent)),
     );
 
@@ -264,7 +278,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     const req = mockReq("br");
     const { res, captured } = mockRes();
 
-    await tryServeStatic(req, res, clientDir, "/assets/vary-bbb222.js", true, cache);
+    await tryServeStatic(req, res, clientDir, "/_next/static/vary-bbb222.js", true, cache);
 
     await captured.ended;
     expect(captured.headers["Vary"]).toBe("Accept-Encoding");
@@ -273,7 +287,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
   // ── Directory traversal protection ─────────────────────────────
 
   it("blocks directory traversal attempts", async () => {
-    await writeFile(clientDir, "assets/safe-ccc333.js", "safe");
+    await writeFile(clientDir, "_next/static/safe-ccc333.js", "safe");
 
     const cache = await StaticFileCache.create(clientDir);
     const req = mockReq();
@@ -312,10 +326,10 @@ describe("tryServeStatic (with StaticFileCache)", () => {
   // ── 304 Not Modified (conditional requests) ────────────────────
 
   it("returns 304 when If-None-Match matches the ETag", async () => {
-    await writeFile(clientDir, "assets/cached-aaa111.js", "cached content");
+    await writeFile(clientDir, "_next/static/cached-aaa111.js", "cached content");
 
     const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/assets/cached-aaa111.js");
+    const entry = cache.lookup("/_next/static/cached-aaa111.js");
     const etag = entry!.etag;
 
     const req = mockReq(undefined, { "if-none-match": etag });
@@ -325,7 +339,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
       req,
       res,
       clientDir,
-      "/assets/cached-aaa111.js",
+      "/_next/static/cached-aaa111.js",
       true,
       cache,
     );
@@ -337,10 +351,10 @@ describe("tryServeStatic (with StaticFileCache)", () => {
   });
 
   it("returns 304 when If-None-Match contains the ETag in a comma-separated list", async () => {
-    await writeFile(clientDir, "assets/cached-list-aaa111.js", "cached content");
+    await writeFile(clientDir, "_next/static/cached-list-aaa111.js", "cached content");
 
     const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/assets/cached-list-aaa111.js");
+    const entry = cache.lookup("/_next/static/cached-list-aaa111.js");
     const etag = entry!.etag;
 
     const req = mockReq(undefined, {
@@ -352,7 +366,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
       req,
       res,
       clientDir,
-      "/assets/cached-list-aaa111.js",
+      "/_next/static/cached-list-aaa111.js",
       true,
       cache,
     );
@@ -364,7 +378,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
   });
 
   it("returns 200 when If-None-Match does not match", async () => {
-    await writeFile(clientDir, "assets/stale-bbb222.js", "new content");
+    await writeFile(clientDir, "_next/static/stale-bbb222.js", "new content");
 
     const cache = await StaticFileCache.create(clientDir);
     const req = mockReq(undefined, { "if-none-match": 'W/"999-0"' });
@@ -374,7 +388,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
       req,
       res,
       clientDir,
-      "/assets/stale-bbb222.js",
+      "/_next/static/stale-bbb222.js",
       true,
       cache,
     );
@@ -386,28 +400,28 @@ describe("tryServeStatic (with StaticFileCache)", () => {
   });
 
   it("returns 200 when no If-None-Match header is present", async () => {
-    await writeFile(clientDir, "assets/fresh-ccc333.js", "fresh content");
+    await writeFile(clientDir, "_next/static/fresh-ccc333.js", "fresh content");
 
     const cache = await StaticFileCache.create(clientDir);
     const req = mockReq();
     const { res, captured } = mockRes();
 
-    await tryServeStatic(req, res, clientDir, "/assets/fresh-ccc333.js", true, cache);
+    await tryServeStatic(req, res, clientDir, "/_next/static/fresh-ccc333.js", true, cache);
 
     await captured.ended;
     expect(captured.status).toBe(200);
   });
 
   it("304 response excludes Content-Type per RFC 9110", async () => {
-    await writeFile(clientDir, "assets/rfc-aaa111.js", "rfc content");
+    await writeFile(clientDir, "_next/static/rfc-aaa111.js", "rfc content");
 
     const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/assets/rfc-aaa111.js");
+    const entry = cache.lookup("/_next/static/rfc-aaa111.js");
 
     const req = mockReq(undefined, { "if-none-match": entry!.etag });
     const { res, captured } = mockRes();
 
-    await tryServeStatic(req, res, clientDir, "/assets/rfc-aaa111.js", true, cache);
+    await tryServeStatic(req, res, clientDir, "/_next/static/rfc-aaa111.js", true, cache);
 
     await captured.ended;
     expect(captured.status).toBe(304);
@@ -415,15 +429,15 @@ describe("tryServeStatic (with StaticFileCache)", () => {
   });
 
   it("304 response includes ETag and Cache-Control but no Content-Length", async () => {
-    await writeFile(clientDir, "assets/headers-ddd444.js", "header test content");
+    await writeFile(clientDir, "_next/static/headers-ddd444.js", "header test content");
 
     const cache = await StaticFileCache.create(clientDir);
-    const entry = cache.lookup("/assets/headers-ddd444.js");
+    const entry = cache.lookup("/_next/static/headers-ddd444.js");
 
     const req = mockReq(undefined, { "if-none-match": entry!.etag });
     const { res, captured } = mockRes();
 
-    await tryServeStatic(req, res, clientDir, "/assets/headers-ddd444.js", true, cache);
+    await tryServeStatic(req, res, clientDir, "/_next/static/headers-ddd444.js", true, cache);
 
     await captured.ended;
     expect(captured.status).toBe(304);
@@ -436,13 +450,20 @@ describe("tryServeStatic (with StaticFileCache)", () => {
 
   it("HEAD request returns headers without streaming body", async () => {
     const jsContent = "const x = 1;\n".repeat(200);
-    await writeFile(clientDir, "assets/head-eee555.js", jsContent);
+    await writeFile(clientDir, "_next/static/head-eee555.js", jsContent);
 
     const cache = await StaticFileCache.create(clientDir);
     const req = mockReq(undefined, undefined, "HEAD");
     const { res, captured } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/assets/head-eee555.js", true, cache);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/_next/static/head-eee555.js",
+      true,
+      cache,
+    );
 
     await captured.ended;
     expect(served).toBe(true);
@@ -454,15 +475,15 @@ describe("tryServeStatic (with StaticFileCache)", () => {
 
   it("HEAD request includes compressed Content-Length when precompressed variant exists", async () => {
     const jsContent = "const app = () => {};\n".repeat(200);
-    await writeFile(clientDir, "assets/head-br-fff666.js", jsContent);
+    await writeFile(clientDir, "_next/static/head-br-fff666.js", jsContent);
     const brContent = zlib.brotliCompressSync(Buffer.from(jsContent));
-    await writeFile(clientDir, "assets/head-br-fff666.js.br", brContent);
+    await writeFile(clientDir, "_next/static/head-br-fff666.js.br", brContent);
 
     const cache = await StaticFileCache.create(clientDir);
     const req = mockReq("br", undefined, "HEAD");
     const { res, captured } = mockRes();
 
-    await tryServeStatic(req, res, clientDir, "/assets/head-br-fff666.js", true, cache);
+    await tryServeStatic(req, res, clientDir, "/_next/static/head-br-fff666.js", true, cache);
 
     await captured.ended;
     expect(captured.status).toBe(200);
@@ -475,15 +496,22 @@ describe("tryServeStatic (with StaticFileCache)", () => {
 
   it("serves precompressed zstd when client accepts zstd", async () => {
     const jsContent = "const zstd = true;\n".repeat(200);
-    await writeFile(clientDir, "assets/zstd-ggg777.js", jsContent);
+    await writeFile(clientDir, "_next/static/zstd-ggg777.js", jsContent);
     const zstdContent = zlib.zstdCompressSync(Buffer.from(jsContent));
-    await writeFile(clientDir, "assets/zstd-ggg777.js.zst", zstdContent);
+    await writeFile(clientDir, "_next/static/zstd-ggg777.js.zst", zstdContent);
 
     const cache = await StaticFileCache.create(clientDir);
     const req = mockReq("zstd, br, gzip");
     const { res, captured } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/assets/zstd-ggg777.js", true, cache);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/_next/static/zstd-ggg777.js",
+      true,
+      cache,
+    );
 
     await captured.ended;
     expect(served).toBe(true);
@@ -496,15 +524,15 @@ describe("tryServeStatic (with StaticFileCache)", () => {
 
   it("prefers zstd over br when both accepted and available", async () => {
     const jsContent = "const priority = true;\n".repeat(200);
-    await writeFile(clientDir, "assets/priority-hhh888.js", jsContent);
+    await writeFile(clientDir, "_next/static/priority-hhh888.js", jsContent);
     await writeFile(
       clientDir,
-      "assets/priority-hhh888.js.zst",
+      "_next/static/priority-hhh888.js.zst",
       zlib.zstdCompressSync(Buffer.from(jsContent)),
     );
     await writeFile(
       clientDir,
-      "assets/priority-hhh888.js.br",
+      "_next/static/priority-hhh888.js.br",
       zlib.brotliCompressSync(Buffer.from(jsContent)),
     );
 
@@ -512,7 +540,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     const req = mockReq("zstd, br, gzip");
     const { res, captured } = mockRes();
 
-    await tryServeStatic(req, res, clientDir, "/assets/priority-hhh888.js", true, cache);
+    await tryServeStatic(req, res, clientDir, "/_next/static/priority-hhh888.js", true, cache);
 
     await captured.ended;
     expect(captured.headers["Content-Encoding"]).toBe("zstd");
@@ -520,10 +548,10 @@ describe("tryServeStatic (with StaticFileCache)", () => {
 
   it("falls back to br when zstd accepted but no .zst file exists", async () => {
     const jsContent = "const fallback = true;\n".repeat(200);
-    await writeFile(clientDir, "assets/fallback-iii999.js", jsContent);
+    await writeFile(clientDir, "_next/static/fallback-iii999.js", jsContent);
     await writeFile(
       clientDir,
-      "assets/fallback-iii999.js.br",
+      "_next/static/fallback-iii999.js.br",
       zlib.brotliCompressSync(Buffer.from(jsContent)),
     );
     // No .zst file
@@ -532,7 +560,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     const req = mockReq("zstd, br, gzip");
     const { res, captured } = mockRes();
 
-    await tryServeStatic(req, res, clientDir, "/assets/fallback-iii999.js", true, cache);
+    await tryServeStatic(req, res, clientDir, "/_next/static/fallback-iii999.js", true, cache);
 
     await captured.ended;
     expect(captured.headers["Content-Encoding"]).toBe("br");
@@ -541,12 +569,18 @@ describe("tryServeStatic (with StaticFileCache)", () => {
   // ── Slow path (no cache) ───────────────────────────────────────
 
   it("slow path serves static file without cache", async () => {
-    await writeFile(clientDir, "assets/nocache-aaa111.js", "slow path content");
+    await writeFile(clientDir, "_next/static/nocache-aaa111.js", "slow path content");
 
     const req = mockReq();
     const { res, captured } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/assets/nocache-aaa111.js", false);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/_next/static/nocache-aaa111.js",
+      false,
+    );
 
     await captured.ended;
     expect(served).toBe(true);
@@ -565,12 +599,18 @@ describe("tryServeStatic (with StaticFileCache)", () => {
   });
 
   it("slow path serves HEAD without body", async () => {
-    await writeFile(clientDir, "assets/head-slow-bbb222.js", "head content");
+    await writeFile(clientDir, "_next/static/head-slow-bbb222.js", "head content");
 
     const req = mockReq(undefined, undefined, "HEAD");
     const { res, captured } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/assets/head-slow-bbb222.js", false);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/_next/static/head-slow-bbb222.js",
+      false,
+    );
 
     await captured.ended;
     expect(served).toBe(true);
@@ -580,7 +620,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
   });
 
   it("slow path serves HEAD without body for compressed response", async () => {
-    await writeFile(clientDir, "assets/head-slow-comp-ccc333.js", "compress me");
+    await writeFile(clientDir, "_next/static/head-slow-comp-ccc333.js", "compress me");
 
     const req = mockReq("br", undefined, "HEAD");
     const { res, captured } = mockRes();
@@ -589,7 +629,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
       req,
       res,
       clientDir,
-      "/assets/head-slow-comp-ccc333.js",
+      "/_next/static/head-slow-comp-ccc333.js",
       true,
     );
 
@@ -603,7 +643,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
   // ── Malformed pathname handling ─────────────────────────────────
 
   it("returns false for malformed percent-encoded pathname", async () => {
-    await writeFile(clientDir, "assets/safe-ddd444.js", "safe");
+    await writeFile(clientDir, "_next/static/safe-ddd444.js", "safe");
 
     const cache = await StaticFileCache.create(clientDir);
     const req = mockReq();
@@ -626,14 +666,20 @@ describe("tryServeStatic (with StaticFileCache)", () => {
   // ── Slow path 304 (conditional requests) ───────────────────────
 
   it("slow path returns 304 for hashed asset with matching filename-hash ETag", async () => {
-    await writeFile(clientDir, "assets/etag-slow-abc123.js", "etag content");
+    await writeFile(clientDir, "_next/static/etag-slow-abc123.js", "etag content");
 
     // The slow path computes a filename-hash ETag for /assets/* files.
     // Derive the expected ETag the same way etagFromFilenameHash does.
     const req = mockReq(undefined, { "if-none-match": 'W/"abc123"' });
     const { res, captured } = mockRes();
 
-    const served = await tryServeStatic(req, res, clientDir, "/assets/etag-slow-abc123.js", true);
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/_next/static/etag-slow-abc123.js",
+      true,
+    );
 
     await captured.ended;
     expect(served).toBe(true);
@@ -644,7 +690,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
   });
 
   it("slow path returns 200 when ETag does not match", async () => {
-    await writeFile(clientDir, "assets/etag-slow-miss-xyz999.js", "fresh content");
+    await writeFile(clientDir, "_next/static/etag-slow-miss-xyz999.js", "fresh content");
 
     const req = mockReq(undefined, { "if-none-match": 'W/"stale-etag"' });
     const { res, captured } = mockRes();
@@ -653,7 +699,7 @@ describe("tryServeStatic (with StaticFileCache)", () => {
       req,
       res,
       clientDir,
-      "/assets/etag-slow-miss-xyz999.js",
+      "/_next/static/etag-slow-miss-xyz999.js",
       true,
     );
 
@@ -664,12 +710,12 @@ describe("tryServeStatic (with StaticFileCache)", () => {
   });
 
   it("slow path 304 includes Vary: Accept-Encoding for compressible content", async () => {
-    await writeFile(clientDir, "assets/vary-slow-abc123.js", "vary content");
+    await writeFile(clientDir, "_next/static/vary-slow-abc123.js", "vary content");
 
     const req = mockReq(undefined, { "if-none-match": 'W/"abc123"' });
     const { res, captured } = mockRes();
 
-    await tryServeStatic(req, res, clientDir, "/assets/vary-slow-abc123.js", true);
+    await tryServeStatic(req, res, clientDir, "/_next/static/vary-slow-abc123.js", true);
 
     await captured.ended;
     expect(captured.status).toBe(304);

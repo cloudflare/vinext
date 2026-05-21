@@ -140,15 +140,16 @@ export function _rewriteCachedFontCssToServedUrls(
 }
 
 /**
- * Default Vite `build.assetsDir` — mirrors Vite's own default. Used as
- * the fallback for the `assetsDir` parameter of
+ * Default `build.assetsDir` — matches vinext's resolved default in
+ * `resolveAssetsDir("")` (Next.js's canonical `_next/static` convention).
+ * Used as the fallback for the `assetsDir` parameter of
  * `_rewriteCachedFontCssToServedUrls` so the exported helper can be unit
  * tested without synthesizing plugin state. Production call sites thread
  * the real `envConfig.build.assetsDir` resolved by Vite through so that
  * the embedded CSS URLs always match the directory the `writeBundle`
  * hook copies the font files into.
  */
-const DEFAULT_ASSETS_DIR = "assets";
+const DEFAULT_ASSETS_DIR = "_next/static";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

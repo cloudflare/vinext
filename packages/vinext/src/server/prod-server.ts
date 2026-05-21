@@ -539,18 +539,15 @@ async function tryServeStatic(
   const ext = path.extname(resolved.path);
   const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
   // Mirror the StaticFileCache's `isHashed` rule: assets under Vite's
-  // `assetsDir` carry a content hash regardless of whether they sit under
-  // `/assets/` (historical default) or `/<prefix>?/_next/static/`
-  // (assetPrefix-enabled builds). Both forms get immutable cache headers.
-  // `pathname` always has a leading `/`, so a single `includes` covers both
-  // the root-level `/_next/static/...` case and any `/<prefix>/_next/static/...`
-  // assetPrefix layout.
-  const isHashed = pathname.startsWith("/assets/") || pathname.includes("/_next/static/");
+  // `assetsDir` carry a content hash. `pathname` always has a leading `/`,
+  // so a single `includes` covers both the root-level `/_next/static/...`
+  // case and any `/<prefix>/_next/static/...` assetPrefix layout.
+  const isHashed = pathname.includes("/_next/static/");
   const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
   // Use a filename-hash ETag for hashed assets (matches the fast-path cache
   // behaviour and survives deploys). Use resolved.path (not pathname) so that
   // ext and the hash extraction both come from the same file — they can diverge
-  // after HTML fallback (e.g. /assets/widget-abc123 → widget-abc123.html).
+  // after HTML fallback (e.g. /_next/static/widget-abc123 → widget-abc123.html).
   // Fall back to mtime for non-hashed files.
   const etag =
     (isHashed && etagFromFilenameHash(resolved.path, ext)) ||
@@ -950,34 +947,25 @@ function resolveAppRouterHandler(entry: unknown): (request: Request) => Promise<
  *
  * Three URL shapes are recognised:
  *
- *  - `/assets/...` — the historical Vite default, used when `assetPrefix` is
- *    unset. Returns the pathname verbatim.
+ *  - `/_next/static/...` — the default layout. Files land on disk at
+ *    `dist/client/_next/static/...`, so the pathname maps 1:1. Also covers
+ *    absolute-URL `assetPrefix` with no path component (same on-disk and
+ *    URL shape).
  *  - `<assetPathPrefix>/_next/static/...` — when `assetPrefix` is a path
  *    prefix (e.g. `/custom-asset-prefix`). The on-disk layout is
  *    `dist/client/<prefix>/_next/static/...`, so the pathname maps 1:1.
- *  - `/_next/static/...` — when `assetPrefix` is an absolute URL with no
- *    path component (e.g. `https://cdn.example.com`). Files land on disk
- *    at `dist/client/_next/static/...`. This branch is mostly a fallback
- *    for setups that don't actually route asset requests to the CDN.
- *
- * When `assetPrefix` is an absolute URL with a non-empty pathname
- * (e.g. `https://cdn.example.com/sub`), files are written to
- * `dist/client/_next/static/...` but emitted URLs prepend the full URL
- * (`https://cdn.example.com/sub/_next/static/...`). Requests for those
- * URLs do not normally arrive at this server — they go to the CDN. We
- * still accept `<pathname>/_next/static/...` so a same-origin reverse
- * proxy can route through.
+ *  - `<absoluteURLPathname>/_next/static/...` — when `assetPrefix` is an
+ *    absolute URL with a non-empty pathname (e.g. `https://cdn/sub`).
+ *    Files are written to `dist/client/_next/static/...` but emitted URLs
+ *    prepend the full URL. Requests do not normally arrive here — they go
+ *    to the CDN — but we accept them so a same-origin reverse proxy can
+ *    route through; the on-disk path is just `_next/static/...`.
  */
 export function resolveAppRouterAssetPath(
   pathname: string,
   assetPathPrefix: string,
   assetPrefix: string,
 ): string | null {
-  // Historical layout — always supported for projects without assetPrefix.
-  if (pathname.startsWith("/assets/")) return pathname;
-
-  if (!assetPrefix) return null;
-
   const nextStaticDir = `/${ASSET_PREFIX_URL_DIR}/`;
 
   if (assetPathPrefix) {
@@ -999,8 +987,9 @@ export function resolveAppRouterAssetPath(
     return null;
   }
 
-  // Absolute-URL assetPrefix with no path component — files on disk at
-  // `dist/client/_next/static/...`. Accept incoming `/_next/static/...`.
+  // No `assetPrefix` (default layout), or absolute-URL `assetPrefix` with no
+  // path component — both land files on disk at `dist/client/_next/static/...`
+  // and emit URLs starting `/_next/static/...`.
   if (pathname.startsWith(nextStaticDir)) return pathname;
 
   return null;
@@ -1130,24 +1119,29 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // Public directory files fall through to the RSC handler, which runs
     // middleware before serving them.
     //
-    // When `assetPrefix` is configured the on-disk layout under
-    // `dist/client` mirrors `<prefix>/_next/static/...` (path-prefix form)
-    // or `_next/static/...` (absolute-URL form). Either way, requests for
-    // `<prefix>/_next/static/...` arrive at this server in production
-    // (Cloudflare's ASSETS binding serves these directly in Workers; this
-    // branch is the Node fallback) and we look them up on disk. The base
-    // `/assets/` prefix continues to work too — projects without
-    // `assetPrefix` keep the historical layout.
+    // The on-disk layout under `dist/client` mirrors the URL path:
+    //   - default                 → `_next/static/...`
+    //   - path-prefix assetPrefix → `<prefix>/_next/static/...`
+    //   - absolute-URL prefix     → `_next/static/...`
+    // Cloudflare's ASSETS binding serves these directly in Workers; this
+    // branch is the Node fallback.
+    //
+    // Asset-shaped requests that don't find a file return a plain-text 404
+    // instead of falling through to the RSC handler (which would render
+    // the full HTML 404 page). Matches Next.js's behaviour in
+    // packages/next/src/server/lib/router-server.ts.
     {
       const assetLookupPath = resolveAppRouterAssetPath(
         pathname,
         appAssetPathPrefix,
         appRouterAssetPrefix,
       );
-      if (
-        assetLookupPath &&
-        (await tryServeStatic(req, res, clientDir, assetLookupPath, compress, staticCache))
-      ) {
+      if (assetLookupPath) {
+        if (await tryServeStatic(req, res, clientDir, assetLookupPath, compress, staticCache)) {
+          return;
+        }
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not Found");
         return;
       }
     }
@@ -1463,16 +1457,16 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     }
 
     // ── 1. Hashed build assets ─────────────────────────────────────
-    // Serve Vite build output (hashed JS/CSS bundles in /assets/) before
-    // middleware. These are always public and don't need protection.
+    // Serve Vite build output (hashed JS/CSS bundles in /_next/static/)
+    // before middleware. These are always public and don't need protection.
     // Public directory files (e.g. /favicon.ico, /robots.txt) are served
     // after middleware (step 5b) so middleware can intercept them.
     //
-    // When `assetPrefix` is configured, also accept asset requests under
-    // `<prefix>/_next/static/...` (or `/_next/static/...` for an absolute
-    // URL prefix). On disk the layout under `dist/client` mirrors the URL
-    // (see `resolveAppRouterAssetPath` for the full table), so the same
-    // helper handles both routers.
+    // On disk the layout under `dist/client` mirrors the URL:
+    //   - default                 → `_next/static/...`
+    //   - path-prefix assetPrefix → `<prefix>/_next/static/...`
+    //   - absolute-URL prefix     → `_next/static/...`
+    // (see `resolveAppRouterAssetPath` for the full table).
     //
     // Match the App Router's behaviour (above) and use the UN-stripped
     // `pathname` here, not `staticLookupPath`. Emitted asset URLs already
@@ -1482,12 +1476,19 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // path-prefix branch miss the match and return null → 404.
     // `staticLookupPath` is still computed because non-asset paths below
     // (image-optimization, SSR routing) match against the basePath-stripped form.
+    //
+    // Asset-shaped requests that don't find a file return a plain-text 404
+    // instead of falling through to the SSR/render handler (which would
+    // render the full HTML 404 page). Matches Next.js's behaviour in
+    // packages/next/src/server/lib/router-server.ts.
     const staticLookupPath = stripBasePath(pathname, basePath);
     const pagesAssetLookup = resolveAppRouterAssetPath(pathname, pagesAssetPathPrefix, assetPrefix);
-    if (
-      pagesAssetLookup &&
-      (await tryServeStatic(req, res, clientDir, pagesAssetLookup, compress, staticCache))
-    ) {
+    if (pagesAssetLookup) {
+      if (await tryServeStatic(req, res, clientDir, pagesAssetLookup, compress, staticCache)) {
+        return;
+      }
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not Found");
       return;
     }
 
@@ -1780,14 +1781,14 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // ── 5b. Serve public directory static files ────────────────────
       // Public directory files (non-build-asset static files) are served
       // after middleware so middleware can intercept or redirect them.
-      // Build assets (/assets/*) are already served in step 1.
+      // Build assets (/_next/static/*) are already served in step 1.
       // Middleware response headers (including config headers applied above)
       // are passed through so Set-Cookie, security headers, etc. from
       // middleware and next.config.js are included in the response.
       if (
         staticLookupPath !== "/" &&
         !staticLookupPath.startsWith("/api/") &&
-        !staticLookupPath.startsWith("/assets/") &&
+        !staticLookupPath.startsWith("/_next/static/") &&
         (await tryServeStatic(
           req,
           res,

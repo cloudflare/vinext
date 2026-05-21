@@ -2,18 +2,19 @@
  * Build-time precompression for hashed static assets.
  *
  * Generates .br (brotli q5), .gz (gzip l8), and .zst (zstd l8) files
- * alongside compressible assets in dist/client/assets/. Served directly by
- * the production server — no per-request compression needed for immutable
- * build output.
+ * alongside compressible assets in dist/client/_next/static/. Served
+ * directly by the production server — no per-request compression needed
+ * for immutable build output.
  *
- * Only targets assets/ (hashed, immutable) — public directory files use
- * on-the-fly compression since they may change between deploys.
+ * Only targets the hashed-asset directory (immutable) — public directory
+ * files use on-the-fly compression since they may change between deploys.
  */
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import { promisify } from "node:util";
+import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
 
 const brotliCompress = promisify(zlib.brotliCompress);
 const gzip = promisify(zlib.gzip);
@@ -77,23 +78,23 @@ async function* walkFiles(dir: string, base: string = dir): AsyncGenerator<strin
  * Safe to re-run — overwrites existing compressed variants with identical
  * output, and never compresses `.br`, `.gz`, or `.zst` files themselves.
  *
- * `assetsDir` defaults to `"assets"` (Vite's historical default). When
- * `assetPrefix` is configured the build writes assets to a different
- * directory (e.g. `"cdn/_next/static"` for a path prefix, or `"_next/static"`
- * for an absolute URL prefix); callers should resolve that with
+ * `assetsDir` defaults to `"_next/static"` (Next.js's canonical convention,
+ * matching `resolveAssetsDir("")`). When `assetPrefix` is configured as a
+ * path prefix the build writes assets to a different directory (e.g.
+ * `"cdn/_next/static"`); callers should resolve that with
  * `resolveAssetsDir(assetPrefix)` and thread it through. Without this,
- * `assetPrefix` builds would walk an empty `assets/` directory and emit
- * zero compressed variants.
+ * `assetPrefix` builds would walk an empty `_next/static/` directory and
+ * emit zero compressed variants.
  */
 export async function precompressAssets(
   clientDir: string,
   options: {
-    /** Subdirectory under `clientDir` containing hashed assets. Defaults to `"assets"`. */
+    /** Subdirectory under `clientDir` containing hashed assets. Defaults to `"_next/static"`. */
     assetsDir?: string;
     onProgress?: (completed: number, total: number, file: string) => void;
   } = {},
 ): Promise<PrecompressResult> {
-  const { assetsDir: assetsSubdir = "assets", onProgress } = options;
+  const { assetsDir: assetsSubdir = ASSET_PREFIX_URL_DIR, onProgress } = options;
   const assetsDir = path.join(clientDir, assetsSubdir);
   const result: PrecompressResult = {
     filesCompressed: 0,
