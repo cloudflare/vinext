@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
+import { isRecord } from "../utils/is-record.js";
 import { isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigPathAliasesForRoot } from "./tsconfig-paths.js";
 
@@ -216,6 +217,11 @@ export type NextConfig = {
   serverExternalPackages?: string[];
   /** Webpack config (ignored — we use Vite) */
   webpack?: unknown;
+  /** Turbopack config. vinext translates a small set of compatibility cases. */
+  turbopack?: {
+    rules?: Record<string, unknown>;
+    resolveAlias?: Record<string, unknown>;
+  };
   /**
    * Path to a custom cache handler module (e.g., KV, Redis, DynamoDB).
    * Accepts relative paths, absolute paths, or file:// URLs from import.meta.resolve().
@@ -322,6 +328,8 @@ export type ResolvedNextConfig = {
    * change without modifying source — useful for cache-busting after CDN poisoning.
    */
   hashSalt: string;
+  /** True when next.config uses the known Tailwind Turbopack CSS webpack loader shape. */
+  tailwindTurbopackCssLoader: boolean;
   /**
    * Raw `sassOptions` object from next.config (or `null` when unset). vinext
    * passes the relevant keys through to Vite's `css.preprocessorOptions.scss`
@@ -928,6 +936,7 @@ export async function resolveNextConfig(
       enablePrerenderSourceMaps: true,
       hashSalt: process.env.NEXT_HASH_SALT ?? "",
       buildId,
+      tailwindTurbopackCssLoader: false,
       deploymentId,
       sassOptions: null,
     };
@@ -995,6 +1004,8 @@ export async function resolveNextConfig(
     ...extractTurboAliases(config, root),
     ...webpackProbe.aliases,
   };
+  const tailwindTurbopackCssLoader = hasTailwindTurbopackCssLoader(config);
+  const hasUnsupportedTurbopackRules = hasUnsupportedConfiguredTurbopackRules(config);
 
   const allowedDevOrigins = Array.isArray(config.allowedDevOrigins) ? config.allowedDevOrigins : [];
 
@@ -1051,6 +1062,13 @@ export async function resolveNextConfig(
         '[vinext] next.config option "webpack" is not yet supported and will be ignored',
       );
     }
+  }
+
+  if (hasUnsupportedTurbopackRules) {
+    console.warn(
+      '[vinext] next.config option "turbopack.rules" contains rules that are not supported and will be ignored. ' +
+        "The known Tailwind CSS loader shape is translated automatically.",
+    );
   }
 
   const output = config.output ?? "";
@@ -1112,6 +1130,7 @@ export async function resolveNextConfig(
     enablePrerenderSourceMaps: config.enablePrerenderSourceMaps ?? true,
     hashSalt,
     buildId,
+    tailwindTurbopackCssLoader,
     deploymentId,
     sassOptions:
       config.sassOptions && typeof config.sassOptions === "object"
@@ -1161,7 +1180,7 @@ function normalizeAliasEntries(
 function extractTurboAliases(config: NextConfig, root: string): Record<string, string> {
   const experimental = config.experimental as Record<string, unknown> | undefined;
   const experimentalTurbo = experimental?.turbo as Record<string, unknown> | undefined;
-  const topLevelTurbopack = config.turbopack as Record<string, unknown> | undefined;
+  const topLevelTurbopack = config.turbopack;
 
   return {
     ...normalizeAliasEntries(
@@ -1173,6 +1192,84 @@ function extractTurboAliases(config: NextConfig, root: string): Record<string, s
       root,
     ),
   };
+}
+
+function getTurbopackRuleRecords(config: NextConfig): Record<string, unknown>[] {
+  const records: Record<string, unknown>[] = [];
+  const experimental = config.experimental as Record<string, unknown> | undefined;
+  const experimentalTurbo = experimental?.turbo;
+  if (isRecord(experimentalTurbo) && isRecord(experimentalTurbo.rules)) {
+    records.push(experimentalTurbo.rules);
+  }
+  if (isRecord(config.turbopack?.rules)) {
+    records.push(config.turbopack.rules);
+  }
+  return records;
+}
+
+function isTailwindWebpackLoader(loader: unknown): boolean {
+  if (typeof loader === "string") {
+    return loader === "@tailwindcss/webpack";
+  }
+  if (isRecord(loader) && typeof loader.loader === "string") {
+    return loader.loader === "@tailwindcss/webpack";
+  }
+  return false;
+}
+
+function turbopackRuleHasTailwindLoader(rule: unknown): boolean {
+  if (Array.isArray(rule)) {
+    return rule.some((item) => {
+      if (isTailwindWebpackLoader(item)) return true;
+      return isRecord(item) && turbopackRuleHasTailwindLoader(item);
+    });
+  }
+
+  if (!isRecord(rule)) return false;
+
+  if (Array.isArray(rule.loaders)) {
+    return rule.loaders.some(isTailwindWebpackLoader);
+  }
+
+  return false;
+}
+
+function isSupportedTailwindTurbopackCssRule(rule: unknown): boolean {
+  if (Array.isArray(rule)) {
+    return (
+      rule.length > 0 &&
+      rule.every((item) => {
+        if (isTailwindWebpackLoader(item)) return true;
+        return isRecord(item) && isSupportedTailwindTurbopackCssRule(item);
+      })
+    );
+  }
+
+  if (!isRecord(rule)) {
+    return false;
+  }
+
+  if (!("loaders" in rule)) {
+    return typeof rule.type === "string";
+  }
+
+  if (!Array.isArray(rule.loaders)) {
+    return false;
+  }
+
+  return rule.loaders.length > 0 && rule.loaders.every(isTailwindWebpackLoader);
+}
+
+function hasTailwindTurbopackCssLoader(config: NextConfig): boolean {
+  return getTurbopackRuleRecords(config).some((rules) =>
+    Object.values(rules).some((rule) => turbopackRuleHasTailwindLoader(rule)),
+  );
+}
+
+function hasUnsupportedConfiguredTurbopackRules(config: NextConfig): boolean {
+  return getTurbopackRuleRecords(config).some((rules) =>
+    Object.values(rules).some((rule) => !isSupportedTailwindTurbopackCssRule(rule)),
+  );
 }
 
 async function probeWebpackConfig(

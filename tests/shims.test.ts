@@ -10491,6 +10491,20 @@ describe("extractMdxOptions", () => {
     expect(config.mdx).not.toBeNull();
     expect(config.mdx!.remarkPlugins).toHaveLength(1);
   });
+
+  it("resolveNextConfig detects Tailwind Turbopack CSS loader rules", async () => {
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const config = await resolveNextConfig({
+      turbopack: {
+        rules: {
+          "*.scss": {
+            loaders: ["@tailwindcss/webpack"],
+          },
+        },
+      },
+    });
+    expect(config.tailwindTurbopackCssLoader).toBe(true);
+  });
 });
 
 describe("next/web-vitals shim", () => {

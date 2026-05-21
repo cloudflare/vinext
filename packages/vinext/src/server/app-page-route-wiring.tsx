@@ -98,6 +98,7 @@ export type AppPageRouteWiringRoute<
   notFounds?: readonly (TModule | null | undefined)[] | null;
   forbidden?: TModule | null;
   forbiddens?: readonly (TModule | null | undefined)[] | null;
+  styles?: readonly string[] | null;
   unauthorized?: TModule | null;
   unauthorizeds?: readonly (TModule | null | undefined)[] | null;
   routeSegments?: readonly string[];
@@ -139,6 +140,7 @@ type BuildAppPageRouteElementOptions<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = {
+  basePath?: string;
   element: ReactNode;
   globalErrorModule?: TErrorModule | null;
   makeThenableParams: (params: AppPageParams) => unknown;
@@ -360,6 +362,16 @@ function createAppPageRouteHead(
       <ViewportHead viewport={viewport} />
     </>
   );
+}
+
+function prefixRouteAssetHref(href: string, basePath: string | undefined): string {
+  if (!basePath || !href.startsWith("/") || href.startsWith("//")) {
+    return href;
+  }
+  if (href === basePath || href.startsWith(`${basePath}/`)) {
+    return href;
+  }
+  return `${basePath}${href}`;
 }
 
 export function buildAppPageElements<
@@ -840,8 +852,17 @@ export function buildAppPageElements<
     routeChildren = <ErrorBoundary fallback={globalErrorComponent}>{routeChildren}</ErrorBoundary>;
   }
 
+  // Source CSS links are dev-only route metadata. They make CSS available in
+  // the initial SSR HTML before Vite's client-side CSS injection runs; the
+  // trade-off is that dev may fetch a stylesheet Vite also sees in the module
+  // graph. They stay in the route body for dev simplicity; production CSS comes
+  // from the built client manifest.
   elements[routeId] = (
     <>
+      {options.route.styles?.map((href) => {
+        const assetHref = prefixRouteAssetHref(href, options.basePath);
+        return <link key={assetHref} rel="stylesheet" href={assetHref} />;
+      })}
       {createAppPageRouteHead(
         options.resolvedMetadata,
         options.resolvedViewport,

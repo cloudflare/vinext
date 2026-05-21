@@ -1,4 +1,5 @@
 import { fnv1a64 } from "../utils/hash.js";
+import { isRecord } from "../utils/is-record.js";
 
 export const ARTIFACT_COMPATIBILITY_SCHEMA_VERSION = 1;
 
@@ -97,10 +98,6 @@ export function createArtifactCompatibilityGraphVersion(
 ): string {
   const fingerprint = fnv1a64(JSON.stringify([input.routePattern, input.rootBoundaryId]));
   return `app-route-graph:${fingerprint}`;
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isStringOrNull(value: unknown): value is string | null {

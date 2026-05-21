@@ -4,10 +4,16 @@ import os from "node:os";
 
 describe("resolvePostcssStringPlugins", () => {
   let resolvePostcssStringPlugins: (typeof import("../packages/vinext/src/plugins/postcss.js"))["resolvePostcssStringPlugins"];
+  let inspectPostcssConfig: (typeof import("../packages/vinext/src/plugins/postcss.js"))["inspectPostcssConfig"];
+  let resolvePostcssPlugin: (typeof import("../packages/vinext/src/plugins/postcss.js"))["resolvePostcssPlugin"];
+  let isTailwindPostcssPluginValue: (typeof import("../packages/vinext/src/plugins/postcss.js"))["isTailwindPostcssPluginValue"];
 
   beforeAll(async () => {
     const mod = await import("../packages/vinext/src/plugins/postcss.js");
     resolvePostcssStringPlugins = mod.resolvePostcssStringPlugins;
+    inspectPostcssConfig = mod.inspectPostcssConfig;
+    resolvePostcssPlugin = mod.resolvePostcssPlugin;
+    isTailwindPostcssPluginValue = mod.isTailwindPostcssPluginValue;
   });
 
   /**
@@ -211,6 +217,89 @@ module.exports.postcss = true;
     }
   });
 
+  it("marks YAML PostCSS configs as opaque", async () => {
+    const fsp = await import("node:fs/promises");
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-postcss-yaml-"));
+    await fsp.writeFile(path.join(dir, ".postcssrc.yml"), "plugins:\n  autoprefixer: {}\n");
+    try {
+      const info = await inspectPostcssConfig(dir);
+      expect(info?.isOpaqueConfig).toBe(true);
+      expect(info?.postcss).toBeUndefined();
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+
+  it("throws for malformed PostCSS JSON configs", async () => {
+    const fsp = await import("node:fs/promises");
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-postcss-json-"));
+    await fsp.writeFile(path.join(dir, "postcss.config.json"), "{ invalid");
+    try {
+      await expect(resolvePostcssStringPlugins(dir)).rejects.toThrow();
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+
+  it("resolves object-form plugins from Next.js-supported postcss.config.json", async () => {
+    const dir = await createTmpProject(
+      "postcss.config.json",
+      JSON.stringify({ plugins: { "mock-postcss-plugin": {} } }),
+    );
+    try {
+      const result = await resolvePostcssStringPlugins(dir);
+      expect(result).toBeDefined();
+      expect(result!.plugins).toHaveLength(1);
+      expect(result!.plugins[0]).toHaveProperty("postcssPlugin", "mock-postcss-plugin");
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+
+  it("detects Tailwind PostCSS plugins so Tailwind config is not auto-injected twice", async () => {
+    const dir = await createTmpProject(
+      "postcss.config.mjs",
+      `export default { plugins: ["@tailwindcss/postcss"] };`,
+    );
+    try {
+      const info = await inspectPostcssConfig(dir);
+      expect(info?.hasTailwindPlugin).toBe(true);
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+
+  it("ignores disabled Tailwind PostCSS plugin entries", async () => {
+    const dir = await createTmpProject(
+      "postcss.config.json",
+      JSON.stringify({ plugins: { "@tailwindcss/postcss": false, "mock-postcss-plugin": {} } }),
+    );
+    try {
+      const info = await inspectPostcssConfig(dir);
+      expect(info?.hasTailwindPlugin).toBe(false);
+      const result = await info?.postcss;
+      expect(result?.plugins).toHaveLength(1);
+      expect(result?.plugins[0]).toHaveProperty("postcssPlugin", "mock-postcss-plugin");
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+
+  it("does not identify disabled Tailwind PostCSS tuples as active plugins", () => {
+    expect(isTailwindPostcssPluginValue(["@tailwindcss/postcss", false])).toBe(false);
+    expect(isTailwindPostcssPluginValue(["tailwindcss", false])).toBe(false);
+    expect(isTailwindPostcssPluginValue(["@tailwindcss/postcss", {}])).toBe(true);
+  });
+
+  it("throws when resolving a disabled PostCSS plugin directly", async () => {
+    const dir = await createTmpProject("postcss.config.cjs", `module.exports = { plugins: [] };`);
+    try {
+      await expect(resolvePostcssPlugin(dir, "mock-postcss-plugin", false)).rejects.toThrow();
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+
   // --- Config file priority ---
 
   it("picks postcss.config.js over .postcssrc", async () => {
@@ -229,6 +318,29 @@ module.exports.postcss = true;
       // postcss.config.js has array-form with string — should resolve
       expect(result).toBeDefined();
       expect(result!.plugins).toHaveLength(1);
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+
+  it("picks package.json postcss over file-based PostCSS config", async () => {
+    const fsp = await import("node:fs/promises");
+    const dir = await createTmpProject(
+      "postcss.config.js",
+      `module.exports = { plugins: ["missing-postcss-plugin"] };`,
+    );
+    await fsp.writeFile(
+      path.join(dir, "package.json"),
+      JSON.stringify({
+        type: "module",
+        postcss: { plugins: ["mock-postcss-plugin"] },
+      }),
+    );
+    try {
+      const result = await resolvePostcssStringPlugins(dir);
+      expect(result).toBeDefined();
+      expect(result!.plugins).toHaveLength(1);
+      expect(result!.plugins[0]).toHaveProperty("postcssPlugin", "mock-postcss-plugin");
     } finally {
       await cleanupDir(dir);
     }

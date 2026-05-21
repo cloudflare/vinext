@@ -17,9 +17,14 @@
  * - fixtures/app-basic/app/nextjs-compat/css-test/global/
  */
 
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { createServer } from "vite";
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, startFixtureServer, fetchHtml } from "../helpers.js";
+import vinext from "../../packages/vinext/src/index.js";
 
 describe("Next.js compat: app-css", () => {
   let server: ViteDevServer;
@@ -72,6 +77,79 @@ describe("Next.js compat: app-css", () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/css-test/global");
     // Global CSS class names are NOT scoped — should appear as-is
     expect(html).toContain('class="global-heading"');
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-css-pageextensions/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-css-pageextensions/index.test.ts
+  it("loads global CSS imported from src/app/layout", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-src-app-css-"));
+    let srcServer: ViteDevServer | undefined;
+    try {
+      await fs.mkdir(path.join(tmpDir, "src", "app"), { recursive: true });
+      await fs.symlink(
+        path.resolve(import.meta.dirname, "../../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      await fs.writeFile(
+        path.join(tmpDir, "package.json"),
+        JSON.stringify({ type: "module", dependencies: { react: "*", "react-dom": "*" } }),
+      );
+      await fs.writeFile(
+        path.join(tmpDir, "tsconfig.json"),
+        JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "#/*": ["./src/*"] } } }),
+      );
+      await fs.writeFile(
+        path.join(tmpDir, "src", "app", "globals.css"),
+        `.src-layout-global { color: rgb(12, 34, 56); }`,
+      );
+      await fs.writeFile(
+        path.join(tmpDir, "src", "app", "layout.tsx"),
+        `import "#/app/globals.css";
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      await fs.writeFile(
+        path.join(tmpDir, "src", "app", "page.tsx"),
+        `export default function Page() {
+  return <h1 className="src-layout-global">Layout Global CSS</h1>;
+}
+`,
+      );
+
+      srcServer = await createServer({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: path.join(tmpDir, "src") })],
+        logLevel: "silent",
+        server: { port: 0 },
+      });
+      await srcServer.listen();
+      const addr = srcServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") {
+        throw new Error("Expected fixture dev server to listen on a TCP port");
+      }
+      const srcBaseUrl = `http://localhost:${addr.port}`;
+      const { html } = await fetchHtml(srcBaseUrl, "/");
+      const cssHrefs = [...html.matchAll(/<link[^>]+href="([^"]+\.css[^"]*)"[^>]*>/g)].map(
+        (match) => match[1],
+      );
+      expect(cssHrefs.length).toBeGreaterThan(0);
+
+      const cssBodies = await Promise.all(
+        cssHrefs.map(async (href) => {
+          const response = await fetch(new URL(href, srcBaseUrl));
+          return response.text();
+        }),
+      );
+      expect(cssBodies.join("\n")).toContain(".src-layout-global");
+    } finally {
+      await srcServer?.close();
+      await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   });
 
   // ── Browser-only tests (documented, not ported) ──────────────

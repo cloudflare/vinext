@@ -134,6 +134,8 @@ type AppRouterConfig = {
    * `virtual:vinext-server-entry` when this flag is set.
    */
   hasPagesDir?: boolean;
+  /** Dev-only source stylesheet hrefs, aligned by route index. */
+  devCssStylesByRoute?: readonly (readonly string[])[];
   /** Exact public/ file routes, using normalized leading-slash pathnames. */
   publicFiles?: string[];
 };
@@ -172,6 +174,7 @@ export function generateRscEntry(
     routes,
     metadataRoutes,
     globalErrorPath,
+    devCssStylesByRoute: config?.devCssStylesByRoute,
     globalNotFoundPath: config?.globalNotFoundPath ?? null,
   });
   const {

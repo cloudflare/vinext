@@ -1037,6 +1037,52 @@ describe("app page route wiring helpers", () => {
     expect(body).toContain("Blog page");
   });
 
+  it("prefixes route stylesheet hrefs with the configured basePath", async () => {
+    function BlogPage() {
+      return createElement("main", null, "Blog page");
+    }
+
+    const elements = buildAppPageElements({
+      basePath: "/docs",
+      element: createElement(BlogPage),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["blog"],
+        slots: null,
+        styles: [
+          "/src/app/globals.css",
+          "/docs/src/app/already-prefixed.css",
+          "//cdn.test/app.css",
+        ],
+      },
+      routePath: "/blog",
+      rootNotFoundModule: null,
+    });
+
+    const body = await renderRouteEntry(elements, "route:/blog");
+    const stylesheetHrefs = [
+      ...body.matchAll(/<link\b(?=[^>]*\brel="stylesheet")(?=[^>]*\bhref="([^"]+)")[^>]*>/g),
+    ].map((match) => match[1]);
+
+    expect(stylesheetHrefs).toEqual([
+      "/docs/src/app/globals.css",
+      "/docs/src/app/already-prefixed.css",
+      "//cdn.test/app.css",
+    ]);
+  });
+
   it("nests per-segment NotFoundBoundary inside the template wrapper", () => {
     function RootNotFound() {
       return createElement("div", { "data-not-found": "root" }, "Not Found");

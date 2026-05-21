@@ -108,8 +108,14 @@ import {
 } from "./plugins/fonts.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import { computeLazyChunks } from "./utils/lazy-chunks.js";
-import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
+import { isRecord } from "./utils/is-record.js";
+import { resolveCssConfigCompatibility } from "./plugins/css-config-compat.js";
 import { buildSassPreprocessorOptions } from "./plugins/sass.js";
+import type { DevCssImportsCache } from "./server/dev-css-imports.js";
+import {
+  buildDevRouteAssetManifest,
+  getRouteCssHrefsInRouteOrder,
+} from "./server/route-asset-manifest.js";
 import {
   createClientManualChunks,
   createClientOutputConfig,
@@ -184,10 +190,6 @@ function resolveShimModulePath(shimsDir: string, moduleName: string): string {
 
 function toRelativeFileEntry(root: string, absPath: string): string {
   return path.relative(root, absPath).split(path.sep).join("/");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
@@ -637,6 +639,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
+  let viteCommand: "build" | "serve" = "serve";
+  let devCssAliases: Record<string, string> = {};
+  const devCssImportsCache: DevCssImportsCache = new Map();
   let rscCompatibilityId: string | undefined;
 
   // Build-time layout classification manifest, captured in the RSC virtual
@@ -939,6 +944,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       enforce: "pre",
 
       async config(config, env) {
+        viteCommand = env?.command ?? "serve";
         root = config.root ?? process.cwd();
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         const shouldEnableNativeTsconfigPaths =
@@ -1029,6 +1035,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           nextConfig = await resolveNextConfig(rawConfig, root);
         }
+        devCssAliases = {
+          ...tsconfigPathAliases,
+          ...nextConfig.aliases,
+        };
         rscCompatibilityId ??= createRscCompatibilityId(nextConfig);
         fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);
         instrumentationPath = findInstrumentationFile(root, fileMatcher);
@@ -1263,18 +1273,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             (p.name === "nitro" || p.name.startsWith("nitro:")),
         );
 
-        // Resolve PostCSS string plugin names that Vite can't handle.
-        // Next.js projects commonly use array-form plugins like
-        // `plugins: ["@tailwindcss/postcss"]` which postcss-load-config
-        // doesn't resolve (only object-form keys are resolved). We detect
-        // this and resolve the strings to actual plugin functions, then
-        // inject via css.postcss so Vite uses the resolved plugins.
-        // Only do this if the user hasn't already set css.postcss inline.
-        // oxlint-disable-next-line typescript/no-explicit-any
-        let postcssOverride: { plugins: any[] } | undefined;
-        if (!config.css?.postcss || typeof config.css.postcss === "string") {
-          postcssOverride = await resolvePostcssStringPlugins(root);
-        }
+        const cssCompatConfig = await resolveCssConfigCompatibility({
+          projectRoot: root,
+          viteConfig: config,
+          nextConfig,
+          configuredPlugins: pluginsFlat,
+        });
 
         // Translate `sassOptions` from next.config into Vite's
         // `css.preprocessorOptions.scss` / `.sass` shape so SCSS variables
@@ -1287,6 +1291,27 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         //
         // Reference: packages/next/src/build/webpack/config/blocks/css/index.ts
         const sassPreprocessorOptions = buildSassPreprocessorOptions(nextConfig.sassOptions);
+        const cssConfig =
+          cssCompatConfig.css || sassPreprocessorOptions
+            ? {
+                css: {
+                  ...cssCompatConfig.css,
+                  ...(sassPreprocessorOptions
+                    ? {
+                        preprocessorOptions: {
+                          ...cssCompatConfig.css?.preprocessorOptions,
+                          // Apply the same options to both `.scss` and `.sass`
+                          // entry points. Next.js's sass-loader rule matches
+                          // /\.s[ca]ss$/, so a single `sassOptions` block
+                          // covers both syntaxes there too.
+                          scss: sassPreprocessorOptions,
+                          sass: sassPreprocessorOptions,
+                        },
+                      }
+                    : {}),
+                },
+              }
+            : {};
 
         // Auto-inject @mdx-js/rollup when MDX files exist and no MDX plugin is
         // already configured. Applies remark/rehype plugins from next.config.
@@ -1560,6 +1585,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // below — that keeps `basePath` and `assetPrefix` independent, as
           // they are in Next.js.
           ...(nextConfig.basePath ? { base: nextConfig.basePath + "/" } : {}),
+          // Inject CSS config shapes that Next.js supports but Vite does not
+          // discover or normalize on its own, plus sassOptions translated from
+          // next.config into Vite's preprocessorOptions shape.
+          ...cssConfig,
           // When `assetPrefix` is configured, override Vite's default
           // `assetsURL = base + url` behaviour so emitted JS/CSS/asset URLs
           // start with the configured asset prefix and use Next.js's
@@ -1593,30 +1622,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                         : filename;
                     return urlPrefix + stripped;
                   },
-                },
-              }
-            : {}),
-          // Inject resolved PostCSS plugins (when found) and any
-          // sassOptions translated from next.config. Both end up on
-          // `css.*`, so we merge them into a single `css` object rather
-          // than emitting `{ css: ... }` twice (the second would clobber
-          // the first).
-          ...(postcssOverride || sassPreprocessorOptions
-            ? {
-                css: {
-                  ...(postcssOverride ? { postcss: postcssOverride } : {}),
-                  ...(sassPreprocessorOptions
-                    ? {
-                        preprocessorOptions: {
-                          // Apply the same options to both `.scss` and `.sass`
-                          // entry points. Next.js's sass-loader rule matches
-                          // /\.s[ca]ss$/, so a single `sassOptions` block
-                          // covers both syntaxes there too.
-                          scss: sassPreprocessorOptions,
-                          sass: sassPreprocessorOptions,
-                        },
-                      }
-                    : {}),
                 },
               }
             : {}),
@@ -2121,7 +2126,35 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
         // App Router virtual modules
         if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
+          const resolveDevCssImport = async (specifier: string, importerPath: string) => {
+            // CSS file resolution is expected to be environment-neutral; the
+            // browser fetches the returned source href even though this resolve
+            // runs while generating the RSC entry.
+            const resolved = await this.resolve(specifier, importerPath, { skipSelf: true });
+            return resolved?.id.split("?", 1)[0] ?? null;
+          };
           const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
+          const devCssStylesByRoute =
+            viteCommand === "build"
+              ? undefined
+              : getRouteCssHrefsInRouteOrder(
+                  await buildDevRouteAssetManifest(
+                    routes,
+                    {
+                      projectRoot: root,
+                      aliases: devCssAliases,
+                      onParseError(filePath, error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        console.warn(
+                          `[vinext] Failed to scan CSS imports in ${filePath}: ${message}`,
+                        );
+                      },
+                      resolve: resolveDevCssImport,
+                    },
+                    devCssImportsCache,
+                  ),
+                  routes,
+                );
           const metaRoutes = scanMetadataFiles(appDir);
           // Check for global-error.tsx at app root
           const globalErrorPath = findFileWithExts(appDir, "global-error", fileMatcher);
@@ -2158,6 +2191,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               expireTime: nextConfig?.expireTime,
               i18n: nextConfig?.i18n,
               hasPagesDir,
+              devCssStylesByRoute,
               publicFiles: scanPublicFileRoutes(root),
               globalNotFoundPath,
             },

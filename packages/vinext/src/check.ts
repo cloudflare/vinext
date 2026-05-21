@@ -6,6 +6,7 @@
  */
 
 import { detectPackageManager } from "./utils/project.js";
+import { findPostcssConfig } from "./plugins/postcss.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -192,6 +193,11 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   webpack: {
     status: "unsupported",
     detail: "Vite replaces webpack — custom webpack configs need migration",
+  },
+  "turbopack.rules": {
+    status: "partial",
+    detail:
+      "generic Turbopack loader rules are not translated; the known Tailwind CSS loader is handled",
   },
   enablePrerenderSourceMaps: {
     status: "supported",
@@ -457,10 +463,27 @@ export function analyzeConfig(root: string): CheckItem[] {
     }
   }
 
+  if (hasTailwindTurbopackCssRule(content)) {
+    items.push({
+      name: "Tailwind Turbopack CSS loader",
+      status: "partial",
+      detail:
+        'vinext translates "@tailwindcss/webpack" CSS rules to "@tailwindcss/postcss" when needed',
+    });
+  }
+
   // Sort: unsupported first
   items.sort(compareByStatus);
 
   return items;
+}
+
+function hasTailwindTurbopackCssRule(content: string): boolean {
+  return (
+    /\bturbopack\s*:\s*\{/.test(content) &&
+    /\brules\s*:\s*\{/.test(content) &&
+    /['"]@tailwindcss\/webpack['"]/.test(content)
+  );
 }
 
 /**
@@ -647,19 +670,28 @@ export function checkConventions(root: string): CheckItem[] {
     });
   }
 
-  // Check PostCSS config for string-form plugins
-  const postcssConfigs = ["postcss.config.mjs", "postcss.config.js", "postcss.config.cjs"];
-  for (const configFile of postcssConfigs) {
-    const configPath = path.join(root, configFile);
-    if (fs.existsSync(configPath)) {
-      const content = fs.readFileSync(configPath, "utf-8");
+  const postcssConfig = findPostcssConfig(root);
+  if (postcssConfig) {
+    const configFile = path.basename(postcssConfig.configPath);
+    const content = fs.readFileSync(postcssConfig.configPath, "utf-8");
+    const isJsonConfig =
+      configFile === "package.json" ||
+      configFile === "postcss.config.json" ||
+      configFile === ".postcssrc.json" ||
+      (configFile === ".postcssrc" && postcssConfig.config !== undefined);
+    if (isJsonConfig) {
+      items.push({
+        name: `PostCSS config (${configFile})`,
+        status: "supported",
+        detail:
+          "JSON PostCSS config is supported by Next.js and vinext injects string-form plugins into Vite automatically",
+      });
+    } else {
       // Detect string-form plugins: plugins: ["..."] or plugins: ['...']
       const stringPluginRegex = /plugins\s*:\s*\[[\s\S]*?(['"][^'"]+['"])[\s\S]*?\]/;
       const match = stringPluginRegex.exec(content);
       if (match) {
-        // Check it's not require() or import() form — just bare string literals in the array
         const pluginsBlock = match[0];
-        // If plugins array contains string literals not wrapped in require()
         if (/plugins\s*:\s*\[[\s\n]*['"]/.test(pluginsBlock)) {
           items.push({
             name: `PostCSS string-form plugins (${configFile})`,
@@ -669,7 +701,6 @@ export function checkConventions(root: string): CheckItem[] {
           });
         }
       }
-      break; // Only check the first config file found
     }
   }
 

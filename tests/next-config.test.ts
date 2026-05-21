@@ -635,6 +635,74 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
   });
 });
 
+describe("resolveNextConfig turbopack.rules warning", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("does not warn for the known Tailwind Turbopack CSS loader shape", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      turbopack: {
+        rules: {
+          "*.css": {
+            loaders: ["@tailwindcss/webpack"],
+          },
+        },
+      },
+    });
+
+    const turbopackRulesWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("turbopack.rules"),
+    );
+    expect(turbopackRulesWarning).toBeUndefined();
+  });
+
+  it("does not warn for type-only Turbopack CSS rules", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const config = await resolveNextConfig({
+      turbopack: {
+        rules: {
+          "*.css": {
+            type: "css",
+          },
+        },
+      },
+    });
+
+    expect(config.tailwindTurbopackCssLoader).toBe(false);
+    const turbopackRulesWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("turbopack.rules"),
+    );
+    expect(turbopackRulesWarning).toBeUndefined();
+  });
+
+  it("warns when unsupported Turbopack rules are configured alongside Tailwind CSS", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const config = await resolveNextConfig({
+      turbopack: {
+        rules: {
+          "*.css": {
+            loaders: ["@tailwindcss/webpack"],
+          },
+          "*.svg": {
+            loaders: ["@svgr/webpack"],
+          },
+        },
+      },
+    });
+
+    expect(config.tailwindTurbopackCssLoader).toBe(true);
+    const turbopackRulesWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("turbopack.rules"),
+    );
+    expect(turbopackRulesWarning).toBeDefined();
+  });
+});
+
 describe("parseBodySizeLimit", () => {
   it("parses megabyte strings", () => {
     expect(parseBodySizeLimit("10mb")).toBe(10 * 1024 * 1024);
@@ -920,6 +988,7 @@ describe("detectNextIntlConfig", () => {
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
       hashSalt: "",
+      tailwindTurbopackCssLoader: false,
       enablePrerenderSourceMaps: true,
       expireTime: 31_536_000,
       buildId: "test-build-id",

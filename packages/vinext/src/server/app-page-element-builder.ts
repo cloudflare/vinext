@@ -206,6 +206,7 @@ export async function buildPageElements<
     resolvedMetadataPathname: routePath,
     resolvedViewport,
     interceptionContext: opts?.interceptionContext ?? null,
+    basePath: options.basePath,
     interception,
     routePath,
     rootNotFoundModule: rootNotFoundModule ?? null,
