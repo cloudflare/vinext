@@ -84,6 +84,13 @@ type LinkProps = {
   passHref?: boolean;
   /** Scroll to top on navigation (default: true) */
   scroll?: boolean;
+  /**
+   * Pages Router: update the URL without re-running data fetching methods
+   * (getServerSideProps / getStaticProps / getInitialProps). The shallow change
+   * still triggers the route change events and updates `router.query`. Only
+   * applies to navigations within the same page. No-op on the App Router.
+   */
+  shallow?: boolean;
   /** Locale for i18n (used for locale-prefixed URLs) */
   locale?: string | false;
   /** Called before navigation happens (Next.js 16). Return value is ignored. */
@@ -397,6 +404,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     replace = false,
     prefetch: prefetchProp,
     scroll = true,
+    shallow = false,
     children,
     onClick,
     onMouseEnter,
@@ -630,7 +638,13 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       try {
         const routerModule = await import("next/router");
         const Router = routerModule.default;
-        await navigatePagesRouterLink(Router, { href: absoluteHref, replace, scroll, locale });
+        await navigatePagesRouterLink(Router, {
+          href: absoluteHref,
+          replace,
+          scroll,
+          shallow,
+          locale,
+        });
       } catch {
         // Fallback to hard navigation if router fails
         if (replace) {

@@ -101,6 +101,16 @@ describe("Link rendering", () => {
     expect(html).not.toContain("locale=");
   });
 
+  it("does not render shallow as an HTML attribute", () => {
+    // Regression for #1332 sub-problem 3: the `shallow` boolean is consumed
+    // by the click handler and must not leak onto the rendered <a>.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/test", shallow: true }, "Test"),
+    );
+    expect(html).not.toContain("shallow");
+    expect(html).toContain('href="/test"');
+  });
+
   it("passes through standard anchor attributes", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(
@@ -515,6 +525,70 @@ describe("Link locale handling", () => {
 
     expect(push).toHaveBeenCalledWith("/fr/about", undefined, { scroll: true, locale: "fr" });
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  // Regression for #1332 sub-problem 3: `<Link shallow>` must reach
+  // Router.push with `shallow: true` so the Pages Router skips the
+  // _next/data fetch and only updates the URL. Mirrors Next.js's
+  // test/e2e/middleware-trailing-slash shallow-link assertion at
+  // packages/next/src/client/link.tsx.
+  it("forwards shallow=true through the Pages Router Link handoff (push)", async () => {
+    const push = vi.fn(async () => true);
+    const replace = vi.fn(async () => true);
+
+    await navigatePagesRouterLink(
+      { push, replace },
+      { href: "/sha?hello=world", replace: false, scroll: true, shallow: true },
+    );
+
+    expect(push).toHaveBeenCalledWith("/sha?hello=world", undefined, {
+      scroll: true,
+      locale: undefined,
+      shallow: true,
+    });
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("forwards shallow=true through the Pages Router Link handoff (replace)", async () => {
+    const push = vi.fn(async () => true);
+    const replace = vi.fn(async () => true);
+
+    await navigatePagesRouterLink(
+      { push, replace },
+      { href: "/sha?hello=world", replace: true, scroll: true, shallow: true },
+    );
+
+    expect(replace).toHaveBeenCalledWith("/sha?hello=world", undefined, {
+      scroll: true,
+      locale: undefined,
+      shallow: true,
+    });
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("forwards shallow=false explicitly when the default is used", async () => {
+    const push = vi.fn(async () => true);
+    const replace = vi.fn(async () => true);
+
+    await navigatePagesRouterLink(
+      { push, replace },
+      { href: "/sha", replace: false, scroll: true, shallow: false },
+    );
+
+    expect(push).toHaveBeenCalledWith("/sha", undefined, {
+      scroll: true,
+      locale: undefined,
+      shallow: false,
+    });
+  });
+
+  it("omits shallow from router options when the caller does not pass it", async () => {
+    const push = vi.fn(async () => true);
+    const replace = vi.fn(async () => true);
+
+    await navigatePagesRouterLink({ push, replace }, { href: "/", replace: false, scroll: true });
+
+    expect(push).toHaveBeenCalledWith("/", undefined, { scroll: true, locale: undefined });
   });
 });
 
