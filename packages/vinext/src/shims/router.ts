@@ -297,6 +297,14 @@ type SSRContext = {
   locales?: string[];
   defaultLocale?: string;
   domainLocales?: VinextNextData["domainLocales"];
+  /**
+   * True when rendering a `getStaticPaths` fallback shell for a path that
+   * hasn't been pre-rendered yet (`fallback: true` + unlisted path). Mirrors
+   * `renderContext.isFallback` in Next.js's `render.tsx`: `getStaticProps`
+   * is skipped, the page renders with empty props, and `useRouter().isFallback`
+   * returns `true` so user code can show a loading state.
+   */
+  isFallback?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -796,7 +804,10 @@ function buildRouterValue(
     domainLocales,
     isReady: true,
     isPreview: false,
-    isFallback: typeof window !== "undefined" && nextData?.isFallback === true,
+    isFallback:
+      typeof window !== "undefined"
+        ? nextData?.isFallback === true
+        : _ssrState?.isFallback === true,
     ...methods,
     events: routerEvents,
   };
@@ -1268,7 +1279,7 @@ const Router: typeof RouterMethods & Omit<NextRouter, keyof typeof RouterMethods
     isFallback: {
       enumerable: true,
       get(): boolean {
-        if (typeof window === "undefined") return false;
+        if (typeof window === "undefined") return _getSSRContext()?.isFallback === true;
         return (window.__NEXT_DATA__ as VinextNextData | undefined)?.isFallback === true;
       },
     },

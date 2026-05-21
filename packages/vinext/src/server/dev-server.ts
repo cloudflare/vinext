@@ -415,9 +415,15 @@ export function createSSRHandler(
         // Collect page props via data fetching methods
         let pageProps: Record<string, unknown> = {};
         let isrRevalidateSeconds: number | null = null;
+        // Set when `getStaticPaths: { fallback: true }` is configured and the
+        // requested path is NOT in the pre-rendered list. Triggers the loading
+        // shell render below: `getStaticProps`/`getServerSideProps` are skipped
+        // and `useRouter().isFallback === true`, matching Next.js render.tsx.
+        let isFallbackRender = false;
 
-        // Handle getStaticPaths for dynamic routes: validate the path
-        // and respect fallback: false (return 404 for unlisted paths).
+        // Handle getStaticPaths for dynamic routes: validate the path,
+        // respect `fallback: false` (return 404 for unlisted paths), and
+        // render the loading shell for unlisted paths under `fallback: true`.
         if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
           const pathsResult = await pageModule.getStaticPaths({
             locales: i18nConfig?.locales ?? [],
@@ -425,59 +431,71 @@ export function createSSRHandler(
           });
           const fallback = pathsResult?.fallback ?? false;
 
-          if (fallback === false) {
-            // Only allow paths explicitly listed in getStaticPaths. Next.js
-            // accepts `paths` as Array<string | { params, locale? }>; the
-            // shared `StaticPathsEntry` type and `normalizeStaticPathname`
-            // helper in `../routing/route-pattern.ts` reference the upstream
-            // implementation.
-            type DevStaticPathsEntry = Exclude<StaticPathsEntry, null | undefined>;
-            const paths: Array<DevStaticPathsEntry> = pathsResult?.paths ?? [];
-            const currentPathname = normalizeStaticPathname(url);
-            const isValidPath = paths.some((p) => {
-              if (typeof p === "string") {
-                return normalizeStaticPathname(p) === currentPathname;
+          // Only allow paths explicitly listed in getStaticPaths. Next.js
+          // accepts `paths` as Array<string | { params, locale? }>; the
+          // shared `StaticPathsEntry` type and `normalizeStaticPathname`
+          // helper in `../routing/route-pattern.ts` reference the upstream
+          // implementation.
+          type DevStaticPathsEntry = Exclude<StaticPathsEntry, null | undefined>;
+          const paths: Array<DevStaticPathsEntry> = pathsResult?.paths ?? [];
+          const currentPathname = normalizeStaticPathname(url);
+          const isValidPath = paths.some((p) => {
+            if (typeof p === "string") {
+              return normalizeStaticPathname(p) === currentPathname;
+            }
+            const entryParams = p.params;
+            if (entryParams === undefined || entryParams === null) {
+              return false;
+            }
+            return Object.entries(entryParams).every(([key, val]) => {
+              const actual = params[key];
+              if (Array.isArray(val)) {
+                return Array.isArray(actual) && val.join("/") === actual.join("/");
               }
-              const entryParams = p.params;
-              if (entryParams === undefined || entryParams === null) {
-                return false;
-              }
-              return Object.entries(entryParams).every(([key, val]) => {
-                const actual = params[key];
-                if (Array.isArray(val)) {
-                  return Array.isArray(actual) && val.join("/") === actual.join("/");
-                }
-                return String(val) === String(actual);
-              });
+              return String(val) === String(actual);
             });
+          });
 
-            if (!isValidPath) {
-              if (isDataReq) {
-                // Data requests get a JSON 404 so the client router can
-                // hard-navigate instead of trying to parse HTML as JSON.
-                res.writeHead(404, { "Content-Type": "application/json" });
-                res.end("{}");
-                return;
-              }
-              await renderErrorPage(
-                server,
-                runner,
-                req,
-                res,
-                url,
-                pagesDir,
-                404,
-                routerShim.wrapWithRouterContext,
-                matcher,
-              );
+          if (fallback === false && !isValidPath) {
+            if (isDataReq) {
+              // Data requests get a JSON 404 so the client router can
+              // hard-navigate instead of trying to parse HTML as JSON.
+              res.writeHead(404, { "Content-Type": "application/json" });
+              res.end("{}");
               return;
             }
+            await renderErrorPage(
+              server,
+              runner,
+              req,
+              res,
+              url,
+              pagesDir,
+              404,
+              routerShim.wrapWithRouterContext,
+              matcher,
+            );
+            return;
           }
-          // fallback: true or "blocking" — always SSR on-demand.
-          // In dev mode, Next.js does the same (no fallback shell).
-          // In production, both modes SSR on-demand with caching.
-          // The difference is that fallback:true could serve a shell first,
-          // but since we always have data available via SSR, we render fully.
+
+          // Render the loading shell for `fallback: true` when the path
+          // wasn't pre-rendered. Data requests still resolve real props so
+          // the client can swap in after the shell ships.
+          if (fallback === true && !isValidPath && !isDataReq) {
+            isFallbackRender = true;
+            if (typeof routerShim.setSSRContext === "function") {
+              routerShim.setSSRContext({
+                pathname: patternToNextFormat(route.pattern),
+                query,
+                asPath: url,
+                locale: locale ?? currentDefaultLocale,
+                locales: i18nConfig?.locales,
+                defaultLocale: currentDefaultLocale,
+                domainLocales,
+                isFallback: true,
+              });
+            }
+          }
         }
 
         // Headers set by getServerSideProps for explicit forwarding to
@@ -486,7 +504,7 @@ export function createSSRHandler(
         // would silently break if streamPageToResponse is refactored.
         const gsspExtraHeaders: Record<string, string | string[]> = {};
 
-        if (typeof pageModule.getServerSideProps === "function") {
+        if (typeof pageModule.getServerSideProps === "function" && !isFallbackRender) {
           // Snapshot existing headers so we can detect what gSSP adds.
           const headersBeforeGSSP = new Set(Object.keys(res.getHeaders()));
 
@@ -591,7 +609,7 @@ export function createSSRHandler(
           // Font modules not loaded yet — skip
         }
 
-        if (typeof pageModule.getStaticProps === "function") {
+        if (typeof pageModule.getStaticProps === "function" && !isFallbackRender) {
           // Check ISR cache before calling getStaticProps
           const cacheKey = isrCacheKey(
             "pages",
@@ -1001,7 +1019,7 @@ hydrate();
             page: patternToNextFormat(route.pattern),
             query: params,
             buildId: process.env.__VINEXT_BUILD_ID,
-            isFallback: false,
+            isFallback: isFallbackRender,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,

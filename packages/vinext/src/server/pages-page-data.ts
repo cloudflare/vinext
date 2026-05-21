@@ -144,6 +144,13 @@ type ResolvePagesPageDataRenderResult = {
   gsspRes: PagesGsspResponse | null;
   isrRevalidateSeconds: number | null;
   pageProps: Record<string, unknown>;
+  /**
+   * True when `getStaticPaths` returned `fallback: true` AND the requested path
+   * is not in the pre-rendered list. The caller renders a loading shell with
+   * empty props and `useRouter().isFallback === true` (matching Next.js's
+   * `render.tsx` — `getStaticProps` is skipped on the fallback render).
+   */
+  isFallback: boolean;
 };
 
 type ResolvePagesPageDataResponseResult = {
@@ -307,35 +314,58 @@ export async function resolvePagesPageData(
     ? options.params
     : null;
 
+  // Set when `getStaticPaths: { fallback: true }` is configured and the
+  // requested path is NOT in the pre-rendered list. When true, we render the
+  // loading shell with empty props and `useRouter().isFallback === true`,
+  // skipping `getStaticProps`. Matches Next.js `render.tsx`'s
+  // `if (isSSG && !isFallback)` gate around `getStaticProps`. Data requests
+  // (`/_next/data/...json`) still call `getStaticProps` so the client can
+  // hydrate the page after the fallback shell ships.
+  let isFallback = false;
+
   if (typeof options.pageModule.getStaticPaths === "function" && options.route.isDynamic) {
     const pathsResult = await options.pageModule.getStaticPaths({
       locales: options.i18n.locales ?? [],
       defaultLocale: options.i18n.defaultLocale ?? "",
     });
     const fallback = pathsResult?.fallback ?? false;
+    const paths = pathsResult?.paths ?? [];
+    const isValidPath = paths.some((pathEntry) =>
+      matchesPagesStaticPath(pathEntry, options.params, options.routeUrl),
+    );
 
-    if (fallback === false) {
-      const paths = pathsResult?.paths ?? [];
-      const isValidPath = paths.some((pathEntry) =>
-        matchesPagesStaticPath(pathEntry, options.params, options.routeUrl),
-      );
+    if (fallback === false && !isValidPath) {
+      // For data requests (`/_next/data/...json`), return a JSON-shaped 404
+      // so the client router can `res.json()` without blowing up — matches
+      // Next.js' behavior. HTML navigations still get the HTML 404 page.
+      return {
+        kind: "response",
+        response: options.isDataReq
+          ? buildPagesDataNotFoundResponse()
+          : buildPagesNotFoundResponse(),
+      };
+    }
 
-      if (!isValidPath) {
-        // For data requests (`/_next/data/...json`), return a JSON-shaped 404
-        // so the client router can `res.json()` without blowing up — matches
-        // Next.js' behavior. HTML navigations still get the HTML 404 page.
-        return {
-          kind: "response",
-          response: options.isDataReq
-            ? buildPagesDataNotFoundResponse()
-            : buildPagesNotFoundResponse(),
-        };
-      }
+    // Render the fallback shell for unlisted paths under `fallback: true`.
+    // Data requests resolve props normally so the client can fill in after
+    // the loading shell ships (`fallback: 'blocking'` keeps SSRing as before).
+    if (fallback === true && !isValidPath && !options.isDataReq) {
+      isFallback = true;
     }
   }
 
   let pageProps: Record<string, unknown> = {};
   let gsspRes: PagesMutableGsspResponse | null = null;
+
+  if (isFallback) {
+    return {
+      kind: "render",
+      gsspRes: null,
+      isrRevalidateSeconds: null,
+      pageProps,
+      isFallback: true,
+    };
+  }
 
   if (typeof options.pageModule.getServerSideProps === "function") {
     const { req, res, responsePromise } = options.createGsspReqRes();
@@ -517,5 +547,6 @@ export async function resolvePagesPageData(
     gsspRes,
     isrRevalidateSeconds,
     pageProps,
+    isFallback: false,
   };
 }

@@ -54,6 +54,13 @@ type RenderPagesPageResponseOptions = {
     expireSeconds?: number,
   ) => Promise<void>;
   i18n: PagesI18nRenderContext;
+  /**
+   * True when rendering a `getStaticPaths` fallback shell for a path that
+   * isn't pre-rendered (`fallback: true` + unlisted path). Forwarded to
+   * `buildPagesNextDataScript` so the client serialises `isFallback: true`
+   * into `__NEXT_DATA__`, then later hydrates by fetching the data URL.
+   */
+  isFallback?: boolean;
   pageProps: Record<string, unknown>;
   params: Record<string, unknown>;
   renderDocumentToString: (element: ReactNode) => Promise<string>;
@@ -94,6 +101,7 @@ export function buildPagesNextDataScript(
     RenderPagesPageResponseOptions,
     | "buildId"
     | "i18n"
+    | "isFallback"
     | "pageProps"
     | "params"
     | "routePattern"
@@ -108,7 +116,7 @@ export function buildPagesNextDataScript(
     page: options.routePattern,
     query: options.params,
     buildId: options.buildId,
-    isFallback: false,
+    isFallback: options.isFallback === true,
   };
 
   if (options.i18n.locales) {
@@ -304,6 +312,7 @@ export async function renderPagesPageResponse(
   const nextDataScript = buildPagesNextDataScript({
     buildId: options.buildId,
     i18n: options.i18n,
+    isFallback: options.isFallback,
     pageProps: options.pageProps,
     params: options.params,
     routePattern: options.routePattern,

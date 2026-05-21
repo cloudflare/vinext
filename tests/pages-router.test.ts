@@ -1273,16 +1273,35 @@ describe("Pages Router integration", () => {
     expect(html).toMatch(/isFallback:.*false/);
   });
 
-  it("SSR renders unlisted path with getStaticPaths fallback: true (on-demand)", async () => {
-    // In dev/SSR mode, fallback: true still renders fully (same as blocking)
-    // because data is always available via on-demand SSR.
+  it("renders fallback shell for unlisted path with getStaticPaths fallback: true", async () => {
+    // Next.js parity: when `fallback: true` and the path isn't pre-rendered,
+    // skip getStaticProps, render with `useRouter().isFallback === true`, and
+    // ship a loading shell that the client later swaps for the full data.
+    // See: .nextjs-ref/packages/next/src/server/render.tsx — `if (isSSG && !isFallback)`.
     const res = await fetch(`${baseUrl}/products/unknown`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toMatch(/Product\s*(<!-- -->)?\s*unknown/);
-    expect(html).toMatch(/Product ID:.*unknown/);
-    // isFallback should be false since we always SSR fully
-    expect(html).toMatch(/isFallback:.*false/);
+    expect(html).toContain("Loading product...");
+    // The full-content branch must NOT render — getStaticProps was skipped.
+    expect(html).not.toMatch(/Product ID:.*unknown/);
+    const match = html.match(/__NEXT_DATA__\s*=\s*(\{.*?\})\s*[;<]/);
+    expect(match).toBeTruthy();
+    const nextData = JSON.parse(match![1]);
+    expect(nextData.isFallback).toBe(true);
+    // Empty pageProps on the fallback shell — client fetches them later.
+    expect(nextData.props).toEqual({ pageProps: {} });
+  });
+
+  it("resolves real props for the data URL of an unlisted fallback: true path", async () => {
+    // Counterpart to the fallback-shell test: the page HTML ships empty props,
+    // but the client follows up with `/_next/data/<buildId>/products/unknown.json`
+    // to fetch the actual props. That request must invoke getStaticProps.
+    const res = await fetch(`${baseUrl}/_next/data/test-build-id/products/unknown.json`, {
+      headers: { "x-nextjs-data": "1" },
+    });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.pageProps).toMatchObject({ pid: "unknown" });
   });
 
   it("includes isFallback: false in __NEXT_DATA__", async () => {
@@ -3293,6 +3312,24 @@ describe("Production server middleware (Pages Router)", () => {
     const html = await res.text();
     // /rewritten should serve the content of /ssr page
     expect(html).toContain("Server-Side Rendered");
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // ('should rewrite to fallback: true page successfully').
+  // Refs #1331: post-rewrite fallback: true must render the loading shell.
+  it("renders the loading shell when middleware/route targets an unlisted fallback: true path", async () => {
+    const res = await fetch(`${prodUrl}/products/never-built`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // Page renders its fallback branch (the slug is not in getStaticPaths).
+    expect(html).toContain("Loading product...");
+    // Full-data branch must not have rendered — getStaticProps was skipped.
+    expect(html).not.toMatch(/Product ID:.*never-built/);
+    const match = html.match(/__NEXT_DATA__\s*=\s*(\{.*?\})\s*[;<]/);
+    expect(match).toBeTruthy();
+    const nextData = JSON.parse(match![1]);
+    expect(nextData.isFallback).toBe(true);
+    expect(nextData.props).toEqual({ pageProps: {} });
   });
 
   // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
