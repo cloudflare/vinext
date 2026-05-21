@@ -103,6 +103,14 @@ const nextConfig: NextConfig = {
         { source: "/after-rewrite-about", destination: "/about" },
         // Used by E2E: config-redirect.spec.ts
         { source: "/config-rewrite", destination: "/" },
+        // Used by Vitest: nextjs-compat/hooks.test.ts — usePathname should
+        // return the CANONICAL URL after a config rewrite, not the internal
+        // rewrite target. Ported from Next.js test/e2e/app-dir/hooks/next.config.js
+        // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/next.config.js
+        {
+          source: "/rewritten-use-pathname",
+          destination: "/nextjs-compat/hooks-search",
+        },
       ],
       fallback: [
         // Used by Vitest: app-router.test.ts — fallback rewrite gated on a

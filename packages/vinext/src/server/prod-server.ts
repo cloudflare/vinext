@@ -52,7 +52,13 @@ import {
   normalizeTrailingSlash,
 } from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import {
+  isNextDataPathname,
+  parseNextDataPathname,
+  buildNextDataNotFoundResponse,
+} from "./pages-data-route.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { mergeRewriteQuery } from "../utils/query.js";
 import {
   ASSET_PREFIX_URL_DIR,
   assetPrefixPathname,
@@ -66,6 +72,7 @@ import { readPrerenderSecret } from "../build/server-manifest.js";
 import { VINEXT_PRERENDER_SECRET_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { seedMemoryCacheFromPrerender } from "./seed-cache.js";
 import { installSocketErrorBackstop } from "./socket-error-backstop.js";
+import { stripI18nLocaleForApiRoute } from "./pages-i18n.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -1306,7 +1313,7 @@ function readPagesServerEntryPageRoutes(value: unknown): PagesServerEntryPageRou
  *
  * Uses the server entry (dist/server/entry.js) which exports:
  * - renderPage(request, url, manifest, ctx?, middlewareHeaders?) — SSR rendering (Web Request → Response)
- * - handleApiRoute(request, url) — API route handling (Web Request → Response)
+ * - handleApiRoute(request, url, ctx?) — API route handling (ctx optional; pass for ctx.waitUntil() on Workers)
  * - runMiddleware(request, ctx?) — middleware execution (ctx optional; pass for ctx.waitUntil() on Workers)
  * - vinextConfig — embedded next.config.js settings
  */
@@ -1318,7 +1325,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   // the freshly built module rather than a stale cached copy.
   const serverMtime = fs.statSync(serverEntryPath).mtimeMs;
   const serverEntry = await import(`${pathToFileURL(serverEntryPath).href}?t=${serverMtime}`);
-  const { renderPage, handleApiRoute: handleApi, runMiddleware, vinextConfig } = serverEntry;
+  const {
+    renderPage,
+    handleApiRoute: handleApi,
+    runMiddleware,
+    vinextConfig,
+    buildId: pagesBuildId,
+  } = serverEntry;
   const matchPageRoute =
     typeof serverEntry.matchPageRoute === "function" ? serverEntry.matchPageRoute : undefined;
   const pageRoutes = readPagesServerEntryPageRoutes(serverEntry.pageRoutes);
@@ -1523,6 +1536,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
     try {
       // ── 2. Strip basePath ─────────────────────────────────────────
+      // Track whether the original request was under basePath. This drives
+      // the basePath gating of rewrites/redirects/headers below — Next.js
+      // only applies default rules to requests inside basePath, and only
+      // applies `basePath: false` rules to requests outside it.
+      const hadBasePath = !basePath || hasBasePath(pathname, basePath);
       {
         const stripped = stripBasePath(pathname, basePath);
         if (stripped !== pathname) {
@@ -1531,6 +1549,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           pathname = stripped;
         }
       }
+      const basePathState = { basePath, hadBasePath };
 
       // ── 3. Trailing slash normalization ───────────────────────────
       {
@@ -1547,6 +1566,30 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         }
       }
 
+      // ── 3b. `_next/data` normalization ────────────────────────────
+      // Pages Router client-side navigations fetch
+      // `/_next/data/<buildId>/<page>.json`. The page path must be normalized
+      // BEFORE middleware runs so middleware sees `/page`, matching Next.js
+      // (see `handleNextDataRequest` in base-server.ts). If the buildId in the
+      // URL does not match this server's buildId we return a JSON 404 right
+      // here — stale clients can fall back to a hard navigation without
+      // accidentally triggering middleware/SSR on a bogus path.
+      let isDataReq = false;
+      if (isNextDataPathname(pathname)) {
+        const dataMatch = pagesBuildId ? parseNextDataPathname(pathname, pagesBuildId) : null;
+        if (!dataMatch) {
+          // Wrong buildId (or malformed) — surface a JSON 404 so the client
+          // hard-navigates instead of silently rendering an empty page.
+          const notFound = buildNextDataNotFoundResponse();
+          await sendWebResponse(notFound, req, res, compress);
+          return;
+        }
+        isDataReq = true;
+        const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+        url = dataMatch.pagePathname + qs;
+        pathname = dataMatch.pagePathname;
+      }
+
       // Convert Node.js req to Web Request for the server entry
       const rawProtocol = trustProxy
         ? (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim()
@@ -1557,6 +1600,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         if (v) h.set(k, Array.isArray(v) ? v.join(", ") : v);
         return h;
       }, new Headers());
+      // Capture `x-nextjs-data` before filterInternalHeaders strips it — the
+      // middleware redirect protocol needs to know whether the inbound request
+      // was a `_next/data` fetch to emit `x-nextjs-redirect` instead of a 3xx.
+      const isDataRequest = rawReqHeaders.get("x-nextjs-data") === "1";
       // Strip internal headers from inbound requests before any handler or
       // middleware sees them.
       const reqHeaders = filterInternalHeaders(rawReqHeaders);
@@ -1580,13 +1627,19 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       // ── 4. Apply redirects from next.config.js ────────────────────
       if (configRedirects.length) {
-        const redirect = matchRedirect(pathname, configRedirects, reqCtx);
+        // The matcher sees the stripped pathname when the request was under
+        // basePath, and the original (un-stripped) pathname otherwise. The
+        // basePath gating inside `matchRedirect` then filters rules based on
+        // their `basePath: false` opt-out so the wrong rule set can't match.
+        const redirect = matchRedirect(pathname, configRedirects, reqCtx, basePathState);
         if (redirect) {
-          // Guard against double-prefixing: only add basePath if destination
-          // doesn't already start with it.
-          // Sanitize the final destination to prevent protocol-relative URL open redirects.
+          // Guard against double-prefixing: only add basePath if the
+          // request was under basePath AND the destination doesn't already
+          // start with it. basePath: false rules with `hadBasePath === false`
+          // must NOT receive a basePath prefix.
           const dest = sanitizeDestination(
             basePath &&
+              hadBasePath &&
               !isExternalUrl(redirect.destination) &&
               !hasBasePath(redirect.destination, basePath)
               ? basePath + redirect.destination
@@ -1603,7 +1656,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       const middlewareHeaders: Record<string, string | string[]> = {};
       let middlewareStatus: number | undefined;
       if (typeof runMiddleware === "function") {
-        const result = await runMiddleware(webRequest, undefined);
+        const result = await runMiddleware(webRequest, undefined, { isDataRequest });
 
         // Settle waitUntil promises immediately — in Node.js there's no ctx.waitUntil().
         // Must run BEFORE the !result.continue check so promises survive redirect/response paths
@@ -1713,6 +1766,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           configHeaders,
           pathname,
           requestContext: reqCtx,
+          basePathState,
         });
       }
 
@@ -1748,24 +1802,53 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
 
       // ── 7. Apply beforeFiles rewrites from next.config.js ─────────
+      let configRewriteFired = false;
       if (configRewrites.beforeFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
+        const rewritten = matchRewrite(
+          resolvedPathname,
+          configRewrites.beforeFiles,
+          postMwReqCtx,
+          basePathState,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             const proxyResponse = await proxyExternalRequest(webRequest, rewritten);
             await sendWebResponse(proxyResponse, req, res, compress);
             return;
           }
-          resolvedUrl = rewritten;
-          resolvedPathname = rewritten.split("?")[0];
+          // Preserve the original request's query params across the config
+          // rewrite. Matches Next.js `Object.assign(parsedUrl.query, ...)`.
+          resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
+          resolvedPathname = resolvedUrl.split("?")[0];
+          configRewriteFired = true;
         }
       }
 
+      // ── 7b. Reject out-of-basePath requests that no rule rewrote ──
+      // When `basePath` is configured and the request was outside it,
+      // only `basePath: false` rules can keep it alive. If none matched,
+      // the request must 404 — Next.js does not serve internal routes
+      // from outside the configured basePath.
+      // @see .nextjs-ref/packages/next/src/server/lib/router-utils/resolve-routes.ts:304-309
+      if (basePath && !hadBasePath && !configRewriteFired) {
+        res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
+        res.end("This page could not be found");
+        return;
+      }
+
       // ── 8. API routes ─────────────────────────────────────────────
-      if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
+      // Strip the i18n locale prefix before the `/api/` check so
+      // `/fr/api/ok` resolves to the `pages/api/ok` handler (Next.js
+      // parity — see base-server.ts's normalizeLocalePath call).
+      const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, vinextConfig?.i18n ?? null);
+      const apiLookupPathname = apiLookupUrl.split("?")[0];
+      if (apiLookupPathname.startsWith("/api/") || apiLookupPathname === "/api") {
         let response: Response;
         if (typeof handleApi === "function") {
-          response = await handleApi(webRequest, resolvedUrl);
+          // Pass a Node-shaped ExecutionContext so any after() calls in the
+          // API handler still get a working waitUntil (which fires
+          // background work without blocking the response).
+          response = await handleApi(webRequest, apiLookupUrl, createNodeExecutionContext());
         } else {
           response = new Response("404 - API route not found", { status: 404 });
         }
@@ -1803,15 +1886,20 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // ── 9. Apply afterFiles rewrites from next.config.js ──────────
       // These run after non-dynamic page routes but before dynamic routes.
       if ((!pageMatch || pageMatch.route.isDynamic) && configRewrites.afterFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, postMwReqCtx);
+        const rewritten = matchRewrite(
+          resolvedPathname,
+          configRewrites.afterFiles,
+          postMwReqCtx,
+          basePathState,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             const proxyResponse = await proxyExternalRequest(webRequest, rewritten);
             await sendWebResponse(proxyResponse, req, res, compress);
             return;
           }
-          resolvedUrl = rewritten;
-          resolvedPathname = rewritten.split("?")[0];
+          resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
+          resolvedPathname = resolvedUrl.split("?")[0];
         }
       }
 
@@ -1819,12 +1907,14 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       let response: Response | undefined;
       if (typeof renderPage === "function") {
         const middlewareResponseHeaders = toWebHeaders(middlewareHeaders);
+        const renderOptions = isDataReq ? { isDataReq: true } : undefined;
         response = await renderPage(
           webRequest,
           resolvedUrl,
           ssrManifest,
           undefined,
           middlewareResponseHeaders,
+          renderOptions,
         );
 
         // ── 11. Fallback rewrites (if SSR returned 404) ─────────────
@@ -1833,6 +1923,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             resolvedPathname,
             configRewrites.fallback,
             postMwReqCtx,
+            basePathState,
           );
           if (fallbackRewrite) {
             if (isExternalUrl(fallbackRewrite)) {
@@ -1842,10 +1933,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             }
             response = await renderPage(
               webRequest,
-              fallbackRewrite,
+              mergeRewriteQuery(resolvedUrl, fallbackRewrite),
               ssrManifest,
               undefined,
               middlewareResponseHeaders,
+              renderOptions,
             );
           }
         }

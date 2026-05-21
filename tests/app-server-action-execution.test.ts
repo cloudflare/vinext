@@ -583,6 +583,26 @@ describe("app server action execution helpers", () => {
     expect(clearContext).toHaveBeenCalledTimes(1);
   });
 
+  // The progressive (MPA / no-JS form POST) path also needs to recognise the
+  // prod-build "server reference not found" shape thrown by
+  // `@vitejs/plugin-rsc` when the referenced action id isn't in the built
+  // manifest, including when the build has no server actions at all.
+  it("returns action-not-found when the prod build has no matching reference on a progressive action", async () => {
+    const response = requireProgressiveActionResponse(
+      await handleProgressiveServerActionRequest(
+        createOptions({
+          async decodeAction() {
+            throw new Error("server reference not found 'abc123'");
+          },
+        }),
+      ),
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await response.text()).toBe("Server action not found.");
+  });
+
   it("returns action-not-found for progressive decode misses that include an action id", async () => {
     const response = requireProgressiveActionResponse(
       await handleProgressiveServerActionRequest(
@@ -876,6 +896,40 @@ describe("app server action execution helpers", () => {
     expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
     expect(await response?.text()).toBe("Server action not found.");
     expect(decodeReply).not.toHaveBeenCalled();
+  });
+
+  // Reproduces the prod-build error path where the @vitejs/plugin-rsc server
+  // references manifest doesn't include the requested action id. In a build
+  // with NO server actions defined at all, the action loader throws
+  // `server reference not found '<id>'` (not the dev-mode `[vite-rsc] invalid
+  // server reference '<id>'`). Both shapes have to land on the 404 +
+  // `x-nextjs-action-not-found` response that the client router recognises.
+  //
+  // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
+  it("returns action-not-found when the prod build has no matching server reference", async () => {
+    const reportedErrors: Error[] = [];
+    const renderToReadableStream = vi.fn();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        actionId: "abc123",
+        loadServerAction() {
+          return Promise.reject(new Error("server reference not found 'abc123'"));
+        },
+        renderToReadableStream,
+        reportRequestError(error) {
+          reportedErrors.push(error);
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(response?.headers.get("content-type")).toBe("text/plain");
+    expect(await response?.text()).toBe("Server action not found.");
+    expect(reportedErrors).toEqual([]);
+    expect(renderToReadableStream).not.toHaveBeenCalled();
   });
 
   it("keeps unrelated server action loader failures on the generic error path", async () => {

@@ -2,7 +2,7 @@ import {
   mergeMetadataEntries,
   mergeViewport,
   postProcessMetadata,
-  resolveModuleMetadata,
+  resolveModuleMetadata as _resolveModuleMetadata,
   resolveModuleViewport,
   type Metadata,
   type MetadataMergeEntry,
@@ -11,8 +11,29 @@ import {
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { applyFileBasedMetadata } from "./file-based-metadata.js";
 import type { AppPageParams } from "./app-page-boundary.js";
+import { tagAppPageMetadataError } from "./app-page-execution.js";
 import { resolveAppPageSegmentParams } from "./app-page-params.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
+
+/**
+ * Wrapped {@link _resolveModuleMetadata} that tags any thrown error with the
+ * `APP_PAGE_METADATA_ERROR_MARKER` symbol. The marker lets downstream special-
+ * error handling distinguish a `generateMetadata()` redirect/notFound from a
+ * page-component redirect/notFound, which matters because metadata is
+ * suspended/streamed in Next.js: its redirects ride inside the flight payload
+ * with a 200 status code even for document SSR, whereas page redirects still
+ * emit a 307 for SSR. See https://github.com/cloudflare/vinext/issues/1347
+ * and Next.js test/e2e/app-dir/metadata-navigation.
+ */
+async function resolveModuleMetadata(
+  ...args: Parameters<typeof _resolveModuleMetadata>
+): Promise<Metadata | null> {
+  try {
+    return await _resolveModuleMetadata(...args);
+  } catch (error) {
+    throw tagAppPageMetadataError(error);
+  }
+}
 
 type AppPageSearchParams = Record<string, string | string[]>;
 
@@ -368,12 +389,23 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
   const parallelViewportResults = parallelRouteHeads.flatMap((head) => head.viewportResults);
   const parallelMetadataSources = parallelRouteHeads.flatMap((head) => head.metadataSources);
 
+  // Active parallel slot metadata is suppressed from contributing the primary
+  // <title> when the matched page already provides one. This preserves Next.js
+  // behavior where slot pages (typically modals/sidebars rendered alongside the
+  // main page) don't clobber the page title. When the route has no children
+  // page providing a title (e.g. a parallel layout that doesn't render
+  // `{children}`, or a parent that only has `default.tsx`), the slot page's
+  // title is the most specific signal and is allowed to contribute — matching
+  // Next.js's loader-tree walk which appends slot metadata items in tree order
+  // with no title suppression.
+  // Reference: https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
+  const primaryPageHasTitle = pageMetadata != null && pageMetadata.title !== undefined;
   const metadataEntries: MetadataMergeEntry[] = [
     ...layoutMetadataResults.filter(isPresent).map((metadata) => ({ metadata })),
     ...(pageMetadata ? [{ isPage: true, metadata: pageMetadata }] : []),
     ...parallelMetadataResults
       .filter(isPresent)
-      .map((metadata) => ({ contributesTitle: false, metadata })),
+      .map((metadata) => ({ contributesTitle: !primaryPageHasTitle, metadata })),
   ];
   const viewportList = [
     ...layoutViewportResults.filter(isPresent),

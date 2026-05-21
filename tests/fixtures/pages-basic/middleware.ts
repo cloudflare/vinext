@@ -7,6 +7,10 @@ export function middleware(request: NextRequest) {
   // Add a custom header to all matched requests
   const response = NextResponse.next();
   response.headers.set("x-custom-middleware", "active");
+  // Expose the pathname middleware actually observed. Used by tests verifying
+  // `/_next/data/<buildId>/<page>.json` is normalized to `/page` BEFORE
+  // middleware runs (matching Next.js' `handleNextDataRequest` pipeline).
+  response.headers.set("x-mw-pathname", url.pathname);
 
   // Redirect /old-page to /about
   if (url.pathname === "/old-page") {
@@ -24,6 +28,26 @@ export function middleware(request: NextRequest) {
   // Rewrite /rewritten to /ssr
   if (url.pathname === "/rewritten") {
     return NextResponse.rewrite(new URL("/ssr", request.url));
+  }
+
+  // Rewrite /mw-rewrite-query to /ssr-query — preserves the original
+  // request's query params on the rewrite target so getServerSideProps
+  // sees them. Mirrors Next.js: test/e2e/edge-pages-support.
+  if (url.pathname === "/mw-rewrite-query") {
+    return NextResponse.rewrite(new URL("/ssr-query", request.url));
+  }
+
+  // Rewrite /mw-rewrite-dynamic-query to /posts/first — the rewrite
+  // target is dynamic, so the resulting query should contain both the
+  // dynamic param (id=first) and the original query (?hello=world).
+  if (url.pathname === "/mw-rewrite-dynamic-query") {
+    return NextResponse.rewrite(new URL("/posts/first", request.url));
+  }
+
+  // Rewrite target carries its own query — rewrite-target params should
+  // win over original request params on key conflicts.
+  if (url.pathname === "/mw-rewrite-merge-query") {
+    return NextResponse.rewrite(new URL("/ssr-query?hello=from-rewrite", request.url));
   }
 
   if (url.pathname === "/rewrite-with-cookie") {

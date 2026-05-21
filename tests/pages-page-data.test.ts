@@ -297,4 +297,73 @@ describe("pages page data", () => {
       pageProps: { title: "hello" },
     });
   });
+
+  // Matches Next.js behavior: for non-dynamic routes, `params` in
+  // getServerSideProps context is null (not `{}`).
+  // Ported from Next.js: test/e2e/edge-pages-support/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-pages-support/index.test.ts#L67-L77
+  it("passes params: null to getServerSideProps on non-dynamic routes", async () => {
+    let received: unknown = "untouched";
+    await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getServerSideProps(context) {
+            received = context.params;
+            return { props: {} };
+          },
+        },
+        params: {},
+        query: {},
+        route: { isDynamic: false },
+        routePattern: "/",
+        routeUrl: "/",
+      }),
+    );
+
+    expect(received).toBeNull();
+  });
+
+  it("passes the matched params object to getServerSideProps on dynamic routes", async () => {
+    let received: unknown = null;
+    await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getServerSideProps(context) {
+            received = context.params;
+            return { props: {} };
+          },
+        },
+        params: { id: "123" },
+        query: { id: "123" },
+        route: { isDynamic: true },
+        routePattern: "/[id]",
+        routeUrl: "/123",
+      }),
+    );
+
+    expect(received).toEqual({ id: "123" });
+  });
+
+  // Matches Next.js behavior: for non-dynamic routes, `params` in
+  // getStaticProps context is null (not `{}`).
+  it("passes params: null to getStaticProps on non-dynamic routes", async () => {
+    let received: unknown = "untouched";
+    await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticProps(context) {
+            received = context.params;
+            return { props: {} };
+          },
+        },
+        params: {},
+        query: {},
+        route: { isDynamic: false },
+        routePattern: "/",
+        routeUrl: "/",
+      }),
+    );
+
+    expect(received).toBeNull();
+  });
 });

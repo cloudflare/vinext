@@ -123,6 +123,17 @@ describe("App Router integration", () => {
     expect(html).toContain("This is the about page.");
   });
 
+  // Ported from Next.js: test/e2e/async-modules/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/async-modules/index.test.ts
+  it("renders pages that use top-level await (async modules)", async () => {
+    const res = await fetch(`${baseUrl}/async-modules-test`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain('<div id="app-value">hello</div>');
+    expect(html).toContain('<div id="page-value">42</div>');
+  });
+
   // Ported from Next.js: test/e2e/prerender.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/prerender.test.ts
   it("returns Method Not Allowed for non-action mutation requests to App Router pages", async () => {
@@ -553,6 +564,59 @@ describe("App Router integration", () => {
     // @parallelB slot should show the nested sub-page
     expect(html).toContain('data-testid="parallelB-nested-page"');
     expect(html).toContain("Hello from nested parallel page!");
+  });
+
+  // --- Sibling route-group with catch-all parallel slot ---
+  // Ported from Next.js: test/e2e/app-dir/parallel-routes-catchall-groups/parallel-routes-catchall-groups.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-catchall-groups/parallel-routes-catchall-groups.test.ts
+  //
+  // Two sibling route groups share the same URL pattern (/parallel-group-catchall):
+  //   (group-b) owns the children-rendering layout, page.tsx, and foo/page.tsx
+  //   (group-a) owns a layout that only renders a `parallel` slot plus
+  //             @parallel/[...catcher]/page.tsx as a catch-all fallback
+  // Navigating to /parallel-group-catchall/foo matches the explicit (group-b) page.
+  // Navigating to /parallel-group-catchall/bar has no explicit page, so the
+  // catch-all slot in (group-a) must take over instead of falling back to
+  // default.tsx / not-found.
+
+  it("renders the explicit page at the shared root URL of two sibling route groups", async () => {
+    // /parallel-group-catchall has an explicit page in (group-b) and a
+    // layout-only sibling in (group-a). The explicit page must win.
+    const res = await fetch(`${baseUrl}/parallel-group-catchall`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain('data-testid="group-b-layout"');
+    expect(html).toContain('data-testid="group-b-home"');
+    expect(html).toContain("Group B Home");
+    // No catch-all takeover at the explicit page URL.
+    expect(html).not.toContain('data-testid="parallel-catcher"');
+    expect(html).not.toContain('data-testid="group-a-layout"');
+  });
+
+  it("matches an explicit sibling page when both route groups define the same URL space", async () => {
+    const res = await fetch(`${baseUrl}/parallel-group-catchall/foo`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain('data-testid="group-b-layout"');
+    expect(html).toContain('data-testid="group-b-foo"');
+    expect(html).toContain("Foo Page");
+    // The (group-a) catch-all must not steal an explicitly matched URL.
+    expect(html).not.toContain('data-testid="parallel-catcher"');
+  });
+
+  it("falls back to a catch-all parallel slot in a sibling route group", async () => {
+    // /parallel-group-catchall/bar has no own page anywhere — only
+    // (group-a)/@parallel/[...catcher]/page.tsx can render it.
+    const res = await fetch(`${baseUrl}/parallel-group-catchall/bar`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain('data-testid="group-a-layout"');
+    expect(html).toContain('data-testid="group-a-parallel-slot"');
+    expect(html).toContain('data-testid="parallel-catcher"');
+    expect(html).toContain("Catcher");
   });
 
   // --- useSelectedLayoutSegment(s) ---
@@ -1103,6 +1167,80 @@ describe("App Router integration", () => {
     const location = res.headers.get("location");
     expect(location).toBeTruthy();
     expect(location).toContain("/about");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
+  //
+  // When a server component calls `redirect()` and the client makes an RSC
+  // navigation request, Next.js returns HTTP 200 with the redirect instruction
+  // encoded in the RSC flight payload. The status code must be 200 because the
+  // client uses `redirect: 'manual'` fetch semantics when validating
+  // cache-busting; a raw 307 would break that flow. vinext addresses RSC
+  // payloads via the `.rsc` suffix (not the `Rsc` header — see
+  // app-rsc-request-normalization.ts), so we hit `.rsc` directly here.
+  //
+  // See: https://github.com/cloudflare/vinext/issues/1347
+  it("redirect() from Server Component returns 200 + flight payload for RSC navigations", async () => {
+    const res = await fetch(`${baseUrl}/redirect-test.rsc`, {
+      redirect: "manual",
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    const text = await res.text();
+    // The redirect must be embedded in the flight payload so the client router
+    // can detect it and navigate. Match Next.js's encoding: the NEXT_REDIRECT
+    // digest is serialized as part of the React error chunk.
+    expect(text).toContain("NEXT_REDIRECT");
+    expect(text).toContain("/about");
+  });
+
+  it("permanentRedirect() from Server Component returns 200 + flight payload for RSC navigations", async () => {
+    const res = await fetch(`${baseUrl}/permanent-redirect-test.rsc`, {
+      redirect: "manual",
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    const text = await res.text();
+    expect(text).toContain("NEXT_REDIRECT");
+    expect(text).toContain("/about");
+    // The digest preserves the 308 status code so the client knows it's a
+    // permanent redirect. Mirrors Next.js's `redirect()` vs
+    // `permanentRedirect()` distinction in the flight payload encoding.
+    expect(text).toContain("308");
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
+  // ("should support redirect in generateMetadata"). When generateMetadata
+  // throws redirect(), Next.js still returns 200 — metadata is suspended in
+  // SSR so the redirect rides inside the streamed flight payload rather than
+  // becoming an HTTP-level 307. See:
+  //   https://github.com/cloudflare/vinext/issues/1347
+  it("redirect() from generateMetadata returns 200 with flight redirect payload (RSC)", async () => {
+    const res = await fetch(`${baseUrl}/metadata-redirect-test.rsc`, {
+      redirect: "manual",
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    const text = await res.text();
+    expect(text).toContain("NEXT_REDIRECT");
+    expect(text).toContain("/about");
+  });
+
+  it("redirect() from generateMetadata returns 200 for SSR document request", async () => {
+    const res = await fetch(`${baseUrl}/metadata-redirect-test`, {
+      redirect: "manual",
+    });
+    // Metadata is suspended in SSR — the redirect surfaces via the inlined
+    // flight payload, not as an HTTP-level redirect.
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain("NEXT_REDIRECT");
+    expect(text).toContain("/about");
   });
 
   // ── probePage() with Next.js 15+ async params/searchParams ──

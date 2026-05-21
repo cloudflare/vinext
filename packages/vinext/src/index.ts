@@ -13,6 +13,7 @@ import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
 import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
+import { stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
@@ -42,6 +43,7 @@ import {
 } from "./config/next-config.js";
 
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
+import { isNextDataPathname, parseNextDataPathname } from "./server/pages-data-route.js";
 import {
   MIDDLEWARE_HEADER_PREFIX,
   MIDDLEWARE_NEXT_HEADER,
@@ -80,6 +82,7 @@ import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-r
 import { detectPackageManager } from "./utils/project.js";
 import { manifestFileWithBase, manifestFilesWithBase } from "./utils/manifest-paths.js";
 import { hasBasePath } from "./utils/base-path.js";
+import { mergeRewriteQuery } from "./utils/query.js";
 import {
   ASSET_PREFIX_URL_DIR,
   resolveAssetUrlPrefix,
@@ -87,8 +90,10 @@ import {
 } from "./utils/asset-prefix.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
+import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
+import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
 import { generateRouteTypes } from "./typegen.js";
@@ -934,6 +939,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           } satisfies Plugin,
         ]
       : []),
+    // Allow `import 'server-only'` from middleware (and any module reachable
+    // from it) in non-RSC environments. Registered before `vinext:config` so
+    // its `enforce: "pre"` resolveId runs ahead of @vitejs/plugin-rsc's
+    // `rsc:validate-imports` (which rejects bare `server-only` outside RSC).
+    // See packages/vinext/src/plugins/middleware-server-only.ts for the
+    // import-chain taint design.
+    createMiddlewareServerOnlyPlugin({
+      getMiddlewarePath: () => middlewarePath,
+      getCanonicalMiddlewarePath: () =>
+        middlewarePath ? (tryRealpathSync(middlewarePath) ?? middlewarePath) : null,
+      serverOnlyShimPath: resolveShimModulePath(shimsDir, "server-only"),
+    }),
+    // Resolve `data:text/css[+module],...` imports into virtual CSS files so
+    // Vite's CSS pipeline (LightningCSS, CSS modules) processes them instead
+    // of leaving the data URL as a runtime import that Node/workerd cannot
+    // load. Matches Turbopack's behaviour for the Next.js
+    // `css-modules-data-urls` fixture. See plugins/css-data-url.ts.
+    dataUrlCssPlugin(),
     {
       name: "vinext:config",
       enforce: "pre",
@@ -2853,6 +2876,42 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }
               }
 
+              // ── `_next/data` normalization (Pages Router) ──────────────
+              // Client-side navigations in the Pages Router fetch
+              // `/_next/data/<buildId>/<page>.json`. Normalize the URL to the
+              // page path BEFORE middleware runs so middleware sees `/page`
+              // (matching Next.js — see `handleNextDataRequest` in
+              // base-server.ts). If the buildId is missing (dev) or matches,
+              // accept the request; if it is present and wrong, fall through
+              // to the dot-extension skip below which returns 404.
+              let isDataReq = false;
+              if (isNextDataPathname(pathname)) {
+                // Use the plugin's resolved buildId so a user-supplied
+                // `generateBuildId` in next.config.mjs is honored in dev —
+                // matching the value embedded into the prod entry. Fall back
+                // to the env-var define (set by the plugin) and finally
+                // "development" if the plugin hasn't resolved a config yet.
+                const devBuildId =
+                  nextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development";
+                const dataMatch = parseNextDataPathname(pathname, devBuildId);
+                if (dataMatch) {
+                  isDataReq = true;
+                  const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+                  url = dataMatch.pagePathname + qs;
+                  pathname = dataMatch.pagePathname;
+                  // Rewrite req.url so downstream middleware sees the page
+                  // path, not the raw _next/data URL.
+                  req.url = url;
+                } else {
+                  // Stale buildId or malformed path. Return a JSON 404 here
+                  // (matching the prod-server path) so clients hard-navigate
+                  // instead of trying to parse Vite's HTML 404 as JSON.
+                  res.writeHead(404, { "Content-Type": "application/json" });
+                  res.end("{}");
+                  return;
+                }
+              }
+
               // Skip requests for files with extensions (static assets) after
               // trailing-slash canonicalization so file-looking dynamic routes
               // like /catch-all/hello.world/ still get the Next.js redirect.
@@ -2878,6 +2937,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]),
                 ),
               );
+              // Capture `x-nextjs-data` before filterInternalHeaders strips it
+              // — the middleware redirect protocol needs to know whether the
+              // inbound request was a `_next/data` fetch to emit
+              // `x-nextjs-redirect` instead of a 3xx.
+              const isDataRequest = rawHeaders.get("x-nextjs-data") === "1";
               // Strip internal headers from inbound requests so they cannot be
               // forged to influence routing or impersonate internal state.
               // Both the middleware Request (built below) and the SSR handler
@@ -2958,6 +3022,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   middlewareRequest,
                   nextConfig?.i18n,
                   nextConfig?.basePath,
+                  isDataRequest,
                 );
 
                 // Settle waitUntil promises — no ctx.waitUntil() in dev, but
@@ -3100,14 +3165,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // pre-middleware request state; middleware response headers win
               // later because they are already on the outgoing response.
               if (nextConfig?.headers.length) {
-                applyHeaders(pathname, res, nextConfig.headers, preMiddlewareReqCtx);
+                applyHeaders(pathname, res, nextConfig.headers, preMiddlewareReqCtx, bp);
               }
 
               // Apply rewrites from next.config.js (beforeFiles)
               let resolvedUrl = url;
               if (nextConfig?.rewrites.beforeFiles.length) {
-                resolvedUrl =
-                  applyRewrites(pathname, nextConfig.rewrites.beforeFiles, reqCtx) ?? url;
+                const rewritten = applyRewrites(
+                  pathname,
+                  nextConfig.rewrites.beforeFiles,
+                  reqCtx,
+                  bp,
+                );
+                if (rewritten) {
+                  // Preserve original query params across the rewrite — Next.js
+                  // semantics: `Object.assign(parsedUrl.query, rewriteQuery)`.
+                  resolvedUrl = mergeRewriteQuery(url, rewritten);
+                }
               }
 
               // External rewrite from beforeFiles — proxy to external URL
@@ -3118,15 +3192,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 return;
               }
 
-              // Handle API routes first (pages/api/*)
-              const resolvedPathname = resolvedUrl.split("?")[0];
+              // Handle API routes first (pages/api/*).
+              // Strip the i18n locale prefix before the `/api/` check so
+              // `/fr/api/ok` resolves to the `pages/api/ok` handler (Next.js
+              // parity — see base-server.ts's normalizeLocalePath call).
+              const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, nextConfig?.i18n);
+              const resolvedPathname = apiLookupUrl.split("?")[0];
               if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
                 const apiRoutes = await apiRouter(
                   pagesDir,
                   nextConfig?.pageExtensions,
                   fileMatcher,
                 );
-                const apiMatch = matchRoute(resolvedUrl, apiRoutes);
+                const apiMatch = matchRoute(apiLookupUrl, apiRoutes);
                 if (apiMatch) {
                   applyDeferredMwHeaders();
                   if (middlewareRequestHeaders) {
@@ -3137,7 +3215,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   getPagesRunner(),
                   req,
                   res,
-                  resolvedUrl,
+                  apiLookupUrl,
                   apiRoutes,
                 );
                 if (handled) return;
@@ -3162,9 +3240,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   resolvedUrl.split("?")[0],
                   nextConfig.rewrites.afterFiles,
                   reqCtx,
+                  bp,
                 );
                 if (afterRewrite) {
-                  resolvedUrl = afterRewrite;
+                  resolvedUrl = mergeRewriteQuery(resolvedUrl, afterRewrite);
                   match = matchRoute(resolvedUrl.split("?")[0], routes);
                 }
               }
@@ -3195,7 +3274,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 if (middlewareRequestHeaders) {
                   applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
                 }
-                await handler(req, res, resolvedUrl, mwStatus);
+                await handler(req, res, resolvedUrl, mwStatus, isDataReq);
                 return;
               }
 
@@ -3205,6 +3284,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   resolvedUrl.split("?")[0],
                   nextConfig.rewrites.fallback,
                   reqCtx,
+                  bp,
                 );
                 if (fallbackRewrite) {
                   // External fallback rewrite — proxy to external URL
@@ -3222,7 +3302,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   if (middlewareRequestHeaders) {
                     applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
                   }
-                  await handler(req, res, fallbackRewrite, mwStatus);
+                  await handler(req, res, fallbackRewrite, mwStatus, isDataReq);
                   return;
                 }
               }
@@ -3231,7 +3311,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // otherwise render via the pages SSR handler (will 404 for unknown routes).
               if (hasAppDir) return next();
 
-              await handler(req, res, resolvedUrl, mwStatus);
+              await handler(req, res, resolvedUrl, mwStatus, isDataReq);
             } catch (e) {
               next(e);
             }
@@ -4216,7 +4296,11 @@ function applyRedirects(
   ctx: RequestContext,
   basePath = "",
 ): boolean {
-  const result = matchRedirect(pathname, redirects, ctx);
+  // Vite strips the basePath before our middleware sees the request, so any
+  // pathname we see is implicitly "under basePath" for matching purposes.
+  // Default rules fire as expected; `basePath: false` rules cannot reach the
+  // dev server today because Vite won't proxy out-of-basepath requests.
+  const result = matchRedirect(pathname, redirects, ctx, { basePath, hadBasePath: true });
   if (result) {
     // Sanitize to prevent open redirect via protocol-relative URLs
     const dest = sanitizeDestination(
@@ -4302,8 +4386,11 @@ function applyRewrites(
   pathname: string,
   rewrites: NextRewrite[],
   ctx: RequestContext,
+  basePath = "",
 ): string | null {
-  const dest = matchRewrite(pathname, rewrites, ctx);
+  // Vite strips the basePath before our middleware sees the request; see
+  // applyRedirects for rationale.
+  const dest = matchRewrite(pathname, rewrites, ctx, { basePath, hadBasePath: true });
   if (dest) {
     // Sanitize to prevent open redirect via protocol-relative URLs
     return sanitizeDestination(dest);
@@ -4322,8 +4409,11 @@ function applyHeaders(
   res: any,
   headers: NextHeader[],
   ctx: RequestContext,
+  basePath = "",
 ): void {
-  const matched = matchHeaders(pathname, headers, ctx);
+  // Vite strips the basePath before our middleware sees the request; see
+  // applyRedirects for rationale.
+  const matched = matchHeaders(pathname, headers, ctx, { basePath, hadBasePath: true });
   for (const header of matched) {
     // Use append semantics for headers where multiple values must coexist
     // (Vary, Set-Cookie). Using setHeader() on these would destroy

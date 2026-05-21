@@ -46,6 +46,20 @@ export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context
 /** RSC render mode (e.g. "navigation", "prefetch"). */
 export const VINEXT_RSC_RENDER_MODE_HEADER = "X-Vinext-Rsc-Render-Mode";
 
+/**
+ * Side-channel signal that an RSC response (HTTP 200) encodes a `redirect()`
+ * thrown during render. The header value is the redirect target (path-only
+ * for same-origin, absolute for cross-origin). The flight body still carries
+ * the canonical `NEXT_REDIRECT;...` digest so Next.js's own tests can read it
+ * via response.body; this header is purely for vinext's own client
+ * (`navigateRsc` in app-browser-entry.ts) to follow the redirect inside the
+ * same navigation transaction — keeping `useTransition`'s pending state
+ * continuous across the hop. Pre-1347 vinext relied on `fetch`'s auto-follow
+ * of a 307 for that, but the new 200 + flight format leaves it without a
+ * cheap way to detect the redirect ahead of stream decode.
+ */
+export const VINEXT_RSC_REDIRECT_HEADER = "X-Vinext-Rsc-Redirect";
+
 // ---------------------------------------------------------------------------
 // RSC protocol headers
 // ---------------------------------------------------------------------------

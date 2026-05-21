@@ -543,6 +543,267 @@ describe("Link App Router navigation scheduling", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Link onNavigate prop — Next.js 15 contract
+//
+// Ported from Next.js: test/e2e/link-on-navigate-prop/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/link-on-navigate-prop/index.test.ts
+//
+// The Next.js contract (see `.nextjs-ref/packages/next/src/client/link.tsx`
+// `linkClicked`) is:
+//   1. onClick always fires first (regardless of modifier, target, download,
+//      or external href).
+//   2. onNavigate only fires when the Link is about to perform its own
+//      client-side navigation: skipped for modifier-key clicks, target=_blank,
+//      download links, and truly external URLs.
+//   3. Calling `event.preventDefault()` inside onNavigate cancels the Link's
+//      navigation.
+//   4. External URLs with the `replace` prop must call
+//      `window.location.replace()` instead of letting the browser push.
+// ---------------------------------------------------------------------------
+describe("Link onNavigate prop", () => {
+  type NavigateEventLike = {
+    preventDefault(): void;
+    defaultPrevented?: boolean;
+    url?: URL;
+  };
+
+  async function renderLinkAndClick(args: {
+    href: string;
+    props?: Record<string, unknown>;
+    clickEvent: Partial<{
+      altKey: boolean;
+      button: number;
+      ctrlKey: boolean;
+      metaKey: boolean;
+      shiftKey: boolean;
+      currentTarget: { hasAttribute(name: string): boolean; target: string };
+    }>;
+    locationOverrides?: Record<string, unknown>;
+  }) {
+    vi.resetModules();
+
+    let capturedAnchorProps: CapturedAnchorProps | undefined;
+    const startTransition = vi.fn((callback: () => void) => {
+      callback();
+    });
+
+    const captureAnchor = (type: unknown, props: unknown) => {
+      if (type === "a" && props !== null && typeof props === "object") {
+        capturedAnchorProps = props;
+      }
+    };
+
+    mockReactAnchorCaptureForLinkOnly_DO_NOT_REUSE({ captureAnchor, startTransition });
+
+    const navigate = vi.fn(async () => {});
+    const locationReplace = vi.fn();
+    const locationAssign = vi.fn();
+    const pushState = vi.fn();
+    const replaceState = vi.fn();
+
+    vi.stubGlobal("window", {
+      [Symbol.for("vinext.navigationRuntime")]: {
+        bootstrap: { routeManifest: null, rsc: undefined },
+        functions: { navigate },
+      },
+      addEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+      history: { pushState, replaceState },
+      location: {
+        href: "https://example.com/current",
+        origin: "https://example.com",
+        replace: locationReplace,
+        assign: locationAssign,
+        ...args.locationOverrides,
+      },
+      scrollTo: vi.fn(),
+    });
+
+    const { default: IsolatedLink } = await import("../packages/vinext/src/shims/link.js");
+    const React = await vi.importActual<typeof import("react")>("react");
+
+    ReactDOMServer.renderToString(
+      React.createElement(
+        IsolatedLink,
+        { href: args.href, prefetch: false, ...args.props },
+        "target",
+      ),
+    );
+
+    const onClickHandler = capturedAnchorProps?.onClick;
+    if (typeof onClickHandler !== "function") {
+      throw new Error("Expected rendered Link anchor to expose an onClick handler");
+    }
+
+    const clickEvent = {
+      button: 0,
+      currentTarget: { hasAttribute: () => false, target: "" },
+      defaultPrevented: false,
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+      ...args.clickEvent,
+    };
+
+    await onClickHandler(clickEvent);
+
+    return {
+      clickEvent,
+      locationReplace,
+      locationAssign,
+      navigate,
+      startTransition,
+      pushState,
+      replaceState,
+    };
+  }
+
+  it("fires onClick and onNavigate for an internal click", async () => {
+    const onClick = vi.fn();
+    const onNavigate = vi.fn();
+
+    const result = await renderLinkAndClick({
+      href: "/subpage",
+      props: { onClick, onNavigate },
+      clickEvent: {},
+    });
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(result.clickEvent.defaultPrevented).toBe(true);
+    expect(result.navigate).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes a NavigateEvent exposing preventDefault to onNavigate", async () => {
+    let received: NavigateEventLike | undefined;
+    const onNavigate = vi.fn((event: NavigateEventLike) => {
+      received = event;
+    });
+
+    await renderLinkAndClick({
+      href: "/subpage",
+      props: { onNavigate },
+      clickEvent: {},
+    });
+
+    expect(typeof received?.preventDefault).toBe("function");
+  });
+
+  it("cancels navigation when onNavigate calls preventDefault", async () => {
+    const onClick = vi.fn();
+    const onNavigate = vi.fn((event: NavigateEventLike) => {
+      event.preventDefault();
+    });
+
+    const result = await renderLinkAndClick({
+      href: "/subpage",
+      props: { onClick, onNavigate },
+      clickEvent: {},
+    });
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    // Link still calls preventDefault on the click so the <a> doesn't navigate.
+    expect(result.clickEvent.defaultPrevented).toBe(true);
+    // ...but the client-side navigation must not happen.
+    expect(result.navigate).not.toHaveBeenCalled();
+  });
+
+  it("fires onClick but skips onNavigate when a modifier key is held", async () => {
+    const onClick = vi.fn();
+    const onNavigate = vi.fn();
+
+    const result = await renderLinkAndClick({
+      href: "/subpage",
+      props: { onClick, onNavigate },
+      clickEvent: { metaKey: true },
+    });
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onNavigate).not.toHaveBeenCalled();
+    // Browser default must run so the modifier-key shortcut still opens a tab.
+    expect(result.clickEvent.defaultPrevented).toBe(false);
+    expect(result.navigate).not.toHaveBeenCalled();
+  });
+
+  it("fires onClick but skips onNavigate for target=_blank", async () => {
+    const onClick = vi.fn();
+    const onNavigate = vi.fn();
+
+    const result = await renderLinkAndClick({
+      href: "/subpage",
+      props: { onClick, onNavigate, target: "_blank" },
+      clickEvent: {
+        currentTarget: { hasAttribute: () => false, target: "_blank" },
+      },
+    });
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(result.clickEvent.defaultPrevented).toBe(false);
+    expect(result.navigate).not.toHaveBeenCalled();
+  });
+
+  it("fires onClick but skips onNavigate for download links", async () => {
+    const onClick = vi.fn();
+    const onNavigate = vi.fn();
+
+    const result = await renderLinkAndClick({
+      href: "/zip.zip",
+      props: { download: true, onClick, onNavigate },
+      clickEvent: {
+        currentTarget: {
+          hasAttribute: (name: string) => name === "download",
+          target: "",
+        },
+      },
+    });
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(result.clickEvent.defaultPrevented).toBe(false);
+    expect(result.navigate).not.toHaveBeenCalled();
+  });
+
+  it("fires onClick but skips onNavigate for external URLs", async () => {
+    const onClick = vi.fn();
+    const onNavigate = vi.fn();
+
+    const result = await renderLinkAndClick({
+      href: "https://example.org/about",
+      props: { onClick, onNavigate },
+      clickEvent: {},
+    });
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onNavigate).not.toHaveBeenCalled();
+    // Without replace, the browser's default click navigation handles it.
+    expect(result.clickEvent.defaultPrevented).toBe(false);
+    expect(result.locationReplace).not.toHaveBeenCalled();
+    expect(result.navigate).not.toHaveBeenCalled();
+  });
+
+  it("calls location.replace for external URLs with the replace prop", async () => {
+    const onClick = vi.fn();
+    const onNavigate = vi.fn();
+
+    const result = await renderLinkAndClick({
+      href: "https://example.org/about",
+      props: { replace: true, onClick, onNavigate },
+      clickEvent: {},
+    });
+
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onNavigate).not.toHaveBeenCalled();
+    // Browser default would push — we must prevent it so the replace below
+    // doesn't end up creating a second history entry.
+    expect(result.clickEvent.defaultPrevented).toBe(true);
+    expect(result.locationReplace).toHaveBeenCalledTimes(1);
+    expect(result.locationReplace).toHaveBeenCalledWith("https://example.org/about");
+  });
+});
+
 async function renderIsolatedLink(options: {
   appNavigation?: boolean;
   href: string;

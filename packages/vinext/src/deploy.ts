@@ -546,6 +546,8 @@ import {
   isOpenRedirectShaped,
   normalizeTrailingSlash,
 } from "vinext/server/request-pipeline";
+import { mergeRewriteQuery } from "vinext/utils/query";
+import { stripI18nLocaleForApiRoute } from "vinext/server/pages-i18n";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { renderPage, handleApiRoute, runMiddleware, vinextConfig, matchPageRoute } from "virtual:vinext-server-entry";
@@ -606,6 +608,11 @@ export default {
         return new Response("This page could not be found", { status: 404 });
       }
 
+      // Capture x-nextjs-data before filterInternalHeaders strips it -- the
+      // middleware redirect protocol needs to know whether the inbound request
+      // was a _next/data fetch to emit x-nextjs-redirect instead of a 3xx.
+      const isDataRequest = request.headers.get("x-nextjs-data") === "1";
+
       // Strip internal headers from inbound requests so they cannot be
       // forged to influence routing or impersonate internal state.
       // Request.headers is immutable in Workers, so build a clean copy.
@@ -615,6 +622,10 @@ export default {
       }
 
       // ── 1. Strip basePath ─────────────────────────────────────────
+      // Track basePath presence on the original request so the matcher
+      // gating below can distinguish requests inside basePath (default
+      // rules apply) from requests outside it (only opt-out rules apply).
+      const hadBasePath = !basePath || hasBasePath(pathname, basePath);
       {
         const stripped = stripBasePath(pathname, basePath);
         if (stripped !== pathname) {
@@ -622,6 +633,7 @@ export default {
           pathname = stripped;
         }
       }
+      const basePathState = { basePath, hadBasePath };
 
       // ── Image optimization via Cloudflare Images binding ──────────
       // Checked after basePath stripping so /<basePath>/_vinext/image works.
@@ -670,10 +682,14 @@ export default {
 
       // ── 3. Apply redirects from next.config.js ────────────────────
       if (configRedirects.length) {
-        const redirect = matchRedirect(pathname, configRedirects, reqCtx);
+        const redirect = matchRedirect(pathname, configRedirects, reqCtx, basePathState);
         if (redirect) {
+          // Only prepend basePath when the request was actually under basePath.
+          // Opt-out rules running on out-of-basepath requests must not receive
+          // a basePath prefix.
           const dest = sanitizeDestination(
             basePath &&
+              hadBasePath &&
               !isExternalUrl(redirect.destination) &&
               !hasBasePath(redirect.destination, basePath)
               ? basePath + redirect.destination
@@ -691,7 +707,7 @@ export default {
       const middlewareHeaders: Record<string, string | string[]> = {};
       let middlewareRewriteStatus: number | undefined;
       if (typeof runMiddleware === "function") {
-        const result = await runMiddleware(request, ctx);
+        const result = await runMiddleware(request, ctx, { isDataRequest });
 
         // Bubble up waitUntil promises (e.g. Clerk telemetry/session sync)
         if (result.waitUntilPromises?.length) {
@@ -769,6 +785,7 @@ export default {
           configHeaders,
           pathname,
           requestContext: reqCtx,
+          basePathState,
         });
       }
 
@@ -778,21 +795,47 @@ export default {
       }
 
       // ── 6. Apply beforeFiles rewrites from next.config.js ─────────
+      let configRewriteFired = false;
       if (configRewrites.beforeFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
+        const rewritten = matchRewrite(
+          resolvedPathname,
+          configRewrites.beforeFiles,
+          postMwReqCtx,
+          basePathState,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
           }
-          resolvedUrl = rewritten;
-          resolvedPathname = rewritten.split("?")[0];
+          // Preserve original query params across rewrites (Next.js parity).
+          resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
+          resolvedPathname = resolvedUrl.split("?")[0];
+          configRewriteFired = true;
         }
       }
 
+      // Reject out-of-basePath requests that no rule rewrote. See the
+      // matching comment in prod-server.ts step 7b.
+      if (basePath && !hadBasePath && !configRewriteFired) {
+        return new Response("This page could not be found", {
+          status: 404,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+
       // ── 7. API routes ─────────────────────────────────────────────
-      if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
+      // Forward ctx so handlePagesApiRoute can wrap the user handler in
+      // runWithExecutionContext, making ctx.waitUntil() reachable from
+      // after() and other shims that schedule deferred work.
+      //
+      // Strip the i18n locale prefix before the /api/ check so
+      // /fr/api/ok resolves to the pages/api/ok handler (Next.js
+      // parity -- see base-server.ts's normalizeLocalePath call).
+      const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, vinextConfig?.i18n ?? null);
+      const apiLookupPathname = apiLookupUrl.split("?")[0];
+      if (apiLookupPathname.startsWith("/api/") || apiLookupPathname === "/api") {
         const response = typeof handleApiRoute === "function"
-          ? await handleApiRoute(request, resolvedUrl)
+          ? await handleApiRoute(request, apiLookupUrl, ctx)
           : new Response("404 - API route not found", { status: 404 });
         return mergeHeaders(response, middlewareHeaders, middlewareRewriteStatus);
       }
@@ -803,13 +846,18 @@ export default {
       // ── 8. Apply afterFiles rewrites from next.config.js ──────────
       // These run after non-dynamic page routes but before dynamic routes.
       if ((!pageMatch || pageMatch.route.isDynamic) && configRewrites.afterFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, postMwReqCtx);
+        const rewritten = matchRewrite(
+          resolvedPathname,
+          configRewrites.afterFiles,
+          postMwReqCtx,
+          basePathState,
+        );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
           }
-          resolvedUrl = rewritten;
-          resolvedPathname = rewritten.split("?")[0];
+          resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
+          resolvedPathname = resolvedUrl.split("?")[0];
         }
       }
 
@@ -820,12 +868,22 @@ export default {
 
         // ── 10. Fallback rewrites (if SSR returned 404) ─────────────
         if (response && response.status === 404 && configRewrites.fallback?.length) {
-          const fallbackRewrite = matchRewrite(resolvedPathname, configRewrites.fallback, postMwReqCtx);
+          const fallbackRewrite = matchRewrite(
+            resolvedPathname,
+            configRewrites.fallback,
+            postMwReqCtx,
+            basePathState,
+          );
           if (fallbackRewrite) {
             if (isExternalUrl(fallbackRewrite)) {
               return proxyExternalRequest(request, fallbackRewrite);
             }
-            response = await renderPage(request, fallbackRewrite, null, ctx);
+            response = await renderPage(
+              request,
+              mergeRewriteQuery(resolvedUrl, fallbackRewrite),
+              null,
+              ctx,
+            );
           }
         }
       }

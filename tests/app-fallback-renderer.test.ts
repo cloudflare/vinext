@@ -324,6 +324,173 @@ describe("app fallback renderer factory", () => {
   });
 });
 
+// Ported from Next.js: test/e2e/app-dir/default-error-page-ui/default-error-page-ui.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/default-error-page-ui/default-error-page-ui.test.ts
+//
+// When the app does not define `error.tsx`, `global-error.tsx`, etc., vinext
+// must still render the same default error UI Next.js ships, including the
+// 32x32 warning icon, the "This page couldn't load" heading, a "Reload"
+// button, a "Back" button (client errors only), and an "ERROR <digest>"
+// footer (server errors only). Without this, the renderer used to return
+// null and the request bubbled up as a generic 500.
+describe("app fallback renderer default global error UI", () => {
+  it("renders the built-in default global error UI for client errors", async () => {
+    const { renderer } = createRenderer();
+    const request = new Request("https://example.com/trigger-error");
+
+    const response = await renderer.renderErrorBoundary(
+      {
+        // No `error` module on the route — falls back to the default global error.
+        layouts: [],
+        params: {},
+        pattern: "/trigger-error",
+      },
+      new Error("Test client error"),
+      false,
+      request,
+      {},
+      undefined,
+      { headers: null, status: null },
+    );
+
+    expect(response?.status).toBe(200);
+    const html = await response?.text();
+
+    // 32x32 SVG warning icon (matches the test's `expect width/height === 32`).
+    expect(html).toContain('width="32"');
+    expect(html).toContain('height="32"');
+    // Heading + curly apostrophe ("couldn’t").
+    expect(html).toContain("<h1");
+    expect(html).toContain("This page couldn’t load");
+    // Client error message + "Reload" + "Back" buttons.
+    expect(html).toContain("Reload to try again, or go back");
+    expect(html).toContain(">Reload<");
+    expect(html).toContain(">Back<");
+    // Theme CSS is inlined so the test's color assertions still resolve.
+    expect(html).toContain("--next-error-title");
+    // No digest -> no "ERROR <digest>" footer.
+    expect(html).not.toMatch(/ERROR\s+\w+/);
+  });
+
+  it("renders the server error variant with an ERROR <digest> footer", async () => {
+    const { renderer } = createRenderer();
+    const request = new Request("https://example.com/server-error");
+
+    // Use a sanitizer that preserves the digest so the footer is emitted.
+    const serverError = Object.assign(new Error("Test server error"), {
+      digest: "1234567890",
+    });
+
+    const response = await renderer.renderErrorBoundary(
+      {
+        layouts: [],
+        params: {},
+        pattern: "/server-error",
+      },
+      serverError,
+      false,
+      request,
+      {},
+      undefined,
+      { headers: null, status: null },
+    );
+
+    expect(response?.status).toBe(200);
+    const html = await response?.text();
+    // Server errors still render the same heading.
+    expect(html).toContain("This page couldn’t load");
+    // Server error variant of the message.
+    expect(html).toContain("A server error occurred");
+    // Server errors do not render the "Back" button.
+    expect(html).not.toContain(">Back<");
+    // Digest footer "ERROR <digest>" — the test uses /ERROR \w+/.
+    expect(html).toMatch(/ERROR\s+1234567890/);
+  });
+
+  it("prefers a user-defined global error module over the default", async () => {
+    function UserGlobalError({ error }: { error: { message?: string } }) {
+      return React.createElement(
+        "html",
+        null,
+        React.createElement(
+          "body",
+          null,
+          React.createElement(
+            "h1",
+            { "data-user-global-error": "true" },
+            `user-global-error:${error.message ?? ""}`,
+          ),
+        ),
+      );
+    }
+    const userGlobalErrorModule = { default: UserGlobalError } satisfies TestModule;
+
+    const { renderer } = createRenderer();
+    // Re-create the renderer with a user-supplied global error module. The
+    // createRenderer helper does not expose globalErrorModule directly, so
+    // call createAppFallbackRenderer here instead via the same overrides path.
+    // We instead test by inspecting that the default UI is replaced when a
+    // user module is configured. Since the helper does not currently allow
+    // overriding globalErrorModule, this assertion is encoded by re-creating
+    // the renderer locally.
+    const { createAppFallbackRenderer } =
+      await import("../packages/vinext/src/server/app-fallback-renderer.js");
+    const localRenderer = createAppFallbackRenderer({
+      basePath: "",
+      clearRequestContext() {},
+      createRscOnErrorHandler: () => () => null,
+      fontProviders: {
+        buildFontLinkHeader: () => "",
+        getFontLinks: () => [],
+        getFontPreloads: () => [],
+        getFontStyles: () => [],
+      },
+      getNavigationContext: () => ({ pathname: "/server-error" }),
+      globalErrorModule: userGlobalErrorModule,
+      globalNotFoundModule: null,
+      makeThenableParams: (p) => p,
+      metadataRoutes: [],
+      resolveChildSegments: () => [],
+      rootBoundaries: {
+        rootForbiddenModule: null,
+        rootLayouts: [],
+        rootNotFoundModule: null,
+        rootUnauthorizedModule: null,
+      },
+      rscRenderer: renderElementToStream,
+      sanitizer: (error) => error,
+      ssrLoader: async () => ({
+        async handleSsr(rscStream: ReadableStream<Uint8Array>) {
+          return rscStream;
+        },
+      }),
+    });
+
+    void renderer;
+
+    const request = new Request("https://example.com/server-error");
+    const response = await localRenderer.renderErrorBoundary(
+      {
+        layouts: [],
+        params: {},
+        pattern: "/server-error",
+      },
+      new Error("from-user"),
+      false,
+      request,
+      {},
+      undefined,
+      { headers: null, status: null },
+    );
+
+    const html = await response?.text();
+    expect(html).toContain('data-user-global-error="true"');
+    expect(html).toContain("user-global-error:from-user");
+    // The default UI must NOT leak through.
+    expect(html).not.toContain("This page couldn’t load");
+  });
+});
+
 // Mirrors Next.js 16 experimental.globalNotFound behavior.
 // Ported from Next.js: test/e2e/app-dir/global-not-found/{basic,both-present,not-present}.
 // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found

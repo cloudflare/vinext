@@ -273,6 +273,13 @@ export function createSSRHandler(
     url: string,
     /** Status code override — propagated from middleware rewrite status. */
     statusCode?: number,
+    /**
+     * True when the request originated as `/_next/data/<buildId>/<page>.json`.
+     * When true the handler emits a `{ pageProps }` JSON envelope instead of
+     * rendering the React tree to HTML — matching Next.js' behavior for
+     * client-side navigations in the Pages Router.
+     */
+    isDataReq: boolean = false,
   ): Promise<void> => {
     const _reqStart = now();
     let _compileEnd: number | undefined;
@@ -326,12 +333,26 @@ export function createSSRHandler(
     const match = matchRoute(localeStrippedUrl, routes);
 
     if (!match) {
+      if (isDataReq) {
+        // Stale client requested data for a page that no longer exists.
+        // Emit a JSON 404 so the client hard-navigates (matches Next.js).
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end("{}");
+        return;
+      }
       // No route matched — try to render custom 404 page
       await renderErrorPage(server, runner, req, res, url, pagesDir, 404, undefined, matcher);
       return;
     }
 
     const { route, params } = match;
+    // Next.js exposes `params: null` to data-fetching contexts (gSSP, gSP) on
+    // non-dynamic routes — see render.tsx's `...(pageIsDynamic ? { params } : undefined)`.
+    // Internal use (query merging, _app router context) keeps the matched
+    // object since those expect a record shape, not null.
+    const userFacingParams: Record<string, string | string[]> | null = route.isDynamic
+      ? params
+      : null;
     const query = mergeRouteParamsIntoQuery(parseQuery(url), params);
 
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
@@ -431,6 +452,13 @@ export function createSSRHandler(
             });
 
             if (!isValidPath) {
+              if (isDataReq) {
+                // Data requests get a JSON 404 so the client router can
+                // hard-navigate instead of trying to parse HTML as JSON.
+                res.writeHead(404, { "Content-Type": "application/json" });
+                res.end("{}");
+                return;
+              }
               await renderErrorPage(
                 server,
                 runner,
@@ -463,7 +491,7 @@ export function createSSRHandler(
           const headersBeforeGSSP = new Set(Object.keys(res.getHeaders()));
 
           const context = {
-            params,
+            params: userFacingParams,
             req,
             res,
             query,
@@ -502,6 +530,11 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
+            if (isDataReq) {
+              res.writeHead(404, { "Content-Type": "application/json" });
+              res.end("{}");
+              return;
+            }
             await renderErrorPage(
               server,
               runner,
@@ -569,7 +602,13 @@ export function createSSRHandler(
           );
           const cached = await isrGet(cacheKey);
 
-          if (cached && !cached.isStale && cached.value.value?.kind === "PAGES" && !scriptNonce) {
+          if (
+            cached &&
+            !cached.isStale &&
+            cached.value.value?.kind === "PAGES" &&
+            !scriptNonce &&
+            !isDataReq
+          ) {
             // Fresh cache hit — serve directly
             const cachedPage = cached.value.value as CachedPagesValue;
             const cachedHtml = cachedPage.html;
@@ -586,7 +625,13 @@ export function createSSRHandler(
             return;
           }
 
-          if (cached && cached.isStale && cached.value.value?.kind === "PAGES" && !scriptNonce) {
+          if (
+            cached &&
+            cached.isStale &&
+            cached.value.value?.kind === "PAGES" &&
+            !scriptNonce &&
+            !isDataReq
+          ) {
             // Stale hit — serve stale immediately, trigger background regen
             const cachedPage = cached.value.value as CachedPagesValue;
             const cachedHtml = cachedPage.html;
@@ -606,7 +651,7 @@ export function createSSRHandler(
                 return runWithRequestContext(regenContext, async () => {
                   ensureFetchPatch();
                   const freshResult = await pageModule.getStaticProps({
-                    params,
+                    params: userFacingParams,
                     locale: locale ?? currentDefaultLocale,
                     locales: i18nConfig?.locales,
                     defaultLocale: currentDefaultLocale,
@@ -735,7 +780,7 @@ export function createSSRHandler(
 
           // Cache miss — call getStaticProps normally
           const context = {
-            params,
+            params: userFacingParams,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
@@ -760,6 +805,11 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
+            if (isDataReq) {
+              res.writeHead(404, { "Content-Type": "application/json" });
+              res.end("{}");
+              return;
+            }
             await renderErrorPage(
               server,
               runner,
@@ -777,6 +827,27 @@ export function createSSRHandler(
           if (typeof result?.revalidate === "number" && result.revalidate > 0) {
             isrRevalidateSeconds = result.revalidate;
           }
+        }
+
+        // ── _next/data JSON envelope short-circuit (dev) ──────────────
+        // Client-side navigations fetch /_next/data/<buildId>/<page>.json and
+        // expect { pageProps } as JSON. We have pageProps; skip the React
+        // tree render and the _document shell entirely. Headers set on `res`
+        // by getServerSideProps (cookies, status codes, etc.) are preserved
+        // because we already let gSSP mutate `res` above.
+        if (isDataReq) {
+          const dataHeaders: Record<string, string | string[] | number> = {
+            "Content-Type": "application/json",
+          };
+          if (gsspExtraHeaders) {
+            for (const [k, v] of Object.entries(gsspExtraHeaders)) {
+              dataHeaders[k] = v;
+            }
+          }
+          res.writeHead(statusCode ?? 200, dataHeaders);
+          res.end(JSON.stringify({ pageProps }));
+          _renderEnd = now();
+          return;
         }
 
         // Try to load _app.tsx if it exists

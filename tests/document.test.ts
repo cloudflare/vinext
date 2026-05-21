@@ -90,3 +90,48 @@ describe("Html", () => {
     expect(html).toMatch(/^<html/);
   });
 });
+
+// Regression test for the contract motivating PR #1381 (issue #1361):
+// user `pages/_document.tsx` files commonly use the class form
+// `class MyDocument extends Document`. If the shim's default export is a
+// function, the extends chain produces a class React refuses to construct
+// (`Class constructor cannot be invoked without 'new'`), which 500s SSR and
+// surfaces as empty pages in deploy-suite e2e tests.
+//
+// Ported from Next.js: test/e2e/async-modules/pages/_document.jsx
+// https://github.com/vercel/next.js/blob/canary/test/e2e/async-modules/pages/_document.jsx
+describe("Document base class", () => {
+  it("can be extended by a user class that React can construct", () => {
+    class MyDocument extends Document {
+      render() {
+        return React.createElement(
+          Html,
+          { lang: "ja" },
+          React.createElement(Head),
+          React.createElement(
+            "body",
+            null,
+            React.createElement("div", { id: "doc-marker" }, "ok"),
+            React.createElement(Main),
+            React.createElement(NextScript),
+          ),
+        );
+      }
+    }
+    const html = render(React.createElement(MyDocument));
+    expect(html).toMatch(/<html[^>]*lang="ja"/);
+    expect(html).toContain('id="doc-marker"');
+    expect(html).toContain("__NEXT_MAIN__");
+    expect(html).toContain("__NEXT_SCRIPTS__");
+  });
+
+  it("exposes a static getInitialProps that resolves to a DocumentInitialProps-shaped value", async () => {
+    // The runtime contract: subclasses commonly delegate via
+    // `await Document.getInitialProps(ctx)` and destructure `html` from the
+    // result. The stub returns an empty html shell — the test pins the shape
+    // so wiring up the full Pages Router renderPage flow later doesn't
+    // silently regress consumers that destructure `html`.
+    const result = await Document.getInitialProps({});
+    expect(typeof result.html).toBe("string");
+  });
+});

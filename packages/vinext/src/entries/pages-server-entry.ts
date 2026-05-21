@@ -23,6 +23,7 @@ const _pagesPageResponsePath = resolveEntryPath(
   import.meta.url,
 );
 const _pagesPageDataPath = resolveEntryPath("../server/pages-page-data.js", import.meta.url);
+const _pagesDataRoutePath = resolveEntryPath("../server/pages-data-route.js", import.meta.url);
 const _pagesNodeCompatPath = resolveEntryPath("../server/pages-node-compat.js", import.meta.url);
 const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", import.meta.url);
 const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
@@ -159,11 +160,12 @@ if (typeof _instrumentation.onRequestError === "function") {
   // TypeScript modules so dev/prod paths cannot drift.
   const middlewareExportCode = middlewarePath
     ? `
-export async function runMiddleware(request, ctx) {
+export async function runMiddleware(request, ctx, options) {
   return __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
     ctx,
     i18nConfig,
+    isDataRequest: options?.isDataRequest === true,
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
     request,
@@ -211,6 +213,7 @@ import {
 } from ${JSON.stringify(_isrCachePath)};
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from ${JSON.stringify(_cspPath)};
 import { resolvePagesPageData as __resolvePagesPageData } from ${JSON.stringify(_pagesPageDataPath)};
+import { buildNextDataJsonResponse as __buildNextDataJsonResponse, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse } from ${JSON.stringify(_pagesDataRoutePath)};
 import { renderPagesPageResponse as __renderPagesPageResponse } from ${JSON.stringify(_pagesPageResponsePath)};
 ${instrumentationImportCode}
 ${middlewareImportCode}
@@ -220,8 +223,10 @@ ${instrumentationInitCode}
 // i18n config (embedded at build time)
 const i18nConfig = ${i18nConfigJson};
 
-// Build ID (embedded at build time)
-const buildId = ${buildIdJson};
+// Build ID (embedded at build time). Exported so the production server can
+// match _next/data requests against the embedded buildId without needing
+// to load next.config.js at runtime.
+export const buildId = ${buildIdJson};
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
@@ -443,12 +448,13 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
   return tags.join("\\n  ");
 }
 
-export async function renderPage(request, url, manifest, ctx, middlewareHeaders) {
-  if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders));
-  return _renderPage(request, url, manifest, middlewareHeaders);
+export async function renderPage(request, url, manifest, ctx, middlewareHeaders, options) {
+  if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders, options));
+  return _renderPage(request, url, manifest, middlewareHeaders, options);
 }
 
-async function _renderPage(request, url, manifest, middlewareHeaders) {
+async function _renderPage(request, url, manifest, middlewareHeaders, options) {
+  const isDataReq = !!(options && options.isDataReq);
   const localeInfo = i18nConfig
     ? resolvePagesI18nRequest(
         url,
@@ -472,6 +478,9 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
 
   const match = matchRoute(routeUrl, pageRoutes);
   if (!match) {
+    if (isDataReq) {
+      return __buildNextDataNotFoundResponse();
+    }
     return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
       { status: 404, headers: { "Content-Type": "text/html" } });
   }
@@ -526,6 +535,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
         }
       } catch (e) { /* font preloads not available */ }
       const pageDataResult = await __resolvePagesPageData({
+        isDataReq,
         applyRequestContexts() {
           if (typeof setSSRContext === "function") {
             setSSRContext({
@@ -598,6 +608,25 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
       let pageProps = pageDataResult.pageProps;
       var gsspRes = pageDataResult.gsspRes;
       let isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
+
+      // ── _next/data JSON envelope short-circuit ───────────────────────
+      // For client-side navigations Next.js fetches /_next/data/<buildId>/<page>.json
+      // and expects { pageProps } as JSON instead of the full HTML page. Skip
+      // rendering the React tree and emit the JSON envelope directly via the
+      // typed helper so the envelope shape stays in one place. Headers and
+      // cookies set on the gsspRes by getServerSideProps are forwarded so
+      // middleware/auth flows work the same as the HTML page.
+      if (isDataReq) {
+        const init = {};
+        if (gsspRes && gsspRes.headers) {
+          init.headers = {};
+          for (const [k, v] of Object.entries(gsspRes.headers)) {
+            if (v === undefined || v === null) continue;
+            init.headers[k] = Array.isArray(v) ? v.join(", ") : String(v);
+          }
+        }
+        return __buildNextDataJsonResponse(pageProps, safeJsonStringify, init);
+      }
 
       // Include both the matched page module and the global _app module
       // (if present). _app is wrapped around every page in Pages Router,
@@ -685,9 +714,10 @@ async function _renderPage(request, url, manifest, middlewareHeaders) {
   });
 }
 
-export async function handleApiRoute(request, url) {
+export async function handleApiRoute(request, url, ctx) {
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({
+    ctx,
     match,
     request,
     url,

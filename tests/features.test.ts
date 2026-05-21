@@ -1403,6 +1403,37 @@ describe("i18n domain routing (Pages Router)", () => {
       '"domainLocales":[{"domain":"example.com","defaultLocale":"en"},{"domain":"example.fr","defaultLocale":"fr","http":true}]',
     );
   });
+
+  // Issue #1336 item 3: locale prefix must be stripped before API route matching.
+  //
+  // Ported from Next.js: test/e2e/middleware-redirects/test/index.test.ts
+  // (the "should redirect to api route with locale" case, which exercises
+  // /fr/api/ok hitting pages/api/ok.js)
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-redirects/test/index.test.ts
+  it("matches /api/ok without a locale prefix (dev)", async () => {
+    const res = await requestNodeServerWithHost(domainPort, "/api/ok", "example.com");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toBe("ok");
+  });
+
+  it("matches /fr/api/ok by stripping the locale prefix in dev (issue #1336)", async () => {
+    const res = await requestNodeServerWithHost(domainPort, "/fr/api/ok", "example.com");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toBe("ok");
+  });
+
+  it("preserves query parameters when stripping the locale prefix from an API path (dev)", async () => {
+    const res = await requestNodeServerWithHost(
+      domainPort,
+      "/fr/api/ok?foo=bar&baz=qux",
+      "example.com",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toBe("ok");
+  });
 });
 
 describe("i18n domain routing with basePath (Pages Router)", () => {

@@ -115,12 +115,16 @@ import {
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
 import { APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI } from "./app-rsc-render-mode.js";
-import { resolveRscRedirectLifecycleHop } from "./app-browser-rsc-redirect.js";
+import {
+  MAX_RSC_REDIRECT_DEPTH,
+  resolveRscRedirectLifecycleHop,
+} from "./app-browser-rsc-redirect.js";
 import {
   ACTION_REDIRECT_HEADER,
   ACTION_REDIRECT_TYPE_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
+  VINEXT_RSC_REDIRECT_HEADER,
 } from "./headers.js";
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
@@ -1426,6 +1430,40 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           currentHistoryMode = redirectDecision.historyUpdateMode;
           currentPrevNextUrl = redirectDecision.previousNextUrl;
           redirectCount = redirectDecision.redirectDepth;
+          continue;
+        }
+
+        // RSC redirect encoded as 200 + flight payload (the server's response
+        // for `redirect()` thrown from a server component during RSC rendering;
+        // see issue #1347 and `buildAppPageSpecialErrorResponse`). The flight
+        // body carries the canonical `NEXT_REDIRECT;...` digest for clients
+        // that decode it through React's RedirectBoundary, but vinext's
+        // browser-navigation loop catches it ahead of decode via this
+        // side-channel header so the redirect-following loop above can drain
+        // the body and continue without bouncing through the catch path.
+        // Reusing the same loop variables keeps `pendingRouterState` and the
+        // outer `useTransition` pending state continuous across the hop —
+        // matching the pre-1347 fetch-auto-follow-307 behavior.
+        const flightRedirectTarget = navResponse.headers.get(VINEXT_RSC_REDIRECT_HEADER);
+        if (flightRedirectTarget) {
+          // Drain the response body so the underlying connection is released.
+          // We do this best-effort: the destination's `.rsc` fetch on the next
+          // loop iteration will replace this response entirely.
+          void navResponse.body?.cancel().catch(() => {});
+          const resolvedTarget = new URL(flightRedirectTarget, window.location.origin);
+          if (resolvedTarget.origin !== window.location.origin) {
+            window.location.href = resolvedTarget.href;
+            return;
+          }
+          if (redirectCount >= MAX_RSC_REDIRECT_DEPTH) {
+            console.error(
+              "[vinext] Too many RSC redirects — aborting navigation to prevent infinite loop.",
+            );
+            window.location.href = resolvedTarget.href;
+            return;
+          }
+          currentHref = `${resolvedTarget.pathname}${resolvedTarget.search}${resolvedTarget.hash}`;
+          redirectCount += 1;
           continue;
         }
 

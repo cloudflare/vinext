@@ -33,6 +33,10 @@
       "types": "./dist/server/prod-server.d.ts",
       "import": "./dist/server/prod-server.js"
     },
+    "./server/pages-i18n": {
+      "types": "./dist/server/pages-i18n.d.ts",
+      "import": "./dist/server/pages-i18n.js"
+    },
     "./cloudflare": {
       "types": "./dist/cloudflare/index.d.ts",
       "import": "./dist/cloudflare/index.js"
@@ -56,6 +60,10 @@
     "./server/worker-utils": {
       "types": "./dist/server/worker-utils.d.ts",
       "import": "./dist/server/worker-utils.js"
+    },
+    "./utils/query": {
+      "types": "./dist/utils/query.d.ts",
+      "import": "./dist/utils/query.js"
     }
   },
   "scripts": {
