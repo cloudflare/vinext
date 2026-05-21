@@ -1731,6 +1731,28 @@ describe("next/router withRouter HOC", () => {
     expect(receivedRouter.events).toBeDefined();
   });
 
+  it("withRouter router.push is safe during server rendering", async () => {
+    delete (globalThis as any).window;
+    vi.resetModules();
+
+    const { withRouter, wrapWithRouterContext } =
+      await import("../packages/vinext/src/shims/router.js");
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    let navigation: Promise<boolean> | null = null;
+    const Inner: React.ComponentType<{ router: NextRouter }> = ({ router }) => {
+      navigation = router.push("/ssr-target");
+      return React.createElement("span", null, "ok");
+    };
+
+    const Wrapped = withRouter(Inner);
+    expect(() => {
+      renderToStaticMarkup(wrapWithRouterContext(React.createElement(Wrapped)));
+    }).not.toThrow();
+    await expect(navigation).resolves.toBe(false);
+  });
+
   // Regression guard for Next.js spread order:
   // packages/next/src/client/with-router.tsx renders
   //   `<ComposedComponent router={useRouter()} {...props} />`

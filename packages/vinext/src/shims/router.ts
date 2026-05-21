@@ -840,6 +840,8 @@ async function performNavigation(
   mode: "push" | "replace",
   onStateUpdate?: () => void,
 ): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+
   const navigationLocale = resolveTransitionLocale(options?.locale);
   let resolved = resolveNavigationTarget(url, as, navigationLocale);
 
