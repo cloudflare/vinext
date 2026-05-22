@@ -1501,6 +1501,75 @@ describe("window.next debug global", () => {
     }
   });
 
+  // Issue #1467 — `window.next.router.push(...)` must resolve to a boolean
+  // (true on success, false if blocked), matching Next.js's contract in
+  // `packages/next/src/shared/lib/router/router.ts:1025-1048` where push/replace
+  // delegate to `change()` which returns `Promise<boolean>`. The Next.js deploy
+  // test suite (prerender, use-router-with-rewrites, etc.) reads the resolved
+  // value via `browser.eval('await window.next.router.push("/foo")')` and
+  // asserts truthiness; resolving to `undefined` is observable as a regression
+  // even when the navigation otherwise succeeds.
+  it("window.next.router.push resolves to true on shallow success", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win: any = {
+      location: {
+        pathname: "/",
+        search: "",
+        hash: "",
+        href: "http://localhost/",
+        origin: "http://localhost",
+      },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+      dispatchEvent() {},
+      scrollTo() {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      // Shallow push avoids the HTML fetch + render path so this unit test
+      // does not need a navigateClient stub. The boolean-return contract
+      // applies equally to shallow and non-shallow navigations.
+      const result = await win.next.router.push("/foo", undefined, { shallow: true });
+      expect(result).toBe(true);
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("window.next.router.replace resolves to true on shallow success", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win: any = {
+      location: {
+        pathname: "/",
+        search: "",
+        hash: "",
+        href: "http://localhost/",
+        origin: "http://localhost",
+      },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+      dispatchEvent() {},
+      scrollTo() {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      const result = await win.next.router.replace("/foo", undefined, { shallow: true });
+      expect(result).toBe(true);
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
   it("appRouterInstance exported from the navigation shim has the public router surface", async () => {
     vi.resetModules();
     const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");

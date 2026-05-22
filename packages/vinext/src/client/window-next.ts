@@ -64,10 +64,18 @@ type AppRouterPublicInstance = {
  * to this looser type at the install call site (Pages Router methods take
  * narrow `UrlObject | string` arguments, which are not contravariantly
  * assignable to the `unknown[]` surface this global exposes).
+ *
+ * `push` and `replace` return `Promise<boolean>` to match Next.js's
+ * documented contract (`packages/next/src/shared/lib/router/router.ts:1025-1068`
+ * — push/replace delegate to `change()` which returns `Promise<boolean>`,
+ * resolving to `true` on a successful navigation and `false` when blocked
+ * — e.g. hard-navigation fallback). The Next.js deploy test suite reads
+ * the resolved value via `browser.eval('await window.next.router.push(...)')`
+ * to assert success.
  */
 export type PagesRouterPublicInstance = {
-  push: (...args: unknown[]) => unknown;
-  replace: (...args: unknown[]) => unknown;
+  push: (...args: unknown[]) => Promise<boolean>;
+  replace: (...args: unknown[]) => Promise<boolean>;
   back: () => void;
   reload: () => void;
   prefetch: (...args: unknown[]) => unknown;
