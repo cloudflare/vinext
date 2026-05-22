@@ -2,12 +2,11 @@
  * Cloudflare Worker entry point for vinext Pages Router.
  *
  * The built server entry (virtual:vinext-server-entry) exports:
- * - renderPage(request, url, manifest, ctx?, middlewareHeaders?, options?) -> Response
+ * - renderPage(request, url, manifest) -> Response
  * - handleApiRoute(request, url) -> Response
  * - runMiddleware(request) -> middleware result
  * - vinextConfig -> embedded next.config.js settings
  * - matchPageRoute(url, request) -> route match metadata
- * - buildId -> string, used to validate `/_next/data/<buildId>/*.json` paths
  *
  * Both use Web-standard Request/Response APIs, making them
  * directly usable in a Worker fetch handler.
@@ -22,14 +21,9 @@ import {
   sanitizeDestination,
 } from "vinext/config/config-matchers";
 import { mergeHeaders } from "vinext/server/worker-utils";
-import {
-  isNextDataPathname,
-  parseNextDataPathname,
-  buildNextDataNotFoundResponse,
-} from "vinext/server/pages-data-route";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
-import { renderPage, handleApiRoute, runMiddleware, vinextConfig, matchPageRoute, buildId } from "virtual:vinext-server-entry";
+import { renderPage, handleApiRoute, runMiddleware, vinextConfig, matchPageRoute } from "virtual:vinext-server-entry";
 
 // Extract config values (embedded at build time in the server entry)
 const basePath: string = vinextConfig?.basePath ?? "";
@@ -74,23 +68,8 @@ export default {
         }
       }
 
-      // Normalize `/_next/data/<buildId>/<page>.json` to the page path BEFORE
-      // middleware so middleware sees `/page` rather than the raw data URL.
-      // Mismatched buildIds short-circuit to a JSON 404 so the stale client
-      // hard-navigates onto the new build. Mirrors prod-server.ts.
-      let isDataReq = false;
-      if (isNextDataPathname(pathname)) {
-        const dataMatch = buildId ? parseNextDataPathname(pathname, buildId) : null;
-        if (!dataMatch) {
-          return buildNextDataNotFoundResponse();
-        }
-        isDataReq = true;
-        pathname = dataMatch.pagePathname;
-        urlWithQuery = pathname + url.search;
-      }
-
       // Build request with basePath-stripped URL for middleware
-      if (basePath || isDataReq) {
+      if (basePath) {
         const strippedUrl = new URL(request.url);
         strippedUrl.pathname = pathname;
         request = new Request(strippedUrl, request);
@@ -244,8 +223,7 @@ export default {
       // Page routes
       let response: Response | undefined;
       if (typeof renderPage === "function") {
-        const renderOptions = isDataReq ? { isDataReq: true } : undefined;
-        response = await renderPage(request, resolvedUrl, null, undefined, undefined, renderOptions);
+        response = await renderPage(request, resolvedUrl, null);
 
         // Fallback rewrites (if SSR returned 404)
         if (response && response.status === 404 && configRewrites.fallback?.length) {
@@ -254,7 +232,7 @@ export default {
             if (isExternalUrl(fallbackRewrite)) {
               return proxyExternalRequest(request, fallbackRewrite);
             }
-            response = await renderPage(request, fallbackRewrite, null, undefined, undefined, renderOptions);
+            response = await renderPage(request, fallbackRewrite, null);
           }
         }
       }
