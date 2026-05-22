@@ -16,6 +16,9 @@
 /** ISR / page cache state indicator: "HIT" | "MISS" | "STALE" | "STATIC". */
 export const VINEXT_CACHE_HEADER = "X-Vinext-Cache";
 
+/** Next.js public ISR / page cache state indicator. */
+export const NEXTJS_CACHE_HEADER = "x-nextjs-cache";
+
 /** Static file signal — value is URL-encoded pathname. */
 export const VINEXT_STATIC_FILE_HEADER = "x-vinext-static-file";
 

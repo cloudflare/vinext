@@ -255,6 +255,76 @@ describe("seedMemoryCacheFromPrerender", () => {
     ]);
   });
 
+  it("can write through an injected app page cache writer", async () => {
+    const writes: {
+      key: string;
+      metadata: { expireSeconds?: number; revalidateSeconds?: number };
+      valueKind: string;
+    }[] = [];
+
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "seed-injected-writer-test",
+        routes: [{ route: "/isr", status: "rendered", revalidate: 60, expire: 300, router: "app" }],
+      },
+      {
+        "isr.html": "<html>ISR</html>",
+        "isr.rsc": "RSC isr",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir, {
+      async writeAppPageEntry(key, data, metadata): Promise<void> {
+        writes.push({ key, metadata, valueKind: data.kind });
+      },
+    });
+
+    const baseKey = isrCacheKey("app", "/isr", "seed-injected-writer-test");
+    expect(writes).toEqual([
+      {
+        key: baseKey + ":html",
+        metadata: { expireSeconds: 300, revalidateSeconds: 60 },
+        valueKind: "APP_PAGE",
+      },
+      {
+        key: baseKey + ":rsc",
+        metadata: { expireSeconds: 300, revalidateSeconds: 60 },
+        valueKind: "APP_PAGE",
+      },
+    ]);
+  });
+
+  it("can use injected runtime app page cache key builders", async () => {
+    const keys: string[] = [];
+
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "manifest-build-id",
+        routes: [{ route: "/isr", status: "rendered", revalidate: 60, router: "app" }],
+      },
+      {
+        "isr.html": "<html>ISR</html>",
+        "isr.rsc": "RSC isr",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir, {
+      buildAppPageHtmlKey(pathname) {
+        return `runtime-build:${pathname}:html`;
+      },
+      buildAppPageRscKey(pathname) {
+        return `runtime-build:${pathname}:rsc`;
+      },
+      async writeAppPageEntry(key): Promise<void> {
+        keys.push(key);
+      },
+    });
+
+    expect(keys).toEqual(["runtime-build:/isr:html", "runtime-build:/isr:rsc"]);
+  });
+
   it("does not set revalidate duration for static routes", async () => {
     const buildId = "static-duration-test";
     setupPrerenderFixture(

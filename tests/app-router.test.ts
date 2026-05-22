@@ -5120,6 +5120,20 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain('["locale"]');
   });
 
+  it("generated code exposes prerender cache seeding from the RSC module graph", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+
+    expect(code).toContain("seedMemoryCacheFromPrerender as __seedMemoryCacheFromPrerender");
+    expect(code).toContain("isrSetPrerenderedAppPage as __isrSetPrerenderedAppPage");
+    expect(code).toContain("export function seedMemoryCacheFromPrerender(serverDir)");
+    expect(code).toContain("buildAppPageHtmlKey(pathname)");
+    expect(code).toContain("return __isrHtmlKey(pathname)");
+    expect(code).toContain("buildAppPageRscKey(pathname)");
+    expect(code).toContain("return __isrRscKey(pathname)");
+    expect(code).toContain("writeAppPageEntry(key, data, metadata)");
+    expect(code).toContain("return __isrSetPrerenderedAppPage(key, data, metadata)");
+  });
+
   it("generated code delegates server-action header handling to the typed handler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("handleServerActionRequest({");

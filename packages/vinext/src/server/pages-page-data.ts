@@ -3,7 +3,7 @@ import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
 import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache";
 import { buildCachedRevalidateCacheControl } from "./cache-control.js";
-import { VINEXT_CACHE_HEADER } from "./headers.js";
+import { buildCacheStateHeaders } from "./cache-headers.js";
 import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import {
   buildPagesNextDataScript,
@@ -235,7 +235,7 @@ function buildPagesCacheResponse(
     cacheControl === undefined ? undefined : (cacheControl.expire ?? expireSeconds);
   const headers: Record<string, string> = {
     "Content-Type": "text/html",
-    [VINEXT_CACHE_HEADER]: cacheState,
+    ...buildCacheStateHeaders(cacheState),
     "Cache-Control": buildCachedRevalidateCacheControl(
       cacheState,
       effectiveRevalidateSeconds,

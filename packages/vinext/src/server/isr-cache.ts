@@ -81,6 +81,34 @@ export async function isrSet(
   });
 }
 
+export async function isrSetPrerenderedAppPage(
+  key: string,
+  data: CachedAppPageValue,
+  metadata: { expireSeconds?: number; revalidateSeconds?: number },
+): Promise<void> {
+  const handler = getCacheHandler();
+  const revalidateSeconds = metadata.revalidateSeconds;
+  if (process.env.NEXT_PRIVATE_DEBUG_CACHE) {
+    console.debug("[vinext] ISR: seed", key);
+  }
+  await handler.set(
+    key,
+    data,
+    revalidateSeconds === undefined
+      ? {}
+      : metadata.expireSeconds === undefined
+        ? { cacheControl: { revalidate: revalidateSeconds }, revalidate: revalidateSeconds }
+        : {
+            cacheControl: { revalidate: revalidateSeconds, expire: metadata.expireSeconds },
+            revalidate: revalidateSeconds,
+          },
+  );
+
+  if (revalidateSeconds !== undefined) {
+    setRevalidateDuration(key, revalidateSeconds);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Background regeneration dedup — one in-flight regeneration per cache key.
 // Uses Symbol.for() on globalThis so the map is shared across Vite's

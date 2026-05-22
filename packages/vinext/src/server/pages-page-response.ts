@@ -4,7 +4,7 @@ import type { CachedPagesValue } from "vinext/shims/cache";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { buildRevalidateCacheControl } from "./cache-control.js";
-import { VINEXT_CACHE_HEADER } from "./headers.js";
+import { setCacheStateHeaders } from "./cache-headers.js";
 import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
 import { reportRequestError } from "./instrumentation.js";
 import { readStreamAsText } from "../utils/text-stream.js";
@@ -383,7 +383,7 @@ export async function renderPagesPageResponse(
       "Cache-Control",
       buildRevalidateCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
     );
-    responseHeaders.set(VINEXT_CACHE_HEADER, "MISS");
+    setCacheStateHeaders(responseHeaders, "MISS");
   }
   if (options.fontLinkHeader) {
     responseHeaders.set("Link", options.fontLinkHeader);
