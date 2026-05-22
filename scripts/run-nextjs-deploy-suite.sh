@@ -60,14 +60,13 @@ fi
 if [ "${NEXTJS_PREPARE:-0}" = "1" ]; then
   (
     cd "${NEXTJS_DIR}"
+    echo ">>> $(date -Iseconds) pnpm install"
     run_pnpm install
+    echo ">>> $(date -Iseconds) pnpm build"
     run_pnpm build
-    run_pnpm install
-    if [ "${CI:-0}" = "1" ] || [ "${CI:-}" = "true" ]; then
-      run_pnpm playwright install --with-deps chromium chromium-headless-shell
-    else
-      run_pnpm playwright install chromium chromium-headless-shell
-    fi
+    echo ">>> $(date -Iseconds) pnpm playwright install"
+    run_pnpm playwright install chromium chromium-headless-shell
+    echo ">>> $(date -Iseconds) prepare done"
   )
 fi
 

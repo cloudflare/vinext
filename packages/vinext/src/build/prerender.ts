@@ -43,6 +43,7 @@ import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-strea
 import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import { startProdServer } from "../server/prod-server.js";
 import { readPrerenderSecret } from "./server-manifest.js";
+import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
 export { readPrerenderSecret } from "./server-manifest.js";
 
 function getErrorMessageWithStack(err: Error): string {
@@ -365,17 +366,6 @@ function buildUrlFromParams(
   }
 
   return "/" + result.join("/");
-}
-
-/**
- * Determine the HTML output file path for a URL.
- * Respects trailingSlash config.
- */
-export function getOutputPath(urlPath: string, trailingSlash: boolean): string {
-  if (urlPath === "/") return "index.html";
-  const clean = urlPath.replace(/^\//, "");
-  if (trailingSlash) return `${clean}/index.html`;
-  return `${clean}.html`;
 }
 
 /** Map of route patterns to generateStaticParams functions (or null/undefined). */
@@ -1370,16 +1360,6 @@ export async function prerenderApp({
       await new Promise<void>((resolve) => ownedProdServerHandle!.server.close(() => resolve()));
     }
   }
-}
-
-/**
- * Determine the RSC output file path for a URL.
- * "/blog/hello-world" → "blog/hello-world.rsc"
- * "/"                 → "index.rsc"
- */
-export function getRscOutputPath(urlPath: string): string {
-  if (urlPath === "/") return "index.rsc";
-  return urlPath.replace(/^\//, "") + ".rsc";
 }
 
 function resolveRenderedCacheControl(

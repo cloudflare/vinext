@@ -8,8 +8,10 @@ import {
   MIDDLEWARE_HEADER_PREFIX,
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
+  NEXTJS_CACHE_HEADER,
   VINEXT_CACHE_HEADER,
 } from "./headers.js";
+import { setCacheStateHeaders } from "./cache-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 
@@ -110,7 +112,7 @@ export function buildRouteHandlerCachedResponse(
       headers.set(key, value);
     }
   }
-  headers.set(VINEXT_CACHE_HEADER, options.cacheState);
+  setCacheStateHeaders(headers, options.cacheState);
   const revalidateSeconds = options.cacheControl?.revalidate ?? options.revalidateSeconds;
   const expireSeconds =
     options.cacheControl === undefined
@@ -139,7 +141,7 @@ export function applyRouteHandlerRevalidateHeader(
 }
 
 export function markRouteHandlerCacheMiss(response: Response): void {
-  response.headers.set(VINEXT_CACHE_HEADER, "MISS");
+  setCacheStateHeaders(response.headers, "MISS");
 }
 
 function getSetCookieName(cookie: string): string | null {
@@ -198,6 +200,7 @@ export async function buildAppRouteCacheValue(response: Response): Promise<Cache
     if (
       key === "set-cookie" ||
       key === VINEXT_CACHE_HEADER.toLowerCase() ||
+      key === NEXTJS_CACHE_HEADER.toLowerCase() ||
       key === "cache-control" ||
       key.startsWith(MIDDLEWARE_HEADER_PREFIX)
     ) {

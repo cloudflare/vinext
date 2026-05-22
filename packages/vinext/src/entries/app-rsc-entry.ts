@@ -79,6 +79,7 @@ const appPrerenderStaticParamsPath = resolveEntryPath(
   "../server/app-prerender-static-params.js",
   import.meta.url,
 );
+const seedCachePath = resolveEntryPath("../server/seed-cache.js", import.meta.url);
 const appHookWarningSuppressionPath = resolveEntryPath(
   "../server/app-hook-warning-suppression.js",
   import.meta.url,
@@ -274,6 +275,7 @@ import {
   appIsrRouteKey as __isrRouteKey,
   isrGet as __isrGet,
   isrSet as __isrSet,
+  isrSetPrerenderedAppPage as __isrSetPrerenderedAppPage,
   triggerBackgroundRegeneration as __triggerBackgroundRegeneration,
 } from ${JSON.stringify(isrCachePath)};
 // Import server-only state module to register ALS-backed accessors.
@@ -292,6 +294,7 @@ ${hasPagesDir ? `// Pages Router routes are loaded lazily from the SSR environme
 import { suppressHookWarningAls } from ${JSON.stringify(appHookWarningSuppressionPath)};
 import { clearAppRequestContext as __clearRequestContext, setAppNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestContextPath)};
 import { createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver } from ${JSON.stringify(appPrerenderStaticParamsPath)};
+import { seedMemoryCacheFromPrerender as __seedMemoryCacheFromPrerender } from ${JSON.stringify(seedCachePath)};
 
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
@@ -457,6 +460,20 @@ const __expireTime = ${JSON.stringify(expireTime)};
 // mirrors the embedded \`__basePath\` pattern (and Pages Router's
 // \`vinextConfig\` export). Empty string when unset.
 export const __assetPrefix = ${JSON.stringify(assetPrefix)};
+
+export function seedMemoryCacheFromPrerender(serverDir) {
+  return __seedMemoryCacheFromPrerender(serverDir, {
+    buildAppPageHtmlKey(pathname) {
+      return __isrHtmlKey(pathname);
+    },
+    buildAppPageRscKey(pathname) {
+      return __isrRscKey(pathname);
+    },
+    writeAppPageEntry(key, data, metadata) {
+      return __isrSetPrerenderedAppPage(key, data, metadata);
+    },
+  });
+}
 
 ${generateDevOriginCheckCode(config?.allowedDevOrigins)}
 

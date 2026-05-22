@@ -9821,6 +9821,22 @@ describe("next/og shim", () => {
     expect(bytes[3]).toBe(0x47); // G
   });
 
+  it("sets Next.js metadata image cache headers by default", async () => {
+    const React = await import("react");
+    const og = await import("../packages/vinext/src/shims/og.js");
+
+    const element = React.createElement("div", {
+      style: { display: "flex", width: "100%", height: "100%", backgroundColor: "blue" },
+    });
+
+    const response = new og.ImageResponse(element, {
+      width: 50,
+      height: 50,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+  });
+
   it("respects custom status and headers", async () => {
     const React = await import("react");
     const og = await import("../packages/vinext/src/shims/og.js");
@@ -15835,6 +15851,51 @@ describe("shim alias map .js variants", () => {
 
     const missing = topLevel.filter((key) => !(key + ".js" in aliases!));
     expect(missing, `Missing .js aliases for: ${missing.join(", ")}`).toEqual([]);
+  });
+});
+
+describe("@vercel/og compatibility resolution", () => {
+  type ResolveIdHook = {
+    filter: { id: RegExp };
+    handler: (
+      this: { environment?: { name?: string } },
+      id: string,
+      importer?: string,
+    ) => string | undefined;
+  };
+
+  function getResolveIdHook(): ResolveIdHook {
+    const plugins = vinext() as Plugin[];
+    const configPlugin = plugins.find((p) => p.name === "vinext:config");
+    if (!configPlugin?.resolveId || typeof configPlugin.resolveId === "function") {
+      throw new Error("vinext:config resolveId hook not found");
+    }
+    return configPlugin.resolveId as ResolveIdHook;
+  }
+
+  it("routes direct @vercel/og app imports through the Next-compatible ImageResponse shim", () => {
+    const hook = getResolveIdHook();
+    const expectedShim = path.resolve(import.meta.dirname, "../packages/vinext/src/shims/og.tsx");
+
+    expect(hook.filter.id.test("@vercel/og")).toBe(true);
+    expect(hook.filter.id.test("@vercel/og.js")).toBe(true);
+    expect(
+      hook.handler.call({}, "@vercel/og", path.join(FIXTURE_DIR, "app/opengraph-image.tsx")),
+    ).toBe(expectedShim);
+    expect(
+      hook.handler.call({}, "@vercel/og.js", path.join(FIXTURE_DIR, "app/twitter-image.tsx")),
+    ).toBe(expectedShim);
+  });
+
+  it("lets the ImageResponse shim delegate to the real @vercel/og package", () => {
+    const hook = getResolveIdHook();
+
+    expect(
+      hook.handler.call({}, "@vercel/og", "/repo/packages/vinext/src/shims/og.tsx"),
+    ).toBeUndefined();
+    expect(
+      hook.handler.call({}, "@vercel/og", "/repo/node_modules/vinext/dist/shims/og.js"),
+    ).toBeUndefined();
   });
 });
 

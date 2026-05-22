@@ -19,6 +19,7 @@ export function generateBrowserEntry(
   const prefetchRoutes: VinextLinkPrefetchRoute[] = routes
     .filter((route) => isLinkPrefetchRoute(route))
     .map((route) => ({
+      canPrefetchLoadingShell: route.loadingPath !== null,
       patternParts: [...route.patternParts],
       isDynamic: route.isDynamic,
     }));

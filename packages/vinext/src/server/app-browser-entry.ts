@@ -19,6 +19,7 @@ import {
   createCachedRscResponseSnapshot,
   createClientNavigationRenderSnapshot,
   getClientNavigationRenderContext,
+  getPrefetchCache,
   invalidatePrefetchCache,
   pushHistoryStateWithoutNotify,
   replaceClientParamsWithoutNotify,
@@ -30,6 +31,7 @@ import {
   setNavigationContext,
   type CachedRscResponse,
   type ClientNavigationRenderSnapshot,
+  type PrefetchCacheEntry,
 } from "vinext/shims/navigation";
 import {
   getNavigationRuntime,
@@ -120,6 +122,13 @@ import {
   resolveRscRedirectLifecycleHop,
 } from "./app-browser-rsc-redirect.js";
 import {
+  createOptimisticRouteTemplate,
+  getOptimisticPrefetchSourceKey,
+  getOptimisticRouteTemplateKey,
+  resolveOptimisticNavigationPayload,
+  type OptimisticRouteTemplate,
+} from "./app-optimistic-routing.js";
+import {
   ACTION_REDIRECT_HEADER,
   ACTION_REDIRECT_TYPE_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
@@ -165,6 +174,9 @@ const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
 const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
 const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
 const CLIENT_RSC_COMPATIBILITY_ID = getVinextRscCompatibilityId();
+const optimisticRouteTemplates = new Map<string, OptimisticRouteTemplate>();
+const optimisticRouteTemplateSources = new Set<string>();
+const optimisticRouteTemplateLearning = new Map<string, Promise<void>>();
 function getBrowserRouteManifest(): RouteManifest | null {
   return getNavigationRuntime()?.bootstrap.routeManifest ?? null;
 }
@@ -341,11 +353,113 @@ function clearVisitedResponseCache(): void {
 
 function clearPrefetchState(): void {
   invalidatePrefetchCache();
+  optimisticRouteTemplates.clear();
+  optimisticRouteTemplateSources.clear();
+  optimisticRouteTemplateLearning.clear();
 }
 
 function clearClientNavigationCaches(): void {
   clearVisitedResponseCache();
   clearPrefetchState();
+}
+
+function isSettledPrefetchCacheEntry(
+  entry: PrefetchCacheEntry,
+): entry is PrefetchCacheEntry & { snapshot: CachedRscResponse } {
+  return (
+    entry.outcome === "cache-seeded" && entry.pending === undefined && entry.snapshot !== undefined
+  );
+}
+
+function parsePrefetchCacheKey(cacheKey: string): {
+  interceptionContext: string | null;
+  rscUrl: string;
+} {
+  const separatorIndex = cacheKey.indexOf("\0");
+  if (separatorIndex === -1) {
+    return { interceptionContext: null, rscUrl: cacheKey };
+  }
+  return {
+    interceptionContext: cacheKey.slice(separatorIndex + 1),
+    rscUrl: cacheKey.slice(0, separatorIndex),
+  };
+}
+
+async function learnOptimisticRouteTemplateFromPrefetch(options: {
+  cacheKey: string;
+  entry: PrefetchCacheEntry & { snapshot: CachedRscResponse };
+  interceptionContext: string | null;
+  mountedSlotsHeader: string | null;
+  routeManifest: RouteManifest;
+}): Promise<boolean> {
+  const source = parsePrefetchCacheKey(options.cacheKey);
+  if (source.interceptionContext !== options.interceptionContext) return false;
+  if ((options.entry.snapshot.mountedSlotsHeader ?? null) !== options.mountedSlotsHeader)
+    return false;
+  if (options.interceptionContext !== null) return false;
+
+  const elements = await decodeAppElementsPromise(
+    createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
+  );
+  const template = createOptimisticRouteTemplate({
+    allowLoadingShell: options.entry.optimisticRouteShell === true,
+    basePath: __basePath,
+    elements,
+    href: options.entry.snapshot.url || source.rscUrl,
+    interceptionContext: options.interceptionContext,
+    mountedSlotsHeader: options.mountedSlotsHeader,
+    routeManifest: options.routeManifest,
+  });
+  if (template === null) return false;
+
+  optimisticRouteTemplates.set(
+    getOptimisticRouteTemplateKey({
+      interceptionContext: options.interceptionContext,
+      mountedSlotsHeader: options.mountedSlotsHeader,
+      routeId: template.routeId,
+    }),
+    template,
+  );
+  return true;
+}
+
+async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
+  interceptionContext: string | null;
+  mountedSlotsHeader: string | null;
+  routeManifest: RouteManifest | null;
+}): Promise<void> {
+  if (options.routeManifest === null) return;
+
+  const learning: Promise<void>[] = [...optimisticRouteTemplateLearning.values()];
+  for (const [cacheKey, entry] of getPrefetchCache()) {
+    const sourceKey = getOptimisticPrefetchSourceKey({
+      cacheKey,
+      interceptionContext: options.interceptionContext,
+      mountedSlotsHeader: options.mountedSlotsHeader,
+    });
+    if (optimisticRouteTemplateSources.has(sourceKey)) continue;
+    if (optimisticRouteTemplateLearning.has(sourceKey)) continue;
+    if (!isSettledPrefetchCacheEntry(entry)) continue;
+
+    const promise = learnOptimisticRouteTemplateFromPrefetch({
+      cacheKey,
+      entry,
+      interceptionContext: options.interceptionContext,
+      mountedSlotsHeader: options.mountedSlotsHeader,
+      routeManifest: options.routeManifest,
+    })
+      .then((learned) => {
+        if (learned) optimisticRouteTemplateSources.add(sourceKey);
+      })
+      .finally(() => {
+        optimisticRouteTemplateLearning.delete(sourceKey);
+      });
+    optimisticRouteTemplateLearning.set(sourceKey, promise);
+    learning.push(promise);
+  }
+
+  if (learning.length === 0) return;
+  await Promise.allSettled(learning);
 }
 
 function syncCurrentHistoryStatePreviousNextUrl(previousNextUrl: string | null): void {
@@ -733,7 +847,11 @@ function BrowserRoot({
     // browser router state is attached and link/router interactions can safely
     // observe the committed tree. It is intentionally later than hydrateRoot()
     // returning.
-    window.__VINEXT_HYDRATED_AT = performance.now();
+    const hydratedAt = performance.now();
+    window.__VINEXT_HYDRATED_AT = hydratedAt;
+    window.__NEXT_HYDRATED = true;
+    window.__NEXT_HYDRATED_AT = hydratedAt;
+    window.__NEXT_HYDRATED_CB?.();
     return () => {
       detach();
       setMountedSlotsHeader(null);
@@ -1224,6 +1342,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     let currentHistoryMode = historyUpdateMode;
     let currentPrevNextUrl = previousNextUrlOverride;
     let redirectCount = redirectDepth;
+    let detachedNavigationCommits = false;
     const activeTraversalIntent =
       navigationKind === "traverse"
         ? (traversalIntent ??
@@ -1324,7 +1443,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             currentHistoryMode,
             cachedParams,
             requestPreviousNextUrl,
-            pendingRouterState,
+            detachedNavigationCommits ? null : pendingRouterState,
             VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
             toActionType(navigationKind),
             toOperationLane(navigationKind),
@@ -1347,6 +1466,59 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           if (prefetchedResponse) {
             navResponse = restoreRscResponse(prefetchedResponse, false);
             navResponseUrl = prefetchedResponse.url;
+          }
+        }
+
+        if (!navResponse && navigationKind === "navigate") {
+          const routeManifest = getBrowserRouteManifest();
+          await learnOptimisticRouteTemplatesFromPrefetchCache({
+            interceptionContext: requestInterceptionContext,
+            mountedSlotsHeader,
+            routeManifest,
+          });
+          if (!browserNavigationController.isCurrentNavigation(navId)) return;
+
+          if (routeManifest !== null) {
+            const optimisticPayload = resolveOptimisticNavigationPayload({
+              basePath: __basePath,
+              href: currentHref,
+              interceptionContext: requestInterceptionContext,
+              mountedSlotsHeader,
+              routeManifest,
+              templates: optimisticRouteTemplates,
+            });
+
+            if (optimisticPayload !== null) {
+              detachedNavigationCommits = true;
+              const optimisticNavigationSnapshot = createClientNavigationRenderSnapshot(
+                currentHref,
+                optimisticPayload.params,
+              );
+              // The optimistic shell is a detached commit for this navigation.
+              // It uses the same navId gate as the real payload, while the real
+              // payload skips pending-router-state reuse via
+              // detachedNavigationCommits. That keeps late optimistic errors or
+              // transitions from mutating a newer navigation or sharing mutable
+              // pending state with the authoritative render.
+              void renderNavigationPayload(
+                Promise.resolve(optimisticPayload.elements),
+                optimisticNavigationSnapshot,
+                currentHref,
+                navId,
+                currentHistoryMode,
+                optimisticPayload.params,
+                requestPreviousNextUrl,
+                null,
+                FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+                toActionType(navigationKind),
+                toOperationLane(navigationKind),
+                activeTraversalIntent,
+              ).catch((error) => {
+                if (browserNavigationController.isCurrentNavigation(navId)) {
+                  console.error("[vinext] Optimistic RSC navigation error:", error);
+                }
+              });
+            }
           }
         }
 
@@ -1515,7 +1687,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           currentHistoryMode,
           navParams,
           requestPreviousNextUrl,
-          pendingRouterState,
+          detachedNavigationCommits ? null : pendingRouterState,
           FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
           toActionType(navigationKind),
           toOperationLane(navigationKind),

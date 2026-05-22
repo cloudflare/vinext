@@ -383,8 +383,15 @@ describe("Pages Router integration", () => {
     const first = await fetch(`${baseUrl}/isr-test`);
     expect(first.status).toBe(200);
     expect(first.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(first.headers.get("x-nextjs-cache")).toBe("MISS");
     const firstHtml = await first.text();
     expect(firstHtml).not.toContain("nonce=");
+
+    const cached = await fetch(`${baseUrl}/isr-test`);
+    expect(cached.status).toBe(200);
+    expect(cached.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(cached.headers.get("x-nextjs-cache")).toBe("HIT");
+    await cached.text();
 
     const second = await fetch(`${baseUrl}/isr-test?mw-csp-nonce=pages-isr`);
     expect(second.status).toBe(200);
@@ -4979,6 +4986,7 @@ describe("Pages Router dev ISR regeneration", () => {
         200,
         expect.objectContaining({
           "X-Vinext-Cache": "STALE",
+          "x-nextjs-cache": "STALE",
         }),
       );
 

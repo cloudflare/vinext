@@ -1067,6 +1067,14 @@ export async function resolveNextConfig(
     );
   }
 
+  // `next/root-params` is now stable — no longer requires an experimental flag.
+  if (experimental?.rootParams !== undefined) {
+    console.warn(
+      "[vinext] `experimental.rootParams` is no longer needed, because `next/root-params` is available by default. " +
+        "You can remove it from next.config.(js|mjs|ts).",
+    );
+  }
+
   // Warn about unsupported webpack usage. We preserve alias injection and
   // extract MDX settings, but all other webpack customization is still ignored.
   if (config.webpack !== undefined) {

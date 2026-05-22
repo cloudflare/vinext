@@ -27,14 +27,21 @@ import {
 // Import shared RSC prefetch utilities from navigation shim (relative path
 // so this resolves both via the Vite plugin and in direct vitest imports)
 import {
-  getCurrentInterceptionContext,
+  getPrefetchInterceptionContext,
+  getPrefetchCache,
   getPrefetchedUrls,
   getMountedSlotsHeader,
   navigateClientSide,
   prefetchRscResponse,
 } from "./navigation.js";
 import { AppElementsWire } from "../server/app-elements.js";
-import { createRscRequestHeaders, createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
+import {
+  createRscRequestHeaders,
+  createRscRequestUrl,
+  stripRscCacheBustingSearchParam,
+  stripRscSuffix,
+} from "../server/app-rsc-cache-busting.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../server/app-rsc-render-mode.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "../server/headers.js";
 import { isDangerousScheme, reportBlockedDangerousNavigation } from "./url-safety.js";
 import {
@@ -187,6 +194,35 @@ export function canAutoPrefetchFullAppRoute(href: string): boolean {
   return !match.route.isDynamic;
 }
 
+export function resolveAutoAppRoutePrefetch(href: string): {
+  cacheForNavigation: boolean;
+  shouldPrefetch: boolean;
+} {
+  if (typeof window === "undefined") {
+    return { cacheForNavigation: false, shouldPrefetch: false };
+  }
+
+  const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
+  if (!routes) {
+    return { cacheForNavigation: false, shouldPrefetch: false };
+  }
+
+  const routeHref = toSameOriginRouteHref(href);
+  if (routeHref === null) {
+    return { cacheForNavigation: false, shouldPrefetch: false };
+  }
+
+  const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
+  if (!match) {
+    return { cacheForNavigation: false, shouldPrefetch: false };
+  }
+
+  return {
+    cacheForNavigation: !match.route.isDynamic,
+    shouldPrefetch: !match.route.isDynamic || match.route.canPrefetchLoadingShell,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Prefetching infrastructure
 // ---------------------------------------------------------------------------
@@ -218,16 +254,22 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
   schedule(() => {
     void (async () => {
       if (hasAppNavigationRuntime()) {
-        // `auto`/`null`/undefined should not behave like `prefetch={true}` for
-        // App Router dynamic routes. Next.js may prefetch a loading-boundary
-        // shell for dynamic routes, but vinext's current client cache stores
-        // complete RSC responses only; keep automatic full prefetch to route
-        // shapes that are statically known safe until segment prefetch exists.
-        if (mode === "auto" && !canAutoPrefetchFullAppRoute(prefetchHref)) return;
+        const autoPrefetch =
+          mode === "auto"
+            ? resolveAutoAppRoutePrefetch(prefetchHref)
+            : { cacheForNavigation: true, shouldPrefetch: true };
+        if (!autoPrefetch.shouldPrefetch) return;
 
-        const interceptionContext = getCurrentInterceptionContext();
+        const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
-        const headers = createRscRequestHeaders({ interceptionContext });
+        const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
+        if (isOptimisticRouteShellPrefetch && interceptionContext !== null) return;
+        const headers = createRscRequestHeaders({
+          interceptionContext,
+          renderMode: isOptimisticRouteShellPrefetch
+            ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+            : undefined,
+        });
         if (mountedSlotsHeader) {
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
         }
@@ -236,7 +278,15 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         const rscUrl = await createRscRequestUrl(fullHref, headers);
         const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
-        if (prefetched.has(cacheKey)) return;
+        if (prefetched.has(cacheKey)) {
+          if (autoPrefetch.cacheForNavigation) {
+            const existing = getPrefetchCache().get(cacheKey);
+            if (existing?.cacheForNavigation === false) {
+              existing.cacheForNavigation = true;
+            }
+          }
+          return;
+        }
         prefetched.add(cacheKey);
         prefetchRscResponse(
           rscUrl,
@@ -249,6 +299,11 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
           }),
           interceptionContext,
           mountedSlotsHeader,
+          undefined,
+          {
+            cacheForNavigation: autoPrefetch.cacheForNavigation,
+            optimisticRouteShell: isOptimisticRouteShellPrefetch,
+          },
         );
       } else if ((window.__NEXT_DATA__ as VinextNextData | undefined)?.__vinext?.pageModuleUrl) {
         // Pages Router: inject a prefetch link for the target page module
@@ -265,6 +320,36 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
       console.error("[vinext] RSC prefetch setup error:", error);
     });
   });
+}
+
+function promotePrefetchEntriesForNavigation(href: string): void {
+  if (typeof window === "undefined") return;
+
+  let target: URL;
+  try {
+    target = new URL(
+      toBrowserNavigationHref(href, window.location.href, __basePath),
+      window.location.href,
+    );
+  } catch {
+    return;
+  }
+
+  for (const [cacheKey, entry] of getPrefetchCache()) {
+    if (entry.optimisticRouteShell === true) continue;
+
+    const [rscUrl] = cacheKey.split("\0", 1);
+    let cached: URL;
+    try {
+      cached = new URL(rscUrl, window.location.href);
+    } catch {
+      continue;
+    }
+    stripRscCacheBustingSearchParam(cached);
+    if (stripRscSuffix(cached.pathname) === target.pathname && cached.search === target.search) {
+      entry.cacheForNavigation = true;
+    }
+  }
 }
 
 /**
@@ -523,6 +608,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       if (instance) {
         instance.mode = "full";
       }
+      promotePrefetchEntriesForNavigation(normalizedHref);
     }
     prefetchUrl(normalizedHref, intentMode, "high");
   }, [prefetchProp, isDangerous, prefetchMode, normalizedHref, unstable_dynamicOnHover]);

@@ -271,6 +271,7 @@ describe("pages page data", () => {
       throw new Error("expected response result");
     }
     expect(result.response.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(result.response.headers.get("x-nextjs-cache")).toBe("HIT");
     expect(result.response.headers.get("cache-control")).toBe(
       "s-maxage=15, stale-while-revalidate=285",
     );

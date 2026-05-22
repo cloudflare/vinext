@@ -382,6 +382,7 @@ describe("app page response helpers", () => {
     expect(response.headers.get("x-vinext-params")).toBe(encodeURIComponent('{"slug":"test"}'));
     expect(response.headers.get("cache-control")).toBe("private, max-age=5");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(response.headers.get("x-nextjs-cache")).toBe("MISS");
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
     expect(response.headers.get("x-vinext-timing")).toBe("10,5,-1");
     await expect(response.text()).resolves.toBe("flight");
@@ -464,6 +465,7 @@ describe("app page response helpers", () => {
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(response.headers.get("cache-control")).toBe("private, max-age=5");
     expect(response.headers.get("x-vinext-cache")).toBe("STATIC");
+    expect(response.headers.get("x-nextjs-cache")).toBe("HIT");
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
     expect(response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",

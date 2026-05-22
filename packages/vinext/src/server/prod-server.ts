@@ -70,7 +70,7 @@ import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { readPrerenderSecret } from "../build/server-manifest.js";
 import { VINEXT_PRERENDER_SECRET_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
-import { seedMemoryCacheFromPrerender } from "./seed-cache.js";
+import { seedMemoryCacheFromPrerender as seedMemoryCacheFromPrerenderFallback } from "./seed-cache.js";
 import { installSocketErrorBackstop } from "./socket-error-backstop.js";
 import { stripI18nLocaleForApiRoute } from "./pages-i18n.js";
 
@@ -939,6 +939,39 @@ function resolveAppRouterHandler(entry: unknown): (request: Request) => Promise<
   process.exit(1);
 }
 
+type AppRouterPrerenderSeeder = (serverDir: string) => Promise<number>;
+type AppRouterPrerenderSeederExport = (serverDir: string) => unknown;
+
+function isAppRouterPrerenderSeederExport(value: unknown): value is AppRouterPrerenderSeederExport {
+  return typeof value === "function";
+}
+
+export function resolveAppRouterPrerenderSeeder(entryModule: unknown): AppRouterPrerenderSeeder {
+  if (typeof entryModule !== "object" || entryModule === null) {
+    return seedMemoryCacheFromPrerenderFallback;
+  }
+
+  const seedExport: unknown = Object.getOwnPropertyDescriptor(
+    entryModule,
+    "seedMemoryCacheFromPrerender",
+  )?.value;
+  if (!isAppRouterPrerenderSeederExport(seedExport)) {
+    if (process.env.NEXT_PRIVATE_DEBUG_CACHE) {
+      console.debug("[vinext] ISR: using fallback prerender cache seeder");
+    }
+    return seedMemoryCacheFromPrerenderFallback;
+  }
+
+  if (process.env.NEXT_PRIVATE_DEBUG_CACHE) {
+    console.debug("[vinext] ISR: using App Router entry prerender cache seeder");
+  }
+
+  return async (serverDir) => {
+    const result = await Promise.resolve(seedExport(serverDir));
+    return typeof result === "number" ? result : 0;
+  };
+}
+
 /**
  * Resolve a request pathname to a static-asset lookup path inside `clientDir`.
  *
@@ -1055,7 +1088,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
   // Seed the memory cache with pre-rendered routes so the first request to
   // any pre-rendered page is a cache HIT instead of a full re-render.
-  const seededRoutes = await seedMemoryCacheFromPrerender(path.dirname(rscEntryPath));
+  const seedPrerenderedRoutes = resolveAppRouterPrerenderSeeder(rscModule);
+  const seededRoutes = await seedPrerenderedRoutes(path.dirname(rscEntryPath));
   if (seededRoutes > 0) {
     console.log(
       `[vinext] Seeded ${seededRoutes} pre-rendered route${seededRoutes !== 1 ? "s" : ""} into memory cache`,

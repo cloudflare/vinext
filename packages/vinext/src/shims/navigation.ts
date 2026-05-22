@@ -14,6 +14,7 @@ import * as React from "react";
 import { getNavigationRuntime, hasAppNavigationRuntime } from "../client/navigation-runtime.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import { AppElementsWire } from "../server/app-elements.js";
+import { resolveManifestNavigationInterceptionContext } from "../server/app-browser-interception-context.js";
 import { createExternalHistoryStatePreservingMetadata } from "../server/app-history-state.js";
 import {
   createRscRequestHeaders,
@@ -350,8 +351,10 @@ export type PrefetchOptions = {
 };
 
 export type PrefetchCacheEntry = {
+  cacheForNavigation?: boolean;
   invalidationTimer?: ReturnType<typeof setTimeout>;
   onInvalidateCallbacks?: Set<() => void>;
+  optimisticRouteShell?: boolean;
   outcome: "pending" | "cache-seeded";
   snapshot?: CachedRscResponse;
   pending?: Promise<void>;
@@ -364,6 +367,26 @@ export function getCurrentInterceptionContext(): string | null {
   }
 
   return stripBasePath(window.location.pathname, __basePath);
+}
+
+export function getPrefetchInterceptionContext(targetHref: string): string | null {
+  if (isServer) {
+    return null;
+  }
+
+  let targetUrl: URL;
+  try {
+    targetUrl = new URL(targetHref, window.location.href);
+  } catch {
+    return null;
+  }
+
+  return resolveManifestNavigationInterceptionContext({
+    basePath: __basePath,
+    currentPathname: window.location.pathname,
+    routeManifest: getNavigationRuntime()?.bootstrap.routeManifest ?? null,
+    targetPathname: targetUrl.pathname,
+  });
 }
 
 export function getCurrentNextUrl(): string {
@@ -640,6 +663,7 @@ export function prefetchRscResponse(
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
   options?: PrefetchOptions,
+  behavior: { cacheForNavigation?: boolean; optimisticRouteShell?: boolean } = {},
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
@@ -647,6 +671,8 @@ export function prefetchRscResponse(
   const now = Date.now();
 
   const entry: PrefetchCacheEntry = {
+    cacheForNavigation: behavior.cacheForNavigation ?? true,
+    optimisticRouteShell: behavior.optimisticRouteShell === true,
     outcome: "pending",
     timestamp: now,
   };
@@ -701,6 +727,7 @@ export function consumePrefetchResponse(
   // Skip in-flight snapshots and error-path residue where pending cleared
   // without a successful transition to a cache-seeded entry.
   if (entry.pending || entry.outcome !== "cache-seeded") return null;
+  if (entry.cacheForNavigation === false) return null;
 
   deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, false);
 
@@ -1499,7 +1526,7 @@ const _appRouter = {
       // We must add to prefetchedUrls manually for deduplication.
       // prefetchRscResponse only manages the cache Map, not the URL set.
       const fullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
-      const interceptionContext = getCurrentInterceptionContext();
+      const interceptionContext = getPrefetchInterceptionContext(fullHref);
       const mountedSlotsHeader = getMountedSlotsHeader();
       const headers = createRscRequestHeaders({ interceptionContext });
       if (mountedSlotsHeader) {

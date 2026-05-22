@@ -17,6 +17,7 @@ import ReactDOMServer from "react-dom/server";
 // Link is a "use client" component but renderToString still works for SSR output.
 import Link, {
   canAutoPrefetchFullAppRoute,
+  resolveAutoAppRoutePrefetch,
   resolveLinkPrefetchMode,
   useLinkStatus,
 } from "../packages/vinext/src/shims/link.js";
@@ -169,9 +170,9 @@ describe("Link App Router prefetch mode", () => {
         origin: "http://localhost",
       },
       __VINEXT_LINK_PREFETCH_ROUTES__: [
-        { patternParts: ["about"], isDynamic: false },
-        { patternParts: ["blog", ":slug"], isDynamic: true },
-        { patternParts: ["docs", ":slug+"], isDynamic: true },
+        { canPrefetchLoadingShell: false, patternParts: ["about"], isDynamic: false },
+        { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
+        { canPrefetchLoadingShell: true, patternParts: ["docs", ":slug+"], isDynamic: true },
       ],
     };
 
@@ -180,6 +181,46 @@ describe("Link App Router prefetch mode", () => {
       expect(canAutoPrefetchFullAppRoute("/blog/hello-world")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/docs/a/b")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/missing")).toBe(false);
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+    }
+  });
+
+  it("allows automatic dynamic App Router prefetches only as loading-boundary learning requests", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: {
+        href: "http://localhost/blog",
+        origin: "http://localhost",
+      },
+      __VINEXT_LINK_PREFETCH_ROUTES__: [
+        { canPrefetchLoadingShell: false, patternParts: ["about"], isDynamic: false },
+        { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
+        { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
+      ],
+    };
+
+    try {
+      expect(resolveAutoAppRoutePrefetch("/about")).toEqual({
+        cacheForNavigation: true,
+        shouldPrefetch: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/blog/hello-world")).toEqual({
+        cacheForNavigation: false,
+        shouldPrefetch: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/products/1")).toEqual({
+        cacheForNavigation: false,
+        shouldPrefetch: false,
+      });
+      expect(resolveAutoAppRoutePrefetch("/missing")).toEqual({
+        cacheForNavigation: false,
+        shouldPrefetch: false,
+      });
     } finally {
       if (originalWindow === undefined) {
         delete (globalThis as any).window;

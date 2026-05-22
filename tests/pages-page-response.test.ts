@@ -177,6 +177,7 @@ describe("pages page response", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate=240");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(response.headers.get("x-nextjs-cache")).toBe("MISS");
     await expect(response.text()).resolves.toContain("<div>live-body</div>");
     await settleMicrotasks();
 

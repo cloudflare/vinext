@@ -101,6 +101,7 @@ describe("app route handler response helpers", () => {
       revalidateSeconds: 60,
     });
     expect(hit.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(hit.headers.get("x-nextjs-cache")).toBe("HIT");
     expect(hit.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate");
     await expect(hit.text()).resolves.toBe("from-cache");
 
@@ -111,6 +112,7 @@ describe("app route handler response helpers", () => {
       revalidateSeconds: 60,
     });
     expect(staleHead.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(staleHead.headers.get("x-nextjs-cache")).toBe("STALE");
     expect(staleHead.headers.get("cache-control")).toBe("s-maxage=0, stale-while-revalidate");
     await expect(staleHead.text()).resolves.toBe("");
   });
@@ -153,6 +155,7 @@ describe("app route handler response helpers", () => {
         "content-type": "text/plain",
         "cache-control": "s-maxage=60, stale-while-revalidate",
         "x-vinext-cache": "MISS",
+        "x-nextjs-cache": "MISS",
         "x-middleware-set-cookie": "internal=1; Path=/",
         "x-extra": "kept",
       },
