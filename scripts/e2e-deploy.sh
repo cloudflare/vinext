@@ -427,16 +427,17 @@ function dependencyBucketFor(name) {
 function normalizeAppRouterReactDeps() {
   if (!hasAppRouterDir(process.cwd())) return
 
-  const minimumReactVersion = [19, 2, 6]
   for (const dep of ['react', 'react-dom']) {
     const bucket = dependencyBucketFor(dep)
     if (!bucket) continue
 
     const current = pkg[bucket][dep]
     const version = parseSemverSpec(current)
-    if (!version || compareSemver(version, minimumReactVersion) >= 0) continue
-
     const replacement = dependencySpecFor(dep)
+    const minimumVersion = parseSemverSpec(replacement)
+    if (!minimumVersion) continue
+    if (!version || compareSemver(version, minimumVersion) >= 0) continue
+
     pkg[bucket][dep] = replacement
     console.log(
       `Bumped ${bucket}.${dep} from ${current} to ${replacement} for RSC compatibility`,
