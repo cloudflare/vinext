@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach } from "vite-plus/test";
 import path from "node:path";
 import fs from "node:fs";
+import { http, HttpResponse } from "msw";
+import { server } from "./_msw/server.js";
 import vinext from "../packages/vinext/src/index.js";
 import {
   parseStaticObjectLiteral,
@@ -15,6 +17,29 @@ import type { Plugin } from "vite-plus";
 /** Unwrap a Vite plugin hook that may use the object-with-filter format */
 function unwrapHook(hook: any): Function {
   return typeof hook === "function" ? hook : hook?.handler;
+}
+
+/**
+ * Install an MSW handler that returns the given body for any
+ * `fonts.googleapis.com` request, and records every URL it sees.
+ *
+ * Replaces the prior pattern of swapping `globalThis.fetch` inside a
+ * try/finally — handlers are reset between tests by the global
+ * `afterEach` in `tests/_msw/setup.ts`.
+ */
+function mockGoogleFontsCSS(
+  body: string,
+  opts: { status?: number; headers?: HeadersInit } = {},
+): { urls: string[]; count: () => number } {
+  const urls: string[] = [];
+  const headers = opts.headers ?? { "content-type": "text/css" };
+  server.use(
+    http.get("https://fonts.googleapis.com/*", ({ request }) => {
+      urls.push(request.url);
+      return new HttpResponse(body, { status: opts.status ?? 200, headers });
+    }),
+  );
+  return { urls, count: () => urls.length };
 }
 
 /** Extract the vinext:google-fonts plugin from the plugin array */
@@ -738,12 +763,7 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-italic-only");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Molle'; font-style: italic; }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Molle'; font-style: italic; }");
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -759,7 +779,6 @@ describe("vinext:google-fonts plugin", () => {
       expect(result.code).toContain("fontWeight: 400");
       expect(result.code).toContain('fontStyle: "italic"');
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -769,12 +788,7 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-multi-style");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Inter'; }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; }");
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -790,7 +804,6 @@ describe("vinext:google-fonts plugin", () => {
       expect(result.code).toContain("fontWeight: 400");
       expect(result.code).not.toContain("fontStyle:");
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -800,12 +813,7 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-no-adjust");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -819,7 +827,6 @@ describe("vinext:google-fonts plugin", () => {
       expect(result.code).toContain("selfHostedCSS");
       expect(result.code).not.toContain("adjustedFallbackCSS");
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -835,16 +842,7 @@ describe("vinext:google-fonts plugin", () => {
     // transform twice: first with a real fetch to populate the in-memory
     // cache, then again to verify the cache is used (no second fetch).
     // Simpler approach: mock fetch to return controlled CSS.
-    const originalFetch = globalThis.fetch;
-    const fetchCount = { value: 0 };
-    globalThis.fetch = async (_input: any, _init?: any) => {
-      fetchCount.value++;
-      // Return fake Google Fonts CSS
-      return new Response(fakeCSS, {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
-    };
+    const fonts = mockGoogleFontsCSS(fakeCSS);
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -858,14 +856,13 @@ describe("vinext:google-fonts plugin", () => {
       expect(result1).not.toBeNull();
       expect(result1.code).toContain("virtual:vinext-google-fonts?");
       expect(result1.code).toContain("selfHostedCSS");
-      const firstFetchCount = fetchCount.value;
+      const firstFetchCount = fonts.count();
 
       // Second call: should use in-memory cache (no additional fetch)
       const result2 = await transform.call(plugin, code, "/app/page.tsx");
       expect(result2).not.toBeNull();
-      expect(fetchCount.value).toBe(firstFetchCount);
+      expect(fonts.count()).toBe(firstFetchCount);
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -875,21 +872,19 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-3");
     initPlugin(plugin, { command: "build", root });
 
-    // Mock fetch to return different CSS per font family
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async (input: any) => {
-      const url = String(input);
-      if (url.includes("Inter")) {
-        return new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
-          status: 200,
+    // Mock Google Fonts to return different CSS per font family.
+    server.use(
+      http.get("https://fonts.googleapis.com/*", ({ request }) => {
+        if (request.url.includes("Inter")) {
+          return HttpResponse.text("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
+            headers: { "content-type": "text/css" },
+          });
+        }
+        return HttpResponse.text("@font-face { font-family: 'Roboto'; src: url(/roboto.woff2); }", {
           headers: { "content-type": "text/css" },
         });
-      }
-      return new Response("@font-face { font-family: 'Roboto'; src: url(/roboto.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
-    };
+      }),
+    );
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -906,7 +901,6 @@ describe("vinext:google-fonts plugin", () => {
       const matches = result.code.match(/selfHostedCSS/g);
       expect(matches?.length).toBe(2);
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -917,12 +911,7 @@ describe("vinext:google-fonts plugin", () => {
     initPlugin(plugin, { command: "build", root });
 
     // Mock fetch for Inter only
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Inter'; }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; }");
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -940,7 +929,6 @@ describe("vinext:google-fonts plugin", () => {
       const matches = result.code.match(/selfHostedCSS/g);
       expect(matches?.length).toBe(1);
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -953,12 +941,7 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-trailing-comma");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -978,7 +961,6 @@ describe("vinext:google-fonts plugin", () => {
       // Verify the generated code is syntactically valid by checking structure
       expect(result.code).toContain('selfHostedCSS: "');
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -990,12 +972,7 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-nested");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -1015,7 +992,6 @@ describe("vinext:google-fonts plugin", () => {
       // Verify the injected object is syntactically valid (no double-comma)
       expect(result.code).not.toMatch(/,\s*,/);
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -1026,12 +1002,7 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-nested-member");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -1046,7 +1017,6 @@ describe("vinext:google-fonts plugin", () => {
       expect(result.code).toContain("selfHostedCSS");
       expect(result.code).not.toMatch(/,\s*,/);
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -1058,12 +1028,7 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-brace-string");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -1078,7 +1043,6 @@ describe("vinext:google-fonts plugin", () => {
       expect(result.code).toContain("selfHostedCSS");
       expect(result.code).not.toMatch(/,\s*,/);
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -1088,12 +1052,7 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-alias");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -1106,7 +1065,6 @@ describe("vinext:google-fonts plugin", () => {
       expect(result.code).toContain("virtual:vinext-google-fonts?");
       expect(result.code).toContain("selfHostedCSS");
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -1119,15 +1077,7 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-sen");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    const fetchedUrls: string[] = [];
-    globalThis.fetch = async (input: any) => {
-      fetchedUrls.push(String(input));
-      return new Response("@font-face { font-family: 'Sen'; src: url(/sen.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
-    };
+    const fonts = mockGoogleFontsCSS("@font-face { font-family: 'Sen'; src: url(/sen.woff2); }");
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -1140,13 +1090,12 @@ describe("vinext:google-fonts plugin", () => {
       expect(result).not.toBeNull();
       expect(result.code).toContain("selfHostedCSS");
 
-      const cssFetch = fetchedUrls.find((u) => u.includes("fonts.googleapis.com/css2"));
+      const cssFetch = fonts.urls.find((u) => u.includes("fonts.googleapis.com/css2"));
       expect(cssFetch).toBeDefined();
       const decoded = decodeURIComponent(cssFetch!);
       expect(decoded).toContain("Sen:wght@400..800");
       expect(decoded).not.toContain("wght@100..900");
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -1158,15 +1107,9 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-axes");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    const fetchedUrls: string[] = [];
-    globalThis.fetch = async (input: any) => {
-      fetchedUrls.push(String(input));
-      return new Response("@font-face { font-family: 'Roboto Flex'; src: url(/flex.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
-    };
+    const fonts = mockGoogleFontsCSS(
+      "@font-face { font-family: 'Roboto Flex'; src: url(/flex.woff2); }",
+    );
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -1179,12 +1122,11 @@ describe("vinext:google-fonts plugin", () => {
       expect(result).not.toBeNull();
       expect(result.code).toContain("selfHostedCSS");
 
-      const cssFetch = fetchedUrls.find((u) => u.includes("fonts.googleapis.com/css2"));
+      const cssFetch = fonts.urls.find((u) => u.includes("fonts.googleapis.com/css2"));
       expect(cssFetch).toBeDefined();
       const decoded = decodeURIComponent(cssFetch!);
       expect(decoded).toContain("Roboto+Flex:opsz,wght@8..144,100..1000");
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -1233,12 +1175,10 @@ describe("vinext:google-fonts plugin", () => {
     const longBody = `/* axis range out of bounds */${"x".repeat(600)}`;
     const truncatedLength = longBody.length - 500;
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response(longBody, {
-        status: 400,
-        headers: { "content-type": "text/html" },
-      });
+    mockGoogleFontsCSS(longBody, {
+      status: 400,
+      headers: { "content-type": "text/html" },
+    });
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -1252,7 +1192,6 @@ describe("vinext:google-fonts plugin", () => {
         ),
       );
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -1266,10 +1205,7 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-network-error");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () => {
-      throw new TypeError("fetch failed");
-    };
+    server.use(http.get("https://fonts.googleapis.com/*", () => HttpResponse.error()));
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -1282,7 +1218,6 @@ describe("vinext:google-fonts plugin", () => {
       expect(result).not.toBeNull();
       expect(result.code).not.toContain("selfHostedCSS");
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -1292,12 +1227,7 @@ describe("vinext:google-fonts plugin", () => {
     const root = path.join(import.meta.dirname, ".test-font-root-default");
     initPlugin(plugin, { command: "build", root });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response("@font-face { font-family: 'Roboto Mono'; src: url(/roboto-mono.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
+    mockGoogleFontsCSS("@font-face { font-family: 'Roboto Mono'; src: url(/roboto-mono.woff2); }");
 
     try {
       const transform = unwrapHook(plugin.transform);
@@ -1309,7 +1239,6 @@ describe("vinext:google-fonts plugin", () => {
       expect(result).not.toBeNull();
       expect(result.code).toContain("selfHostedCSS");
     } finally {
-      globalThis.fetch = originalFetch;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
