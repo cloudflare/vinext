@@ -522,3 +522,163 @@ describe("Pages Router locale stickiness on programmatic navigation", () => {
     }
   });
 });
+
+// The initial document entry is created by the browser with `state: null`. If
+// we don't stamp it with Next.js-shaped state on install, a later
+// back-navigation popstate has no recorded locale and the handler falls back
+// to `window.__VINEXT_LOCALE__` — which may have been changed by an
+// intervening locale-switching push, fetching the wrong locale's HTML for the
+// initial entry. installPagesRouterRuntime() runs replaceState once at boot
+// to close that gap.
+describe("Pages Router initial-entry history state", () => {
+  async function installRuntime(win: ReturnType<typeof createNavWindow>["win"]) {
+    const listeners = new Map<string, (event: any) => void>();
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    }) as any;
+    (globalThis as any).window = win;
+    vi.resetModules();
+    await import("../packages/vinext/src/shims/router.js");
+    const { installPagesRouterRuntime } =
+      await import("../packages/vinext/src/shims/pages-router-runtime.js");
+    installPagesRouterRuntime();
+    return listeners;
+  }
+
+  it("install stamps the initial document entry with the active locale", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win, replaceState } = createNavWindow();
+    win.location.pathname = "/about";
+    win.location.href = "http://localhost/about";
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "fr",
+      __VINEXT_LOCALES__: ["en", "fr"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    });
+
+    try {
+      await installRuntime(win);
+
+      // First replaceState call is the install-time stamp.
+      expect(replaceState).toHaveBeenCalled();
+      const firstCall = replaceState.mock.calls[0]!;
+      const state = firstCall[0] as { __N?: true; options?: { locale?: string }; as?: string };
+      expect(state.__N).toBe(true);
+      expect(state.options?.locale).toBe("fr");
+      expect(state.as).toBe("/about");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("install does not overwrite pre-existing history state", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win, replaceState } = createNavWindow();
+    win.history.state = { foreign: true };
+    Object.assign(win, { __VINEXT_LOCALE__: "fr" });
+
+    try {
+      await installRuntime(win);
+      expect(replaceState).not.toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("back-nav to the initial entry uses the stamped locale, not the live window global", async () => {
+    // The regression this guards against: land on `/` under the default
+    // locale "en" (browser URL unprefixed), push to `/fr/about` with locale
+    // "fr" (flips window.__VINEXT_LOCALE__), hit back. Without an
+    // install-time stamp the popstate handler reads the live window global
+    // ("fr") and fetches `/fr` for the root entry — the wrong locale.
+    // Default-locale roots route through a locale-qualified HTML endpoint,
+    // so the wrong locale changes which HTML the page receives.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const { win } = createNavWindow();
+    win.location.pathname = "/";
+    win.location.href = "http://localhost/";
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "en",
+      __VINEXT_LOCALES__: ["en", "fr"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    });
+
+    const fetchCalls: string[] = [];
+    globalThis.fetch = vi.fn(async (input: any) => {
+      fetchCalls.push(typeof input === "string" ? input : input.url);
+      return new Response(
+        buildNavHtml(
+          "/",
+          PAGE_MODULE_URL,
+          {},
+          { locale: "en", locales: ["en", "fr"], defaultLocale: "en" },
+        ),
+        { status: 200 },
+      );
+    }) as any;
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+
+    try {
+      const listeners = await installRuntime(win);
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      // Capture the install-time stamped state — this is what the browser
+      // hands back on a popstate to the initial entry.
+      const stampedState = win.history.state as { options?: { locale?: string }; as?: string };
+      expect(stampedState.options?.locale).toBe("en");
+      expect(stampedState.as).toBe("/");
+
+      // Simulate a forward push to /fr/about (locale "fr"). We just need to
+      // advance the popstate handler's internal trackers
+      // (`_lastPathnameAndSearch`, `_isFirstPopStateEvent`) past boot — in
+      // production this happens via Router.push, but driving the popstate
+      // handler directly is simpler than mocking the full push flow.
+      win.location.pathname = "/fr/about";
+      win.location.href = "http://localhost/fr/about";
+      popstateHandler!({
+        state: { url: "/about", as: "/about", options: { locale: "fr" }, __N: true, key: "" },
+      });
+      await new Promise((r) => setTimeout(r, 0));
+      fetchCalls.length = 0;
+
+      // Now back: browser pathname returns to `/` and the popstate carries
+      // the *initial-entry* state we stamped. The live window global has
+      // flipped to "fr" from the prior forward nav.
+      Object.assign(win, { __VINEXT_LOCALE__: "fr" });
+      win.location.pathname = "/";
+      win.location.href = "http://localhost/";
+
+      popstateHandler!({ state: stampedState });
+      await new Promise((r) => setTimeout(r, 0));
+
+      // The fetch must use the *stamped* locale ("en") → /en, not /fr.
+      expect(fetchCalls.length).toBeGreaterThan(0);
+      const backFetchUrl = fetchCalls[0]!;
+      expect(backFetchUrl).toBe("/en");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
+    }
+  });
+});

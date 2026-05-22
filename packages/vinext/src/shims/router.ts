@@ -38,7 +38,7 @@ import {
   toBrowserNavigationHref,
   toSameOriginAppPath,
   getWindowOrigin,
-  withBasePath as withBasePathPrefix,
+  withBasePath,
 } from "./url-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import {
@@ -57,7 +57,10 @@ import {
 } from "../utils/query.js";
 import { matchRoutePattern, routePatternParts } from "../routing/route-pattern.js";
 import { scrollToHashTarget } from "./hash-scroll.js";
-import { setPagesRouterPopStateHandler } from "./pages-router-runtime.js";
+import {
+  setPagesRouterPopStateHandler,
+  setStampInitialHistoryState,
+} from "./pages-router-runtime.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
 
@@ -336,12 +339,44 @@ export function isHashOnlyChange(href: string): boolean {
   return isHashOnlyBrowserUrlChange(href, window.location.href, __basePath);
 }
 
+/**
+ * Build router-shaped state for the initial document entry. Captures the
+ * active locale (from `window.__VINEXT_LOCALE__`) so a back-navigation
+ * popstate to this entry can recover its locale instead of falling back to
+ * the live window global — the locale may have changed by the time the user
+ * navigates back.
+ */
+function buildInitialRouterState(): VinextHistoryState {
+  const appPath = stripBasePath(window.location.pathname, __basePath) + window.location.search;
+  const options: { locale?: string; shallow?: boolean } = {};
+  if (window.__VINEXT_LOCALE__ !== undefined) options.locale = window.__VINEXT_LOCALE__;
+  return {
+    url: appPath,
+    as: appPath,
+    options,
+    __N: true,
+    key: createHistoryKey(),
+  };
+}
+
+/**
+ * Stamp the initial document entry with router-shaped state (only if no
+ * state is present). Called once at runtime install so the entry has a
+ * locale stamped before any push could overwrite the active locale global.
+ */
+function stampInitialHistoryState(): void {
+  if (window.history.state !== null && window.history.state !== undefined) return;
+  window.history.replaceState(buildInitialRouterState(), "");
+}
+
+setStampInitialHistoryState(stampInitialHistoryState);
+
 /** Save current scroll position into history state for back/forward restoration.
  *
  * Merging into the existing state preserves any router-owned fields (`__N`,
- * `url`, `as`, `options`, `key`). The initial document entry has `null`
- * state — in that case we add the router markers ourselves so a subsequent
- * back-navigation popstate is not mistaken for a foreign history entry.
+ * `url`, `as`, `options`, `key`). If the install-time stamp didn't run
+ * (Router.push called before installPagesRouterRuntime), fall back to
+ * minting the same shape here so the entry isn't treated as foreign.
  */
 function saveScrollPosition(): void {
   const existing =
@@ -352,15 +387,7 @@ function saveScrollPosition(): void {
     __vinext_scrollX: window.scrollX,
     __vinext_scrollY: window.scrollY,
   };
-  const base: Record<string, unknown> = existing ?? {
-    // Mint router state for the initial document entry so the back-navigation
-    // popstate carries `__N: true` and can pass the foreign-state filter.
-    url: stripBasePath(window.location.pathname, __basePath) + window.location.search,
-    as: stripBasePath(window.location.pathname, __basePath) + window.location.search,
-    options: {} as { locale?: string; shallow?: boolean },
-    __N: true,
-    key: createHistoryKey(),
-  };
+  const base: Record<string, unknown> = existing ?? buildInitialRouterState();
   window.history.replaceState({ ...base, ...scroll }, "");
 }
 
@@ -1332,6 +1359,12 @@ function extractHash(url: string): string {
   return i === -1 ? "" : url.slice(i);
 }
 
+/** Return the URL with any trailing `#fragment` removed. */
+function stripHash(url: string): string {
+  const i = url.indexOf("#");
+  return i === -1 ? url : url.slice(0, i);
+}
+
 /** Notify in-page listeners (e.g. useRouter hooks) that navigation occurred. */
 function dispatchNavigateEvent(): void {
   window.dispatchEvent(new CustomEvent("vinext:navigate"));
@@ -1486,10 +1519,12 @@ async function performNavigation(
 
   // History state metadata — surfaces the active locale to popstate and the
   // Safari-replay filter. `as` is the canonical app-relative path (no
-  // basePath) so it can be compared against router/state in handlers.
+  // basePath, no hash) so it can be compared against `_lastPathnameAndSearch`
+  // (which is `pathname + search` only) in the popstate handler.
   const navStateOptions: { locale?: string; shallow: boolean } = { shallow };
   if (navigationLocale !== undefined) navStateOptions.locale = navigationLocale;
-  const navState = { url: resolved, as: resolved, options: navStateOptions };
+  const resolvedNoHash = stripHash(resolved);
+  const navState = { url: resolvedNoHash, as: resolvedNoHash, options: navStateOptions };
 
   // Hash-only change — no page fetch needed
   if (isHashOnlyChange(full)) {
@@ -1688,7 +1723,7 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     if (
       state.options?.locale === currentLocale &&
       typeof state.as === "string" &&
-      withBasePathPrefix(state.as, __basePath) === _lastPathnameAndSearch
+      withBasePath(state.as, __basePath) === _lastPathnameAndSearch
     ) {
       return;
     }
