@@ -3309,6 +3309,18 @@ describe("app browser root-layout hard navigation", () => {
     }
   });
 
+  it("blocks a repeated same-target hard-navigation fallback outside visible commits", () => {
+    const controller = createAppBrowserNavigationController();
+    const { assign } = stubWindow("https://example.com/dashboard");
+
+    expect(controller.performHardNavigation("https://example.com/dashboard")).toBe(true);
+    expect(assign).toHaveBeenCalledTimes(1);
+
+    assign.mockClear();
+    expect(controller.performHardNavigation("https://example.com/dashboard")).toBe(false);
+    expect(assign).not.toHaveBeenCalled();
+  });
+
   it("allows cross-page hard navigation when the stored guard target is not the current URL", async () => {
     const { controller, detach } = createControllerHarness(
       createState({ rootLayoutTreePath: "/(marketing)" }),
