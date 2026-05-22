@@ -34,7 +34,6 @@ import {
 import { stripBasePath } from "../utils/base-path.js";
 import {
   addLocalePrefix,
-  detectDomainLocale,
   getDomainLocaleUrl,
   getLocalePathPrefix,
   type DomainLocale,
@@ -49,6 +48,7 @@ import { matchRoutePattern, routePatternParts } from "../routing/route-pattern.j
 import { scrollToHashTarget } from "./hash-scroll.js";
 import { setPagesRouterPopStateHandler } from "./pages-router-runtime.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
+import { getCurrentBrowserLocale } from "./client-locale.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
@@ -166,17 +166,11 @@ function resolveNavigationTarget(
 }
 
 function getCurrentUrlLocale(): string | undefined {
-  const pathnameLocale = getLocalePathPrefix(
-    stripBasePath(window.location.pathname, __basePath),
-    window.__VINEXT_LOCALES__,
-  );
-  if (pathnameLocale) return pathnameLocale;
-
-  return (
-    detectDomainLocale(getDomainLocales(), getCurrentHostname())?.defaultLocale ??
-    window.__VINEXT_DEFAULT_LOCALE__ ??
-    window.__VINEXT_LOCALE__
-  );
+  return getCurrentBrowserLocale({
+    basePath: __basePath,
+    domainLocales: getDomainLocales(),
+    hostname: getCurrentHostname(),
+  });
 }
 
 function resolveTransitionLocale(locale: TransitionOptions["locale"]): string | undefined {

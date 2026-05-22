@@ -408,6 +408,21 @@ describe("Link locale handling", () => {
     expect(html).toContain('href="/id"');
   });
 
+  it("locale=undefined renders a default-locale root fallback during SSR", async () => {
+    delete (globalThis as any).window;
+
+    const html = await runWithI18nState(async () => {
+      setI18nContext({
+        locale: "en",
+        locales: ["en", "id"],
+        defaultLocale: "en",
+      });
+      return ReactDOMServer.renderToString(React.createElement(Link, { href: "/" }, "x"));
+    });
+
+    expect(html).toContain('href="/en"');
+  });
+
   it("locale=undefined treats a non-locale-prefixed browser path as the default locale", () => {
     // Ported from Next.js:
     // test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts

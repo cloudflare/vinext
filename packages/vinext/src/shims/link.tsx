@@ -59,18 +59,13 @@ import {
   withBasePath,
 } from "./url-utils.js";
 import { appendSearchParamsToUrl, type UrlQuery, urlQueryToSearchParams } from "../utils/query.js";
-import {
-  addLocalePrefix,
-  detectDomainLocale,
-  getDomainLocaleUrl,
-  getLocalePathPrefix,
-  type DomainLocale,
-} from "../utils/domain-locale.js";
+import { addLocalePrefix, getDomainLocaleUrl, type DomainLocale } from "../utils/domain-locale.js";
 import { getI18nContext } from "./i18n-context.js";
 import type { VinextLinkPrefetchRoute, VinextNextData } from "../client/vinext-next-data.js";
 import { navigatePagesRouterLink } from "../client/pages-router-link-navigation.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../routing/route-matching.js";
 import { stripBasePath } from "../utils/base-path.js";
+import { getCurrentBrowserLocale } from "./client-locale.js";
 
 type NavigateEvent = {
   url: URL;
@@ -430,17 +425,11 @@ function getDefaultLocale(): string | undefined {
 
 function getCurrentLocale(): string | undefined {
   if (typeof window !== "undefined") {
-    const pathnameLocale = getLocalePathPrefix(
-      stripBasePath(window.location.pathname, __basePath),
-      window.__VINEXT_LOCALES__,
-    );
-    if (pathnameLocale) return pathnameLocale;
-
-    return (
-      detectDomainLocale(getDomainLocales(), getCurrentHostname())?.defaultLocale ??
-      window.__VINEXT_DEFAULT_LOCALE__ ??
-      window.__VINEXT_LOCALE__
-    );
+    return getCurrentBrowserLocale({
+      basePath: __basePath,
+      domainLocales: getDomainLocales(),
+      hostname: getCurrentHostname(),
+    });
   }
   return getI18nContext()?.locale;
 }
