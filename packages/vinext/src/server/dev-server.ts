@@ -583,6 +583,19 @@ export function createSSRHandler(
               gsspExtraHeaders[key] = String(val);
             }
           }
+
+          // Default Cache-Control for getServerSideProps responses, matching
+          // Next.js's pages-handler.ts (revalidate: 0 → getCacheControlHeader).
+          // Skip when gSSP already set one via res.setHeader (case-insensitive)
+          // or when ISR is layered on top below — that branch overwrites this
+          // default with the ISR cache-control. Fixes #1461.
+          const hasUserCacheControl = Object.keys(gsspExtraHeaders).some(
+            (k) => k.toLowerCase() === "cache-control",
+          );
+          if (!hasUserCacheControl) {
+            gsspExtraHeaders["Cache-Control"] =
+              "private, no-cache, no-store, max-age=0, must-revalidate";
+          }
         }
         // Collect font preloads early so ISR cached responses can include
         // the Link header (font preloads are module-level state that persists
@@ -673,6 +686,9 @@ export function createSSRHandler(
                     locale: locale ?? currentDefaultLocale,
                     locales: i18nConfig?.locales,
                     defaultLocale: currentDefaultLocale,
+                    // Stale-while-revalidate background regeneration — mirrors
+                    // Next.js `render.tsx`'s `revalidateReason` resolution.
+                    revalidateReason: "stale",
                   });
                   if (freshResult && "props" in freshResult) {
                     const revalidate =
@@ -796,12 +812,17 @@ export function createSSRHandler(
             return;
           }
 
-          // Cache miss — call getStaticProps normally
+          // Cache miss — call getStaticProps normally.
+          // Dev has no build-time prerender phase, so every dev hit is
+          // treated as a stale-while-revalidate refresh — mirrors Next.js
+          // `render.tsx` (`isBuildTimeSSG ? "build" : "stale"`).
+          // See `.nextjs-ref/test/e2e/revalidate-reason/revalidate-reason.test.ts`.
           const context = {
             params: userFacingParams,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
+            revalidateReason: "stale" as const,
           };
           const result = await pageModule.getStaticProps(context);
           if (result && "props" in result) {

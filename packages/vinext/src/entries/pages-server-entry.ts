@@ -580,6 +580,13 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         isrGet,
         isrSet,
         expireSeconds: vinextConfig.expireTime,
+        // The vinext build phase boots the prod server with VINEXT_PRERENDER=1
+        // and fetches every statically-generated page through it. That hit is
+        // the "build" prerender for revalidateReason; runtime hits are not.
+        // Mirrors Next.js's \`renderOpts.isBuildTimePrerendering\`. See
+        // \`.nextjs-ref/packages/next/src/server/render.tsx\` and
+        // \`packages/vinext/src/build/prerender.ts\`.
+        isBuildTimePrerendering: typeof process !== "undefined" && process.env && process.env.VINEXT_PRERENDER === "1",
         pageModule,
         params,
         query,
