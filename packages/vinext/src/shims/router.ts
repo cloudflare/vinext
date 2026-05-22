@@ -42,6 +42,8 @@ import {
 import {
   addQueryParam,
   appendSearchParamsToUrl,
+  mergeRouteParamsIntoQuery,
+  parseQueryString,
   type UrlQuery,
   urlQueryToSearchParams,
 } from "../utils/query.js";
@@ -757,12 +759,18 @@ async function navigateClientData(
   // disjoint, so TypeScript rejects the direct assignment. We spread the
   // previous nextData first to inherit locale/locales/defaultLocale/
   // domainLocales unchanged, then override the per-navigation fields.
+  // Mirror Next.js' `__NEXT_DATA__.query`: search params + dynamic route params
+  // merged in one object, with route params winning on key collision (so
+  // `/posts/123?id=456` still exposes `id: "123"`). Without this, code reading
+  // `window.__NEXT_DATA__.query` directly would see only the dynamic params.
+  const mergedQuery = mergeRouteParamsIntoQuery(parseQueryString(target.search), target.params);
+
   const prev = window.__NEXT_DATA__ as NonNullable<Window["__NEXT_DATA__"]> | undefined;
   const nextData = {
     ...prev,
     props: { pageProps },
     page: target.pattern,
-    query: { ...target.params },
+    query: mergedQuery,
     buildId: target.buildId,
     isFallback: false,
   } as unknown as NonNullable<Window["__NEXT_DATA__"]> & VinextNextData;

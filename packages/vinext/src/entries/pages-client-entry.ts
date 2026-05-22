@@ -82,8 +82,11 @@ const appLoader = undefined;
 //
 // Keys are route patterns in Next.js bracket format (matching __NEXT_DATA__.page
 // and the keys of pageLoaders above). The patterns list is the same as
-// Object.keys(pageLoaders) but exposed separately so the router can sort it
-// once (longest match first) without re-keying the loader map.
+// Object.keys(pageLoaders), exposed separately so navigateClient() can iterate
+// it without re-keying the map. Ordering is the insertion order of pageRoutes,
+// which pagesRouter() has already sorted by specificity (static → dynamic →
+// catch-all → optional catch-all) via compareRoutes — so matchPagesPattern()
+// can iterate in order and trust the first match.
 window.__VINEXT_PAGE_LOADERS__ = pageLoaders;
 window.__VINEXT_PAGE_PATTERNS__ = Object.keys(pageLoaders);
 window.__VINEXT_APP_LOADER__ = appLoader;
