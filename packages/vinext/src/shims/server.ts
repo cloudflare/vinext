@@ -98,6 +98,20 @@ export class NextRequest extends Request {
       };
     },
   ) {
+    // Match Next.js: reject relative URLs with the canonical error before any
+    // fallback URL parsing kicks in. Next.js calls `validateURL(url)` at the
+    // top of its NextRequest constructor; we mirror that here so middleware
+    // tests asserting on the error message text get the documented string.
+    const rawUrl = typeof input !== "string" && "url" in input ? input.url : String(input);
+    try {
+      // eslint-disable-next-line no-new
+      new URL(rawUrl);
+    } catch (error) {
+      throw new Error(
+        `URL is malformed "${rawUrl}". Please use only absolute URLs - https://nextjs.org/docs/messages/middleware-relative-urls`,
+        { cause: error },
+      );
+    }
     // Strip nextConfig before passing to super() — it's vinext-internal,
     // not a valid RequestInit property.
     const { nextConfig: _nextConfig, ...requestInit } = init ?? {};

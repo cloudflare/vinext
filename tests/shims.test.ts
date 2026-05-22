@@ -6808,6 +6808,16 @@ describe("cookie name validation", () => {
 // NextRequest API tests
 
 describe("NextRequest API", () => {
+  it("throws canonical 'Please use only absolute URLs' error for relative URL input", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    // Matches Next.js's documented behaviour — middleware tests assert on this
+    // exact message via the middleware-relative-urls docs link.
+    expect(() => new NextRequest("/foo")).toThrow(/Please use only absolute URLs/);
+    expect(() => new NextRequest("/urls-b")).toThrow(
+      /URL is malformed "\/urls-b"\. Please use only absolute URLs/,
+    );
+  });
+
   it("cookies reads request cookies", async () => {
     const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
     const req = new NextRequest("http://localhost/test", {
