@@ -46,6 +46,9 @@ export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context
 /** RSC render mode (e.g. "navigation", "prefetch"). */
 export const VINEXT_RSC_RENDER_MODE_HEADER = "X-Vinext-Rsc-Render-Mode";
 
+/** Disabled-by-default client hint describing already-held App Router payload entries. */
+export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manifest";
+
 /**
  * Side-channel signal that an RSC response (HTTP 200) encodes a `redirect()`
  * thrown during render. The header value is the redirect target (path-only
