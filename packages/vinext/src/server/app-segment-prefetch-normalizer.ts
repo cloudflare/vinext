@@ -25,7 +25,7 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export type SegmentPrefetchResult = {
+type SegmentPrefetchResult = {
   /** The original page pathname without segment-prefetch suffixes (e.g. "/dashboard"). */
   originalPathname: string;
   /** The segment path (e.g. "/_tree", "/_index", "/dashboard/__PAGE__"). */
