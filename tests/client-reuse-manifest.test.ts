@@ -383,6 +383,7 @@ describe("ClientReuseManifest protocol", () => {
         variantCacheKey: "cp1:root",
       },
     ]);
+    // Rejections preserve their canonical wire position after serialization.
     expect(parsed.entryRejections).toEqual([
       {
         code: "SKIP_PRIVATE_ENTRY",
@@ -395,6 +396,47 @@ describe("ClientReuseManifest protocol", () => {
         fields: { idHash: createClientReusePayloadHash("opaque:future-entry") },
       },
     ]);
+  });
+
+  it("rejects duplicate IDs even when the first copy is rejected per-entry", () => {
+    const result = parseClientReuseManifestHeader(
+      JSON.stringify({
+        entries: [
+          {
+            artifactCompatibility,
+            id: "layout:/account",
+            payloadHash: createClientReusePayloadHash("account-private"),
+            privacy: "private",
+            variantCacheKey: "cp1:account-private",
+          },
+          {
+            artifactCompatibility,
+            id: "layout:/account",
+            payloadHash: createClientReusePayloadHash("account-public"),
+            privacy: "public",
+            variantCacheKey: "cp1:account-public",
+          },
+        ],
+        hashAlgorithm: CLIENT_REUSE_MANIFEST_HASH_ALGORITHM,
+        replayWindow: {
+          validFromVisibleCommitVersion: 1,
+          validUntilVisibleCommitVersion: 1,
+        },
+        schemaVersion: CLIENT_REUSE_MANIFEST_SCHEMA_VERSION,
+        visibleCommitVersion: 1,
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: "rejected",
+      rejection: {
+        code: "SKIP_ENTRY_ORDER_NON_CANONICAL",
+        fields: {
+          entryIdHash: createClientReusePayloadHash("layout:/account"),
+          previousEntryIdHash: createClientReusePayloadHash("layout:/account"),
+        },
+      },
+    });
   });
 
   it("accepts intercepted AppElements page and route IDs as public manifest entries", () => {

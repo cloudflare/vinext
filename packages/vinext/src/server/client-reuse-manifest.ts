@@ -97,6 +97,8 @@ export type ClientReuseManifestRejectionCode =
   | "SKIP_VISIBLE_COMMIT_VERSION_INVALID"
   | "SKIP_VISIBLE_COMMIT_VERSION_MISMATCH";
 
+export type ClientReuseManifestDispositionCode = "SKIP_MODEL_DISABLED";
+
 export type ClientReuseManifestTraceFieldValue =
   | string
   | number
@@ -119,7 +121,7 @@ export type ClientReuseManifestEntryRejection = ClientReuseManifestRejection &
   }>;
 
 export type ClientReuseManifestSkipDisposition = Readonly<{
-  code: "SKIP_MODEL_DISABLED";
+  code: ClientReuseManifestDispositionCode;
   enabled: false;
   mode: "renderAndSend";
 }>;
@@ -141,6 +143,10 @@ type ParseClientReuseManifestOptions = Readonly<{
 
 const HASH_DIGEST_PATTERN = /^[0-9a-z]+$/;
 const textEncoder = new TextEncoder();
+
+type ParseReplayWindowResult =
+  | Readonly<{ kind: "parsed"; replayWindow: ClientReuseManifestReplayWindow }>
+  | Readonly<{ kind: "rejected"; rejection: ClientReuseManifestRejection }>;
 
 function createRejection(
   code: ClientReuseManifestRejectionCode,
@@ -183,11 +189,10 @@ function createCanonicalWireEntries(
     }
   }
 
-  return Array.from(entriesById.values())
-    .sort(compareManifestEntries)
-    .map((entry) => ({ ...entry }));
+  return Array.from(entriesById.values()).sort(compareManifestEntries);
 }
 
+// The manifest byte budget is enforced once at the untrusted header boundary.
 function countUtf8Bytes(input: string): number {
   return textEncoder.encode(input).length;
 }
@@ -196,12 +201,12 @@ function isVisibleCommitVersion(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-function parseReplayWindow(
-  value: unknown,
-  visibleCommitVersion: number,
-): ClientReuseManifestReplayWindow | ClientReuseManifestRejection {
+function parseReplayWindow(value: unknown, visibleCommitVersion: number): ParseReplayWindowResult {
   if (!isUnknownRecord(value)) {
-    return createRejection("SKIP_REPLAY_WINDOW_INVALID", { field: "replayWindow" });
+    return {
+      kind: "rejected",
+      rejection: createRejection("SKIP_REPLAY_WINDOW_INVALID", { field: "replayWindow" }),
+    };
   }
 
   const validFromVisibleCommitVersion = value.validFromVisibleCommitVersion;
@@ -213,20 +218,26 @@ function parseReplayWindow(
     visibleCommitVersion < validFromVisibleCommitVersion ||
     visibleCommitVersion > validUntilVisibleCommitVersion
   ) {
-    return createRejection("SKIP_REPLAY_WINDOW_INVALID", {
-      validFromVisibleCommitVersion: isVisibleCommitVersion(validFromVisibleCommitVersion)
-        ? validFromVisibleCommitVersion
-        : null,
-      validUntilVisibleCommitVersion: isVisibleCommitVersion(validUntilVisibleCommitVersion)
-        ? validUntilVisibleCommitVersion
-        : null,
-      visibleCommitVersion,
-    });
+    return {
+      kind: "rejected",
+      rejection: createRejection("SKIP_REPLAY_WINDOW_INVALID", {
+        validFromVisibleCommitVersion: isVisibleCommitVersion(validFromVisibleCommitVersion)
+          ? validFromVisibleCommitVersion
+          : null,
+        validUntilVisibleCommitVersion: isVisibleCommitVersion(validUntilVisibleCommitVersion)
+          ? validUntilVisibleCommitVersion
+          : null,
+        visibleCommitVersion,
+      }),
+    };
   }
 
   return {
-    validFromVisibleCommitVersion,
-    validUntilVisibleCommitVersion,
+    kind: "parsed",
+    replayWindow: {
+      validFromVisibleCommitVersion,
+      validUntilVisibleCommitVersion,
+    },
   };
 }
 
@@ -400,10 +411,11 @@ export function parseClientReuseManifestHeader(
     });
   }
 
-  const replayWindow = parseReplayWindow(decoded.replayWindow, visibleCommitVersion);
-  if ("code" in replayWindow) {
-    return { kind: "rejected", rejection: replayWindow };
+  const replayWindowResult = parseReplayWindow(decoded.replayWindow, visibleCommitVersion);
+  if (replayWindowResult.kind === "rejected") {
+    return { kind: "rejected", rejection: replayWindowResult.rejection };
   }
+  const { replayWindow } = replayWindowResult;
   if (!currentCommitVersionMatchesReplayWindow(options.currentVisibleCommitVersion, replayWindow)) {
     return rejectManifest("SKIP_VISIBLE_COMMIT_VERSION_MISMATCH", {
       currentVisibleCommitVersion: options.currentVisibleCommitVersion ?? null,
