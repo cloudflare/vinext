@@ -117,7 +117,11 @@ async function hydrate() {
   const root = hydrateRoot(container, element);
   window.__VINEXT_ROOT__ = root;
   installPagesRouterRuntime();
-  window.__VINEXT_HYDRATED_AT = performance.now();
+  const hydratedAt = performance.now();
+  window.__VINEXT_HYDRATED_AT = hydratedAt;
+  window.__NEXT_HYDRATED = true;
+  window.__NEXT_HYDRATED_AT = hydratedAt;
+  window.__NEXT_HYDRATED_CB?.();
 }
 
 hydrate();

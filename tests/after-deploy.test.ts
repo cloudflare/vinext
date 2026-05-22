@@ -140,8 +140,11 @@ describe("after() in deploy mode — Pages Router worker entry", () => {
     // Regression for #1365: handleApiRoute previously ignored ctx, leaving
     // after() inside Pages Router api routes without a way to call
     // ctx.waitUntil(). The generated worker entry must thread ctx through.
+    //
+    // After #1336 item 3 the dispatch URL is `apiLookupUrl` (the locale-
+    // stripped form of `resolvedUrl`), but `ctx` is still threaded through.
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("handleApiRoute(request, resolvedUrl, ctx)");
+    expect(content).toContain("handleApiRoute(request, apiLookupUrl, ctx)");
   });
 
   it("forwards ctx to renderPage so page renders can call after()", () => {

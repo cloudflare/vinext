@@ -479,6 +479,49 @@ export type RequestContext = {
 };
 
 /**
+ * basePath gating state passed alongside the pathname to every matcher.
+ *
+ * Rewrites/redirects/headers run with default `basePath: true` semantics in
+ * Next.js: the rule only matches when the inbound request was under the
+ * configured `basePath`. Rules with `basePath: false` opt out and match
+ * the original (un-stripped) pathname regardless of prefix.
+ *
+ * When `basePath` is empty (not configured) every rule is treated as
+ * basePath-defaulted: every request matches.
+ *
+ * @see .nextjs-ref/packages/next/src/lib/load-custom-routes.ts:198-220
+ */
+export type BasePathMatchState = {
+  /** Configured `basePath` (without trailing slash) or "" when unset. */
+  basePath: string;
+  /**
+   * True when the inbound request was originally under `basePath` (i.e.
+   * the prod-server/handler stripped the prefix before the matcher runs).
+   * Ignored when `basePath` is empty.
+   */
+  hadBasePath: boolean;
+};
+
+const _BASEPATH_DEFAULT: BasePathMatchState = { basePath: "", hadBasePath: true };
+
+/**
+ * Decide whether a rule should be evaluated at all given the current
+ * basePath-gating state.
+ *
+ * Encodes the Next.js rules:
+ *   - basePath: false rule → only when the request was NOT under basePath
+ *     (i.e. it's the explicit opt-out path). When `basePath` itself is
+ *     empty, basePath: false rules are still allowed to match — there's
+ *     just no basePath to gate them.
+ *   - default rule (basePath !== false) → only when the request WAS under
+ *     basePath (or no basePath is configured).
+ */
+function shouldEvaluateRule(ruleBasePath: false | undefined, state: BasePathMatchState): boolean {
+  if (!state.basePath) return true;
+  return ruleBasePath === false ? !state.hadBasePath : state.hadBasePath;
+}
+
+/**
  * Parse a Cookie header string into a key-value record.
  */
 export function parseCookies(cookieHeader: string | null): Record<string, string> {
@@ -704,10 +747,37 @@ function extractConstraint(str: string, re: RegExp): string | null {
  *   (regex)    - inline regex patterns in the source
  *   :param(constraint) - named param with inline regex constraint
  */
+/**
+ * Strip a single trailing slash from a pathname for config-source matching.
+ *
+ * Next.js conditionally appends `(/)?` to rewrite/redirect/header source
+ * regexes when `trailingSlash: true` (see Next.js
+ * `resolve-rewrites.ts` and `server-utils.ts:checkRewrite`). Rather than
+ * threading the trailingSlash flag through every matcher, we unconditionally
+ * strip a trailing slash from the incoming pathname. When `trailingSlash: false`
+ * the request pipeline emits a normalizing redirect (step 3) before config
+ * rewrites/redirects (step 6) ever run, so the pathname is already slash-free;
+ * the unconditional strip is defense-in-depth for that ordering. When
+ * `trailingSlash: true` it bridges the gap between the canonicalized request
+ * path (`/rewrite-1/`) and source patterns written without a trailing slash
+ * (`/rewrite-1`).
+ *
+ * The root path `"/"` is preserved as-is.
+ */
+function stripTrailingSlashForConfigMatch(pathname: string): string {
+  return pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+}
+
 export function matchConfigPattern(
   pathname: string,
   pattern: string,
 ): Record<string, string> | null {
+  // See `stripTrailingSlashForConfigMatch` — the source pattern itself is left
+  // unchanged because catch-all patterns (`:param*` / `:param+`) and the root
+  // `/` already consume any trailing slash; stripping the pattern would change
+  // those semantics.
+  pathname = stripTrailingSlashForConfigMatch(pathname);
+
   // If the pattern contains regex groups like (\d+) or (.*), use regex matching.
   // Also enter this branch when a catch-all parameter (:param* or :param+) is
   // followed by a literal suffix (e.g. "/:path*.md"). Without this, the suffix
@@ -870,8 +940,15 @@ export function matchRedirect(
   pathname: string,
   redirects: NextRedirect[],
   ctx: RequestContext,
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
 ): { destination: string; permanent: boolean } | null {
   if (redirects.length === 0) return null;
+
+  // Strip trailing slash so the locale-static fast path (Map.get on the
+  // pathname) matches keys derived from slash-free source patterns. The
+  // linear fallback also passes through `matchConfigPattern` which strips
+  // again, but normalizing once here keeps both paths consistent.
+  pathname = stripTrailingSlashForConfigMatch(pathname);
 
   const index = _getRedirectIndex(redirects);
 
@@ -903,6 +980,7 @@ export function matchRedirect(
         if (!entry.optional) continue; // mandatory-locale rule — skip
         if (entry.originalIndex >= localeMatchIndex) continue; // already have a better match
         const redirect = entry.redirect;
+        if (!shouldEvaluateRule(redirect.basePath, basePathState)) continue;
         const conditionParams =
           redirect.has || redirect.missing
             ? collectConditionParams(redirect.has, redirect.missing, ctx)
@@ -933,6 +1011,7 @@ export function matchRedirect(
           // Validate that `localePart` is one of the allowed alternation values.
           if (!entry.altRe.test(localePart)) continue;
           const redirect = entry.redirect;
+          if (!shouldEvaluateRule(redirect.basePath, basePathState)) continue;
           const conditionParams =
             redirect.has || redirect.missing
               ? collectConditionParams(redirect.has, redirect.missing, ctx)
@@ -960,6 +1039,7 @@ export function matchRedirect(
       // the locale-static match wins. Stop scanning.
       break;
     }
+    if (!shouldEvaluateRule(redirect.basePath, basePathState)) continue;
     const params = matchConfigPattern(pathname, redirect.source);
     if (params) {
       const conditionParams =
@@ -992,8 +1072,10 @@ export function matchRewrite(
   pathname: string,
   rewrites: NextRewrite[],
   ctx: RequestContext,
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
 ): string | null {
   for (const rewrite of rewrites) {
+    if (!shouldEvaluateRule(rewrite.basePath, basePathState)) continue;
     const params = matchConfigPattern(pathname, rewrite.source);
     if (params) {
       const conditionParams =
@@ -1208,9 +1290,16 @@ export function matchHeaders(
   pathname: string,
   headers: NextHeader[],
   ctx: RequestContext,
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
 ): Array<{ key: string; value: string }> {
+  // Header source regexes are compiled without a trailing-slash tolerance,
+  // so the incoming pathname must be normalized the same way config rewrites
+  // and redirects are. See `stripTrailingSlashForConfigMatch`.
+  pathname = stripTrailingSlashForConfigMatch(pathname);
+
   const result: Array<{ key: string; value: string }> = [];
   for (const rule of headers) {
+    if (!shouldEvaluateRule(rule.basePath, basePathState)) continue;
     // Cache the compiled source regex — escapeHeaderSource() + safeRegExp() are
     // pure functions of rule.source and the result never changes between requests.
     const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, rule.source, () =>

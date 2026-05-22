@@ -3,7 +3,7 @@ import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
 import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache";
 import { buildCachedRevalidateCacheControl } from "./cache-control.js";
-import { VINEXT_CACHE_HEADER } from "./headers.js";
+import { buildCacheStateHeaders } from "./cache-headers.js";
 import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import {
   buildPagesNextDataScript,
@@ -98,6 +98,15 @@ type RenderPagesIsrHtmlOptions = {
 export type ResolvePagesPageDataOptions = {
   applyRequestContexts: () => void;
   buildId: string | null;
+  /**
+   * When true, this is a `/_next/data/<buildId>/<page>.json` request. Callers
+   * that respond with a JSON envelope (`{ pageProps }`) instead of HTML must
+   * bypass the HTML ISR cache: a cached HTML body cannot be reshaped into the
+   * expected JSON shape, and storing JSON in the HTML cache would corrupt
+   * subsequent HTML hits. Next.js handles this the same way — see
+   * `isNextDataRequest` checks in `packages/next/src/server/base-server.ts`.
+   */
+  isDataReq?: boolean;
   createGsspReqRes: () => PagesGsspContextResponse;
   createPageElement: (pageProps: Record<string, unknown>) => ReactNode;
   fontLinkHeader: string;
@@ -135,6 +144,13 @@ type ResolvePagesPageDataRenderResult = {
   gsspRes: PagesGsspResponse | null;
   isrRevalidateSeconds: number | null;
   pageProps: Record<string, unknown>;
+  /**
+   * True when `getStaticPaths` returned `fallback: true` AND the requested path
+   * is not in the pre-rendered list. The caller renders a loading shell with
+   * empty props and `useRouter().isFallback === true` (matching Next.js's
+   * `render.tsx` — `getStaticProps` is skipped on the fallback render).
+   */
+  isFallback: boolean;
 };
 
 type ResolvePagesPageDataResponseResult = {
@@ -154,7 +170,13 @@ function buildPagesNotFoundResponse(): Response {
 }
 
 function buildPagesDataNotFoundResponse(): Response {
-  return new Response("404", { status: 404 });
+  // Matches Next.js: `/_next/data/<buildId>/<page>.json` 404 responses use
+  // application/json with an empty object body so clients can call
+  // `res.json()` without throwing before inspecting the status code.
+  return new Response("{}", {
+    status: 404,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 function resolvePagesRedirectStatus(redirect: PagesRedirectResult): number {
@@ -213,7 +235,7 @@ function buildPagesCacheResponse(
     cacheControl === undefined ? undefined : (cacheControl.expire ?? expireSeconds);
   const headers: Record<string, string> = {
     "Content-Type": "text/html",
-    [VINEXT_CACHE_HEADER]: cacheState,
+    ...buildCacheStateHeaders(cacheState),
     "Cache-Control": buildCachedRevalidateCacheControl(
       cacheState,
       effectiveRevalidateSeconds,
@@ -292,30 +314,58 @@ export async function resolvePagesPageData(
     ? options.params
     : null;
 
+  // Set when `getStaticPaths: { fallback: true }` is configured and the
+  // requested path is NOT in the pre-rendered list. When true, we render the
+  // loading shell with empty props and `useRouter().isFallback === true`,
+  // skipping `getStaticProps`. Matches Next.js `render.tsx`'s
+  // `if (isSSG && !isFallback)` gate around `getStaticProps`. Data requests
+  // (`/_next/data/...json`) still call `getStaticProps` so the client can
+  // hydrate the page after the fallback shell ships.
+  let isFallback = false;
+
   if (typeof options.pageModule.getStaticPaths === "function" && options.route.isDynamic) {
     const pathsResult = await options.pageModule.getStaticPaths({
       locales: options.i18n.locales ?? [],
       defaultLocale: options.i18n.defaultLocale ?? "",
     });
     const fallback = pathsResult?.fallback ?? false;
+    const paths = pathsResult?.paths ?? [];
+    const isValidPath = paths.some((pathEntry) =>
+      matchesPagesStaticPath(pathEntry, options.params, options.routeUrl),
+    );
 
-    if (fallback === false) {
-      const paths = pathsResult?.paths ?? [];
-      const isValidPath = paths.some((pathEntry) =>
-        matchesPagesStaticPath(pathEntry, options.params, options.routeUrl),
-      );
+    if (fallback === false && !isValidPath) {
+      // For data requests (`/_next/data/...json`), return a JSON-shaped 404
+      // so the client router can `res.json()` without blowing up — matches
+      // Next.js' behavior. HTML navigations still get the HTML 404 page.
+      return {
+        kind: "response",
+        response: options.isDataReq
+          ? buildPagesDataNotFoundResponse()
+          : buildPagesNotFoundResponse(),
+      };
+    }
 
-      if (!isValidPath) {
-        return {
-          kind: "response",
-          response: buildPagesNotFoundResponse(),
-        };
-      }
+    // Render the fallback shell for unlisted paths under `fallback: true`.
+    // Data requests resolve props normally so the client can fill in after
+    // the loading shell ships (`fallback: 'blocking'` keeps SSRing as before).
+    if (fallback === true && !isValidPath && !options.isDataReq) {
+      isFallback = true;
     }
   }
 
   let pageProps: Record<string, unknown> = {};
   let gsspRes: PagesMutableGsspResponse | null = null;
+
+  if (isFallback) {
+    return {
+      kind: "render",
+      gsspRes: null,
+      isrRevalidateSeconds: null,
+      pageProps,
+      isFallback: true,
+    };
+  }
 
   if (typeof options.pageModule.getServerSideProps === "function") {
     const { req, res, responsePromise } = options.createGsspReqRes();
@@ -354,7 +404,9 @@ export async function resolvePagesPageData(
     if (result?.notFound) {
       return {
         kind: "response",
-        response: buildPagesDataNotFoundResponse(),
+        response: options.isDataReq
+          ? buildPagesDataNotFoundResponse()
+          : buildPagesNotFoundResponse(),
       };
     }
 
@@ -369,7 +421,13 @@ export async function resolvePagesPageData(
     const cached = await options.isrGet(cacheKey);
     const cachedValue = cached?.value.value;
 
-    if (cachedValue?.kind === "PAGES" && cached && !cached.isStale && !options.scriptNonce) {
+    if (
+      cachedValue?.kind === "PAGES" &&
+      cached &&
+      !cached.isStale &&
+      !options.scriptNonce &&
+      !options.isDataReq
+    ) {
       return {
         kind: "response",
         response: buildPagesCacheResponse(
@@ -383,7 +441,13 @@ export async function resolvePagesPageData(
       };
     }
 
-    if (cachedValue?.kind === "PAGES" && cached && cached.isStale && !options.scriptNonce) {
+    if (
+      cachedValue?.kind === "PAGES" &&
+      cached &&
+      cached.isStale &&
+      !options.scriptNonce &&
+      !options.isDataReq
+    ) {
       options.triggerBackgroundRegeneration(
         cacheKey,
         async function () {
@@ -467,7 +531,9 @@ export async function resolvePagesPageData(
     if (result?.notFound) {
       return {
         kind: "response",
-        response: buildPagesDataNotFoundResponse(),
+        response: options.isDataReq
+          ? buildPagesDataNotFoundResponse()
+          : buildPagesNotFoundResponse(),
       };
     }
 
@@ -481,5 +547,6 @@ export async function resolvePagesPageData(
     gsspRes,
     isrRevalidateSeconds,
     pageProps,
+    isFallback: false,
   };
 }

@@ -13,6 +13,7 @@ import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
 import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
+import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
@@ -42,6 +43,7 @@ import {
 } from "./config/next-config.js";
 
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
+import { isNextDataPathname, parseNextDataPathname } from "./server/pages-data-route.js";
 import {
   MIDDLEWARE_HEADER_PREFIX,
   MIDDLEWARE_NEXT_HEADER,
@@ -76,7 +78,6 @@ import {
   type RequestContext,
 } from "./config/config-matchers.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
-import { normalizeDefaultLocalePathname } from "./server/pages-i18n.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-request-headers.js";
 import { detectPackageManager } from "./utils/project.js";
 import { manifestFileWithBase, manifestFilesWithBase } from "./utils/manifest-paths.js";
@@ -176,7 +177,7 @@ function resolveOptionalDependency(projectRoot: string, specifier: string): stri
 function resolveShimModulePath(shimsDir: string, moduleName: string): string {
   // Source checkouts only ship TypeScript shims, while built packages only ship
   // JavaScript. Check .ts first to avoid an extra stat in development.
-  const candidates = [".ts", ".js"];
+  const candidates = [".ts", ".tsx", ".js"];
   for (const ext of candidates) {
     const candidate = path.join(shimsDir, `${moduleName}${ext}`);
     if (fs.existsSync(candidate)) {
@@ -184,6 +185,21 @@ function resolveShimModulePath(shimsDir: string, moduleName: string): string {
     }
   }
   return path.join(shimsDir, `${moduleName}.js`);
+}
+
+function isVercelOgImport(id: string): boolean {
+  return id === "@vercel/og" || id === "@vercel/og.js";
+}
+
+function isVinextOgShimImporter(importer: string | undefined): boolean {
+  if (!importer) return false;
+  const cleanImporter = (importer.startsWith("\0") ? importer.slice(1) : importer).split("?")[0];
+  const normalizedImporter = cleanImporter.replace(/\\/g, "/");
+  return (
+    normalizedImporter.endsWith("/shims/og.tsx") ||
+    normalizedImporter.endsWith("/shims/og.js") ||
+    normalizedImporter.endsWith("/dist/shims/og.js")
+  );
 }
 
 function toRelativeFileEntry(root: string, absPath: string): string {
@@ -1141,6 +1157,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // because vinext is the runtime — there is no underlying Next.js
         // version to surface.
         defines["process.env.__NEXT_VERSION"] = JSON.stringify(getVinextVersion());
+        // App Shells — always false; plumbing-only flag, not yet implemented.
+        // See: https://github.com/vercel/next.js/pull/93997
+        defines["process.env.__NEXT_APP_SHELLS"] = JSON.stringify(false);
 
         // Build the shim alias map. Exact `.js` variants are included for the
         // public Next entrypoints that are file-backed in `next/package.json`.
@@ -1404,19 +1423,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // test/e2e/app-dir/css-media-query/css-media-query.test.ts which
             // asserts `cssText` preserves `max-width: 768px`.
             cssTarget: ["chrome111", "edge111", "firefox114", "safari15"],
-            // Direct Vite to write build output under `<assetPrefix>/_next/static/`
-            // (path-prefix form) or `_next/static/` (absolute-URL form) when
-            // `assetPrefix` is configured. Keeps the default of `assets/`
-            // when no prefix is set so existing on-disk layouts are stable
-            // for projects that haven't opted in.
+            // Direct Vite to write build output under the canonical Next.js
+            // layout so the on-disk path mirrors the emitted URL path:
+            //   - empty `assetPrefix`     → `_next/static/`
+            //   - path prefix (`/cdn`)    → `cdn/_next/static/`
+            //   - absolute URL            → `_next/static/` (CDN serves it
+            //                                directly via renderBuiltUrl)
             //
-            // Pair with `experimental.renderBuiltUrl` above: the on-disk
+            // Pair with `experimental.renderBuiltUrl` below: the on-disk
             // layout matches the URL path so the Cloudflare ASSETS binding
-            // and any static file server can resolve `<assetPrefix>/_next/static/...`
-            // requests without a runtime rewrite.
-            ...(nextConfig.assetPrefix
-              ? { assetsDir: resolveAssetsDir(nextConfig.assetPrefix) }
-              : {}),
+            // and any static file server can resolve
+            // `<assetPrefix?>/_next/static/...` requests directly, and
+            // misses naturally fall through as plain-text 404s.
+            assetsDir: resolveAssetsDir(nextConfig.assetPrefix ?? ""),
             ...withBuildBundlerOptions(viteMajorVersion, {
               // Suppress "Module level directives cause errors when bundled"
               // warnings for "use client" / "use server" directives. Our shims
@@ -1587,8 +1606,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // start with the configured asset prefix and use Next.js's
           // canonical `_next/static/` directory convention. We also write
           // assets to disk under that same path layout (via `build.assetsDir`
-          // below) so the Cloudflare ASSETS binding and any static file
+          // above) so the Cloudflare ASSETS binding and any static file
           // server can serve them without runtime rewrites.
+          //
+          // When `assetPrefix` is empty, Vite's default `base + url`
+          // composition already produces the correct `/_next/static/...`
+          // URLs because `build.assetsDir` is `_next/static` — so this
+          // override is only needed for the configured cases.
           //
           // See packages/vinext/src/utils/asset-prefix.ts for the helpers
           // and Next.js docs for the contract:
@@ -2051,18 +2075,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       resolveId: {
-        // Hook filter: only invoke JS for next/* imports and virtual:vinext-* modules.
+        // Hook filter: only invoke JS for handled Next/Vinext compatibility modules.
         // Matches "next/navigation", "next/router.js", "virtual:vinext-rsc-entry",
-        // and \0-prefixed re-imports from @vitejs/plugin-rsc.
+        // direct @vercel/og imports in metadata routes, and \0-prefixed
+        // re-imports from @vitejs/plugin-rsc.
         filter: {
-          id: /(?:next\/|virtual:vinext-)/,
+          id: /(?:next\/|virtual:vinext-|^@vercel\/og(?:\.js)?$)/,
         },
-        handler(id) {
+        handler(id, importer) {
           // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
           // browser entry imports our virtual module using the already-resolved
           // ID (with \0 prefix). We need to re-resolve it so the client
           // environment's import-analysis can find it.
           const cleanId = id.startsWith("\0") ? id.slice(1) : id;
+
+          if (isVercelOgImport(cleanId) && !isVinextOgShimImporter(importer)) {
+            return resolveShimModulePath(_shimsDir, "og");
+          }
 
           // Pages Router virtual modules
           if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
@@ -2875,6 +2904,42 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }
               }
 
+              // ── `_next/data` normalization (Pages Router) ──────────────
+              // Client-side navigations in the Pages Router fetch
+              // `/_next/data/<buildId>/<page>.json`. Normalize the URL to the
+              // page path BEFORE middleware runs so middleware sees `/page`
+              // (matching Next.js — see `handleNextDataRequest` in
+              // base-server.ts). If the buildId is missing (dev) or matches,
+              // accept the request; if it is present and wrong, fall through
+              // to the dot-extension skip below which returns 404.
+              let isDataReq = false;
+              if (isNextDataPathname(pathname)) {
+                // Use the plugin's resolved buildId so a user-supplied
+                // `generateBuildId` in next.config.mjs is honored in dev —
+                // matching the value embedded into the prod entry. Fall back
+                // to the env-var define (set by the plugin) and finally
+                // "development" if the plugin hasn't resolved a config yet.
+                const devBuildId =
+                  nextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development";
+                const dataMatch = parseNextDataPathname(pathname, devBuildId);
+                if (dataMatch) {
+                  isDataReq = true;
+                  const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+                  url = dataMatch.pagePathname + qs;
+                  pathname = dataMatch.pagePathname;
+                  // Rewrite req.url so downstream middleware sees the page
+                  // path, not the raw _next/data URL.
+                  req.url = url;
+                } else {
+                  // Stale buildId or malformed path. Return a JSON 404 here
+                  // (matching the prod-server path) so clients hard-navigate
+                  // instead of trying to parse Vite's HTML 404 as JSON.
+                  res.writeHead(404, { "Content-Type": "application/json" });
+                  res.end("{}");
+                  return;
+                }
+              }
+
               // Skip requests for files with extensions (static assets) after
               // trailing-slash canonicalization so file-looking dynamic routes
               // like /catch-all/hello.world/ still get the Next.js redirect.
@@ -2927,11 +2992,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // request before any config rule or filesystem match runs so
               // that locale-aware rules with `:locale` placeholders still
               // match default-locale URLs. Mirrors resolve-routes.ts.
+              //
+              // `matchPathname` covers pre-middleware matching against the
+              // original pathname. `matchResolvedPathname` is a function form
+              // used by the post-middleware rewrite phases (afterFiles,
+              // fallback) so they pick up the rewritten URL each time — the
+              // same shape as `prod-server.ts` and `deploy.ts`.
               const matchPathname = nextConfig?.i18n
                 ? normalizeDefaultLocalePathname(pathname, nextConfig.i18n, {
                     hostname: preMiddlewareReqUrl.hostname,
                   })
                 : pathname;
+              const matchResolvedPathname = (p: string): string =>
+                nextConfig?.i18n
+                  ? normalizeDefaultLocalePathname(p, nextConfig.i18n, {
+                      hostname: preMiddlewareReqUrl.hostname,
+                    })
+                  : p;
 
               // Config redirects run before middleware, but still match against
               // the original normalized pathname and request headers/cookies.
@@ -2996,6 +3073,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   middlewareRequest,
                   nextConfig?.i18n,
                   nextConfig?.basePath,
+                  nextConfig?.trailingSlash,
                   isDataRequest,
                 );
 
@@ -3139,7 +3217,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // pre-middleware request state; middleware response headers win
               // later because they are already on the outgoing response.
               if (nextConfig?.headers.length) {
-                applyHeaders(matchPathname, res, nextConfig.headers, preMiddlewareReqCtx);
+                applyHeaders(matchPathname, res, nextConfig.headers, preMiddlewareReqCtx, bp);
               }
 
               // Apply rewrites from next.config.js (beforeFiles)
@@ -3149,6 +3227,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   matchPathname,
                   nextConfig.rewrites.beforeFiles,
                   reqCtx,
+                  bp,
                 );
                 if (rewritten) {
                   // Preserve original query params across the rewrite — Next.js
@@ -3165,15 +3244,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 return;
               }
 
-              // Handle API routes first (pages/api/*)
-              const resolvedPathname = resolvedUrl.split("?")[0];
+              // Handle API routes first (pages/api/*).
+              // Strip the i18n locale prefix before the `/api/` check so
+              // `/fr/api/ok` resolves to the `pages/api/ok` handler (Next.js
+              // parity — see base-server.ts's normalizeLocalePath call).
+              const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, nextConfig?.i18n);
+              const resolvedPathname = apiLookupUrl.split("?")[0];
               if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
                 const apiRoutes = await apiRouter(
                   pagesDir,
                   nextConfig?.pageExtensions,
                   fileMatcher,
                 );
-                const apiMatch = matchRoute(resolvedUrl, apiRoutes);
+                const apiMatch = matchRoute(apiLookupUrl, apiRoutes);
                 if (apiMatch) {
                   applyDeferredMwHeaders();
                   if (middlewareRequestHeaders) {
@@ -3184,7 +3267,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   getPagesRunner(),
                   req,
                   res,
-                  resolvedUrl,
+                  apiLookupUrl,
                   apiRoutes,
                 );
                 if (handled) return;
@@ -3206,13 +3289,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // chance to win, but before dynamic route matching.
               if ((!match || match.route.isDynamic) && nextConfig?.rewrites.afterFiles.length) {
                 const afterRewrite = applyRewrites(
-                  nextConfig?.i18n
-                    ? normalizeDefaultLocalePathname(resolvedUrl.split("?")[0], nextConfig.i18n, {
-                        hostname: preMiddlewareReqUrl.hostname,
-                      })
-                    : resolvedUrl.split("?")[0],
+                  matchResolvedPathname(resolvedUrl.split("?")[0]),
                   nextConfig.rewrites.afterFiles,
                   reqCtx,
+                  bp,
                 );
                 if (afterRewrite) {
                   resolvedUrl = mergeRewriteQuery(resolvedUrl, afterRewrite);
@@ -3246,20 +3326,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 if (middlewareRequestHeaders) {
                   applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
                 }
-                await handler(req, res, resolvedUrl, mwStatus);
+                await handler(req, res, resolvedUrl, mwStatus, isDataReq);
                 return;
               }
 
               // No route matched — try fallback rewrites
               if (nextConfig?.rewrites.fallback.length) {
                 const fallbackRewrite = applyRewrites(
-                  nextConfig?.i18n
-                    ? normalizeDefaultLocalePathname(resolvedUrl.split("?")[0], nextConfig.i18n, {
-                        hostname: preMiddlewareReqUrl.hostname,
-                      })
-                    : resolvedUrl.split("?")[0],
+                  matchResolvedPathname(resolvedUrl.split("?")[0]),
                   nextConfig.rewrites.fallback,
                   reqCtx,
+                  bp,
                 );
                 if (fallbackRewrite) {
                   // External fallback rewrite — proxy to external URL
@@ -3277,7 +3354,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   if (middlewareRequestHeaders) {
                     applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
                   }
-                  await handler(req, res, fallbackRewrite, mwStatus);
+                  await handler(req, res, fallbackRewrite, mwStatus, isDataReq);
                   return;
                 }
               }
@@ -3286,7 +3363,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // otherwise render via the pages SSR handler (will 404 for unknown routes).
               if (hasAppDir) return next();
 
-              await handler(req, res, resolvedUrl, mwStatus);
+              await handler(req, res, resolvedUrl, mwStatus, isDataReq);
             } catch (e) {
               next(e);
             }
@@ -4109,13 +4186,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           // Generate _headers file for Cloudflare Workers static asset caching.
           // Vite outputs content-hashed files (JS, CSS, fonts) to the assetsDir
-          // (defaults to "assets"). These are safe to cache indefinitely since
-          // the hash changes on any content change. Without this, Cloudflare
-          // serves them with max-age=0 which forces unnecessary revalidation
-          // on every page load.
+          // (defaults to `_next/static` — Next.js's canonical convention; see
+          // resolveAssetsDir in utils/asset-prefix.ts). These are safe to
+          // cache indefinitely since the hash changes on any content change.
+          // Without this, Cloudflare serves them with max-age=0 which forces
+          // unnecessary revalidation on every page load.
           const headersPath = path.join(clientDir, "_headers");
           if (!fs.existsSync(headersPath)) {
-            const assetsDir = envConfig.build?.assetsDir ?? "assets";
+            const assetsDir = envConfig.build?.assetsDir ?? ASSET_PREFIX_URL_DIR;
             const headersContent = [
               "# Cache content-hashed assets immutably (generated by vinext)",
               `/${assetsDir}/*`,
@@ -4271,7 +4349,11 @@ function applyRedirects(
   ctx: RequestContext,
   basePath = "",
 ): boolean {
-  const result = matchRedirect(pathname, redirects, ctx);
+  // Vite strips the basePath before our middleware sees the request, so any
+  // pathname we see is implicitly "under basePath" for matching purposes.
+  // Default rules fire as expected; `basePath: false` rules cannot reach the
+  // dev server today because Vite won't proxy out-of-basepath requests.
+  const result = matchRedirect(pathname, redirects, ctx, { basePath, hadBasePath: true });
   if (result) {
     // Sanitize to prevent open redirect via protocol-relative URLs
     const dest = sanitizeDestination(
@@ -4357,8 +4439,11 @@ function applyRewrites(
   pathname: string,
   rewrites: NextRewrite[],
   ctx: RequestContext,
+  basePath = "",
 ): string | null {
-  const dest = matchRewrite(pathname, rewrites, ctx);
+  // Vite strips the basePath before our middleware sees the request; see
+  // applyRedirects for rationale.
+  const dest = matchRewrite(pathname, rewrites, ctx, { basePath, hadBasePath: true });
   if (dest) {
     // Sanitize to prevent open redirect via protocol-relative URLs
     return sanitizeDestination(dest);
@@ -4377,8 +4462,11 @@ function applyHeaders(
   res: any,
   headers: NextHeader[],
   ctx: RequestContext,
+  basePath = "",
 ): void {
-  const matched = matchHeaders(pathname, headers, ctx);
+  // Vite strips the basePath before our middleware sees the request; see
+  // applyRedirects for rationale.
+  const matched = matchHeaders(pathname, headers, ctx, { basePath, hadBasePath: true });
   for (const header of matched) {
     // Use append semantics for headers where multiple values must coexist
     // (Vary, Set-Cookie). Using setHeader() on these would destroy

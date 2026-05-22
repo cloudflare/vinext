@@ -120,7 +120,7 @@ describe("prefetch cache eviction", () => {
 
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetchedUrl).toMatch(/^\/dashboard\.rsc\?tab=1&_rsc(?:=.+)?$/);
-    expect(getPrefetchedUrls().has(AppElementsWire.encodeCacheKey(String(fetchedUrl), "/"))).toBe(
+    expect(getPrefetchedUrls().has(AppElementsWire.encodeCacheKey(String(fetchedUrl), null))).toBe(
       true,
     );
   });
@@ -137,7 +137,7 @@ describe("prefetch cache eviction", () => {
     appRouterInstance.prefetch("/dashboard", { onInvalidate });
     await waitForPrefetchSetup(() => getPrefetchCache().size > 0);
 
-    const cacheKey = AppElementsWire.encodeCacheKey(String(fetchedUrl), "/");
+    const cacheKey = AppElementsWire.encodeCacheKey(String(fetchedUrl), null);
     expect(getPrefetchedUrls().has(cacheKey)).toBe(true);
 
     invalidatePrefetchCache();
@@ -217,6 +217,30 @@ describe("prefetch cache eviction", () => {
     expect(prefetched.has(rscUrl)).toBe(false);
   });
 
+  it("keeps learning-only prefetch responses out of navigation consumption", () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const rscUrl = "/blog/hello.rsc";
+
+    cache.set(rscUrl, {
+      cacheForNavigation: false,
+      outcome: "cache-seeded",
+      snapshot: {
+        buffer: new TextEncoder().encode("flight").buffer,
+        contentType: "text/x-component",
+        mountedSlotsHeader: null,
+        paramsHeader: null,
+        url: rscUrl,
+      },
+      timestamp: Date.now(),
+    });
+    prefetched.add(rscUrl);
+
+    expect(consumePrefetchResponse(rscUrl, null, null)).toBeNull();
+    expect(cache.has(rscUrl)).toBe(true);
+    expect(prefetched.has(rscUrl)).toBe(true);
+  });
+
   it("derives the interception context from the current pathname", () => {
     (globalThis as any).window.location.pathname = "/feed";
 
@@ -287,7 +311,7 @@ describe("prefetch cache eviction", () => {
         : fetchedUrl instanceof URL
           ? fetchedUrl.href
           : fetchedUrl.url;
-    const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, "/");
+    const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, null);
 
     expect(getPrefetchCache().get(cacheKey)?.outcome).toBe("pending");
 
@@ -302,7 +326,7 @@ describe("prefetch cache eviction", () => {
     expect(entry?.outcome).toBe("cache-seeded");
     expect(entry?.pending).toBeUndefined();
 
-    const consumed = consumePrefetchResponse(rscUrl, "/", null);
+    const consumed = consumePrefetchResponse(rscUrl, null, null);
     expect(consumed?.mountedSlotsHeader).toBeNull();
     expect(getPrefetchCache().has(cacheKey)).toBe(false);
     expect(getPrefetchedUrls().has(cacheKey)).toBe(false);

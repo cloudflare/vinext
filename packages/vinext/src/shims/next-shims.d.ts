@@ -233,8 +233,10 @@ declare module "next/navigation" {
     url: string;
   };
   export type PrefetchCacheEntry = {
+    cacheForNavigation?: boolean;
     invalidationTimer?: ReturnType<typeof setTimeout>;
     onInvalidateCallbacks?: Set<() => void>;
+    optimisticRouteShell?: boolean;
     outcome: "pending" | "cache-seeded";
     snapshot?: CachedRscResponse;
     pending?: Promise<void>;
@@ -242,6 +244,7 @@ declare module "next/navigation" {
   };
   export const MAX_PREFETCH_CACHE_SIZE: number;
   export const PREFETCH_CACHE_TTL: number;
+  export function getPrefetchInterceptionContext(targetHref: string): string | null;
   export function getPrefetchCache(): Map<string, PrefetchCacheEntry>;
   export function getPrefetchedUrls(): Set<string>;
   export function invalidatePrefetchCache(): void;
@@ -258,6 +261,8 @@ declare module "next/navigation" {
     fetchPromise: Promise<Response>,
     interceptionContext?: string | null,
     mountedSlotsHeader?: string | null,
+    options?: { onInvalidate?: () => void },
+    behavior?: { cacheForNavigation?: boolean; optimisticRouteShell?: boolean },
   ): void;
   export function consumePrefetchResponse(
     rscUrl: string,

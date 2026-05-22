@@ -29,18 +29,19 @@ fi
 PID="$(cat "${PID_FILE}")"
 rm -f "${PID_FILE}"
 
-# Kill the process group if possible (handles vp exec → node → vinext chains).
-# On macOS/Linux, -PID sends the signal to the entire process group.
-kill -TERM "-${PID}" >/dev/null 2>&1 || kill -TERM "${PID}" >/dev/null 2>&1 || true
+# Kill the recorded process first. A follow-up listener sweep below handles
+# child processes that outlive the package-manager wrapper without risking the
+# Jest/run-tests process group.
+kill -TERM "${PID}" >/dev/null 2>&1 || true
 sleep 1
-kill -KILL "-${PID}" >/dev/null 2>&1 || kill -KILL "${PID}" >/dev/null 2>&1 || true
+kill -KILL "${PID}" >/dev/null 2>&1 || true
 
 # If a port file exists, also kill any process still listening on that port.
 # This catches orphaned child processes that escaped process group signaling.
 PORT_FILE=".vinext-deploy-server.port"
 if [ -f "${PORT_FILE}" ]; then
   PORT="$(cat "${PORT_FILE}")"
-  LISTENER_PID="$(lsof -ti "tcp:${PORT}" 2>/dev/null || true)"
+  LISTENER_PID="$(lsof -ti "tcp:${PORT}" -sTCP:LISTEN 2>/dev/null || true)"
   if [ -n "${LISTENER_PID}" ]; then
     kill -TERM ${LISTENER_PID} >/dev/null 2>&1 || true
     sleep 1

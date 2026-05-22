@@ -1,5 +1,6 @@
 type PagesRouterLinkTransitionOptions = {
   scroll?: boolean;
+  shallow?: boolean;
   locale?: string | false;
 };
 
@@ -14,15 +15,18 @@ export async function navigatePagesRouterLink(
     href,
     replace,
     scroll,
+    shallow,
     locale,
   }: {
     href: string;
     replace: boolean;
     scroll: boolean;
+    shallow?: boolean;
     locale?: string | false;
   },
 ): Promise<void> {
-  const routerOptions = { scroll, locale };
+  const routerOptions: PagesRouterLinkTransitionOptions = { scroll, locale };
+  if (shallow !== undefined) routerOptions.shallow = shallow;
   if (replace) {
     await router.replace(href, undefined, routerOptions);
   } else {

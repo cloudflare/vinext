@@ -2,6 +2,7 @@ import { Fragment, createElement, isValidElement, type ReactElement, type ReactN
 import { describe, expect, it } from "vite-plus/test";
 import { useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
 import {
+  APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_SLOT_BINDINGS_KEY,
   APP_UNMATCHED_SLOT_WIRE_VALUE,
   type AppElements,
@@ -14,7 +15,10 @@ import {
   createAppPageLayoutEntries,
   resolveAppPageChildSegments,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
-import { APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
 
 function readNode(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -447,6 +451,73 @@ describe("app page route wiring helpers", () => {
 
     expect(containsElementType(elements["route:/dashboard"], RouteLoadingProbe)).toBe(false);
     expect(containsElementType(elements["slot:sidebar:/"], SlotLoadingProbe)).toBe(false);
+  });
+
+  it("serializes route loading UI instead of page content for loading-shell prefetches", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: { default: RouteLoadingProbe },
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+
+    expect(elements["page:/dashboard"]).toBeNull();
+    expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
+    const html = await renderRouteEntry(elements, "route:/dashboard");
+
+    expect(html).toContain("Route loading");
+    expect(html).not.toContain("Page");
+  });
+
+  it("does not render page content for loading-shell prefetches without a route loading boundary", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+
+    expect(elements["page:/dashboard"]).toBeNull();
+    expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBeUndefined();
+    const html = await renderRouteEntry(elements, "route:/dashboard");
+
+    expect(html).not.toContain("Page");
   });
 
   it("uses override params for slot segment maps when an override page is active", async () => {

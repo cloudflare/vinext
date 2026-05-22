@@ -20,8 +20,15 @@ import {
 import { VINEXT_RSC_RENDER_MODE_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  createClientReuseManifest,
+  createClientReusePayloadHash,
+} from "../packages/vinext/src/server/client-reuse-manifest.js";
+import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
+import { VINEXT_CLIENT_REUSE_MANIFEST_HEADER } from "../packages/vinext/src/server/headers.js";
 
 function req(path: string, headers: Record<string, string> = {}): Request {
   return new Request(`http://localhost${path}`, { headers });
@@ -322,6 +329,14 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
     const normal = normalized(
       normalizeRscRequest(req("/page.rsc", { [VINEXT_RSC_RENDER_MODE_HEADER]: "true" }), ""),
     );
+    const prefetchShell = normalized(
+      normalizeRscRequest(
+        req("/page.rsc", {
+          [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        }),
+        "",
+      ),
+    );
     const html = normalized(
       normalizeRscRequest(
         req("/page", { [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI }),
@@ -330,8 +345,72 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
     );
 
     expect(refresh.renderMode).toBe(APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI);
+    expect(prefetchShell.renderMode).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
     expect(normal.renderMode).toBe(APP_RSC_RENDER_MODE_NAVIGATION);
     expect(html.renderMode).toBe(APP_RSC_RENDER_MODE_NAVIGATION);
+  });
+});
+
+// ── Client reuse manifest normalization ─────────────────────────────────────
+
+describe("normalizeRscRequest — ClientReuseManifest boundary", () => {
+  it("parses ClientReuseManifest only for canonical RSC payload requests", () => {
+    const manifest = createClientReuseManifest({
+      entries: [
+        {
+          artifactCompatibility: createArtifactCompatibilityEnvelope({
+            deploymentVersion: "deploy-a",
+            graphVersion: "graph-a",
+            renderEpoch: "epoch-a",
+            rootBoundaryId: "layout:/",
+          }),
+          id: "layout:/",
+          payloadHash: createClientReusePayloadHash("root"),
+          privacy: "public",
+          variantCacheKey: "cp1:root",
+        },
+      ],
+      visibleCommitVersion: 1,
+    });
+    const header = JSON.stringify(manifest);
+
+    const rsc = normalized(
+      normalizeRscRequest(req("/page.rsc", { [VINEXT_CLIENT_REUSE_MANIFEST_HEADER]: header }), ""),
+    );
+    const html = normalized(
+      normalizeRscRequest(req("/page", { [VINEXT_CLIENT_REUSE_MANIFEST_HEADER]: header }), ""),
+    );
+
+    expect(rsc.clientReuseManifest.kind).toBe("parsed");
+    expect(html.clientReuseManifest).toEqual({ kind: "absent" });
+  });
+
+  it("keeps rejected ClientReuseManifest hints as disabled metadata instead of failing routing", () => {
+    const result = normalized(
+      normalizeRscRequest(
+        req("/page.rsc", {
+          [VINEXT_CLIENT_REUSE_MANIFEST_HEADER]: JSON.stringify({
+            entries: [],
+            hashAlgorithm: "sha512",
+            replayWindow: {
+              validFromVisibleCommitVersion: 1,
+              validUntilVisibleCommitVersion: 1,
+            },
+            schemaVersion: 1,
+            visibleCommitVersion: 1,
+          }),
+        }),
+        "",
+      ),
+    );
+
+    expect(result.clientReuseManifest).toEqual({
+      kind: "rejected",
+      rejection: {
+        code: "SKIP_HASH_ALGORITHM_UNSUPPORTED",
+        fields: { hashAlgorithm: "sha512" },
+      },
+    });
   });
 });
 

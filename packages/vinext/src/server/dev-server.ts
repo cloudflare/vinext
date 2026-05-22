@@ -6,7 +6,7 @@ import { normalizeStaticPathname, type StaticPathsEntry } from "../routing/route
 import type { ModuleImporter } from "./instrumentation.js";
 import { importModule, reportRequestError } from "./instrumentation.js";
 import type { NextI18nConfig } from "../config/next-config.js";
-import { VINEXT_CACHE_HEADER } from "./headers.js";
+import { buildCacheStateHeaders } from "./cache-headers.js";
 import {
   isrGet,
   isrSet,
@@ -273,6 +273,13 @@ export function createSSRHandler(
     url: string,
     /** Status code override — propagated from middleware rewrite status. */
     statusCode?: number,
+    /**
+     * True when the request originated as `/_next/data/<buildId>/<page>.json`.
+     * When true the handler emits a `{ pageProps }` JSON envelope instead of
+     * rendering the React tree to HTML — matching Next.js' behavior for
+     * client-side navigations in the Pages Router.
+     */
+    isDataReq: boolean = false,
   ): Promise<void> => {
     const _reqStart = now();
     let _compileEnd: number | undefined;
@@ -326,6 +333,13 @@ export function createSSRHandler(
     const match = matchRoute(localeStrippedUrl, routes);
 
     if (!match) {
+      if (isDataReq) {
+        // Stale client requested data for a page that no longer exists.
+        // Emit a JSON 404 so the client hard-navigates (matches Next.js).
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end("{}");
+        return;
+      }
       // No route matched — try to render custom 404 page
       await renderErrorPage(server, runner, req, res, url, pagesDir, 404, undefined, matcher);
       return;
@@ -401,9 +415,15 @@ export function createSSRHandler(
         // Collect page props via data fetching methods
         let pageProps: Record<string, unknown> = {};
         let isrRevalidateSeconds: number | null = null;
+        // Set when `getStaticPaths: { fallback: true }` is configured and the
+        // requested path is NOT in the pre-rendered list. Triggers the loading
+        // shell render below: `getStaticProps`/`getServerSideProps` are skipped
+        // and `useRouter().isFallback === true`, matching Next.js render.tsx.
+        let isFallbackRender = false;
 
-        // Handle getStaticPaths for dynamic routes: validate the path
-        // and respect fallback: false (return 404 for unlisted paths).
+        // Handle getStaticPaths for dynamic routes: validate the path,
+        // respect `fallback: false` (return 404 for unlisted paths), and
+        // render the loading shell for unlisted paths under `fallback: true`.
         if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
           const pathsResult = await pageModule.getStaticPaths({
             locales: i18nConfig?.locales ?? [],
@@ -411,52 +431,71 @@ export function createSSRHandler(
           });
           const fallback = pathsResult?.fallback ?? false;
 
-          if (fallback === false) {
-            // Only allow paths explicitly listed in getStaticPaths. Next.js
-            // accepts `paths` as Array<string | { params, locale? }>; the
-            // shared `StaticPathsEntry` type and `normalizeStaticPathname`
-            // helper in `../routing/route-pattern.ts` reference the upstream
-            // implementation.
-            type DevStaticPathsEntry = Exclude<StaticPathsEntry, null | undefined>;
-            const paths: Array<DevStaticPathsEntry> = pathsResult?.paths ?? [];
-            const currentPathname = normalizeStaticPathname(url);
-            const isValidPath = paths.some((p) => {
-              if (typeof p === "string") {
-                return normalizeStaticPathname(p) === currentPathname;
+          // Only allow paths explicitly listed in getStaticPaths. Next.js
+          // accepts `paths` as Array<string | { params, locale? }>; the
+          // shared `StaticPathsEntry` type and `normalizeStaticPathname`
+          // helper in `../routing/route-pattern.ts` reference the upstream
+          // implementation.
+          type DevStaticPathsEntry = Exclude<StaticPathsEntry, null | undefined>;
+          const paths: Array<DevStaticPathsEntry> = pathsResult?.paths ?? [];
+          const currentPathname = normalizeStaticPathname(url);
+          const isValidPath = paths.some((p) => {
+            if (typeof p === "string") {
+              return normalizeStaticPathname(p) === currentPathname;
+            }
+            const entryParams = p.params;
+            if (entryParams === undefined || entryParams === null) {
+              return false;
+            }
+            return Object.entries(entryParams).every(([key, val]) => {
+              const actual = params[key];
+              if (Array.isArray(val)) {
+                return Array.isArray(actual) && val.join("/") === actual.join("/");
               }
-              const entryParams = p.params;
-              if (entryParams === undefined || entryParams === null) {
-                return false;
-              }
-              return Object.entries(entryParams).every(([key, val]) => {
-                const actual = params[key];
-                if (Array.isArray(val)) {
-                  return Array.isArray(actual) && val.join("/") === actual.join("/");
-                }
-                return String(val) === String(actual);
-              });
+              return String(val) === String(actual);
             });
+          });
 
-            if (!isValidPath) {
-              await renderErrorPage(
-                server,
-                runner,
-                req,
-                res,
-                url,
-                pagesDir,
-                404,
-                routerShim.wrapWithRouterContext,
-                matcher,
-              );
+          if (fallback === false && !isValidPath) {
+            if (isDataReq) {
+              // Data requests get a JSON 404 so the client router can
+              // hard-navigate instead of trying to parse HTML as JSON.
+              res.writeHead(404, { "Content-Type": "application/json" });
+              res.end("{}");
               return;
             }
+            await renderErrorPage(
+              server,
+              runner,
+              req,
+              res,
+              url,
+              pagesDir,
+              404,
+              routerShim.wrapWithRouterContext,
+              matcher,
+            );
+            return;
           }
-          // fallback: true or "blocking" — always SSR on-demand.
-          // In dev mode, Next.js does the same (no fallback shell).
-          // In production, both modes SSR on-demand with caching.
-          // The difference is that fallback:true could serve a shell first,
-          // but since we always have data available via SSR, we render fully.
+
+          // Render the loading shell for `fallback: true` when the path
+          // wasn't pre-rendered. Data requests still resolve real props so
+          // the client can swap in after the shell ships.
+          if (fallback === true && !isValidPath && !isDataReq) {
+            isFallbackRender = true;
+            if (typeof routerShim.setSSRContext === "function") {
+              routerShim.setSSRContext({
+                pathname: patternToNextFormat(route.pattern),
+                query,
+                asPath: url,
+                locale: locale ?? currentDefaultLocale,
+                locales: i18nConfig?.locales,
+                defaultLocale: currentDefaultLocale,
+                domainLocales,
+                isFallback: true,
+              });
+            }
+          }
         }
 
         // Headers set by getServerSideProps for explicit forwarding to
@@ -465,7 +504,7 @@ export function createSSRHandler(
         // would silently break if streamPageToResponse is refactored.
         const gsspExtraHeaders: Record<string, string | string[]> = {};
 
-        if (typeof pageModule.getServerSideProps === "function") {
+        if (typeof pageModule.getServerSideProps === "function" && !isFallbackRender) {
           // Snapshot existing headers so we can detect what gSSP adds.
           const headersBeforeGSSP = new Set(Object.keys(res.getHeaders()));
 
@@ -509,6 +548,11 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
+            if (isDataReq) {
+              res.writeHead(404, { "Content-Type": "application/json" });
+              res.end("{}");
+              return;
+            }
             await renderErrorPage(
               server,
               runner,
@@ -565,7 +609,7 @@ export function createSSRHandler(
           // Font modules not loaded yet — skip
         }
 
-        if (typeof pageModule.getStaticProps === "function") {
+        if (typeof pageModule.getStaticProps === "function" && !isFallbackRender) {
           // Check ISR cache before calling getStaticProps
           const cacheKey = isrCacheKey(
             "pages",
@@ -576,7 +620,13 @@ export function createSSRHandler(
           );
           const cached = await isrGet(cacheKey);
 
-          if (cached && !cached.isStale && cached.value.value?.kind === "PAGES" && !scriptNonce) {
+          if (
+            cached &&
+            !cached.isStale &&
+            cached.value.value?.kind === "PAGES" &&
+            !scriptNonce &&
+            !isDataReq
+          ) {
             // Fresh cache hit — serve directly
             const cachedPage = cached.value.value as CachedPagesValue;
             const cachedHtml = cachedPage.html;
@@ -584,7 +634,7 @@ export function createSSRHandler(
             const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
             const hitHeaders: Record<string, string> = {
               "Content-Type": "text/html",
-              [VINEXT_CACHE_HEADER]: "HIT",
+              ...buildCacheStateHeaders("HIT"),
               "Cache-Control": `s-maxage=${revalidateSecs}, stale-while-revalidate`,
             };
             if (earlyFontLinkHeader) hitHeaders["Link"] = earlyFontLinkHeader;
@@ -593,7 +643,13 @@ export function createSSRHandler(
             return;
           }
 
-          if (cached && cached.isStale && cached.value.value?.kind === "PAGES" && !scriptNonce) {
+          if (
+            cached &&
+            cached.isStale &&
+            cached.value.value?.kind === "PAGES" &&
+            !scriptNonce &&
+            !isDataReq
+          ) {
             // Stale hit — serve stale immediately, trigger background regen
             const cachedPage = cached.value.value as CachedPagesValue;
             const cachedHtml = cachedPage.html;
@@ -731,7 +787,7 @@ export function createSSRHandler(
             const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
             const staleHeaders: Record<string, string> = {
               "Content-Type": "text/html",
-              [VINEXT_CACHE_HEADER]: "STALE",
+              ...buildCacheStateHeaders("STALE"),
               "Cache-Control": `s-maxage=${revalidateSecs}, stale-while-revalidate`,
             };
             if (earlyFontLinkHeader) staleHeaders["Link"] = earlyFontLinkHeader;
@@ -767,6 +823,11 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
+            if (isDataReq) {
+              res.writeHead(404, { "Content-Type": "application/json" });
+              res.end("{}");
+              return;
+            }
             await renderErrorPage(
               server,
               runner,
@@ -784,6 +845,27 @@ export function createSSRHandler(
           if (typeof result?.revalidate === "number" && result.revalidate > 0) {
             isrRevalidateSeconds = result.revalidate;
           }
+        }
+
+        // ── _next/data JSON envelope short-circuit (dev) ──────────────
+        // Client-side navigations fetch /_next/data/<buildId>/<page>.json and
+        // expect { pageProps } as JSON. We have pageProps; skip the React
+        // tree render and the _document shell entirely. Headers set on `res`
+        // by getServerSideProps (cookies, status codes, etc.) are preserved
+        // because we already let gSSP mutate `res` above.
+        if (isDataReq) {
+          const dataHeaders: Record<string, string | string[] | number> = {
+            "Content-Type": "application/json",
+          };
+          if (gsspExtraHeaders) {
+            for (const [k, v] of Object.entries(gsspExtraHeaders)) {
+              dataHeaders[k] = v;
+            }
+          }
+          res.writeHead(statusCode ?? 200, dataHeaders);
+          res.end(JSON.stringify({ pageProps }));
+          _renderEnd = now();
+          return;
         }
 
         // Try to load _app.tsx if it exists
@@ -926,7 +1008,11 @@ async function hydrate() {
   const root = hydrateRoot(document.getElementById("__next"), element);
   window.__VINEXT_ROOT__ = root;
   installPagesRouterRuntime();
-  window.__VINEXT_HYDRATED_AT = performance.now();
+  const hydratedAt = performance.now();
+  window.__VINEXT_HYDRATED_AT = hydratedAt;
+  window.__NEXT_HYDRATED = true;
+  window.__NEXT_HYDRATED_AT = hydratedAt;
+  window.__NEXT_HYDRATED_CB?.();
 }
 hydrate();
 </script>`;
@@ -937,7 +1023,7 @@ hydrate();
             page: patternToNextFormat(route.pattern),
             query: params,
             buildId: process.env.__VINEXT_BUILD_ID,
-            isFallback: false,
+            isFallback: isFallbackRender,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
@@ -977,7 +1063,7 @@ hydrate();
           } else {
             extraHeaders["Cache-Control"] =
               `s-maxage=${isrRevalidateSeconds}, stale-while-revalidate`;
-            extraHeaders[VINEXT_CACHE_HEADER] = "MISS";
+            Object.assign(extraHeaders, buildCacheStateHeaders("MISS"));
           }
         }
 

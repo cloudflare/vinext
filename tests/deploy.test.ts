@@ -520,9 +520,12 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("runs middleware before routing", () => {
     const content = generatePagesRouterWorkerEntry();
-    // Middleware should appear before API route check
+    // Middleware should appear before API route check.
+    // The API check now uses apiLookupPathname (post-locale-strip), but the
+    // ordering invariant still holds (issue #1336 item 3 only changes the
+    // variable name, not the relative position).
     const middlewarePos = content.indexOf("runMiddleware(request, ctx, { isDataRequest })");
-    const apiRoutePos = content.indexOf('resolvedPathname.startsWith("/api/")');
+    const apiRoutePos = content.indexOf('apiLookupPathname.startsWith("/api/")');
     expect(middlewarePos).toBeGreaterThan(-1);
     expect(apiRoutePos).toBeGreaterThan(-1);
     expect(middlewarePos).toBeLessThan(apiRoutePos);
@@ -533,9 +536,12 @@ describe("generatePagesRouterWorkerEntry", () => {
     // Redirect matching uses the locale-normalised `matchPathname` so that
     // `:locale` placeholders and `locale: false` redirect rules continue to
     // match default-locale URLs that arrive without a prefix (issue #1336
-    // item 4). Whatever the exact form, redirect matching must still happen
+    // item 4). It also passes `basePathState` for basePath: false opt-out
+    // gating. Whatever the exact form, redirect matching must still happen
     // before middleware runs.
-    const redirectPos = content.indexOf("matchRedirect(matchPathname, configRedirects, reqCtx)");
+    const redirectPos = content.indexOf(
+      "matchRedirect(matchPathname, configRedirects, reqCtx, basePathState)",
+    );
     const middlewarePos = content.indexOf("runMiddleware(request, ctx, { isDataRequest })");
     expect(redirectPos).toBeGreaterThan(-1);
     expect(middlewarePos).toBeGreaterThan(-1);
@@ -571,7 +577,8 @@ describe("generatePagesRouterWorkerEntry", () => {
     const content = generatePagesRouterWorkerEntry();
     const middlewareRewritePos = content.indexOf("resolvedUrl = result.rewriteUrl");
     const externalCheckPos = content.indexOf("isExternalUrl(resolvedUrl)", middlewareRewritePos);
-    const localApiRoutePos = content.indexOf('resolvedPathname.startsWith("/api/")');
+    // API check uses apiLookupPathname (post-locale-strip) since #1336 item 3.
+    const localApiRoutePos = content.indexOf('apiLookupPathname.startsWith("/api/")');
 
     expect(middlewareRewritePos).toBeGreaterThan(-1);
     expect(externalCheckPos).toBeGreaterThan(middlewareRewritePos);
@@ -603,9 +610,12 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("configRewrites.beforeFiles");
     expect(content).toContain("configRewrites.afterFiles");
     expect(content).toContain("configRewrites.fallback");
-    // Rewrite matching also runs against the locale-normalised resolved
-    // pathname via the local `matchResolvedPathname` helper (issue #1336 item 4).
+    // Rewrite matching runs against the locale-normalised resolved pathname
+    // via the local `matchResolvedPathname` helper (issue #1336 item 4) and
+    // passes `basePathState` for basePath: false opt-out gating.
     expect(content).toContain("matchResolvedPathname(resolvedPathname)");
+    expect(content).toMatch(/matchRewrite\(\s*matchResolvedPathname\(resolvedPathname\)/);
+    expect(content).toContain("basePathState");
     expect(content).toContain("matchPageRoute");
     expect(content).toContain("matchPageRoute(resolvedPathname, request)");
   });
@@ -639,11 +649,15 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("routes /api/ to handleApiRoute using resolved URL and forwards ctx", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain('resolvedPathname.startsWith("/api/")');
+    // Locale prefix is stripped before the /api/ check so /fr/api/ok matches
+    // pages/api/ok (issue #1336 item 3). The resulting URL (apiLookupUrl) is
+    // then used both for the prefix check and for the handleApiRoute call.
+    expect(content).toContain("stripI18nLocaleForApiRoute");
+    expect(content).toContain('apiLookupPathname.startsWith("/api/")');
     // Forwarding ctx lets handlePagesApiRoute wrap the handler in
     // runWithExecutionContext so after() and other shims can reach
     // ctx.waitUntil(). See #1365.
-    expect(content).toContain("handleApiRoute(request, resolvedUrl, ctx)");
+    expect(content).toContain("handleApiRoute(request, apiLookupUrl, ctx)");
   });
 
   it("includes error handling", () => {
@@ -1833,7 +1847,7 @@ describe("detectProject on real fixtures", () => {
 
 describe("Cloudflare _headers file generation", () => {
   /** Replicates the _headers generation logic from the closeBundle hook. */
-  function generateHeaders(clientDir: string, assetsDir = "assets"): void {
+  function generateHeaders(clientDir: string, assetsDir = "_next/static"): void {
     const headersPath = path.join(clientDir, "_headers");
     if (!fs.existsSync(headersPath)) {
       const headersContent = [
@@ -1853,11 +1867,11 @@ describe("Cloudflare _headers file generation", () => {
     generateHeaders(clientDir);
 
     const content = fs.readFileSync(path.join(clientDir, "_headers"), "utf-8");
-    expect(content).toContain("/assets/*");
+    expect(content).toContain("/_next/static/*");
     expect(content).toContain("Cache-Control: public, max-age=31536000, immutable");
     // Verify Cloudflare _headers format: path on its own line, indented header below
     const lines = content.split("\n");
-    const pathLine = lines.findIndex((l) => l === "/assets/*");
+    const pathLine = lines.findIndex((l) => l === "/_next/static/*");
     expect(pathLine).toBeGreaterThanOrEqual(0);
     expect(lines[pathLine + 1]).toBe("  Cache-Control: public, max-age=31536000, immutable");
   });
@@ -1873,7 +1887,7 @@ describe("Cloudflare _headers file generation", () => {
 
     const content = fs.readFileSync(path.join(clientDir, "_headers"), "utf-8");
     expect(content).toBe(userContent);
-    expect(content).not.toContain("/assets/*");
+    expect(content).not.toContain("/_next/static/*");
   });
 
   it("respects custom assetsDir", () => {
@@ -1884,7 +1898,7 @@ describe("Cloudflare _headers file generation", () => {
 
     const content = fs.readFileSync(path.join(clientDir, "_headers"), "utf-8");
     expect(content).toContain("/static/*");
-    expect(content).not.toContain("/assets/*");
+    expect(content).not.toContain("/_next/static/*");
   });
 
   it("ends with a trailing newline", () => {

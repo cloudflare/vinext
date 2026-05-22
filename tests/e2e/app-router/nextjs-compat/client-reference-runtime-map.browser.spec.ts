@@ -163,7 +163,7 @@ async function findCssAssetContaining(directory: string, marker: string): Promis
 
 async function assertPackageClientReferenceCssDeps(fixtureRoot: string): Promise<void> {
   const cssAsset = await findCssAssetContaining(
-    path.join(fixtureRoot, "dist", "client", "assets"),
+    path.join(fixtureRoot, "dist", "client", "_next", "static"),
     "package-probe",
   );
   const manifestUrl =

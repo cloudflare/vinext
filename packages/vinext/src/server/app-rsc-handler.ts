@@ -11,6 +11,7 @@ import {
   proxyExternalRequest,
   requestContextFromRequest,
   sanitizeDestination,
+  type BasePathMatchState,
 } from "../config/config-matchers.js";
 import { headersContextFromRequest } from "vinext/shims/headers";
 import {
@@ -222,6 +223,10 @@ function isExecutionContextLike(value: unknown): value is ExecutionContextLike {
   return hasProperty(value, "waitUntil") && typeof value.waitUntil === "function";
 }
 
+// TODO(#1333): once App Router supports `basePath: false` rules (see
+// `normalizeRscRequest` — it 404s out-of-basePath requests before they
+// reach this code), pass `hadBasePath` here and skip the prefix when
+// false, mirroring the same guard in `prod-server.ts` and `deploy.ts`.
 function redirectDestinationWithBasePath(destination: string, basePath: string): string {
   if (!basePath || isExternalUrl(destination) || hasBasePath(destination, basePath)) {
     return destination;
@@ -231,6 +236,7 @@ function redirectDestinationWithBasePath(destination: string, basePath: string):
 
 async function applyRewrite(
   options: {
+    basePathState: BasePathMatchState;
     clearRequestContext: () => void;
     request: Request;
     requestContext: RequestContext;
@@ -240,7 +246,12 @@ async function applyRewrite(
 ): Promise<Response | string | null> {
   if (!options.rewrites.length) return null;
 
-  const rewritten = matchRewrite(cleanPathname, options.rewrites, options.requestContext);
+  const rewritten = matchRewrite(
+    cleanPathname,
+    options.rewrites,
+    options.requestContext,
+    options.basePathState,
+  );
   if (!rewritten) return null;
 
   if (isExternalUrl(rewritten)) {
@@ -254,6 +265,7 @@ async function applyRewrite(
 function applyConfigHeadersToMiddlewareRedirect(
   response: Response,
   options: {
+    basePathState: BasePathMatchState;
     configHeaders: NextHeader[];
     pathname: string;
     requestContext: RequestContext;
@@ -270,6 +282,7 @@ function applyConfigHeadersToMiddlewareRedirect(
     configHeaders: options.configHeaders,
     pathname: options.pathname,
     requestContext: options.requestContext,
+    basePathState: options.basePathState,
   });
 
   if (!headers.entries().next().done) {
@@ -311,6 +324,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   //   "should have the canonical url pathname on rewrite"
   const canonicalPathname = cleanPathname;
 
+  // The request reached this point so it was either under basePath (stripped
+  // by normalizeRscRequest) or basePath is empty. In both cases the matcher
+  // gating below treats default (basePath: true) rules as eligible. The App
+  // Router does not yet support `basePath: false` rules — they would need a
+  // pre-strip hook in normalizeRscRequest to fire. Tracked as follow-up to
+  // issue #1333.
+  const basePathState = { basePath: options.basePath, hadBasePath: true };
+
   const prerenderEndpointResponse = await handleAppPrerenderEndpoint(request, {
     isPrerenderEnabled() {
       return process.env.VINEXT_PRERENDER === "1";
@@ -334,15 +355,20 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // splices in the (domain-aware) default locale on every request that
   // arrives without a locale prefix before running config redirect / rewrite
   // / header matching. Mirrors resolve-routes.ts lines ~250-263.
-  const redirectPathname = normalizeDefaultLocalePathname(
-    stripRscSuffix(pathname),
-    options.i18nConfig,
-    { hostname: url.hostname },
-  );
+  //
+  // Defined once here so the same helper is reused for the redirect match
+  // below, the middleware-redirect config header match further down, and the
+  // post-middleware rewrite matches. `i18nConfig` and `url.hostname` are
+  // request-scoped constants from this point on.
+  const matchPathname = (p: string): string =>
+    normalizeDefaultLocalePathname(p, options.i18nConfig, { hostname: url.hostname });
+
+  const redirectPathname = matchPathname(stripRscSuffix(pathname));
   const redirect = matchRedirect(
     redirectPathname,
     options.configRedirects,
     preMiddlewareRequestContext,
+    basePathState,
   );
   if (redirect) {
     const destination = sanitizeDestination(
@@ -380,11 +406,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       isProxy: options.isMiddlewareProxy,
       module: options.middlewareModule,
       request,
+      trailingSlash: options.trailingSlash,
     });
     if (middlewareResult.kind === "response") {
       return applyConfigHeadersToMiddlewareRedirect(middlewareResult.response, {
+        basePathState,
         configHeaders: options.configHeaders,
-        pathname: cleanPathname,
+        pathname: matchPathname(cleanPathname),
         requestContext: preMiddlewareRequestContext,
       });
     }
@@ -398,22 +426,20 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareContext.headers);
   const postMiddlewareRequestContext = buildPostMwRequestContext(request);
 
-  // Default-locale-normalised form of `cleanPathname` used only for matching
-  // against next.config.js rewrites (beforeFiles, afterFiles, fallback).
-  // Route matching itself continues to use the un-prefixed `cleanPathname`
-  // because App Router files live under `app/...` with no locale segment.
-  // See issue #1336 item 4 / pages-i18n.normalizeDefaultLocalePathname.
-  const rewriteMatchPathname = (p: string): string =>
-    normalizeDefaultLocalePathname(p, options.i18nConfig, { hostname: url.hostname });
-
+  // Rewrites (beforeFiles, afterFiles, fallback) use `matchPathname` from
+  // above to splice in the default locale before matching. Route matching
+  // itself continues to use the un-prefixed `cleanPathname` because App
+  // Router files live under `app/...` with no locale segment. See issue
+  // #1336 item 4 / pages-i18n.normalizeDefaultLocalePathname.
   const beforeFilesRewrite = await applyRewrite(
     {
+      basePathState,
       clearRequestContext: options.clearRequestContext,
       request,
       requestContext: postMiddlewareRequestContext,
       rewrites: options.configRewrites.beforeFiles,
     },
-    rewriteMatchPathname(cleanPathname),
+    matchPathname(cleanPathname),
   );
   if (beforeFilesRewrite instanceof Response) return beforeFilesRewrite;
   if (beforeFilesRewrite) cleanPathname = beforeFilesRewrite;
@@ -491,12 +517,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (!match || match.route.isDynamic) {
     const afterFilesRewrite = await applyRewrite(
       {
+        basePathState,
         clearRequestContext: options.clearRequestContext,
         request,
         requestContext: postMiddlewareRequestContext,
         rewrites: options.configRewrites.afterFiles,
       },
-      rewriteMatchPathname(cleanPathname),
+      matchPathname(cleanPathname),
     );
     if (afterFilesRewrite instanceof Response) return afterFilesRewrite;
     if (afterFilesRewrite) {
@@ -508,12 +535,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (!match) {
     const fallbackRewrite = await applyRewrite(
       {
+        basePathState,
         clearRequestContext: options.clearRequestContext,
         request,
         requestContext: postMiddlewareRequestContext,
         rewrites: options.configRewrites.fallback,
       },
-      rewriteMatchPathname(cleanPathname),
+      matchPathname(cleanPathname),
     );
     if (fallbackRewrite instanceof Response) return fallbackRewrite;
     if (fallbackRewrite) {
@@ -660,6 +688,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
           return finalizeAppRscResponse(response, request, {
             basePath: options.basePath,
             configHeaders: options.configHeaders,
+            i18nConfig: options.i18nConfig,
             requestContext: preMiddlewareRequestContext,
           });
         },

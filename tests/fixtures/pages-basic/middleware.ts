@@ -7,6 +7,10 @@ export function middleware(request: NextRequest) {
   // Add a custom header to all matched requests
   const response = NextResponse.next();
   response.headers.set("x-custom-middleware", "active");
+  // Expose the pathname middleware actually observed. Used by tests verifying
+  // `/_next/data/<buildId>/<page>.json` is normalized to `/page` BEFORE
+  // middleware runs (matching Next.js' `handleNextDataRequest` pipeline).
+  response.headers.set("x-mw-pathname", url.pathname);
 
   // Redirect /old-page to /about
   if (url.pathname === "/old-page") {
@@ -63,6 +67,40 @@ export function middleware(request: NextRequest) {
       request.headers.get("x-middleware-test-rewrite-target") ??
       "https://api.example.com/from-middleware-status";
     return NextResponse.rewrite(target, { status: 403 });
+  }
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/app/middleware.js
+  // ('/middleware-external-rewrite-body') — POST body must reach upstream.
+  if (url.pathname === "/external-middleware-rewrite-body") {
+    const target =
+      request.headers.get("x-middleware-test-rewrite-target") ??
+      "https://api.example.com/echo-body";
+    return NextResponse.rewrite(target);
+  }
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/app/middleware.js
+  // ('/middleware-external-rewrite-body-headers-return-headers') — request
+  // header overrides from `NextResponse.rewrite(url, { request: { headers } })`
+  // must propagate to the proxied upstream request.
+  if (url.pathname === "/external-middleware-rewrite-with-headers") {
+    const target =
+      request.headers.get("x-middleware-test-rewrite-target") ??
+      "https://api.example.com/echo-headers";
+    const tmpHeaders = new Headers(request.headers);
+    tmpHeaders.set("x-hello-from-middleware1", "hello");
+    return NextResponse.rewrite(target, {
+      request: { headers: tmpHeaders },
+    });
+  }
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // ('should rewrite to the external url for incoming data request
+  //  externally rewritten') — `_next/data/<page>.json` requests rewritten
+  // to an external host must proxy through and surface the upstream body.
+  if (url.pathname === "/data-external-rewrite") {
+    const target =
+      request.headers.get("x-middleware-test-rewrite-target") ?? "https://api.example.com/data";
+    return NextResponse.rewrite(target);
   }
 
   if (url.pathname === "/middleware-bad-content-length") {

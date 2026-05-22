@@ -37,6 +37,7 @@ import { validateGoogleFontOptions } from "../build/google-fonts/validate.js";
 import { getFontAxes } from "../build/google-fonts/get-axes.js";
 import { buildGoogleFontsUrl } from "../build/google-fonts/build-url.js";
 import { CONTENT_TYPES } from "../server/static-file-cache.js";
+import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
 
 /**
  * Thrown when Google Fonts returns a non-2xx response. Distinct from a raw
@@ -140,15 +141,16 @@ export function _rewriteCachedFontCssToServedUrls(
 }
 
 /**
- * Default Vite `build.assetsDir` — mirrors Vite's own default. Used as
- * the fallback for the `assetsDir` parameter of
+ * Default `build.assetsDir` — matches vinext's resolved default in
+ * `resolveAssetsDir("")` (Next.js's canonical convention). Used as the
+ * fallback for the `assetsDir` parameter of
  * `_rewriteCachedFontCssToServedUrls` so the exported helper can be unit
  * tested without synthesizing plugin state. Production call sites thread
  * the real `envConfig.build.assetsDir` resolved by Vite through so that
  * the embedded CSS URLs always match the directory the `writeBundle`
  * hook copies the font files into.
  */
-const DEFAULT_ASSETS_DIR = "assets";
+const DEFAULT_ASSETS_DIR = ASSET_PREFIX_URL_DIR;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

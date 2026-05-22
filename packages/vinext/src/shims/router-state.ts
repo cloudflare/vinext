@@ -27,6 +27,7 @@ export type SSRContext = {
   locale?: string;
   locales?: string[];
   defaultLocale?: string;
+  isFallback?: boolean;
 };
 
 export type RouterState = {

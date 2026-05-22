@@ -1340,6 +1340,68 @@ describe("resolveNextConfig swcEnvOptions warning", () => {
   });
 });
 
+describe("resolveNextConfig rootParams deprecation warning", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("emits a warning when experimental.rootParams is true", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: { rootParams: true },
+    });
+
+    const rootParamsWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("rootParams"),
+    );
+
+    expect(rootParamsWarning).toBeDefined();
+    expect(rootParamsWarning![0]).toContain("experimental.rootParams");
+    expect(rootParamsWarning![0]).toContain("no longer needed");
+    expect(rootParamsWarning![0]).toContain("next/root-params");
+    expect(rootParamsWarning![0]).toContain("available by default");
+  });
+
+  it("emits a warning when experimental.rootParams is false", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: { rootParams: false },
+    });
+
+    const rootParamsWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("rootParams"),
+    );
+
+    expect(rootParamsWarning).toBeDefined();
+  });
+
+  it("does not warn when experimental.rootParams is not set", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: {},
+    });
+
+    const rootParamsWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("rootParams"),
+    );
+    expect(rootParamsWarning).toBeUndefined();
+  });
+
+  it("does not warn when experimental is not set", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({});
+
+    const rootParamsWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("rootParams"),
+    );
+    expect(rootParamsWarning).toBeUndefined();
+  });
+});
+
 describe("resolveNextConfig cacheHandler", () => {
   it("resolves file:// URLs to filesystem paths", async () => {
     const resolved = await resolveNextConfig({

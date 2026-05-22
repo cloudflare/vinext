@@ -4,7 +4,7 @@ import type { CachedPagesValue } from "vinext/shims/cache";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { buildRevalidateCacheControl } from "./cache-control.js";
-import { VINEXT_CACHE_HEADER } from "./headers.js";
+import { setCacheStateHeaders } from "./cache-headers.js";
 import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
 import { reportRequestError } from "./instrumentation.js";
 import { readStreamAsText } from "../utils/text-stream.js";
@@ -54,6 +54,13 @@ type RenderPagesPageResponseOptions = {
     expireSeconds?: number,
   ) => Promise<void>;
   i18n: PagesI18nRenderContext;
+  /**
+   * True when rendering a `getStaticPaths` fallback shell for a path that
+   * isn't pre-rendered (`fallback: true` + unlisted path). Forwarded to
+   * `buildPagesNextDataScript` so the client serialises `isFallback: true`
+   * into `__NEXT_DATA__`, then later hydrates by fetching the data URL.
+   */
+  isFallback?: boolean;
   pageProps: Record<string, unknown>;
   params: Record<string, unknown>;
   renderDocumentToString: (element: ReactNode) => Promise<string>;
@@ -94,6 +101,7 @@ export function buildPagesNextDataScript(
     RenderPagesPageResponseOptions,
     | "buildId"
     | "i18n"
+    | "isFallback"
     | "pageProps"
     | "params"
     | "routePattern"
@@ -108,7 +116,7 @@ export function buildPagesNextDataScript(
     page: options.routePattern,
     query: options.params,
     buildId: options.buildId,
-    isFallback: false,
+    isFallback: options.isFallback === true,
   };
 
   if (options.i18n.locales) {
@@ -304,6 +312,7 @@ export async function renderPagesPageResponse(
   const nextDataScript = buildPagesNextDataScript({
     buildId: options.buildId,
     i18n: options.i18n,
+    isFallback: options.isFallback,
     pageProps: options.pageProps,
     params: options.params,
     routePattern: options.routePattern,
@@ -374,7 +383,7 @@ export async function renderPagesPageResponse(
       "Cache-Control",
       buildRevalidateCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
     );
-    responseHeaders.set(VINEXT_CACHE_HEADER, "MISS");
+    setCacheStateHeaders(responseHeaders, "MISS");
   }
   if (options.fontLinkHeader) {
     responseHeaders.set("Link", options.fontLinkHeader);

@@ -33,6 +33,10 @@
       "types": "./dist/server/prod-server.d.ts",
       "import": "./dist/server/prod-server.js"
     },
+    "./server/pages-i18n": {
+      "types": "./dist/server/pages-i18n.d.ts",
+      "import": "./dist/server/pages-i18n.js"
+    },
     "./cloudflare": {
       "types": "./dist/cloudflare/index.d.ts",
       "import": "./dist/cloudflare/index.js"

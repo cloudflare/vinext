@@ -16,6 +16,9 @@
 /** ISR / page cache state indicator: "HIT" | "MISS" | "STALE" | "STATIC". */
 export const VINEXT_CACHE_HEADER = "X-Vinext-Cache";
 
+/** Next.js public ISR / page cache state indicator. */
+export const NEXTJS_CACHE_HEADER = "x-nextjs-cache";
+
 /** Static file signal — value is URL-encoded pathname. */
 export const VINEXT_STATIC_FILE_HEADER = "x-vinext-static-file";
 
@@ -45,6 +48,23 @@ export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context
 
 /** RSC render mode (e.g. "navigation", "prefetch"). */
 export const VINEXT_RSC_RENDER_MODE_HEADER = "X-Vinext-Rsc-Render-Mode";
+
+/** Disabled-by-default client hint describing already-held App Router payload entries. */
+export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manifest";
+
+/**
+ * Side-channel signal that an RSC response (HTTP 200) encodes a `redirect()`
+ * thrown during render. The header value is the redirect target (path-only
+ * for same-origin, absolute for cross-origin). The flight body still carries
+ * the canonical `NEXT_REDIRECT;...` digest so Next.js's own tests can read it
+ * via response.body; this header is purely for vinext's own client
+ * (`navigateRsc` in app-browser-entry.ts) to follow the redirect inside the
+ * same navigation transaction — keeping `useTransition`'s pending state
+ * continuous across the hop. Pre-1347 vinext relied on `fetch`'s auto-follow
+ * of a 307 for that, but the new 200 + flight format leaves it without a
+ * cheap way to detect the redirect ahead of stream decode.
+ */
+export const VINEXT_RSC_REDIRECT_HEADER = "X-Vinext-Rsc-Redirect";
 
 // ---------------------------------------------------------------------------
 // RSC protocol headers

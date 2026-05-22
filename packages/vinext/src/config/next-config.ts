@@ -86,10 +86,10 @@ export type NextRedirect = {
    */
   locale?: false;
   /**
-   * When `false`, Next.js does not prepend `basePath` to the rule's source.
-   * Currently parsed for forward compatibility but not yet applied — vinext
-   * strips basePath before matching, so all rules behave as if `basePath:false`
-   * is implicit. Tracking parity in a follow-up.
+   * When `false`, the rule is NOT prefixed with `basePath`. Source and
+   * destination are matched/applied verbatim. Mirrors Next.js's
+   * `Redirect.basePath: false` opt-out — see
+   * `.nextjs-ref/packages/next/src/lib/load-custom-routes.ts:26`.
    */
   basePath?: false;
 };
@@ -110,6 +110,8 @@ export type NextHeader = {
   has?: HasCondition[];
   missing?: HasCondition[];
   headers: Array<{ key: string; value: string }>;
+  /** See {@link NextRedirect.basePath}. */
+  basePath?: false;
 };
 
 export type NextI18nConfig = {
@@ -1057,6 +1059,14 @@ export async function resolveNextConfig(
     );
   }
 
+  // `next/root-params` is now stable — no longer requires an experimental flag.
+  if (experimental?.rootParams !== undefined) {
+    console.warn(
+      "[vinext] `experimental.rootParams` is no longer needed, because `next/root-params` is available by default. " +
+        "You can remove it from next.config.(js|mjs|ts).",
+    );
+  }
+
   // Warn about unsupported webpack usage. We preserve alias injection and
   // extract MDX settings, but all other webpack customization is still ignored.
   if (config.webpack !== undefined) {
@@ -1159,11 +1169,11 @@ export async function resolveNextConfig(
   detectNextIntlConfig(root, resolved);
 
   // Parity with Next.js: when `basePath` is configured but `assetPrefix` is
-  // not, fall back to using `basePath` as the asset prefix. Without this, an
-  // app deployed under a basePath would serve its routes correctly but emit
-  // its assets from `<basePath>/assets/...` (Vite's default `base + assetsDir`
-  // composition) rather than from the Next.js-canonical
-  // `<basePath>/_next/static/...`.
+  // not, fall back to using `basePath` as the asset prefix. This ensures the
+  // on-disk layout under `dist/client` is rooted at `<basePath>/_next/static/`
+  // (matching the URL Vite emits via `base + assetsDir`), so Cloudflare's
+  // ASSETS binding and the prod-server static layer can serve requests
+  // verbatim without any runtime path rewriting.
   //
   // Mirrors Next.js: packages/next/src/server/config.ts:509-532
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/config.ts

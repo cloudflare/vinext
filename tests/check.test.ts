@@ -335,6 +335,21 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
   });
 
+  // Mirrors Next.js: test/e2e/app-dir/app-shells
+  it("detects experimental.appShells as unsupported", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        experimental: {
+          appShells: true,
+        },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.appShells")?.status).toBe("unsupported");
+  });
+
   it("detects experimental.serverActions as supported", () => {
     writeFile(
       "next.config.mjs",
@@ -417,6 +432,7 @@ describe("analyzeConfig", () => {
     ["experimental.serverActions", "experimental", "serverActions: { allowedOrigins: [] }"],
     ["experimental.prefetchInlining", "experimental", "prefetchInlining: true"],
     ["experimental.swcEnvOptions", "experimental", 'swcEnvOptions: { mode: "usage" }'],
+    ["experimental.appShells", "experimental", "appShells: true"],
     ["i18n.domains", "i18n", "domains: []"],
   ])("detects %s via generic dot-notation handling", (name, parent, body) => {
     writeFile("next.config.mjs", `export default { ${parent}: { ${body} } };`);

@@ -17,6 +17,7 @@ import ReactDOMServer from "react-dom/server";
 // Link is a "use client" component but renderToString still works for SSR output.
 import Link, {
   canAutoPrefetchFullAppRoute,
+  resolveAutoAppRoutePrefetch,
   resolveLinkPrefetchMode,
   useLinkStatus,
 } from "../packages/vinext/src/shims/link.js";
@@ -101,6 +102,16 @@ describe("Link rendering", () => {
     expect(html).not.toContain("locale=");
   });
 
+  it("does not render shallow as an HTML attribute", () => {
+    // Regression for #1332 sub-problem 3: the `shallow` boolean is consumed
+    // by the click handler and must not leak onto the rendered <a>.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/test", shallow: true }, "Test"),
+    );
+    expect(html).not.toContain("shallow");
+    expect(html).toContain('href="/test"');
+  });
+
   it("passes through standard anchor attributes", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(
@@ -159,9 +170,9 @@ describe("Link App Router prefetch mode", () => {
         origin: "http://localhost",
       },
       __VINEXT_LINK_PREFETCH_ROUTES__: [
-        { patternParts: ["about"], isDynamic: false },
-        { patternParts: ["blog", ":slug"], isDynamic: true },
-        { patternParts: ["docs", ":slug+"], isDynamic: true },
+        { canPrefetchLoadingShell: false, patternParts: ["about"], isDynamic: false },
+        { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
+        { canPrefetchLoadingShell: true, patternParts: ["docs", ":slug+"], isDynamic: true },
       ],
     };
 
@@ -170,6 +181,46 @@ describe("Link App Router prefetch mode", () => {
       expect(canAutoPrefetchFullAppRoute("/blog/hello-world")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/docs/a/b")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/missing")).toBe(false);
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+    }
+  });
+
+  it("allows automatic dynamic App Router prefetches only as loading-boundary learning requests", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: {
+        href: "http://localhost/blog",
+        origin: "http://localhost",
+      },
+      __VINEXT_LINK_PREFETCH_ROUTES__: [
+        { canPrefetchLoadingShell: false, patternParts: ["about"], isDynamic: false },
+        { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
+        { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
+      ],
+    };
+
+    try {
+      expect(resolveAutoAppRoutePrefetch("/about")).toEqual({
+        cacheForNavigation: true,
+        shouldPrefetch: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/blog/hello-world")).toEqual({
+        cacheForNavigation: false,
+        shouldPrefetch: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/products/1")).toEqual({
+        cacheForNavigation: false,
+        shouldPrefetch: false,
+      });
+      expect(resolveAutoAppRoutePrefetch("/missing")).toEqual({
+        cacheForNavigation: false,
+        shouldPrefetch: false,
+      });
     } finally {
       if (originalWindow === undefined) {
         delete (globalThis as any).window;
@@ -515,6 +566,70 @@ describe("Link locale handling", () => {
 
     expect(push).toHaveBeenCalledWith("/fr/about", undefined, { scroll: true, locale: "fr" });
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  // Regression for #1332 sub-problem 3: `<Link shallow>` must reach
+  // Router.push with `shallow: true` so the Pages Router skips the
+  // _next/data fetch and only updates the URL. Mirrors Next.js's
+  // test/e2e/middleware-trailing-slash shallow-link assertion at
+  // packages/next/src/client/link.tsx.
+  it("forwards shallow=true through the Pages Router Link handoff (push)", async () => {
+    const push = vi.fn(async () => true);
+    const replace = vi.fn(async () => true);
+
+    await navigatePagesRouterLink(
+      { push, replace },
+      { href: "/sha?hello=world", replace: false, scroll: true, shallow: true },
+    );
+
+    expect(push).toHaveBeenCalledWith("/sha?hello=world", undefined, {
+      scroll: true,
+      locale: undefined,
+      shallow: true,
+    });
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("forwards shallow=true through the Pages Router Link handoff (replace)", async () => {
+    const push = vi.fn(async () => true);
+    const replace = vi.fn(async () => true);
+
+    await navigatePagesRouterLink(
+      { push, replace },
+      { href: "/sha?hello=world", replace: true, scroll: true, shallow: true },
+    );
+
+    expect(replace).toHaveBeenCalledWith("/sha?hello=world", undefined, {
+      scroll: true,
+      locale: undefined,
+      shallow: true,
+    });
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("forwards shallow=false explicitly when the default is used", async () => {
+    const push = vi.fn(async () => true);
+    const replace = vi.fn(async () => true);
+
+    await navigatePagesRouterLink(
+      { push, replace },
+      { href: "/sha", replace: false, scroll: true, shallow: false },
+    );
+
+    expect(push).toHaveBeenCalledWith("/sha", undefined, {
+      scroll: true,
+      locale: undefined,
+      shallow: false,
+    });
+  });
+
+  it("omits shallow from router options when the caller does not pass it", async () => {
+    const push = vi.fn(async () => true);
+    const replace = vi.fn(async () => true);
+
+    await navigatePagesRouterLink({ push, replace }, { href: "/", replace: false, scroll: true });
+
+    expect(push).toHaveBeenCalledWith("/", undefined, { scroll: true, locale: undefined });
   });
 });
 

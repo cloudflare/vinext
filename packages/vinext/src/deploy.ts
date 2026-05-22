@@ -546,7 +546,7 @@ import {
   isOpenRedirectShaped,
   normalizeTrailingSlash,
 } from "vinext/server/request-pipeline";
-import { normalizeDefaultLocalePathname } from "vinext/server/pages-i18n";
+import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "vinext/server/pages-i18n";
 import { mergeRewriteQuery } from "vinext/utils/query";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -623,6 +623,10 @@ export default {
       }
 
       // ── 1. Strip basePath ─────────────────────────────────────────
+      // Track basePath presence on the original request so the matcher
+      // gating below can distinguish requests inside basePath (default
+      // rules apply) from requests outside it (only opt-out rules apply).
+      const hadBasePath = !basePath || hasBasePath(pathname, basePath);
       {
         const stripped = stripBasePath(pathname, basePath);
         if (stripped !== pathname) {
@@ -630,6 +634,7 @@ export default {
           pathname = stripped;
         }
       }
+      const basePathState = { basePath, hadBasePath };
 
       // ── Image optimization via Cloudflare Images binding ──────────
       // Checked after basePath stripping so /<basePath>/_vinext/image works.
@@ -689,10 +694,14 @@ export default {
 
       // ── 3. Apply redirects from next.config.js ────────────────────
       if (configRedirects.length) {
-        const redirect = matchRedirect(matchPathname, configRedirects, reqCtx);
+        const redirect = matchRedirect(matchPathname, configRedirects, reqCtx, basePathState);
         if (redirect) {
+          // Only prepend basePath when the request was actually under basePath.
+          // Opt-out rules running on out-of-basepath requests must not receive
+          // a basePath prefix.
           const dest = sanitizeDestination(
             basePath &&
+              hadBasePath &&
               !isExternalUrl(redirect.destination) &&
               !hasBasePath(redirect.destination, basePath)
               ? basePath + redirect.destination
@@ -788,6 +797,7 @@ export default {
           configHeaders,
           pathname: matchPathname,
           requestContext: reqCtx,
+          basePathState,
         });
       }
 
@@ -804,11 +814,13 @@ export default {
           : p;
 
       // ── 6. Apply beforeFiles rewrites from next.config.js ─────────
+      let configRewriteFired = false;
       if (configRewrites.beforeFiles?.length) {
         const rewritten = matchRewrite(
           matchResolvedPathname(resolvedPathname),
           configRewrites.beforeFiles,
           postMwReqCtx,
+          basePathState,
         );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
@@ -817,16 +829,32 @@ export default {
           // Preserve original query params across rewrites (Next.js parity).
           resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
           resolvedPathname = resolvedUrl.split("?")[0];
+          configRewriteFired = true;
         }
+      }
+
+      // Reject out-of-basePath requests that no rule rewrote. See the
+      // matching comment in prod-server.ts step 7b.
+      if (basePath && !hadBasePath && !configRewriteFired) {
+        return new Response("This page could not be found", {
+          status: 404,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
       }
 
       // ── 7. API routes ─────────────────────────────────────────────
       // Forward ctx so handlePagesApiRoute can wrap the user handler in
       // runWithExecutionContext, making ctx.waitUntil() reachable from
       // after() and other shims that schedule deferred work.
-      if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
+      //
+      // Strip the i18n locale prefix before the /api/ check so
+      // /fr/api/ok resolves to the pages/api/ok handler (Next.js
+      // parity -- see base-server.ts's normalizeLocalePath call).
+      const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, vinextConfig?.i18n ?? null);
+      const apiLookupPathname = apiLookupUrl.split("?")[0];
+      if (apiLookupPathname.startsWith("/api/") || apiLookupPathname === "/api") {
         const response = typeof handleApiRoute === "function"
-          ? await handleApiRoute(request, resolvedUrl, ctx)
+          ? await handleApiRoute(request, apiLookupUrl, ctx)
           : new Response("404 - API route not found", { status: 404 });
         return mergeHeaders(response, middlewareHeaders, middlewareRewriteStatus);
       }
@@ -841,6 +869,7 @@ export default {
           matchResolvedPathname(resolvedPathname),
           configRewrites.afterFiles,
           postMwReqCtx,
+          basePathState,
         );
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
@@ -862,6 +891,7 @@ export default {
             matchResolvedPathname(resolvedPathname),
             configRewrites.fallback,
             postMwReqCtx,
+            basePathState,
           );
           if (fallbackRewrite) {
             if (isExternalUrl(fallbackRewrite)) {

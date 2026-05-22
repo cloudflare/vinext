@@ -4,11 +4,11 @@ import {
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
 import {
-  VINEXT_CACHE_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_TIMING_HEADER,
 } from "./headers.js";
+import { setCacheStateHeaders } from "./cache-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import {
   VINEXT_RSC_CONTENT_TYPE,
@@ -237,7 +237,7 @@ export function buildAppPageRscResponse(
     headers.set("Cache-Control", options.policy.cacheControl);
   }
   if (options.policy.cacheState) {
-    headers.set(VINEXT_CACHE_HEADER, options.policy.cacheState);
+    setCacheStateHeaders(headers, options.policy.cacheState);
   }
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
   applyRscCompatibilityIdHeader(headers);
@@ -263,7 +263,7 @@ export function buildAppPageHtmlResponse(
     headers.set("Cache-Control", options.policy.cacheControl);
   }
   if (options.policy.cacheState) {
-    headers.set(VINEXT_CACHE_HEADER, options.policy.cacheState);
+    setCacheStateHeaders(headers, options.policy.cacheState);
   }
   if (options.draftCookie) {
     headers.append("Set-Cookie", options.draftCookie);

@@ -29,6 +29,13 @@ export type ApplyAppMiddlewareOptions = {
   isProxy: boolean;
   module: MiddlewareModule;
   request: Request;
+  /**
+   * Forwarded to `executeMiddleware` so the NextRequest exposes a NextURL with
+   * the configured trailingSlash policy. This is what makes
+   * `NextResponse.redirect(request.nextUrl)` emit a Location that honours
+   * `trailingSlash`.
+   */
+  trailingSlash?: boolean;
 };
 
 export type ApplyAppMiddlewareResult =
@@ -235,6 +242,7 @@ export async function applyAppMiddleware(
       module: options.module,
       normalizedPathname: cleanPathname,
       request: middlewareRequest,
+      trailingSlash: options.trailingSlash,
     });
 
     if (!result.continue) {

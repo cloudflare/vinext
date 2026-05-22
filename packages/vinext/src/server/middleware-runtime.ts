@@ -58,6 +58,14 @@ type ExecuteMiddlewareOptions = {
   module: MiddlewareModule;
   normalizedPathname?: string;
   request: Request;
+  /**
+   * The user's `trailingSlash` config. Plumbed into the NextRequest's NextURL
+   * so `request.nextUrl.toString()` formats with the configured slash policy,
+   * which feeds into `NextResponse.redirect(request.nextUrl)` Location headers.
+   * Also used to normalize redirect Location pathnames returned via plain
+   * `new URL('/x', req.url)`.
+   */
+  trailingSlash?: boolean;
 };
 
 type RunGeneratedMiddlewareOptions = ExecuteMiddlewareOptions & {
@@ -184,6 +192,7 @@ function createNextRequest(
   normalizedPathname: string,
   i18nConfig?: NextI18nConfig | null,
   basePath?: string,
+  trailingSlash?: boolean,
 ): NextRequest {
   const url = new URL(request.url);
   // Middleware gets an isolated body branch; downstream routing keeps owning
@@ -195,10 +204,14 @@ function createNextRequest(
     mwRequest = new Request(mwUrl, mwRequest);
   }
 
-  const nextConfig =
-    basePath || i18nConfig
-      ? { basePath: basePath ?? "", i18n: i18nConfig ?? undefined }
-      : undefined;
+  const hasNextConfig = basePath || i18nConfig || trailingSlash;
+  const nextConfig = hasNextConfig
+    ? {
+        basePath: basePath ?? "",
+        i18n: i18nConfig ?? undefined,
+        trailingSlash: trailingSlash ?? undefined,
+      }
+    : undefined;
 
   return mwRequest instanceof NextRequest
     ? mwRequest
@@ -234,6 +247,7 @@ export async function executeMiddleware(
     normalizedPathname,
     options.i18nConfig,
     options.basePath,
+    options.trailingSlash,
   );
   const fetchEvent = new NextFetchEvent({ page: normalizedPathname });
 

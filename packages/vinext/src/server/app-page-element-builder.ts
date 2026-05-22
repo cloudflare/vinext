@@ -12,6 +12,7 @@ import {
 } from "./app-page-route-wiring.js";
 import { AppElementsWire, type AppElements, type AppElementsInterception } from "./app-elements.js";
 import type { AppPageParams } from "./app-page-boundary.js";
+import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
@@ -197,7 +198,12 @@ export async function buildPageElements<
 
   return buildAppPageElements({
     element: PageComponent ? createElement(PageComponent, pageProps) : null,
-    globalErrorModule: globalErrorModule ?? null,
+    // Fall back to vinext's built-in default global error module so that
+    // uncaught client render errors are caught by the route-level
+    // <ErrorBoundary> wrapper in app-page-route-wiring.tsx, mirroring
+    // Next.js's behavior when the user has not defined app/global-error.tsx.
+    globalErrorModule:
+      globalErrorModule ?? (DEFAULT_GLOBAL_ERROR_MODULE as unknown as TErrorModule),
     isRscRequest,
     mountedSlotIds,
     makeThenableParams,

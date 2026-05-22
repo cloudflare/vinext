@@ -48,6 +48,13 @@ declare global {
     __VINEXT_HYDRATED_AT: number | undefined;
 
     /**
+     * Next.js test/runtime compatibility hydration marker.
+     */
+    __NEXT_HYDRATED: boolean | undefined;
+    __NEXT_HYDRATED_AT: number | undefined;
+    __NEXT_HYDRATED_CB: (() => void) | undefined;
+
+    /**
      * The cached `_app` component for Pages Router.
      * Written and read by `shims/router.ts` to avoid re-importing on every
      * client-side navigation.
@@ -191,7 +198,7 @@ declare global {
   var __VINEXT_LAZY_CHUNKS__: string[] | undefined;
 
   /**
-   * The client entry JS filename (e.g. `"assets/entry-abc123.js"`) for Pages
+   * The client entry JS filename (e.g. `"_next/static/entry-abc123.js"`) for Pages
    * Router builds.
    * Injected into the Worker entry at build time for Pages Router only.
    * App Router uses the RSC plugin's `loadBootstrapScriptContent` mechanism

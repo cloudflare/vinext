@@ -31,6 +31,99 @@ function getBuildBundlerOptions(result: any) {
   return result.build?.rolldownOptions ?? result.build?.rollupOptions;
 }
 
+/**
+ * Fixture: a Pages Router app with both `pages/index.tsx` (static) and
+ * `pages/[id].tsx` (dynamic root catch). Models the
+ * `test/e2e/middleware-trailing-slash` Next.js fixture: a static `ssr-page`
+ * route, a `[id]` dynamic root, plus next.config.js afterFiles rewrites
+ * (`/rewrite-1` → `/ssr-page?from=config`) and a middleware that rewrites
+ * `/rewrite-me` to `/`. After any rewrite the rewrite target must go
+ * through full route resolution — static routes must beat the `[id]`
+ * dynamic root.
+ */
+function writeMiddlewareRewritePriorityFixture(rootDir: string): void {
+  fs.mkdirSync(path.join(rootDir, "pages"), { recursive: true });
+  const nmLink = path.join(rootDir, "node_modules");
+  if (!fs.existsSync(nmLink)) {
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), nmLink);
+  }
+  fs.writeFileSync(path.join(rootDir, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
+  fs.writeFileSync(
+    path.join(rootDir, "pages", "index.tsx"),
+    `export default function Home() {
+  return <p id="home">Hello World</p>;
+}
+`,
+  );
+  fs.writeFileSync(
+    path.join(rootDir, "pages", "[id].tsx"),
+    `export const getServerSideProps = ({ params, query }) => ({
+  props: { id: params.id ?? null, q: query.id ?? null },
+});
+export default function Dynamic({ id, q }: { id: string | null; q: string | null }) {
+  return (
+    <div>
+      <p id="dynamic">Dynamic route</p>
+      <p id="id">{id}</p>
+      <p id="q">{q}</p>
+    </div>
+  );
+}
+`,
+  );
+  fs.writeFileSync(
+    path.join(rootDir, "pages", "about.tsx"),
+    `export default function About() {
+  return <p id="about">About Page</p>;
+}
+`,
+  );
+  fs.writeFileSync(
+    path.join(rootDir, "pages", "ssr-page.tsx"),
+    `export const getServerSideProps = ({ query }) => ({
+  props: { from: query.from ?? null },
+});
+export default function SsrPage({ from }: { from: string | null }) {
+  return (
+    <div>
+      <p id="ssr">Hello World</p>
+      <p id="from">{from ?? ""}</p>
+    </div>
+  );
+}
+`,
+  );
+  fs.writeFileSync(
+    path.join(rootDir, "next.config.js"),
+    `module.exports = {
+  trailingSlash: true,
+  rewrites() {
+    return [
+      { source: "/rewrite-1", destination: "/ssr-page?from=config" },
+    ];
+  },
+};
+`,
+  );
+  fs.writeFileSync(
+    path.join(rootDir, "middleware.ts"),
+    `import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+
+export default function middleware(request: NextRequest) {
+  const url = new URL(request.url);
+  if (url.pathname === "/rewrite-me" || url.pathname === "/rewrite-me/") {
+    return NextResponse.rewrite(new URL("/", request.url));
+  }
+  if (url.pathname === "/rewrite-to-about" || url.pathname === "/rewrite-to-about/") {
+    return NextResponse.rewrite(new URL("/about", request.url));
+  }
+  return NextResponse.next();
+}
+`,
+  );
+}
+
 function writeEncodedSlashPagesFixture(rootDir: string): void {
   fs.mkdirSync(path.join(rootDir, "pages", "a"), { recursive: true });
   const nmLink = path.join(rootDir, "node_modules");
@@ -290,8 +383,15 @@ describe("Pages Router integration", () => {
     const first = await fetch(`${baseUrl}/isr-test`);
     expect(first.status).toBe(200);
     expect(first.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(first.headers.get("x-nextjs-cache")).toBe("MISS");
     const firstHtml = await first.text();
     expect(firstHtml).not.toContain("nonce=");
+
+    const cached = await fetch(`${baseUrl}/isr-test`);
+    expect(cached.status).toBe(200);
+    expect(cached.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(cached.headers.get("x-nextjs-cache")).toBe("HIT");
+    await cached.text();
 
     const second = await fetch(`${baseUrl}/isr-test?mw-csp-nonce=pages-isr`);
     expect(second.status).toBe(200);
@@ -904,6 +1004,82 @@ describe("Pages Router integration", () => {
     expect(res.headers.get("location")).toContain("/about");
   });
 
+  // Regression for #1331: after a middleware rewrite, the rewrite target
+  // must go through full route resolution where static routes win over
+  // dynamic catch-alls. Without the fix the `[id]` dynamic page captures
+  // the rewrite target and renders "Dynamic route" with id="rewrite-me".
+  it("middleware rewrite to / resolves to static index over [id] dynamic route (dev)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-mw-rewrite-priority-dev-"));
+    writeMiddlewareRewritePriorityFixture(tmpDir);
+
+    let tempServer: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir);
+      tempServer = started.server;
+
+      const res = await fetch(`${started.baseUrl}/rewrite-me/`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      // `id="home"` is unique to `pages/index.tsx`; ssr-page also says
+      // "Hello World" so this disambiguates that the index rendered.
+      expect(html).toContain('id="home"');
+      expect(html).toContain("Hello World");
+      expect(html).not.toContain("Dynamic route");
+    } finally {
+      await tempServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("middleware rewrite to /about resolves to static about over [id] dynamic route (dev)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-mw-rewrite-priority-dev-about-"));
+    writeMiddlewareRewritePriorityFixture(tmpDir);
+
+    let tempServer: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir);
+      tempServer = started.server;
+
+      const res = await fetch(`${started.baseUrl}/rewrite-to-about/`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("About Page");
+      expect(html).not.toContain("Dynamic route");
+    } finally {
+      await tempServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Regression for #1331: next.config.js rewrites with `trailingSlash: true`
+  // and a `[id].tsx` dynamic root catch — the `[id]` route is also matched
+  // by the rewrite source, so afterFiles rewrites must still be considered
+  // (the matched route is dynamic), and the rewrite target must resolve to
+  // the static page, not back into `[id]`.
+  it("config afterFiles rewrite target resolves static page over [id] dynamic root (dev)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-mw-rewrite-priority-dev-cfg-"));
+    writeMiddlewareRewritePriorityFixture(tmpDir);
+
+    let tempServer: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir);
+      tempServer = started.server;
+
+      const res = await fetch(`${started.baseUrl}/rewrite-1/`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      // `id="ssr"` only lives on the rewrite target (`pages/ssr-page.tsx`) —
+      // `pages/index.tsx` also says "Hello World" so this disambiguates that
+      // the rewrite target is what rendered.
+      expect(html).toContain('id="ssr"');
+      expect(html).toContain("Hello World");
+      expect(html).not.toContain("Dynamic route");
+    } finally {
+      await tempServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("middleware rewrites /rewritten to /ssr", async () => {
     const res = await fetch(`${baseUrl}/rewritten`);
     expect(res.status).toBe(200);
@@ -1104,16 +1280,35 @@ describe("Pages Router integration", () => {
     expect(html).toMatch(/isFallback:.*false/);
   });
 
-  it("SSR renders unlisted path with getStaticPaths fallback: true (on-demand)", async () => {
-    // In dev/SSR mode, fallback: true still renders fully (same as blocking)
-    // because data is always available via on-demand SSR.
+  it("renders fallback shell for unlisted path with getStaticPaths fallback: true", async () => {
+    // Next.js parity: when `fallback: true` and the path isn't pre-rendered,
+    // skip getStaticProps, render with `useRouter().isFallback === true`, and
+    // ship a loading shell that the client later swaps for the full data.
+    // See: .nextjs-ref/packages/next/src/server/render.tsx — `if (isSSG && !isFallback)`.
     const res = await fetch(`${baseUrl}/products/unknown`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toMatch(/Product\s*(<!-- -->)?\s*unknown/);
-    expect(html).toMatch(/Product ID:.*unknown/);
-    // isFallback should be false since we always SSR fully
-    expect(html).toMatch(/isFallback:.*false/);
+    expect(html).toContain("Loading product...");
+    // The full-content branch must NOT render — getStaticProps was skipped.
+    expect(html).not.toMatch(/Product ID:.*unknown/);
+    const match = html.match(/__NEXT_DATA__\s*=\s*(\{.*?\})\s*[;<]/);
+    expect(match).toBeTruthy();
+    const nextData = JSON.parse(match![1]);
+    expect(nextData.isFallback).toBe(true);
+    // Empty pageProps on the fallback shell — client fetches them later.
+    expect(nextData.props).toEqual({ pageProps: {} });
+  });
+
+  it("resolves real props for the data URL of an unlisted fallback: true path", async () => {
+    // Counterpart to the fallback-shell test: the page HTML ships empty props,
+    // but the client follows up with `/_next/data/<buildId>/products/unknown.json`
+    // to fetch the actual props. That request must invoke getStaticProps.
+    const res = await fetch(`${baseUrl}/_next/data/test-build-id/products/unknown.json`, {
+      headers: { "x-nextjs-data": "1" },
+    });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.pageProps).toMatchObject({ pid: "unknown" });
   });
 
   it("includes isFallback: false in __NEXT_DATA__", async () => {
@@ -1186,6 +1381,80 @@ describe("Pages Router integration", () => {
   it("allows page requests without Origin header", async () => {
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
+  });
+
+  // ── /_next/data JSON endpoint (issue #1330) ──────────────────────
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // ("should trigger middleware for data requests").
+  describe("/_next/data JSON endpoint", () => {
+    // pages-basic's next.config.mjs pins the build id to "test-build-id".
+    // In dev the plugin now reads this from the resolved config so the
+    // value matches the prod-server's embedded buildId.
+    const BUILD_ID = "test-build-id";
+
+    it("returns { pageProps } JSON for a getServerSideProps page", async () => {
+      const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/ssr.json`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      const json = (await res.json()) as { pageProps: { message: string } };
+      expect(json.pageProps.message).toBe("Hello from getServerSideProps");
+    });
+
+    it("returns { pageProps } JSON for a getStaticProps page", async () => {
+      // /isr-test uses getStaticProps with revalidate; the data endpoint
+      // must bypass the HTML ISR cache and surface the props as JSON
+      // (mirroring Next.js' `isNextDataRequest` cache-bypass path).
+      const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/isr-test.json`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      const json = (await res.json()) as { pageProps: Record<string, unknown> };
+      expect(json).toHaveProperty("pageProps");
+      expect(typeof json.pageProps).toBe("object");
+    });
+
+    it("normalizes the URL to /<page> BEFORE middleware runs", async () => {
+      const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/ssr.json`);
+      expect(res.status).toBe(200);
+      // Middleware exposes the pathname it observed via `x-mw-pathname`.
+      // The raw `/_next/data/...` should never reach the middleware function —
+      // Next.js normalizes it to `/ssr` first.
+      expect(res.headers.get("x-mw-pathname")).toBe("/ssr");
+      // The middleware also sets `x-custom-middleware: active` on every match,
+      // proving the middleware actually executed for this request.
+      expect(res.headers.get("x-custom-middleware")).toBe("active");
+    });
+
+    it("returns 404 JSON for an unknown page", async () => {
+      const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/totally-missing-page.json`);
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      // Body must still be valid JSON so naive clients calling `.json()` do
+      // not throw before checking the status code.
+      expect(await res.json()).toEqual({});
+    });
+
+    it("returns JSON 404 when getStaticPaths fallback:false rejects the path", async () => {
+      // /blog/[slug] has `fallback: false` and only allows the slugs listed
+      // in getStaticPaths. An unlisted slug must produce a JSON 404 for
+      // data requests (not the HTML 404 page) so the client router can
+      // hard-navigate instead of failing to parse HTML as JSON.
+      const res = await fetch(
+        `${baseUrl}/_next/data/${BUILD_ID}/blog/this-slug-does-not-exist.json`,
+      );
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      expect(await res.json()).toEqual({});
+    });
+
+    it("returns JSON 404 for a stale buildId (dev)", async () => {
+      // Mirrors the prod-server path: when the buildId in the URL doesn't
+      // match the resolved buildId we surface a JSON 404 right away so the
+      // client can hard-navigate (instead of parsing Vite's HTML 404).
+      const res = await fetch(`${baseUrl}/_next/data/wrong-build-id/ssr.json`);
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      expect(await res.json()).toEqual({});
+    });
   });
 });
 
@@ -2138,8 +2407,9 @@ export const config = { matcher: ["/protected"] };
       },
     });
 
-    // Verify client output exists
-    const assetsDir = path.join(outDir, "client", "assets");
+    // Verify client output exists under Next.js's canonical `_next/static/`
+    // directory (matches `resolveAssetsDir("")`).
+    const assetsDir = path.join(outDir, "client", "_next", "static");
     expect(fs.existsSync(assetsDir)).toBe(true);
 
     // Verify SSR manifest was produced
@@ -2866,6 +3136,85 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.headers.get("location")).toContain("/about");
   });
 
+  // Regression for #1331: after a middleware rewrite, the rewrite target
+  // must go through full route resolution where static routes win over
+  // dynamic catch-alls. Without the fix the `[id]` dynamic page captures
+  // the rewrite target and renders "Dynamic route" with id="rewrite-me".
+  it("middleware rewrite resolves static index over [id] dynamic route in production", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-mw-rewrite-priority-prod-"));
+    writeMiddlewareRewritePriorityFixture(tmpDir);
+
+    let prodServer: import("node:http").Server | undefined;
+    try {
+      await build({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(tmpDir, "dist", "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: { output: { entryFileNames: "entry.js" } },
+        },
+      });
+      await build({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(tmpDir, "dist", "client"),
+          manifest: true,
+          ssrManifest: true,
+          rollupOptions: { input: "virtual:vinext-client-entry" },
+        },
+      });
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir: path.join(tmpDir, "dist"),
+        }),
+      );
+      const addr = prodServer.address() as { port: number };
+      const tempProdUrl = `http://127.0.0.1:${addr.port}`;
+
+      const indexRes = await fetch(`${tempProdUrl}/rewrite-me/`);
+      expect(indexRes.status).toBe(200);
+      const indexHtml = await indexRes.text();
+      // `id="home"` is unique to `pages/index.tsx`; ssr-page also says
+      // "Hello World" so this disambiguates that the index rendered.
+      expect(indexHtml).toContain('id="home"');
+      expect(indexHtml).toContain("Hello World");
+      expect(indexHtml).not.toContain("Dynamic route");
+
+      const aboutRes = await fetch(`${tempProdUrl}/rewrite-to-about/`);
+      expect(aboutRes.status).toBe(200);
+      const aboutHtml = await aboutRes.text();
+      expect(aboutHtml).toContain("About Page");
+      expect(aboutHtml).not.toContain("Dynamic route");
+
+      // Next.js parity: with trailingSlash: true and a [id] dynamic root,
+      // `/rewrite-1/` matches `[id]` but afterFiles config rewrites must
+      // still rewrite it to /ssr-page, and the rewrite target must resolve
+      // to the static ssr-page rather than back into [id].
+      const cfgRes = await fetch(`${tempProdUrl}/rewrite-1/`);
+      expect(cfgRes.status).toBe(200);
+      const cfgHtml = await cfgRes.text();
+      // `id="ssr"` is unique to `pages/ssr-page.tsx`; `pages/index.tsx`
+      // also says "Hello World" so this disambiguates that the rewrite
+      // target rendered (not the index, not the dynamic [id]).
+      expect(cfgHtml).toContain('id="ssr"');
+      expect(cfgHtml).toContain("Hello World");
+      expect(cfgHtml).not.toContain("Dynamic route");
+    } finally {
+      await new Promise<void>((resolve) => prodServer?.close(() => resolve()) ?? resolve());
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not collapse encoded slashes onto nested routes in production", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-encoded-prod-"));
     writeEncodedSlashPagesFixture(tmpDir);
@@ -2970,6 +3319,120 @@ describe("Production server middleware (Pages Router)", () => {
     const html = await res.text();
     // /rewritten should serve the content of /ssr page
     expect(html).toContain("Server-Side Rendered");
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // ('should rewrite to fallback: true page successfully').
+  // Refs #1331: post-rewrite fallback: true must render the loading shell.
+  it("renders the loading shell when middleware/route targets an unlisted fallback: true path", async () => {
+    const res = await fetch(`${prodUrl}/products/never-built`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // Page renders its fallback branch (the slug is not in getStaticPaths).
+    expect(html).toContain("Loading product...");
+    // Full-data branch must not have rendered — getStaticProps was skipped.
+    expect(html).not.toMatch(/Product ID:.*never-built/);
+    const match = html.match(/__NEXT_DATA__\s*=\s*(\{.*?\})\s*[;<]/);
+    expect(match).toBeTruthy();
+    const nextData = JSON.parse(match![1]);
+    expect(nextData.isFallback).toBe(true);
+    expect(nextData.props).toEqual({ pageProps: {} });
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // ('should handle middleware rewrite with body correctly').
+  // Refs #1331: POST bodies must reach the upstream when middleware
+  // externally rewrites the request.
+  it("forwards the POST body to the upstream on external middleware rewrites", async () => {
+    const { createServer: createHttpServer } = await import("node:http");
+    const upstream = createHttpServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        const received = Buffer.concat(chunks);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(received);
+      });
+    });
+
+    try {
+      await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+      const addr = upstream.address();
+      if (typeof addr === "string" || addr === null) throw new Error("Expected upstream port");
+
+      const body = JSON.stringify({ hello: "world" });
+      const res = await fetch(`${prodUrl}/external-middleware-rewrite-body`, {
+        method: "POST",
+        body,
+        headers: {
+          "content-type": "application/json",
+          "x-middleware-test-rewrite-target": `http://127.0.0.1:${addr.port}/echo-body`,
+        },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe(body);
+    } finally {
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // ('should handle middleware rewrite with body and headers correctly').
+  // Refs #1331: `NextResponse.rewrite(url, { request: { headers } })` request
+  // header overrides must propagate to the proxied upstream request.
+  it("forwards middleware-overridden request headers on external middleware rewrites", async () => {
+    const { createServer: createHttpServer } = await import("node:http");
+    const upstream = createHttpServer((req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ headers: req.headers }));
+    });
+
+    try {
+      await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+      const addr = upstream.address();
+      if (typeof addr === "string" || addr === null) throw new Error("Expected upstream port");
+
+      const res = await fetch(`${prodUrl}/external-middleware-rewrite-with-headers`, {
+        headers: {
+          "x-middleware-test-rewrite-target": `http://127.0.0.1:${addr.port}/echo-headers`,
+        },
+      });
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { headers: Record<string, string> };
+      expect(json.headers["x-hello-from-middleware1"]).toBe("hello");
+    } finally {
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
+  });
+
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // ('should rewrite to the external url for incoming data request
+  //  externally rewritten'). Refs #1331: a `_next/data/<buildId>/<page>.json`
+  // request whose middleware rewrites to an external URL must proxy through
+  // — the data-request path is not allowed to short-circuit external rewrites.
+  it("proxies through to upstream when an external middleware rewrite hits a data request", async () => {
+    const { createServer: createHttpServer } = await import("node:http");
+    const upstream = createHttpServer((_, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<!doctype html><html><body>External Domain</body></html>");
+    });
+
+    try {
+      await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+      const addr = upstream.address();
+      if (typeof addr === "string" || addr === null) throw new Error("Expected upstream port");
+
+      const res = await fetch(`${prodUrl}/_next/data/test-build-id/data-external-rewrite.json`, {
+        headers: {
+          "x-nextjs-data": "1",
+          "x-middleware-test-rewrite-target": `http://127.0.0.1:${addr.port}/data`,
+        },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("External Domain");
+    } finally {
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
   });
 
   // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
@@ -3254,6 +3717,62 @@ describe("Production server middleware (Pages Router)", () => {
     // Ensure encoded variants like /%2Evite/ are also blocked
     const res = await fetch(`${prodUrl}/%2Evite/ssr-manifest.json`);
     expect(res.status).toBe(404);
+  });
+
+  // ── /_next/data JSON endpoint in production (issue #1330) ─────────
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // ("should trigger middleware for data requests", "should normalize data
+  // requests into page requests").
+  describe("/_next/data JSON endpoint", () => {
+    // pages-basic's next.config.mjs pins the build id to "test-build-id".
+    const BUILD_ID = "test-build-id";
+
+    it("returns { pageProps } JSON for a getServerSideProps page", async () => {
+      const res = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/ssr.json`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      const json = (await res.json()) as { pageProps: { message: string } };
+      expect(json.pageProps.message).toBe("Hello from getServerSideProps");
+    });
+
+    it("returns { pageProps } JSON for a getStaticProps page (bypasses HTML cache)", async () => {
+      // /isr-test uses getStaticProps with revalidate. The data endpoint
+      // must bypass the cached HTML body and surface pageProps as JSON —
+      // mirrors Next.js' `isNextDataRequest` cache-bypass logic in
+      // base-server.ts.
+      const res = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/isr-test.json`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      const json = (await res.json()) as { pageProps: Record<string, unknown> };
+      expect(json).toHaveProperty("pageProps");
+      expect(typeof json.pageProps).toBe("object");
+    });
+
+    it("normalizes the URL to /<page> BEFORE middleware runs", async () => {
+      const res = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/ssr.json`);
+      expect(res.status).toBe(200);
+      // The middleware fixture sets `x-mw-pathname` to whatever pathname it
+      // observed. If `_next/data` is not normalized first, middleware sees
+      // the raw `/_next/data/.../ssr.json` URL — which is the failure mode
+      // tracked in issue #1330 and surfaced by `middleware-general` tests
+      // in the deploy suite.
+      expect(res.headers.get("x-mw-pathname")).toBe("/ssr");
+      expect(res.headers.get("x-custom-middleware")).toBe("active");
+    });
+
+    it("returns JSON 404 for an unknown page", async () => {
+      const res = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/totally-missing-page.json`);
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      expect(await res.json()).toEqual({});
+    });
+
+    it("returns JSON 404 for a stale buildId", async () => {
+      const res = await fetch(`${prodUrl}/_next/data/wrong-build-id/ssr.json`);
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      expect(await res.json()).toEqual({});
+    });
   });
 });
 
@@ -4467,6 +4986,7 @@ describe("Pages Router dev ISR regeneration", () => {
         200,
         expect.objectContaining({
           "X-Vinext-Cache": "STALE",
+          "x-nextjs-cache": "STALE",
         }),
       );
 

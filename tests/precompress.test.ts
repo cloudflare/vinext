@@ -37,13 +37,13 @@ describe("precompressAssets", () => {
 
   it("generates .br and .gz files for compressible hashed assets", async () => {
     const jsContent = "const x = 1;\n".repeat(200); // well above 1KB threshold
-    await writeAsset(clientDir, "assets/index-abc123.js", jsContent);
+    await writeAsset(clientDir, "_next/static/index-abc123.js", jsContent);
 
     const result = await precompressAssets(clientDir);
 
     // Both compressed variants should exist on disk
-    expect(fs.existsSync(path.join(clientDir, "assets/index-abc123.js.br"))).toBe(true);
-    expect(fs.existsSync(path.join(clientDir, "assets/index-abc123.js.gz"))).toBe(true);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/index-abc123.js.br"))).toBe(true);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/index-abc123.js.gz"))).toBe(true);
 
     // Result should report what was compressed
     expect(result.filesCompressed).toBe(1);
@@ -51,50 +51,50 @@ describe("precompressAssets", () => {
 
   it("brotli output decompresses to original content", async () => {
     const jsContent = "export function hello() { return 'world'; }\n".repeat(100);
-    await writeAsset(clientDir, "assets/hello-def456.js", jsContent);
+    await writeAsset(clientDir, "_next/static/hello-def456.js", jsContent);
 
     await precompressAssets(clientDir);
 
-    const brBuffer = await fsp.readFile(path.join(clientDir, "assets/hello-def456.js.br"));
+    const brBuffer = await fsp.readFile(path.join(clientDir, "_next/static/hello-def456.js.br"));
     const decompressed = zlib.brotliDecompressSync(brBuffer).toString();
     expect(decompressed).toBe(jsContent);
   });
 
   it("gzip output decompresses to original content", async () => {
     const cssContent = ".container { display: flex; }\n".repeat(100);
-    await writeAsset(clientDir, "assets/styles-789abc.css", cssContent);
+    await writeAsset(clientDir, "_next/static/styles-789abc.css", cssContent);
 
     await precompressAssets(clientDir);
 
-    const gzBuffer = await fsp.readFile(path.join(clientDir, "assets/styles-789abc.css.gz"));
+    const gzBuffer = await fsp.readFile(path.join(clientDir, "_next/static/styles-789abc.css.gz"));
     const decompressed = zlib.gunzipSync(gzBuffer).toString();
     expect(decompressed).toBe(cssContent);
   });
 
   it("skips files below the compression threshold", async () => {
     // Tiny file — not worth compressing
-    await writeAsset(clientDir, "assets/tiny-aaa111.js", "const x = 1;");
+    await writeAsset(clientDir, "_next/static/tiny-aaa111.js", "const x = 1;");
 
     const result = await precompressAssets(clientDir);
 
-    expect(fs.existsSync(path.join(clientDir, "assets/tiny-aaa111.js.br"))).toBe(false);
-    expect(fs.existsSync(path.join(clientDir, "assets/tiny-aaa111.js.gz"))).toBe(false);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/tiny-aaa111.js.br"))).toBe(false);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/tiny-aaa111.js.gz"))).toBe(false);
     expect(result.filesCompressed).toBe(0);
   });
 
   it("skips non-compressible file types (images, fonts)", async () => {
     // PNG file (binary, already compressed)
     const pngHeader = Buffer.alloc(2048, 0x89); // fake PNG data, above threshold
-    await writeAsset(clientDir, "assets/logo-bbb222.png", pngHeader.toString("binary"));
+    await writeAsset(clientDir, "_next/static/logo-bbb222.png", pngHeader.toString("binary"));
 
     // WOFF2 font (already compressed)
     const fontData = Buffer.alloc(2048, 0x77);
-    await writeAsset(clientDir, "assets/font-ccc333.woff2", fontData.toString("binary"));
+    await writeAsset(clientDir, "_next/static/font-ccc333.woff2", fontData.toString("binary"));
 
     const result = await precompressAssets(clientDir);
 
-    expect(fs.existsSync(path.join(clientDir, "assets/logo-bbb222.png.br"))).toBe(false);
-    expect(fs.existsSync(path.join(clientDir, "assets/font-ccc333.woff2.br"))).toBe(false);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/logo-bbb222.png.br"))).toBe(false);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/font-ccc333.woff2.br"))).toBe(false);
     expect(result.filesCompressed).toBe(0);
   });
 
@@ -110,37 +110,41 @@ describe("precompressAssets", () => {
   it("compresses CSS files alongside JS", async () => {
     const jsContent = "function render() {}\n".repeat(200);
     const cssContent = "body { margin: 0; }\n".repeat(200);
-    await writeAsset(clientDir, "assets/app-aaa111.js", jsContent);
-    await writeAsset(clientDir, "assets/app-bbb222.css", cssContent);
+    await writeAsset(clientDir, "_next/static/app-aaa111.js", jsContent);
+    await writeAsset(clientDir, "_next/static/app-bbb222.css", cssContent);
 
     const result = await precompressAssets(clientDir);
 
     expect(result.filesCompressed).toBe(2);
-    expect(fs.existsSync(path.join(clientDir, "assets/app-aaa111.js.br"))).toBe(true);
-    expect(fs.existsSync(path.join(clientDir, "assets/app-bbb222.css.br"))).toBe(true);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/app-aaa111.js.br"))).toBe(true);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/app-bbb222.css.br"))).toBe(true);
   });
 
   it("does not re-compress existing .br or .gz files", async () => {
     const jsContent = "const x = 1;\n".repeat(200);
-    await writeAsset(clientDir, "assets/index-abc123.js", jsContent);
+    await writeAsset(clientDir, "_next/static/index-abc123.js", jsContent);
 
     // Run twice — should not create .br.br or .gz.gz
     await precompressAssets(clientDir);
     await precompressAssets(clientDir);
 
-    expect(fs.existsSync(path.join(clientDir, "assets/index-abc123.js.br.br"))).toBe(false);
-    expect(fs.existsSync(path.join(clientDir, "assets/index-abc123.js.gz.gz"))).toBe(false);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/index-abc123.js.br.br"))).toBe(false);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/index-abc123.js.gz.gz"))).toBe(false);
   });
 
   it("handles nested directories under assets/", async () => {
     const jsContent = "export default {}\n".repeat(200);
-    await writeAsset(clientDir, "assets/chunks/vendor-ddd444.js", jsContent);
+    await writeAsset(clientDir, "_next/static/chunks/vendor-ddd444.js", jsContent);
 
     const result = await precompressAssets(clientDir);
 
     expect(result.filesCompressed).toBe(1);
-    expect(fs.existsSync(path.join(clientDir, "assets/chunks/vendor-ddd444.js.br"))).toBe(true);
-    expect(fs.existsSync(path.join(clientDir, "assets/chunks/vendor-ddd444.js.gz"))).toBe(true);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/chunks/vendor-ddd444.js.br"))).toBe(
+      true,
+    );
+    expect(fs.existsSync(path.join(clientDir, "_next/static/chunks/vendor-ddd444.js.gz"))).toBe(
+      true,
+    );
   });
 
   it("only compresses files inside assets/ not other client files", async () => {
@@ -149,34 +153,34 @@ describe("precompressAssets", () => {
     // This file is in client root, not in assets/ — should not be compressed
     await writeAsset(clientDir, "index.html", htmlContent);
     // This one is in assets/ — should be compressed
-    await writeAsset(clientDir, "assets/main-eee555.js", jsContent);
+    await writeAsset(clientDir, "_next/static/main-eee555.js", jsContent);
 
     const result = await precompressAssets(clientDir);
 
     expect(result.filesCompressed).toBe(1);
     expect(fs.existsSync(path.join(clientDir, "index.html.br"))).toBe(false);
-    expect(fs.existsSync(path.join(clientDir, "assets/main-eee555.js.br"))).toBe(true);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/main-eee555.js.br"))).toBe(true);
   });
 
   it("generates .zst files alongside .br and .gz", async () => {
     const jsContent = "const x = 1;\n".repeat(200);
-    await writeAsset(clientDir, "assets/zstd-aaa111.js", jsContent);
+    await writeAsset(clientDir, "_next/static/zstd-aaa111.js", jsContent);
 
     const result = await precompressAssets(clientDir);
 
-    expect(fs.existsSync(path.join(clientDir, "assets/zstd-aaa111.js.zst"))).toBe(true);
-    expect(fs.existsSync(path.join(clientDir, "assets/zstd-aaa111.js.br"))).toBe(true);
-    expect(fs.existsSync(path.join(clientDir, "assets/zstd-aaa111.js.gz"))).toBe(true);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/zstd-aaa111.js.zst"))).toBe(true);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/zstd-aaa111.js.br"))).toBe(true);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/zstd-aaa111.js.gz"))).toBe(true);
     expect(result.filesCompressed).toBe(1);
   });
 
   it("zstd output decompresses to original content", async () => {
     const jsContent = "export function hello() { return 'world'; }\n".repeat(100);
-    await writeAsset(clientDir, "assets/hello-zstd.js", jsContent);
+    await writeAsset(clientDir, "_next/static/hello-zstd.js", jsContent);
 
     await precompressAssets(clientDir);
 
-    const zstdBuffer = await fsp.readFile(path.join(clientDir, "assets/hello-zstd.js.zst"));
+    const zstdBuffer = await fsp.readFile(path.join(clientDir, "_next/static/hello-zstd.js.zst"));
     const decompressed = zlib.zstdDecompressSync(zstdBuffer).toString();
     expect(decompressed).toBe(jsContent);
   });
@@ -189,7 +193,7 @@ describe("precompressAssets", () => {
     await writeAsset(clientDir, "cdn/_next/static/main-abc123.js", jsContent);
     // A file at the legacy `assets/` location must NOT be picked up when a
     // custom assetsDir is in effect — otherwise both layouts would be walked.
-    await writeAsset(clientDir, "assets/legacy-def456.js", jsContent);
+    await writeAsset(clientDir, "_next/static/legacy-def456.js", jsContent);
 
     const result = await precompressAssets(clientDir, { assetsDir: "cdn/_next/static" });
 
@@ -197,7 +201,7 @@ describe("precompressAssets", () => {
     expect(fs.existsSync(path.join(clientDir, "cdn/_next/static/main-abc123.js.br"))).toBe(true);
     expect(fs.existsSync(path.join(clientDir, "cdn/_next/static/main-abc123.js.gz"))).toBe(true);
     // Legacy location is untouched
-    expect(fs.existsSync(path.join(clientDir, "assets/legacy-def456.js.br"))).toBe(false);
+    expect(fs.existsSync(path.join(clientDir, "_next/static/legacy-def456.js.br"))).toBe(false);
   });
 
   it("compresses assets under _next/static for absolute-URL assetPrefix", async () => {
@@ -215,7 +219,7 @@ describe("precompressAssets", () => {
 
   it("reports total original and compressed byte sizes", async () => {
     const jsContent = "const x = 1;\n".repeat(500);
-    await writeAsset(clientDir, "assets/big-fff666.js", jsContent);
+    await writeAsset(clientDir, "_next/static/big-fff666.js", jsContent);
 
     const result = await precompressAssets(clientDir);
 
