@@ -23,7 +23,10 @@ import {
   getRevalidateDuration,
   triggerBackgroundRegeneration,
 } from "../packages/vinext/src/server/isr-cache.js";
-import { APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { buildPageCacheTags } from "../packages/vinext/src/server/implicit-tags.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import {
@@ -168,6 +171,17 @@ describe("App Router ISR cache key primitives", () => {
     );
     expect(appIsrRscKey("/feed", "modal", APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI)).toMatch(
       /^app:\/feed:rsc:slots:[a-z0-9]+:preserve-ui$/,
+    );
+  });
+
+  it("keys RSC loading-shell prefetch variants separately from normal navigation variants", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    expect(appIsrRscKey("/feed", null, APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL)).toBe(
+      "app:/feed:rsc:prefetch-loading-shell",
+    );
+    expect(appIsrRscKey("/feed", "modal", APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL)).toMatch(
+      /^app:\/feed:rsc:slots:[a-z0-9]+:prefetch-loading-shell$/,
     );
   });
 

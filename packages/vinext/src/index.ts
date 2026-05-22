@@ -177,7 +177,7 @@ function resolveOptionalDependency(projectRoot: string, specifier: string): stri
 function resolveShimModulePath(shimsDir: string, moduleName: string): string {
   // Source checkouts only ship TypeScript shims, while built packages only ship
   // JavaScript. Check .ts first to avoid an extra stat in development.
-  const candidates = [".ts", ".js"];
+  const candidates = [".ts", ".tsx", ".js"];
   for (const ext of candidates) {
     const candidate = path.join(shimsDir, `${moduleName}${ext}`);
     if (fs.existsSync(candidate)) {
@@ -185,6 +185,21 @@ function resolveShimModulePath(shimsDir: string, moduleName: string): string {
     }
   }
   return path.join(shimsDir, `${moduleName}.js`);
+}
+
+function isVercelOgImport(id: string): boolean {
+  return id === "@vercel/og" || id === "@vercel/og.js";
+}
+
+function isVinextOgShimImporter(importer: string | undefined): boolean {
+  if (!importer) return false;
+  const cleanImporter = (importer.startsWith("\0") ? importer.slice(1) : importer).split("?")[0];
+  const normalizedImporter = cleanImporter.replace(/\\/g, "/");
+  return (
+    normalizedImporter.endsWith("/shims/og.tsx") ||
+    normalizedImporter.endsWith("/shims/og.js") ||
+    normalizedImporter.endsWith("/dist/shims/og.js")
+  );
 }
 
 function toRelativeFileEntry(root: string, absPath: string): string {
@@ -1142,6 +1157,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // because vinext is the runtime — there is no underlying Next.js
         // version to surface.
         defines["process.env.__NEXT_VERSION"] = JSON.stringify(getVinextVersion());
+        // App Shells — always false; plumbing-only flag, not yet implemented.
+        // See: https://github.com/vercel/next.js/pull/93997
+        defines["process.env.__NEXT_APP_SHELLS"] = JSON.stringify(false);
 
         // Build the shim alias map. Exact `.js` variants are included for the
         // public Next entrypoints that are file-backed in `next/package.json`.
@@ -1405,19 +1423,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // test/e2e/app-dir/css-media-query/css-media-query.test.ts which
             // asserts `cssText` preserves `max-width: 768px`.
             cssTarget: ["chrome111", "edge111", "firefox114", "safari15"],
-            // Direct Vite to write build output under `<assetPrefix>/_next/static/`
-            // (path-prefix form) or `_next/static/` (absolute-URL form) when
-            // `assetPrefix` is configured. Keeps the default of `assets/`
-            // when no prefix is set so existing on-disk layouts are stable
-            // for projects that haven't opted in.
+            // Direct Vite to write build output under the canonical Next.js
+            // layout so the on-disk path mirrors the emitted URL path:
+            //   - empty `assetPrefix`     → `_next/static/`
+            //   - path prefix (`/cdn`)    → `cdn/_next/static/`
+            //   - absolute URL            → `_next/static/` (CDN serves it
+            //                                directly via renderBuiltUrl)
             //
-            // Pair with `experimental.renderBuiltUrl` above: the on-disk
+            // Pair with `experimental.renderBuiltUrl` below: the on-disk
             // layout matches the URL path so the Cloudflare ASSETS binding
-            // and any static file server can resolve `<assetPrefix>/_next/static/...`
-            // requests without a runtime rewrite.
-            ...(nextConfig.assetPrefix
-              ? { assetsDir: resolveAssetsDir(nextConfig.assetPrefix) }
-              : {}),
+            // and any static file server can resolve
+            // `<assetPrefix?>/_next/static/...` requests directly, and
+            // misses naturally fall through as plain-text 404s.
+            assetsDir: resolveAssetsDir(nextConfig.assetPrefix ?? ""),
             ...withBuildBundlerOptions(viteMajorVersion, {
               // Suppress "Module level directives cause errors when bundled"
               // warnings for "use client" / "use server" directives. Our shims
@@ -1588,8 +1606,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // start with the configured asset prefix and use Next.js's
           // canonical `_next/static/` directory convention. We also write
           // assets to disk under that same path layout (via `build.assetsDir`
-          // below) so the Cloudflare ASSETS binding and any static file
+          // above) so the Cloudflare ASSETS binding and any static file
           // server can serve them without runtime rewrites.
+          //
+          // When `assetPrefix` is empty, Vite's default `base + url`
+          // composition already produces the correct `/_next/static/...`
+          // URLs because `build.assetsDir` is `_next/static` — so this
+          // override is only needed for the configured cases.
           //
           // See packages/vinext/src/utils/asset-prefix.ts for the helpers
           // and Next.js docs for the contract:
@@ -2052,18 +2075,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       resolveId: {
-        // Hook filter: only invoke JS for next/* imports and virtual:vinext-* modules.
+        // Hook filter: only invoke JS for handled Next/Vinext compatibility modules.
         // Matches "next/navigation", "next/router.js", "virtual:vinext-rsc-entry",
-        // and \0-prefixed re-imports from @vitejs/plugin-rsc.
+        // direct @vercel/og imports in metadata routes, and \0-prefixed
+        // re-imports from @vitejs/plugin-rsc.
         filter: {
-          id: /(?:next\/|virtual:vinext-)/,
+          id: /(?:next\/|virtual:vinext-|^@vercel\/og(?:\.js)?$)/,
         },
-        handler(id) {
+        handler(id, importer) {
           // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
           // browser entry imports our virtual module using the already-resolved
           // ID (with \0 prefix). We need to re-resolve it so the client
           // environment's import-analysis can find it.
           const cleanId = id.startsWith("\0") ? id.slice(1) : id;
+
+          if (isVercelOgImport(cleanId) && !isVinextOgShimImporter(importer)) {
+            return resolveShimModulePath(_shimsDir, "og");
+          }
 
           // Pages Router virtual modules
           if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
@@ -3022,6 +3050,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   middlewareRequest,
                   nextConfig?.i18n,
                   nextConfig?.basePath,
+                  nextConfig?.trailingSlash,
                   isDataRequest,
                 );
 
@@ -4134,13 +4163,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           // Generate _headers file for Cloudflare Workers static asset caching.
           // Vite outputs content-hashed files (JS, CSS, fonts) to the assetsDir
-          // (defaults to "assets"). These are safe to cache indefinitely since
-          // the hash changes on any content change. Without this, Cloudflare
-          // serves them with max-age=0 which forces unnecessary revalidation
-          // on every page load.
+          // (defaults to `_next/static` — Next.js's canonical convention; see
+          // resolveAssetsDir in utils/asset-prefix.ts). These are safe to
+          // cache indefinitely since the hash changes on any content change.
+          // Without this, Cloudflare serves them with max-age=0 which forces
+          // unnecessary revalidation on every page load.
           const headersPath = path.join(clientDir, "_headers");
           if (!fs.existsSync(headersPath)) {
-            const assetsDir = envConfig.build?.assetsDir ?? "assets";
+            const assetsDir = envConfig.build?.assetsDir ?? ASSET_PREFIX_URL_DIR;
             const headersContent = [
               "# Cache content-hashed assets immutably (generated by vinext)",
               `/${assetsDir}/*`,

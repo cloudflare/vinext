@@ -134,6 +134,7 @@ export async function runMiddleware(
   request: Request,
   i18nConfig?: NextI18nConfig | null,
   basePath?: string,
+  trailingSlash?: boolean,
   isDataRequest?: boolean,
 ): Promise<MiddlewareResult> {
   // Load the middleware module via the direct-call ModuleRunner.
@@ -153,5 +154,6 @@ export async function runMiddleware(
     isProxy: isProxyFile(middlewarePath),
     module: mod,
     request,
+    trailingSlash,
   });
 }

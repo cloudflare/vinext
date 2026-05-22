@@ -25,7 +25,7 @@ type BuildManifestChunk = {
  * @param buildManifest - Vite's build manifest (manifest.json), which is a
  *   Record<string, ManifestChunk> where each chunk has `file`, `imports`,
  *   `dynamicImports`, `isEntry`, and `isDynamicEntry` fields.
- * @returns Array of chunk filenames (e.g. "assets/mermaid-NOHMQCX5.js") that
+ * @returns Array of chunk filenames (e.g. "_next/static/mermaid-NOHMQCX5.js") that
  *   should be excluded from modulepreload hints.
  */
 export function computeLazyChunks(buildManifest: Record<string, BuildManifestChunk>): string[] {

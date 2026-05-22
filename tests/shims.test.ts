@@ -7337,6 +7337,142 @@ describe("NextURL basePath and locale properties", () => {
 });
 
 // ---------------------------------------------------------------------------
+// NextURL trailingSlash policy (regression for issue #1332)
+//
+// The trailingSlash config must reach NextURL so that
+// `NextResponse.redirect(request.nextUrl)` and friends emit a Location header
+// that honours the user's slash policy. Mirrors Next.js's
+// `formatNextPathnameInfo` behaviour.
+
+describe("NextURL trailingSlash policy", () => {
+  it("appends a trailing slash to href when trailingSlash is true", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about", undefined, {
+      nextConfig: { trailingSlash: true },
+    });
+    expect(url.href).toBe("http://localhost/about/");
+    expect(url.toString()).toBe("http://localhost/about/");
+  });
+
+  it("does not add a trailing slash to the root path", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/", undefined, {
+      nextConfig: { trailingSlash: true },
+    });
+    expect(url.href).toBe("http://localhost/");
+  });
+
+  it("preserves trailing slash when trailingSlash is true and input already has one", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about/", undefined, {
+      nextConfig: { trailingSlash: true },
+    });
+    expect(url.href).toBe("http://localhost/about/");
+  });
+
+  it("strips trailing slash when trailingSlash is false", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about/", undefined, {
+      nextConfig: { trailingSlash: false },
+    });
+    expect(url.href).toBe("http://localhost/about");
+  });
+
+  it("defaults to no trailing slash when trailingSlash is not configured", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about/");
+    expect(url.href).toBe("http://localhost/about");
+  });
+
+  it("applies trailingSlash after setting pathname", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/x", undefined, {
+      nextConfig: { trailingSlash: true },
+    });
+    url.pathname = "/somewhere";
+    expect(url.href).toBe("http://localhost/somewhere/");
+  });
+
+  it("applies trailingSlash with basePath", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard", undefined, {
+      basePath: "/app",
+      nextConfig: { trailingSlash: true },
+    });
+    expect(url.pathname).toBe("/dashboard");
+    expect(url.href).toBe("http://localhost/app/dashboard/");
+  });
+
+  it("applies trailingSlash with locale", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, {
+      nextConfig: {
+        i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+        trailingSlash: true,
+      },
+    });
+    expect(url.locale).toBe("fr");
+    expect(url.href).toBe("http://localhost/fr/about/");
+  });
+
+  it("preserves search and hash when adding trailing slash", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about?q=1#top", undefined, {
+      nextConfig: { trailingSlash: true },
+    });
+    expect(url.href).toBe("http://localhost/about/?q=1#top");
+  });
+
+  it("clone() preserves the trailingSlash config", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/about", undefined, {
+      nextConfig: { trailingSlash: true },
+    });
+    const cloned = url.clone();
+    cloned.pathname = "/contact";
+    expect(cloned.href).toBe("http://localhost/contact/");
+  });
+});
+
+describe("NextRequest plumbs trailingSlash into nextUrl", () => {
+  it("forwards trailingSlash from nextConfig into the NextURL", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost/about", {
+      nextConfig: { trailingSlash: true },
+    });
+    expect(req.nextUrl.href).toBe("http://localhost/about/");
+  });
+
+  it("NextResponse.redirect(request.nextUrl) emits a Location that honours trailingSlash", async () => {
+    const { NextRequest, NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost/redirect", {
+      nextConfig: { trailingSlash: true },
+    });
+    const url = req.nextUrl.clone();
+    url.pathname = "/somewhere";
+    const res = NextResponse.redirect(url);
+    expect(res.status).toBe(307);
+    const location = res.headers.get("location");
+    expect(location).not.toBeNull();
+    // Location is fully-qualified per the spec; the pathname must include the slash.
+    expect(new URL(location!).pathname).toBe("/somewhere/");
+  });
+
+  it("NextResponse.redirect(request.nextUrl) drops trailing slash when trailingSlash is false", async () => {
+    const { NextRequest, NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost/redirect/", {
+      nextConfig: { trailingSlash: false },
+    });
+    const url = req.nextUrl.clone();
+    url.pathname = "/somewhere/";
+    const res = NextResponse.redirect(url);
+    const location = res.headers.get("location");
+    expect(location).not.toBeNull();
+    expect(new URL(location!).pathname).toBe("/somewhere");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // NextResponse.next() with request header forwarding
 
 describe("NextResponse.next() request header forwarding", () => {
@@ -7787,6 +7923,40 @@ describe("matchConfigPattern", () => {
     expect(matchConfigPattern("/foo/bar", "/foo/:path*")).toEqual({ path: "bar" });
     expect(matchConfigPattern("/foo", "/foo/:path*")).toEqual({ path: "" });
     expect(matchConfigPattern("/foo", "/foo/:path+")).toBeNull();
+  });
+
+  // Regression for #1331: a trailing slash on the request pathname must not
+  // hide a config rewrite/redirect/header source written without one. This
+  // mirrors Next.js's conditional `source + '(/)?'` suffix under
+  // `trailingSlash: true` — see `stripTrailingSlashForConfigMatch`.
+  it("strips a trailing slash on the incoming pathname before matching", async () => {
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Exact match: trailing slash on the pathname is ignored.
+    expect(matchConfigPattern("/about/", "/about")).toEqual({});
+    // :param match across the segment with a trailing slash on the pathname.
+    expect(matchConfigPattern("/blog/hello-world/", "/blog/:slug")).toEqual({
+      slug: "hello-world",
+    });
+    // Multi-segment :param with a trailing slash.
+    expect(matchConfigPattern("/blog/2024/my-post/", "/blog/:year/:slug")).toEqual({
+      year: "2024",
+      slug: "my-post",
+    });
+    // Regex-group pattern with a trailing slash.
+    expect(matchConfigPattern("/123/", "/:id(\\d+)")).toEqual({ id: "123" });
+  });
+
+  it("preserves the root path and catch-all semantics under trailing slash", async () => {
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
+    // The root pathname "/" stays "/" — never stripped to "".
+    expect(matchConfigPattern("/", "/")).toEqual({});
+    // Catch-alls already consume the trailing slash; the strip must not turn
+    // `/docs/` into `/docs` in a way that breaks zero-segment matching.
+    expect(matchConfigPattern("/docs/", "/docs/:path*")).toEqual({ path: "" });
+    // One-segment catch-all with trailing slash on the pathname.
+    expect(matchConfigPattern("/docs/intro/", "/docs/:path*")).toEqual({ path: "intro" });
+    // :path+ still requires at least one segment when the only "extra" was a slash.
+    expect(matchConfigPattern("/api/", "/api/:path+")).toBeNull();
   });
 });
 
@@ -8549,6 +8719,29 @@ describe("matchHeaders", () => {
     // Request without the required header should not match
     const matched = matchHeaders("/about", rules, makeCtx());
     expect(matched).toEqual([]);
+  });
+
+  // Regression for #1331: under `trailingSlash: true` the incoming pathname
+  // arrives as `/about/`, but header source patterns are written without a
+  // trailing slash. `matchHeaders` must strip the slash before matching.
+  it("matches when the request pathname has a trailing slash", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rules: any[] = [
+      {
+        source: "/about",
+        headers: [{ key: "x-static-header", value: "1" }],
+      },
+      {
+        source: "/api/:path*",
+        headers: [{ key: "x-api-header", value: "1" }],
+      },
+    ];
+
+    const aboutMatched = matchHeaders("/about/", rules, makeCtx());
+    expect(aboutMatched).toEqual([{ key: "x-static-header", value: "1" }]);
+
+    const apiMatched = matchHeaders("/api/users/", rules, makeCtx());
+    expect(apiMatched).toEqual([{ key: "x-api-header", value: "1" }]);
   });
 });
 
@@ -9626,6 +9819,22 @@ describe("next/og shim", () => {
     expect(bytes[1]).toBe(0x50); // P
     expect(bytes[2]).toBe(0x4e); // N
     expect(bytes[3]).toBe(0x47); // G
+  });
+
+  it("sets Next.js metadata image cache headers by default", async () => {
+    const React = await import("react");
+    const og = await import("../packages/vinext/src/shims/og.js");
+
+    const element = React.createElement("div", {
+      style: { display: "flex", width: "100%", height: "100%", backgroundColor: "blue" },
+    });
+
+    const response = new og.ImageResponse(element, {
+      width: 50,
+      height: 50,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
   });
 
   it("respects custom status and headers", async () => {
@@ -16148,6 +16357,51 @@ describe("shim alias map .js variants", () => {
 
     const missing = topLevel.filter((key) => !(key + ".js" in aliases!));
     expect(missing, `Missing .js aliases for: ${missing.join(", ")}`).toEqual([]);
+  });
+});
+
+describe("@vercel/og compatibility resolution", () => {
+  type ResolveIdHook = {
+    filter: { id: RegExp };
+    handler: (
+      this: { environment?: { name?: string } },
+      id: string,
+      importer?: string,
+    ) => string | undefined;
+  };
+
+  function getResolveIdHook(): ResolveIdHook {
+    const plugins = vinext() as Plugin[];
+    const configPlugin = plugins.find((p) => p.name === "vinext:config");
+    if (!configPlugin?.resolveId || typeof configPlugin.resolveId === "function") {
+      throw new Error("vinext:config resolveId hook not found");
+    }
+    return configPlugin.resolveId as ResolveIdHook;
+  }
+
+  it("routes direct @vercel/og app imports through the Next-compatible ImageResponse shim", () => {
+    const hook = getResolveIdHook();
+    const expectedShim = path.resolve(import.meta.dirname, "../packages/vinext/src/shims/og.tsx");
+
+    expect(hook.filter.id.test("@vercel/og")).toBe(true);
+    expect(hook.filter.id.test("@vercel/og.js")).toBe(true);
+    expect(
+      hook.handler.call({}, "@vercel/og", path.join(FIXTURE_DIR, "app/opengraph-image.tsx")),
+    ).toBe(expectedShim);
+    expect(
+      hook.handler.call({}, "@vercel/og.js", path.join(FIXTURE_DIR, "app/twitter-image.tsx")),
+    ).toBe(expectedShim);
+  });
+
+  it("lets the ImageResponse shim delegate to the real @vercel/og package", () => {
+    const hook = getResolveIdHook();
+
+    expect(
+      hook.handler.call({}, "@vercel/og", "/repo/packages/vinext/src/shims/og.tsx"),
+    ).toBeUndefined();
+    expect(
+      hook.handler.call({}, "@vercel/og", "/repo/node_modules/vinext/dist/shims/og.js"),
+    ).toBeUndefined();
   });
 });
 

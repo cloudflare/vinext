@@ -3,10 +3,15 @@ import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { guardProtocolRelativeUrl } from "./request-pipeline.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "./headers.js";
+import {
+  parseClientReuseManifestHeader,
+  type ClientReuseManifestParseResult,
+} from "./client-reuse-manifest.js";
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import { stripRscSuffix } from "./app-rsc-cache-busting.js";
 import {
@@ -33,6 +38,8 @@ export type NormalizedRscRequest = {
   mountedSlotsHeader: string | null;
   /** Semantic RSC payload mode. HTML requests always normalize to "navigation". */
   renderMode: AppRscRenderMode;
+  /** Disabled ClientReuseManifest hint. Never authorizes skip transport in this stage. */
+  clientReuseManifest: ClientReuseManifestParseResult;
 };
 
 /**
@@ -59,6 +66,7 @@ export type NormalizedRscRequest = {
  *   8. Sanitize X-Vinext-Interception-Context — strip null bytes (header injection)
  *   9. Normalize x-vinext-mounted-slots — dedup and sort for canonical cache keys
  *   10. Read semantic render mode for refresh/action payload rendering
+ *   11. Parse disabled ClientReuseManifest hints on canonical RSC payload requests
  *
  * @returns A 400 or 404 Response for invalid or out-of-scope inputs,
  *          or a NormalizedRscRequest for valid requests.
@@ -115,8 +123,12 @@ export function normalizeRscRequest(
   const renderMode = isRscRequest
     ? parseAppRscRenderMode(request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER))
     : APP_RSC_RENDER_MODE_NAVIGATION;
+  const clientReuseManifest = isRscRequest
+    ? parseClientReuseManifestHeader(request.headers.get(VINEXT_CLIENT_REUSE_MANIFEST_HEADER))
+    : ({ kind: "absent" } satisfies ClientReuseManifestParseResult);
 
   return {
+    clientReuseManifest,
     url,
     pathname,
     cleanPathname,

@@ -179,6 +179,7 @@ export async function runMiddleware(request, ctx, options) {
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
     request: __dataNorm.request,
+    trailingSlash: vinextConfig.trailingSlash,
   });
   if (__dataNorm.isDataReq && __result.continue && !__result.rewriteUrl && !__result.redirectUrl) {
     return { ...__result, rewriteUrl: __dataNorm.normalizedPathname + __dataNorm.search };
@@ -682,6 +683,24 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       let pageProps = pageDataResult.pageProps;
       var gsspRes = pageDataResult.gsspRes;
       let isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
+      const isFallbackRender = pageDataResult.isFallback === true;
+
+      // Republish the SSR context with isFallback flipped on so the page's
+      // \`useRouter().isFallback\` returns true during render, matching Next.js's
+      // \`render.tsx\` fallback shell. Without this, the page would still see
+      // \`isFallback: false\` and run the non-fallback branch.
+      if (isFallbackRender && typeof setSSRContext === "function") {
+        setSSRContext({
+          pathname: routePattern,
+          query,
+          asPath: routeUrl,
+          locale: locale,
+          locales: i18nConfig ? i18nConfig.locales : undefined,
+          defaultLocale: currentDefaultLocale,
+          domainLocales: domainLocales,
+          isFallback: true,
+        });
+      }
 
       // ── _next/data JSON envelope short-circuit ───────────────────────
       // For client-side navigations Next.js fetches /_next/data/<buildId>/<page>.json
@@ -762,6 +781,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
           defaultLocale: currentDefaultLocale,
           domainLocales: domainLocales,
         },
+        isFallback: isFallbackRender,
         pageProps,
         params,
         renderDocumentToString(element) {

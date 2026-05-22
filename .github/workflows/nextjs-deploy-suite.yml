@@ -68,16 +68,44 @@ jobs:
           ref: ${{ inputs.next-ref || 'v16.2.6' }}
           path: next.js
 
+      # Share the playwright-chromium cache with ci.yml, which keeps it hot
+      # on every run. Restore-only — ci.yml owns saving. Sidesteps the
+      # upstream Playwright extraction hang that started 2026-05-22 (runs
+      # 26265986264, 26279790373, 26281061094, 26281758803) by avoiding
+      # the download+extract path entirely on cache hit. The lockfile lives
+      # under next.js/ because that's where the prepare-step install pulls
+      # `playwright` from; if Next.js bumps Playwright before vinext does,
+      # the cache key won't match ci.yml's and we'd need to seed by running
+      # vinext's CI once on the new version first.
+      - name: Restore Playwright browsers
+        id: playwright-cache
+        uses: ./.github/actions/playwright-cache
+        with:
+          browser: chromium
+          lockfile: next.js/pnpm-lock.yaml
+          mode: restore
+
       - name: Build vinext
         run: vp run vinext#build
 
       - name: Prepare Next.js checkout
+        timeout-minutes: 15
         run: bash scripts/run-nextjs-deploy-suite.sh "$GITHUB_WORKSPACE/next.js"
         env:
           CI: true
           VINEXT_BUILD: "0"
           NEXTJS_PREPARE: "1"
           NEXTJS_PREPARE_ONLY: "1"
+          # The Next.js workspace pulls `playwright-chromium` as a transitive
+          # dep, whose postinstall downloads Chrome via the Playwright CDN.
+          # Since 2026-05-22 that postinstall has wedged on this runner after
+          # the 167 MiB Chrome zip downloads but before extraction completes,
+          # silently consuming the whole job timeout (runs 26265986264,
+          # 26279790373, 26281061094). The explicit `pnpm playwright install
+          # chromium chromium-headless-shell` later in the prepare script is
+          # what actually provisions the browsers we use at test time, so
+          # skipping the transitive postinstall is safe.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
 
       - name: Generate deploy manifest
         env:
@@ -288,7 +316,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Download all test results
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: test-results-*
           path: results
@@ -296,7 +324,7 @@ jobs:
 
       - name: Generate report
         id: report
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           # Resolve the GitHub Actions expressions to env vars once, instead
           # of splicing `${{ ... }}` into JS string literals further down.

@@ -747,10 +747,37 @@ function extractConstraint(str: string, re: RegExp): string | null {
  *   (regex)    - inline regex patterns in the source
  *   :param(constraint) - named param with inline regex constraint
  */
+/**
+ * Strip a single trailing slash from a pathname for config-source matching.
+ *
+ * Next.js conditionally appends `(/)?` to rewrite/redirect/header source
+ * regexes when `trailingSlash: true` (see Next.js
+ * `resolve-rewrites.ts` and `server-utils.ts:checkRewrite`). Rather than
+ * threading the trailingSlash flag through every matcher, we unconditionally
+ * strip a trailing slash from the incoming pathname. When `trailingSlash: false`
+ * the request pipeline emits a normalizing redirect (step 3) before config
+ * rewrites/redirects (step 6) ever run, so the pathname is already slash-free;
+ * the unconditional strip is defense-in-depth for that ordering. When
+ * `trailingSlash: true` it bridges the gap between the canonicalized request
+ * path (`/rewrite-1/`) and source patterns written without a trailing slash
+ * (`/rewrite-1`).
+ *
+ * The root path `"/"` is preserved as-is.
+ */
+function stripTrailingSlashForConfigMatch(pathname: string): string {
+  return pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+}
+
 export function matchConfigPattern(
   pathname: string,
   pattern: string,
 ): Record<string, string> | null {
+  // See `stripTrailingSlashForConfigMatch` — the source pattern itself is left
+  // unchanged because catch-all patterns (`:param*` / `:param+`) and the root
+  // `/` already consume any trailing slash; stripping the pattern would change
+  // those semantics.
+  pathname = stripTrailingSlashForConfigMatch(pathname);
+
   // If the pattern contains regex groups like (\d+) or (.*), use regex matching.
   // Also enter this branch when a catch-all parameter (:param* or :param+) is
   // followed by a literal suffix (e.g. "/:path*.md"). Without this, the suffix
@@ -916,6 +943,12 @@ export function matchRedirect(
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
 ): { destination: string; permanent: boolean } | null {
   if (redirects.length === 0) return null;
+
+  // Strip trailing slash so the locale-static fast path (Map.get on the
+  // pathname) matches keys derived from slash-free source patterns. The
+  // linear fallback also passes through `matchConfigPattern` which strips
+  // again, but normalizing once here keeps both paths consistent.
+  pathname = stripTrailingSlashForConfigMatch(pathname);
 
   const index = _getRedirectIndex(redirects);
 
@@ -1259,6 +1292,11 @@ export function matchHeaders(
   ctx: RequestContext,
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
 ): Array<{ key: string; value: string }> {
+  // Header source regexes are compiled without a trailing-slash tolerance,
+  // so the incoming pathname must be normalized the same way config rewrites
+  // and redirects are. See `stripTrailingSlashForConfigMatch`.
+  pathname = stripTrailingSlashForConfigMatch(pathname);
+
   const result: Array<{ key: string; value: string }> = [];
   for (const rule of headers) {
     if (!shouldEvaluateRule(rule.basePath, basePathState)) continue;

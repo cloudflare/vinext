@@ -1,6 +1,7 @@
 import { Suspense, type ComponentType, type ReactNode } from "react";
 import {
   AppElementsWire,
+  APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   normalizeAppElementsSlotBindings,
   type AppElements,
   type AppElementsInterception,
@@ -27,6 +28,7 @@ import {
 import { resolveAppPageSegmentParams } from "./app-page-params.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   shouldSuppressLoadingBoundaries,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
@@ -367,6 +369,7 @@ export function buildAppPageElements<
   TErrorModule extends AppPageErrorModule,
 >(options: BuildAppPageElementsOptions<TModule, TErrorModule>): AppElements {
   const interceptionContext = options.interceptionContext ?? null;
+  const renderMode = options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION;
   const routeSegments = options.route.routeSegments ?? [];
   const routeResetKey = resolveAppPageRouteStateKey(routeSegments, options.matchedParams);
   const routeId = AppElementsWire.encodeRouteId(options.routePath, interceptionContext);
@@ -463,7 +466,20 @@ export function buildAppPageElements<
     pageDependencies.push(templateDependency);
   }
 
-  elements[pageId] = renderAfterAppDependencies(options.element, pageDependencies);
+  const routeLoadingComponent = getDefaultExport(options.route.loading);
+  const isPrefetchLoadingShell = renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
+  const shouldRenderPrefetchLoadingShell = isPrefetchLoadingShell && routeLoadingComponent !== null;
+  if (shouldRenderPrefetchLoadingShell) {
+    // Client loading components serialize as module references in Flight. Keep
+    // a durable marker in the shell payload so external router tests and
+    // diagnostics can recognize this as a loading-boundary response without
+    // requiring source text to appear in client component references.
+    elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
+  }
+
+  elements[pageId] = isPrefetchLoadingShell
+    ? null
+    : renderAfterAppDependencies(options.element, pageDependencies);
 
   for (const templateEntry of templateEntries) {
     const templateComponent = getDefaultExport(templateEntry.templateModule);
@@ -603,10 +619,7 @@ export function buildAppPageElements<
     }
 
     const slotLoadingComponent = getDefaultExport(slot.loading);
-    if (
-      slotLoadingComponent &&
-      !shouldSuppressLoadingBoundaries(options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION)
-    ) {
+    if (slotLoadingComponent && !shouldSuppressLoadingBoundaries(renderMode)) {
       const SlotLoadingComponent = slotLoadingComponent;
       slotElement = (
         <Suspense key={slotResetKey} fallback={<SlotLoadingComponent />}>
@@ -636,41 +649,46 @@ export function buildAppPageElements<
     </LayoutSegmentProvider>
   );
 
-  // Wrap the page slot in a per-segment RedirectBoundary so that a
-  // redirect() thrown from a server component (or a client component
-  // within the page subtree) is caught here — below the route's layouts —
-  // rather than at the top-level boundary in app-browser-entry. Catching
-  // at the top level unmounts the entire route tree including layouts,
-  // which destroys client-side state in layout-hosted components
-  // (counters, theme toggles, form drafts). Here, only the page subtree
-  // is unmounted; the surrounding layouts stay mounted across the
-  // boundary's null-render → router.replace transition, and segment
-  // reuse keeps their React state intact.
-  //
-  // Placed inside the Suspense (loading) boundary to match Next.js nesting
-  // for the redirect boundary specifically:
-  //   Error > AccessFallback > Loading (Suspense) > Redirect > content
-  // (Note: Next.js places AccessFallback inside Loading, not outside — that
-  // is a pre-existing nesting divergence tracked separately.)
-  // This keeps the loading fallback visible during redirect-driven
-  // transitions rather than unmounting it.
-  routeChildren = <RedirectBoundary>{routeChildren}</RedirectBoundary>;
+  if (isPrefetchLoadingShell) {
+    if (routeLoadingComponent === null) {
+      routeChildren = null;
+    } else {
+      const RouteLoadingComponent = routeLoadingComponent;
+      routeChildren = <RouteLoadingComponent />;
+    }
+  } else {
+    // Wrap the page slot in a per-segment RedirectBoundary so that a
+    // redirect() thrown from a server component (or a client component
+    // within the page subtree) is caught here — below the route's layouts —
+    // rather than at the top-level boundary in app-browser-entry. Catching
+    // at the top level unmounts the entire route tree including layouts,
+    // which destroys client-side state in layout-hosted components
+    // (counters, theme toggles, form drafts). Here, only the page subtree
+    // is unmounted; the surrounding layouts stay mounted across the
+    // boundary's null-render → router.replace transition, and segment
+    // reuse keeps their React state intact.
+    //
+    // Placed inside the Suspense (loading) boundary to match Next.js nesting
+    // for the redirect boundary specifically:
+    //   Error > AccessFallback > Loading (Suspense) > Redirect > content
+    // (Note: Next.js places AccessFallback inside Loading, not outside — that
+    // is a pre-existing nesting divergence tracked separately.)
+    // This keeps the loading fallback visible during redirect-driven
+    // transitions rather than unmounting it.
+    routeChildren = <RedirectBoundary>{routeChildren}</RedirectBoundary>;
 
-  const routeLoadingComponent = getDefaultExport(options.route.loading);
-  if (
-    routeLoadingComponent &&
-    !shouldSuppressLoadingBoundaries(options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION)
-  ) {
-    const RouteLoadingComponent = routeLoadingComponent;
-    // Route-level wrappers cover the full page branch in vinext's flat element
-    // transport, so their reset key includes the visible segment-state path.
-    // Dynamic param changes reset the pending boundary, while search-only changes
-    // preserve it.
-    routeChildren = (
-      <Suspense key={routeResetKey} fallback={<RouteLoadingComponent />}>
-        {routeChildren}
-      </Suspense>
-    );
+    if (routeLoadingComponent && !shouldSuppressLoadingBoundaries(renderMode)) {
+      const RouteLoadingComponent = routeLoadingComponent;
+      // Route-level wrappers cover the full page branch in vinext's flat element
+      // transport, so their reset key includes the visible segment-state path.
+      // Dynamic param changes reset the pending boundary, while search-only changes
+      // preserve it.
+      routeChildren = (
+        <Suspense key={routeResetKey} fallback={<RouteLoadingComponent />}>
+          {routeChildren}
+        </Suspense>
+      );
+    }
   }
 
   const lastLayoutErrorModule =

@@ -50,6 +50,7 @@ import {
 import { matchRoutePattern, routePatternParts } from "../routing/route-pattern.js";
 import { scrollToHashTarget } from "./hash-scroll.js";
 import { setPagesRouterPopStateHandler } from "./pages-router-runtime.js";
+import { assertSafeNavigationUrl } from "./url-safety.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
@@ -299,6 +300,14 @@ type SSRContext = {
   locales?: string[];
   defaultLocale?: string;
   domainLocales?: VinextNextData["domainLocales"];
+  /**
+   * True when rendering a `getStaticPaths` fallback shell for a path that
+   * hasn't been pre-rendered yet (`fallback: true` + unlisted path). Mirrors
+   * `renderContext.isFallback` in Next.js's `render.tsx`: `getStaticProps`
+   * is skipped, the page renders with empty props, and `useRouter().isFallback`
+   * returns `true` so user code can show a loading state.
+   */
+  isFallback?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -1056,7 +1065,10 @@ function buildRouterValue(
     domainLocales,
     isReady: true,
     isPreview: false,
-    isFallback: typeof window !== "undefined" && nextData?.isFallback === true,
+    isFallback:
+      typeof window !== "undefined"
+        ? nextData?.isFallback === true
+        : _ssrState?.isFallback === true,
     ...methods,
     events: routerEvents,
   };
@@ -1129,6 +1141,19 @@ async function performNavigation(
   // that takes down the request pipeline.
   if (typeof window === "undefined") {
     throwNoRouterInstance();
+  }
+
+  // Block dangerous URI schemes (javascript:, data:, vbscript:) before any
+  // navigation work happens. Mirrors Next.js's Pages Router guard at
+  // packages/next/src/shared/lib/router/router.ts:1020-1028,1052-1060, which
+  // throws and (via React's event-handler runtime) surfaces a console.error
+  // that the `test/e2e/app-dir/javascript-urls/javascript-urls.test.ts` suite
+  // asserts on. `assertSafeNavigationUrl` emits the matching console.error
+  // before throwing so the same observable behaviour holds when the throw is
+  // swallowed by an async event handler (e.g. Link's click delegation).
+  assertSafeNavigationUrl(resolveUrl(url));
+  if (as !== undefined) {
+    assertSafeNavigationUrl(String(as));
   }
 
   const navigationLocale = resolveTransitionLocale(options?.locale);
@@ -1558,7 +1583,7 @@ const Router: typeof RouterMethods & Omit<NextRouter, keyof typeof RouterMethods
     isFallback: {
       enumerable: true,
       get(): boolean {
-        if (typeof window === "undefined") return false;
+        if (typeof window === "undefined") return _getSSRContext()?.isFallback === true;
         return (window.__NEXT_DATA__ as VinextNextData | undefined)?.isFallback === true;
       },
     },

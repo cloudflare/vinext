@@ -64,15 +64,15 @@ test.describe("Pages Router Production Build", () => {
   // This test verifies that the asset directory itself is served correctly for when
   // production client hydration is implemented.
   test("static asset directory serves JS files", async ({ request }) => {
-    // The production build outputs client bundles to dist/client/assets/
-    // Even though HTML doesn't reference them (no hydration), verify the
-    // asset server works for direct requests.
+    // The production build outputs client bundles to dist/client/_next/static/
+    // (Next.js's canonical layout). Even though HTML doesn't reference them
+    // (no hydration), verify the asset server works for direct requests.
     const response = await request.get(`${BASE}/`);
     expect(response.status()).toBe(200);
     const html = await response.text();
 
     // Check if any script tags exist — if so, verify they're served correctly
-    const jsMatch = html.match(/src="(\/assets\/[^"]+\.js)"/);
+    const jsMatch = html.match(/src="(\/_next\/static\/[^"]+\.js)"/);
     if (jsMatch) {
       const jsRes = await request.get(`${BASE}${jsMatch[1]}`);
       expect(jsRes.status()).toBe(200);

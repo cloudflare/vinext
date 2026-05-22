@@ -73,6 +73,9 @@ describe("app page cache helpers", () => {
     expect(htmlResponse?.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(htmlResponse?.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate");
     expect(htmlResponse?.headers.get("x-vinext-cache")).toBe("HIT");
+    // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/generate-static-params.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-root-params-getters/generate-static-params.test.ts
+    expect(htmlResponse?.headers.get("x-nextjs-cache")).toBe("HIT");
     await expect(htmlResponse?.text()).resolves.toBe("<h1>cached</h1>");
 
     const rscResponse = withEnvVar("__VINEXT_RSC_COMPATIBILITY_ID", "compat-a", () =>
@@ -86,6 +89,7 @@ describe("app page cache helpers", () => {
     expect(rscResponse?.headers.get("content-type")).toBe("text/x-component");
     expect(rscResponse?.headers.get("cache-control")).toBe("s-maxage=0, stale-while-revalidate");
     expect(rscResponse?.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
+    expect(rscResponse?.headers.get("x-nextjs-cache")).toBe("STALE");
     expect(await rscResponse?.arrayBuffer()).toEqual(rscData);
   });
 

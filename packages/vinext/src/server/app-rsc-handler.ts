@@ -393,6 +393,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       isProxy: options.isMiddlewareProxy,
       module: options.middlewareModule,
       request,
+      trailingSlash: options.trailingSlash,
     });
     if (middlewareResult.kind === "response") {
       return applyConfigHeadersToMiddlewareRedirect(middlewareResult.response, {

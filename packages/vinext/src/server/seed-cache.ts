@@ -31,9 +31,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { getCacheHandler, type CachedAppPageValue } from "vinext/shims/cache";
-import { isrCacheKey, setRevalidateDuration } from "./isr-cache.js";
-import { getOutputPath, getRscOutputPath } from "../build/prerender.js";
+import type { CachedAppPageValue } from "vinext/shims/cache";
+import { isrCacheKey, isrSetPrerenderedAppPage } from "./isr-cache.js";
+import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
 
 // ─── Manifest types ───────────────────────────────────────────────────────────
 
@@ -52,6 +52,21 @@ type PrerenderManifestRoute = {
   router?: "app" | "pages";
 };
 
+type PrerenderCacheSeedMetadata = {
+  expireSeconds?: number;
+  revalidateSeconds?: number;
+};
+
+type PrerenderCacheSeedOptions = {
+  buildAppPageHtmlKey?: (pathname: string) => string;
+  buildAppPageRscKey?: (pathname: string) => string;
+  writeAppPageEntry?: (
+    key: string,
+    data: CachedAppPageValue,
+    metadata: PrerenderCacheSeedMetadata,
+  ) => Promise<void>;
+};
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -63,7 +78,10 @@ type PrerenderManifestRoute = {
  * @param serverDir - Path to `dist/server/` (where vinext-prerender.json lives)
  * @returns The number of routes seeded (0 if no manifest or no renderable routes).
  */
-export async function seedMemoryCacheFromPrerender(serverDir: string): Promise<number> {
+export async function seedMemoryCacheFromPrerender(
+  serverDir: string,
+  options?: PrerenderCacheSeedOptions,
+): Promise<number> {
   const manifestPath = path.join(serverDir, "vinext-prerender.json");
   if (!fs.existsSync(manifestPath)) return 0;
 
@@ -80,7 +98,7 @@ export async function seedMemoryCacheFromPrerender(serverDir: string): Promise<n
 
   const trailingSlash = manifest.trailingSlash ?? false;
   const prerenderDir = path.join(serverDir, "prerendered-routes");
-  const handler = getCacheHandler();
+  const writeAppPageEntry = options?.writeAppPageEntry ?? createDefaultAppPageEntryWriter();
   let seeded = 0;
 
   for (const route of routes) {
@@ -88,22 +106,34 @@ export async function seedMemoryCacheFromPrerender(serverDir: string): Promise<n
     if (route.router !== "app") continue;
 
     const pathname = route.path ?? route.route;
+    // Fallback keys support older generated entries that do not export their
+    // runtime key builders. Current App Router entries inject buildAppPage*Key
+    // so seeded keys match process.env.__VINEXT_BUILD_ID exactly.
     const baseKey = isrCacheKey("app", pathname, buildId);
+    const htmlKey = options?.buildAppPageHtmlKey?.(pathname) ?? baseKey + ":html";
+    const rscKey = options?.buildAppPageRscKey?.(pathname) ?? baseKey + ":rsc";
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
     const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
 
     if (
       await seedHtml(
-        handler,
+        writeAppPageEntry,
         prerenderDir,
-        baseKey,
+        htmlKey,
         pathname,
         trailingSlash,
         revalidateSeconds,
         expireSeconds,
       )
     ) {
-      await seedRsc(handler, prerenderDir, baseKey, pathname, revalidateSeconds, expireSeconds);
+      await seedRsc(
+        writeAppPageEntry,
+        prerenderDir,
+        rscKey,
+        pathname,
+        revalidateSeconds,
+        expireSeconds,
+      );
       seeded++;
     }
   }
@@ -113,21 +143,10 @@ export async function seedMemoryCacheFromPrerender(serverDir: string): Promise<n
 
 // ─── Internals ────────────────────────────────────────────────────────────────
 
-/**
- * Build the CacheHandler context object from a revalidate value.
- * `revalidate: undefined` (static routes) → empty context → no expiry.
- */
-function revalidateCtx(
-  revalidateSeconds: number | undefined,
-  expireSeconds: number | undefined,
-): Record<string, unknown> {
-  if (revalidateSeconds === undefined) return {};
-  return expireSeconds === undefined
-    ? { cacheControl: { revalidate: revalidateSeconds }, revalidate: revalidateSeconds }
-    : {
-        cacheControl: { revalidate: revalidateSeconds, expire: expireSeconds },
-        revalidate: revalidateSeconds,
-      };
+function createDefaultAppPageEntryWriter(): NonNullable<
+  PrerenderCacheSeedOptions["writeAppPageEntry"]
+> {
+  return (key, data, metadata) => isrSetPrerenderedAppPage(key, data, metadata);
 }
 
 /**
@@ -135,9 +154,9 @@ function revalidateCtx(
  * Returns true if the file existed and was seeded.
  */
 async function seedHtml(
-  handler: ReturnType<typeof getCacheHandler>,
+  writeAppPageEntry: NonNullable<PrerenderCacheSeedOptions["writeAppPageEntry"]>,
   prerenderDir: string,
-  baseKey: string,
+  key: string,
   pathname: string,
   trailingSlash: boolean,
   revalidateSeconds: number | undefined,
@@ -156,12 +175,7 @@ async function seedHtml(
     status: undefined,
   };
 
-  const key = baseKey + ":html";
-  await handler.set(key, htmlValue, revalidateCtx(revalidateSeconds, expireSeconds));
-
-  if (revalidateSeconds !== undefined) {
-    setRevalidateDuration(key, revalidateSeconds);
-  }
+  await writeAppPageEntry(key, htmlValue, { expireSeconds, revalidateSeconds });
 
   return true;
 }
@@ -171,9 +185,9 @@ async function seedHtml(
  * No-op if the .rsc file doesn't exist on disk.
  */
 async function seedRsc(
-  handler: ReturnType<typeof getCacheHandler>,
+  writeAppPageEntry: NonNullable<PrerenderCacheSeedOptions["writeAppPageEntry"]>,
   prerenderDir: string,
-  baseKey: string,
+  key: string,
   pathname: string,
   revalidateSeconds: number | undefined,
   expireSeconds: number | undefined,
@@ -195,10 +209,5 @@ async function seedRsc(
     status: undefined,
   };
 
-  const key = baseKey + ":rsc";
-  await handler.set(key, rscValue, revalidateCtx(revalidateSeconds, expireSeconds));
-
-  if (revalidateSeconds !== undefined) {
-    setRevalidateDuration(key, revalidateSeconds);
-  }
+  await writeAppPageEntry(key, rscValue, { expireSeconds, revalidateSeconds });
 }

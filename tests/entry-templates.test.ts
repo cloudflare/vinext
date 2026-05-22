@@ -145,6 +145,29 @@ describe("App Router generated manifest construction", () => {
         params: [],
       },
       {
+        pattern: "/docs/:slug",
+        patternParts: ["docs", ":slug"],
+        pagePath: "/tmp/test/app/docs/[slug]/page.tsx",
+        routePath: null,
+        layouts: ["/tmp/test/app/layout.tsx"],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: "/tmp/test/app/docs/[slug]/loading.tsx",
+        errorPath: null,
+        layoutErrorPaths: [null],
+        notFoundPath: null,
+        notFoundPaths: [null],
+        forbiddenPaths: [null],
+        forbiddenPath: null,
+        unauthorizedPaths: [null],
+        unauthorizedPath: null,
+        routeSegments: ["docs", ":slug"],
+        templateTreePositions: [],
+        layoutTreePositions: [0],
+        isDynamic: true,
+        params: ["slug"],
+      },
+      {
         pattern: "/api",
         patternParts: ["api"],
         pagePath: null,
@@ -173,10 +196,21 @@ describe("App Router generated manifest construction", () => {
     expect(code).toContain("window.__VINEXT_LINK_PREFETCH_ROUTES__ = ");
     expect(code).toContain("registerNavigationRuntimeBootstrap({");
     expect(code).toContain("routeManifest: null");
-    expect(code).toContain('{"patternParts":["about"],"isDynamic":false}');
-    expect(code).toContain('{"patternParts":["blog",":slug"],"isDynamic":true}');
-    expect(code).toContain('{"patternParts":["modal-host"],"isDynamic":false}');
-    expect(code).not.toContain('{"patternParts":["api"],"isDynamic":false}');
+    expect(code).toContain(
+      '{"canPrefetchLoadingShell":false,"patternParts":["about"],"isDynamic":false}',
+    );
+    expect(code).toContain(
+      '{"canPrefetchLoadingShell":false,"patternParts":["blog",":slug"],"isDynamic":true}',
+    );
+    expect(code).toContain(
+      '{"canPrefetchLoadingShell":true,"patternParts":["docs",":slug"],"isDynamic":true}',
+    );
+    expect(code).toContain(
+      '{"canPrefetchLoadingShell":false,"patternParts":["modal-host"],"isDynamic":false}',
+    );
+    expect(code).not.toContain(
+      '{"canPrefetchLoadingShell":false,"patternParts":["api"],"isDynamic":false}',
+    );
   });
 
   it("embeds the RouteManifest read model in the browser entry", async () => {
