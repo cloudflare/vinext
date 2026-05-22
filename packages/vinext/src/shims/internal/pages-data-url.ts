@@ -71,7 +71,7 @@ export function buildPagesDataHref(
 }
 
 /** Result of matching a URL pathname against the registered route patterns. */
-export type PagesPatternMatch = {
+type PagesPatternMatch = {
   /** The matched route pattern in Next.js bracket format (e.g. `/blog/[slug]`). */
   pattern: string;
   /** Dynamic route params extracted from the URL. */
