@@ -3,6 +3,7 @@ import { defineConfig } from "vite-plus";
 import { randomUUID } from "node:crypto";
 
 const SHIMS_SRC = path.resolve(import.meta.dirname, "packages/vinext/src/shims");
+const MSW_SETUP = path.resolve(import.meta.dirname, "tests/_msw/setup.ts");
 
 export default defineConfig({
   staged: {
@@ -128,6 +129,7 @@ export default defineConfig({
         },
         test: {
           name: "unit",
+          setupFiles: [MSW_SETUP],
           include: ["tests/**/*.test.ts"],
           exclude: [
             "tests/fixtures/**/node_modules/**",
@@ -163,6 +165,7 @@ export default defineConfig({
         },
         test: {
           name: "integration",
+          setupFiles: [MSW_SETUP],
           include: [
             "tests/app-router.test.ts",
             "tests/api-handler.test.ts",

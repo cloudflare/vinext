@@ -3,6 +3,8 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
 import { createBuilder } from "vite-plus";
+import { http, HttpResponse } from "msw";
+import { server } from "./_msw/server.js";
 import vinext from "../packages/vinext/src/index.js";
 
 const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/font-google-multiple");
@@ -14,20 +16,24 @@ async function buildFontGoogleMultipleFixture(): Promise<string> {
   const ssrOutDir = path.join(outDir, "server", "ssr");
   const clientOutDir = path.join(outDir, "client");
 
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input: any) => {
-    const url = String(input);
-    if (url.includes("Geist") && !url.includes("Mono")) {
-      return new Response("@font-face { font-family: 'Geist'; src: url(/geist.woff2); }", {
-        status: 200,
-        headers: { "content-type": "text/css" },
-      });
-    }
-    return new Response("@font-face { font-family: 'Geist Mono'; src: url(/geist-mono.woff2); }", {
-      status: 200,
-      headers: { "content-type": "text/css" },
-    });
-  };
+  // Intercept the Google Fonts CSS fetch issued by the in-process Vite build.
+  // MSW Node intercepts both `globalThis.fetch` and `node:http`/`node:https`,
+  // so any request the bundler issues against fonts.googleapis.com is caught.
+  // Handlers are reset by the global `afterEach` in `tests/_msw/setup.ts`.
+  server.use(
+    http.get("https://fonts.googleapis.com/*", ({ request }) => {
+      const url = request.url;
+      if (url.includes("Geist") && !url.includes("Mono")) {
+        return HttpResponse.text("@font-face { font-family: 'Geist'; src: url(/geist.woff2); }", {
+          headers: { "content-type": "text/css" },
+        });
+      }
+      return HttpResponse.text(
+        "@font-face { font-family: 'Geist Mono'; src: url(/geist-mono.woff2); }",
+        { headers: { "content-type": "text/css" } },
+      );
+    }),
+  );
 
   const nodeModulesLink = path.join(APP_FIXTURE_DIR, "node_modules");
 
@@ -54,7 +60,6 @@ async function buildFontGoogleMultipleFixture(): Promise<string> {
 
     return path.join(outDir, "server", "index.js");
   } finally {
-    globalThis.fetch = originalFetch;
     await fs.unlink(nodeModulesLink).catch(() => {});
   }
 }

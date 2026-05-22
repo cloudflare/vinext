@@ -22,6 +22,7 @@
     "@mdx-js/rollup": "catalog:"
   },
   "devDependencies": {
+    "@mswjs/interceptors": "catalog:",
     "@playwright/test": "catalog:",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
@@ -30,6 +31,7 @@
     "@vitejs/plugin-rsc": "catalog:",
     "@vitest/coverage-istanbul": "catalog:",
     "knip": "catalog:",
+    "msw": "catalog:",
     "next": "catalog:",
     "playwright": "catalog:",
     "react": "catalog:",
