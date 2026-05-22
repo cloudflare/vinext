@@ -50,8 +50,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout vinext
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
           ref: ${{ inputs.vinext-ref || github.ref }}
 
       - uses: ./.github/actions/setup
@@ -62,8 +63,9 @@ jobs:
         run: corepack enable pnpm
 
       - name: Checkout Next.js
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
           repository: vercel/next.js
           ref: ${{ inputs.next-ref || 'v16.2.6' }}
           path: next.js
@@ -195,7 +197,7 @@ jobs:
       # be re-submitted manually (e.g. if the live POST hiccupped) or
       # inspected when debugging misclassifications.
       - name: Upload suite router classification
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nextjs-suite-routers
           path: |
@@ -205,7 +207,7 @@ jobs:
           retention-days: 14
 
       - name: Save build artifacts
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           # The test job needs: vinext built dist + workspace metadata (for
           # e2e-deploy.sh dependency injection), the scripts, the prepared
@@ -247,7 +249,7 @@ jobs:
 
     steps:
       - name: Restore build artifacts
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             .
@@ -288,11 +290,13 @@ jobs:
           NEXT_TEST_DEPLOY_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-deploy.sh
           NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-logs.sh
           NEXT_TEST_CLEANUP_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-cleanup.sh
-        run: node run-tests.js --timings --retries 0 -g ${{ matrix.group }} -c ${{ inputs.test-concurrency || '2' }} --type e2e
+          GROUP: ${{ matrix.group }}
+          CONCURRENCY: ${{ inputs.test-concurrency || '2' }}
+        run: node run-tests.js --timings --retries 0 -g "$GROUP" -c "$CONCURRENCY" --type e2e
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-results-${{ strategy.job-index }}
           path: next.js/test/**/*.results.json
@@ -301,7 +305,7 @@ jobs:
 
       - name: Upload deploy debug logs
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: deploy-debug-${{ strategy.job-index }}
           path: reports/nextjs-deploy-debug/
@@ -316,7 +320,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Download all test results
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: test-results-*
           path: results
@@ -324,7 +328,7 @@ jobs:
 
       - name: Generate report
         id: report
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           # Resolve the GitHub Actions expressions to env vars once, instead
           # of splicing `${{ ... }}` into JS string literals further down.
@@ -517,7 +521,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: deploy-suite-report
           # Include both files: the human-readable report and the
