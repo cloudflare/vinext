@@ -179,7 +179,7 @@ function countUtf8Bytes(input: string): number {
 }
 
 function isVisibleCommitVersion(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function parseReplayWindow(

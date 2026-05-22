@@ -152,6 +152,56 @@ describe("ClientReuseManifest protocol", () => {
     });
   });
 
+  it("rejects unsafe visible commit versions from the client boundary", () => {
+    const result = parseClientReuseManifestHeader(
+      JSON.stringify({
+        entries: [],
+        hashAlgorithm: CLIENT_REUSE_MANIFEST_HASH_ALGORITHM,
+        replayWindow: {
+          validFromVisibleCommitVersion: 1,
+          validUntilVisibleCommitVersion: 1,
+        },
+        schemaVersion: CLIENT_REUSE_MANIFEST_SCHEMA_VERSION,
+        visibleCommitVersion: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: "rejected",
+      rejection: {
+        code: "SKIP_VISIBLE_COMMIT_VERSION_INVALID",
+        fields: { visibleCommitVersion: null },
+      },
+    });
+  });
+
+  it("rejects unsafe replay window bounds from the client boundary", () => {
+    const result = parseClientReuseManifestHeader(
+      JSON.stringify({
+        entries: [],
+        hashAlgorithm: CLIENT_REUSE_MANIFEST_HASH_ALGORITHM,
+        replayWindow: {
+          validFromVisibleCommitVersion: 1,
+          validUntilVisibleCommitVersion: Number.MAX_SAFE_INTEGER + 1,
+        },
+        schemaVersion: CLIENT_REUSE_MANIFEST_SCHEMA_VERSION,
+        visibleCommitVersion: 1,
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: "rejected",
+      rejection: {
+        code: "SKIP_REPLAY_WINDOW_INVALID",
+        fields: {
+          validFromVisibleCommitVersion: 1,
+          validUntilVisibleCommitVersion: null,
+          visibleCommitVersion: 1,
+        },
+      },
+    });
+  });
+
   it("rejects replayed manifests outside the visible commit version window", () => {
     const manifest = createClientReuseManifest({
       entries: [],
