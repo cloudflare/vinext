@@ -33,6 +33,10 @@
       "types": "./dist/server/prod-server.d.ts",
       "import": "./dist/server/prod-server.js"
     },
+    "./server/pages-data-route": {
+      "types": "./dist/server/pages-data-route.d.ts",
+      "import": "./dist/server/pages-data-route.js"
+    },
     "./server/pages-i18n": {
       "types": "./dist/server/pages-i18n.d.ts",
       "import": "./dist/server/pages-i18n.js"
