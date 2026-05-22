@@ -51,4 +51,37 @@ test.describe("Pages Router navigation on Cloudflare Workers", () => {
     html = await res!.text();
     expect(html).toContain('"page":"/ssr"');
   });
+
+  // Regression guard for PR #1412: a Link click on a hydrated Pages Router app
+  // must fetch /_next/data/<buildId>/<page>.json (the JSON data endpoint), not
+  // the full HTML page. If the loader manifest (__VINEXT_PAGE_LOADERS__) stops
+  // being exposed by the build, navigateClient() silently falls back to the HTML
+  // path — every other navigation test still passes, but the JSON-path
+  // optimisation is gone. This test fails loudly in that scenario.
+  test("Link click fetches /_next/data JSON, not full HTML", async ({ page }) => {
+    await page.goto(BASE + "/");
+    // Wait for hydration to expose the loader manifest.
+    await page.waitForFunction(() => (window as any).__VINEXT_HYDRATED_AT !== undefined);
+
+    const buildId = await page.evaluate(() => (window as any).__NEXT_DATA__.buildId);
+    expect(buildId).toBeTruthy();
+
+    const dataRequests: string[] = [];
+    const htmlRequests: string[] = [];
+    page.on("request", (req) => {
+      const url = req.url();
+      if (url.includes(`/_next/data/${buildId}/ssr.json`)) {
+        dataRequests.push(url);
+      } else if (url === `${BASE}/ssr` && req.resourceType() === "document") {
+        htmlRequests.push(url);
+      }
+    });
+
+    await page.click('a[href="/ssr"]');
+    await page.waitForURL("**/ssr");
+    await expect(page.locator("h1")).toHaveText("Server-Side Rendered on Workers");
+
+    expect(dataRequests.length).toBeGreaterThan(0);
+    expect(htmlRequests).toEqual([]);
+  });
 });
