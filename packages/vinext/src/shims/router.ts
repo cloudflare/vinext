@@ -156,6 +156,8 @@ function resolveUrl(url: string | UrlObject): string {
  * data fetching, as for the browser URL). We collapse them because vinext's
  * navigateClient() fetches HTML from the target URL, so `as` must be a
  * server-resolvable path. Purely decorative `as` values are not supported.
+ * Pages error routes are handled as a narrow exception below because Next.js
+ * treats their href as the component route while preserving `as` in history.
  */
 function resolveNavigationTarget(
   url: string | UrlObject,
@@ -171,6 +173,42 @@ function getCurrentUrlLocale(): string | undefined {
     domainLocales: getDomainLocales(),
     hostname: getCurrentHostname(),
   });
+}
+
+function getLocalPathname(url: string): string | null {
+  if (typeof window === "undefined") return null;
+  if (isAbsoluteOrProtocolRelativeUrl(url)) {
+    const localPath = toSameOriginAppPath(url, __basePath);
+    if (localPath == null) return null;
+    return stripBasePath(new URL(localPath, window.location.href).pathname, __basePath);
+  }
+  try {
+    return stripBasePath(new URL(url, window.location.href).pathname, __basePath);
+  } catch {
+    return null;
+  }
+}
+
+function isPagesErrorRouteHref(url: string): boolean {
+  const pathname = getLocalPathname(url);
+  return pathname === "/404" || pathname === "/_error";
+}
+
+function resolvePagesErrorHtmlFetchUrl(
+  url: string | UrlObject,
+  locale: string | undefined,
+): string | null {
+  const resolvedUrl = applyNavigationLocale(resolveUrl(url), locale);
+  if (!isPagesErrorRouteHref(resolvedUrl)) return null;
+
+  const parsed = new URL(resolvedUrl, window.location.href);
+  const appPathname = stripBasePath(parsed.pathname, __basePath);
+  const fetchPathname = appPathname === "/_error" ? "/404" : appPathname;
+  const fetchTarget = `${fetchPathname}${parsed.search}${parsed.hash}`;
+  return normalizePathTrailingSlash(
+    toBrowserNavigationHref(fetchTarget, window.location.href, __basePath),
+    __trailingSlash,
+  );
 }
 
 function resolveTransitionLocale(locale: TransitionOptions["locale"]): string | undefined {
@@ -579,7 +617,15 @@ function scheduleHardNavigationAndThrow(url: string, message: string): never {
  * Throws on hard-navigation failures (non-OK response, missing data) so the
  * caller can distinguish success from failure for event emission.
  */
-async function navigateClient(url: string, fetchUrl = url): Promise<void> {
+type NavigateClientOptions = {
+  allowNotFoundResponse?: boolean;
+};
+
+async function navigateClient(
+  url: string,
+  fetchUrl = url,
+  options: NavigateClientOptions = {},
+): Promise<void> {
   if (typeof window === "undefined") return;
 
   const root = window.__VINEXT_ROOT__;
@@ -620,7 +666,7 @@ async function navigateClient(url: string, fetchUrl = url): Promise<void> {
     }
     assertStillCurrent();
 
-    if (!res.ok) {
+    if (!res.ok && !(options.allowNotFoundResponse === true && res.status === 404)) {
       // Set window.location.href first so the browser navigates to the correct
       // page even if the caller suppresses the error.  The assignment schedules
       // the navigation asynchronously (as a task), so synchronous routeChangeError
@@ -749,9 +795,10 @@ async function runNavigateClient(
   fullUrl: string,
   resolvedUrl: string,
   fetchUrl = fullUrl,
+  options: NavigateClientOptions = {},
 ): Promise<"completed" | "cancelled" | "failed"> {
   try {
-    await navigateClient(fullUrl, fetchUrl);
+    await navigateClient(fullUrl, fetchUrl, options);
     return "completed";
   } catch (err: unknown) {
     routerEvents.emit("routeChangeError", err, resolvedUrl, { shallow: false });
@@ -923,7 +970,10 @@ async function performNavigation(
     toBrowserNavigationHref(resolved, window.location.href, __basePath),
     __trailingSlash,
   );
-  const htmlFetchUrl = getPagesHtmlFetchUrl(full, navigationLocale);
+  const errorRouteHtmlFetchUrl = resolvePagesErrorHtmlFetchUrl(url, navigationLocale);
+  const htmlFetchUrl = errorRouteHtmlFetchUrl ?? getPagesHtmlFetchUrl(full, navigationLocale);
+  const navigateOptions: NavigateClientOptions =
+    errorRouteHtmlFetchUrl === null ? {} : { allowNotFoundResponse: true };
   const shallow = options?.shallow ?? false;
   const doScroll = options?.scroll !== false;
 
@@ -944,7 +994,7 @@ async function performNavigation(
   routerEvents.emit("beforeHistoryChange", resolved, { shallow });
   updateHistory(mode, full);
   if (!shallow) {
-    const result = await runNavigateClient(full, resolved, htmlFetchUrl);
+    const result = await runNavigateClient(full, resolved, htmlFetchUrl, navigateOptions);
     if (result === "cancelled") return true;
     if (result === "failed") return false;
   }

@@ -145,6 +145,38 @@ export default function middleware() {
   );
 }
 
+function writeBasePathErrorPagesFixture(rootDir: string): void {
+  fs.mkdirSync(path.join(rootDir, "pages"), { recursive: true });
+  const nmLink = path.join(rootDir, "node_modules");
+  if (!fs.existsSync(nmLink)) {
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), nmLink);
+  }
+  fs.writeFileSync(path.join(rootDir, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
+  fs.writeFileSync(
+    path.join(rootDir, "pages", "[slug].tsx"),
+    `import { useRouter } from "next/router";
+
+export default function Page() {
+  const router = useRouter();
+  return <p id="slug">slug: {router.query.slug}</p>;
+}
+`,
+  );
+  fs.writeFileSync(
+    path.join(rootDir, "pages", "404.tsx"),
+    `import NextError from "next/error";
+
+export default function Page() {
+  return <NextError statusCode={404} />;
+}
+`,
+  );
+  fs.writeFileSync(
+    path.join(rootDir, "next.config.mjs"),
+    `export default { basePath: "/docs" };\n`,
+  );
+}
+
 async function buildPagesFixtureToOutDir(rootDir: string, outDir: string): Promise<void> {
   await build({
     root: rootDir,
@@ -2600,6 +2632,140 @@ export default function CounterPage() {
         await new Promise<void>((resolve) => prodServer.close(() => resolve()));
       }
     } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("renders pages/404 for basePath route misses after stripping one basePath segment", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-basepath-404-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+      await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+      await fsp.writeFile(
+        path.join(tmpRoot, "next.config.mjs"),
+        `export default { basePath: "/docs" };\n`,
+      );
+      await fsp.writeFile(path.join(tmpRoot, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "404.tsx"),
+        `export default function Custom404() {
+  return <main id="custom-404">This page could not be found</main>;
+}
+`,
+      );
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "hello.tsx"),
+        `export default function Hello() {
+  return <main id="hello">Hello World</main>;
+}
+`,
+      );
+
+      await buildPagesFixtureToOutDir(tmpRoot, fixtureOutDir);
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir: fixtureOutDir,
+        }),
+      );
+
+      try {
+        const addr = prodServer.address() as { port: number };
+        const baseUrl = `http://127.0.0.1:${addr.port}`;
+
+        const res = await fetch(`${baseUrl}/docs/docs/other-page`);
+        expect(res.status).toBe(404);
+        const html = await res.text();
+        expect(html).toContain('id="custom-404"');
+        expect(html).toContain("This page could not be found");
+        expect(html).toContain('"page":"/404"');
+      } finally {
+        await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      }
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  // Ported from Next.js:
+  // test/e2e/basepath/error-pages.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/error-pages.test.ts
+  it("renders the Pages Router error route while preserving a masked basePath URL", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-error-nav-"));
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+    let prodServer: import("node:http").Server | undefined;
+    let browser: import("playwright").Browser | undefined;
+
+    try {
+      await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+      writeBasePathErrorPagesFixture(tmpRoot);
+      await buildPagesFixtureToOutDir(tmpRoot, fixtureOutDir);
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir: fixtureOutDir,
+        }),
+      );
+
+      const { chromium } = await import("playwright");
+      browser = await chromium.launch({ headless: true });
+      const page = await browser.newPage();
+      const documentRequests: string[] = [];
+      page.on("request", (request) => {
+        if (
+          request.resourceType() === "document" ||
+          request.headers().accept?.includes("text/html")
+        ) {
+          documentRequests.push(new URL(request.url()).pathname);
+        }
+      });
+      const addr = prodServer.address() as { port: number };
+      const baseUrl = `http://127.0.0.1:${addr.port}`;
+      const errorRouteResponse = await fetch(`${baseUrl}/docs/404`);
+      const errorRouteHtml = await errorRouteResponse.text();
+      expect(errorRouteResponse.status).toBe(404);
+      expect(errorRouteHtml).toContain('"page":"/404"');
+      expect(errorRouteHtml).toContain('"pageModuleUrl"');
+
+      await page.goto(`${baseUrl}/docs/slug-1`);
+      await expect.poll(() => page.locator("#slug").textContent()).toBe("slug: slug-1");
+      await page.evaluate(() => {
+        (window as any).__VINEXT_TEST_ROUTE_ERRORS__ = [];
+        (window as any).next?.router?.events.on("routeChangeError", (err: Error, url: string) => {
+          (window as any).__VINEXT_TEST_ROUTE_ERRORS__.push(`${url}: ${err.message}`);
+        });
+      });
+
+      await page.evaluate(() => (window as any).next?.router?.push("/404", "/slug-2"));
+
+      await expect.poll(() => documentRequests).toContain("/docs/404");
+      await page.waitForTimeout(100);
+      expect(await page.evaluate(() => (window as any).__VINEXT_TEST_ROUTE_ERRORS__)).toEqual([]);
+      expect(documentRequests).not.toContain("/docs/slug-2");
+      await expect
+        .poll(() => page.locator("body").textContent())
+        .toContain("This page could not be found");
+      expect(await page.evaluate(() => window.location.pathname)).toBe("/docs/slug-2");
+      expect(await page.evaluate(() => window.__NEXT_DATA__?.page)).toBe("/404");
+    } finally {
+      await browser?.close();
+      await new Promise<void>((resolve) => {
+        if (!prodServer) {
+          resolve();
+          return;
+        }
+        prodServer.close(() => resolve());
+      });
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });

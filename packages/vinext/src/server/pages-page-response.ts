@@ -70,6 +70,8 @@ type RenderPagesPageResponseOptions = {
   routeUrl: string;
   safeJsonStringify: (value: unknown) => string;
   scriptNonce?: string;
+  statusCode?: number;
+  vinext?: VinextNextData["__vinext"];
 };
 
 function buildPagesFontHeadHtml(
@@ -265,9 +267,13 @@ function schedulePagesIsrCacheWrite(options: {
   getRequestExecutionContext()?.waitUntil(cacheWritePromise);
 }
 
-function applyGsspHeaders(headers: Headers, gsspRes: PagesGsspResponse | null): number {
+function applyGsspHeaders(
+  headers: Headers,
+  gsspRes: PagesGsspResponse | null,
+  statusCode?: number,
+): number {
   if (!gsspRes) {
-    return 200;
+    return statusCode ?? 200;
   }
 
   const gsspHeaders = gsspRes.getHeaders();
@@ -289,7 +295,7 @@ function applyGsspHeaders(headers: Headers, gsspRes: PagesGsspResponse | null): 
     }
   }
   headers.set("Content-Type", "text/html");
-  return gsspRes.statusCode;
+  return statusCode ?? gsspRes.statusCode;
 }
 
 export async function renderPagesPageResponse(
@@ -318,6 +324,7 @@ export async function renderPagesPageResponse(
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
     scriptNonce: options.scriptNonce,
+    vinext: options.vinext,
   });
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
   // Render the page FIRST so that <Head> and other SSR state collectors
@@ -374,7 +381,7 @@ export async function renderPagesPageResponse(
   );
 
   const responseHeaders = new Headers({ "Content-Type": "text/html" });
-  const finalStatus = applyGsspHeaders(responseHeaders, options.gsspRes);
+  const finalStatus = applyGsspHeaders(responseHeaders, options.gsspRes, options.statusCode);
 
   if (options.scriptNonce) {
     responseHeaders.set("Cache-Control", "no-store, must-revalidate");

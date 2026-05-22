@@ -449,6 +449,35 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
   return tags.join("\\n  ");
 }
 
+function getManifestFilesForModule(manifest, moduleId) {
+  const m = (manifest && Object.keys(manifest).length > 0)
+    ? manifest
+    : (typeof globalThis !== "undefined" && globalThis.__VINEXT_SSR_MANIFEST__) || null;
+  if (!m || !moduleId) return null;
+
+  var files = m[moduleId];
+  if (files) return files;
+
+  for (var key in m) {
+    if (moduleId.endsWith("/" + key) || moduleId === key) {
+      return m[key];
+    }
+  }
+  return null;
+}
+
+function resolveClientModuleUrl(manifest, moduleId) {
+  const files = getManifestFilesForModule(manifest, moduleId);
+  if (!files) return undefined;
+  for (var i = 0; i < files.length; i++) {
+    var file = files[i];
+    if (!file || !file.endsWith(".js")) continue;
+    if (file.charAt(0) !== "/") file = "/" + file;
+    return file;
+  }
+  return undefined;
+}
+
 export async function renderPage(request, url, manifest, ctx, middlewareHeaders, options) {
   if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders, options));
   return _renderPage(request, url, manifest, middlewareHeaders, options);
@@ -456,6 +485,8 @@ export async function renderPage(request, url, manifest, ctx, middlewareHeaders,
 
 async function _renderPage(request, url, manifest, middlewareHeaders, options) {
   const isDataReq = !!(options && options.isDataReq);
+  const statusCode = options && typeof options.statusCode === "number" ? options.statusCode : undefined;
+  const asPath = options && typeof options.asPath === "string" ? options.asPath : undefined;
   const localeInfo = i18nConfig
     ? resolvePagesI18nRequest(
         url,
@@ -482,6 +513,14 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     if (isDataReq) {
       return __buildNextDataNotFoundResponse();
     }
+    const notFoundMatch = matchRoute("/404", pageRoutes);
+    if (notFoundMatch && notFoundMatch.route.pattern === "/404") {
+      return _renderPage(request, "/404", manifest, middlewareHeaders, {
+        ...(options || {}),
+        asPath: routeUrl,
+        statusCode: 404,
+      });
+    }
     return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
       { status: 404, headers: { "Content-Type": "text/html" } });
   }
@@ -494,12 +533,13 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     ensureFetchPatch();
     try {
       const routePattern = patternToNextFormat(route.pattern);
+      const renderStatusCode = statusCode ?? (routePattern === "/404" ? 404 : undefined);
       const query = mergeRouteParamsIntoQuery(parseQuery(routeUrl), params);
       if (typeof setSSRContext === "function") {
         setSSRContext({
           pathname: routePattern,
           query,
-          asPath: routeUrl,
+          asPath: asPath || routeUrl,
           locale: locale,
           locales: i18nConfig ? i18nConfig.locales : undefined,
           defaultLocale: currentDefaultLocale,
@@ -542,7 +582,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
             setSSRContext({
               pathname: routePattern,
               query,
-              asPath: routeUrl,
+              asPath: asPath || routeUrl,
               locale: locale,
               locales: i18nConfig ? i18nConfig.locales : undefined,
               defaultLocale: currentDefaultLocale,
@@ -619,7 +659,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         setSSRContext({
           pathname: routePattern,
           query,
-          asPath: routeUrl,
+          asPath: asPath || routeUrl,
           locale: locale,
           locales: i18nConfig ? i18nConfig.locales : undefined,
           defaultLocale: currentDefaultLocale,
@@ -658,6 +698,8 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       if (route.filePath) pageModuleIds.push(route.filePath);
       if (_appAssetPath) pageModuleIds.push(_appAssetPath);
       const assetTags = collectAssetTags(manifest, pageModuleIds, scriptNonce);
+      const pageModuleUrl = resolveClientModuleUrl(manifest, route.filePath);
+      const appModuleUrl = resolveClientModuleUrl(manifest, _appAssetPath);
 
       return __renderPagesPageResponse({
         assetTags,
@@ -721,6 +763,11 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         routeUrl,
         safeJsonStringify,
         scriptNonce,
+        statusCode: renderStatusCode,
+        vinext: {
+          pageModuleUrl,
+          appModuleUrl,
+        },
       });
     } catch (e) {
       console.error("[vinext] SSR error:", e);
