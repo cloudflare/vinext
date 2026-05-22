@@ -441,6 +441,26 @@ describe("Pages Router integration", () => {
     expect(setCookie).toContain("gssp_token=abc123");
   });
 
+  // Regression for #1461: gSSP responses must carry the default Cache-Control
+  // header that Next.js applies for getServerSideProps pages so CDNs and
+  // browsers do not cache the per-request payload.
+  it("sets the default Cache-Control header on getServerSideProps responses", async () => {
+    const res = await fetch(`${baseUrl}/ssr`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
+
+  // Regression for #1461: when getServerSideProps overrides Cache-Control via
+  // res.setHeader, the user-provided value must reach the final HTTP response
+  // instead of being clobbered by the default.
+  it("preserves res.setHeader Cache-Control overrides set in getServerSideProps", async () => {
+    const res = await fetch(`${baseUrl}/ssr-cache-control`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("public, max-age=42");
+  });
+
   it("getServerSideProps calling res.end() short-circuits the response", async () => {
     const res = await fetch(`${baseUrl}/ssr-res-end`);
     // gSSP calls res.end() with a JSON body and status 202
@@ -2847,8 +2867,18 @@ export default function CounterPage() {
       // Test: SSR page with getServerSideProps
       const ssrRes = await fetch(`${prodUrl}/ssr`);
       expect(ssrRes.status).toBe(200);
+      // Regression for #1461: gssp pages get the default Cache-Control header.
+      expect(ssrRes.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
       const ssrHtml = await ssrRes.text();
       expect(ssrHtml).toContain("Server-Side Rendered");
+
+      // Regression for #1461: user-set Cache-Control via res.setHeader sticks.
+      const ssrCcRes = await fetch(`${prodUrl}/ssr-cache-control`);
+      expect(ssrCcRes.status).toBe(200);
+      expect(ssrCcRes.headers.get("cache-control")).toBe("public, max-age=42");
+      await ssrCcRes.text();
 
       // Regression test for #1354: a page that exports `getServerSideProps`
       // via a separate `export { getServerSideProps }` re-export must build
