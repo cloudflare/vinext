@@ -20,6 +20,7 @@ import {
 import { VINEXT_RSC_RENDER_MODE_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 
@@ -322,6 +323,14 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
     const normal = normalized(
       normalizeRscRequest(req("/page.rsc", { [VINEXT_RSC_RENDER_MODE_HEADER]: "true" }), ""),
     );
+    const prefetchShell = normalized(
+      normalizeRscRequest(
+        req("/page.rsc", {
+          [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        }),
+        "",
+      ),
+    );
     const html = normalized(
       normalizeRscRequest(
         req("/page", { [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI }),
@@ -330,6 +339,7 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
     );
 
     expect(refresh.renderMode).toBe(APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI);
+    expect(prefetchShell.renderMode).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
     expect(normal.renderMode).toBe(APP_RSC_RENDER_MODE_NAVIGATION);
     expect(html.renderMode).toBe(APP_RSC_RENDER_MODE_NAVIGATION);
   });

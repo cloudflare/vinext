@@ -48,6 +48,13 @@ declare global {
     __VINEXT_HYDRATED_AT: number | undefined;
 
     /**
+     * Next.js test/runtime compatibility hydration marker.
+     */
+    __NEXT_HYDRATED: boolean | undefined;
+    __NEXT_HYDRATED_AT: number | undefined;
+    __NEXT_HYDRATED_CB: (() => void) | undefined;
+
+    /**
      * The cached `_app` component for Pages Router.
      * Written and read by `shims/router.ts` to avoid re-importing on every
      * client-side navigation.

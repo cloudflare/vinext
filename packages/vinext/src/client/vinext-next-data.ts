@@ -9,8 +9,9 @@ import type { NEXT_DATA } from "vinext/shims/internal/utils";
 import { isUnknownRecord } from "../utils/record.js";
 
 export type VinextLinkPrefetchRoute = {
-  patternParts: string[];
+  canPrefetchLoadingShell: boolean;
   isDynamic: boolean;
+  patternParts: string[];
 };
 
 export type VinextNextData = {

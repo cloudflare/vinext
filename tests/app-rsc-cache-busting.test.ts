@@ -13,7 +13,10 @@ import {
   VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
-import { APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import { withEnvVar } from "./env-test-helpers.js";
 
@@ -75,6 +78,16 @@ describe("App Router RSC cache-busting", () => {
 
     expect(navigationHash).toBe("");
     expect(refreshHash).not.toBe("");
+  });
+
+  it("varies loading-shell prefetch payloads from normal navigations", async () => {
+    const navigationHash = await computeRscCacheBustingSearchParam(createRscRequestHeaders());
+    const prefetchShellHash = await computeRscCacheBustingSearchParam(
+      createRscRequestHeaders({ renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL }),
+    );
+
+    expect(navigationHash).toBe("");
+    expect(prefetchShellHash).not.toBe("");
   });
 
   it("normalizes invalid render modes to normal navigation for cache-busting", async () => {

@@ -26,7 +26,7 @@ import { reportRequestError, type OnRequestErrorContext } from "./instrumentatio
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
-  shouldUsePreserveUiCacheVariant,
+  getRscRenderModeCacheVariant,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import type { RenderObservation } from "./cache-proof.js";
@@ -236,7 +236,7 @@ export function appIsrHtmlKey(pathname: string): string {
  * Build the ISR cache key for an RSC payload.
  *
  * Note: the key format changed from `rsc:<hash>` to `rsc:slots:<hash>` (and
- * optionally `rsc:slots:<hash>:preserve-ui`). Existing cached entries under
+ * optionally `rsc:slots:<hash>:<render-mode-variant>`). Existing cached entries under
  * the old format will become unreachable after deployment. This is acceptable
  * because ISR entries have TTLs and will be regenerated on the next request.
  */
@@ -248,7 +248,7 @@ export function appIsrRscKey(
   const normalizedMountedSlotsHeader = normalizeMountedSlotsHeader(mountedSlotsHeader);
   const variant = [
     normalizedMountedSlotsHeader ? `slots:${fnv1a64(normalizedMountedSlotsHeader)}` : null,
-    shouldUsePreserveUiCacheVariant(renderMode) ? "preserve-ui" : null,
+    getRscRenderModeCacheVariant(renderMode),
   ]
     .filter((part) => part !== null)
     .join(":");
