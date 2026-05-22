@@ -84,6 +84,7 @@ type DispatchMatchedPageOptions<TRoute> = {
   route: TRoute;
   scriptNonce?: string;
   searchParams: URLSearchParams;
+  segmentPrefetchPath: string | null;
 };
 
 type DispatchMatchedRouteHandlerOptions<TRoute> = {
@@ -231,7 +232,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const normalized = normalizeRscRequest(request, options.basePath);
   if (normalized instanceof Response) return normalized;
 
-  const { url, isRscRequest, interceptionContextHeader, mountedSlotsHeader } = normalized;
+  const { url, isRscRequest, interceptionContextHeader, mountedSlotsHeader, segmentPrefetchPath } =
+    normalized;
   let { pathname, cleanPathname } = normalized;
 
   const prerenderEndpointResponse = await handleAppPrerenderEndpoint(request, {
@@ -469,6 +471,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     route,
     scriptNonce,
     searchParams: url.searchParams,
+    segmentPrefetchPath,
   });
 }
 

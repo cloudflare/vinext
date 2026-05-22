@@ -355,3 +355,67 @@ describe("normalizeMountedSlotsHeader", () => {
     expect(normalizeMountedSlotsHeader("modal")).toBe("modal");
   });
 });
+
+// ── Segment-prefetch URL normalization ──────────────────────────────────────
+
+describe("normalizeRscRequest — segment-prefetch URLs", () => {
+  it("detects a route tree prefetch and rewrites to the original page path", () => {
+    const result = normalized(
+      normalizeRscRequest(req("/dashboard.segments/_tree.segment.rsc"), ""),
+    );
+    expect(result.pathname).toBe("/dashboard");
+    expect(result.cleanPathname).toBe("/dashboard");
+    expect(result.isRscRequest).toBe(true);
+    expect(result.segmentPrefetchPath).toBe("/_tree");
+  });
+
+  it("detects a page segment prefetch and rewrites to the original page path", () => {
+    const result = normalized(
+      normalizeRscRequest(req("/dashboard.segments/__PAGE__.segment.rsc"), ""),
+    );
+    expect(result.pathname).toBe("/dashboard");
+    expect(result.cleanPathname).toBe("/dashboard");
+    expect(result.isRscRequest).toBe(true);
+    expect(result.segmentPrefetchPath).toBe("/__PAGE__");
+  });
+
+  it("handles root page segment-prefetch URL", () => {
+    const result = normalized(normalizeRscRequest(req("/.segments/_tree.segment.rsc"), ""));
+    expect(result.pathname).toBe("/");
+    expect(result.cleanPathname).toBe("/");
+    expect(result.isRscRequest).toBe(true);
+    expect(result.segmentPrefetchPath).toBe("/_tree");
+  });
+
+  it("handles a deeply nested segment path", () => {
+    const result = normalized(
+      normalizeRscRequest(req("/dashboard/settings.segments/tab/profile/__PAGE__.segment.rsc"), ""),
+    );
+    expect(result.pathname).toBe("/dashboard/settings");
+    expect(result.cleanPathname).toBe("/dashboard/settings");
+    expect(result.isRscRequest).toBe(true);
+    expect(result.segmentPrefetchPath).toBe("/tab/profile/__PAGE__");
+  });
+
+  it("preserves isRscRequest=false for non-segment-prefetch URLs", () => {
+    const result = normalized(normalizeRscRequest(req("/dashboard"), ""));
+    expect(result.isRscRequest).toBe(false);
+    expect(result.segmentPrefetchPath).toBeNull();
+  });
+
+  it("preserves isRscRequest=true for regular .rsc URLs", () => {
+    const result = normalized(normalizeRscRequest(req("/dashboard.rsc"), ""));
+    expect(result.isRscRequest).toBe(true);
+    expect(result.segmentPrefetchPath).toBeNull();
+  });
+
+  it("works with basePath", () => {
+    const result = normalized(
+      normalizeRscRequest(req("/app/dashboard.segments/_tree.segment.rsc"), "/app"),
+    );
+    expect(result.pathname).toBe("/dashboard");
+    expect(result.cleanPathname).toBe("/dashboard");
+    expect(result.isRscRequest).toBe(true);
+    expect(result.segmentPrefetchPath).toBe("/_tree");
+  });
+});
