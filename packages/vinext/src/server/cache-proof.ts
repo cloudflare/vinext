@@ -366,6 +366,11 @@ export type StaticLayoutReuseProof = Readonly<{
   variant: CacheVariant;
 }>;
 
+export type StaticLayoutArtifactReuseProof = StaticLayoutReuseProof &
+  Readonly<{
+    candidateArtifactCompatibility: ArtifactCompatibilityEnvelope;
+  }>;
+
 export type BuildStaticLayoutReuseProofInput = Readonly<{
   candidateObservation: RenderObservation;
   candidateVariant: CacheVariant;
@@ -388,7 +393,7 @@ export type StaticLayoutArtifactReuseDecision =
       canReuse: true;
       kind: "reuse";
       metric: CacheProofHotPathMetric;
-      proof: StaticLayoutReuseProof;
+      proof: StaticLayoutArtifactReuseProof;
     }>
   | Readonly<{
       canReuse: false;
@@ -1549,7 +1554,10 @@ export function createStaticLayoutArtifactReuseDecision(
   return {
     kind: "reuse",
     canReuse: true,
-    proof: proof.proof,
+    proof: {
+      ...proof.proof,
+      candidateArtifactCompatibility: { ...input.candidateArtifactCompatibility },
+    },
     metric: createCacheProofHotPathMetric("reuse", proof.proof.code, proof.proof.fields),
   };
 }

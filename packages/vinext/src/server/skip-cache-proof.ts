@@ -48,6 +48,16 @@ type CrossCheckClientReuseManifestEntryWithCacheInput = Readonly<{
 }> &
   ArtifactCompatibilityEvaluationOptions;
 
+const ARTIFACT_COMPATIBILITY_PROOF_FIELDS: readonly (keyof ArtifactCompatibilityEnvelope)[] = [
+  "schemaVersion",
+  "graphVersion",
+  "deploymentVersion",
+  "appElementsSchemaVersion",
+  "rscPayloadSchemaVersion",
+  "rootBoundaryId",
+  "renderEpoch",
+];
+
 function createDisabledSkipDisposition(): ClientReuseManifestSkipDisposition {
   return {
     code: "SKIP_MODEL_DISABLED",
@@ -70,6 +80,19 @@ function rejectSkipCacheCrossCheck(
     },
     skipDisposition: createDisabledSkipDisposition(),
   };
+}
+
+function collectArtifactCompatibilityProofMismatches(
+  artifactCompatibility: ArtifactCompatibilityEnvelope,
+  proofCompatibility: ArtifactCompatibilityEnvelope,
+): readonly string[] {
+  const mismatchedFields: string[] = [];
+  for (const field of ARTIFACT_COMPATIBILITY_PROOF_FIELDS) {
+    if (artifactCompatibility[field] !== proofCompatibility[field]) {
+      mismatchedFields.push(field);
+    }
+  }
+  return mismatchedFields;
 }
 
 function assertNever(value: never): never {
@@ -121,6 +144,16 @@ export function crossCheckClientReuseManifestEntryWithCache(
     return rejectSkipCacheCrossCheck(entry, "SKIP_CACHE_ENTRY_ID_MISMATCH", {
       cacheEntryId: proof.candidateOutput.layoutId,
       manifestEntryId: entry.id,
+    });
+  }
+
+  const artifactProofMismatches = collectArtifactCompatibilityProofMismatches(
+    input.artifact.compatibility,
+    proof.candidateArtifactCompatibility,
+  );
+  if (artifactProofMismatches.length > 0) {
+    return rejectSkipCacheCrossCheck(entry, "SKIP_CACHE_ARTIFACT_PROOF_MISMATCH", {
+      mismatchedFields: artifactProofMismatches,
     });
   }
 

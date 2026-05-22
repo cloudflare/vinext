@@ -100,12 +100,13 @@ function expectReuseDecision(
 
 function createManifestEntry(input: {
   artifactCompatibility?: ArtifactCompatibilityEnvelope;
+  id?: string;
   payloadHash?: string;
   variantCacheKey: string;
 }): ClientReuseManifestEntry {
   return {
     artifactCompatibility: input.artifactCompatibility ?? createCompatibility(),
-    id: "layout:/dashboard",
+    id: input.id ?? "layout:/dashboard",
     kind: "layout",
     payloadHash: input.payloadHash ?? createClientReusePayloadHash("dashboard-layout-payload"),
     privacy: "public",
@@ -165,12 +166,59 @@ describe("skip/cache proof cross-checks", () => {
     });
   });
 
+  it("rejects artifact metadata that was not bound to the accepted cache proof", () => {
+    const provenCompatibility = createCompatibility({
+      deploymentVersion: "deploy-a",
+      graphVersion: "graph-a",
+    });
+    const unprovenCompatibility = createCompatibility({
+      deploymentVersion: "deploy-b",
+      graphVersion: "graph-b",
+    });
+    const payloadHash = createClientReusePayloadHash("dashboard-layout-payload");
+    const decision = createReuseDecision({
+      candidateArtifactCompatibility: provenCompatibility,
+      currentArtifactCompatibility: provenCompatibility,
+    });
+    expectReuseDecision(decision);
+
+    const result = crossCheckClientReuseManifestEntryWithCache({
+      artifact: {
+        compatibility: unprovenCompatibility,
+        invalidation: { kind: "valid" },
+        payloadHash,
+      },
+      cacheDecision: decision,
+      entry: createManifestEntry({
+        artifactCompatibility: unprovenCompatibility,
+        payloadHash,
+        variantCacheKey: decision.proof.variant.cacheKey,
+      }),
+    });
+
+    expect(result).toMatchObject({
+      kind: "rejected",
+      rejection: {
+        code: "SKIP_CACHE_ARTIFACT_PROOF_MISMATCH",
+        entryId: "layout:/dashboard",
+        fields: {
+          mismatchedFields: ["graphVersion", "deploymentVersion"],
+        },
+      },
+    });
+  });
+
   for (const [label, artifactCompatibility, reason] of [
     ["graph", createCompatibility({ graphVersion: "graph-b" }), "graphVersionMismatch"],
     [
       "deployment",
       createCompatibility({ deploymentVersion: "deploy-b" }),
       "deploymentVersionMismatch",
+    ],
+    [
+      "root boundary",
+      createCompatibility({ rootBoundaryId: "layout:/other-root" }),
+      "rootBoundaryIdMismatch",
     ],
     ["render epoch", createCompatibility({ renderEpoch: "epoch-b" }), "renderEpochMismatch"],
   ] as const) {
@@ -220,6 +268,33 @@ describe("skip/cache proof cross-checks", () => {
         fields: {
           compatibilityFallback: "renderFresh",
           reason: "graphVersionUnknown",
+        },
+      },
+    });
+  });
+
+  it("rejects manifest entries whose layout id differs from the accepted cache proof", () => {
+    const fixture = createVerifiedFixture();
+
+    const result = crossCheckClientReuseManifestEntryWithCache({
+      artifact: fixture.artifact,
+      cacheDecision: fixture.decision,
+      entry: createManifestEntry({
+        artifactCompatibility: fixture.artifact.compatibility,
+        id: "layout:/billing",
+        payloadHash: fixture.entry.payloadHash,
+        variantCacheKey: fixture.decision.proof.variant.cacheKey,
+      }),
+    });
+
+    expect(result).toMatchObject({
+      kind: "rejected",
+      rejection: {
+        code: "SKIP_CACHE_ENTRY_ID_MISMATCH",
+        entryId: "layout:/billing",
+        fields: {
+          cacheEntryId: "layout:/dashboard",
+          manifestEntryId: "layout:/billing",
         },
       },
     });
