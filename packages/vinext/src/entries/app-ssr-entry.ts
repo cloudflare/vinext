@@ -7,9 +7,9 @@ import { resolveRuntimeEntryModule } from "./runtime-entry-module.js";
  * deserializes it to a React tree, and renders to HTML.
  *
  * When `hasPagesDir` is true (hybrid App + Pages Router project), the SSR
- * entry also re-exports `pageRoutes` from `virtual:vinext-server-entry` so
- * that the Cloudflare Workers RSC bundle can access Pages Router route
- * metadata (including `getStaticPaths`) via `import("./ssr/index.js")`.
+ * entry also re-exports selected Pages server entry hooks from
+ * `virtual:vinext-server-entry` so the RSC bundle can access Pages Router
+ * route metadata and fallback dispatchers via `import("./ssr/index.js")`.
  */
 export function generateSsrEntry(hasPagesDir = false): string {
   const entryPath = resolveRuntimeEntryModule("app-ssr-entry");
@@ -20,7 +20,7 @@ export { default } from ${JSON.stringify(entryPath)};
 ${
   hasPagesDir
     ? `
-export { pageRoutes, renderPage } from "virtual:vinext-server-entry";
+export { handleApiRoute, pageRoutes, renderPage } from "virtual:vinext-server-entry";
 `
     : ""
 }`;

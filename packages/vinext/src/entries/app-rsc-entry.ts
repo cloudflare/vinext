@@ -35,6 +35,10 @@ const appRouteHandlerDispatchPath = resolveEntryPath(
   "../server/app-route-handler-dispatch.js",
   import.meta.url,
 );
+const appRouteHandlerResponsePath = resolveEntryPath(
+  "../server/app-route-handler-response.js",
+  import.meta.url,
+);
 const appServerActionExecutionPath = resolveEntryPath(
   "../server/app-server-action-execution.js",
   import.meta.url,
@@ -227,6 +231,9 @@ import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromM
 import {
   dispatchAppRouteHandler as __dispatchAppRouteHandler,
 } from ${JSON.stringify(appRouteHandlerDispatchPath)};
+import {
+  applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
+} from ${JSON.stringify(appRouteHandlerResponsePath)};
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
   handleServerActionRscRequest as __handleServerActionRscRequest,
@@ -826,17 +833,35 @@ export default __createAppRscHandler({
     if (isRscRequest) return null;
 
     const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-    if (typeof __pagesEntry.renderPage !== "function") return null;
 
     const __pagesRequestHeaders = middlewareContext.requestHeaders
       ? __buildRequestHeadersFromMiddlewareResponse(request.headers, middlewareContext.requestHeaders)
       : null;
-    const __pagesRequest = __pagesRequestHeaders
-      ? new Request(request.url, { method: request.method, headers: __pagesRequestHeaders })
-      : request;
+    let __pagesRequest = request;
+    if (__pagesRequestHeaders) {
+      const __pagesRequestInit = {
+        method: request.method,
+        headers: __pagesRequestHeaders,
+      };
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        __pagesRequestInit.body = request.body;
+        __pagesRequestInit.duplex = "half";
+      }
+      __pagesRequest = new Request(request.url, __pagesRequestInit);
+    }
+
+    const __pagesUrl = __decodePathParams(url.pathname) + (url.search || "");
+    const __pagesPathname = url.pathname;
+    if (__pagesPathname.startsWith("/api/") || __pagesPathname === "/api") {
+      if (typeof __pagesEntry.handleApiRoute !== "function") return null;
+      const __pagesApiResponse = await __pagesEntry.handleApiRoute(__pagesRequest, __pagesUrl);
+      return __applyRouteHandlerMiddlewareContext(__pagesApiResponse, middlewareContext);
+    }
+
+    if (typeof __pagesEntry.renderPage !== "function") return null;
     const __pagesRes = await __pagesEntry.renderPage(
       __pagesRequest,
-      __decodePathParams(url.pathname) + (url.search || ""),
+      __pagesUrl,
       {},
       undefined,
       middlewareContext.requestHeaders,
