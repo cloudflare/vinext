@@ -13173,6 +13173,115 @@ describe("Pages Router _next/data client navigation", () => {
       vi.resetModules();
     }
   });
+
+  it("strips the locale prefix before matching loaders and updates __NEXT_DATA__.locale", async () => {
+    // Regression: route patterns in __VINEXT_PAGE_PATTERNS__ are
+    // locale-unaware (e.g. /about, not /fr/about). Without stripping the
+    // locale prefix from the URL before pattern matching, locale transitions
+    // would always miss the loader map and fall through to the slower HTML
+    // path. The data URL itself must keep the locale prefix so the server
+    // returns locale-specific gSSP data.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const loaderAbout = vi.fn(async () => makePageModule("about"));
+    const { win, buildId } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/about": loaderAbout,
+      },
+      locale: "en",
+    });
+    (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
+    (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    (win.__NEXT_DATA__ as any).locale = "en";
+    (win.__NEXT_DATA__ as any).locales = ["en", "fr"];
+    (win.__NEXT_DATA__ as any).defaultLocale = "en";
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ pageProps: { hello: "bonjour" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      const result = await Router.push("/fr/about");
+
+      expect(result).toBe(true);
+      // URL kept the locale prefix — the server uses it to pick the locale.
+      const [calledUrl] = (fetchMock.mock.calls[0] ?? []) as unknown as [unknown, RequestInit?];
+      expect(String(calledUrl)).toBe(`/_next/data/${buildId}/fr/about.json`);
+      // Loader matched on the locale-stripped pattern.
+      expect(loaderAbout).toHaveBeenCalledTimes(1);
+      // Page resolved to the unprefixed route pattern.
+      expect(win.__NEXT_DATA__.page).toBe("/about");
+      // Locale globals updated to the new locale so useRouter().locale reflects it.
+      expect((win.__NEXT_DATA__ as any).locale).toBe("fr");
+      expect(win.__VINEXT_LOCALE__).toBe("fr");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("restores the default locale on transitions back to an unprefixed URL", async () => {
+    // `Router.push("/about", undefined, { locale: "en" })` from a French page
+    // switches back to the default locale. The data URL drops the locale
+    // prefix (default locale is unprefixed) and __NEXT_DATA__.locale flips
+    // back to "en" so useRouter().locale tracks the new locale.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const loaderAbout = vi.fn(async () => makePageModule("about"));
+    const { win, buildId } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/about": loaderAbout,
+      },
+      locale: "fr",
+      pathname: "/fr",
+    });
+    (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
+    (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    (win.__NEXT_DATA__ as any).locale = "fr";
+    (win.__NEXT_DATA__ as any).locales = ["en", "fr"];
+    (win.__NEXT_DATA__ as any).defaultLocale = "en";
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ pageProps: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ) as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      await Router.push("/about", undefined, { locale: "en" });
+
+      const [calledUrl] = (globalThis.fetch as any).mock.calls[0];
+      expect(String(calledUrl)).toBe(`/_next/data/${buildId}/about.json`);
+      expect((win.__NEXT_DATA__ as any).locale).toBe("en");
+      expect(win.__VINEXT_LOCALE__).toBe("en");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
 });
 
 describe("next/server enhancements", () => {

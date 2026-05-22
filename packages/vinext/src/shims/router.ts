@@ -23,7 +23,11 @@ import {
   type VinextNextData,
 } from "../client/vinext-next-data.js";
 import { isValidModulePath } from "../client/validate-module-path.js";
-import { buildPagesDataHref, matchPagesPattern } from "./internal/pages-data-url.js";
+import {
+  prefetchPagesData,
+  resolvePagesDataNavigationTarget,
+  type PagesDataTarget,
+} from "./internal/pages-data-target.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import {
   isAbsoluteOrProtocolRelativeUrl,
@@ -565,67 +569,6 @@ function scheduleHardNavigationAndThrow(url: string, message: string): never {
   throw new HardNavigationScheduledError(message);
 }
 
-/**
- * Decide whether the JSON data-endpoint navigation path is usable for this
- * browser URL. We require:
- *   - A registered code-split loader for the matched route pattern. Without
- *     this, the client has no chunk URL to import for the new page.
- *   - A buildId on the current `__NEXT_DATA__`, since the data URL embeds it.
- *
- * Returns the matched pattern + params + the loader, or `null` to signal
- * the caller should fall back to the HTML extraction path (e.g. dev server,
- * or a route that exists on the server but is not in the client loader map).
- *
- * Ported from Next.js: `packages/next/src/client/page-loader.ts`
- * (`getDataHref`) — vinext's equivalent uses an in-memory loader map instead
- * of Next.js' `_buildManifest.js`.
- */
-function resolvePagesDataNavigationTarget(browserUrl: string): {
-  dataHref: string;
-  pattern: string;
-  params: Record<string, string | string[]>;
-  loader: () => Promise<{ default?: unknown; [key: string]: unknown }>;
-  buildId: string;
-  pagePath: string;
-  search: string;
-} | null {
-  if (typeof window === "undefined") return null;
-
-  const loaders = window.__VINEXT_PAGE_LOADERS__;
-  const patterns = window.__VINEXT_PAGE_PATTERNS__;
-  if (!loaders || !patterns || patterns.length === 0) return null;
-
-  const buildId = (window.__NEXT_DATA__ as VinextNextData | undefined)?.buildId ?? undefined;
-  if (!buildId) return null;
-
-  let parsed: URL;
-  try {
-    parsed = new URL(browserUrl, window.location.href);
-  } catch {
-    return null;
-  }
-  // Same-origin only — cross-origin URLs would not hit our data endpoint
-  // and the navigation must hard-load anyway.
-  if (parsed.origin !== window.location.origin) return null;
-
-  const pagePath = stripBasePath(parsed.pathname, __basePath);
-  const match = matchPagesPattern(pagePath, patterns);
-  if (!match) return null;
-
-  const loader = loaders[match.pattern];
-  if (!loader) return null;
-
-  return {
-    dataHref: buildPagesDataHref(__basePath, buildId, pagePath, parsed.search),
-    pattern: match.pattern,
-    params: match.params,
-    loader,
-    buildId,
-    pagePath,
-    search: parsed.search,
-  };
-}
-
 /** Wire format of `/_next/data/<id>/<page>.json` response bodies. */
 type PagesDataResponse = {
   pageProps?: Record<string, unknown>;
@@ -650,7 +593,7 @@ type PagesDataResponse = {
  */
 async function navigateClientData(
   url: string,
-  target: NonNullable<ReturnType<typeof resolvePagesDataNavigationTarget>>,
+  target: PagesDataTarget,
   controller: AbortController,
   navId: number,
   assertStillCurrent: () => void,
@@ -775,6 +718,18 @@ async function navigateClientData(
   const mergedQuery = mergeRouteParamsIntoQuery(parseQueryString(target.search), target.params);
 
   const prev = window.__NEXT_DATA__ as NonNullable<Window["__NEXT_DATA__"]> | undefined;
+  // Locale-prefixed URLs change the active locale; the JSON envelope itself
+  // has no locale metadata, so derive it from the URL we navigated to.
+  // `target.locale` is `undefined` when the URL is unprefixed — that means
+  // either no i18n config (keep `prev.locale`) or the default locale
+  // (override `prev.locale` so locale transitions back to default land
+  // correctly). The locales list / defaultLocale / domainLocales are
+  // build-time config and don't change between pages, so they spread through
+  // from `prev` unchanged.
+  const hasI18n = (window.__VINEXT_LOCALES__?.length ?? 0) > 0;
+  const nextLocale = hasI18n
+    ? (target.locale ?? window.__VINEXT_DEFAULT_LOCALE__)
+    : (prev as VinextNextData | undefined)?.locale;
   const nextData = {
     ...prev,
     props: { pageProps },
@@ -782,6 +737,7 @@ async function navigateClientData(
     query: mergedQuery,
     buildId: target.buildId,
     isFallback: false,
+    ...(nextLocale !== undefined ? { locale: nextLocale } : {}),
   } as unknown as NonNullable<Window["__NEXT_DATA__"]> & VinextNextData;
 
   // INVARIANT: Everything between the final assertStillCurrent() above and
@@ -971,7 +927,7 @@ async function navigateClient(url: string, fetchUrl = url): Promise<void> {
   }
 
   try {
-    const dataTarget = resolvePagesDataNavigationTarget(url);
+    const dataTarget = resolvePagesDataNavigationTarget(url, __basePath);
     if (dataTarget) {
       await navigateClientData(url, dataTarget, controller, navId, assertStillCurrent);
     } else {
@@ -1234,25 +1190,9 @@ async function performNavigation(
 async function prefetchUrl(url: string): Promise<void> {
   if (typeof document === "undefined") return;
 
-  const dataTarget = resolvePagesDataNavigationTarget(url);
+  const dataTarget = resolvePagesDataNavigationTarget(url, __basePath);
   if (dataTarget) {
-    // Prefetch the data JSON. `as="fetch"` + `crossorigin` matches the
-    // actual fetch the navigation will perform (Accept: application/json,
-    // credentials: same-origin) so the resource ends up in the right cache
-    // partition.
-    const link = document.createElement("link");
-    link.rel = "prefetch";
-    link.as = "fetch";
-    link.crossOrigin = "anonymous";
-    link.href = dataTarget.dataHref;
-    document.head.appendChild(link);
-
-    // Warm the code-split chunk. The loader returns a Promise we don't need
-    // — `import()` schedules the network fetch and caches the result, so a
-    // subsequent navigation re-invocation hits the cache without paying for
-    // a second round trip. Any errors are intentionally swallowed: prefetch
-    // is best-effort and must never break the page.
-    void dataTarget.loader().catch(() => {});
+    prefetchPagesData(dataTarget);
     return;
   }
 
