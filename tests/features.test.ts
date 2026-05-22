@@ -1699,25 +1699,6 @@ describe("i18n localeDetection: false", () => {
 });
 
 describe("basePath support (Pages Router)", () => {
-  let server: ViteDevServer;
-
-  beforeAll(async () => {
-    const plugins: any[] = [vinext()];
-    server = await createServer({
-      root: PAGES_FIXTURE_DIR,
-      configFile: false,
-      plugins,
-      server: { port: 0 },
-      logLevel: "silent",
-    });
-
-    await server.listen();
-  });
-
-  afterAll(async () => {
-    await server?.close();
-  });
-
   it("resolveNextConfig correctly resolves basePath", async () => {
     const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
 
