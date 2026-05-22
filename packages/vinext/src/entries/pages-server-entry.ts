@@ -67,9 +67,10 @@ export async function generateServerEntry(
       `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: api_${i} }`,
   );
 
-  // Check for _app and _document
+  // Check for _app, _document, and _error.
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
   const docFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
+  const errorFilePath = findFileWithExts(pagesDir, "_error", fileMatcher);
   // Embed the resolved _app path (or null) so the runtime can look it up
   // in the SSR manifest and include any CSS/JS chunks `_app` brings in
   // (e.g. global stylesheets imported by `_app.tsx`) alongside the page's
@@ -86,6 +87,13 @@ export async function generateServerEntry(
     docFilePath !== null
       ? `import { default as DocumentComponent } from ${JSON.stringify(normalizePathSeparators(docFilePath))};`
       : `const DocumentComponent = null;`;
+
+  const errorAssetPathJson =
+    errorFilePath !== null ? JSON.stringify(normalizePathSeparators(errorFilePath)) : "null";
+  const errorImportCode =
+    errorFilePath !== null
+      ? `import * as ErrorPageModule from ${JSON.stringify(normalizePathSeparators(errorFilePath))};`
+      : `const ErrorPageModule = null;`;
 
   // Serialize i18n config for embedding in the server entry
   const i18nConfigJson = nextConfig?.i18n
@@ -276,11 +284,22 @@ ${apiImports.join("\n")}
 
 ${appImportCode}
 ${docImportCode}
+${errorImportCode}
 
 export const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
 ];
 const _pageRouteTrie = _buildRouteTrie(pageRoutes);
+const _errorPageRoute = ErrorPageModule
+  ? {
+      pattern: "/_error",
+      patternParts: ["_error"],
+      isDynamic: false,
+      params: [],
+      module: ErrorPageModule,
+      filePath: ${errorAssetPathJson},
+    }
+  : null;
 
 const apiRoutes = [
 ${apiRouteEntries.join(",\n")}
@@ -498,21 +517,26 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     return new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } });
   }
 
-  const match = matchRoute(routeUrl, pageRoutes);
+  let match = matchRoute(routeUrl, pageRoutes);
+  let renderStatusCodeOverride = statusCode;
+  let renderAsPath = asPath;
   if (!match) {
     if (isDataReq) {
       return __buildNextDataNotFoundResponse();
     }
     const notFoundMatch = matchRoute("/404", pageRoutes);
     if (notFoundMatch && notFoundMatch.route.pattern === "/404") {
-      return _renderPage(request, "/404", manifest, middlewareHeaders, {
-        ...(options || {}),
-        asPath: routeUrl,
-        statusCode: 404,
-      });
+      match = notFoundMatch;
+      renderStatusCodeOverride = 404;
+      renderAsPath = routeUrl;
+    } else if (_errorPageRoute) {
+      match = { route: _errorPageRoute, params: {} };
+      renderStatusCodeOverride = 404;
+      renderAsPath = routeUrl;
+    } else {
+      return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
+        { status: 404, headers: { "Content-Type": "text/html" } });
     }
-    return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
-      { status: 404, headers: { "Content-Type": "text/html" } });
   }
 
   const { route, params } = match;
@@ -523,13 +547,13 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     ensureFetchPatch();
     try {
       const routePattern = patternToNextFormat(route.pattern);
-      const renderStatusCode = statusCode ?? (routePattern === "/404" ? 404 : undefined);
+      const renderStatusCode = renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
       const query = mergeRouteParamsIntoQuery(parseQuery(routeUrl), params);
       if (typeof setSSRContext === "function") {
         setSSRContext({
           pathname: routePattern,
           query,
-          asPath: asPath || routeUrl,
+          asPath: renderAsPath || routeUrl,
           locale: locale,
           locales: i18nConfig ? i18nConfig.locales : undefined,
           defaultLocale: currentDefaultLocale,
@@ -572,7 +596,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
             setSSRContext({
               pathname: routePattern,
               query,
-              asPath: asPath || routeUrl,
+              asPath: renderAsPath || routeUrl,
               locale: locale,
               locales: i18nConfig ? i18nConfig.locales : undefined,
               defaultLocale: currentDefaultLocale,
@@ -637,6 +661,9 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         return pageDataResult.response;
       }
       let pageProps = pageDataResult.pageProps;
+      if (routePattern === "/_error" && typeof renderStatusCode === "number") {
+        pageProps = { ...pageProps, statusCode: renderStatusCode };
+      }
       var gsspRes = pageDataResult.gsspRes;
       let isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
       const isFallbackRender = pageDataResult.isFallback === true;
@@ -649,7 +676,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         setSSRContext({
           pathname: routePattern,
           query,
-          asPath: asPath || routeUrl,
+          asPath: renderAsPath || routeUrl,
           locale: locale,
           locales: i18nConfig ? i18nConfig.locales : undefined,
           defaultLocale: currentDefaultLocale,

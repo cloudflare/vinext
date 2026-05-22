@@ -201,7 +201,12 @@ function resolvePagesErrorHtmlFetchUrl(
   const resolvedUrl = applyNavigationLocale(resolveUrl(url), locale);
   if (!isPagesErrorRouteHref(resolvedUrl)) return null;
 
-  const parsed = new URL(resolvedUrl, window.location.href);
+  let parsed: URL;
+  try {
+    parsed = new URL(resolvedUrl, window.location.href);
+  } catch {
+    return null;
+  }
   const appPathname = stripBasePath(parsed.pathname, __basePath);
   const fetchPathname = appPathname === "/_error" ? "/404" : appPathname;
   const fetchTarget = `${fetchPathname}${parsed.search}${parsed.hash}`;
@@ -972,8 +977,9 @@ async function performNavigation(
   );
   const errorRouteHtmlFetchUrl = resolvePagesErrorHtmlFetchUrl(url, navigationLocale);
   const htmlFetchUrl = errorRouteHtmlFetchUrl ?? getPagesHtmlFetchUrl(full, navigationLocale);
-  const navigateOptions: NavigateClientOptions =
-    errorRouteHtmlFetchUrl === null ? {} : { allowNotFoundResponse: true };
+  const navigateOptions: NavigateClientOptions = errorRouteHtmlFetchUrl
+    ? { allowNotFoundResponse: true }
+    : {};
   const shallow = options?.shallow ?? false;
   const doScroll = options?.scroll !== false;
 
