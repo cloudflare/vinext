@@ -189,17 +189,16 @@ function getLocalPathname(url: string): string | null {
   }
 }
 
-function isPagesErrorRouteHref(url: string): boolean {
-  const pathname = getLocalPathname(url);
-  return pathname === "/404" || pathname === "/_error";
-}
-
 function resolvePagesErrorHtmlFetchUrl(
   url: string | UrlObject,
   locale: string | undefined,
 ): string | null {
-  const resolvedUrl = applyNavigationLocale(resolveUrl(url), locale);
-  if (!isPagesErrorRouteHref(resolvedUrl)) return null;
+  const href = resolveUrl(url);
+  const errorRoutePathname = getLocalPathname(href);
+  if (errorRoutePathname !== "/404" && errorRoutePathname !== "/_error") return null;
+
+  const fetchHref = errorRoutePathname === "/_error" ? replaceUrlPathname(href, "/404") : href;
+  const resolvedUrl = applyNavigationLocale(fetchHref, locale);
 
   let parsed: URL;
   try {
@@ -208,12 +207,20 @@ function resolvePagesErrorHtmlFetchUrl(
     return null;
   }
   const appPathname = stripBasePath(parsed.pathname, __basePath);
-  const fetchPathname = appPathname === "/_error" ? "/404" : appPathname;
-  const fetchTarget = `${fetchPathname}${parsed.search}${parsed.hash}`;
+  const fetchTarget = `${appPathname}${parsed.search}${parsed.hash}`;
   return normalizePathTrailingSlash(
     toBrowserNavigationHref(fetchTarget, window.location.href, __basePath),
     __trailingSlash,
   );
+}
+
+function replaceUrlPathname(url: string, pathname: string): string {
+  try {
+    const parsed = new URL(url, window.location.href);
+    return `${pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return pathname;
+  }
 }
 
 function resolveTransitionLocale(locale: TransitionOptions["locale"]): string | undefined {

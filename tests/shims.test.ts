@@ -11404,9 +11404,9 @@ describe("Pages Router concurrent navigation", () => {
       },
       __VINEXT_ROOT__: { render },
       __VINEXT_APP__: undefined,
-      __VINEXT_LOCALE__: undefined,
-      __VINEXT_LOCALES__: undefined,
-      __VINEXT_DEFAULT_LOCALE__: undefined,
+      __VINEXT_LOCALE__: undefined as string | undefined,
+      __VINEXT_LOCALES__: undefined as string[] | undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined as string | undefined,
     };
 
     // Make pushState update location to simulate real browser behavior
@@ -11641,6 +11641,126 @@ describe("Pages Router concurrent navigation", () => {
       expect(fetch).toHaveBeenCalledWith("/docs/404", expect.any(Object));
       expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/docs/slug-2");
       expect(win.location.pathname).toBe("/docs/slug-2");
+      expect(win.__NEXT_DATA__.page).toBe("/404");
+    } finally {
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("Pages Router fetches /404 through a non-default locale while preserving the masked URL", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    win.location.pathname = "/docs/fr/slug-1";
+    win.location.href = "http://localhost/docs/fr/slug-1";
+    win.__VINEXT_LOCALE__ = "fr";
+    win.__VINEXT_LOCALES__ = ["en", "fr"];
+    win.__VINEXT_DEFAULT_LOCALE__ = "en";
+    (globalThis as any).window = win;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          buildNavHtml(
+            "/404",
+            pageModuleUrl,
+            {},
+            {
+              locale: "fr",
+              locales: ["en", "fr"],
+              defaultLocale: "en",
+            },
+          ),
+          { status: 404 },
+        ),
+    );
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/404", "/slug-2");
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenCalledWith("/docs/fr/404", expect.any(Object));
+      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/docs/fr/slug-2");
+      expect(win.location.pathname).toBe("/docs/fr/slug-2");
+      expect(win.__NEXT_DATA__.page).toBe("/404");
+    } finally {
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("Pages Router maps /_error through a non-default locale while preserving the masked URL", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    win.location.pathname = "/docs/fr/slug-1";
+    win.location.href = "http://localhost/docs/fr/slug-1";
+    win.__VINEXT_LOCALE__ = "fr";
+    win.__VINEXT_LOCALES__ = ["en", "fr"];
+    win.__VINEXT_DEFAULT_LOCALE__ = "en";
+    (globalThis as any).window = win;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          buildNavHtml(
+            "/404",
+            pageModuleUrl,
+            {},
+            {
+              locale: "fr",
+              locales: ["en", "fr"],
+              defaultLocale: "en",
+            },
+          ),
+          { status: 404 },
+        ),
+    );
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/_error", "/slug-2");
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenCalledWith("/docs/fr/404", expect.any(Object));
+      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/docs/fr/slug-2");
+      expect(win.location.pathname).toBe("/docs/fr/slug-2");
       expect(win.__NEXT_DATA__.page).toBe("/404");
     } finally {
       if (previousBasePath === undefined) {

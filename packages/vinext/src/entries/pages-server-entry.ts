@@ -496,6 +496,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
   const isDataReq = !!(options && options.isDataReq);
   const statusCode = options && typeof options.statusCode === "number" ? options.statusCode : undefined;
   const asPath = options && typeof options.asPath === "string" ? options.asPath : undefined;
+  const renderErrorPageOnMiss = !(options && options.renderErrorPageOnMiss === false);
   const localeInfo = i18nConfig
     ? resolvePagesI18nRequest(
         url,
@@ -523,6 +524,10 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
   if (!match) {
     if (isDataReq) {
       return __buildNextDataNotFoundResponse();
+    }
+    if (!renderErrorPageOnMiss) {
+      return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
+        { status: 404, headers: { "Content-Type": "text/html" } });
     }
     const notFoundMatch = matchRoute("/404", pageRoutes);
     // matchRoute may match a catch-all (e.g. [...slug]) — only use the explicit pages/404 route.

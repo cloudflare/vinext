@@ -2662,6 +2662,85 @@ export default function CounterPage() {
     }
   });
 
+  it("applies fallback rewrites before rendering custom 404 pages", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-fallback-before-404-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+      await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+      await fsp.writeFile(
+        path.join(tmpRoot, "next.config.mjs"),
+        `export default {
+  basePath: "/docs",
+  async rewrites() {
+    return {
+      fallback: [{ source: "/:path*", destination: "/fallback" }],
+    };
+  },
+};
+`,
+      );
+      await fsp.writeFile(path.join(tmpRoot, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "404.tsx"),
+        `export default function Custom404() {
+  const shouldThrow = Boolean(
+    (globalThis as { __VINEXT_FALLBACK_REWRITE_TEST_RUNTIME?: boolean })
+      .__VINEXT_FALLBACK_REWRITE_TEST_RUNTIME,
+  );
+  if (shouldThrow) {
+    throw new Error("pages/404 should not execute before fallback rewrites");
+  }
+  return <main id="custom-404">This page could not be found</main>;
+}
+`,
+      );
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "fallback.tsx"),
+        `export default function Fallback() {
+  return <main id="fallback">Fallback rewrite</main>;
+}
+`,
+      );
+
+      await buildPagesFixtureToOutDir(tmpRoot, fixtureOutDir);
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir: fixtureOutDir,
+        }),
+      );
+
+      try {
+        (
+          globalThis as { __VINEXT_FALLBACK_REWRITE_TEST_RUNTIME?: boolean }
+        ).__VINEXT_FALLBACK_REWRITE_TEST_RUNTIME = true;
+        const addr = prodServer.address() as { port: number };
+        const baseUrl = `http://127.0.0.1:${addr.port}`;
+
+        const res = await fetch(`${baseUrl}/docs/missing`);
+        expect(res.status).toBe(200);
+        const html = await res.text();
+        expect(html).toContain('id="fallback"');
+        expect(html).toContain("Fallback rewrite");
+        expect(html).toContain('"page":"/fallback"');
+        expect(html).not.toContain("pages/404 should not execute before fallback rewrites");
+      } finally {
+        delete (globalThis as { __VINEXT_FALLBACK_REWRITE_TEST_RUNTIME?: boolean })
+          .__VINEXT_FALLBACK_REWRITE_TEST_RUNTIME;
+        await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      }
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to pages/_error for route misses when pages/404 is absent", async () => {
     const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-basepath-error-"));
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
