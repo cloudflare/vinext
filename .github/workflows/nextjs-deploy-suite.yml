@@ -79,6 +79,16 @@ jobs:
           VINEXT_BUILD: "0"
           NEXTJS_PREPARE: "1"
           NEXTJS_PREPARE_ONLY: "1"
+          # The Next.js workspace pulls `playwright-chromium` as a transitive
+          # dep, whose postinstall downloads Chrome via the Playwright CDN.
+          # Since 2026-05-22 that postinstall has wedged on this runner after
+          # the 167 MiB Chrome zip downloads but before extraction completes,
+          # silently consuming the whole job timeout (runs 26265986264,
+          # 26279790373, 26281061094). The explicit `pnpm playwright install
+          # chromium chromium-headless-shell` later in the prepare script is
+          # what actually provisions the browsers we use at test time, so
+          # skipping the transitive postinstall is safe.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
 
       - name: Generate deploy manifest
         env:
