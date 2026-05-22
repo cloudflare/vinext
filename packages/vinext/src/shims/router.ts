@@ -34,6 +34,7 @@ import {
 import { stripBasePath } from "../utils/base-path.js";
 import {
   addLocalePrefix,
+  detectDomainLocale,
   getDomainLocaleUrl,
   getLocalePathPrefix,
   type DomainLocale,
@@ -164,10 +165,24 @@ function resolveNavigationTarget(
   return applyNavigationLocale(as ?? resolveUrl(url), locale);
 }
 
+function getCurrentUrlLocale(): string | undefined {
+  const pathnameLocale = getLocalePathPrefix(
+    stripBasePath(window.location.pathname, __basePath),
+    window.__VINEXT_LOCALES__,
+  );
+  if (pathnameLocale) return pathnameLocale;
+
+  return (
+    detectDomainLocale(getDomainLocales(), getCurrentHostname())?.defaultLocale ??
+    window.__VINEXT_DEFAULT_LOCALE__ ??
+    window.__VINEXT_LOCALE__
+  );
+}
+
 function resolveTransitionLocale(locale: TransitionOptions["locale"]): string | undefined {
   if (typeof window === "undefined") return undefined;
   if (locale === false) return window.__VINEXT_DEFAULT_LOCALE__;
-  return locale ?? window.__VINEXT_LOCALE__;
+  return locale ?? getCurrentUrlLocale();
 }
 
 function getDomainLocales(): readonly DomainLocale[] | undefined {

@@ -11862,6 +11862,124 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("treats a non-locale-prefixed current path as the default locale for root Link navigations", async () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    win.location.pathname = "/new";
+    win.location.href = "http://localhost/new";
+    Object.assign(win, {
+      // Simulate a stale/preferred locale signal that must not override the
+      // URL-derived Pages Router locale for an unprefixed path.
+      __VINEXT_LOCALE__: "id",
+      __VINEXT_LOCALES__: ["en", "id"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    });
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          buildNavHtml(
+            "/",
+            pageModuleUrl,
+            {},
+            {
+              locale: "en",
+              locales: ["en", "id"],
+              defaultLocale: "en",
+            },
+          ),
+          { status: 200 },
+        ),
+    );
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/");
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenCalledWith("/en", expect.any(Object));
+      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/");
+      expect(win.location.href).toBe("http://localhost/");
+      expect(win.__VINEXT_LOCALE__).toBe("en");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("keeps a locale-prefixed current path locale for root Link navigations", async () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    win.location.pathname = "/id/new";
+    win.location.href = "http://localhost/id/new";
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "id",
+      __VINEXT_LOCALES__: ["en", "id"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    });
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          buildNavHtml(
+            "/",
+            pageModuleUrl,
+            {},
+            {
+              locale: "id",
+              locales: ["en", "id"],
+              defaultLocale: "en",
+            },
+          ),
+          { status: 200 },
+        ),
+    );
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/");
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenCalledWith("/id", expect.any(Object));
+      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/id");
+      expect(win.location.href).toBe("http://localhost/id");
+      expect(win.__VINEXT_LOCALE__).toBe("id");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("popstate fetches default-locale root through a locale-qualified URL", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
