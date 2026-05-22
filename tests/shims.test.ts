@@ -11561,6 +11561,9 @@ describe("Pages Router concurrent navigation", () => {
     });
   });
 
+  // Ported from Next.js:
+  // test/e2e/basepath/error-pages.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/error-pages.test.ts
   it("Pages Router fetches the error route while preserving the masked URL under basePath", async () => {
     const previousWindow = (globalThis as any).window;
     const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;

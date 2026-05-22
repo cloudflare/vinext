@@ -340,11 +340,29 @@ function patternToNextFormat(pattern) {
     .replace(/:([^\\/]+?)(?=\\/|$)/g, "[$1]");
 }
 
-function collectAssetTags(manifest, moduleIds, scriptNonce) {
+function resolveSsrManifest(manifest) {
   // Fall back to embedded manifest (set by vinext:cloudflare-build for Workers)
-  const m = (manifest && Object.keys(manifest).length > 0)
+  return (manifest && Object.keys(manifest).length > 0)
     ? manifest
     : (typeof globalThis !== "undefined" && globalThis.__VINEXT_SSR_MANIFEST__) || null;
+}
+
+function getManifestFilesForModule(manifest, moduleId) {
+  if (!manifest || !moduleId) return null;
+
+  var files = manifest[moduleId];
+  if (files) return files;
+
+  for (var key in manifest) {
+    if (moduleId.endsWith("/" + key) || moduleId === key) {
+      return manifest[key];
+    }
+  }
+  return null;
+}
+
+function collectAssetTags(manifest, moduleIds, scriptNonce) {
+  const m = resolveSsrManifest(manifest);
   const tags = [];
   const seen = new Set();
   const nonceAttr = __createNonceAttribute(scriptNonce);
@@ -377,18 +395,7 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
       // Collect assets for the requested page modules
       for (var mi = 0; mi < moduleIds.length; mi++) {
         var id = moduleIds[mi];
-        var files = m[id];
-        if (!files) {
-          // Absolute path didn't match — try matching by suffix.
-          // Manifest keys are relative (e.g. "pages/about.tsx") while
-          // moduleIds may be absolute (e.g. "/home/.../pages/about.tsx").
-          for (var mk in m) {
-            if (id.endsWith("/" + mk) || id === mk) {
-              files = m[mk];
-              break;
-            }
-          }
-        }
+        var files = getManifestFilesForModule(m, id);
         if (files) {
           for (var fi = 0; fi < files.length; fi++) allFiles.push(files[fi]);
         }
@@ -449,25 +456,8 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
   return tags.join("\\n  ");
 }
 
-function getManifestFilesForModule(manifest, moduleId) {
-  const m = (manifest && Object.keys(manifest).length > 0)
-    ? manifest
-    : (typeof globalThis !== "undefined" && globalThis.__VINEXT_SSR_MANIFEST__) || null;
-  if (!m || !moduleId) return null;
-
-  var files = m[moduleId];
-  if (files) return files;
-
-  for (var key in m) {
-    if (moduleId.endsWith("/" + key) || moduleId === key) {
-      return m[key];
-    }
-  }
-  return null;
-}
-
 function resolveClientModuleUrl(manifest, moduleId) {
-  const files = getManifestFilesForModule(manifest, moduleId);
+  const files = getManifestFilesForModule(resolveSsrManifest(manifest), moduleId);
   if (!files) return undefined;
   for (var i = 0; i < files.length; i++) {
     var file = files[i];
