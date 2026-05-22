@@ -52,6 +52,7 @@ import {
   normalizeTrailingSlash,
 } from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pages-i18n.js";
 import {
   isNextDataPathname,
   parseNextDataPathname,
@@ -72,7 +73,6 @@ import { readPrerenderSecret } from "../build/server-manifest.js";
 import { VINEXT_PRERENDER_SECRET_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { seedMemoryCacheFromPrerender as seedMemoryCacheFromPrerenderFallback } from "./seed-cache.js";
 import { installSocketErrorBackstop } from "./socket-error-backstop.js";
-import { stripI18nLocaleForApiRoute } from "./pages-i18n.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -1377,6 +1377,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const pagesAssetPathPrefix = assetPrefixPathname(assetPrefix);
   const assetBase = basePath ? `${basePath}/` : "/";
   const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
+  const i18nConfig = vinextConfig?.i18n ?? null;
   const configRedirects = vinextConfig?.redirects ?? [];
   const configRewrites = vinextConfig?.rewrites ?? {
     beforeFiles: [],
@@ -1660,13 +1661,33 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // Next.js execution order, so they use postMwReqCtx below.
       const reqCtx: RequestContext = requestContextFromRequest(webRequest);
 
-      // ── 4. Apply redirects from next.config.js ────────────────────
+      // ── 4. Default-locale path normalisation (issue #1336, item 4) ──
+      // Next.js normalises every request that arrives without a locale
+      // prefix by splicing in the (domain-aware) default locale before any
+      // config rule or filesystem match runs. Without this, a rule like
+      // `source: '/:locale/to-sv'` with `locale: false` does not match a
+      // request for `/to-sv` because there is no segment for `:locale`.
+      // Mirrors packages/next/src/server/lib/router-utils/resolve-routes.ts
+      // (lines ~250-263).
+      //
+      // Extract the request hostname once and reuse it for both the
+      // pre-middleware match below and the post-middleware
+      // `matchResolvedPathname` helper further down. `webRequest.url` is
+      // preserved across `applyMiddlewareRequestHeaders` (it constructs the
+      // post-middleware request with the same URL), so the hostname does
+      // not change.
+      const requestHostname = i18nConfig ? new URL(webRequest.url).hostname : "";
+      const matchPathname = i18nConfig
+        ? normalizeDefaultLocalePathname(pathname, i18nConfig, { hostname: requestHostname })
+        : pathname;
+
+      // ── 5. Apply redirects from next.config.js ────────────────────
       if (configRedirects.length) {
         // The matcher sees the stripped pathname when the request was under
         // basePath, and the original (un-stripped) pathname otherwise. The
         // basePath gating inside `matchRedirect` then filters rules based on
         // their `basePath: false` opt-out so the wrong rule set can't match.
-        const redirect = matchRedirect(pathname, configRedirects, reqCtx, basePathState);
+        const redirect = matchRedirect(matchPathname, configRedirects, reqCtx, basePathState);
         if (redirect) {
           // Guard against double-prefixing: only add basePath if the
           // request was under basePath AND the destination doesn't already
@@ -1787,6 +1808,14 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // Config header matching must keep using the original normalized pathname
       // even if middleware rewrites the downstream route/render target.
       let resolvedPathname = resolvedUrl.split("?")[0];
+      // Default-locale-normalised form of resolvedPathname for matching against
+      // next.config.js rewrites (beforeFiles, afterFiles, fallback). Mirrors
+      // Next.js's resolve-routes.ts behaviour where the post-middleware
+      // pathname is also locale-prefixed before rewrite matching.
+      const matchResolvedPathname = (p: string): string =>
+        i18nConfig
+          ? normalizeDefaultLocalePathname(p, i18nConfig, { hostname: requestHostname })
+          : p;
 
       // ── 6. Apply custom headers from next.config.js ───────────────
       // Config headers are additive for multi-value headers (Vary,
@@ -1799,7 +1828,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       if (configHeaders.length) {
         applyConfigHeadersToHeaderRecord(middlewareHeaders, {
           configHeaders,
-          pathname,
+          pathname: matchPathname,
           requestContext: reqCtx,
           basePathState,
         });
@@ -1840,7 +1869,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       let configRewriteFired = false;
       if (configRewrites.beforeFiles?.length) {
         const rewritten = matchRewrite(
-          resolvedPathname,
+          matchResolvedPathname(resolvedPathname),
           configRewrites.beforeFiles,
           postMwReqCtx,
           basePathState,
@@ -1922,7 +1951,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // These run after non-dynamic page routes but before dynamic routes.
       if ((!pageMatch || pageMatch.route.isDynamic) && configRewrites.afterFiles?.length) {
         const rewritten = matchRewrite(
-          resolvedPathname,
+          matchResolvedPathname(resolvedPathname),
           configRewrites.afterFiles,
           postMwReqCtx,
           basePathState,
@@ -1955,7 +1984,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         // ── 11. Fallback rewrites (if SSR returned 404) ─────────────
         if (response && response.status === 404 && configRewrites.fallback?.length) {
           const fallbackRewrite = matchRewrite(
-            resolvedPathname,
+            matchResolvedPathname(resolvedPathname),
             configRewrites.fallback,
             postMwReqCtx,
             basePathState,

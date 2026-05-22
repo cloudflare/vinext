@@ -1182,7 +1182,7 @@ function registerServerActionCallback(): void {
       try {
         const redirectUrl = new URL(actionRedirect, window.location.origin);
         if (redirectUrl.origin !== window.location.origin) {
-          window.location.href = actionRedirect;
+          browserNavigationController.performHardNavigation(actionRedirect);
           return undefined;
         }
       } catch {
@@ -1196,9 +1196,9 @@ function registerServerActionCallback(): void {
       clearClientNavigationCaches();
       const redirectType = fetchResponse.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "replace";
       if (redirectType === "push") {
-        window.location.assign(actionRedirect);
+        browserNavigationController.performHardNavigation(actionRedirect, "assign");
       } else {
-        window.location.replace(actionRedirect);
+        browserNavigationController.performHardNavigation(actionRedirect, "replace");
       }
       return undefined;
     }
@@ -1212,7 +1212,7 @@ function registerServerActionCallback(): void {
         responseUrl: fetchResponse.url,
       }).kind === "hard-navigate"
     ) {
-      window.location.reload();
+      browserNavigationController.performHardNavigation(actionInitiation.href);
       return undefined;
     }
 
@@ -1409,7 +1409,9 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             responseUrl: cachedRoute.response.url,
           });
           if (compatibilityDecision.kind === "hard-navigate") {
-            window.location.href = compatibilityDecision.hardNavigationTarget;
+            browserNavigationController.performHardNavigation(
+              compatibilityDecision.hardNavigationTarget,
+            );
             return;
           }
           // Check stale-navigation before and after createFromFetch. The pre-check
@@ -1554,10 +1556,12 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         const isRscResponse = navContentType.startsWith("text/x-component");
         if (!navResponse.ok || !isRscResponse || !navResponse.body) {
           const responseUrl = navResponseUrl ?? navResponse.url;
-          window.location.href = resolveHardNavigationTargetFromRscResponse(
-            responseUrl,
-            currentHref,
-            window.location.origin,
+          browserNavigationController.performHardNavigation(
+            resolveHardNavigationTargetFromRscResponse(
+              responseUrl,
+              currentHref,
+              window.location.origin,
+            ),
           );
           return;
         }
@@ -1570,7 +1574,9 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           responseUrl: navResponseUrl ?? navResponse.url,
         });
         if (compatibilityDecision.kind === "hard-navigate") {
-          window.location.href = compatibilityDecision.hardNavigationTarget;
+          browserNavigationController.performHardNavigation(
+            compatibilityDecision.hardNavigationTarget,
+          );
           return;
         }
 
@@ -1589,7 +1595,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
               "[vinext] Too many RSC redirects — aborting navigation to prevent infinite loop.",
             );
           }
-          window.location.href = redirectDecision.href;
+          browserNavigationController.performHardNavigation(redirectDecision.href);
           return;
         }
 
@@ -1624,14 +1630,14 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           void navResponse.body?.cancel().catch(() => {});
           const resolvedTarget = new URL(flightRedirectTarget, window.location.origin);
           if (resolvedTarget.origin !== window.location.origin) {
-            window.location.href = resolvedTarget.href;
+            browserNavigationController.performHardNavigation(resolvedTarget.href);
             return;
           }
           if (redirectCount >= MAX_RSC_REDIRECT_DEPTH) {
             console.error(
               "[vinext] Too many RSC redirects — aborting navigation to prevent infinite loop.",
             );
-            window.location.href = resolvedTarget.href;
+            browserNavigationController.performHardNavigation(resolvedTarget.href);
             return;
           }
           currentHref = `${resolvedTarget.pathname}${resolvedTarget.search}${resolvedTarget.hash}`;
@@ -1730,7 +1736,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
       if (!isPageUnloading) {
         console.error("[vinext] RSC navigation error:", error);
       }
-      window.location.href = currentHref;
+      browserNavigationController.performHardNavigation(currentHref);
     } finally {
       // Single settlement site: covers normal return, early returns on stale-id
       // checks, and error paths. The finally runs even when the catch returns.

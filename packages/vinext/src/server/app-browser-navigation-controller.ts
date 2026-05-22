@@ -69,6 +69,7 @@ type BrowserNavigationController = {
   hasBrowserRouterState(): boolean;
   getBrowserRouterState(): AppRouterState;
   isCurrentNavigation(navId: number): boolean;
+  performHardNavigation(href: string, mode?: HardNavigationMode): boolean;
   waitForBrowserRouterStateReady(): Promise<void>;
   attachBrowserRouterState(
     setter: Dispatch<AppRouterState | Promise<AppRouterState>>,
@@ -690,6 +691,7 @@ export function createAppBrowserNavigationController(
     hasBrowserRouterState,
     getBrowserRouterState,
     isCurrentNavigation,
+    performHardNavigation,
     waitForBrowserRouterStateReady,
     attachBrowserRouterState,
     beginPendingBrowserRouterState,

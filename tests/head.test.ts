@@ -61,7 +61,7 @@ describe("Head SSR collection", () => {
     expect(headHtml).toContain("<title");
     expect(headHtml).toContain("My Page Title");
     expect(headHtml).toContain("</title>");
-    expect(headHtml).toContain('data-vinext-head="true"');
+    expect(headHtml).toContain('data-next-head=""');
   });
 
   it("collects meta elements as self-closing", () => {

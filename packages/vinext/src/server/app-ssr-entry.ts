@@ -22,6 +22,10 @@ import { isOpenRedirectShaped } from "./request-pipeline.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import {
+  BeforeInteractiveContext,
+  type BeforeInteractiveInlineScript,
+} from "vinext/shims/before-interactive-context";
+import {
   createInlineScriptTag,
   createNonceAttribute,
   escapeHtmlAttr,
@@ -93,6 +97,54 @@ function renderInsertedHtml(insertedElements: readonly unknown[]): string {
   }
 
   return insertedHTML;
+}
+
+/**
+ * Render captured `<Script strategy="beforeInteractive">` inline scripts to
+ * HTML, ready to splice immediately after `<head ...>` opens. Each entry has
+ * already had its inline content escaped via `escapeInlineContent(..., "script")`
+ * inside the Script shim, so this function only quotes the attributes that
+ * actually go on the tag (id, nonce, plus the residual passthroughs).
+ *
+ * Keeping this function colocated with the rest of the head-injection
+ * helpers makes it obvious where the boundary is: anything passed through
+ * here is being concatenated directly into HTML; treat the inputs
+ * accordingly.
+ */
+// Conservative subset of the HTML attribute-name grammar. Must start with a
+// letter and contain only letters, digits, underscores, hyphens, or dots —
+// enough to round-trip data-* and standard attributes (`async`, `defer`,
+// `type`, `crossorigin`, etc.) without ever splicing a `"`/`>`/whitespace
+// into the unquoted *name* position where escaping wouldn't help.
+const VALID_ATTR_NAME = /^[a-zA-Z][\w.-]*$/;
+
+function renderBeforeInteractiveInlineScripts(
+  scripts: readonly BeforeInteractiveInlineScript[],
+): string {
+  if (scripts.length === 0) return "";
+  let html = "";
+  for (const script of scripts) {
+    let attrs = "";
+    if (script.id) {
+      attrs += ` id="${escapeHtmlAttr(script.id)}"`;
+    }
+    attrs += createNonceAttribute(script.nonce);
+    if (script.attributes) {
+      for (const [key, value] of Object.entries(script.attributes)) {
+        // Attribute *values* go through escapeHtmlAttr below. The *name*
+        // can't be escaped — a malformed key would break the tag — so we
+        // gate at the boundary instead of trying to neutralise it.
+        if (!VALID_ATTR_NAME.test(key)) continue;
+        if (value === true) {
+          attrs += ` ${key}`;
+        } else if (typeof value === "string") {
+          attrs += ` ${key}="${escapeHtmlAttr(value)}"`;
+        }
+      }
+    }
+    html += `<script${attrs}>${script.innerHTML}</script>`;
+  }
+  return html;
 }
 
 function renderFontHtml(fontData?: FontData, nonce?: string): string {
@@ -265,7 +317,27 @@ export async function handleSsr(
               root,
             )
           : root;
-        const ssrRoot = withScriptNonce(ssrTree, options?.scriptNonce);
+
+        // Capture inline `<Script strategy="beforeInteractive">` content so the
+        // SSR stream transform can emit it immediately after `<head ...>`
+        // opens — ahead of every React-emitted resource hint. The Script shim
+        // pushes here when it sees an inline beforeInteractive Script and
+        // returns `null` from its render so React does not also serialize the
+        // tag where the user wrote it (where Fizz would push it *after* the
+        // hoisted stylesheets/modulepreloads). See
+        // packages/vinext/src/shims/script.tsx for the capture side.
+        const beforeInteractiveInlineScripts: BeforeInteractiveInlineScript[] = [];
+        const registerBeforeInteractiveInlineScript = (
+          script: BeforeInteractiveInlineScript,
+        ): void => {
+          beforeInteractiveInlineScripts.push(script);
+        };
+        const treeWithBeforeInteractive = createReactElement(
+          BeforeInteractiveContext.Provider,
+          { value: registerBeforeInteractiveInlineScript },
+          ssrTree,
+        );
+        const ssrRoot = withScriptNonce(treeWithBeforeInteractive, options?.scriptNonce);
 
         // plugin-rsc returns the bootstrap as `import("<url>")` so callers can
         // inject it via `bootstrapScriptContent`. We hand the URL to React's
@@ -353,8 +425,21 @@ export async function handleSsr(
           );
         };
 
+        // The transform calls this once when it splices after `<head ...>`.
+        // By that point React Fizz has rendered the layout's `<head>` children
+        // (which is where the Script shim registers), so the captured array is
+        // populated. We deliberately return a snapshot — `flushBuffered` will
+        // not re-invoke us, and any beforeInteractive Script that renders
+        // later (inside a Suspense boundary further down the tree) falls back
+        // to its inline location, matching the documented guarantee that
+        // ordering applies to scripts rendered in the initial shell.
+        const getBeforeInteractiveHeadHTML = (): string =>
+          renderBeforeInteractiveInlineScripts(beforeInteractiveInlineScripts);
+
         return deferUntilStreamConsumed(
-          htmlStream.pipeThrough(createTickBufferedTransform(rscEmbed, getInsertedHTML)),
+          htmlStream.pipeThrough(
+            createTickBufferedTransform(rscEmbed, getInsertedHTML, getBeforeInteractiveHeadHTML),
+          ),
           cleanup,
         );
       } catch (error) {

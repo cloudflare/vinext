@@ -64,6 +64,42 @@ declare global {
       | undefined;
 
     /**
+     * Pages Router code-split loader map. Keys are route patterns in Next.js
+     * bracket format (e.g. `/blog/[slug]`), values are dynamic `import()`
+     * thunks that resolve to the page module. Vite code-splits each thunk
+     * into its own chunk, so this is the manifest the client uses to load
+     * the right page chunk on a client-side `_next/data` navigation.
+     *
+     * Set by the generated client entry (`entries/pages-client-entry.ts`)
+     * before `hydrate()`. Read by `shims/router.ts` `navigateClient` after a
+     * successful `/_next/data/<buildId>/<page>.json` fetch.
+     *
+     * `undefined` during SSR and on the very first hydration tick.
+     */
+    __VINEXT_PAGE_LOADERS__:
+      | Record<string, () => Promise<{ default?: unknown; [key: string]: unknown }>>
+      | undefined;
+
+    /**
+     * Pages Router pattern list. The route patterns (Next.js bracket format)
+     * keyed in `__VINEXT_PAGE_LOADERS__`, in priority order (longest specific
+     * pattern first, catch-alls last). Used by `shims/router.ts` to match an
+     * incoming URL pathname to a registered loader.
+     */
+    __VINEXT_PAGE_PATTERNS__: string[] | undefined;
+
+    /**
+     * Pages Router `_app` loader. Dynamic `import()` thunk for the user's
+     * `pages/_app.tsx` module, or `undefined` when the app has no `_app`.
+     * Set by the generated client entry; read by `shims/router.ts`
+     * `navigateClient` to lazy-load `_app` on the first client-side
+     * navigation.
+     */
+    __VINEXT_APP_LOADER__:
+      | (() => Promise<{ default?: unknown; [key: string]: unknown }>)
+      | undefined;
+
+    /**
      * The current active locale for Pages Router internationalisation.
      * Injected as an inline `<script>` by the dev/prod server.
      */

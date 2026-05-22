@@ -23,6 +23,11 @@ import {
   type VinextNextData,
 } from "../client/vinext-next-data.js";
 import { isValidModulePath } from "../client/validate-module-path.js";
+import {
+  prefetchPagesData,
+  resolvePagesDataNavigationTarget,
+  type PagesDataTarget,
+} from "./internal/pages-data-target.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import {
   isAbsoluteOrProtocolRelativeUrl,
@@ -41,6 +46,8 @@ import {
 import {
   addQueryParam,
   appendSearchParamsToUrl,
+  mergeRouteParamsIntoQuery,
+  parseQueryString,
   type UrlQuery,
   urlQueryToSearchParams,
 } from "../utils/query.js";
@@ -48,6 +55,7 @@ import { matchRoutePattern, routePatternParts } from "../routing/route-pattern.j
 import { scrollToHashTarget } from "./hash-scroll.js";
 import { setPagesRouterPopStateHandler } from "./pages-router-runtime.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
+import { getCurrentBrowserLocale } from "./client-locale.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
@@ -164,10 +172,18 @@ function resolveNavigationTarget(
   return applyNavigationLocale(as ?? resolveUrl(url), locale);
 }
 
+function getCurrentUrlLocale(): string | undefined {
+  return getCurrentBrowserLocale({
+    basePath: __basePath,
+    domainLocales: getDomainLocales(),
+    hostname: getCurrentHostname(),
+  });
+}
+
 function resolveTransitionLocale(locale: TransitionOptions["locale"]): string | undefined {
   if (typeof window === "undefined") return undefined;
   if (locale === false) return window.__VINEXT_DEFAULT_LOCALE__;
-  return locale ?? window.__VINEXT_LOCALE__;
+  return locale ?? getCurrentUrlLocale();
 }
 
 function getDomainLocales(): readonly DomainLocale[] | undefined {
@@ -562,23 +578,348 @@ function scheduleHardNavigationAndThrow(url: string, message: string): never {
   throw new HardNavigationScheduledError(message);
 }
 
-/**
- * Perform client-side navigation: fetch the target page's HTML,
- * extract __NEXT_DATA__, and re-render the React root.
- *
- * Throws NavigationCancelledError if a newer navigation supersedes this one.
- * Throws on hard-navigation failures (non-OK response, missing data) so the
- * caller can distinguish success from failure for event emission.
- */
-async function navigateClient(url: string, fetchUrl = url): Promise<void> {
-  if (typeof window === "undefined") return;
+/** Wire format of `/_next/data/<id>/<page>.json` response bodies. */
+type PagesDataResponse = {
+  pageProps?: Record<string, unknown>;
+  // Server may also emit `notFound`, `__N_SSP`, etc. — we only consume
+  // `pageProps`; everything else triggers a hard reload per the
+  // user-configured fallback policy.
+  [key: string]: unknown;
+};
 
+/**
+ * Perform client-side navigation via the `/_next/data/<id>/<page>.json`
+ * endpoint. Used when `__VINEXT_PAGE_LOADERS__` has a matching code-split
+ * loader for the target pattern (the prod hot path). Falls back to the
+ * HTML extraction path (`navigateClientHtml`) when this returns `null`.
+ *
+ * Failure modes (404, 5xx, network, parse, missing loader, soft redirect)
+ * all queue a hard navigation and throw `HardNavigationScheduledError`,
+ * mirroring the existing HTML-path failure protocol. The hard reload is
+ * the deploy-skew safety net: when the server's buildId has rotated, the
+ * data endpoint returns 404 and the client lands on the new build via a
+ * full document load.
+ */
+async function navigateClientData(
+  url: string,
+  target: PagesDataTarget,
+  controller: AbortController,
+  navId: number,
+  assertStillCurrent: () => void,
+): Promise<void> {
   const root = window.__VINEXT_ROOT__;
   if (!root) {
     // No React root yet — fall back to hard navigation
     window.location.href = url;
     return;
   }
+
+  // Fetch the page-data JSON.
+  let res: Response;
+  try {
+    res = await fetch(target.dataHref, {
+      headers: { Accept: "application/json", "x-nextjs-data": "1" },
+      signal: controller.signal,
+    });
+  } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new NavigationCancelledError(url);
+    }
+    throw err;
+  }
+  assertStillCurrent();
+
+  // Soft-redirect protocol: the data endpoint emits 200 + x-nextjs-redirect
+  // when middleware (or gSSP/gSP) chose a redirect for this URL. For now we
+  // hard-reload to the target; a future iteration can wire this through
+  // Router.replace so the redirect stays a client-side navigation.
+  const softRedirect = res.headers.get("x-nextjs-redirect");
+  if (softRedirect) {
+    scheduleHardNavigationAndThrow(softRedirect, "Navigation soft-redirected by data endpoint");
+  }
+
+  if (!res.ok) {
+    // 404 here is the deploy-skew signal (server buildId rotated) — hard
+    // reload to land on the new build's HTML. Any other non-OK status is
+    // treated the same way per the user-configured "always hard reload"
+    // fallback policy.
+    scheduleHardNavigationAndThrow(url, `Data navigation failed: ${res.status} ${res.statusText}`);
+  }
+
+  let body: PagesDataResponse;
+  try {
+    body = (await res.json()) as PagesDataResponse;
+  } catch {
+    scheduleHardNavigationAndThrow(url, "Data navigation failed: invalid JSON response");
+  }
+  assertStillCurrent();
+
+  const pageProps: Record<string, unknown> =
+    body.pageProps && typeof body.pageProps === "object" ? body.pageProps : {};
+
+  // Load the page module via the registered code-split loader. Vite has
+  // already split each page into its own chunk; the loader is just the
+  // `import()` thunk the build generated.
+  let pageModule: { default?: unknown; [key: string]: unknown };
+  try {
+    pageModule = await target.loader();
+  } catch (err) {
+    console.error("[vinext] Page loader threw during navigation:", err);
+    scheduleHardNavigationAndThrow(url, "Data navigation failed: page loader threw");
+  }
+  assertStillCurrent();
+
+  const PageComponent = pageModule.default as React.ComponentType<unknown> | undefined;
+  if (!PageComponent) {
+    scheduleHardNavigationAndThrow(
+      url,
+      "Data navigation failed: page module has no default export",
+    );
+  }
+
+  // Lazy-load `_app` if we have an app loader and haven't cached it yet.
+  let AppComponent = window.__VINEXT_APP__;
+  if (!AppComponent && typeof window.__VINEXT_APP_LOADER__ === "function") {
+    try {
+      const appModule = await window.__VINEXT_APP_LOADER__();
+      AppComponent = appModule.default as Window["__VINEXT_APP__"];
+      if (AppComponent) window.__VINEXT_APP__ = AppComponent;
+    } catch {
+      // _app load failed — fall through and render without it. This matches
+      // the HTML path which also tolerates a missing _app gracefully.
+    }
+  }
+  assertStillCurrent();
+
+  // Import React (already evaluated; this is a cached re-import).
+  const React = (await import("react")).default;
+  assertStillCurrent();
+
+  let element: React.ReactElement;
+  if (AppComponent) {
+    element = React.createElement(AppComponent, {
+      Component: PageComponent as React.ComponentType<unknown>,
+      pageProps,
+    });
+  } else {
+    element = React.createElement(PageComponent as React.ComponentType<unknown>, pageProps);
+  }
+  element = wrapWithRouterContext(element);
+
+  // Build the updated __NEXT_DATA__. The JSON envelope is intentionally
+  // minimal (just `pageProps`), so we synthesise the surrounding fields
+  // from the data we already have: the matched pattern, the params, and
+  // the previous nextData's buildId/locale state. This keeps
+  // `useRouter()`, `getPagesNavigationContext()`, and any code reading
+  // `window.__NEXT_DATA__` in sync after a JSON navigation — mirroring
+  // what the HTML path produces.
+  //
+  // The cast through `unknown` is unavoidable: the upstream `NEXT_DATA`
+  // type defines `query` as `ParsedUrlQuery` which is structurally
+  // identical to our `Record<string, string | string[]>` but nominally
+  // disjoint, so TypeScript rejects the direct assignment. We spread the
+  // previous nextData first to inherit locale/locales/defaultLocale/
+  // domainLocales unchanged, then override the per-navigation fields.
+  // Mirror Next.js' `__NEXT_DATA__.query`: search params + dynamic route params
+  // merged in one object, with route params winning on key collision (so
+  // `/posts/123?id=456` still exposes `id: "123"`). Without this, code reading
+  // `window.__NEXT_DATA__.query` directly would see only the dynamic params.
+  const mergedQuery = mergeRouteParamsIntoQuery(parseQueryString(target.search), target.params);
+
+  const prev = window.__NEXT_DATA__ as NonNullable<Window["__NEXT_DATA__"]> | undefined;
+  // Locale-prefixed URLs change the active locale; the JSON envelope itself
+  // has no locale metadata, so derive it from the URL we navigated to.
+  // `target.locale` is `undefined` when the URL is unprefixed — that means
+  // either no i18n config (keep `prev.locale`) or the default locale
+  // (override `prev.locale` so locale transitions back to default land
+  // correctly). The locales list / defaultLocale / domainLocales are
+  // build-time config and don't change between pages, so they spread through
+  // from `prev` unchanged.
+  const hasI18n = (window.__VINEXT_LOCALES__?.length ?? 0) > 0;
+  const nextLocale = hasI18n
+    ? (target.locale ?? window.__VINEXT_DEFAULT_LOCALE__)
+    : (prev as VinextNextData | undefined)?.locale;
+  const nextData = {
+    ...prev,
+    props: { pageProps },
+    page: target.pattern,
+    query: mergedQuery,
+    buildId: target.buildId,
+    isFallback: false,
+    ...(nextLocale !== undefined ? { locale: nextLocale } : {}),
+  } as unknown as NonNullable<Window["__NEXT_DATA__"]> & VinextNextData;
+
+  // INVARIANT: Everything between the final assertStillCurrent() above and
+  // root.render() must be synchronous. If a future change introduces another
+  // await, add an assertStillCurrent() before mutating window.__NEXT_DATA__.
+  window.__NEXT_DATA__ = nextData;
+  applyVinextLocaleGlobals(window, nextData);
+  root.render(element);
+}
+
+/**
+ * Perform client-side navigation by fetching the page's full HTML and
+ * extracting `__NEXT_DATA__` plus the page module URL. Used in dev (where
+ * the per-page inline hydration script does not populate the loader map) and
+ * as a generic fallback when the data path is not available.
+ *
+ * Throws NavigationCancelledError if a newer navigation supersedes this one.
+ * Throws on hard-navigation failures (non-OK response, missing data) so the
+ * caller can distinguish success from failure for event emission.
+ */
+async function navigateClientHtml(
+  url: string,
+  fetchUrl: string,
+  controller: AbortController,
+  navId: number,
+  assertStillCurrent: () => void,
+): Promise<void> {
+  const root = window.__VINEXT_ROOT__;
+  if (!root) {
+    // No React root yet — fall back to hard navigation
+    window.location.href = url;
+    return;
+  }
+
+  // Fetch the target page's SSR HTML
+  let res: Response;
+  try {
+    res = await fetch(fetchUrl, {
+      headers: { Accept: "text/html" },
+      signal: controller.signal,
+    });
+  } catch (err: unknown) {
+    // AbortError means a newer navigation cancelled this fetch
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new NavigationCancelledError(url);
+    }
+    throw err;
+  }
+  assertStillCurrent();
+
+  if (!res.ok) {
+    // Set window.location.href first so the browser navigates to the correct
+    // page even if the caller suppresses the error.  The assignment schedules
+    // the navigation asynchronously (as a task), so synchronous routeChangeError
+    // listeners still run — and observe the error — before the page unloads.
+    // Contract: routeChangeError listeners MUST be synchronous; async listeners
+    // will not fire before the navigation completes.  Callers (runNavigateClient)
+    // must NOT schedule a second hard navigation — this assignment already queues
+    // the browser fallback, and the helper-level HardNavigationScheduledError
+    // makes that contract explicit to callers.
+    scheduleHardNavigationAndThrow(url, `Navigation failed: ${res.status} ${res.statusText}`);
+  }
+
+  const html = await res.text();
+  assertStillCurrent();
+
+  // Extract __NEXT_DATA__ from the HTML
+  const nextDataJson = extractVinextNextDataJson(html);
+  if (!nextDataJson) {
+    scheduleHardNavigationAndThrow(url, "Navigation failed: missing __NEXT_DATA__ in response");
+  }
+
+  const nextData = parseVinextNextDataJson(nextDataJson);
+  const { pageProps } = nextData.props;
+  // Defer writing window.__NEXT_DATA__ until just before root.render() —
+  // writing it here would let a stale navigation briefly pollute the global
+  // between this assertStillCurrent() and the next one after await import().
+
+  // Get the page module URL from __NEXT_DATA__.__vinext (preferred),
+  // or fall back to parsing the hydration script
+  let pageModuleUrl: string | undefined = nextData.__vinext?.pageModuleUrl;
+
+  if (!pageModuleUrl) {
+    // Legacy fallback: try to find the module URL in the inline script
+    const moduleMatch = html.match(/import\("([^"]+)"\);\s*\n\s*const PageComponent/);
+    const altMatch = html.match(/await import\("([^"]+pages\/[^"]+)"\)/);
+    pageModuleUrl = moduleMatch?.[1] ?? altMatch?.[1] ?? undefined;
+  }
+
+  if (!pageModuleUrl) {
+    scheduleHardNavigationAndThrow(url, "Navigation failed: no page module URL found");
+  }
+
+  // Validate the module URL before importing — defense-in-depth against
+  // unexpected __NEXT_DATA__ or malformed HTML responses
+  if (!isValidModulePath(pageModuleUrl)) {
+    console.error("[vinext] Blocked import of invalid page module path:", pageModuleUrl);
+    scheduleHardNavigationAndThrow(url, "Navigation failed: invalid page module path");
+  }
+
+  // Dynamically import the new page module
+  const pageModule = await import(/* @vite-ignore */ pageModuleUrl);
+  assertStillCurrent();
+
+  const PageComponent = pageModule.default;
+
+  if (!PageComponent) {
+    scheduleHardNavigationAndThrow(url, "Navigation failed: page module has no default export");
+  }
+
+  // Import React for createElement
+  const React = (await import("react")).default;
+  assertStillCurrent();
+
+  // Re-render with the new page, loading _app if needed
+  let AppComponent = window.__VINEXT_APP__;
+  const appModuleUrl: string | undefined = nextData.__vinext?.appModuleUrl;
+
+  if (!AppComponent && appModuleUrl) {
+    if (!isValidModulePath(appModuleUrl)) {
+      console.error("[vinext] Blocked import of invalid app module path:", appModuleUrl);
+    } else {
+      try {
+        const appModule = await import(/* @vite-ignore */ appModuleUrl);
+        AppComponent = appModule.default;
+        window.__VINEXT_APP__ = AppComponent;
+      } catch {
+        // _app not available — continue without it
+      }
+    }
+  }
+  assertStillCurrent();
+
+  let element;
+  if (AppComponent) {
+    element = React.createElement(AppComponent, {
+      Component: PageComponent,
+      pageProps,
+    });
+  } else {
+    element = React.createElement(PageComponent, pageProps);
+  }
+
+  // Wrap with RouterContext.Provider so next/router and next/compat/router work.
+  element = wrapWithRouterContext(element);
+
+  // Commit __NEXT_DATA__ only after all assertStillCurrent() checks have passed,
+  // so a stale navigation can never pollute the global.
+  // INVARIANT: Everything after the final assertStillCurrent() above (the
+  // checkpoint immediately after the optional _app import) through
+  // root.render() is synchronous. If any step here ever becomes async, add
+  // another assertStillCurrent() before writing __NEXT_DATA__.
+  window.__NEXT_DATA__ = nextData;
+  applyVinextLocaleGlobals(window, nextData);
+  root.render(element);
+}
+
+/**
+ * Perform client-side navigation. Prefers the JSON data endpoint when the
+ * client has a registered code-split loader for the target route (the prod
+ * hot path); otherwise falls back to fetching the page's full HTML (dev and
+ * any unmapped route).
+ *
+ * Throws NavigationCancelledError if a newer navigation supersedes this one.
+ * Throws on hard-navigation failures (non-OK response, missing data) so the
+ * caller can distinguish success from failure for event emission.
+ *
+ * `fetchUrl` is the HTML-path fetch URL (already includes locale-root
+ * fixups). The JSON path derives its own URL from the browser-facing `url`
+ * because the data endpoint speaks the unprefixed path.
+ */
+async function navigateClient(url: string, fetchUrl = url): Promise<void> {
+  if (typeof window === "undefined") return;
 
   // Cancel any in-flight navigation (abort its fetch, mark it stale)
   _activeAbortController?.abort();
@@ -595,127 +936,12 @@ async function navigateClient(url: string, fetchUrl = url): Promise<void> {
   }
 
   try {
-    // Fetch the target page's SSR HTML
-    let res: Response;
-    try {
-      res = await fetch(fetchUrl, {
-        headers: { Accept: "text/html" },
-        signal: controller.signal,
-      });
-    } catch (err: unknown) {
-      // AbortError means a newer navigation cancelled this fetch
-      if (err instanceof DOMException && err.name === "AbortError") {
-        throw new NavigationCancelledError(url);
-      }
-      throw err;
-    }
-    assertStillCurrent();
-
-    if (!res.ok) {
-      // Set window.location.href first so the browser navigates to the correct
-      // page even if the caller suppresses the error.  The assignment schedules
-      // the navigation asynchronously (as a task), so synchronous routeChangeError
-      // listeners still run — and observe the error — before the page unloads.
-      // Contract: routeChangeError listeners MUST be synchronous; async listeners
-      // will not fire before the navigation completes.  Callers (runNavigateClient)
-      // must NOT schedule a second hard navigation — this assignment already queues
-      // the browser fallback, and the helper-level HardNavigationScheduledError
-      // makes that contract explicit to callers.
-      scheduleHardNavigationAndThrow(url, `Navigation failed: ${res.status} ${res.statusText}`);
-    }
-
-    const html = await res.text();
-    assertStillCurrent();
-
-    // Extract __NEXT_DATA__ from the HTML
-    const nextDataJson = extractVinextNextDataJson(html);
-    if (!nextDataJson) {
-      scheduleHardNavigationAndThrow(url, "Navigation failed: missing __NEXT_DATA__ in response");
-    }
-
-    const nextData = parseVinextNextDataJson(nextDataJson);
-    const { pageProps } = nextData.props;
-    // Defer writing window.__NEXT_DATA__ until just before root.render() —
-    // writing it here would let a stale navigation briefly pollute the global
-    // between this assertStillCurrent() and the next one after await import().
-
-    // Get the page module URL from __NEXT_DATA__.__vinext (preferred),
-    // or fall back to parsing the hydration script
-    let pageModuleUrl: string | undefined = nextData.__vinext?.pageModuleUrl;
-
-    if (!pageModuleUrl) {
-      // Legacy fallback: try to find the module URL in the inline script
-      const moduleMatch = html.match(/import\("([^"]+)"\);\s*\n\s*const PageComponent/);
-      const altMatch = html.match(/await import\("([^"]+pages\/[^"]+)"\)/);
-      pageModuleUrl = moduleMatch?.[1] ?? altMatch?.[1] ?? undefined;
-    }
-
-    if (!pageModuleUrl) {
-      scheduleHardNavigationAndThrow(url, "Navigation failed: no page module URL found");
-    }
-
-    // Validate the module URL before importing — defense-in-depth against
-    // unexpected __NEXT_DATA__ or malformed HTML responses
-    if (!isValidModulePath(pageModuleUrl)) {
-      console.error("[vinext] Blocked import of invalid page module path:", pageModuleUrl);
-      scheduleHardNavigationAndThrow(url, "Navigation failed: invalid page module path");
-    }
-
-    // Dynamically import the new page module
-    const pageModule = await import(/* @vite-ignore */ pageModuleUrl);
-    assertStillCurrent();
-
-    const PageComponent = pageModule.default;
-
-    if (!PageComponent) {
-      scheduleHardNavigationAndThrow(url, "Navigation failed: page module has no default export");
-    }
-
-    // Import React for createElement
-    const React = (await import("react")).default;
-    assertStillCurrent();
-
-    // Re-render with the new page, loading _app if needed
-    let AppComponent = window.__VINEXT_APP__;
-    const appModuleUrl: string | undefined = nextData.__vinext?.appModuleUrl;
-
-    if (!AppComponent && appModuleUrl) {
-      if (!isValidModulePath(appModuleUrl)) {
-        console.error("[vinext] Blocked import of invalid app module path:", appModuleUrl);
-      } else {
-        try {
-          const appModule = await import(/* @vite-ignore */ appModuleUrl);
-          AppComponent = appModule.default;
-          window.__VINEXT_APP__ = AppComponent;
-        } catch {
-          // _app not available — continue without it
-        }
-      }
-    }
-    assertStillCurrent();
-
-    let element;
-    if (AppComponent) {
-      element = React.createElement(AppComponent, {
-        Component: PageComponent,
-        pageProps,
-      });
+    const dataTarget = resolvePagesDataNavigationTarget(url, __basePath);
+    if (dataTarget) {
+      await navigateClientData(url, dataTarget, controller, navId, assertStillCurrent);
     } else {
-      element = React.createElement(PageComponent, pageProps);
+      await navigateClientHtml(url, fetchUrl, controller, navId, assertStillCurrent);
     }
-
-    // Wrap with RouterContext.Provider so next/router and next/compat/router work.
-    element = wrapWithRouterContext(element);
-
-    // Commit __NEXT_DATA__ only after all assertStillCurrent() checks have passed,
-    // so a stale navigation can never pollute the global.
-    // INVARIANT: Everything after the final assertStillCurrent() above (the
-    // checkpoint immediately after the optional _app import) through
-    // root.render() is synchronous. If any step here ever becomes async, add
-    // another assertStillCurrent() before writing __NEXT_DATA__.
-    window.__NEXT_DATA__ = nextData;
-    applyVinextLocaleGlobals(window, nextData);
-    root.render(element);
   } finally {
     // Clean up the abort controller if this navigation is still the active one
     if (navId === _navigationId) {
@@ -951,15 +1177,42 @@ async function performNavigation(
   return true;
 }
 
-/** Inject a `<link rel="prefetch">` for the target page. */
+/**
+ * Prefetch the resources needed for a future Pages Router navigation.
+ *
+ * When the client has a registered code-split loader for the target route
+ * (the prod hot path), we prefetch in parallel:
+ *   1. The `/_next/data/<buildId>/<page>.json` payload — same URL the actual
+ *      navigation will request, so a cache hit is automatic.
+ *   2. The page's JS chunk — by invoking the loader thunk now. Vite's
+ *      dynamic `import()` machinery is responsible for fetching + caching;
+ *      the returned Promise is intentionally discarded.
+ *
+ * When no loader is registered (dev server, or an unmapped route), we fall
+ * back to the legacy `<link rel="prefetch" as="document">` hint, which lets
+ * the browser preload the HTML document. This matches the pre-`_next/data`
+ * behaviour so dev doesn't regress.
+ *
+ * Ported from Next.js: `packages/next/src/client/page-loader.ts` `prefetch`
+ * (the data + chunk parallel prefetch shape).
+ */
 async function prefetchUrl(url: string): Promise<void> {
-  if (typeof document !== "undefined") {
-    const link = document.createElement("link");
-    link.rel = "prefetch";
-    link.href = url;
-    link.as = "document";
-    document.head.appendChild(link);
+  if (typeof document === "undefined") return;
+
+  const dataTarget = resolvePagesDataNavigationTarget(url, __basePath);
+  if (dataTarget) {
+    prefetchPagesData(dataTarget);
+    return;
   }
+
+  // Legacy fallback for routes without a registered loader (e.g. dev).
+  // Hints the browser to preload the HTML document so the next click feels
+  // faster, even though we can't resolve the chunk ahead of time.
+  const link = document.createElement("link");
+  link.rel = "prefetch";
+  link.href = url;
+  link.as = "document";
+  document.head.appendChild(link);
 }
 
 /**

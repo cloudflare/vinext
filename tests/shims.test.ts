@@ -4047,6 +4047,70 @@ describe('"use cache" runtime', () => {
     expect(r3).toEqual({ count: 2 });
   });
 
+  it("private variant marks prerender output dynamic", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { consumeDynamicUsage } = await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    // Ported from Next.js: "use cache: private" is dynamic in prerendering contexts.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      await runWithRequestContext(createRequestContext(), async () => {
+        const cached = registerCachedFunction(
+          async () => "private",
+          "test:private-prerender",
+          "private",
+        );
+        await cached();
+
+        expect(consumeDynamicUsage()).toBe(true);
+      });
+    } finally {
+      if (previousPrerender === undefined) {
+        delete process.env.VINEXT_PRERENDER;
+      } else {
+        process.env.VINEXT_PRERENDER = previousPrerender;
+      }
+    }
+  });
+
+  it('rejects "use cache: private" nested inside public "use cache"', async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { cookies, setHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    // Ported from Next.js: "use cache: private" must not run inside public "use cache".
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+    await runWithRequestContext(createRequestContext(), async () => {
+      try {
+        setHeadersContext({
+          headers: new Headers({ cookie: "test-cookie=leaked" }),
+          cookies: new Map([["test-cookie", "leaked"]]),
+        });
+
+        const inner = registerCachedFunction(
+          async () => (await cookies()).get("test-cookie")?.value,
+          "test:private-nested-inner",
+          "private",
+        );
+        const outer = registerCachedFunction(async () => inner(), "test:private-nested-outer", "");
+
+        await expect(outer()).rejects.toThrow(
+          /"use cache: private" must not be used within "use cache"/,
+        );
+      } finally {
+        setHeadersContext(null);
+      }
+    });
+  });
+
   it("cacheLife minimum-wins rule applies", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
@@ -4635,8 +4699,17 @@ describe("middleware runner", () => {
     try {
       findMiddlewareFile(FIXTURE_DIR, createValidFileMatcher());
       expect(warnSpy).toHaveBeenCalledOnce();
+      // Match Next.js canonical wording: deprecation-warnings and
+      // app-middleware e2e suites assert on this exact phrase via toContain.
+      // See .nextjs-ref/packages/next/src/build/index.ts (the Log.warnOnce call
+      // adjacent to MIDDLEWARE_FILENAME / PROXY_FILENAME).
       expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("middleware.ts is deprecated in Next.js 16"),
+        expect.stringContaining(
+          'The "middleware" file convention is deprecated. Please use "proxy" instead.',
+        ),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("https://nextjs.org/docs/messages/middleware-to-proxy"),
       );
     } finally {
       warnSpy.mockRestore();
@@ -6808,6 +6881,16 @@ describe("cookie name validation", () => {
 // NextRequest API tests
 
 describe("NextRequest API", () => {
+  it("throws canonical 'Please use only absolute URLs' error for relative URL input", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    // Matches Next.js's documented behaviour — middleware tests assert on this
+    // exact message via the middleware-relative-urls docs link.
+    expect(() => new NextRequest("/foo")).toThrow(/Please use only absolute URLs/);
+    expect(() => new NextRequest("/urls-b")).toThrow(
+      /URL is malformed "\/urls-b"\. Please use only absolute URLs/,
+    );
+  });
+
   it("cookies reads request cookies", async () => {
     const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
     const req = new NextRequest("http://localhost/test", {
@@ -11862,6 +11945,124 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("treats a non-locale-prefixed current path as the default locale for root Link navigations", async () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    win.location.pathname = "/new";
+    win.location.href = "http://localhost/new";
+    Object.assign(win, {
+      // Simulate a stale/preferred locale signal that must not override the
+      // URL-derived Pages Router locale for an unprefixed path.
+      __VINEXT_LOCALE__: "id",
+      __VINEXT_LOCALES__: ["en", "id"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    });
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          buildNavHtml(
+            "/",
+            pageModuleUrl,
+            {},
+            {
+              locale: "en",
+              locales: ["en", "id"],
+              defaultLocale: "en",
+            },
+          ),
+          { status: 200 },
+        ),
+    );
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/");
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenCalledWith("/en", expect.any(Object));
+      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/");
+      expect(win.location.href).toBe("http://localhost/");
+      expect(win.__VINEXT_LOCALE__).toBe("en");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("keeps a locale-prefixed current path locale for root Link navigations", async () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    win.location.pathname = "/id/new";
+    win.location.href = "http://localhost/id/new";
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "id",
+      __VINEXT_LOCALES__: ["en", "id"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    });
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          buildNavHtml(
+            "/",
+            pageModuleUrl,
+            {},
+            {
+              locale: "id",
+              locales: ["en", "id"],
+              defaultLocale: "en",
+            },
+          ),
+          { status: 200 },
+        ),
+    );
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/");
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenCalledWith("/id", expect.any(Object));
+      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/id");
+      expect(win.location.href).toBe("http://localhost/id");
+      expect(win.__VINEXT_LOCALE__).toBe("id");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("popstate fetches default-locale root through a locale-qualified URL", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -12664,6 +12865,621 @@ describe("Pages Router concurrent navigation", () => {
       } else {
         (globalThis as any).window = previousWindow;
       }
+      vi.resetModules();
+    }
+  });
+});
+
+describe("Pages Router _next/data client navigation", () => {
+  // These tests exercise the JSON path in navigateClient: when
+  // `__VINEXT_PAGE_LOADERS__` is populated (prod-style hydration), navigation
+  // fetches `/_next/data/<buildId>/<page>.json` instead of the full HTML.
+  // The HTML path tests above still cover the dev fallback.
+
+  // Local mirror of trackHrefAssignments in the concurrent-navigation suite —
+  // duplicated rather than hoisted to avoid disturbing the existing scopes.
+  function trackHrefAssignmentsLocal(win: { location: { href: string } }): string[] {
+    let currentHref = win.location.href;
+    const assignments: string[] = [];
+    Object.defineProperty(win.location, "href", {
+      configurable: true,
+      enumerable: true,
+      get: () => currentHref,
+      set: (value: string) => {
+        currentHref = value;
+        assignments.push(value);
+      },
+    });
+    return assignments;
+  }
+
+  // Local mirror of buildNavHtml — the HTML-fallback assertion needs a
+  // minimal HTML response that the navigateClientHtml path can parse.
+  function buildNavHtmlLocal(page: string, pageModuleUrl: string): string {
+    const nextData = {
+      props: { pageProps: {} },
+      page,
+      query: {},
+      buildId: null,
+      isFallback: false,
+      __vinext: { pageModuleUrl },
+    };
+    return `<html><head></head><body><script>window.__NEXT_DATA__ = ${JSON.stringify(nextData)}</script></body></html>`;
+  }
+
+  function createDataNavWindow(
+    opts: {
+      buildId?: string;
+      page?: string;
+      locale?: string;
+      loaders?: Record<string, () => Promise<unknown>>;
+      appLoader?: () => Promise<unknown>;
+      /** Initial pathname for window.location. */
+      pathname?: string;
+    } = {},
+  ) {
+    const pushState = vi.fn();
+    const replaceState = vi.fn();
+    const render = vi.fn();
+    const buildId = opts.buildId ?? "test-build";
+
+    const win = {
+      location: {
+        pathname: opts.pathname ?? "/",
+        search: "",
+        hash: "",
+        href: `http://localhost${opts.pathname ?? "/"}`,
+        origin: "http://localhost",
+        hostname: "localhost",
+        assign: vi.fn(),
+        replace: vi.fn(),
+        reload: vi.fn(),
+      },
+      history: {
+        state: null,
+        pushState: pushState as any,
+        replaceState: replaceState as any,
+        back: vi.fn(),
+      },
+      dispatchEvent: vi.fn(),
+      scrollTo: vi.fn(),
+      scrollX: 0,
+      scrollY: 0,
+      addEventListener: vi.fn(),
+      __NEXT_DATA__: {
+        page: opts.page ?? "/",
+        query: {},
+        isFallback: false,
+        props: { pageProps: {} },
+        buildId,
+      } as any,
+      __VINEXT_ROOT__: { render },
+      __VINEXT_APP__: undefined,
+      __VINEXT_LOCALE__: opts.locale,
+      __VINEXT_LOCALES__: undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined,
+      __VINEXT_PAGE_LOADERS__: opts.loaders,
+      __VINEXT_PAGE_PATTERNS__: opts.loaders ? Object.keys(opts.loaders) : undefined,
+      __VINEXT_APP_LOADER__: opts.appLoader,
+    };
+
+    pushState.mockImplementation((_state: unknown, _title: string, url: string) => {
+      try {
+        const parsed = new URL(url, "http://localhost");
+        win.location.pathname = parsed.pathname;
+        win.location.search = parsed.search;
+        win.location.hash = parsed.hash;
+        win.location.href = parsed.href;
+      } catch {
+        win.location.pathname = url;
+        win.location.href = "http://localhost" + url;
+      }
+    });
+    replaceState.mockImplementation((_state: unknown, _title: string, url?: string) => {
+      if (!url) return;
+      try {
+        const parsed = new URL(url, "http://localhost");
+        win.location.pathname = parsed.pathname;
+        win.location.search = parsed.search;
+        win.location.hash = parsed.hash;
+        win.location.href = parsed.href;
+      } catch {
+        win.location.pathname = url;
+        win.location.href = "http://localhost" + url;
+      }
+    });
+
+    return { win, pushState, replaceState, render, buildId };
+  }
+
+  // Fake React-component placeholder. The mocked __VINEXT_ROOT__.render
+  // captures whatever element navigateClient produces; we only assert on the
+  // surrounding state (page, query, fetch URL, etc.), so the page modules
+  // returned by loaders just need a default export of any function value.
+  const FakePage = (() => "fake-page") as unknown as { default: unknown };
+  (FakePage as { default: unknown }).default = () => "fake-page";
+
+  function makePageModule(name: string): { default: unknown } {
+    return { default: ((): string => `page:${name}`) as unknown };
+  }
+
+  it("fetches /_next/data/<buildId>/<page>.json instead of the HTML page", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const loaderAbout = vi.fn(async () => makePageModule("about"));
+    const { win, buildId } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/about": loaderAbout },
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(
+      async (_url: any, _init: any) =>
+        new Response(JSON.stringify({ pageProps: { hello: "world" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      const result = await Router.push("/about");
+
+      expect(result).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [calledUrl, calledInit] = fetchMock.mock.calls[0];
+      expect(String(calledUrl)).toBe(`/_next/data/${buildId}/about.json`);
+      expect((calledInit as RequestInit).headers).toMatchObject({
+        Accept: "application/json",
+        "x-nextjs-data": "1",
+      });
+      expect(loaderAbout).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__.page).toBe("/about");
+      expect(win.__NEXT_DATA__.props.pageProps).toEqual({ hello: "world" });
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("hard-reloads when the data endpoint returns 404 (build-skew safety net)", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const { win } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/about": vi.fn(async () => makePageModule("about")),
+      },
+    });
+    (globalThis as any).window = win;
+    const hrefAssignments = trackHrefAssignmentsLocal(win);
+    vi.resetModules();
+
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response("{}", { status: 404, headers: { "Content-Type": "application/json" } }),
+    ) as any;
+
+    const onRouteChangeError = vi.fn();
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.on("routeChangeError", onRouteChangeError);
+
+      const result = await Router.push("/about");
+      expect(result).toBe(false);
+      // Hard reload was queued via window.location.href = url.
+      expect(hrefAssignments).toContain("/about");
+      Router.events.off("routeChangeError", onRouteChangeError);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("hard-reloads to the redirect target on x-nextjs-redirect", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const { win } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/about": vi.fn(async () => makePageModule("about")),
+      },
+    });
+    (globalThis as any).window = win;
+    const hrefAssignments = trackHrefAssignmentsLocal(win);
+    vi.resetModules();
+
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response("{}", {
+          status: 200,
+          headers: { "Content-Type": "application/json", "x-nextjs-redirect": "/login" },
+        }),
+    ) as any;
+
+    const onRouteChangeError = vi.fn();
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.on("routeChangeError", onRouteChangeError);
+
+      await Router.push("/about");
+      // The soft redirect destination is what gets hard-loaded.
+      expect(hrefAssignments).toContain("/login");
+      Router.events.off("routeChangeError", onRouteChangeError);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("falls back to the HTML path when no loader is registered for the target route", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    // Loader map has only `/` — no loader for `/about`, so the data path
+    // resolves to null and navigateClient falls through to HTML extraction.
+    const { win } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")) },
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(
+      async (_url: any, _init?: any) =>
+        new Response(buildNavHtmlLocal("/about", "/@fs/pages/about.js"), {
+          status: 200,
+          headers: { "Content-Type": "text/html" },
+        }),
+    );
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      await Router.push("/about");
+
+      // The fetch URL must be the HTML page, not the data endpoint.
+      const [calledUrl] = fetchMock.mock.calls[0];
+      expect(String(calledUrl)).not.toMatch(/^\/_next\/data\//);
+      expect(String(calledUrl)).toContain("/about");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("extracts dynamic route params from the URL and stores them on __NEXT_DATA__.query", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const blogLoader = vi.fn(async () => makePageModule("blog"));
+    const { win, buildId } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/blog/[slug]": blogLoader },
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(
+      async (_url: any, _init?: any) =>
+        new Response(JSON.stringify({ pageProps: { post: "hi" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      await Router.push("/blog/my-post");
+
+      const [calledUrl] = fetchMock.mock.calls[0];
+      expect(String(calledUrl)).toBe(`/_next/data/${buildId}/blog/my-post.json`);
+      expect(blogLoader).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__.page).toBe("/blog/[slug]");
+      expect(win.__NEXT_DATA__.query).toEqual({ slug: "my-post" });
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("merges URL search params and route params into __NEXT_DATA__.query (route params win)", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const { win } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/blog/[slug]": vi.fn(async () => makePageModule("blog")),
+      },
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ pageProps: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ) as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      // Search param `slug` should NOT shadow the dynamic route param `slug`.
+      // Search params `q` and `tag` should appear in query alongside `slug`.
+      await Router.push("/blog/my-post?slug=spoofed&q=hello&tag=a&tag=b");
+
+      expect(win.__NEXT_DATA__.page).toBe("/blog/[slug]");
+      expect(win.__NEXT_DATA__.query).toEqual({
+        slug: "my-post",
+        q: "hello",
+        tag: ["a", "b"],
+      });
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("hard-reloads on a malformed JSON response", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const { win } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/about": vi.fn(async () => makePageModule("about")),
+      },
+    });
+    (globalThis as any).window = win;
+    const hrefAssignments = trackHrefAssignmentsLocal(win);
+    vi.resetModules();
+
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response("not json {{{", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ) as any;
+
+    const onRouteChangeError = vi.fn();
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      Router.events.on("routeChangeError", onRouteChangeError);
+
+      await Router.push("/about");
+      expect(hrefAssignments).toContain("/about");
+      Router.events.off("routeChangeError", onRouteChangeError);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("uses the JSON path for prefetch when a loader is registered", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalDocument = (globalThis as any).document;
+
+    const aboutLoader = vi.fn(async () => makePageModule("about"));
+    const { win, buildId } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/about": aboutLoader },
+    });
+    (globalThis as any).window = win;
+
+    const appendedLinks: Array<{ rel: string; as: string; href: string; crossOrigin?: string }> =
+      [];
+    (globalThis as any).document = {
+      createElement: (tag: string) => {
+        if (tag !== "link") return {};
+        const link: { rel: string; as: string; href: string; crossOrigin?: string } = {
+          rel: "",
+          as: "",
+          href: "",
+        };
+        return link;
+      },
+      head: {
+        appendChild: (node: any) => {
+          appendedLinks.push({
+            rel: node.rel,
+            as: node.as,
+            href: node.href,
+            crossOrigin: node.crossOrigin,
+          });
+        },
+      },
+    };
+    vi.resetModules();
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      await Router.prefetch("/about");
+
+      const prefetchLink = appendedLinks.find((l) => l.rel === "prefetch");
+      expect(prefetchLink).toBeDefined();
+      expect(prefetchLink?.as).toBe("fetch");
+      expect(prefetchLink?.href).toBe(`/_next/data/${buildId}/about.json`);
+      expect(prefetchLink?.crossOrigin).toBe("anonymous");
+      // The loader was warmed (chunk fetch kicked off).
+      expect(aboutLoader).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      (globalThis as any).document = originalDocument;
+      vi.resetModules();
+    }
+  });
+
+  it("falls back to as=document prefetch when no loader matches", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalDocument = (globalThis as any).document;
+
+    const { win } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")) },
+    });
+    (globalThis as any).window = win;
+
+    const appendedLinks: Array<{ rel: string; as: string; href: string }> = [];
+    (globalThis as any).document = {
+      createElement: () => ({ rel: "", as: "", href: "" }),
+      head: {
+        appendChild: (node: any) => {
+          appendedLinks.push({ rel: node.rel, as: node.as, href: node.href });
+        },
+      },
+    };
+    vi.resetModules();
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      await Router.prefetch("/unmapped");
+
+      const prefetchLink = appendedLinks.find((l) => l.rel === "prefetch");
+      expect(prefetchLink?.as).toBe("document");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      (globalThis as any).document = originalDocument;
+      vi.resetModules();
+    }
+  });
+
+  it("strips the locale prefix before matching loaders and updates __NEXT_DATA__.locale", async () => {
+    // Regression: route patterns in __VINEXT_PAGE_PATTERNS__ are
+    // locale-unaware (e.g. /about, not /fr/about). Without stripping the
+    // locale prefix from the URL before pattern matching, locale transitions
+    // would always miss the loader map and fall through to the slower HTML
+    // path. The data URL itself must keep the locale prefix so the server
+    // returns locale-specific gSSP data.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const loaderAbout = vi.fn(async () => makePageModule("about"));
+    const { win, buildId } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/about": loaderAbout,
+      },
+      locale: "en",
+    });
+    (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
+    (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    (win.__NEXT_DATA__ as any).locale = "en";
+    (win.__NEXT_DATA__ as any).locales = ["en", "fr"];
+    (win.__NEXT_DATA__ as any).defaultLocale = "en";
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ pageProps: { hello: "bonjour" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      const result = await Router.push("/fr/about");
+
+      expect(result).toBe(true);
+      // URL kept the locale prefix — the server uses it to pick the locale.
+      const [calledUrl] = (fetchMock.mock.calls[0] ?? []) as unknown as [unknown, RequestInit?];
+      expect(String(calledUrl)).toBe(`/_next/data/${buildId}/fr/about.json`);
+      // Loader matched on the locale-stripped pattern.
+      expect(loaderAbout).toHaveBeenCalledTimes(1);
+      // Page resolved to the unprefixed route pattern.
+      expect(win.__NEXT_DATA__.page).toBe("/about");
+      // Locale globals updated to the new locale so useRouter().locale reflects it.
+      expect((win.__NEXT_DATA__ as any).locale).toBe("fr");
+      expect(win.__VINEXT_LOCALE__).toBe("fr");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("restores the default locale on transitions back to an unprefixed URL", async () => {
+    // `Router.push("/about", undefined, { locale: "en" })` from a French page
+    // switches back to the default locale. The data URL drops the locale
+    // prefix (default locale is unprefixed) and __NEXT_DATA__.locale flips
+    // back to "en" so useRouter().locale tracks the new locale.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const loaderAbout = vi.fn(async () => makePageModule("about"));
+    const { win, buildId } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/about": loaderAbout,
+      },
+      locale: "fr",
+      pathname: "/fr",
+    });
+    (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
+    (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    (win.__NEXT_DATA__ as any).locale = "fr";
+    (win.__NEXT_DATA__ as any).locales = ["en", "fr"];
+    (win.__NEXT_DATA__ as any).defaultLocale = "en";
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ pageProps: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ) as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      await Router.push("/about", undefined, { locale: "en" });
+
+      const [calledUrl] = (globalThis.fetch as any).mock.calls[0];
+      expect(String(calledUrl)).toBe(`/_next/data/${buildId}/about.json`);
+      expect((win.__NEXT_DATA__ as any).locale).toBe("en");
+      expect(win.__VINEXT_LOCALE__).toBe("en");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
       vi.resetModules();
     }
   });
@@ -15313,7 +16129,7 @@ describe("next/head SSR security", () => {
       const html = await collectHeadHTML([el]);
 
       expect(html).toContain(`<${tag}`);
-      expect(html).toContain('data-vinext-head="true"');
+      expect(html).toContain('data-next-head=""');
     }
   });
 });
@@ -15506,6 +16322,69 @@ describe("cache scope guards for dynamic APIs", () => {
     );
 
     setHeadersContext(null);
+  });
+
+  it('headers() is allowed inside "use cache: private" scope', async () => {
+    const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { headers, setHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+
+    // Next.js private-cache stores carry request headers.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/work-unit-async-storage.external.ts
+    try {
+      setHeadersContext({
+        headers: new Headers({ "x-private": "allowed" }),
+        cookies: new Map(),
+      });
+
+      await cacheContextStorage.run(
+        {
+          tags: [],
+          lifeConfigs: [],
+          variant: "private",
+          hasExplicitRevalidate: false,
+          hasExplicitExpire: false,
+          dynamicNestedCacheError: undefined,
+        },
+        async () => {
+          expect((await headers()).get("x-private")).toBe("allowed");
+        },
+      );
+    } finally {
+      setHeadersContext(null);
+    }
+  });
+
+  it('cookies() is allowed inside "use cache: private" scope', async () => {
+    const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { cookies, setHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+
+    // Ported from Next.js: test/e2e/app-dir/use-cache-private/use-cache-private.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-private/use-cache-private.test.ts
+    try {
+      setHeadersContext({
+        headers: new Headers({ cookie: "test-cookie=allowed" }),
+        cookies: new Map([["test-cookie", "allowed"]]),
+      });
+
+      await cacheContextStorage.run(
+        {
+          tags: [],
+          lifeConfigs: [],
+          variant: "private",
+          hasExplicitRevalidate: false,
+          hasExplicitExpire: false,
+          dynamicNestedCacheError: undefined,
+        },
+        async () => {
+          await expect(cookies()).resolves.toMatchObject({
+            get: expect.any(Function),
+          });
+          expect((await cookies()).get("test-cookie")?.value).toBe("allowed");
+        },
+      );
+    } finally {
+      setHeadersContext(null);
+    }
   });
 
   it('cookies() sync access throws the "use cache" error instead of a TypeError', async () => {
@@ -16407,5 +17286,199 @@ describe("locale: false on rewrites/redirects (issue #1336)", () => {
     // Non-default locales match the `:nextInternalLocale` variant.
     expect(matchRedirect("/sv/old", rules, emptyCtx)?.destination).toBe("/sv/new");
     expect(matchRedirect("/nl/old", rules, emptyCtx)?.destination).toBe("/nl/new");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Default-locale path normalisation before route matching (issue #1336, item 4).
+//
+// Next.js normalises every request that arrives without a locale prefix by
+// prepending the (domain-aware) defaultLocale before any redirect, rewrite,
+// header, or filesystem route match runs. The issue body claims the desired
+// behaviour is a 308 from `/en/page` → `/page`, but Next.js does NOT redirect:
+// it serves the same content under both URLs and lets the application normalise
+// the path internally.
+//
+// Ported from Next.js:
+//   - test/e2e/i18n-default-locale-redirect/i18n-default-locale-redirect.test.ts
+//     https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-default-locale-redirect/i18n-default-locale-redirect.test.ts
+//   - test/e2e/i18n-ignore-redirect-source-locale/redirects.test.ts
+//     https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-ignore-redirect-source-locale/redirects.test.ts
+//   - packages/next/src/server/lib/router-utils/resolve-routes.ts (lines ~250-263)
+//     https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+//
+describe("default-locale path normalisation (issue #1336, item 4)", () => {
+  const emptyCtx = {
+    headers: new Headers(),
+    cookies: {},
+    query: new URLSearchParams(),
+    host: "localhost",
+  };
+
+  it("normalizeDefaultLocalePathname prepends the default locale when path has none", async () => {
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = { locales: ["en", "sv", "nl"], defaultLocale: "en" };
+    expect(normalizeDefaultLocalePathname("/about", i18n)).toBe("/en/about");
+    expect(normalizeDefaultLocalePathname("/", i18n)).toBe("/en");
+    expect(normalizeDefaultLocalePathname("/api/health", i18n)).toBe("/en/api/health");
+  });
+
+  it("normalizeDefaultLocalePathname leaves locale-prefixed paths untouched", async () => {
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = { locales: ["en", "sv", "nl"], defaultLocale: "en" };
+    expect(normalizeDefaultLocalePathname("/en/about", i18n)).toBe("/en/about");
+    expect(normalizeDefaultLocalePathname("/sv/about", i18n)).toBe("/sv/about");
+    expect(normalizeDefaultLocalePathname("/nl", i18n)).toBe("/nl");
+  });
+
+  it("normalizeDefaultLocalePathname is a no-op when i18n is not configured", async () => {
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    expect(normalizeDefaultLocalePathname("/about", null)).toBe("/about");
+    expect(normalizeDefaultLocalePathname("/", undefined)).toBe("/");
+    expect(normalizeDefaultLocalePathname("/about", null, { hostname: "example.com" })).toBe(
+      "/about",
+    );
+  });
+
+  it("normalizeDefaultLocalePathname skips internal Next.js / vinext paths", async () => {
+    // Next.js's resolve-routes.ts explicitly excludes /_next/* from
+    // default-locale normalisation. Build assets and prerender manifests must
+    // not get a locale prefix.
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = { locales: ["en", "sv", "nl"], defaultLocale: "en" };
+    expect(normalizeDefaultLocalePathname("/_next/static/chunks/main.js", i18n)).toBe(
+      "/_next/static/chunks/main.js",
+    );
+    expect(normalizeDefaultLocalePathname("/_next/data/build-id/index.json", i18n)).toBe(
+      "/_next/data/build-id/index.json",
+    );
+    // vinext-internal endpoints (prerender, image optimisation) likewise.
+    expect(normalizeDefaultLocalePathname("/__vinext/prerender/pages-static-paths", i18n)).toBe(
+      "/__vinext/prerender/pages-static-paths",
+    );
+  });
+
+  it("normalizeDefaultLocalePathname prefers the domain-mapped default locale", async () => {
+    // Next.js's resolve-routes.ts picks `domainLocale.defaultLocale` over the
+    // global default when the inbound host matches an i18n.domains entry.
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = {
+      locales: ["en", "sv", "nl"],
+      defaultLocale: "en",
+      domains: [{ domain: "example.nl", defaultLocale: "nl" }],
+    };
+    expect(normalizeDefaultLocalePathname("/about", i18n, { hostname: "example.nl" })).toBe(
+      "/nl/about",
+    );
+    // Unknown host falls back to the global default.
+    expect(normalizeDefaultLocalePathname("/about", i18n, { hostname: "example.com" })).toBe(
+      "/en/about",
+    );
+    // Domain-mapped path that already carries a locale stays untouched.
+    expect(normalizeDefaultLocalePathname("/sv/about", i18n, { hostname: "example.nl" })).toBe(
+      "/sv/about",
+    );
+  });
+
+  it("matchRedirect honours :locale capture on locale:false rules after normalisation", async () => {
+    // Ported from Next.js: test/e2e/i18n-ignore-redirect-source-locale/redirects.test.ts
+    // A user-supplied source like `/:locale/to-sv` with `locale: false` is
+    // matched against the POST-normalisation pathname, so requests that
+    // arrive without a locale prefix get the default locale spliced in and
+    // the `:locale` segment captures it.
+    const { matchRedirect, applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = { locales: ["en", "sv", "nl"], defaultLocale: "en" };
+    const rules = applyLocaleToRoutes(
+      [
+        {
+          source: "/:locale/to-sv",
+          destination: "/sv/newpage",
+          permanent: false as const,
+          locale: false as const,
+        },
+        {
+          source: "/:locale/to-en",
+          destination: "/en/newpage",
+          permanent: false as const,
+          locale: false as const,
+        },
+        {
+          source: "/:locale/to-slash",
+          destination: "/newpage",
+          permanent: false as const,
+          locale: false as const,
+        },
+        {
+          source: "/:locale/to-same",
+          destination: "/:locale/newpage",
+          permanent: false as const,
+          locale: false as const,
+        },
+      ],
+      i18n,
+      "redirect",
+    );
+
+    // Unprefixed paths get normalised to the default locale first.
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/to-sv", i18n), rules, emptyCtx)?.destination,
+    ).toBe("/sv/newpage");
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/to-en", i18n), rules, emptyCtx)?.destination,
+    ).toBe("/en/newpage");
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/to-slash", i18n), rules, emptyCtx)
+        ?.destination,
+    ).toBe("/newpage");
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/to-same", i18n), rules, emptyCtx)?.destination,
+    ).toBe("/en/newpage");
+
+    // Locale-prefixed paths are passed through unchanged.
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/sv/to-sv", i18n), rules, emptyCtx)
+        ?.destination,
+    ).toBe("/sv/newpage");
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/nl/to-same", i18n), rules, emptyCtx)
+        ?.destination,
+    ).toBe("/nl/newpage");
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/en/to-en", i18n), rules, emptyCtx)
+        ?.destination,
+    ).toBe("/en/newpage");
+  });
+
+  it("matchRedirect on default-locale paths matches the literal default-locale variant", async () => {
+    // For redirects WITHOUT `locale: false`, applyLocaleToRoutes already emits
+    // a literal `/${defaultLocale}/...` variant. Normalisation routes unprefixed
+    // requests through that variant.
+    const { matchRedirect, applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = { locales: ["en", "sv", "nl"], defaultLocale: "en" };
+    const rules = applyLocaleToRoutes(
+      [{ source: "/old", destination: "/new", permanent: false as const }],
+      i18n,
+      "redirect",
+    );
+
+    // `/old` (unprefixed) → normalised to `/en/old` → matches default-locale variant.
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/old", i18n), rules, emptyCtx)?.destination,
+    ).toBe("/new");
+    // `/sv/old` already prefixed → matches the locale-capture variant.
+    expect(
+      matchRedirect(normalizeDefaultLocalePathname("/sv/old", i18n), rules, emptyCtx)?.destination,
+    ).toBe("/sv/new");
   });
 });

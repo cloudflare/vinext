@@ -408,6 +408,61 @@ describe("Link locale handling", () => {
     expect(html).toContain('href="/id"');
   });
 
+  it("locale=undefined renders a default-locale root fallback during SSR", async () => {
+    delete (globalThis as any).window;
+
+    const html = await runWithI18nState(async () => {
+      setI18nContext({
+        locale: "en",
+        locales: ["en", "id"],
+        defaultLocale: "en",
+      });
+      return ReactDOMServer.renderToString(React.createElement(Link, { href: "/" }, "x"));
+    });
+
+    expect(html).toContain('href="/en"');
+  });
+
+  it("locale=undefined treats a non-locale-prefixed browser path as the default locale", () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    (globalThis as any).window = {
+      location: {
+        pathname: "/new",
+        hostname: "localhost",
+      },
+      __VINEXT_LOCALE__: "id",
+      __VINEXT_LOCALES__: ["en", "id"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+      __NEXT_DATA__: {},
+    };
+
+    const html = ReactDOMServer.renderToString(React.createElement(Link, { href: "/" }, "x"));
+
+    expect(html).toContain('href="/en"');
+  });
+
+  it("locale=undefined keeps the current locale for locale-prefixed browser paths", () => {
+    // Ported from Next.js:
+    // test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+    (globalThis as any).window = {
+      location: {
+        pathname: "/id/new",
+        hostname: "localhost",
+      },
+      __VINEXT_LOCALE__: "id",
+      __VINEXT_LOCALES__: ["en", "id"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+      __NEXT_DATA__: {},
+    };
+
+    const html = ReactDOMServer.renderToString(React.createElement(Link, { href: "/" }, "x"));
+
+    expect(html).toContain('href="/id"');
+  });
+
   it("locale string prepends locale prefix", () => {
     // When locale is a non-default locale string, it prepends /{locale}
     // Note: default locale check uses __VINEXT_DEFAULT_LOCALE__ which is undefined in tests

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
   createRscEmbedTransform,
+  createTickBufferedTransform,
   fixFlightHints,
   fixPreloadAs,
 } from "../packages/vinext/src/server/app-ssr-stream.js";
@@ -164,5 +165,141 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
 
     expect(finalScripts).toContain('.rsc.push([3,"QcM="])');
     expect(finalScripts).toContain('.rsc.push([3,"/w=="])');
+  });
+});
+
+// ── beforeInteractive pre-head splice ────────────────────────────────────────
+
+/**
+ * Pipe an HTML string (or chunks) through `createTickBufferedTransform` and
+ * collect the output. Uses a no-op RscEmbedTransform so we can exercise the
+ * pre-head splice path in isolation.
+ */
+async function runTransform(
+  chunks: string[],
+  options: {
+    injectHTML?: string;
+    injectAfterHeadOpenHTML?: string;
+  } = {},
+): Promise<string> {
+  const noopRsc = {
+    flush: () => "",
+    finalize: async () => "",
+    getRawBuffer: async () => new ArrayBuffer(0),
+  };
+  const transform = createTickBufferedTransform(
+    noopRsc,
+    options.injectHTML ?? "",
+    options.injectAfterHeadOpenHTML ?? "",
+  );
+  const source = createTextStream(chunks);
+  const piped = source.pipeThrough(transform);
+  const reader = piped.getReader();
+  const decoder = new TextDecoder();
+  let out = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    out += decoder.decode(value, { stream: true });
+  }
+  out += decoder.decode();
+  return out;
+}
+
+describe("createTickBufferedTransform pre-head splice", () => {
+  it("emits injectAfterHeadOpenHTML immediately after <head> opens", async () => {
+    const html =
+      '<!DOCTYPE html><html><head><link rel="stylesheet" href="/a.css"/></head><body>x</body></html>';
+    const out = await runTransform([html], {
+      injectAfterHeadOpenHTML: '<script id="hoisted">init()</script>',
+    });
+
+    // The script must appear AFTER <head> and BEFORE the first link.
+    const headOpen = out.indexOf("<head>");
+    const scriptIdx = out.indexOf('<script id="hoisted">');
+    const stylesheetIdx = out.indexOf('<link rel="stylesheet"');
+    expect(headOpen).toBeGreaterThan(-1);
+    expect(scriptIdx).toBeGreaterThan(headOpen);
+    expect(scriptIdx).toBeLessThan(stylesheetIdx);
+  });
+
+  it("preserves existing injection point before </head>", async () => {
+    const html = "<!DOCTYPE html><html><head></head><body></body></html>";
+    const out = await runTransform([html], {
+      injectHTML: "<meta name='end-of-head'/>",
+      injectAfterHeadOpenHTML: "<meta name='start-of-head'/>",
+    });
+
+    const startIdx = out.indexOf("<meta name='start-of-head'/>");
+    const endIdx = out.indexOf("<meta name='end-of-head'/>");
+    const closeIdx = out.indexOf("</head>");
+    expect(startIdx).toBeGreaterThan(-1);
+    expect(endIdx).toBeGreaterThan(-1);
+    expect(startIdx).toBeLessThan(endIdx);
+    expect(endIdx).toBeLessThan(closeIdx);
+  });
+
+  it("handles <head> with attributes", async () => {
+    const html = '<!DOCTYPE html><html><head class="dark"></head><body></body></html>';
+    const out = await runTransform([html], {
+      injectAfterHeadOpenHTML: "<script>x</script>",
+    });
+    expect(out).toContain('<head class="dark"><script>x</script></head>');
+  });
+
+  it("never re-splices on subsequent chunks", async () => {
+    const out = await runTransform(
+      [
+        "<!DOCTYPE html><html><head>",
+        '<link rel="stylesheet" href="/a.css"/>',
+        "</head><body></body></html>",
+      ],
+      {
+        injectAfterHeadOpenHTML: "<script>once</script>",
+      },
+    );
+    // Only one occurrence — the marker must not be re-emitted when later
+    // chunks arrive after the splice already happened.
+    const matches = [...out.matchAll(/<script>once<\/script>/g)];
+    expect(matches).toHaveLength(1);
+  });
+
+  it("does not splice when injectAfterHeadOpenHTML is empty", async () => {
+    const html = "<!DOCTYPE html><html><head></head><body></body></html>";
+    const out = await runTransform([html], { injectAfterHeadOpenHTML: "" });
+    expect(out).toBe(html);
+  });
+
+  it("ignores the splice when <head> is missing", async () => {
+    const html = "<!DOCTYPE html><html><body>no head</body></html>";
+    const out = await runTransform([html], {
+      injectAfterHeadOpenHTML: "<script>x</script>",
+    });
+    expect(out).not.toContain("<script>x</script>");
+  });
+
+  it("re-evaluates the insertion getter only when splice runs", async () => {
+    // For the function-shaped getter we need to confirm we read it lazily —
+    // once at splice time — so callers can pass a getter that snapshots state
+    // (e.g. captured Script content) that may not be populated until the
+    // tree has rendered.
+    let calls = 0;
+    const noopRsc = {
+      flush: () => "",
+      finalize: async () => "",
+      getRawBuffer: async () => new ArrayBuffer(0),
+    };
+    const transform = createTickBufferedTransform(noopRsc, "", () => {
+      calls++;
+      return "<script>fn</script>";
+    });
+    const source = createTextStream(["<!DOCTYPE html><html><head></head><body></body></html>"]);
+    const out = await new Response(source.pipeThrough(transform)).text();
+    expect(out).toContain("<script>fn</script>");
+    // One call at splice time, one at end-of-stream `flush` for the
+    // post-injected emit fallback. Don't pin an exact count — just confirm
+    // it's a small, bounded number rather than per-chunk.
+    expect(calls).toBeGreaterThanOrEqual(1);
+    expect(calls).toBeLessThan(10);
   });
 });
