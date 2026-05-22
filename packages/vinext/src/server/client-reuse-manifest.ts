@@ -431,8 +431,10 @@ export function parseClientReuseManifestHeader(
   for (let index = 0; index < entriesValue.length; index++) {
     const value = entriesValue[index];
     if (isUnknownRecord(value) && typeof value.id === "string") {
-      // <= rejects both out-of-order and duplicate IDs; malformed entries are
-      // rejected below and cannot advance the last valid ID checkpoint.
+      // Canonical ordering is enforced over entries with string IDs. Malformed
+      // entries cannot advance previousEntryId, so interleaving them cannot hide
+      // an ordering violation between valid checkpoints. <= rejects both
+      // out-of-order and duplicate IDs.
       if (previousEntryId !== null && value.id <= previousEntryId) {
         return rejectManifest("SKIP_ENTRY_ORDER_NON_CANONICAL", {
           entryIdHash: createClientReusePayloadHash(value.id),
