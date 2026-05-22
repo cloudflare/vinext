@@ -165,7 +165,18 @@ export default defineConfig({
         },
         test: {
           name: "integration",
-          setupFiles: [MSW_SETUP],
+          // MSW is intentionally NOT installed in the integration project.
+          // Integration tests spin up in-process HTTP servers and fixture
+          // dev servers and exercise them via `fetch("http://127.0.0.1:<port>/...")`.
+          // The @mswjs/interceptors layer interferes with that loopback
+          // traffic in subtle ways even when handlers `passthrough()`
+          // (e.g. 5xx response bodies stall, fixture-startup readiness
+          // probes time out). MSW's value here is mocking external HTTP
+          // for unit tests of fetch wrappers — integration tests already
+          // talk to real local servers, not to the network, so the
+          // unhandled-request guard buys little. If a future integration
+          // test needs to mock an external fetch, wire MSW per-file with
+          // `setupServer` rather than reverting this exclusion.
           include: [
             "tests/app-router.test.ts",
             "tests/api-handler.test.ts",
