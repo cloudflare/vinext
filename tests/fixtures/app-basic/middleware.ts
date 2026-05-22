@@ -277,6 +277,13 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     r.headers.set("content-security-policy", `script-src 'nonce-${nonce}' 'strict-dynamic';`);
   }
   if (
+    pathname.startsWith("/beforeinteractive-head-ordering") &&
+    request.nextUrl.searchParams.has("csp-nonce")
+  ) {
+    const nonce = request.nextUrl.searchParams.get("csp-nonce") ?? "vinext-test-nonce";
+    r.headers.set("content-security-policy", `script-src 'nonce-${nonce}' 'strict-dynamic';`);
+  }
+  if (
     pathname.startsWith("/nextjs-compat/dynamic") &&
     request.nextUrl.searchParams.has("csp-nonce")
   ) {
@@ -333,5 +340,7 @@ export const config = {
     "/mw-gated-fallback-pages",
     "/photos/:path*",
     "/actions",
+    "/beforeinteractive-head-ordering/:path*",
+    "/beforeinteractive-head-ordering",
   ],
 };
