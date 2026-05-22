@@ -152,6 +152,40 @@ function resolveHref(href: LinkProps["href"]): string {
   return url;
 }
 
+// Track hrefs we have already warned about so we do not spam the console on
+// every re-render. Mirrors React's behaviour for repeated warnings.
+const warnedRepeatedSlashHrefs = new Set<string>();
+
+/**
+ * Emit Next.js's "Invalid href" console.error when `href` contains repeated
+ * forward slashes or backslashes in its path portion.
+ *
+ * Ported from Next.js: packages/next/src/client/resolve-href.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/client/resolve-href.ts
+ *
+ * Matches the message asserted by:
+ * test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts
+ */
+function warnOnRepeatedSlashesInHref(urlAsString: string): void {
+  // Strip any protocol prefix (e.g. "https://") so we do not flag the
+  // legitimate `//` that separates the scheme from the authority.
+  const urlProtoMatch = urlAsString.match(/^[a-z][a-z0-9+.-]*:\/\//i);
+  const urlAsStringNoProto = urlProtoMatch
+    ? urlAsString.slice(urlProtoMatch[0].length)
+    : urlAsString;
+  const urlParts = urlAsStringNoProto.split("?", 1);
+  if (!(urlParts[0] || "").match(/(\/\/|\\)/)) return;
+
+  if (warnedRepeatedSlashHrefs.has(urlAsString)) return;
+  warnedRepeatedSlashHrefs.add(urlAsString);
+
+  const pathname =
+    typeof window !== "undefined" && window.location ? window.location.pathname : "/";
+  console.error(
+    `Invalid href '${urlAsString}' passed to next/router in page: '${pathname}'. Repeated forward-slashes (//) or backslashes \\ are not valid in the href.`,
+  );
+}
+
 export function resolveLinkPrefetchMode(
   prefetchProp: LinkProps["prefetch"],
   isDangerous: boolean,
@@ -536,6 +570,13 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // If `as` is provided, use it as the actual URL (legacy Next.js pattern
   // where href is a route pattern like "/user/[id]" and as is "/user/1")
   const resolvedHref = as ?? resolveHref(href);
+
+  // Mirror Next.js: emit a console.error when the href contains repeated
+  // forward-slashes (e.g. "/foo//bar") or backslashes. Next.js does not block
+  // navigation — it only warns. See packages/next/src/client/resolve-href.ts.
+  if (typeof resolvedHref === "string") {
+    warnOnRepeatedSlashesInHref(resolvedHref);
+  }
 
   const isDangerous = typeof resolvedHref === "string" && isDangerousScheme(resolvedHref);
 

@@ -138,6 +138,63 @@ describe("Link rendering", () => {
   });
 });
 
+// ─── Repeated-slash warning (parity with Next.js) ───────────────────────
+//
+// Ported from Next.js: test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts
+//
+// Next.js's `resolveHref` emits a `console.error` when an href contains
+// repeated forward-slashes (e.g. "/hello//world") or backslashes. Navigation
+// is not blocked; only a warning is surfaced.
+
+describe("Link repeated-slash warning", () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+  });
+
+  it("logs a console.error when href contains repeated forward slashes", () => {
+    ReactDOMServer.renderToString(React.createElement(Link, { href: "/hello//world" }, "Hello"));
+    expect(consoleSpy).toHaveBeenCalled();
+    const message = consoleSpy.mock.calls[0]?.[0] as string;
+    expect(message).toContain("Invalid href '/hello//world'");
+    expect(message).toContain(
+      "Repeated forward-slashes (//) or backslashes \\ are not valid in the href.",
+    );
+  });
+
+  it("logs a console.error when href contains a backslash", () => {
+    ReactDOMServer.renderToString(React.createElement(Link, { href: "/foo\\bar" }, "Bad"));
+    expect(consoleSpy).toHaveBeenCalled();
+    const message = consoleSpy.mock.calls[0]?.[0] as string;
+    expect(message).toContain("Invalid href '/foo\\bar'");
+  });
+
+  it("does not warn for absolute URLs whose only '//' is the protocol separator", () => {
+    ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "https://example.com/path" }, "Ext"),
+    );
+    expect(consoleSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not warn for hrefs without repeated slashes", () => {
+    ReactDOMServer.renderToString(React.createElement(Link, { href: "/normal/path" }, "Normal"));
+    expect(consoleSpy).not.toHaveBeenCalled();
+  });
+
+  it("ignores repeated slashes inside the query string", () => {
+    // Next.js only checks the path portion (everything before '?'), so a
+    // query string containing '//' must not trigger the warning.
+    ReactDOMServer.renderToString(React.createElement(Link, { href: "/ok?next=//foo//bar" }, "Q"));
+    expect(consoleSpy).not.toHaveBeenCalled();
+  });
+});
+
 // ─── useLinkStatus ──────────────────────────────────────────────────────
 
 describe("useLinkStatus", () => {
