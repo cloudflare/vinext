@@ -27,6 +27,29 @@ function parseManifest(header: string) {
 }
 
 describe("ClientReuseManifest protocol", () => {
+  it("treats absent and blank headers as absent manifests", () => {
+    for (const header of [null, undefined, "", "   "]) {
+      expect(parseClientReuseManifestHeader(header)).toEqual({ kind: "absent" });
+    }
+  });
+
+  it("parses an empty manifest without enabling skip transport", () => {
+    const parsed = parseManifest(
+      serializeClientReuseManifest({
+        entries: [],
+        visibleCommitVersion: 1,
+      }),
+    );
+
+    expect(parsed.manifest.entries).toEqual([]);
+    expect(parsed.entryRejections).toEqual([]);
+    expect(parsed.skipDisposition).toEqual({
+      code: "SKIP_MODEL_DISABLED",
+      enabled: false,
+      mode: "renderAndSend",
+    });
+  });
+
   it("serializes entries in canonical element-id order", () => {
     const serialized = serializeClientReuseManifest({
       entries: [
@@ -80,6 +103,45 @@ describe("ClientReuseManifest protocol", () => {
         fields: {
           maxManifestBytes: 8,
           manifestBytes: 14,
+        },
+      },
+    });
+  });
+
+  it("counts manifest size in UTF-8 bytes instead of JavaScript string length", () => {
+    const header = JSON.stringify({
+      entries: [
+        {
+          artifactCompatibility,
+          id: "opaque:😀",
+          payloadHash: createClientReusePayloadHash("emoji"),
+          privacy: "public",
+          variantCacheKey: "cp1:emoji",
+        },
+      ],
+      hashAlgorithm: CLIENT_REUSE_MANIFEST_HASH_ALGORITHM,
+      replayWindow: {
+        validFromVisibleCommitVersion: 1,
+        validUntilVisibleCommitVersion: 1,
+      },
+      schemaVersion: CLIENT_REUSE_MANIFEST_SCHEMA_VERSION,
+      visibleCommitVersion: 1,
+    });
+
+    const manifestBytes = new TextEncoder().encode(header).length;
+    expect(manifestBytes).toBeGreaterThan(header.length);
+
+    const result = parseClientReuseManifestHeader(header, {
+      limits: { ...DEFAULT_CLIENT_REUSE_MANIFEST_LIMITS, maxManifestBytes: header.length },
+    });
+
+    expect(result).toEqual({
+      kind: "rejected",
+      rejection: {
+        code: "SKIP_MANIFEST_TOO_LARGE",
+        fields: {
+          manifestBytes,
+          maxManifestBytes: header.length,
         },
       },
     });
@@ -282,6 +344,43 @@ describe("ClientReuseManifest protocol", () => {
         fields: { idHash: createClientReusePayloadHash("opaque:future-entry") },
       },
     ]);
+  });
+
+  it("rejects duplicate entry IDs as non-canonical ordering", () => {
+    const result = parseClientReuseManifestHeader(
+      JSON.stringify(
+        createClientReuseManifest({
+          entries: [
+            {
+              artifactCompatibility,
+              id: "layout:/",
+              payloadHash: createClientReusePayloadHash("root-a"),
+              privacy: "public",
+              variantCacheKey: "cp1:root-a",
+            },
+            {
+              artifactCompatibility,
+              id: "layout:/",
+              payloadHash: createClientReusePayloadHash("root-b"),
+              privacy: "public",
+              variantCacheKey: "cp1:root-b",
+            },
+          ],
+          visibleCommitVersion: 1,
+        }),
+      ),
+    );
+
+    expect(result).toEqual({
+      kind: "rejected",
+      rejection: {
+        code: "SKIP_ENTRY_ORDER_NON_CANONICAL",
+        fields: {
+          entryIdHash: createClientReusePayloadHash("layout:/"),
+          previousEntryIdHash: createClientReusePayloadHash("layout:/"),
+        },
+      },
+    });
   });
 
   it("rejects non-canonical entry ordering at the manifest boundary", () => {

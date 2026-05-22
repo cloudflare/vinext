@@ -61,6 +61,8 @@ export type ClientReuseManifest = Readonly<{
   visibleCommitVersion: number;
 }>;
 
+// Wire manifests preserve client-declared private entries; parsing decides which
+// entries can participate in future reuse.
 type ClientReuseManifestWire = Readonly<{
   entries: readonly ClientReuseManifestWireEntry[];
   hashAlgorithm: ClientReuseManifestHashAlgorithm;
@@ -87,7 +89,6 @@ export type ClientReuseManifestRejectionCode =
   | "SKIP_MANIFEST_MALFORMED"
   | "SKIP_MANIFEST_SCHEMA_UNSUPPORTED"
   | "SKIP_MANIFEST_TOO_LARGE"
-  | "SKIP_MODEL_DISABLED"
   | "SKIP_PRIVATE_ENTRY"
   | "SKIP_REPLAY_WINDOW_INVALID"
   | "SKIP_UNKNOWN_ENTRY"
@@ -139,6 +140,7 @@ type ParseClientReuseManifestOptions = Readonly<{
 }>;
 
 const HASH_DIGEST_PATTERN = /^[0-9a-z]+$/;
+const textEncoder = new TextEncoder();
 
 function createRejection(
   code: ClientReuseManifestRejectionCode,
@@ -172,7 +174,7 @@ function compareManifestEntries(
 }
 
 function countUtf8Bytes(input: string): number {
-  return new TextEncoder().encode(input).length;
+  return textEncoder.encode(input).length;
 }
 
 function isVisibleCommitVersion(value: unknown): value is number {
@@ -414,6 +416,8 @@ export function parseClientReuseManifestHeader(
   for (let index = 0; index < entriesValue.length; index++) {
     const value = entriesValue[index];
     if (isUnknownRecord(value) && typeof value.id === "string") {
+      // <= rejects both out-of-order and duplicate IDs; malformed entries are
+      // rejected below and cannot advance the last valid ID checkpoint.
       if (previousEntryId !== null && value.id <= previousEntryId) {
         return rejectManifest("SKIP_ENTRY_ORDER_NON_CANONICAL", {
           entryIdHash: createClientReusePayloadHash(value.id),
