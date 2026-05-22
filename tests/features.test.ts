@@ -2692,6 +2692,26 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('href="/manual-icon.png"');
   });
 
+  it("keeps icon metadata hrefs relative when metadataBase is configured", () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          metadataBase: new URL("https://mydomain.com"),
+          icons: {
+            icon: [{ url: "/dynamic/big/icon-ahg52g/small", sizes: "48x48", type: "image/png" }],
+            apple: [{ url: "/dynamic/big/apple-icon-ahg52g/0", sizes: "48x48", type: "image/png" }],
+          },
+        },
+      }),
+    );
+
+    expect(html).toContain('href="/dynamic/big/icon-ahg52g/small"');
+    expect(html).toContain('href="/dynamic/big/apple-icon-ahg52g/0"');
+    expect(html).not.toContain("https://mydomain.com/dynamic/big");
+  });
+
   it("renders alternate hreflang links", () => {
     const html = renderToStaticMarkup(
       React.createElement(MetadataHead, {

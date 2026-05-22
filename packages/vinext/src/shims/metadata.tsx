@@ -1018,7 +1018,7 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
         ? metadata.icons.shortcut
         : [metadata.icons.shortcut];
       for (const s of shortcuts) {
-        elements.push(<link key={key++} rel="shortcut icon" href={resolveUrl(s)} />);
+        elements.push(<link key={key++} rel="shortcut icon" href={stringifyUrl(s)} />);
       }
     }
     // Icon
@@ -1028,7 +1028,7 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
           <link
             key={key++}
             rel="icon"
-            href={resolveUrl(i.url)}
+            href={stringifyUrl(i.url)}
             {...(i.sizes ? { sizes: i.sizes } : {})}
             {...(i.type ? { type: i.type } : {})}
             {...(i.media ? { media: i.media } : {})}
@@ -1046,7 +1046,7 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
           <link
             key={key++}
             rel="apple-touch-icon"
-            href={resolveUrl(a.url)}
+            href={stringifyUrl(a.url)}
             {...(a.sizes ? { sizes: a.sizes } : {})}
             {...(a.type ? { type: a.type } : {})}
           />,
@@ -1060,7 +1060,7 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
           <link
             key={key++}
             rel={o.rel}
-            href={resolveUrl(o.url)}
+            href={stringifyUrl(o.url)}
             {...(o.sizes ? { sizes: o.sizes } : {})}
           />,
         );
