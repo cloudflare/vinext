@@ -33,19 +33,25 @@ type SegmentPrefetchResult = {
 };
 
 /**
- * Check if a pathname matches the segment-prefetch URL pattern.
- */
-export function matchSegmentPrefetchRsc(pathname: string): boolean {
-  return SEGMENT_PREFETCH_PATTERN.test(pathname);
-}
-
-/**
- * Extract the original page pathname and segment path from a segment-prefetch URL.
+ * Check if a pathname matches the segment-prefetch URL pattern and extract the
+ * original page pathname and segment path.
  *
  * Returns null when the pathname does not match the expected pattern.
+ * This is the single entry point — prefer it over a separate match + extract
+ * to avoid running the regex twice on the hot path.
  */
 export function extractSegmentPrefetchRsc(pathname: string): SegmentPrefetchResult | null {
   const match = pathname.match(SEGMENT_PREFETCH_PATTERN);
   if (!match) return null;
   return { originalPathname: match[1], segmentPath: match[2] };
+}
+
+/**
+ * Check if a pathname matches the segment-prefetch URL pattern.
+ *
+ * Prefer extractSegmentPrefetchRsc() when you need the extracted path info,
+ * since it runs the regex once and returns null for non-matches.
+ */
+export function matchSegmentPrefetchRsc(pathname: string): boolean {
+  return SEGMENT_PREFETCH_PATTERN.test(pathname);
 }

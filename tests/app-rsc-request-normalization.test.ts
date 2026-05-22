@@ -527,3 +527,33 @@ describe("normalizeRscRequest — segment-prefetch URLs", () => {
     expect(result.segmentPrefetchPath).toBe("/_tree");
   });
 });
+
+describe("normalizeRscRequest — percent-encoded segment-prefetch URLs", () => {
+  it("detects %2Esegments as .segments after percent-decode step", () => {
+    // %2E is '.' — after step 3 (percent-decode), the path contains .segments
+    // which the match in step 6 should detect.
+    const result = normalized(
+      normalizeRscRequest(req("/dashboard%2Esegments/_tree%2Esegment%2Ersc"), ""),
+    );
+    // normalizePathnameForRouteMatchStrict decodes %2E to '.' (it preserves
+    // only %2F for path separator boundaries), so the regex matches.
+    expect(result.pathname).toBe("/dashboard");
+    expect(result.cleanPathname).toBe("/dashboard");
+    expect(result.isRscRequest).toBe(true);
+    expect(result.segmentPrefetchPath).toBe("/_tree");
+  });
+
+  it("does not match double-encoded %252Esegments", () => {
+    // The path /dashboard%252Esegments/_tree.segment.rsc:
+    // URL parser preserves %25, so pathname starts as /dashboard%252Esegments/...
+    // normalizePathnameForRouteMatchStrict decodes %25 -> %, leaving
+    // /dashboard%2Esegments/_tree.segment.rsc. Since %2E is not '.' at this
+    // point, the segment-prefetch regex does not match.
+    // isRscRequest is true because the path still ends with .rsc (.segment.rsc).
+    const result = normalized(
+      normalizeRscRequest(req("/dashboard%252Esegments/_tree.segment.rsc"), ""),
+    );
+    expect(result.segmentPrefetchPath).toBeNull();
+    expect(result.isRscRequest).toBe(true);
+  });
+});
