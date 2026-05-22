@@ -45,6 +45,7 @@ import {
   parseCookieLocaleFromHeader,
   resolvePagesI18nRequest,
 } from "./pages-i18n.js";
+import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -1288,7 +1289,21 @@ async function renderErrorPage(
     }
   }
 
-  // No custom error page found — use plain text fallback
+  // No custom error page found — fall back to vinext's default. The 404 case
+  // renders the canonical Next.js HTML body (matching `pages/_error.tsx`) so
+  // dev-server responses include "This page could not be found." just like
+  // production. Other status codes keep the plain-text fallback because
+  // Next.js's `_error.tsx` defaults already handle those cases when present.
+  if (statusCode === 404) {
+    const defaultResponse = buildDefaultPagesNotFoundResponse();
+    const headers: Record<string, string> = {};
+    defaultResponse.headers.forEach((value, key) => {
+      headers[key] = value;
+    });
+    res.writeHead(defaultResponse.status, headers);
+    res.end(await defaultResponse.text());
+    return;
+  }
   res.writeHead(statusCode, { "Content-Type": "text/plain" });
-  res.end(`${statusCode} - ${statusCode === 404 ? "Page not found" : "Internal Server Error"}`);
+  res.end(`${statusCode} - Internal Server Error`);
 }

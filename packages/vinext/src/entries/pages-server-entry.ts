@@ -24,6 +24,7 @@ const _pagesPageResponsePath = resolveEntryPath(
 );
 const _pagesPageDataPath = resolveEntryPath("../server/pages-page-data.js", import.meta.url);
 const _pagesDataRoutePath = resolveEntryPath("../server/pages-data-route.js", import.meta.url);
+const _pagesDefault404Path = resolveEntryPath("../server/pages-default-404.js", import.meta.url);
 const _pagesNodeCompatPath = resolveEntryPath("../server/pages-node-compat.js", import.meta.url);
 const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", import.meta.url);
 const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
@@ -215,6 +216,7 @@ import {
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from ${JSON.stringify(_cspPath)};
 import { resolvePagesPageData as __resolvePagesPageData } from ${JSON.stringify(_pagesPageDataPath)};
 import { buildNextDataJsonResponse as __buildNextDataJsonResponse, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse } from ${JSON.stringify(_pagesDataRoutePath)};
+import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
 import { renderPagesPageResponse as __renderPagesPageResponse } from ${JSON.stringify(_pagesPageResponsePath)};
 ${instrumentationImportCode}
 ${middlewareImportCode}
@@ -482,8 +484,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     if (isDataReq) {
       return __buildNextDataNotFoundResponse();
     }
-    return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
-      { status: 404, headers: { "Content-Type": "text/html" } });
+    return __buildDefaultPagesNotFoundResponse();
   }
 
   const { route, params } = match;

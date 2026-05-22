@@ -491,6 +491,48 @@ describe("app fallback renderer default global error UI", () => {
   });
 });
 
+// Regression for #1454 — default App Router 404 must match Next.js's built-in
+// not-found component ("This page could not be found." with trailing period).
+describe("app fallback renderer default not-found UI", () => {
+  it("renders the canonical 'This page could not be found.' body when no not-found.tsx exists", async () => {
+    const { renderer } = createRenderer();
+    const request = new Request("https://example.com/missing");
+
+    const response = await renderer.renderNotFound(null, false, request, undefined, undefined, {
+      headers: null,
+      status: null,
+    });
+
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    // Canonical message must contain the trailing period to match Next.js
+    // (see .nextjs-ref/packages/next/src/client/components/builtin/not-found.tsx).
+    expect(html).toContain("This page could not be found.");
+    // Status code is surfaced as the <h1>.
+    expect(html).toContain("404");
+    // Old vinext default ("404 - Page not found") must NOT leak through.
+    expect(html).not.toContain("404 - Page not found");
+  });
+
+  it("prefers a user-defined root not-found.tsx over the default", async () => {
+    const { renderer } = createRenderer({ rootNotFoundModule: notFoundModule });
+    const request = new Request("https://example.com/missing");
+
+    const response = await renderer.renderNotFound(null, false, request, undefined, undefined, {
+      headers: null,
+      status: null,
+    });
+
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    // The user-defined boundary wins.
+    expect(html).toContain('data-boundary="not-found"');
+    expect(html).toContain("Missing page");
+    // The default not-found body must NOT leak through.
+    expect(html).not.toContain("This page could not be found.");
+  });
+});
+
 // Mirrors Next.js 16 experimental.globalNotFound behavior.
 // Ported from Next.js: test/e2e/app-dir/global-not-found/{basic,both-present,not-present}.
 // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
@@ -581,8 +623,9 @@ describe("app fallback renderer with globalNotFoundModule", () => {
     // Mirrors test/e2e/app-dir/global-not-found/not-present: when the user
     // opted into experimental.globalNotFound but never created the file,
     // route-miss 404s should still serve the default 404 response. With no
-    // root notFoundModule either, the renderer returns null and the caller
-    // falls back to the framework's 404 Response.
+    // user-defined root notFoundModule either, vinext renders its built-in
+    // default not-found component (parity with Next.js's packaged
+    // not-found.tsx — "This page could not be found." with trailing period).
     const { renderer } = createRenderer({
       globalNotFoundModule: null,
       rootLayoutModules: [rootLayoutModule],
@@ -594,8 +637,9 @@ describe("app fallback renderer with globalNotFoundModule", () => {
       status: null,
     });
 
-    // No boundary component to render -> renderer returns null.
-    expect(response).toBeNull();
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    expect(html).toContain("This page could not be found.");
   });
 
   it("does not use global-not-found for non-404 access fallbacks (403, 401)", async () => {

@@ -10,6 +10,7 @@ import {
   type PagesGsspResponse,
   type PagesI18nRenderContext,
 } from "./pages-page-response.js";
+import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 
 type PagesRedirectResult = {
   destination: string;
@@ -163,10 +164,7 @@ type ResolvePagesPageDataResult =
   | ResolvePagesPageDataResponseResult;
 
 function buildPagesNotFoundResponse(): Response {
-  return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>", {
-    status: 404,
-    headers: { "Content-Type": "text/html" },
-  });
+  return buildDefaultPagesNotFoundResponse();
 }
 
 function buildPagesDataNotFoundResponse(): Response {
