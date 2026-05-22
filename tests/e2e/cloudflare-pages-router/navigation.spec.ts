@@ -58,8 +58,10 @@ test.describe("Pages Router navigation on Cloudflare Workers", () => {
   // and stops exposing __VINEXT_PAGE_LOADERS__, navigateClient() silently falls
   // back to the HTML extraction path; the URL changes and the new page renders,
   // so every other navigation test still passes, but the JSON-path optimisation
-  // is gone. This test fails loudly in that scenario by sniffing the network
-  // for the data URL and by checking the hydration timestamp survives the click.
+  // is gone. This test fails loudly in that scenario by asserting (a) the data
+  // URL was fetched, and (b) a window-scoped sentinel installed before the
+  // click survives — a document reload would wipe globals, an in-place
+  // re-render preserves them.
   test("Link click fetches /_next/data JSON, not full HTML", async ({ page }) => {
     await page.goto(BASE + "/");
     // Wait for hydration to expose the loader manifest.
@@ -67,8 +69,12 @@ test.describe("Pages Router navigation on Cloudflare Workers", () => {
 
     const buildId = await page.evaluate(() => (window as any).__NEXT_DATA__.buildId);
     expect(buildId).toBeTruthy();
-    // Capture the hydration timestamp; a document reload would reset it.
-    const hydratedAt = await page.evaluate(() => (window as any).__VINEXT_HYDRATED_AT);
+
+    // Install a sentinel on window. A document reload wipes the global object;
+    // an in-place re-render via the JSON path leaves it untouched.
+    await page.evaluate(() => {
+      (window as any).__navTestSentinel = "alive";
+    });
 
     const dataRequests: string[] = [];
     page.on("request", (req) => {
@@ -83,8 +89,8 @@ test.describe("Pages Router navigation on Cloudflare Workers", () => {
 
     // The JSON endpoint must have been hit (proves the data path ran).
     expect(dataRequests.length).toBeGreaterThan(0);
-    // No document reload — same React root, same hydration timestamp.
-    const hydratedAtAfter = await page.evaluate(() => (window as any).__VINEXT_HYDRATED_AT);
-    expect(hydratedAtAfter).toBe(hydratedAt);
+    // No document reload — sentinel survived the navigation.
+    const sentinel = await page.evaluate(() => (window as any).__navTestSentinel);
+    expect(sentinel).toBe("alive");
   });
 });
