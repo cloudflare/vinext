@@ -20,9 +20,10 @@ async function buildFontGoogleMultipleFixture(): Promise<string> {
 
   try {
     // Intercept the Google Fonts CSS fetch issued by the in-process Vite build.
-    // MSW Node intercepts both `globalThis.fetch` and `node:http`/`node:https`,
-    // so any request the bundler issues against fonts.googleapis.com is caught.
-    // Handlers are reset by the global `afterEach` in `tests/_msw/setup.ts`.
+    // The server is configured with `FetchInterceptor` only (see `server.ts`),
+    // so MSW intercepts `globalThis.fetch` — which is what Vite/vinext uses to
+    // pull font CSS. Handlers are reset by the global `afterEach` in
+    // `tests/_msw/setup.ts`.
     server.use(
       http.get("https://fonts.googleapis.com/*", ({ request }) => {
         const url = request.url;
