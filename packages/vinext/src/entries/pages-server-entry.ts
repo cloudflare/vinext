@@ -312,7 +312,14 @@ export function matchPageRoute(url, request) {
 }
 
 function parseQuery(url) {
-  const qs = url.split("?")[1];
+  // Per RFC 3986 only the first "?" separates path from query, so additional
+  // "?" chars belong to the query string (e.g. /linker?href=/about?hello=world
+  // has query "href=/about?hello=world"). split("?")[1] would drop everything
+  // after the second "?" and strip embedded query strings from values.
+  const queryIndex = url.indexOf("?");
+  if (queryIndex === -1) return {};
+  const hashIndex = url.indexOf("#", queryIndex + 1);
+  const qs = hashIndex === -1 ? url.slice(queryIndex + 1) : url.slice(queryIndex + 1, hashIndex);
   if (!qs) return {};
   const p = new URLSearchParams(qs);
   const q = {};

@@ -1088,6 +1088,33 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Server-Side Rendered");
   });
 
+  // Regression for cloudflare/vinext#1471: when a query value itself contains
+  // a query string (e.g. `?href=/about?hello=world`), the embedded `?hello=world`
+  // is part of the `href` value per RFC 3986 — only the first `?` separates the
+  // path from the query string. `getServerSideProps({ query })` must surface
+  // the full value so `<Link href={query.href}>` renders the complete target.
+  // Mirrors `test/e2e/trailing-slashes/pages/linker.js` from the Next.js suite.
+  it("Pages Router Link preserves an embedded query string in the href prop", async () => {
+    const res = await fetch(`${baseUrl}/linker?href=/about?hello=world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // The rendered link target must include the embedded `?hello=world`. The
+    // anchor uses `id="link"` to match Next.js's linker fixture; the literal
+    // anchor href is what `<Link>` resolves through normalizePathTrailingSlash
+    // and withBasePath. With trailingSlash:false and no basePath this is the
+    // exact source string.
+    expect(html).toContain('href="/about?hello=world"');
+  });
+
+  it("Pages Router Link strips trailing slash before an embedded query string", async () => {
+    const res = await fetch(`${baseUrl}/linker?href=/about/?hello=world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // trailingSlash defaults to false — `/about/?hello=world` collapses to
+    // `/about?hello=world` while preserving the query.
+    expect(html).toContain('href="/about?hello=world"');
+  });
+
   // Ported from Next.js: test/e2e/edge-pages-support/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-pages-support/index.test.ts
   // Closes cloudflare/vinext#1342: original query params must survive a
