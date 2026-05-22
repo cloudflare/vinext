@@ -525,6 +525,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       return __buildNextDataNotFoundResponse();
     }
     const notFoundMatch = matchRoute("/404", pageRoutes);
+    // matchRoute may match a catch-all (e.g. [...slug]) — only use the explicit pages/404 route.
     if (notFoundMatch && notFoundMatch.route.pattern === "/404") {
       match = notFoundMatch;
       renderStatusCodeOverride = 404;
