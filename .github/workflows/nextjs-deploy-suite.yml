@@ -68,6 +68,38 @@ jobs:
           ref: ${{ inputs.next-ref || 'v16.2.6' }}
           path: next.js
 
+      # Resolve the Playwright version from Next.js's lockfile so the cache
+      # key tracks the browser revision installed by `pnpm install` below.
+      # Mirrors ci.yml's pattern and key format — vinext's CI keeps the
+      # `playwright-chromium-Linux-vX.Y.Z` cache hot on every run, so when
+      # the two projects agree on a Playwright version (currently 1.58.2)
+      # this restore is a hit and the prepare script's playwright install
+      # becomes a no-op. Falls through to the hang otherwise; if Next.js
+      # bumps Playwright before vinext does, we'll need to seed the cache
+      # by running vinext's CI once on the new version first.
+      - name: Resolve Playwright version
+        id: playwright-version
+        working-directory: next.js
+        run: |
+          set -euo pipefail
+          version=$(grep -E "^\s+playwright:\s+[0-9]" pnpm-lock.yaml | head -n1 | awk '{print $2}' || true)
+          if [ -z "$version" ]; then
+            version="unknown-${{ hashFiles('next.js/pnpm-lock.yaml') }}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved Playwright version: $version"
+
+      # Restore-only — vinext's ci.yml owns saving this cache. Sidesteps
+      # the upstream Playwright extraction hang that started 2026-05-22
+      # (runs 26265986264, 26279790373, 26281061094, 26281758803) by
+      # avoiding the download+extract path entirely on cache hit.
+      - name: Restore Playwright browsers
+        id: playwright-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-v${{ steps.playwright-version.outputs.version }}
+
       - name: Build vinext
         run: vp run vinext#build
 
