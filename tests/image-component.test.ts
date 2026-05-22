@@ -15,12 +15,42 @@ import Image, { getImageProps, type StaticImageData } from "../packages/vinext/s
 
 /** Helper: expected optimization URL matching what the image shim produces. */
 function optUrl(src: string, w: number, q = 75): string {
-  return `/_vinext/image?url=${encodeURIComponent(src)}&w=${w}&q=${q}`;
+  return `/_next/image?url=${encodeURIComponent(src)}&w=${w}&q=${q}`;
 }
 /** Same as optUrl but with HTML entity encoding (for SSR output assertions). */
 function optUrlHtml(src: string, w: number, q = 75): string {
   return optUrl(src, w, q).replace(/&/g, "&amp;");
 }
+
+// ─── Issue #1513 reproduction ───────────────────────────────────────────
+//
+// The default loader must emit URLs starting with `/_next/image` (Next.js
+// canonical) — not the previous `/_vinext/image` prefix. This guards
+// against regression of https://github.com/cloudflare/vinext/issues/1513.
+
+describe("default loader emits /_next/image URLs (issue #1513)", () => {
+  it("imageOptimizationUrl uses /_next/image prefix", async () => {
+    const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
+    const url = imageOptimizationUrl("/photo.png", 828, 85);
+    expect(url.startsWith("/_next/image?")).toBe(true);
+    expect(url).toContain("url=%2Fphoto.png");
+    expect(url).toContain("w=828");
+    expect(url).toContain("q=85");
+  });
+
+  it("Image SSR src starts with /_next/image, not /_vinext/image", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "test",
+        src: "/test.png",
+        width: 100,
+        height: 100,
+      }),
+    );
+    expect(html).toMatch(/src="\/_next\/image\?/);
+    expect(html).not.toContain("/_vinext/image");
+  });
+});
 
 // ─── SSR rendering ──────────────────────────────────────────────────────
 
@@ -423,7 +453,7 @@ describe("getImageProps", () => {
     });
 
     expect(props.srcSet).toBeDefined();
-    expect(props.srcSet).toContain("/_vinext/image");
+    expect(props.srcSet).toContain("/_next/image");
     expect(props.srcSet).toContain("photo.png");
     expect(props.srcSet).toContain("w");
   });

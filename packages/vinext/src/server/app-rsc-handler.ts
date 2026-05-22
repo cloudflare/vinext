@@ -444,7 +444,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (beforeFilesRewrite instanceof Response) return beforeFilesRewrite;
   if (beforeFilesRewrite) cleanPathname = beforeFilesRewrite;
 
-  if (cleanPathname === "/_vinext/image") {
+  if (cleanPathname === "/_next/image") {
     const imageUrlResult = validateImageUrl(url.searchParams.get("url"), request.url);
     if (imageUrlResult instanceof Response) return imageUrlResult;
     return Response.redirect(new URL(imageUrlResult, url.origin).href, 302);

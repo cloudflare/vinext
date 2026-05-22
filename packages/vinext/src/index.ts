@@ -2797,7 +2797,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
               // ── Image optimization passthrough (dev mode) ─────────────
               // In dev, redirect to the original asset URL so Vite serves it.
-              if (url.split("?")[0] === "/_vinext/image") {
+              if (url.split("?")[0] === "/_next/image") {
                 const imgParams = new URLSearchParams(url.split("?")[1] ?? "");
                 const rawImgUrl = imgParams.get("url");
                 // Normalize backslashes: browsers and the URL constructor treat

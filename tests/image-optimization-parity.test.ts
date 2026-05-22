@@ -119,7 +119,7 @@ function runLocalImageUrlParitySuite(router: "app" | "pages"): void {
       const src = getImageSrcFromHtml(html, "unicode");
       const imageUrl = new URL(src, baseUrl);
 
-      expect(imageUrl.pathname).toBe("/_vinext/image");
+      expect(imageUrl.pathname).toBe("/_next/image");
       expect(imageUrl.searchParams.get("url")).toBe("/äöüščří.png");
       expect(imageUrl.searchParams.get("w")).toBe("64");
       expect(imageUrl.searchParams.get("q")).toBe("75");
@@ -136,7 +136,7 @@ function runLocalImageUrlParitySuite(router: "app" | "pages"): void {
       const src = getImageSrcFromHtml(html, "space");
       const imageUrl = new URL(src, baseUrl);
 
-      expect(imageUrl.pathname).toBe("/_vinext/image");
+      expect(imageUrl.pathname).toBe("/_next/image");
       expect(imageUrl.searchParams.get("url")).toBe("/hello world.png");
       expect(imageUrl.searchParams.get("w")).toBe("64");
       expect(imageUrl.searchParams.get("q")).toBe("75");

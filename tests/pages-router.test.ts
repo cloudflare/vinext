@@ -1518,14 +1518,14 @@ describe("Pages Router dev server origin check", () => {
   });
 
   it("blocks image endpoint redirect to /@* internal paths", async () => {
-    const res = await fetch(`${baseUrl}/_vinext/image?url=/@fs/etc/passwd&w=100&q=75`, {
+    const res = await fetch(`${baseUrl}/_next/image?url=/@fs/etc/passwd&w=100&q=75`, {
       redirect: "manual",
     });
     expect(res.status).toBe(400);
   });
 
   it("blocks image endpoint redirect to /__vite internal paths", async () => {
-    const res = await fetch(`${baseUrl}/_vinext/image?url=/__vite_hmr&w=100&q=75`, {
+    const res = await fetch(`${baseUrl}/_next/image?url=/__vite_hmr&w=100&q=75`, {
       redirect: "manual",
     });
     expect(res.status).toBe(400);
@@ -1533,7 +1533,7 @@ describe("Pages Router dev server origin check", () => {
 
   it("blocks image endpoint redirect to /node_modules paths", async () => {
     const res = await fetch(
-      `${baseUrl}/_vinext/image?url=/node_modules/.vite/manifest.json&w=100&q=75`,
+      `${baseUrl}/_next/image?url=/node_modules/.vite/manifest.json&w=100&q=75`,
       {
         redirect: "manual",
       },

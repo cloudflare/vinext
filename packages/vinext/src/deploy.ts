@@ -502,7 +502,7 @@ ${isrSetup}    const url = new URL(request.url);
     // Image optimization via Cloudflare Images binding.
     // The parseImageParams validation inside handleImageOptimization
     // normalizes backslashes and validates the origin hasn't changed.
-    if (url.pathname === "/_vinext/image") {
+    if (url.pathname === "/_next/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
       return handleImageOptimization(request, {
         fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
@@ -637,8 +637,8 @@ export default {
       const basePathState = { basePath, hadBasePath };
 
       // ── Image optimization via Cloudflare Images binding ──────────
-      // Checked after basePath stripping so /<basePath>/_vinext/image works.
-      if (pathname === "/_vinext/image") {
+      // Checked after basePath stripping so /<basePath>/_next/image works.
+      if (pathname === "/_next/image") {
         const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
         return handleImageOptimization(request, {
           fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),

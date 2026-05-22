@@ -27,7 +27,7 @@ export default {
     const url = new URL(request.url);
 
     // Image optimization via Cloudflare Images binding
-    if (url.pathname === "/_vinext/image") {
+    if (url.pathname === "/_next/image") {
       return handleImageOptimization(request, {
         fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
         transformImage: async (body, { width, format, quality }) => {
