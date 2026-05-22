@@ -1062,12 +1062,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         instrumentationPath = findInstrumentationFile(root, fileMatcher);
         instrumentationClientPath = findInstrumentationClientFile(root, fileMatcher);
         middlewarePath = findMiddlewareFile(root, fileMatcher);
-        if (nextConfig.instrumentationClientInject.length > 0) {
-          clientInjectModule = generateInstrumentationClientInjectModule(
-            nextConfig.instrumentationClientInject,
-            instrumentationClientPath,
-          );
-        }
+        clientInjectModule =
+          nextConfig.instrumentationClientInject.length > 0
+            ? generateInstrumentationClientInjectModule(
+                nextConfig.instrumentationClientInject,
+                instrumentationClientPath,
+              )
+            : null;
         if (env?.command === "build") {
           await writeRouteTypes();
         }

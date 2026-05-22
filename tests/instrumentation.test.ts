@@ -353,7 +353,7 @@ describe("generateInstrumentationClientInjectModule", () => {
   it("generates a single import for one inject entry", () => {
     const code = generateInstrumentationClientInjectModule(["./inject-a.js"], null);
     expect(code).toContain('import * as __vinj_0 from "./inject-a.js"');
-    expect(code).toContain("export function onRouterTransitionStart(url, type)");
+    expect(code).toContain("export function onRouterTransitionStart(url: string, type: string)");
     expect(code).toContain('typeof __vinj_0.onRouterTransitionStart === "function"');
     expect(code).toContain("\n    __vinj_0.onRouterTransitionStart(url, type);\n");
   });
@@ -393,5 +393,10 @@ describe("generateInstrumentationClientInjectModule", () => {
       "/project/instrumentation-client.ts",
     );
     expect(code).toBe("export {};");
+  });
+
+  it("escapes special characters in specifier paths", () => {
+    const code = generateInstrumentationClientInjectModule(['./path/with"quote.js'], null);
+    expect(code).toContain('from "./path/with\\"quote.js"');
   });
 });

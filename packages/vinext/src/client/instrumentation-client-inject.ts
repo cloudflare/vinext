@@ -2,11 +2,18 @@
  * Generate a virtual ESM module that implements the Next.js
  * `instrumentationClientInject` contract for client bootstrap.
  *
- * When `injects` is empty, this is a transparent passthrough (or no-op
- * when no user file exists). Otherwise it generates side-effect imports
- * for each inject in array order, then the user's instrumentation-client
- * file last, and exports a single composed `onRouterTransitionStart` that
- * fans out to every module's hook.
+ * Resolution follows two paths depending on whether injects are configured:
+ *
+ * **Empty injects (`injects.length === 0`):** Returns `export {}` and the
+ * plugin does not serve a virtual module. The `resolve.alias` for
+ * `private-next-instrumentation-client` resolves directly to the user's
+ * `instrumentation-client` file (or `vinext/client/empty-module` when absent),
+ * so the user's `onRouterTransitionStart` is used as-is with no composition.
+ *
+ * **Non-empty injects:** The plugin serves this generated module via
+ * `resolveId`/`load`. It side-effect-imports each inject in config order, then
+ * the user's file last, and exports a single composed `onRouterTransitionStart`
+ * that fans out to every module's hook.
  *
  * @param injects - Module specifiers from `nextConfig.instrumentationClientInject`
  * @param userPath - Absolute path to the user's `instrumentation-client` file,
@@ -44,7 +51,7 @@ export function generateInstrumentationClientInjectModule(
   }
 
   lines.push("");
-  lines.push("export function onRouterTransitionStart(url, type) {");
+  lines.push("export function onRouterTransitionStart(url: string, type: string) {");
   lines.push(...hookCalls);
   lines.push(`}`);
   lines.push("");

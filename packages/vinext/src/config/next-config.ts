@@ -1139,7 +1139,9 @@ export async function resolveNextConfig(
     output: output === "export" || output === "standalone" ? output : "",
     pageExtensions,
     instrumentationClientInject: Array.isArray(config.instrumentationClientInject)
-      ? (config.instrumentationClientInject as string[])
+      ? (config.instrumentationClientInject as unknown[]).filter(
+          (x): x is string => typeof x === "string",
+        )
       : [],
     cacheComponents: config.cacheComponents ?? false,
     redirects,
