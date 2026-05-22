@@ -28,7 +28,12 @@ import { http, passthrough, type RequestHandler } from "msw";
  * `passthrough()` is the documented escape hatch: the request is
  * forwarded to the real network without buffering.
  */
-const LOOPBACK_URL_PATTERN = /^https?:\/\/(?:localhost|127(?:\.\d+){3}|\[?::1\]?)(?::\d+)?(?:\/|$)/;
+// 127/8 + IPv6 ::1 + the literal hostname "localhost". The IPv4 octets
+// are loosely bounded to 1-3 digits — `URL.hostname` normalises real
+// addresses and no test would construct an out-of-range octet, so the
+// looser bound is fine and keeps the regex readable.
+const LOOPBACK_URL_PATTERN =
+  /^https?:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)(?::\d+)?(?:\/|$)/;
 const loopbackPassthrough = http.all(LOOPBACK_URL_PATTERN, () => passthrough());
 
 export const handlers: RequestHandler[] = [loopbackPassthrough];
