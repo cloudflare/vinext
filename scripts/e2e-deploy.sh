@@ -207,9 +207,9 @@ cleanup_on_error() {
   if [ -f "${PID_FILE}" ]; then
     local pid
     pid="$(cat "${PID_FILE}")"
-    kill -TERM "-${pid}" >/dev/null 2>&1 || kill -TERM "${pid}" >/dev/null 2>&1 || true
+    kill -TERM "${pid}" >/dev/null 2>&1 || true
     sleep 1
-    kill -KILL "-${pid}" >/dev/null 2>&1 || kill -KILL "${pid}" >/dev/null 2>&1 || true
+    kill -KILL "${pid}" >/dev/null 2>&1 || true
   fi
 
   # Kill any process still listening on the allocated port (handles orphaned children).
@@ -219,7 +219,7 @@ cleanup_on_error() {
     local cleanup_port
     cleanup_port="$(cat "${PORT_FILE}")"
     local listener_pid
-    listener_pid="$(lsof -ti "tcp:${cleanup_port}" 2>/dev/null || true)"
+    listener_pid="$(lsof -ti "tcp:${cleanup_port}" -sTCP:LISTEN 2>/dev/null || true)"
     if [ -n "${listener_pid}" ]; then
       kill -TERM ${listener_pid} >/dev/null 2>&1 || true
       sleep 1
