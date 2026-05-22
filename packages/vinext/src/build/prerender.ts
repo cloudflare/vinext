@@ -897,12 +897,21 @@ export async function prerenderApp({
 
     rscHandler = (req: Request) => {
       // Forward the request to the local prod server.
+      // `redirect: "manual"` ensures pages that call `redirect()` surface as
+      // their original 3xx response — otherwise fetch follows the Location
+      // header server-side, the prerender harness sees a 200 for the
+      // destination page, and that destination HTML gets written under the
+      // redirecting route's filename. At runtime the prod server then serves
+      // the cached HTML with status 200 instead of emitting a 307 for the
+      // document load. Mirrors the pages-prerender `renderPage` helper above.
+      // See: https://github.com/cloudflare/vinext/issues/1530
       const parsed = new URL(req.url);
       const url = `${baseUrl}${parsed.pathname}${parsed.search}`;
       return fetch(url, {
         method: req.method,
         headers: { ...secretHeaders, ...Object.fromEntries(req.headers.entries()) },
         body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
+        redirect: "manual",
       });
     };
 

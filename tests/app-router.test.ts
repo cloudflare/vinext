@@ -2440,6 +2440,23 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(404);
   });
 
+  // Ported from Next.js: test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
+  //
+  // Document request (no `Rsc` header) to a page that calls `redirect()` must
+  // respond with HTTP 307 + Location. The RSC variant (`.rsc` URL or Rsc:1
+  // header) returns 200 with a flight payload — that path is covered by the
+  // sibling `.rsc` redirect tests above and by issue #1347.
+  //
+  // See: https://github.com/cloudflare/vinext/issues/1530
+  it("redirect() from Server Component returns 307 on document load (production)", async () => {
+    const res = await fetch(`${baseUrl}/redirect-test`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    const location = res.headers.get("location");
+    expect(location).toBeTruthy();
+    expect(location).toContain("/about");
+  });
+
   it("serves static assets with cache headers", async () => {
     // Find an actual hashed asset from the build (on disk under
     // `_next/static/`, matching `resolveAssetsDir("")`).

@@ -927,6 +927,27 @@ describe("prerenderApp — default mode (app-basic)", () => {
     expect(r?.status).toBe("skipped");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
+  // ('should get 307 status code for document request')
+  //
+  // A speculative prerender of a route that calls `redirect()` must not
+  // follow the redirect server-side and cache the destination's HTML under
+  // the redirecting URL. Doing so makes the prod server reply with 200 and
+  // the destination's body on every document request to the redirecting
+  // route, instead of emitting an HTTP 307 with a Location header.
+  //
+  // See: https://github.com/cloudflare/vinext/issues/1530
+  it("skips /redirect-test instead of capturing the destination HTML", () => {
+    const r = findRoute(results, "/redirect-test");
+    expect(r).toBeDefined();
+    expect(r?.status).toBe("skipped");
+    // No HTML/RSC must be written for the redirecting route — otherwise the
+    // prod server serves the cached destination body with status 200 for
+    // every document request to /redirect-test.
+    expect(fs.existsSync(path.join(outDir, "redirect-test.html"))).toBe(false);
+    expect(fs.existsSync(path.join(outDir, "redirect-test.rsc"))).toBe(false);
+  });
+
   // ── API routes — always skipped ────────────────────────────────────────────
 
   it("skips all API route handlers", () => {
