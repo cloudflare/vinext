@@ -227,26 +227,15 @@ jobs:
       - name: Build plugin
         run: vp run build
 
-      # Resolve the exact Playwright version from the lockfile so the cache key
-      # only changes when Playwright itself is bumped, not on unrelated lockfile
-      # churn. Falls back to a hash of pnpm-lock.yaml if parsing fails.
-      - name: Resolve Playwright version
-        id: playwright-version
-        run: |
-          set -euo pipefail
-          version=$(grep -E "^\s+playwright:\s+[0-9]" pnpm-lock.yaml | head -n1 | awk '{print $2}' || true)
-          if [ -z "$version" ]; then
-            version="unknown-${{ hashFiles('pnpm-lock.yaml') }}"
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Resolved Playwright version: $version"
-
+      # ci.yml owns the playwright browsers cache; nextjs-deploy-suite.yml
+      # restores it read-only via the same composite action so both workflows
+      # share a single warm cache entry per Playwright version + browser + OS.
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v5
+        uses: ./.github/actions/playwright-cache
         with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ matrix.project == 'app-router-webkit-browser-specific' && 'webkit' || 'chromium' }}-${{ runner.os }}-v${{ steps.playwright-version.outputs.version }}
+          browser: ${{ matrix.project == 'app-router-webkit-browser-specific' && 'webkit' || 'chromium' }}
+          mode: cache
           restore-keys: |
             playwright-${{ matrix.project == 'app-router-webkit-browser-specific' && 'webkit' || 'chromium' }}-${{ runner.os }}-
 
@@ -259,7 +248,7 @@ jobs:
         with:
           path: |
             ~/.cache/apt-archives
-          key: apt-webkit-${{ runner.os }}-v${{ steps.playwright-version.outputs.version }}
+          key: apt-webkit-${{ runner.os }}-v${{ steps.playwright-cache.outputs.version }}
           restore-keys: |
             apt-webkit-${{ runner.os }}-
 
