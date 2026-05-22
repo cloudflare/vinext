@@ -4635,8 +4635,17 @@ describe("middleware runner", () => {
     try {
       findMiddlewareFile(FIXTURE_DIR, createValidFileMatcher());
       expect(warnSpy).toHaveBeenCalledOnce();
+      // Match Next.js canonical wording: deprecation-warnings and
+      // app-middleware e2e suites assert on this exact phrase via toContain.
+      // See .nextjs-ref/packages/next/src/build/index.ts (the Log.warnOnce call
+      // adjacent to MIDDLEWARE_FILENAME / PROXY_FILENAME).
       expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("middleware.ts is deprecated in Next.js 16"),
+        expect.stringContaining(
+          'The "middleware" file convention is deprecated. Please use "proxy" instead.',
+        ),
+      );
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("https://nextjs.org/docs/messages/middleware-to-proxy"),
       );
     } finally {
       warnSpy.mockRestore();
