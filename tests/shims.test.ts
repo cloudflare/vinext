@@ -4047,6 +4047,38 @@ describe('"use cache" runtime', () => {
     expect(r3).toEqual({ count: 2 });
   });
 
+  it("private variant marks prerender output dynamic", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { consumeDynamicUsage } = await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    // Ported from Next.js: "use cache: private" is dynamic in prerendering contexts.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      await runWithRequestContext(createRequestContext(), async () => {
+        const cached = registerCachedFunction(
+          async () => "private",
+          "test:private-prerender",
+          "private",
+        );
+        await cached();
+
+        expect(consumeDynamicUsage()).toBe(true);
+      });
+    } finally {
+      if (previousPrerender === undefined) {
+        delete process.env.VINEXT_PRERENDER;
+      } else {
+        process.env.VINEXT_PRERENDER = previousPrerender;
+      }
+    }
+  });
+
   it("cacheLife minimum-wins rule applies", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
@@ -15506,6 +15538,69 @@ describe("cache scope guards for dynamic APIs", () => {
     );
 
     setHeadersContext(null);
+  });
+
+  it('headers() is allowed inside "use cache: private" scope', async () => {
+    const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { headers, setHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+
+    // Next.js private-cache stores carry request headers.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/work-unit-async-storage.external.ts
+    try {
+      setHeadersContext({
+        headers: new Headers({ "x-private": "allowed" }),
+        cookies: new Map(),
+      });
+
+      await cacheContextStorage.run(
+        {
+          tags: [],
+          lifeConfigs: [],
+          variant: "private",
+          hasExplicitRevalidate: false,
+          hasExplicitExpire: false,
+          dynamicNestedCacheError: undefined,
+        },
+        async () => {
+          expect((await headers()).get("x-private")).toBe("allowed");
+        },
+      );
+    } finally {
+      setHeadersContext(null);
+    }
+  });
+
+  it('cookies() is allowed inside "use cache: private" scope', async () => {
+    const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { cookies, setHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+
+    // Ported from Next.js: test/e2e/app-dir/use-cache-private/use-cache-private.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-private/use-cache-private.test.ts
+    try {
+      setHeadersContext({
+        headers: new Headers({ cookie: "test-cookie=allowed" }),
+        cookies: new Map([["test-cookie", "allowed"]]),
+      });
+
+      await cacheContextStorage.run(
+        {
+          tags: [],
+          lifeConfigs: [],
+          variant: "private",
+          hasExplicitRevalidate: false,
+          hasExplicitExpire: false,
+          dynamicNestedCacheError: undefined,
+        },
+        async () => {
+          await expect(cookies()).resolves.toMatchObject({
+            get: expect.any(Function),
+          });
+          expect((await cookies()).get("test-cookie")?.value).toBe("allowed");
+        },
+      );
+    } finally {
+      setHeadersContext(null);
+    }
   });
 
   it('cookies() sync access throws the "use cache" error instead of a TypeError', async () => {

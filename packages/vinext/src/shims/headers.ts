@@ -208,9 +208,24 @@ const _USE_CACHE_ALS_KEY = Symbol.for("vinext.cacheRuntime.contextAls");
 const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
 const _gHeaders = globalThis as unknown as Record<PropertyKey, unknown>;
 
-function _isInsideUseCache(): boolean {
+type UseCacheGuardContext = {
+  variant?: unknown;
+};
+
+function _getUseCacheGuardContext(): UseCacheGuardContext | null {
   const als = _gHeaders[_USE_CACHE_ALS_KEY] as AsyncLocalStorage<unknown> | undefined;
-  return als?.getStore() != null;
+  const store = als?.getStore();
+  if (!store || typeof store !== "object") return null;
+  return store;
+}
+
+function _isInsidePublicUseCache(): boolean {
+  const ctx = _getUseCacheGuardContext();
+  // Next.js models "use cache: private" as a private-cache work unit that
+  // carries request headers and cookies. Only public "use cache" scopes freeze
+  // request APIs into persisted cache entries and must reject these reads.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/work-unit-async-storage.external.ts
+  return ctx !== null && ctx.variant !== "private";
 }
 
 function _isInsideUnstableCache(): boolean {
@@ -226,7 +241,7 @@ function _isInsideUnstableCache(): boolean {
  * @param apiName - The name of the API being called (e.g. "connection()")
  */
 export function throwIfInsideCacheScope(apiName: string): void {
-  if (_isInsideUseCache()) {
+  if (_isInsidePublicUseCache()) {
     const error = new Error(
       `\`${apiName}\` cannot be called inside "use cache". ` +
         `If you need this data inside a cached function, call \`${apiName}\` ` +

@@ -43,6 +43,7 @@ import {
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
+import { markDynamicUsage } from "./headers.js";
 
 // ---------------------------------------------------------------------------
 // Constants for nested-dynamic cache life detection
@@ -459,6 +460,13 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
 
     // "use cache: private" uses per-request in-memory cache
     if (cacheVariant === "private") {
+      if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") {
+        // Next.js treats "use cache: private" as dynamic during prerendering:
+        // it is excluded from the static artifact and resolved per request.
+        // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+        markDynamicUsage();
+      }
+
       const privateCache = _getPrivateState()._privateCache!;
       const privateHit = privateCache.get(cacheKey);
       if (privateHit !== undefined) {
