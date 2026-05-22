@@ -70,6 +70,7 @@ type RenderPagesPageResponseOptions = {
   routeUrl: string;
   safeJsonStringify: (value: unknown) => string;
   scriptNonce?: string;
+  vinext?: VinextNextData["__vinext"];
 };
 
 function buildPagesFontHeadHtml(
@@ -318,6 +319,7 @@ export async function renderPagesPageResponse(
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
     scriptNonce: options.scriptNonce,
+    vinext: options.vinext,
   });
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
   // Render the page FIRST so that <Head> and other SSR state collectors

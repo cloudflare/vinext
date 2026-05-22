@@ -3317,6 +3317,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 fileMatcher,
                 nextConfig?.basePath ?? "",
                 nextConfig?.trailingSlash ?? false,
+                middlewarePath !== null,
               );
               const mwStatus = req.__vinextMiddlewareStatus;
 

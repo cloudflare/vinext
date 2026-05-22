@@ -1023,6 +1023,28 @@ describe("toSameOriginAppPath", () => {
     }
   });
 
+  it("falls back to location.href when location.origin is unavailable", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: {
+        href: "http://localhost:3000/base/posts/1",
+      },
+    };
+
+    try {
+      expect(toSameOriginAppPath("http://localhost:3000/base/about", "/base")).toBe("/about");
+      expect(toSameOriginAppPath("//localhost:3000/base/about?tab=1#top", "/base")).toBe(
+        "/about?tab=1#top",
+      );
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+    }
+  });
+
   it("treats same-origin URLs outside the configured basePath as external", () => {
     const originalWindow = globalThis.window;
     (globalThis as any).window = {

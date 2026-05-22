@@ -252,6 +252,7 @@ export function createSSRHandler(
   fileMatcher?: ValidFileMatcher,
   basePath = "",
   trailingSlash = false,
+  hasMiddleware = false,
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -758,6 +759,7 @@ export function createSSRHandler(
                         __vinext: {
                           pageModuleUrl: regenPageUrl,
                           appModuleUrl: regenAppUrl,
+                          hasMiddleware,
                         },
                       })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}</script>`;
 
@@ -1032,6 +1034,7 @@ hydrate();
             __vinext: {
               pageModuleUrl,
               appModuleUrl,
+              hasMiddleware,
             },
           })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}`,
           scriptNonce,

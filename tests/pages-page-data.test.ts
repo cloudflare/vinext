@@ -83,6 +83,7 @@ describe("pages page data", () => {
       safeJsonStringify(value: unknown) {
         return JSON.stringify(value);
       },
+      vinext: { hasMiddleware: true },
     });
 
     expect(html).toContain("<div>fresh-body</div>");
@@ -90,6 +91,7 @@ describe("pages page data", () => {
     expect(html).toContain('<script src="/tail.js"></script>');
     expect(html).toContain('"page":"/posts/[slug]"');
     expect(html).toContain('"slug":"post"');
+    expect(html).toContain('"__vinext":{"hasMiddleware":true}');
   });
 
   it("returns an HTML 404 when getStaticPaths excludes a dynamic path", async () => {
@@ -198,6 +200,7 @@ describe("pages page data", () => {
         },
         runInFreshUnifiedContext,
         triggerBackgroundRegeneration,
+        vinext: { hasMiddleware: true },
       }),
     );
 
@@ -229,6 +232,17 @@ describe("pages page data", () => {
       expect.objectContaining({
         kind: "PAGES",
         html: expect.stringContaining("<div>fresh-body</div>"),
+        pageData: { title: "fresh" },
+      }),
+      15,
+      undefined,
+      300,
+    );
+    expect(isrSet).toHaveBeenCalledWith(
+      "pages:/posts/post",
+      expect.objectContaining({
+        kind: "PAGES",
+        html: expect.stringContaining('"__vinext":{"hasMiddleware":true}'),
         pageData: { title: "fresh" },
       }),
       15,

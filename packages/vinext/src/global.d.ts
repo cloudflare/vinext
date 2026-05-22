@@ -60,7 +60,10 @@ declare global {
      * client-side navigation.
      */
     __VINEXT_APP__:
-      | React.ComponentType<{ Component: React.ComponentType<unknown>; pageProps: unknown }>
+      | React.ComponentType<{
+          Component: React.ComponentType<Record<string, unknown>>;
+          pageProps: unknown;
+        }>
       | undefined;
 
     /**

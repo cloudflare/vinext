@@ -21,6 +21,8 @@ export type VinextNextData = {
     pageModuleUrl?: string;
     /** Absolute URL of the `_app` module for dynamic import. */
     appModuleUrl?: string;
+    /** True when the Pages Router server has middleware/proxy configured. */
+    hasMiddleware?: boolean;
   };
 } & NEXT_DATA;
 
