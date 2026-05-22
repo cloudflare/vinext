@@ -893,7 +893,12 @@ export default {
 
         // ── 10. Fallback rewrites (if SSR returned 404) ─────────────
         let matchedFallbackRewrite = false;
-        if (response && response.status === 404 && configRewrites.fallback?.length) {
+        if (
+          response &&
+          response.status === 404 &&
+          shouldDeferErrorPageOnMiss &&
+          configRewrites.fallback?.length
+        ) {
           const fallbackRewrite = matchRewrite(
             matchResolvedPathname(resolvedPathname),
             configRewrites.fallback,

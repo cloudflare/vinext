@@ -2718,12 +2718,20 @@ export default function CounterPage() {
       );
 
       try {
-        (
-          globalThis as { __VINEXT_FALLBACK_REWRITE_TEST_RUNTIME?: boolean }
-        ).__VINEXT_FALLBACK_REWRITE_TEST_RUNTIME = true;
         const addr = prodServer.address() as { port: number };
         const baseUrl = `http://127.0.0.1:${addr.port}`;
 
+        const explicitNotFoundRes = await fetch(`${baseUrl}/docs/404`);
+        expect(explicitNotFoundRes.status).toBe(404);
+        const explicitNotFoundHtml = await explicitNotFoundRes.text();
+        expect(explicitNotFoundHtml).toContain('id="custom-404"');
+        expect(explicitNotFoundHtml).toContain("This page could not be found");
+        expect(explicitNotFoundHtml).toContain('"page":"/404"');
+        expect(explicitNotFoundHtml).not.toContain('id="fallback"');
+
+        (
+          globalThis as { __VINEXT_FALLBACK_REWRITE_TEST_RUNTIME?: boolean }
+        ).__VINEXT_FALLBACK_REWRITE_TEST_RUNTIME = true;
         const res = await fetch(`${baseUrl}/docs/missing`);
         expect(res.status).toBe(200);
         const html = await res.text();
