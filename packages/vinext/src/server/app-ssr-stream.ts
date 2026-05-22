@@ -144,26 +144,88 @@ export function fixPreloadAs(html: string): string {
 }
 
 /**
+ * Match the `<head ...>` opening tag in a chunk. Matches both bare `<head>`
+ * and `<head class="foo">` shapes. Used to splice HTML immediately after the
+ * opening tag so injected content runs before any React-emitted resource
+ * hints (stylesheets, modulepreloads) that React Float hoists into `<head>`.
+ */
+const HEAD_OPEN_RE = /<head\b[^>]*>/;
+
+/**
  * Create the tick-buffered HTML transform that injects RSC scripts between
  * React Fizz flush cycles without corrupting split HTML chunks.
+ *
+ * Two insertion points are supported in tandem:
+ *
+ *  - `injectHTML` is emitted immediately before `</head>`. This is where the
+ *    bulk of vinext's head additions live (RSC navigation runtime metadata,
+ *    bootstrap modulepreload, server-inserted HTML, font preloads, etc.).
+ *  - `injectAfterHeadOpenHTML` is emitted immediately after the `<head ...>`
+ *    opening tag so the content runs before any React-emitted resource
+ *    hints. This is where inline `<Script strategy="beforeInteractive">`
+ *    captures land so the no-flash dark-mode pattern works.
+ *
+ * Fallback behaviour differs by insertion point:
+ *
+ *  - `injectHTML` is emitted at end-of-stream by the `flush` handler when no
+ *    chunk ever contained `</head>` — callers still see the payload on
+ *    highly fragmented streams (just at the end of the body rather than in
+ *    the head).
+ *  - `injectAfterHeadOpenHTML` is silently dropped when `<head ...>` is not
+ *    found in a discoverable chunk. Emitting it at end-of-stream would put
+ *    it after the document body, defeating the point — the splice has to
+ *    happen before resource hints to be useful, so the safer behaviour is
+ *    to no-op and let the user-rendered Script (in its source-order
+ *    position) ship as-is.
  */
 export function createTickBufferedTransform(
   rscEmbed: RscEmbedTransform,
   injectHTML: HtmlInsertion = "",
+  injectAfterHeadOpenHTML: HtmlInsertion = "",
 ): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const insertsPerFlush = typeof injectHTML === "function";
   let injected = false;
+  let preHeadInjected = false;
   let buffered: string[] = [];
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   const readInsertion = (): string =>
     typeof injectHTML === "function" ? injectHTML() : injectHTML;
+  const readPreHeadInsertion = (): string =>
+    typeof injectAfterHeadOpenHTML === "function"
+      ? injectAfterHeadOpenHTML()
+      : injectAfterHeadOpenHTML;
   const emitInsertion = (controller: TransformStreamDefaultController<Uint8Array>): void => {
     const insertion = readInsertion();
     if (insertion) {
       controller.enqueue(encoder.encode(insertion));
     }
+  };
+
+  /**
+   * Splice the pre-head insertion (typically captured beforeInteractive inline
+   * scripts) immediately after the `<head ...>` opening tag. Returns the
+   * rewritten chunk and a flag indicating whether the splice happened, so the
+   * caller can mark `preHeadInjected` and stop scanning further chunks.
+   *
+   * NOTE: This is called only when `<head ...>` lies fully inside `chunk` —
+   * we deliberately avoid stitching across chunk boundaries because doing so
+   * would force the transform to hold output until it had seen `<head ...>`,
+   * which both delays TTFB and complicates the existing `</head>` injection
+   * path. In practice React Fizz emits the opening shell as a single chunk.
+   */
+  const spliceAfterHeadOpen = (chunk: string): { chunk: string; spliced: boolean } => {
+    if (preHeadInjected) return { chunk, spliced: false };
+    const insertion = readPreHeadInsertion();
+    if (!insertion) return { chunk, spliced: false };
+    const match = HEAD_OPEN_RE.exec(chunk);
+    if (!match) return { chunk, spliced: false };
+    const insertAt = match.index + match[0].length;
+    return {
+      chunk: chunk.slice(0, insertAt) + insertion + chunk.slice(insertAt),
+      spliced: true,
+    };
   };
 
   const flushBuffered = (controller: TransformStreamDefaultController<Uint8Array>): void => {
@@ -176,17 +238,25 @@ export function createTickBufferedTransform(
     }
 
     for (const chunk of buffered) {
+      let working = chunk;
+      if (!preHeadInjected) {
+        const result = spliceAfterHeadOpen(working);
+        if (result.spliced) {
+          working = result.chunk;
+          preHeadInjected = true;
+        }
+      }
       if (!injected) {
-        const headEnd = chunk.indexOf("</head>");
+        const headEnd = working.indexOf("</head>");
         if (headEnd !== -1) {
-          const before = chunk.slice(0, headEnd);
-          const after = chunk.slice(headEnd);
+          const before = working.slice(0, headEnd);
+          const after = working.slice(headEnd);
           controller.enqueue(encoder.encode(before + readInsertion() + after));
           injected = true;
           continue;
         }
       }
-      controller.enqueue(encoder.encode(chunk));
+      controller.enqueue(encoder.encode(working));
     }
     buffered = [];
   };

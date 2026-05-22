@@ -246,7 +246,7 @@ function headChildToHTML(tag: string, props: Record<string, unknown>): string {
   const attrStr = attrs.length ? " " + attrs.join(" ") : "";
 
   if (SELF_CLOSING_HEAD_TAGS.has(tag)) {
-    return `<${tag}${attrStr} data-vinext-head="true" />`;
+    return `<${tag}${attrStr} data-next-head="" />`;
   }
 
   // For raw-content tags (script, style), escape closing-tag sequences so the
@@ -255,7 +255,7 @@ function headChildToHTML(tag: string, props: Record<string, unknown>): string {
     innerHTML = escapeInlineContent(innerHTML, tag);
   }
 
-  return `<${tag}${attrStr} data-vinext-head="true">${innerHTML}</${tag}>`;
+  return `<${tag}${attrStr} data-next-head="">${innerHTML}</${tag}>`;
 }
 
 function escapeHTML(s: string): string {
@@ -325,7 +325,7 @@ export function _applyHeadPropsToElement(
 }
 
 function syncClientHead(): void {
-  document.querySelectorAll("[data-vinext-head]").forEach((el) => el.remove());
+  document.querySelectorAll("[data-next-head]").forEach((el) => el.remove());
 
   for (const child of reduceHeadChildren([..._clientHeadChildren.values()])) {
     if (typeof child.type !== "string") continue;
@@ -334,7 +334,7 @@ function syncClientHead(): void {
     const props = child.props as Record<string, unknown>;
     _applyHeadPropsToElement(domEl, props);
 
-    domEl.setAttribute("data-vinext-head", "true");
+    domEl.setAttribute("data-next-head", "");
     document.head.appendChild(domEl);
   }
 }

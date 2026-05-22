@@ -98,3 +98,33 @@ test.describe('"use cache" function-level directive', () => {
     expect(Number(dataValue2)).toBeGreaterThan(Number(dataValue1));
   });
 });
+
+test.describe('"use cache: private"', () => {
+  test("allows reading cookies inside private caches", async ({ request }) => {
+    // Ported from Next.js: test/e2e/app-dir/use-cache-private/use-cache-private.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-private/use-cache-private.test.ts
+    const emptyResponse = await request.get(`${BASE}/use-cache-private-cookies`);
+    expect(emptyResponse.status()).toBe(200);
+    await expect(emptyResponse.text()).resolves.toContain(
+      'data-testid="test-cookie">&lt;empty&gt;</span>',
+    );
+
+    const cookieResponse = await request.get(`${BASE}/use-cache-private-cookies`, {
+      headers: { cookie: "test-cookie=foo" },
+    });
+    expect(cookieResponse.status()).toBe(200);
+    await expect(cookieResponse.text()).resolves.toContain('data-testid="test-cookie">foo</span>');
+  });
+
+  test("allows reading search params inside private cached pages", async ({ page }) => {
+    // Ported from Next.js: test/e2e/app-dir/use-cache-private/use-cache-private.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-private/use-cache-private.test.ts
+    await page.goto(`${BASE}/use-cache-private-search?q=foo`);
+    await expect(page.getByTestId("search-param")).toBeVisible();
+    await expect(page.getByTestId("search-param")).toHaveText("foo");
+
+    await page.goto(`${BASE}/use-cache-private-search?q=bar`);
+    await expect(page.getByTestId("search-param")).toBeVisible();
+    await expect(page.getByTestId("search-param")).toHaveText("bar");
+  });
+});

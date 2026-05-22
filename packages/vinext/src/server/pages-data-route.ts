@@ -75,6 +75,13 @@ export function parseNextDataPathname(pathname: string, buildId: string): NextDa
   if (rest === "index") return { pagePathname: "/" };
   if (rest.endsWith("/index")) return { pagePathname: `/${rest.slice(0, -"/index".length)}` };
 
+  // The encoder (`getAssetPathFromRoute` in Next.js / `buildPagesDataPath` in
+  // vinext) prefixes any path beginning with `index` with an extra `index/`
+  // segment so an explicit `pages/index/foo.tsx` page (route `/index/foo`)
+  // round-trips through the data URL without colliding with `/foo`. Strip
+  // that prefix here.
+  if (rest.startsWith("index/")) return { pagePathname: `/${rest.slice("index/".length)}` };
+
   return { pagePathname: `/${rest}` };
 }
 

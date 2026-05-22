@@ -65,6 +65,10 @@ import type { VinextLinkPrefetchRoute, VinextNextData } from "../client/vinext-n
 import { navigatePagesRouterLink } from "../client/pages-router-link-navigation.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../routing/route-matching.js";
 import { stripBasePath } from "../utils/base-path.js";
+import {
+  prefetchPagesData,
+  resolvePagesDataNavigationTarget,
+} from "./internal/pages-data-target.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
 
 type NavigateEvent = {
@@ -306,16 +310,31 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
           },
         );
-      } else if ((window.__NEXT_DATA__ as VinextNextData | undefined)?.__vinext?.pageModuleUrl) {
-        // Pages Router: inject a prefetch link for the target page module
-        // We can't easily resolve the target page's module URL from the Link,
-        // so we create a <link rel="prefetch"> for the HTML page which helps
-        // the browser's preload scanner.
-        const link = document.createElement("link");
-        link.rel = "prefetch";
-        link.href = fullHref;
-        link.as = "document";
-        document.head.appendChild(link);
+      } else if (window.__NEXT_DATA__) {
+        // Pages Router prefetch. When a code-split loader is registered for
+        // the target route (prod builds expose them on window via the
+        // generated client entry), prefetch the data JSON + warm the page
+        // chunk in parallel — matching the actual navigation, so the click
+        // is a double cache hit. Otherwise (dev, or unmapped route) fall
+        // back to the legacy `<link rel="prefetch" as="document">` so the
+        // browser still preloads the HTML.
+        //
+        // The decision helper + prefetch action live in shims/internal/ so
+        // this file does not pull in the router shim at module init time,
+        // which would create a circular import and grow the SSR module graph.
+        const dataTarget = resolvePagesDataNavigationTarget(fullHref, __basePath);
+        if (dataTarget) {
+          prefetchPagesData(dataTarget);
+        } else {
+          // Legacy fallback: hint the browser to preload the HTML document.
+          // Used in dev (no loader map populated) and for routes not in the
+          // client loader map.
+          const link = document.createElement("link");
+          link.rel = "prefetch";
+          link.href = fullHref;
+          link.as = "document";
+          document.head.appendChild(link);
+        }
       }
     })().catch((error) => {
       console.error("[vinext] RSC prefetch setup error:", error);

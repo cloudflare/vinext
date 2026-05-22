@@ -33,6 +33,7 @@ import {
   cacheLifeProfiles,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
+  type CachedFetchValue,
   type CacheControlMetadata,
   type CacheLifeConfig,
 } from "./cache.js";
@@ -43,6 +44,7 @@ import {
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
+import { markDynamicUsage } from "./headers.js";
 
 // ---------------------------------------------------------------------------
 // Constants for nested-dynamic cache life detection
@@ -405,12 +407,11 @@ export function clearPrivateCache(): void {
  * @param variant - Cache variant: "" (default/shared), "remote", "private"
  * @returns A wrapper function that checks cache before calling the original
  */
-// oxlint-disable-next-line typescript/no-explicit-any
-export function registerCachedFunction<T extends (...args: any[]) => Promise<any>>(
-  fn: T,
+export function registerCachedFunction<TArgs extends unknown[], TResult>(
+  fn: (...args: TArgs) => Promise<TResult>,
   id: string,
   variant?: string,
-): T {
+): (...args: TArgs) => Promise<TResult> {
   const cacheVariant = variant ?? "";
 
   // In dev mode, skip the shared cache so code changes are immediately
@@ -421,8 +422,7 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
   // it's scoped to a single request and doesn't persist across HMR.
   const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
 
-  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-  const cachedFn = async (...args: any[]): Promise<any> => {
+  const cachedFn = async (...args: TArgs): Promise<TResult> => {
     const rsc = await getRscModule();
     const keySeed = getUseCacheKeySeed();
 
@@ -443,7 +443,7 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
         // values (e.g., section:"sports" vs section:"electronics") produce
         // identical cache keys. We must extract the plain data so the actual
         // values are included in the cache key.
-        const processedArgs = unwrapThenableObjects(args) as unknown[];
+        const processedArgs = unwrapThenableObjectArray(args);
         const encoded = await rsc.encodeReply(processedArgs, {
           temporaryReferences: tempRefs,
         });
@@ -459,10 +459,24 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
 
     // "use cache: private" uses per-request in-memory cache
     if (cacheVariant === "private") {
+      const parentCtx = cacheContextStorage.getStore();
+      if (parentCtx && parentCtx.variant !== "private") {
+        throwPrivateUseCacheInsidePublicUseCacheError();
+      }
+
+      if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") {
+        // Next.js treats "use cache: private" as dynamic during prerendering:
+        // it is excluded from the static artifact and resolved per request.
+        // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+        markDynamicUsage();
+      }
+
       const privateCache = _getPrivateState()._privateCache!;
       const privateHit = privateCache.get(cacheKey);
       if (privateHit !== undefined) {
-        return privateHit;
+        // The private cache is heterogeneous across cached functions; the key
+        // includes this function's stable id, so a hit belongs to this TResult.
+        return privateHit as TResult;
       }
 
       const result = await executeWithContext(fn, args, cacheVariant);
@@ -487,7 +501,7 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
           // RSC-serialized entry: base64 → bytes → stream → deserialize
           const bytes = base64ToUint8(existing.value.data.body);
           const stream = uint8ToStream(bytes);
-          const result = await rsc.createFromReadableStream(stream);
+          const result = await rsc.createFromReadableStream<TResult>(stream);
           recordRequestScopedCacheControl(existing.cacheControl);
           return result;
         }
@@ -532,7 +546,7 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
       }
 
       const cacheValue = {
-        kind: "FETCH" as const,
+        kind: "FETCH",
         data: {
           headers,
           body,
@@ -540,7 +554,7 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
         },
         tags: ctx.tags,
         revalidate: revalidateSeconds,
-      };
+      } satisfies CachedFetchValue;
 
       await handler.set(cacheKey, cacheValue, {
         fetchCache: true,
@@ -557,7 +571,16 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
     return result;
   };
 
-  return cachedFn as T;
+  return cachedFn;
+}
+
+function throwPrivateUseCacheInsidePublicUseCacheError(): never {
+  const error = new Error(
+    '"use cache: private" must not be used within "use cache". It can only be nested inside of another "use cache: private".',
+  );
+  const ctx = getRequestContext();
+  if (ctx) ctx.invalidDynamicUsageError = error;
+  throw error;
 }
 
 function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | undefined): void {
@@ -610,9 +633,9 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
  *   propagates lifeConfigs/dynamicNestedCacheError up to the parent.
  * - Private variant (`"use cache: private"`): always reaches here via
  *   `executeWithContext`. The variant is excluded from being a *parent* that
- *   throws (see the `parentCtx.variant !== "private"` guard below), but can
- *   still propagate its resolved life *up* to a public parent — matching
- *   Next.js's `propagateCacheEntryMetadata` for `private` kind.
+ *   throws (see the `parentCtx.variant !== "private"` guard below). Entry into
+ *   a private cache from a public parent is rejected earlier to prevent request
+ *   data from flowing into a shared cache entry.
  * - Dev mode (`registerCachedFunction`, NODE_ENV=development): skips the
  *   shared cache and always reaches here via `executeWithContext`.
  *
@@ -855,6 +878,10 @@ function unwrapThenableObjects(value: unknown): unknown {
     result[key] = unwrapThenableObjects((value as any)[key]);
   }
   return result;
+}
+
+function unwrapThenableObjectArray(values: readonly unknown[]): unknown[] {
+  return values.map(unwrapThenableObjects);
 }
 
 // ---------------------------------------------------------------------------
