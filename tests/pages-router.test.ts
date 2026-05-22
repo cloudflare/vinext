@@ -415,6 +415,24 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Rendered at:");
   });
 
+  // Regression test for #1459: Next.js explicitly supports a Promise value
+  // for `getServerSideProps` `props`. vinext must `await` the value before
+  // serialising — otherwise pageProps end up as a Promise and the rendered
+  // page shows empty values.
+  it("awaits Promise-shaped getServerSideProps props", async () => {
+    const res = await fetch(`${baseUrl}/ssr-promise-props`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("SSR Promise Props");
+    expect(html).toContain("world");
+    // React SSR inserts a `<!-- -->` comment between text and expressions.
+    expect(html).toMatch(/count:\s*(<!--\s*-->)?\s*42/);
+    // The serialized __NEXT_DATA__ payload must contain the resolved values
+    // (not an empty pageProps object).
+    expect(html).toMatch(/"pageProps":\s*\{[^}]*"hello":\s*"world"/);
+  });
+
   // Regression test for #1354: when a page declares `getServerSideProps` as
   // a local `const` and exports it via `export { getServerSideProps }`, the
   // client-bundle transform must strip the export specifier without
@@ -3690,6 +3708,20 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.headers.get("content-type")).toBe("application/json");
     expect(res.headers.get("content-length")).toBe("35");
     expect(await res.json()).toEqual({ ok: true, source: "gssp-res-end" });
+  });
+
+  // Regression test for #1459: Next.js supports a Promise value for `props`
+  // returned from getServerSideProps. The prod worker entry must await it
+  // before serialising into __NEXT_DATA__ / pageProps.
+  it("awaits Promise-shaped getServerSideProps props in production", async () => {
+    const res = await fetch(`${prodUrl}/ssr-promise-props`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("SSR Promise Props");
+    expect(html).toContain("world");
+    // React SSR inserts a `<!-- -->` comment between text and expressions.
+    expect(html).toMatch(/count:\s*(<!--\s*-->)?\s*42/);
+    expect(html).toMatch(/"pageProps":\s*\{[^}]*"hello":\s*"world"/);
   });
 
   it("returns 400 for malformed percent-encoded path (not crash)", async () => {

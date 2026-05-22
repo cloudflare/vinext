@@ -530,7 +530,14 @@ export function createSSRHandler(
             return;
           }
           if (result && "props" in result) {
-            pageProps = result.props;
+            // Next.js explicitly supports a Promise value for `props`. Await
+            // it before serialising; otherwise pageProps would be a Promise
+            // and the rendered page would receive empty props. See
+            // packages/next/src/server/render.tsx (deferredContent).
+            pageProps =
+              result.props && typeof (result.props as { then?: unknown }).then === "function"
+                ? await (result.props as Promise<Record<string, unknown>>)
+                : result.props;
           }
           if (result && "redirect" in result) {
             const { redirect } = result;
