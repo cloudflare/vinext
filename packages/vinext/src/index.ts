@@ -93,7 +93,10 @@ import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js"
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
-import { generateInstrumentationClientInjectModule } from "./client/instrumentation-client-inject.js";
+import {
+  generateInstrumentationClientInjectModule,
+  INSTRUMENTATION_CLIENT_EMPTY_MODULE,
+} from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
@@ -441,7 +444,7 @@ const VIRTUAL_ROOT_PARAMS = "virtual:vinext-root-params";
 const RESOLVED_ROOT_PARAMS = "\0" + VIRTUAL_ROOT_PARAMS;
 /** Virtual module for composed instrumentation-client bootstrap. */
 const VIRTUAL_INSTRUMENTATION_CLIENT = "private-next-instrumentation-client";
-const RESOLVED_INSTRUMENTATION_CLIENT = "\0" + VIRTUAL_INSTRUMENTATION_CLIENT;
+const RESOLVED_INSTRUMENTATION_CLIENT = `\0${VIRTUAL_INSTRUMENTATION_CLIENT}.mjs`;
 /** Image file extensions handled by the vinext:image-imports plugin.
  *  Shared between the Rolldown hook filter and the transform handler regex. */
 const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
@@ -654,6 +657,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasAppDir = false;
   let hasPagesDir = false;
   let nextConfig: ResolvedNextConfig;
+  /** Tracks which project root {@link nextConfig} was loaded for (guards multi-env / test setups). */
+  let nextConfigRoot: string | undefined;
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   let middlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
@@ -1054,7 +1059,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Note: fileMatcher, instrumentationPath, etc. are intentionally set
         // outside this guard — they are cheap and deterministic, and keeping
         // them here ensures they reflect the final resolved root on every call.
-        if (!nextConfig) {
+        // Reload when the project root changes. Vite's multi-environment config()
+        // can fire once per environment; the first call may see a different root
+        // (e.g. Vitest's workspace root) before the final createServer({ root }).
+        if (!nextConfig || nextConfigRoot !== root) {
+          nextConfigRoot = root;
           const phase =
             env?.command === "build" ? PHASE_PRODUCTION_BUILD : PHASE_DEVELOPMENT_SERVER;
           let rawConfig: NextConfig | null;
@@ -1077,13 +1086,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         instrumentationPath = findInstrumentationFile(root, fileMatcher);
         instrumentationClientPath = findInstrumentationClientFile(root, fileMatcher);
         middlewarePath = findMiddlewareFile(root, fileMatcher);
-        clientInjectModule =
-          nextConfig.instrumentationClientInject.length > 0
-            ? generateInstrumentationClientInjectModule(
-                nextConfig.instrumentationClientInject,
-                instrumentationClientPath,
-              )
-            : null;
+        const instrumentationClientInjects = nextConfig.instrumentationClientInject.map((spec) =>
+          spec.startsWith("./") || spec.startsWith("../") ? path.resolve(root, spec) : spec,
+        );
+        clientInjectModule = instrumentationClientInjects.length
+          ? generateInstrumentationClientInjectModule(
+              instrumentationClientInjects,
+              instrumentationClientPath,
+              INSTRUMENTATION_CLIENT_EMPTY_MODULE,
+            )
+          : null;
         if (env?.command === "build") {
           await writeRouteTypes();
         }
@@ -1277,8 +1289,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               "instrumentation-client",
             ),
             "vinext/html": path.resolve(__dirname, "server", "html"),
-            "private-next-instrumentation-client":
-              instrumentationClientPath ?? path.resolve(__dirname, "client", "empty-module"),
+            ...(clientInjectModule === null
+              ? {
+                  "private-next-instrumentation-client":
+                    instrumentationClientPath ?? INSTRUMENTATION_CLIENT_EMPTY_MODULE,
+                }
+              : {}),
           }).flatMap(([k, v]) =>
             k.startsWith("next/")
               ? [
@@ -2333,25 +2349,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
     createInstrumentationClientTransformPlugin(() => instrumentationClientPath),
-    // Generate a virtual `private-next-instrumentation-client` module when
-    // `nextConfig.instrumentationClientInject` is non-empty. Side-effect imports
-    // run in array order, ending with the user's `instrumentation-client` file
-    // (or empty-module), and a single composed `onRouterTransitionStart` fans
-    // out to every module's hook.
     {
       name: "vinext:instrumentation-client-inject",
       enforce: "pre",
 
       resolveId(id) {
         if (id !== VIRTUAL_INSTRUMENTATION_CLIENT) return null;
-        // The module was generated in config() if there are injects to compose.
-        // When empty, resolve.alias handles passthrough to the user file or empty-module.
         return clientInjectModule !== null ? RESOLVED_INSTRUMENTATION_CLIENT : null;
       },
 
       load(id) {
         if (id !== RESOLVED_INSTRUMENTATION_CLIENT) return null;
-        // Deterministic output precomputed once in config().
         return clientInjectModule;
       },
     },

@@ -832,6 +832,29 @@ describe("resolveNextConfig hashSalt", () => {
   });
 });
 
+describe("resolveNextConfig instrumentationClientInject", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(path.join(tmpDir, "package.json"), `{ "type": "module" }\n`);
+  });
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("loads instrumentationClientInject from next.config.mjs", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { instrumentationClientInject: ["./inject-a.js", "./inject-b.js"] };\n`,
+    );
+    const raw = await loadNextConfig(tmpDir);
+    const resolved = await resolveNextConfig(raw, tmpDir);
+    expect(resolved.instrumentationClientInject).toEqual(["./inject-a.js", "./inject-b.js"]);
+  });
+});
+
 describe("resolveNextConfig expireTime", () => {
   it("defaults to the Next.js route expire fallback", async () => {
     const resolved = await resolveNextConfig(null);
