@@ -289,7 +289,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Download all test results
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: test-results-*
           path: results
