@@ -219,7 +219,8 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   "experimental.appShells": {
     status: "unsupported",
-    detail: "app shells not yet implemented",
+    detail:
+      "App Shell prefetching not yet implemented; requires cacheComponents and other co-flags vinext does not support",
   },
   "i18n.domains": {
     status: "partial",

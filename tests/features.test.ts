@@ -1734,23 +1734,6 @@ describe("basePath support (Pages Router)", () => {
     expect(withSlash.basePath).toBe("/docs");
   });
 
-  it("basePath define is injected into client code", async () => {
-    // The plugin should set process.env.__NEXT_ROUTER_BASEPATH as a define.
-    // We test this by checking the resolved config of the current server.
-    const config = server.config;
-    // Default fixture has no basePath, so it should be ""
-    const defineKey = "process.env.__NEXT_ROUTER_BASEPATH";
-    expect(config.define?.[defineKey]).toBe(JSON.stringify(""));
-  });
-
-  it("App Shells define is always false", async () => {
-    // Plumbing-only upstream; vinext always reports false so client gating
-    // code never trips. See issue #1405.
-    const config = server.config;
-    const defineKey = "process.env.__NEXT_APP_SHELLS";
-    expect(config.define?.[defineKey]).toBe(JSON.stringify(false));
-  });
-
   it("resolveNextConfig correctly resolves trailingSlash", async () => {
     const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
 
@@ -1761,6 +1744,43 @@ describe("basePath support (Pages Router)", () => {
     // With trailingSlash: true
     const withTrailing = await resolveNextConfig({ trailingSlash: true });
     expect(withTrailing.trailingSlash).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// build-time defines exposed to client code
+
+describe("build-time defines (Pages Router)", () => {
+  let server: ViteDevServer;
+
+  beforeAll(async () => {
+    const plugins: any[] = [vinext()];
+    server = await createServer({
+      root: PAGES_FIXTURE_DIR,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await server.listen();
+  });
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  it("basePath define is injected into client code", async () => {
+    // Default fixture has no basePath, so it should be ""
+    const defineKey = "process.env.__NEXT_ROUTER_BASEPATH";
+    expect(server.config.define?.[defineKey]).toBe(JSON.stringify(""));
+  });
+
+  it("App Shells define is always false", async () => {
+    // Plumbing-only upstream; vinext always reports false so client gating
+    // code never trips. See issue #1405.
+    const defineKey = "process.env.__NEXT_APP_SHELLS";
+    expect(server.config.define?.[defineKey]).toBe(JSON.stringify(false));
   });
 });
 
