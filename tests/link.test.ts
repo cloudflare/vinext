@@ -193,6 +193,50 @@ describe("Link repeated-slash warning", () => {
     ReactDOMServer.renderToString(React.createElement(Link, { href: "/ok?next=//foo//bar" }, "Q"));
     expect(consoleSpy).not.toHaveBeenCalled();
   });
+
+  it("fires on every render (no dedup, matches Next.js behaviour)", () => {
+    // Next.js's resolve-href.ts does NOT dedupe these warnings — every call
+    // emits a console.error. Confirm we do the same so repeated renders
+    // surface every offending href.
+    const el = React.createElement(Link, { href: "/dup//slash" }, "Dup");
+    ReactDOMServer.renderToString(el);
+    ReactDOMServer.renderToString(el);
+    expect(consoleSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("normalises repeated forward slashes in the rendered href", () => {
+    // Next.js mirrors Vercel's gateway behaviour: after warning, the href is
+    // collapsed so the browser navigates to the canonical path.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/hello//world" }, "Hello"),
+    );
+    expect(html).toContain('href="/hello/world"');
+    expect(html).not.toContain("//world");
+  });
+
+  it("normalises backslashes to forward slashes in the rendered href", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/foo\\bar" }, "Bad"),
+    );
+    expect(html).toContain('href="/foo/bar"');
+    expect(html).not.toContain("\\");
+  });
+
+  it("preserves the query string when normalising repeated slashes", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/a//b?x=1&y=2" }, "Q"),
+    );
+    expect(html).toContain('href="/a/b?x=1&amp;y=2"');
+  });
+
+  it("preserves the protocol when normalising absolute URLs", () => {
+    // The "//" between scheme and authority must survive normalisation, but
+    // a duplicate slash in the *path* portion must still collapse.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "https://example.com//foo//bar" }, "Ext"),
+    );
+    expect(html).toContain('href="https://example.com/foo/bar"');
+  });
 });
 
 // ─── useLinkStatus ──────────────────────────────────────────────────────
