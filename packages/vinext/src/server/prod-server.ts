@@ -940,17 +940,22 @@ function resolveAppRouterHandler(entry: unknown): (request: Request) => Promise<
 }
 
 type AppRouterPrerenderSeeder = (serverDir: string) => Promise<number>;
+type AppRouterPrerenderSeederExport = (serverDir: string) => unknown;
+
+function isAppRouterPrerenderSeederExport(value: unknown): value is AppRouterPrerenderSeederExport {
+  return typeof value === "function";
+}
 
 export function resolveAppRouterPrerenderSeeder(entryModule: unknown): AppRouterPrerenderSeeder {
   if (typeof entryModule !== "object" || entryModule === null) {
     return seedMemoryCacheFromPrerenderFallback;
   }
 
-  const seedExport = Object.getOwnPropertyDescriptor(
+  const seedExport: unknown = Object.getOwnPropertyDescriptor(
     entryModule,
     "seedMemoryCacheFromPrerender",
   )?.value;
-  if (typeof seedExport !== "function") {
+  if (!isAppRouterPrerenderSeederExport(seedExport)) {
     if (process.env.NEXT_PRIVATE_DEBUG_CACHE) {
       console.debug("[vinext] ISR: using fallback prerender cache seeder");
     }
@@ -962,9 +967,7 @@ export function resolveAppRouterPrerenderSeeder(entryModule: unknown): AppRouter
   }
 
   return async (serverDir) => {
-    const result: unknown = await Promise.resolve(
-      Reflect.apply(seedExport, undefined, [serverDir]),
-    );
+    const result = await Promise.resolve(seedExport(serverDir));
     return typeof result === "number" ? result : 0;
   };
 }

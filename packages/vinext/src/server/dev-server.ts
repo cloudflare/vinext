@@ -6,7 +6,7 @@ import { normalizeStaticPathname, type StaticPathsEntry } from "../routing/route
 import type { ModuleImporter } from "./instrumentation.js";
 import { importModule, reportRequestError } from "./instrumentation.js";
 import type { NextI18nConfig } from "../config/next-config.js";
-import { VINEXT_CACHE_HEADER } from "./headers.js";
+import { buildCacheStateHeaders } from "./cache-headers.js";
 import {
   isrGet,
   isrSet,
@@ -634,7 +634,7 @@ export function createSSRHandler(
             const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
             const hitHeaders: Record<string, string> = {
               "Content-Type": "text/html",
-              [VINEXT_CACHE_HEADER]: "HIT",
+              ...buildCacheStateHeaders("HIT"),
               "Cache-Control": `s-maxage=${revalidateSecs}, stale-while-revalidate`,
             };
             if (earlyFontLinkHeader) hitHeaders["Link"] = earlyFontLinkHeader;
@@ -787,7 +787,7 @@ export function createSSRHandler(
             const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
             const staleHeaders: Record<string, string> = {
               "Content-Type": "text/html",
-              [VINEXT_CACHE_HEADER]: "STALE",
+              ...buildCacheStateHeaders("STALE"),
               "Cache-Control": `s-maxage=${revalidateSecs}, stale-while-revalidate`,
             };
             if (earlyFontLinkHeader) staleHeaders["Link"] = earlyFontLinkHeader;
@@ -1059,7 +1059,7 @@ hydrate();
           } else {
             extraHeaders["Cache-Control"] =
               `s-maxage=${isrRevalidateSeconds}, stale-while-revalidate`;
-            extraHeaders[VINEXT_CACHE_HEADER] = "MISS";
+            Object.assign(extraHeaders, buildCacheStateHeaders("MISS"));
           }
         }
 

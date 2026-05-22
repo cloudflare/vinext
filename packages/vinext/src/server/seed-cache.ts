@@ -31,8 +31,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { getCacheHandler, type CachedAppPageValue } from "vinext/shims/cache";
-import { isrCacheKey, setRevalidateDuration } from "./isr-cache.js";
+import type { CachedAppPageValue } from "vinext/shims/cache";
+import { isrCacheKey, isrSetPrerenderedAppPage } from "./isr-cache.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
 
 // ─── Manifest types ───────────────────────────────────────────────────────────
@@ -106,6 +106,9 @@ export async function seedMemoryCacheFromPrerender(
     if (route.router !== "app") continue;
 
     const pathname = route.path ?? route.route;
+    // Fallback keys support older generated entries that do not export their
+    // runtime key builders. Current App Router entries inject buildAppPage*Key
+    // so seeded keys match process.env.__VINEXT_BUILD_ID exactly.
     const baseKey = isrCacheKey("app", pathname, buildId);
     const htmlKey = options?.buildAppPageHtmlKey?.(pathname) ?? baseKey + ":html";
     const rscKey = options?.buildAppPageRscKey?.(pathname) ?? baseKey + ":rsc";
@@ -140,34 +143,10 @@ export async function seedMemoryCacheFromPrerender(
 
 // ─── Internals ────────────────────────────────────────────────────────────────
 
-/**
- * Build the CacheHandler context object from a revalidate value.
- * `revalidate: undefined` (static routes) → empty context → no expiry.
- */
-function revalidateCtx(
-  revalidateSeconds: number | undefined,
-  expireSeconds: number | undefined,
-): Record<string, unknown> {
-  if (revalidateSeconds === undefined) return {};
-  return expireSeconds === undefined
-    ? { cacheControl: { revalidate: revalidateSeconds }, revalidate: revalidateSeconds }
-    : {
-        cacheControl: { revalidate: revalidateSeconds, expire: expireSeconds },
-        revalidate: revalidateSeconds,
-      };
-}
-
 function createDefaultAppPageEntryWriter(): NonNullable<
   PrerenderCacheSeedOptions["writeAppPageEntry"]
 > {
-  const handler = getCacheHandler();
-  return async (key, data, metadata) => {
-    await handler.set(key, data, revalidateCtx(metadata.revalidateSeconds, metadata.expireSeconds));
-
-    if (metadata.revalidateSeconds !== undefined) {
-      setRevalidateDuration(key, metadata.revalidateSeconds);
-    }
-  };
+  return (key, data, metadata) => isrSetPrerenderedAppPage(key, data, metadata);
 }
 
 /**
