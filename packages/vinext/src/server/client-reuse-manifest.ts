@@ -4,6 +4,7 @@ import {
 } from "./artifact-compatibility.js";
 import { AppElementsWire } from "./app-elements-wire.js";
 import { fnv1a64 } from "../utils/hash.js";
+import { isUnknownRecord } from "../utils/record.js";
 
 export const CLIENT_REUSE_MANIFEST_SCHEMA_VERSION = 1;
 export type ClientReuseManifestSchemaVersion = 1;
@@ -139,10 +140,6 @@ type ParseClientReuseManifestOptions = Readonly<{
 
 const HASH_DIGEST_PATTERN = /^[0-9a-z]+$/;
 
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function createRejection(
   code: ClientReuseManifestRejectionCode,
   fields: ClientReuseManifestTraceFields = {},
@@ -186,7 +183,7 @@ function parseReplayWindow(
   value: unknown,
   visibleCommitVersion: number,
 ): ClientReuseManifestReplayWindow | ClientReuseManifestRejection {
-  if (!isRecord(value)) {
+  if (!isUnknownRecord(value)) {
     return createRejection("SKIP_REPLAY_WINDOW_INVALID", { field: "replayWindow" });
   }
 
@@ -247,7 +244,7 @@ function parseManifestEntry(
   limits: ClientReuseManifestLimits,
   index: number,
 ): ClientReuseManifestEntry | ClientReuseManifestEntryRejection {
-  if (!isRecord(value)) {
+  if (!isUnknownRecord(value)) {
     return rejectEntry("SKIP_ENTRY_MALFORMED", null, { index });
   }
 
@@ -360,7 +357,7 @@ export function parseClientReuseManifestHeader(
     return rejectManifest("SKIP_MANIFEST_MALFORMED");
   }
 
-  if (!isRecord(decoded)) {
+  if (!isUnknownRecord(decoded)) {
     return rejectManifest("SKIP_MANIFEST_MALFORMED", { field: "manifest" });
   }
 
@@ -416,7 +413,7 @@ export function parseClientReuseManifestHeader(
 
   for (let index = 0; index < entriesValue.length; index++) {
     const value = entriesValue[index];
-    if (isRecord(value) && typeof value.id === "string") {
+    if (isUnknownRecord(value) && typeof value.id === "string") {
       if (previousEntryId !== null && value.id <= previousEntryId) {
         return rejectManifest("SKIP_ENTRY_ORDER_NON_CANONICAL", {
           entryIdHash: createClientReusePayloadHash(value.id),
