@@ -1,9 +1,16 @@
+import fs from "node:fs";
 import path from "node:path";
 
+/** Resolve empty-module next to this file (.js in dist, .ts in source). */
+function resolveInstrumentationClientEmptyModule(dir: string): string {
+  const jsPath = path.join(dir, "empty-module.js");
+  if (fs.existsSync(jsPath)) return jsPath;
+  return path.join(dir, "empty-module.ts");
+}
+
 /** Absolute path to the vinext empty-module fallback for composed client instrumentation. */
-export const INSTRUMENTATION_CLIENT_EMPTY_MODULE = path.join(
+export const INSTRUMENTATION_CLIENT_EMPTY_MODULE = resolveInstrumentationClientEmptyModule(
   import.meta.dirname,
-  "empty-module.ts",
 );
 
 /**
