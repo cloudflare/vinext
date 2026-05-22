@@ -147,28 +147,17 @@ describe("inline beforeInteractive head ordering", () => {
   });
 
   it("applies the CSP nonce header to the hoisted inline script", async () => {
-    const { res, html } = await fetchHtml(baseUrl, ROUTE, {
-      headers: { "x-vinext-test-csp-nonce": "head-ordering-nonce" },
-    });
+    // The fixture's middleware reads `?csp-nonce=…` and sets a CSP header
+    // with that nonce. vinext extracts the nonce and threads it through
+    // ScriptNonceProvider, so the hoisted tag must carry the same value.
+    const { res, html } = await fetchHtml(baseUrl, `${ROUTE}?csp-nonce=ordering-nonce`);
     expect(res.status).toBe(200);
+    expect(res.headers.get("content-security-policy")).toMatch(/nonce-ordering-nonce/);
 
-    // The fixture's middleware reads `?csp-nonce=…` to inject a nonce; the
-    // value flows through ScriptNonceProvider and lands on the hoisted tag.
-    const { res: nonceRes, html: nonceHtml } = await fetchHtml(
-      baseUrl,
-      `${ROUTE}?csp-nonce=ordering-nonce`,
-    );
-    expect(nonceRes.status).toBe(200);
-    // Verify the nonce-bearing CSP header is set so we know middleware fired.
-    expect(nonceRes.headers.get("content-security-policy")).toMatch(/nonce-ordering-nonce/);
-
-    const head = extractHeadHtml(nonceHtml);
+    const head = extractHeadHtml(html);
     const tagMatch = /<script\b[^>]*id="vinext-test-theme-init"[^>]*>/.exec(head);
     expect(tagMatch).not.toBeNull();
     expect(tagMatch?.[0]).toContain('nonce="ordering-nonce"');
-    // Reference unused vars so eslint/oxlint don't flag them; the headers
-    // request is here as a placeholder for a follow-up CSP wiring path.
-    void html;
   });
 
   it("does not affect external src beforeInteractive scripts", async () => {

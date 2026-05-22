@@ -165,10 +165,18 @@ const HEAD_OPEN_RE = /<head\b[^>]*>/;
  *    hints. This is where inline `<Script strategy="beforeInteractive">`
  *    captures land so the no-flash dark-mode pattern works.
  *
- * Both insertions are best-effort: when the streamed HTML never reaches the
- * `</head>` close (or `<head ...>` open) in a discoverable chunk, the
- * transform falls back to emitting at end-of-stream so callers still see the
- * payload even on highly fragmented streams.
+ * Fallback behaviour differs by insertion point:
+ *
+ *  - `injectHTML` is emitted at end-of-stream by the `flush` handler when no
+ *    chunk ever contained `</head>` — callers still see the payload on
+ *    highly fragmented streams (just at the end of the body rather than in
+ *    the head).
+ *  - `injectAfterHeadOpenHTML` is silently dropped when `<head ...>` is not
+ *    found in a discoverable chunk. Emitting it at end-of-stream would put
+ *    it after the document body, defeating the point — the splice has to
+ *    happen before resource hints to be useful, so the safer behaviour is
+ *    to no-op and let the user-rendered Script (in its source-order
+ *    position) ship as-is.
  */
 export function createTickBufferedTransform(
   rscEmbed: RscEmbedTransform,
