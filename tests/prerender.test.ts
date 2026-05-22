@@ -478,6 +478,7 @@ describe("prerenderPages — default mode (pages-basic)", () => {
 
   it("renders 404 page", () => {
     const r = findRoute(results, "/404");
+    expect(results.filter((result) => result.route === "/404")).toHaveLength(1);
     expect(r).toMatchObject({ route: "/404", status: "rendered", revalidate: false });
     if (r?.status === "rendered") {
       expect(r.outputFiles).toContain("404.html");
