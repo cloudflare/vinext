@@ -142,7 +142,9 @@ describe("App Router appRouterInstance emits console.error on dangerous URI sche
 // Pages Router parity: next/router push/replace must also block dangerous
 // URI schemes with both a throw and a matching console.error. Mirrors
 // Next.js's `packages/next/src/shared/lib/router/router.ts:1020,1052`, where
-// push/replace throw the same error message.
+// push/replace throw the same error message *synchronously* (before any
+// async work) so React's event-handler error reporter can surface the
+// console.error to the user.
 describe("Pages Router next/router blocks dangerous URI schemes", () => {
   // Minimal fake window/document so importing shims/router.ts (which touches
   // window at module load to attach popstate) does not crash. Installed by
@@ -175,14 +177,17 @@ describe("Pages Router next/router blocks dangerous URI schemes", () => {
     vi.resetModules();
   });
 
-  it("Router.push rejects on javascript: URL", async () => {
+  it("Router.push throws synchronously on javascript: URL", async () => {
     const restoreBrowserGlobals = installFakeBrowserGlobals();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       vi.resetModules();
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       const Router = routerModule.default;
-      await expect(Router.push("javascript:alert(1)")).rejects.toThrow(BLOCK_MESSAGE);
+      // Next.js's Pages Router `push` throws synchronously inside the push()
+      // call so React's event-handler error reporter can surface
+      // `console.error`. Mirror that here (do not await the call).
+      expect(() => Router.push("javascript:alert(1)")).toThrow(BLOCK_MESSAGE);
       expect(consoleError).toHaveBeenCalledWith(BLOCK_MESSAGE);
     } finally {
       consoleError.mockRestore();
@@ -190,14 +195,14 @@ describe("Pages Router next/router blocks dangerous URI schemes", () => {
     }
   });
 
-  it("Router.replace rejects on javascript: URL", async () => {
+  it("Router.replace throws synchronously on javascript: URL", async () => {
     const restoreBrowserGlobals = installFakeBrowserGlobals();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       vi.resetModules();
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       const Router = routerModule.default;
-      await expect(Router.replace("javascript:alert(1)")).rejects.toThrow(BLOCK_MESSAGE);
+      expect(() => Router.replace("javascript:alert(1)")).toThrow(BLOCK_MESSAGE);
       expect(consoleError).toHaveBeenCalledWith(BLOCK_MESSAGE);
     } finally {
       consoleError.mockRestore();
@@ -205,14 +210,14 @@ describe("Pages Router next/router blocks dangerous URI schemes", () => {
     }
   });
 
-  it("Router.push rejects when only `as` is a javascript: URL", async () => {
+  it("Router.push throws synchronously when only `as` is a javascript: URL", async () => {
     const restoreBrowserGlobals = installFakeBrowserGlobals();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       vi.resetModules();
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       const Router = routerModule.default;
-      await expect(Router.push("/safe", "javascript:alert(1)")).rejects.toThrow(BLOCK_MESSAGE);
+      expect(() => Router.push("/safe", "javascript:alert(1)")).toThrow(BLOCK_MESSAGE);
       expect(consoleError).toHaveBeenCalledWith(BLOCK_MESSAGE);
     } finally {
       consoleError.mockRestore();
@@ -220,14 +225,14 @@ describe("Pages Router next/router blocks dangerous URI schemes", () => {
     }
   });
 
-  it("Router.replace rejects when only `as` is a javascript: URL", async () => {
+  it("Router.replace throws synchronously when only `as` is a javascript: URL", async () => {
     const restoreBrowserGlobals = installFakeBrowserGlobals();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       vi.resetModules();
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       const Router = routerModule.default;
-      await expect(Router.replace("/safe", "javascript:alert(1)")).rejects.toThrow(BLOCK_MESSAGE);
+      expect(() => Router.replace("/safe", "javascript:alert(1)")).toThrow(BLOCK_MESSAGE);
       expect(consoleError).toHaveBeenCalledWith(BLOCK_MESSAGE);
     } finally {
       consoleError.mockRestore();
@@ -235,14 +240,14 @@ describe("Pages Router next/router blocks dangerous URI schemes", () => {
     }
   });
 
-  it("Router.push rejects on uppercase JAVASCRIPT: URL", async () => {
+  it("Router.push throws synchronously on uppercase JAVASCRIPT: URL", async () => {
     const restoreBrowserGlobals = installFakeBrowserGlobals();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       vi.resetModules();
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       const Router = routerModule.default;
-      await expect(Router.push("JAVASCRIPT:alert(1)")).rejects.toThrow(BLOCK_MESSAGE);
+      expect(() => Router.push("JAVASCRIPT:alert(1)")).toThrow(BLOCK_MESSAGE);
       expect(consoleError).toHaveBeenCalledWith(BLOCK_MESSAGE);
     } finally {
       consoleError.mockRestore();
@@ -250,16 +255,45 @@ describe("Pages Router next/router blocks dangerous URI schemes", () => {
     }
   });
 
-  it("Router.push rejects on data: URL", async () => {
+  it("Router.push throws synchronously on data: URL", async () => {
     const restoreBrowserGlobals = installFakeBrowserGlobals();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       vi.resetModules();
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       const Router = routerModule.default;
-      await expect(Router.push("data:text/html,<script>alert(1)</script>")).rejects.toThrow(
-        BLOCK_MESSAGE,
-      );
+      expect(() => Router.push("data:text/html,<script>alert(1)</script>")).toThrow(BLOCK_MESSAGE);
+      expect(consoleError).toHaveBeenCalledWith(BLOCK_MESSAGE);
+    } finally {
+      consoleError.mockRestore();
+      restoreBrowserGlobals();
+    }
+  });
+
+  // Regression coverage: `Router.push(...)` must throw *before* returning the
+  // Promise. If it ever regresses to throwing inside the async
+  // `performNavigation` body, the throw would be wrapped in a rejected
+  // Promise that React's event-handler runtime does not observe, and the
+  // matching `console.error` would not be reported through page logs (the
+  // failure mode covered by Next.js's
+  // `test/e2e/app-dir/javascript-urls/javascript-urls.test.ts:341,376`).
+  it("Router.push throws synchronously (does not return a rejected Promise)", async () => {
+    const restoreBrowserGlobals = installFakeBrowserGlobals();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      let threw = false;
+      let returned: unknown = "not-called";
+      try {
+        returned = Router.push("javascript:alert(1)");
+      } catch {
+        threw = true;
+      }
+      expect(threw).toBe(true);
+      // The synchronous throw means no value was ever returned.
+      expect(returned).toBe("not-called");
       expect(consoleError).toHaveBeenCalledWith(BLOCK_MESSAGE);
     } finally {
       consoleError.mockRestore();

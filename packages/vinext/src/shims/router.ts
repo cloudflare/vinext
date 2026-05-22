@@ -891,14 +891,13 @@ async function performNavigation(
     throwNoRouterInstance();
   }
 
-  // Block dangerous URI schemes (javascript:, data:, vbscript:) before any
-  // navigation work happens. Mirrors Next.js's Pages Router guard at
-  // packages/next/src/shared/lib/router/router.ts:1020-1028,1052-1060, which
-  // throws and (via React's event-handler runtime) surfaces a console.error
-  // that the `test/e2e/app-dir/javascript-urls/javascript-urls.test.ts` suite
-  // asserts on. `assertSafeNavigationUrl` emits the matching console.error
-  // before throwing so the same observable behaviour holds when the throw is
-  // swallowed by an async event handler (e.g. Link's click delegation).
+  // Defence-in-depth dangerous-scheme guard. The synchronous guard inside
+  // `Router.push` / `Router.replace` (see RouterMethods below) is the primary
+  // line of defence and is what surfaces the matching console.error to React's
+  // event-handler runtime. This inner guard catches any future call sites
+  // that bypass the public Router methods and call `performNavigation`
+  // directly. Mirrors Next.js's Pages Router check at
+  // packages/next/src/shared/lib/router/router.ts:1025-1033,1057-1065.
   assertSafeNavigationUrl(resolveUrl(url));
   if (as !== undefined) {
     assertSafeNavigationUrl(String(as));
@@ -1200,10 +1199,28 @@ export function withRouter<P extends WithRouterProps>(
 const RouterMethods = {
   push: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
     if (typeof window === "undefined") throwNoRouterInstance();
+    // Synchronously guard dangerous URI schemes (javascript:, data:, vbscript:)
+    // before the async performNavigation kicks off. Mirrors Next.js's
+    // Pages Router `push` at packages/next/src/shared/lib/router/router.ts:1025-1033,
+    // where the check runs synchronously inside push() so the throw bubbles up
+    // through React's event-handler error reporter (surfacing console.error).
+    // Without this synchronous hoist, the throw inside `performNavigation`
+    // (an async function) becomes a rejected Promise that React does not
+    // observe from an event handler that does not await it (e.g.
+    // `<button onClick={() => router.push(...)}>`).
+    assertSafeNavigationUrl(resolveUrl(url));
+    if (as !== undefined) {
+      assertSafeNavigationUrl(String(as));
+    }
     return performNavigation(url, as, options, "push");
   },
   replace: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
     if (typeof window === "undefined") throwNoRouterInstance();
+    // See `push` above for the rationale on the synchronous guard.
+    assertSafeNavigationUrl(resolveUrl(url));
+    if (as !== undefined) {
+      assertSafeNavigationUrl(String(as));
+    }
     return performNavigation(url, as, options, "replace");
   },
   back: () => {
