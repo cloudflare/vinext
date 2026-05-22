@@ -6,9 +6,11 @@ import Script from "next/script";
  * of `<head>` — before any React-emitted resource hints (stylesheets,
  * modulepreload links, preload links).
  *
- * The script writes to a dataset attribute on `<html>` so a browser-side
- * test (or a simple HTML grep) can both confirm presence and prove that it
- * runs before stylesheets parse.
+ * The script writes a marker on `self` so a browser-side test can confirm
+ * the script ran. We deliberately don't touch `<html>` attributes here —
+ * doing so would trip React's hydration warning unless the shared root
+ * layout (used by every other test) opted into `suppressHydrationWarning`,
+ * which it doesn't.
  */
 export default function BeforeInteractiveHeadOrderingLayout({
   children,

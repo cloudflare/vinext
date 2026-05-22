@@ -272,12 +272,8 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
       "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
     );
   }
-  if (pathname === "/revalidate-test" && request.nextUrl.searchParams.has("csp-nonce")) {
-    const nonce = request.nextUrl.searchParams.get("csp-nonce") ?? "vinext-test-nonce";
-    r.headers.set("content-security-policy", `script-src 'nonce-${nonce}' 'strict-dynamic';`);
-  }
   if (
-    pathname.startsWith("/beforeinteractive-head-ordering") &&
+    (pathname === "/revalidate-test" || pathname.startsWith("/beforeinteractive-head-ordering")) &&
     request.nextUrl.searchParams.has("csp-nonce")
   ) {
     const nonce = request.nextUrl.searchParams.get("csp-nonce") ?? "vinext-test-nonce";

@@ -9,11 +9,15 @@ test.describe("inline beforeInteractive head ordering", () => {
   }) => {
     await page.goto(`${BASE}/beforeinteractive-head-ordering`);
 
-    // The script writes a marker to documentElement.dataset before any
-    // stylesheet/modulepreload runs. If the script were hoisted incorrectly
-    // (or duplicated by hydration), this would still be observable.
-    const themeInitRan = await page.evaluate(() => document.documentElement.dataset.themeInitRan);
-    expect(themeInitRan).toBe("true");
+    // The hoisted script writes a marker on `self` before any stylesheet or
+    // modulepreload runs. The fixture stores the flag on a global (not a
+    // `<html>` dataset attribute) so the assertion survives React Float's
+    // head reconciliation without `suppressHydrationWarning` on the shared
+    // root layout.
+    const themeInitRan = await page.evaluate(
+      () => (self as unknown as { __vinextThemeInitRan?: boolean }).__vinextThemeInitRan,
+    );
+    expect(themeInitRan).toBe(true);
 
     // Verify exactly one instance of the hoisted script is in the DOM. A
     // hydration mismatch where the client renders a second <script> would

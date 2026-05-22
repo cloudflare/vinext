@@ -111,6 +111,13 @@ function renderInsertedHtml(insertedElements: readonly unknown[]): string {
  * here is being concatenated directly into HTML; treat the inputs
  * accordingly.
  */
+// Conservative subset of the HTML attribute-name grammar. Must start with a
+// letter and contain only letters, digits, underscores, hyphens, or dots —
+// enough to round-trip data-* and standard attributes (`async`, `defer`,
+// `type`, `crossorigin`, etc.) without ever splicing a `"`/`>`/whitespace
+// into the unquoted *name* position where escaping wouldn't help.
+const VALID_ATTR_NAME = /^[a-zA-Z][\w.-]*$/;
+
 function renderBeforeInteractiveInlineScripts(
   scripts: readonly BeforeInteractiveInlineScript[],
 ): string {
@@ -124,6 +131,10 @@ function renderBeforeInteractiveInlineScripts(
     attrs += createNonceAttribute(script.nonce);
     if (script.attributes) {
       for (const [key, value] of Object.entries(script.attributes)) {
+        // Attribute *values* go through escapeHtmlAttr below. The *name*
+        // can't be escaped — a malformed key would break the tag — so we
+        // gate at the boundary instead of trying to neutralise it.
+        if (!VALID_ATTR_NAME.test(key)) continue;
         if (value === true) {
           attrs += ` ${key}`;
         } else if (typeof value === "string") {

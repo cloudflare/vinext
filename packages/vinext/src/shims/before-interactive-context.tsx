@@ -30,16 +30,6 @@ export type RegisterBeforeInteractiveInlineScript = (script: BeforeInteractiveIn
 export const BeforeInteractiveContext =
   React.createContext<RegisterBeforeInteractiveInlineScript | null>(null);
 
-export function BeforeInteractiveProvider(
-  props: React.PropsWithChildren<{ register: RegisterBeforeInteractiveInlineScript }>,
-): React.ReactElement {
-  return React.createElement(
-    BeforeInteractiveContext.Provider,
-    { value: props.register },
-    props.children,
-  );
-}
-
 export function useBeforeInteractiveRegister(): RegisterBeforeInteractiveInlineScript | null {
   return React.useContext(BeforeInteractiveContext);
 }
