@@ -223,6 +223,11 @@ export function buildAppPageRscResponse(
   const headers = new Headers({
     "Content-Type": VINEXT_RSC_CONTENT_TYPE,
     Vary: VINEXT_RSC_VARY_HEADER,
+    // Mirror Next.js' edge runtime marker. vinext serves every App Router
+    // response from a Worker (edge-equivalent runtime), so the test that
+    // asserts `x-edge-runtime: '1'` on RSC responses must see this header.
+    // See edge-ssr-app.ts in the Next.js source for the canonical emission.
+    "x-edge-runtime": "1",
   });
 
   if (options.params && Object.keys(options.params).length > 0) {
@@ -257,6 +262,11 @@ export function buildAppPageHtmlResponse(
   const headers = new Headers({
     "Content-Type": "text/html; charset=utf-8",
     Vary: VINEXT_RSC_VARY_HEADER,
+    // Mirror Next.js' edge runtime marker. vinext serves every App Router
+    // response from a Worker (edge-equivalent runtime), so the test that
+    // asserts `x-edge-runtime: '1'` on HTML responses must see this header.
+    // See edge-ssr-app.ts in the Next.js source for the canonical emission.
+    "x-edge-runtime": "1",
   });
 
   if (options.policy.cacheControl) {
