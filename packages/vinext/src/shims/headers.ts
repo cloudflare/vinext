@@ -8,7 +8,6 @@
  * We support both the sync (legacy) and async patterns.
  */
 
-import type { AsyncLocalStorage } from "node:async_hooks";
 import { MIDDLEWARE_SET_COOKIE_HEADER } from "../server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
@@ -206,15 +205,29 @@ export function consumeRenderRequestApiUsage(): RenderRequestApiKind[] {
 const _USE_CACHE_ALS_KEY = Symbol.for("vinext.cacheRuntime.contextAls");
 /** Symbol used by cache.ts to store the unstable_cache ALS on globalThis */
 const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
-const _gHeaders = globalThis as unknown as Record<PropertyKey, unknown>;
 
 type UseCacheGuardContext = {
   variant?: unknown;
 };
 
+type CacheScopeStorage = {
+  getStore: () => unknown;
+};
+
+function _getGlobalCacheScopeStorage(key: symbol): CacheScopeStorage | null {
+  const value = Reflect.get(globalThis, key);
+  if (!value || typeof value !== "object") return null;
+
+  const getStore = Reflect.get(value, "getStore");
+  if (typeof getStore !== "function") return null;
+
+  return {
+    getStore: () => getStore.call(value),
+  };
+}
+
 function _getUseCacheGuardContext(): UseCacheGuardContext | null {
-  const als = _gHeaders[_USE_CACHE_ALS_KEY] as AsyncLocalStorage<unknown> | undefined;
-  const store = als?.getStore();
+  const store = _getGlobalCacheScopeStorage(_USE_CACHE_ALS_KEY)?.getStore();
   if (!store || typeof store !== "object") return null;
   return store;
 }
@@ -229,8 +242,7 @@ function _isInsidePublicUseCache(): boolean {
 }
 
 function _isInsideUnstableCache(): boolean {
-  const als = _gHeaders[_UNSTABLE_CACHE_ALS_KEY] as AsyncLocalStorage<unknown> | undefined;
-  return als?.getStore() === true;
+  return _getGlobalCacheScopeStorage(_UNSTABLE_CACHE_ALS_KEY)?.getStore() === true;
 }
 
 /**

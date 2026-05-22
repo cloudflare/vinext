@@ -4079,6 +4079,38 @@ describe('"use cache" runtime', () => {
     }
   });
 
+  it('rejects "use cache: private" nested inside public "use cache"', async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { cookies, setHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    // Ported from Next.js: "use cache: private" must not run inside public "use cache".
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+    await runWithRequestContext(createRequestContext(), async () => {
+      try {
+        setHeadersContext({
+          headers: new Headers({ cookie: "test-cookie=leaked" }),
+          cookies: new Map([["test-cookie", "leaked"]]),
+        });
+
+        const inner = registerCachedFunction(
+          async () => (await cookies()).get("test-cookie")?.value,
+          "test:private-nested-inner",
+          "private",
+        );
+        const outer = registerCachedFunction(async () => inner(), "test:private-nested-outer", "");
+
+        await expect(outer()).rejects.toThrow(
+          /"use cache: private" must not be used within "use cache"/,
+        );
+      } finally {
+        setHeadersContext(null);
+      }
+    });
+  });
+
   it("cacheLife minimum-wins rule applies", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
