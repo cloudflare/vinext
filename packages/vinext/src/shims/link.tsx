@@ -338,7 +338,7 @@ function promotePrefetchEntriesForNavigation(href: string): void {
   for (const [cacheKey, entry] of getPrefetchCache()) {
     if (entry.optimisticRouteShell === true) continue;
 
-    const [rscUrl = ""] = cacheKey.split("\0", 1);
+    const [rscUrl] = cacheKey.split("\0", 1);
     let cached: URL;
     try {
       cached = new URL(rscUrl, window.location.href);

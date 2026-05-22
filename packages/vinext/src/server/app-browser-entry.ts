@@ -430,7 +430,7 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
 }): Promise<void> {
   if (options.routeManifest === null) return;
 
-  const learning: Promise<void>[] = [];
+  const learning: Promise<void>[] = [...optimisticRouteTemplateLearning.values()];
   for (const [cacheKey, entry] of getPrefetchCache()) {
     const sourceKey = getOptimisticPrefetchSourceKey({
       cacheKey,
@@ -455,10 +455,7 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
         optimisticRouteTemplateLearning.delete(sourceKey);
       });
     optimisticRouteTemplateLearning.set(sourceKey, promise);
-  }
-
-  if (optimisticRouteTemplateLearning.size > 0) {
-    learning.push(...optimisticRouteTemplateLearning.values());
+    learning.push(promise);
   }
 
   if (learning.length === 0) return;
@@ -1497,6 +1494,12 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
                 currentHref,
                 optimisticPayload.params,
               );
+              // The optimistic shell is a detached commit for this navigation.
+              // It uses the same navId gate as the real payload, while the real
+              // payload skips pending-router-state reuse via
+              // detachedNavigationCommits. That keeps late optimistic errors or
+              // transitions from mutating a newer navigation or sharing mutable
+              // pending state with the authoritative render.
               void renderNavigationPayload(
                 Promise.resolve(optimisticPayload.elements),
                 optimisticNavigationSnapshot,

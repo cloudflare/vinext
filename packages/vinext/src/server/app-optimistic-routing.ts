@@ -38,7 +38,9 @@ type OptimisticNavigationPayload = {
 };
 
 const routeTrieCache = new WeakMap<RouteManifest, OptimisticRouteTrieNode>();
-const OPTIMISTIC_ROUTE_SEGMENT_PROMISE = new Promise<never>(() => {});
+// Shared never-settling thenable used to suspend optimistic page segments until
+// the real RSC payload replaces them.
+const OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER = new Promise<never>(() => {});
 
 export function getOptimisticRouteTemplateKey(options: {
   interceptionContext: string | null;
@@ -95,8 +97,13 @@ function buildRouteTrie(routeManifest: RouteManifest): OptimisticRouteTrieNode {
       }
 
       if (part.startsWith(":")) {
+        const paramName = part.slice(1);
         if (node.dynamicChild === null) {
-          node.dynamicChild = { node: createNode(), paramName: part.slice(1) };
+          node.dynamicChild = { node: createNode(), paramName };
+        } else if (node.dynamicChild.paramName !== paramName && import.meta.env.DEV) {
+          console.warn(
+            `[vinext] Optimistic route trie found conflicting dynamic segments at the same level: :${node.dynamicChild.paramName} vs ${part}`,
+          );
         }
         node = node.dynamicChild.node;
         if (isTerminal) node.route ??= route;
@@ -233,7 +240,7 @@ function getPageElementIds(elements: AppElements): string[] {
 }
 
 function OptimisticRouteSegment(): null {
-  throw OPTIMISTIC_ROUTE_SEGMENT_PROMISE;
+  throw OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER;
 }
 
 export function createOptimisticRouteTemplate(options: {
@@ -257,6 +264,10 @@ export function createOptimisticRouteTemplate(options: {
   if (metadata.interception !== null || metadata.interceptionContext !== null) return null;
 
   const routeElement = options.elements[metadata.routeId];
+  // Full-prefetch learning is intentionally heuristic: legacy full prefetches
+  // are accepted only when the serialized route subtree still contains a
+  // Suspense fallback. Authoritative loading-shell prefetches use the marker
+  // check below instead.
   if (!options.allowLoadingShell && !elementHasSuspenseFallback(routeElement)) return null;
   if (
     options.allowLoadingShell &&
@@ -264,6 +275,8 @@ export function createOptimisticRouteTemplate(options: {
   ) {
     return null;
   }
+  // Shell prefetches must include the eagerly-rendered loading component. A
+  // null route element means the server had no route loading boundary.
   if (options.allowLoadingShell && (routeElement === undefined || routeElement === null))
     return null;
 
