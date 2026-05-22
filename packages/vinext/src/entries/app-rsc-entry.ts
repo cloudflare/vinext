@@ -522,6 +522,7 @@ export default __createAppRscHandler({
     scriptNonce,
     searchParams,
     renderMode,
+    segmentPrefetchPath,
   }) {
     const PageComponent = route.page?.default;
     const __segmentConfig = __resolveAppPageSegmentConfig({

@@ -19,27 +19,36 @@ import {
   parseAppRscRenderMode,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
+import {
+  matchSegmentPrefetchRsc,
+  extractSegmentPrefetchRsc,
+} from "./app-segment-prefetch-normalizer.js";
 import { badRequestResponse, notFoundResponse } from "./http-error-responses.js";
 
 export { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 
 export type NormalizedRscRequest = {
-  /** Parsed URL. Callers may mutate `url.search` after middleware runs. */
   url: URL;
-  /** Normalized pathname with basePath stripped. Used for all internal routing. */
   pathname: string;
-  /** Pathname with `.rsc` suffix removed. Used for route matching and navigation context. */
   cleanPathname: string;
-  /** True when the request targets a canonical `.rsc` payload URL. */
   isRscRequest: boolean;
-  /** Sanitized X-Vinext-Interception-Context header (null bytes stripped). null when absent. */
   interceptionContextHeader: string | null;
-  /** Normalized x-vinext-mounted-slots header (deduplicated, sorted). null when absent or blank. */
   mountedSlotsHeader: string | null;
   /** Semantic RSC payload mode. HTML requests always normalize to "navigation". */
   renderMode: AppRscRenderMode;
   /** Disabled ClientReuseManifest hint. Never authorizes skip transport in this stage. */
   clientReuseManifest: ClientReuseManifestParseResult;
+  /**
+   * When present, this is a segment-prefetch RSC request for a specific
+   * route segment. Contains the segment path (e.g. "/_tree", "/_index",
+   * "/dashboard/__PAGE__"). The cleanPathname is the original page path.
+   *
+   * Currently threaded through DispatchMatchedPageOptions for Phase 1 plumbing.
+   * Not yet consumed by render — the handler returns full-page RSC for all
+   * segment prefetch requests until Phase 2 adds segment-level response
+   * generation.
+   */
+  segmentPrefetchPath: string | null;
 };
 
 /**
@@ -59,14 +68,14 @@ export type NormalizedRscRequest = {
  *   4. Collapse double-slashes, resolve `.` and `..` segments (normalizePath)
  *   5. basePath check + strip — 404 when pathname lacks the basePath prefix.
  *      `/__vinext/` bypasses this for internal prerender endpoints.
- *   6. RSC detection: `.rsc` suffix only. RSC headers do not select payload
- *      rendering at the canonical HTML URL, so caches that ignore Vary cannot
- *      store Flight responses under HTML URLs.
- *   7. cleanPathname — pathname with `.rsc` suffix stripped
- *   8. Sanitize X-Vinext-Interception-Context — strip null bytes (header injection)
- *   9. Normalize x-vinext-mounted-slots — dedup and sort for canonical cache keys
- *   10. Read semantic render mode for refresh/action payload rendering
- *   11. Parse disabled ClientReuseManifest hints on canonical RSC payload requests
+ *   6. Segment-prefetch detection: `.segments/*.segment.rsc` URLs are normalized back
+ *      to the original page path. The segment path is extracted for downstream handling.
+ *   7. RSC detection: `.rsc` suffix only. Segment-prefetch requests are always RSC.
+ *   8. cleanPathname — pathname with `.rsc` suffix stripped
+ *   9. Sanitize X-Vinext-Interception-Context — strip null bytes (header injection)
+ *   10. Normalize x-vinext-mounted-slots — dedup and sort for canonical cache keys
+ *   11. Read semantic render mode for refresh/action payload rendering
+ *   12. Parse disabled ClientReuseManifest hints on canonical RSC payload requests
  *
  * @returns A 400 or 404 Response for invalid or out-of-scope inputs,
  *          or a NormalizedRscRequest for valid requests.
@@ -77,15 +86,9 @@ export function normalizeRscRequest(
 ): Response | NormalizedRscRequest {
   const url = new URL(request.url);
 
-  // Step 2: Guard against protocol-relative open redirects on the raw pathname.
-  // normalizePath (step 4) would collapse //evil.com to /evil.com, causing the
-  // guard to miss it. Raw pathname must be checked first.
   const protoGuard = guardProtocolRelativeUrl(url.pathname);
   if (protoGuard) return protoGuard;
 
-  // Step 3: Strict segment-wise percent-decode. Preserves encoded path delimiters
-  // (%2F stays %2F) to prevent encoded slashes from acting as path separators.
-  // Throws on malformed sequences like %GG — caller must return 400.
   let decoded: string;
   try {
     decoded = normalizePathnameForRouteMatchStrict(url.pathname);
@@ -93,13 +96,8 @@ export function normalizeRscRequest(
     return badRequestResponse();
   }
 
-  // Step 4: Collapse double-slashes and resolve . / .. segments.
   let pathname = normalizePath(decoded);
 
-  // Step 5: basePath check and strip.
-  // Skipped when basePath is empty (no basePath configured).
-  // /__vinext/ prefix bypasses the check for internal prerender endpoints
-  // that must be reachable regardless of basePath configuration.
   if (basePath) {
     if (!hasBasePath(pathname, basePath) && !pathname.startsWith("/__vinext/")) {
       return notFoundResponse();
@@ -107,16 +105,21 @@ export function normalizeRscRequest(
     pathname = stripBasePath(pathname, basePath);
   }
 
-  // Steps 6-7: RSC detection and cleanPathname.
-  const isRscRequest = pathname.endsWith(".rsc");
+  let segmentPrefetchPath: string | null = null;
+  if (matchSegmentPrefetchRsc(pathname)) {
+    const extracted = extractSegmentPrefetchRsc(pathname);
+    if (extracted) {
+      segmentPrefetchPath = extracted.segmentPath;
+      pathname = extracted.originalPathname;
+    }
+  }
+
+  const isRscRequest = pathname.endsWith(".rsc") || segmentPrefetchPath !== null;
   const cleanPathname = stripRscSuffix(pathname);
 
-  // Step 8: Sanitize X-Vinext-Interception-Context.
-  // Null bytes in header values can be used for injection in some HTTP stacks.
   const interceptionContextHeader =
     request.headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER)?.replaceAll("\0", "") || null;
 
-  // Step 9: Normalize mounted-slots header for canonical cache keying.
   const mountedSlotsHeader = normalizeMountedSlotsHeader(
     request.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
   );
@@ -136,5 +139,6 @@ export function normalizeRscRequest(
     interceptionContextHeader,
     mountedSlotsHeader,
     renderMode,
+    segmentPrefetchPath,
   };
 }

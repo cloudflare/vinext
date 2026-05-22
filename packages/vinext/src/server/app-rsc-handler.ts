@@ -101,6 +101,7 @@ type DispatchMatchedPageOptions<TRoute> = {
   scriptNonce?: string;
   searchParams: URLSearchParams;
   renderMode: AppRscRenderMode;
+  segmentPrefetchPath: string | null;
 };
 
 type DispatchMatchedRouteHandlerOptions<TRoute> = {
@@ -312,8 +313,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const normalized = normalizeRscRequest(request, options.basePath);
   if (normalized instanceof Response) return normalized;
 
-  const { url, isRscRequest, interceptionContextHeader, mountedSlotsHeader, renderMode } =
-    normalized;
+  const {
+    url,
+    isRscRequest,
+    interceptionContextHeader,
+    mountedSlotsHeader,
+    renderMode,
+    segmentPrefetchPath,
+  } = normalized;
   let { pathname, cleanPathname } = normalized;
   // Canonical (external) pathname the user requested. Middleware rewrites and
   // next.config.js rewrites mutate `cleanPathname` so internal route matching
@@ -604,6 +611,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     scriptNonce,
     searchParams: url.searchParams,
     renderMode,
+    segmentPrefetchPath,
   });
 }
 
