@@ -16,28 +16,28 @@ async function buildFontGoogleMultipleFixture(): Promise<string> {
   const ssrOutDir = path.join(outDir, "server", "ssr");
   const clientOutDir = path.join(outDir, "client");
 
-  // Intercept the Google Fonts CSS fetch issued by the in-process Vite build.
-  // MSW Node intercepts both `globalThis.fetch` and `node:http`/`node:https`,
-  // so any request the bundler issues against fonts.googleapis.com is caught.
-  // Handlers are reset by the global `afterEach` in `tests/_msw/setup.ts`.
-  server.use(
-    http.get("https://fonts.googleapis.com/*", ({ request }) => {
-      const url = request.url;
-      if (url.includes("Geist") && !url.includes("Mono")) {
-        return HttpResponse.text("@font-face { font-family: 'Geist'; src: url(/geist.woff2); }", {
-          headers: { "content-type": "text/css" },
-        });
-      }
-      return HttpResponse.text(
-        "@font-face { font-family: 'Geist Mono'; src: url(/geist-mono.woff2); }",
-        { headers: { "content-type": "text/css" } },
-      );
-    }),
-  );
-
   const nodeModulesLink = path.join(APP_FIXTURE_DIR, "node_modules");
 
   try {
+    // Intercept the Google Fonts CSS fetch issued by the in-process Vite build.
+    // MSW Node intercepts both `globalThis.fetch` and `node:http`/`node:https`,
+    // so any request the bundler issues against fonts.googleapis.com is caught.
+    // Handlers are reset by the global `afterEach` in `tests/_msw/setup.ts`.
+    server.use(
+      http.get("https://fonts.googleapis.com/*", ({ request }) => {
+        const url = request.url;
+        if (url.includes("Geist") && !url.includes("Mono")) {
+          return HttpResponse.text("@font-face { font-family: 'Geist'; src: url(/geist.woff2); }", {
+            headers: { "content-type": "text/css" },
+          });
+        }
+        return HttpResponse.text(
+          "@font-face { font-family: 'Geist Mono'; src: url(/geist-mono.woff2); }",
+          { headers: { "content-type": "text/css" } },
+        );
+      }),
+    );
+
     const projectNodeModules = path.resolve(import.meta.dirname, "../node_modules");
     await fs.rm(nodeModulesLink, { recursive: true, force: true });
     await fs.symlink(projectNodeModules, nodeModulesLink);
