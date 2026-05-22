@@ -61,8 +61,8 @@ export type ClientReuseManifest = Readonly<{
   visibleCommitVersion: number;
 }>;
 
-// Wire manifests preserve client-declared private entries; parsing decides which
-// entries can participate in future reuse.
+// Internal: createClientReuseManifest returns wire shape while parsing decides
+// which client-declared entries can participate in future reuse.
 type ClientReuseManifestWire = Readonly<{
   entries: readonly ClientReuseManifestWireEntry[];
   hashAlgorithm: ClientReuseManifestHashAlgorithm;
@@ -171,6 +171,21 @@ function compareManifestEntries(
   if (left.id < right.id) return -1;
   if (left.id > right.id) return 1;
   return 0;
+}
+
+function createCanonicalWireEntries(
+  entries: readonly ClientReuseManifestWireEntry[],
+): ClientReuseManifestWireEntry[] {
+  const entriesById = new Map<string, ClientReuseManifestWireEntry>();
+  for (const entry of entries) {
+    if (!entriesById.has(entry.id)) {
+      entriesById.set(entry.id, entry);
+    }
+  }
+
+  return Array.from(entriesById.values())
+    .sort(compareManifestEntries)
+    .map((entry) => ({ ...entry }));
 }
 
 function countUtf8Bytes(input: string): number {
@@ -324,7 +339,7 @@ export function createClientReuseManifest(
     } satisfies ClientReuseManifestReplayWindow);
 
   return {
-    entries: [...input.entries].sort(compareManifestEntries).map((entry) => ({ ...entry })),
+    entries: createCanonicalWireEntries(input.entries),
     hashAlgorithm: CLIENT_REUSE_MANIFEST_HASH_ALGORITHM,
     replayWindow,
     schemaVersion: CLIENT_REUSE_MANIFEST_SCHEMA_VERSION,

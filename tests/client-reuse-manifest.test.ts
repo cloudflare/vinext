@@ -9,6 +9,7 @@ import {
   serializeClientReuseManifest,
 } from "../packages/vinext/src/server/client-reuse-manifest.js";
 import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
+import { AppElementsWire } from "../packages/vinext/src/server/app-elements-wire.js";
 
 const artifactCompatibility = createArtifactCompatibilityEnvelope({
   deploymentVersion: "deploy-a",
@@ -89,6 +90,56 @@ describe("ClientReuseManifest protocol", () => {
       enabled: false,
       mode: "renderAndSend",
     });
+  });
+
+  it("serializes duplicate entry IDs once so helper output round-trips", () => {
+    const parsed = parseManifest(
+      serializeClientReuseManifest({
+        entries: [
+          {
+            artifactCompatibility,
+            id: "layout:/",
+            payloadHash: createClientReusePayloadHash("root-a"),
+            privacy: "public",
+            variantCacheKey: "cp1:root-a",
+          },
+          {
+            artifactCompatibility,
+            id: "layout:/",
+            payloadHash: createClientReusePayloadHash("root-b"),
+            privacy: "public",
+            variantCacheKey: "cp1:root-b",
+          },
+          {
+            artifactCompatibility,
+            id: "layout:/shop",
+            payloadHash: createClientReusePayloadHash("shop"),
+            privacy: "public",
+            variantCacheKey: "cp1:shop",
+          },
+        ],
+        visibleCommitVersion: 1,
+      }),
+    );
+
+    expect(parsed.manifest.entries).toEqual([
+      {
+        artifactCompatibility,
+        id: "layout:/",
+        kind: "layout",
+        payloadHash: createClientReusePayloadHash("root-a"),
+        privacy: "public",
+        variantCacheKey: "cp1:root-a",
+      },
+      {
+        artifactCompatibility,
+        id: "layout:/shop",
+        kind: "layout",
+        payloadHash: createClientReusePayloadHash("shop"),
+        privacy: "public",
+        variantCacheKey: "cp1:shop",
+      },
+    ]);
   });
 
   it("rejects oversized manifests before they can become an IO amplifier", () => {
@@ -346,29 +397,78 @@ describe("ClientReuseManifest protocol", () => {
     ]);
   });
 
+  it("accepts intercepted AppElements page and route IDs as public manifest entries", () => {
+    const pageId = AppElementsWire.encodePageId("/photos/42", "/feed");
+    const routeId = AppElementsWire.encodeRouteId("/api/photos/42", "/feed");
+    const parsed = parseManifest(
+      serializeClientReuseManifest({
+        entries: [
+          {
+            artifactCompatibility,
+            id: pageId,
+            payloadHash: createClientReusePayloadHash("page"),
+            privacy: "public",
+            variantCacheKey: "cp1:page",
+          },
+          {
+            artifactCompatibility,
+            id: routeId,
+            payloadHash: createClientReusePayloadHash("route"),
+            privacy: "public",
+            variantCacheKey: "cp1:route",
+          },
+        ],
+        visibleCommitVersion: 1,
+      }),
+    );
+
+    expect(parsed.manifest.entries).toEqual([
+      {
+        artifactCompatibility,
+        id: pageId,
+        kind: "page",
+        payloadHash: createClientReusePayloadHash("page"),
+        privacy: "public",
+        variantCacheKey: "cp1:page",
+      },
+      {
+        artifactCompatibility,
+        id: routeId,
+        kind: "route",
+        payloadHash: createClientReusePayloadHash("route"),
+        privacy: "public",
+        variantCacheKey: "cp1:route",
+      },
+    ]);
+  });
+
   it("rejects duplicate entry IDs as non-canonical ordering", () => {
     const result = parseClientReuseManifestHeader(
-      JSON.stringify(
-        createClientReuseManifest({
-          entries: [
-            {
-              artifactCompatibility,
-              id: "layout:/",
-              payloadHash: createClientReusePayloadHash("root-a"),
-              privacy: "public",
-              variantCacheKey: "cp1:root-a",
-            },
-            {
-              artifactCompatibility,
-              id: "layout:/",
-              payloadHash: createClientReusePayloadHash("root-b"),
-              privacy: "public",
-              variantCacheKey: "cp1:root-b",
-            },
-          ],
-          visibleCommitVersion: 1,
-        }),
-      ),
+      JSON.stringify({
+        entries: [
+          {
+            artifactCompatibility,
+            id: "layout:/",
+            payloadHash: createClientReusePayloadHash("root-a"),
+            privacy: "public",
+            variantCacheKey: "cp1:root-a",
+          },
+          {
+            artifactCompatibility,
+            id: "layout:/",
+            payloadHash: createClientReusePayloadHash("root-b"),
+            privacy: "public",
+            variantCacheKey: "cp1:root-b",
+          },
+        ],
+        hashAlgorithm: CLIENT_REUSE_MANIFEST_HASH_ALGORITHM,
+        replayWindow: {
+          validFromVisibleCommitVersion: 1,
+          validUntilVisibleCommitVersion: 1,
+        },
+        schemaVersion: CLIENT_REUSE_MANIFEST_SCHEMA_VERSION,
+        visibleCommitVersion: 1,
+      }),
     );
 
     expect(result).toEqual({
