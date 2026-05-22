@@ -1511,6 +1511,17 @@ const _appRouter = {
   prefetch(href: string, options?: PrefetchOptions): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
+    // Validate the URL is parseable. Mirrors Next.js's createPrefetchURL:
+    // `packages/next/src/client/components/app-router-utils.ts` — when the URL
+    // cannot be converted, Next.js throws so the call site (and its surrounding
+    // error boundary, in the App Router) surfaces the failure. Without this
+    // guard, vinext silently swallows unparseable hrefs and the test app's
+    // error boundary never renders.
+    try {
+      new URL(href, window.location.href);
+    } catch {
+      throw new Error(`Cannot prefetch '${href}' because it cannot be converted to a URL.`);
+    }
     void (async () => {
       // Normalize same-origin absolute URLs to local paths; no-op for external
       // origins so we don't pollute the prefetch cache with a same-path .rsc on
