@@ -72,6 +72,7 @@ jobs:
         run: vp run vinext#build
 
       - name: Prepare Next.js checkout
+        timeout-minutes: 15
         run: bash scripts/run-nextjs-deploy-suite.sh "$GITHUB_WORKSPACE/next.js"
         env:
           CI: true
