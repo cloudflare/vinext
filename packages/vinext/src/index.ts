@@ -13,7 +13,7 @@ import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
 import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
-import { stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
+import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
@@ -2987,11 +2987,34 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }),
               );
 
+              // Default-locale path normalisation (issue #1336, item 4).
+              // Next.js prepends `/${defaultLocale}` to every unprefixed
+              // request before any config rule or filesystem match runs so
+              // that locale-aware rules with `:locale` placeholders still
+              // match default-locale URLs. Mirrors resolve-routes.ts.
+              //
+              // `matchPathname` covers pre-middleware matching against the
+              // original pathname. `matchResolvedPathname` is a function form
+              // used by the post-middleware rewrite phases (afterFiles,
+              // fallback) so they pick up the rewritten URL each time — the
+              // same shape as `prod-server.ts` and `deploy.ts`.
+              const matchPathname = nextConfig?.i18n
+                ? normalizeDefaultLocalePathname(pathname, nextConfig.i18n, {
+                    hostname: preMiddlewareReqUrl.hostname,
+                  })
+                : pathname;
+              const matchResolvedPathname = (p: string): string =>
+                nextConfig?.i18n
+                  ? normalizeDefaultLocalePathname(p, nextConfig.i18n, {
+                      hostname: preMiddlewareReqUrl.hostname,
+                    })
+                  : p;
+
               // Config redirects run before middleware, but still match against
               // the original normalized pathname and request headers/cookies.
               if (nextConfig?.redirects.length) {
                 const redirected = applyRedirects(
-                  pathname,
+                  matchPathname,
                   res,
                   nextConfig.redirects,
                   preMiddlewareReqCtx,
@@ -3194,14 +3217,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // pre-middleware request state; middleware response headers win
               // later because they are already on the outgoing response.
               if (nextConfig?.headers.length) {
-                applyHeaders(pathname, res, nextConfig.headers, preMiddlewareReqCtx, bp);
+                applyHeaders(matchPathname, res, nextConfig.headers, preMiddlewareReqCtx, bp);
               }
 
               // Apply rewrites from next.config.js (beforeFiles)
               let resolvedUrl = url;
               if (nextConfig?.rewrites.beforeFiles.length) {
                 const rewritten = applyRewrites(
-                  pathname,
+                  matchPathname,
                   nextConfig.rewrites.beforeFiles,
                   reqCtx,
                   bp,
@@ -3266,7 +3289,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // chance to win, but before dynamic route matching.
               if ((!match || match.route.isDynamic) && nextConfig?.rewrites.afterFiles.length) {
                 const afterRewrite = applyRewrites(
-                  resolvedUrl.split("?")[0],
+                  matchResolvedPathname(resolvedUrl.split("?")[0]),
                   nextConfig.rewrites.afterFiles,
                   reqCtx,
                   bp,
@@ -3310,7 +3333,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // No route matched — try fallback rewrites
               if (nextConfig?.rewrites.fallback.length) {
                 const fallbackRewrite = applyRewrites(
-                  resolvedUrl.split("?")[0],
+                  matchResolvedPathname(resolvedUrl.split("?")[0]),
                   nextConfig.rewrites.fallback,
                   reqCtx,
                   bp,

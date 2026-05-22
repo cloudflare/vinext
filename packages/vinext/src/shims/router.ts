@@ -55,6 +55,7 @@ import { matchRoutePattern, routePatternParts } from "../routing/route-pattern.j
 import { scrollToHashTarget } from "./hash-scroll.js";
 import { setPagesRouterPopStateHandler } from "./pages-router-runtime.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
+import { getCurrentBrowserLocale } from "./client-locale.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
@@ -171,10 +172,18 @@ function resolveNavigationTarget(
   return applyNavigationLocale(as ?? resolveUrl(url), locale);
 }
 
+function getCurrentUrlLocale(): string | undefined {
+  return getCurrentBrowserLocale({
+    basePath: __basePath,
+    domainLocales: getDomainLocales(),
+    hostname: getCurrentHostname(),
+  });
+}
+
 function resolveTransitionLocale(locale: TransitionOptions["locale"]): string | undefined {
   if (typeof window === "undefined") return undefined;
   if (locale === false) return window.__VINEXT_DEFAULT_LOCALE__;
-  return locale ?? window.__VINEXT_LOCALE__;
+  return locale ?? getCurrentUrlLocale();
 }
 
 function getDomainLocales(): readonly DomainLocale[] | undefined {

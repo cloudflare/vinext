@@ -6,6 +6,7 @@ import zlib from "node:zlib";
 import { createBuilder, createServer, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import { generateSsrEntry } from "../packages/vinext/src/entries/app-ssr-entry.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import vinext from "../packages/vinext/src/index.js";
 import {
@@ -2388,6 +2389,17 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).toContain('"cookie":null');
   });
 
+  it("serves Pages Router edge API ImageResponse routes in hybrid production", async () => {
+    // Ported from Next.js: test/e2e/og-api/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/og-api/index.test.ts
+    const res = await fetch(`${baseUrl}/api/pages-og`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("image/png");
+    expect(res.headers.get("x-mw-ran")).toBe("true");
+    expect((await res.blob()).size).toBeGreaterThan(0);
+  });
+
   it("serves dynamic routes", async () => {
     const res = await fetch(`${baseUrl}/blog/test-post`);
     expect(res.status).toBe(200);
@@ -4056,6 +4068,42 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("configHeaders: __configHeaders");
     expect(code).toContain("X-Custom-Header");
     expect(code).toContain("vinext");
+  });
+
+  it("routes hybrid Pages API misses through the Pages server entry", () => {
+    // Ported from Next.js: test/e2e/og-api/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/og-api/index.test.ts
+    //
+    // In a mixed app/ + pages/ project, a Pages Router API route such as
+    // pages/api/og.js remains a real route even though the production server
+    // enters through the App Router handler.
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      hasPagesDir: true,
+    });
+
+    expect(code).toContain("const __pagesPathname = url.pathname;");
+    expect(code).toContain(
+      'if (__pagesPathname.startsWith("/api/") || __pagesPathname === "/api")',
+    );
+    expect(code).toContain('typeof __pagesEntry.handleApiRoute !== "function"');
+    expect(code).toContain("__pagesEntry.handleApiRoute(");
+    expect(code).toContain(
+      "__applyRouteHandlerMiddlewareContext(__pagesApiResponse, middlewareContext)",
+    );
+  });
+
+  it("re-exports Pages API handling from the hybrid SSR entry", () => {
+    // Ported from Next.js: test/e2e/og-api/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/og-api/index.test.ts
+    //
+    // The production App Router entry loads the SSR environment's "index"
+    // module for Pages fallbacks. That bridge must expose the Pages API
+    // dispatcher as well as page rendering.
+    const code = generateSsrEntry(true);
+
+    expect(code).toContain(
+      'export { handleApiRoute, pageRoutes, renderPage } from "virtual:vinext-server-entry";',
+    );
   });
 
   it("embeds basePath and trailingSlash alongside config", () => {

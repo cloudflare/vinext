@@ -61,6 +61,8 @@ catalog:
   ipaddr.js: ^2.1.0
   lucide-react: ^0.577.0
   magic-string: ^0.30.21
+  "@mswjs/interceptors": ^0.41.3
+  msw: ^2.14.6
   ms: 3.0.0-canary.1
   next: 16.2.6
   next-intl: ^4.9.2
@@ -126,3 +128,6 @@ allowBuilds:
   "@parcel/watcher": true
   "@swc/core": true
   unrs-resolver: false
+  # MSW's postinstall only copies a service worker into ./public for browser
+  # mocking. We exclusively use msw/node, so the postinstall is unnecessary.
+  msw: false

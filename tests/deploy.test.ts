@@ -533,8 +533,14 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("applies next.config.js redirects before middleware", () => {
     const content = generatePagesRouterWorkerEntry();
+    // Redirect matching uses the locale-normalised `matchPathname` so that
+    // `:locale` placeholders and `locale: false` redirect rules continue to
+    // match default-locale URLs that arrive without a prefix (issue #1336
+    // item 4). It also passes `basePathState` for basePath: false opt-out
+    // gating. Whatever the exact form, redirect matching must still happen
+    // before middleware runs.
     const redirectPos = content.indexOf(
-      "matchRedirect(pathname, configRedirects, reqCtx, basePathState)",
+      "matchRedirect(matchPathname, configRedirects, reqCtx, basePathState)",
     );
     const middlewarePos = content.indexOf("runMiddleware(request, ctx, { isDataRequest })");
     expect(redirectPos).toBeGreaterThan(-1);
@@ -590,7 +596,13 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("applies next.config.js redirects", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("configRedirects");
-    expect(content).toContain("matchRedirect(pathname");
+    // Redirect matching uses the default-locale-normalised pathname so that
+    // locale-aware redirect rules with `:locale` placeholders and rules with
+    // `locale: false` still match requests that arrive without a locale
+    // prefix (issue #1336 item 4). Before the fix the call site read
+    // `matchRedirect(pathname, ...)`.
+    expect(content).toContain("matchRedirect(matchPathname");
+    expect(content).toContain("normalizeDefaultLocalePathname");
   });
 
   it("applies next.config.js rewrites (beforeFiles, afterFiles, fallback)", () => {
@@ -598,10 +610,11 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("configRewrites.beforeFiles");
     expect(content).toContain("configRewrites.afterFiles");
     expect(content).toContain("configRewrites.fallback");
-    // matchRewrite is invoked with the basePath-gated 4-arg signature.
-    // Across the three rewrite buckets the arg list is now formatted on
-    // multiple lines, so assert on the call expression itself.
-    expect(content).toMatch(/matchRewrite\(\s*resolvedPathname/);
+    // Rewrite matching runs against the locale-normalised resolved pathname
+    // via the local `matchResolvedPathname` helper (issue #1336 item 4) and
+    // passes `basePathState` for basePath: false opt-out gating.
+    expect(content).toContain("matchResolvedPathname(resolvedPathname)");
+    expect(content).toMatch(/matchRewrite\(\s*matchResolvedPathname\(resolvedPathname\)/);
     expect(content).toContain("basePathState");
     expect(content).toContain("matchPageRoute");
     expect(content).toContain("matchPageRoute(resolvedPathname, request)");

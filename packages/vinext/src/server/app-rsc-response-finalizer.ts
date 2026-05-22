@@ -1,4 +1,4 @@
-import type { NextHeader } from "../config/next-config.js";
+import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/config-matchers.js";
 import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { applyConfigHeadersToResponse } from "./request-pipeline.js";
@@ -7,10 +7,18 @@ import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizePath } from "./normalize-path.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
+import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 
 type FinalizeAppRscResponseOptions = {
   basePath: string;
   configHeaders: NextHeader[];
+  /**
+   * i18n config used to splice the default locale into unprefixed paths
+   * before config header matching, so locale-aware `has`/`missing` rules
+   * with `:locale` placeholders or `locale: false` overrides still match
+   * default-locale URLs (issue #1336, item 4).
+   */
+  i18nConfig: NextI18nConfig | null;
   /**
    * Original pre-middleware request context.
    * Next.js evaluates config header has/missing conditions against the
@@ -69,9 +77,18 @@ export function finalizeAppRscResponse(
   const hadBasePath = !options.basePath || hasBasePath(pathname, options.basePath);
   pathname = stripBasePath(pathname, options.basePath);
 
+  // Default-locale path normalisation (issue #1336, item 4). Splice in the
+  // (domain-aware) default locale on unprefixed paths so locale-aware
+  // `has`/`missing` rules with `:locale` placeholders or `locale: false`
+  // overrides still match default-locale URLs. Mirrors the call sites in
+  // `prod-server.ts`, `deploy.ts`, and `app-rsc-handler.ts`.
+  const matchPathname = options.i18nConfig
+    ? normalizeDefaultLocalePathname(pathname, options.i18nConfig, { hostname: url.hostname })
+    : pathname;
+
   applyConfigHeadersToResponse(response.headers, {
     configHeaders: options.configHeaders,
-    pathname,
+    pathname: matchPathname,
     requestContext: options.requestContext,
     basePathState: { basePath: options.basePath, hadBasePath },
   });

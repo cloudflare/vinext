@@ -125,6 +125,7 @@ function createVerifiedFixture(
   const payloadHash = createClientReusePayloadHash("dashboard-layout-payload");
   const decision = createReuseDecision({
     candidateArtifactCompatibility: artifactCompatibility,
+    currentArtifactCompatibility: artifactCompatibility,
   });
   expectReuseDecision(decision);
 
@@ -269,6 +270,74 @@ describe("skip/cache proof cross-checks", () => {
           compatibilityFallback: "renderFresh",
           reason: "graphVersionUnknown",
         },
+      },
+    });
+  });
+
+  it("verifies canary and rollback skip hints when deployments share a compatibility set", () => {
+    const rollbackCompatibility = createCompatibility({
+      deploymentVersion: "deploy-rollback",
+    });
+    const fixture = createVerifiedFixture({ artifactCompatibility: rollbackCompatibility });
+
+    const result = crossCheckClientReuseManifestEntryWithCache({
+      artifact: fixture.artifact,
+      cacheDecision: fixture.decision,
+      compatibilityMap: {
+        deploymentVersions: [["deploy-stable", "deploy-canary", "deploy-rollback"]],
+      },
+      entry: {
+        ...fixture.entry,
+        artifactCompatibility: createCompatibility({
+          deploymentVersion: "deploy-canary",
+        }),
+      },
+    });
+
+    expect(result).toMatchObject({
+      code: "SKIP_CACHE_CROSS_CHECK_PASSED",
+      entryId: "layout:/dashboard",
+      kind: "verified",
+      skipDisposition: {
+        enabled: false,
+        mode: "renderAndSend",
+      },
+    });
+  });
+
+  it("rejects canary and rollback skip hints when the compatibility map is stale", () => {
+    const rollbackCompatibility = createCompatibility({
+      deploymentVersion: "deploy-rollback",
+    });
+    const fixture = createVerifiedFixture({ artifactCompatibility: rollbackCompatibility });
+
+    const result = crossCheckClientReuseManifestEntryWithCache({
+      artifact: fixture.artifact,
+      cacheDecision: fixture.decision,
+      compatibilityMap: {
+        deploymentVersions: [["deploy-stable", "deploy-canary"]],
+      },
+      entry: {
+        ...fixture.entry,
+        artifactCompatibility: createCompatibility({
+          deploymentVersion: "deploy-canary",
+        }),
+      },
+    });
+
+    expect(result).toMatchObject({
+      kind: "rejected",
+      rejection: {
+        code: "SKIP_CACHE_ARTIFACT_COMPATIBILITY_INCOMPATIBLE",
+        entryId: "layout:/dashboard",
+        fields: {
+          compatibilityFallback: "renderFresh",
+          reason: "deploymentVersionNotDeclaredCompatible",
+        },
+      },
+      skipDisposition: {
+        enabled: false,
+        mode: "renderAndSend",
       },
     });
   });

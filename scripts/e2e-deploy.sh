@@ -391,6 +391,62 @@ fs.writeFileSync(
 pkg.devDependencies = pkg.devDependencies || {}
 pkg.devDependencies.vinext = 'file:.vinext-local-package'
 
+// App Router fixtures need React to satisfy the same peer range as the
+// injected react-server-dom-webpack. If they install an older React pair first,
+// `vinext build` runs its RSC compatibility upgrade and pays for a second
+// package-manager install inside every throwaway test app. Normalize the temp
+// manifest before the first install so the final dependency graph is unchanged
+// but setup is single-pass.
+function hasAppRouterDir(root) {
+  return fs.existsSync(path.join(root, 'app')) || fs.existsSync(path.join(root, 'src', 'app'))
+}
+
+function compareSemver(a, b) {
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] < b[index]) return -1
+    if (a[index] > b[index]) return 1
+  }
+
+  return 0
+}
+
+function parseSemverSpec(spec) {
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(spec)
+  if (!match) return null
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+function dependencyBucketFor(name) {
+  for (const bucket of ['dependencies', 'devDependencies', 'peerDependencies']) {
+    if (pkg[bucket]?.[name]) return bucket
+  }
+
+  return null
+}
+
+function normalizeAppRouterReactDeps() {
+  if (!hasAppRouterDir(process.cwd())) return
+
+  for (const dep of ['react', 'react-dom']) {
+    const bucket = dependencyBucketFor(dep)
+    if (!bucket) continue
+
+    const current = pkg[bucket][dep]
+    const version = parseSemverSpec(current)
+    const replacement = dependencySpecFor(dep)
+    const minimumVersion = parseSemverSpec(replacement)
+    if (!minimumVersion) continue
+    if (!version || compareSemver(version, minimumVersion) >= 0) continue
+
+    pkg[bucket][dep] = replacement
+    console.log(
+      `Bumped ${bucket}.${dep} from ${current} to ${replacement} for RSC compatibility`,
+    )
+  }
+}
+
+normalizeAppRouterReactDeps()
+
 // Catalog-tracked deps: spec sourced from vinext or workspace root package.json.
 // Includes the Vite/RSC peers that vinext consumers must install, plus runtime
 // deps of vinext that pnpm doesn't hoist into the test app's top-level

@@ -48,6 +48,58 @@ const normalizeHostname = normalizeDomainHostname;
 export { detectDomainLocale };
 
 /**
+ * Prepend the default locale prefix to a pathname when i18n is configured and
+ * the path does not already carry a locale prefix. Mirrors Next.js's
+ * server-side path normalisation in `resolve-routes.ts` (lines ~250-263):
+ *
+ *   if (!initialLocaleResult.detectedLocale && !pathname.startsWith('/_next/')) {
+ *     parsedUrl.pathname = `/${defaultLocale}${pathname === '/' ? '' : pathname}`
+ *   }
+ *
+ * Run this **before** matching against `next.config.js` redirects/rewrites
+ * (which are emitted by `applyLocaleToRoutes` in locale-prefixed forms) so
+ * that requests arriving without a locale prefix still match those rules.
+ *
+ * Skips internal paths that Next.js leaves alone:
+ *   - `/_next/*` (build assets, prerender manifests, image optimisation)
+ *   - `/__vinext/*` (vinext-internal endpoints)
+ *
+ * Returns the input unchanged when i18n is not configured or when the path
+ * already starts with one of the configured locales. The host-based default
+ * locale (i18n.domains[].defaultLocale) is preferred over the global default
+ * when supplied, matching Next.js's `domainLocale.defaultLocale` branch.
+ *
+ * Item 4 of issue #1336: without this normalisation, requests like
+ * `/to-sv` (default locale = en) against a rule `source: '/:locale/to-sv'`
+ * with `locale: false` do not match because there is no segment for
+ * `:locale`. After normalisation the request looks like `/en/to-sv` and
+ * the rule matches with `:locale=en`.
+ *
+ * Ported from Next.js: packages/next/src/server/lib/router-utils/resolve-routes.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+ */
+export function normalizeDefaultLocalePathname(
+  pathname: string,
+  i18n: NextI18nConfig | null | undefined,
+  options: { hostname?: string | null } = {},
+): string {
+  if (!i18n) return pathname;
+  // Don't touch internal paths.
+  if (pathname.startsWith("/_next/") || pathname.startsWith("/__vinext/")) return pathname;
+  // If the path already starts with a known locale, leave it alone.
+  const parts = pathname.split("/", 3);
+  // parts[0] is the empty string before the leading "/", parts[1] is the first segment.
+  if (parts[1] && i18n.locales.includes(parts[1])) return pathname;
+
+  // Pick the default locale: prefer the domain-mapped one when host matches.
+  const domainLocale = detectDomainLocale(i18n.domains, options.hostname ?? undefined);
+  const defaultLocale = domainLocale?.defaultLocale ?? i18n.defaultLocale;
+
+  if (pathname === "/") return `/${defaultLocale}`;
+  return `/${defaultLocale}${pathname}`;
+}
+
+/**
  * Extract locale prefix from a URL path.
  * e.g. /fr/about -> { locale: "fr", url: "/about", hadPrefix: true }
  *      /about    -> { locale: defaultLocale, url: "/about", hadPrefix: false }
