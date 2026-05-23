@@ -8,6 +8,7 @@ import {
   parseServerActionRevalidationHeader,
   resolveServerActionRedirectLocation,
   readInvalidServerActionResponseError,
+  resolveServerActionRedirectCompatibilityHardNavigationTarget,
   shouldCheckRscCompatibilityForServerActionResponse,
   shouldClearClientNavigationCachesForServerActionResult,
   shouldScheduleRefreshForDiscardedServerAction,
@@ -823,12 +824,42 @@ describe("app browser entry navigation scheduling", () => {
     const error = await readInvalidServerActionResponseError(
       new Response("Custom error!", {
         status: 500,
-        headers: { "content-type": "text/plain" },
+        headers: { "content-type": "text/plain;charset=utf-8" },
       }),
       false,
     );
 
     expect(error?.message).toBe("Custom error!");
+  });
+
+  it("hard-navigates incompatible RSC action redirect responses to the redirect target", () => {
+    const target = resolveServerActionRedirectCompatibilityHardNavigationTarget({
+      actionRedirectHref: "https://example.com/target",
+      clientCompatibilityId: "client-build",
+      response: new Response("flight", {
+        headers: {
+          "content-type": "text/x-component",
+          [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "server-build",
+        },
+      }),
+    });
+
+    expect(target).toBe("https://example.com/target");
+  });
+
+  it("does not hard-navigate compatible RSC action redirect responses", () => {
+    const target = resolveServerActionRedirectCompatibilityHardNavigationTarget({
+      actionRedirectHref: "https://example.com/target",
+      clientCompatibilityId: "same-build",
+      response: new Response("flight", {
+        headers: {
+          "content-type": "text/x-component",
+          [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "same-build",
+        },
+      }),
+    });
+
+    expect(target).toBeNull();
   });
 
   it("uses a stable generic error for non-RSC action responses", async () => {

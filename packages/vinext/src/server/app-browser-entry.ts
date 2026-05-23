@@ -68,6 +68,7 @@ import {
   normalizeServerActionThrownValue,
   parseServerActionRevalidationHeader,
   readInvalidServerActionResponseError,
+  resolveServerActionRedirectCompatibilityHardNavigationTarget,
   shouldCheckRscCompatibilityForServerActionResponse,
   shouldClearClientNavigationCachesForServerActionResult,
   type ServerActionRevalidationKind,
@@ -1256,6 +1257,21 @@ function registerServerActionCallback(): void {
     const hasActionRedirect = fetchResponse.headers.has(ACTION_REDIRECT_HEADER);
     const actionRedirectTarget = resolveActionRedirectTarget(fetchResponse);
     if (hasActionRedirect && !actionRedirectTarget) {
+      return undefined;
+    }
+
+    const actionRedirectCompatibilityHardNavigationTarget =
+      resolveServerActionRedirectCompatibilityHardNavigationTarget({
+        actionRedirectHref: actionRedirectTarget?.href ?? null,
+        clientCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
+        response: fetchResponse,
+      });
+    if (actionRedirectCompatibilityHardNavigationTarget) {
+      clearClientNavigationCaches();
+      browserNavigationController.performHardNavigation(
+        actionRedirectCompatibilityHardNavigationTarget,
+        actionRedirectTarget?.type === "push" ? "assign" : "replace",
+      );
       return undefined;
     }
 

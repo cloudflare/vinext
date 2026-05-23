@@ -30,8 +30,10 @@ import { withEnvVar } from "./env-test-helpers.js";
 
 type TestRoute = {
   id: string;
+  page?: unknown;
   params: readonly string[];
   pattern: string;
+  routeHandler?: unknown;
   routeSegments?: readonly string[];
   runtime?: "edge" | "experimental-edge" | "nodejs" | null;
 };
@@ -1068,6 +1070,44 @@ describe("app server action execution helpers", () => {
     expect(await response?.text()).toBe("");
   });
 
+  it("falls back to header-only redirects when the target is an App route handler", async () => {
+    const buildPageElement = vi.fn(() => "should-not-render");
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/api/logout"));
+        },
+        matchRoute(pathname) {
+          if (pathname === "/api/logout") {
+            return {
+              params: {},
+              route: {
+                id: "api-logout",
+                page: null,
+                params: [],
+                pattern: "/api/logout",
+                routeHandler: {},
+              },
+            };
+          }
+          return {
+            params: {},
+            route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
+          };
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(303);
+    expect(response?.headers.get("x-action-redirect")).toBe("/api/logout");
+    expect(response?.headers.get("content-type")).toBeNull();
+    expect(response?.headers.get("vary")).toBeNull();
+    expect(await response?.text()).toBe("");
+    expect(buildPageElement).not.toHaveBeenCalled();
+  });
+
   it("does not emit x-action-revalidated when a fetch action revalidates a tag with a profile", async () => {
     const response = await handleServerActionRscRequest(
       createRscOptions({
@@ -1387,6 +1427,33 @@ describe("app server action execution helpers", () => {
       returnValue: { ok: true, data: "action-result" },
     });
     expect(renderToReadableStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves forwarded action cookie and revalidation side effects without a rerender", async () => {
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        getAndClearPendingCookies() {
+          return ["forwarded=1; Path=/"];
+        },
+        getDraftModeCookieHeader() {
+          return "draft=1; Path=/";
+        },
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await revalidatePath("/dashboard");
+            return "forwarded-result";
+          });
+        },
+        request: createFetchActionRequest({ "x-action-forwarded": "1" }),
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("x-action-revalidated")).toBe("1");
+    expect(response?.headers.getSetCookie()).toEqual(["forwarded=1; Path=/", "draft=1; Path=/"]);
+    expect(JSON.parse(await response!.text())).toEqual({
+      returnValue: { ok: true, data: "forwarded-result" },
+    });
   });
 
   // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts

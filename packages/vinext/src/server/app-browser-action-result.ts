@@ -1,5 +1,9 @@
 import { ACTION_REVALIDATED_HEADER } from "./headers.js";
-import { VINEXT_RSC_CONTENT_TYPE } from "./app-rsc-cache-busting.js";
+import {
+  isRscCompatibilityIdCompatible,
+  VINEXT_RSC_COMPATIBILITY_ID_HEADER,
+  VINEXT_RSC_CONTENT_TYPE,
+} from "./app-rsc-cache-busting.js";
 
 export type AppBrowserServerActionResult<TRoot> = {
   root?: TRoot;
@@ -128,7 +132,7 @@ export async function readInvalidServerActionResponseError(
   // surfaced to the action caller, using a plain text 4xx/5xx body when one is
   // available and otherwise falling back to a stable generic message.
   const message =
-    response.status >= 400 && contentType === "text/plain"
+    response.status >= 400 && contentType.toLowerCase().startsWith("text/plain")
       ? await response.text()
       : "An unexpected response was received from the server.";
 
@@ -139,6 +143,24 @@ export function shouldCheckRscCompatibilityForServerActionResponse(
   response: Pick<Response, "headers">,
 ): boolean {
   return (response.headers.get("content-type") ?? "").startsWith(VINEXT_RSC_CONTENT_TYPE);
+}
+
+export function resolveServerActionRedirectCompatibilityHardNavigationTarget(options: {
+  actionRedirectHref: string | null;
+  clientCompatibilityId: string | null | undefined;
+  response: Pick<Response, "headers">;
+}): string | null {
+  if (!options.actionRedirectHref) return null;
+  if (!shouldCheckRscCompatibilityForServerActionResponse(options.response)) return null;
+  if (
+    isRscCompatibilityIdCompatible(
+      options.response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
+      options.clientCompatibilityId,
+    )
+  ) {
+    return null;
+  }
+  return options.actionRedirectHref;
 }
 
 export function shouldScheduleRefreshForDiscardedServerAction(

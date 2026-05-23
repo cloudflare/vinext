@@ -85,7 +85,9 @@ type AppServerActionRedirect = {
 };
 
 type AppServerActionRoute = {
+  page?: unknown;
   pattern: string;
+  routeHandler?: unknown;
   routeSegments?: readonly string[];
 };
 
@@ -618,6 +620,12 @@ function shouldUseForwardedActionRedirectStatus<TRoute extends AppServerActionRo
   return currentRuntime !== null && currentRuntime !== targetRuntime;
 }
 
+function canRenderActionRedirectTarget(route: AppServerActionRoute): boolean {
+  if ("routeHandler" in route && route.routeHandler) return false;
+  if ("page" in route) return route.page !== null && route.page !== undefined;
+  return true;
+}
+
 function getActionHttpFallbackStatus(error: unknown): number | null {
   const digest = getNextErrorDigest(error);
   if (!digest) return null;
@@ -998,7 +1006,7 @@ export async function handleServerActionRscRequest<
 
       const targetPathname = stripBasePath(redirectTarget.pathname, options.basePath ?? "");
       const targetMatch = options.matchRoute(targetPathname);
-      if (!targetMatch) {
+      if (!targetMatch || !canRenderActionRedirectTarget(targetMatch.route)) {
         options.clearRequestContext();
         return new Response(null, {
           status: 303,
@@ -1088,6 +1096,11 @@ export async function handleServerActionRscRequest<
       applyEdgeRuntimeHeader(actionHeaders, options.isEdgeRuntime);
       mergeMiddlewareResponseHeaders(actionHeaders, options.middlewareHeaders);
       applyRscCompatibilityIdHeader(actionHeaders);
+      for (const cookie of actionPendingCookies) {
+        actionHeaders.append("Set-Cookie", cookie);
+      }
+      if (actionDraftCookie) actionHeaders.append("Set-Cookie", actionDraftCookie);
+      setActionRevalidatedHeader(actionHeaders, actionRevalidationKind);
 
       return createServerActionRscResponse(
         rscStream,
