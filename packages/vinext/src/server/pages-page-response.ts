@@ -241,6 +241,7 @@ function schedulePagesIsrCacheWrite(options: {
   routePattern: string;
   shellPrefix: string;
   shellSuffix: string;
+  status: number;
   stream: ReadableStream<Uint8Array>;
   setCache: RenderPagesPageResponseOptions["isrSet"];
 }): void {
@@ -253,7 +254,7 @@ function schedulePagesIsrCacheWrite(options: {
           html: options.shellPrefix + bodyHtml + options.shellSuffix,
           pageData: options.pageData,
           headers: undefined,
-          status: undefined,
+          status: options.status,
         },
         options.revalidateSeconds,
         undefined,
@@ -346,6 +347,8 @@ export async function renderPagesPageResponse(
   const markerIndex = shellHtml.indexOf(bodyMarker);
   const shellPrefix = shellHtml.slice(0, markerIndex);
   const shellSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
+  const responseHeaders = new Headers({ "Content-Type": "text/html" });
+  const finalStatus = applyGsspHeaders(responseHeaders, options.gsspRes, options.statusCode);
 
   let responseBodyStream = bodyStream;
   if (
@@ -370,6 +373,7 @@ export async function renderPagesPageResponse(
       setCache: options.isrSet,
       shellPrefix,
       shellSuffix,
+      status: finalStatus,
       stream: cacheBodyStream,
     });
   }
@@ -379,9 +383,6 @@ export async function renderPagesPageResponse(
     shellPrefix,
     shellSuffix,
   );
-
-  const responseHeaders = new Headers({ "Content-Type": "text/html" });
-  const finalStatus = applyGsspHeaders(responseHeaders, options.gsspRes, options.statusCode);
 
   if (options.scriptNonce) {
     responseHeaders.set("Cache-Control", "no-store, must-revalidate");

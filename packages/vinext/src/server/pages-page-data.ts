@@ -131,6 +131,7 @@ export type ResolvePagesPageDataOptions = {
   safeJsonStringify: (value: unknown) => string;
   sanitizeDestination: (destination: string) => string;
   scriptNonce?: string;
+  statusCode?: number;
   triggerBackgroundRegeneration: (
     key: string,
     renderFn: () => Promise<void>,
@@ -226,6 +227,7 @@ function buildPagesCacheResponse(
   revalidateSeconds?: number,
   expireSeconds?: number,
   cacheControl?: CacheControlMetadata,
+  status?: number,
 ): Response {
   // Legacy cache entries written before cacheControl metadata existed can still
   // hit this path without a persisted revalidate value; keep the historic
@@ -248,7 +250,7 @@ function buildPagesCacheResponse(
   }
 
   return new Response(html, {
-    status: 200,
+    status: status ?? 200,
     headers,
   });
 }
@@ -437,6 +439,7 @@ export async function resolvePagesPageData(
           undefined,
           options.expireSeconds,
           cached.value.cacheControl,
+          cachedValue.status,
         ),
       };
     }
@@ -479,7 +482,7 @@ export async function resolvePagesPageData(
 
               await options.isrSet(
                 cacheKey,
-                buildPagesCacheValue(freshHtml, freshResult.props),
+                buildPagesCacheValue(freshHtml, freshResult.props, options.statusCode),
                 freshResult.revalidate,
                 undefined,
                 options.expireSeconds,
@@ -503,6 +506,7 @@ export async function resolvePagesPageData(
           undefined,
           options.expireSeconds,
           cached.value.cacheControl,
+          cachedValue.status,
         ),
       };
     }

@@ -2808,6 +2808,66 @@ export default function CounterPage() {
     }
   });
 
+  it("preserves 404 status for cached ISR custom 404 route misses", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-isr-404-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+      await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+      await fsp.writeFile(path.join(tmpRoot, "next.config.mjs"), `export default {};\n`);
+      await fsp.writeFile(path.join(tmpRoot, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "404.tsx"),
+        `export async function getStaticProps() {
+  return { props: { marker: "custom ISR 404" }, revalidate: 60 };
+}
+
+export default function Custom404({ marker }: { marker: string }) {
+  return <main id="custom-404">{marker}</main>;
+}
+`,
+      );
+
+      await buildPagesFixtureToOutDir(tmpRoot, fixtureOutDir);
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const prodServer = unwrapStartedProdServer(
+        await startProdServer({
+          port: 0,
+          host: "127.0.0.1",
+          outDir: fixtureOutDir,
+        }),
+      );
+
+      try {
+        const addr = prodServer.address() as { port: number };
+        const baseUrl = `http://127.0.0.1:${addr.port}`;
+        const missingUrl = `${baseUrl}/cached-custom-404-miss`;
+
+        const first = await fetch(missingUrl);
+        expect(first.status).toBe(404);
+        expect(first.headers.get("x-vinext-cache")).toBe("MISS");
+        const firstHtml = await first.text();
+        expect(firstHtml).toContain('id="custom-404"');
+        expect(firstHtml).toContain("custom ISR 404");
+
+        const second = await fetch(missingUrl);
+        expect(second.status).toBe(404);
+        expect(second.headers.get("x-vinext-cache")).toBe("HIT");
+        const secondHtml = await second.text();
+        expect(secondHtml).toContain('id="custom-404"');
+        expect(secondHtml).toContain("custom ISR 404");
+      } finally {
+        await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      }
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it("emits stylesheet and static asset URLs for backfilled inlined pages", async () => {
     const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-inline-assets-"));
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");

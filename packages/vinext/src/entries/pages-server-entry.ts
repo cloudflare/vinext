@@ -735,6 +735,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         safeJsonStringify,
         sanitizeDestination: sanitizeDestinationLocal,
         scriptNonce,
+        statusCode: renderStatusCode,
         triggerBackgroundRegeneration,
       });
       if (pageDataResult.kind === "response") {
