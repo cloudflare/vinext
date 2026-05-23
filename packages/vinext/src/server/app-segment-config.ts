@@ -16,7 +16,7 @@ type EffectiveAppPageSegmentConfig = {
   dynamicParamsConfig?: boolean;
   fetchCache?: FetchCacheMode;
   revalidateSeconds: number | null;
-  runtime?: string;
+  runtime?: "edge" | "experimental-edge" | "nodejs";
 };
 
 type ResolveAppPageSegmentConfigOptions = {
@@ -41,6 +41,10 @@ function isRouteSegmentDynamic(value: unknown): value is AppRouteSegmentDynamic 
 
 function isRouteSegmentFetchCache(value: unknown): value is FetchCacheMode {
   return FETCH_CACHE_VALUES.has(value);
+}
+
+function isRouteSegmentRuntime(value: unknown): value is EffectiveAppPageSegmentConfig["runtime"] {
+  return value === "edge" || value === "experimental-edge" || value === "nodejs";
 }
 
 function resolveRevalidateSeconds(current: number | null, value: unknown): number | null {
@@ -103,6 +107,10 @@ export function resolveAppPageSegmentConfig(
 
     if (isRouteSegmentDynamic(segment.dynamic)) {
       config.dynamicConfig = segment.dynamic;
+    }
+
+    if (isRouteSegmentRuntime(segment.runtime)) {
+      config.runtime = segment.runtime;
     }
 
     if (segment.dynamicParams === false) {

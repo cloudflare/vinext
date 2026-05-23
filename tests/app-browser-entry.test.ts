@@ -4,8 +4,11 @@ import { createOnUncaughtError } from "../packages/vinext/src/server/app-browser
 import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
+  normalizeServerActionThrownValue,
   parseServerActionRevalidationHeader,
   resolveServerActionRedirectLocation,
+  readInvalidServerActionResponseError,
+  shouldCheckRscCompatibilityForServerActionResponse,
   shouldClearClientNavigationCachesForServerActionResult,
   shouldScheduleRefreshForDiscardedServerAction,
 } from "../packages/vinext/src/server/app-browser-action-result.js";
@@ -722,6 +725,35 @@ describe("app browser entry navigation scheduling", () => {
     ).toEqual({ kind: "compatible" });
   });
 
+  it("does not classify non-Flight action HTTP errors as RSC compatibility failures", () => {
+    // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+    expect(
+      shouldCheckRscCompatibilityForServerActionResponse(
+        new Response("Custom error!", {
+          headers: { "content-type": "text/plain" },
+          status: 500,
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldCheckRscCompatibilityForServerActionResponse(
+        new Response(JSON.stringify({ error: "Custom error!" }), {
+          headers: { "content-type": "application/json" },
+          status: 500,
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldCheckRscCompatibilityForServerActionResponse(
+        new Response("flight", {
+          headers: { "content-type": "text/x-component" },
+          status: 200,
+        }),
+      ),
+    ).toBe(true);
+  });
+
   it("creates replayable cached RSC snapshots with compatibility IDs", async () => {
     stubWindow("https://example.com/current");
 
@@ -774,6 +806,55 @@ describe("app browser entry navigation scheduling", () => {
     expect(
       parseServerActionRevalidationHeader(new Headers({ [ACTION_REVALIDATED_HEADER]: "not-json" })),
     ).toBe("none");
+  });
+
+  it("restores action HTTP fallback errors from response status", () => {
+    // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+    const fallback = normalizeServerActionThrownValue(new Error("sanitized"), 404);
+
+    expect(fallback).toBeInstanceOf(Error);
+    expect((fallback as Error & { digest?: string }).digest).toBe("NEXT_HTTP_ERROR_FALLBACK;404");
+  });
+
+  it("uses text/plain action response bodies as boundary errors", async () => {
+    // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+    const error = await readInvalidServerActionResponseError(
+      new Response("Custom error!", {
+        status: 500,
+        headers: { "content-type": "text/plain" },
+      }),
+      false,
+    );
+
+    expect(error?.message).toBe("Custom error!");
+  });
+
+  it("uses a stable generic error for non-RSC action responses", async () => {
+    // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+    const error = await readInvalidServerActionResponseError(
+      new Response(JSON.stringify({ error: "Custom error!" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      }),
+      false,
+    );
+
+    expect(error?.message).toBe("An unexpected response was received from the server.");
+  });
+
+  it("allows non-RSC server action redirect responses", async () => {
+    const error = await readInvalidServerActionResponseError(
+      new Response("", {
+        status: 303,
+        headers: { "content-type": "text/plain" },
+      }),
+      true,
+    );
+
+    expect(error).toBeNull();
   });
 
   it("captures server action initiation URL state without a hash in the request path", () => {
@@ -4516,7 +4597,7 @@ describe("mounted slot helpers", () => {
 });
 
 describe("resolveServerActionRequestState", () => {
-  it("includes only the RSC markers and x-rsc-action when previousNextUrl is null and no slots are mounted", () => {
+  it("includes the public Next.js action header when previousNextUrl is null and no slots are mounted", () => {
     const elements = createResolvedElements("route:/settings", "/");
 
     const { headers } = resolveServerActionRequestState({
@@ -4526,8 +4607,16 @@ describe("resolveServerActionRequestState", () => {
       previousNextUrl: null,
     });
 
-    expect(Array.from(headers.keys()).sort()).toEqual(["accept", "rsc", "x-rsc-action"]);
+    // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+    expect(Array.from(headers.keys()).sort()).toEqual([
+      "accept",
+      "next-action",
+      "rsc",
+      "x-rsc-action",
+    ]);
     expect(headers.get("accept")).toBe("text/x-component");
+    expect(headers.get("next-action")).toBe("action-abc");
     expect(headers.get("rsc")).toBe("1");
     expect(headers.get("x-rsc-action")).toBe("action-abc");
   });

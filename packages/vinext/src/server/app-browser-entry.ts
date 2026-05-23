@@ -65,8 +65,10 @@ import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
   isServerActionResult,
+  normalizeServerActionThrownValue,
   parseServerActionRevalidationHeader,
-  resolveServerActionRedirectLocation,
+  readInvalidServerActionResponseError,
+  shouldCheckRscCompatibilityForServerActionResponse,
   shouldClearClientNavigationCachesForServerActionResult,
   type ServerActionRevalidationKind,
   type AppBrowserServerActionResult,
@@ -117,6 +119,7 @@ import { throwOnServerActionNotFound } from "./server-action-not-found.js";
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
+  createServerActionRequestUrl,
   getVinextRscCompatibilityId,
   resolveHardNavigationTargetFromRscResponse,
   resolveRscCompatibilityNavigationDecision,
@@ -207,6 +210,21 @@ const discardedServerActionRefreshScheduler = createDiscardedServerActionRefresh
   },
 });
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
+const ACTION_HTTP_FALLBACK_ROBOTS_META_ATTR = "data-vinext-action-http-fallback";
+
+function syncServerActionHttpFallbackHead(status: number | null): void {
+  document.head
+    .querySelectorAll(`meta[${ACTION_HTTP_FALLBACK_ROBOTS_META_ATTR}="robots"]`)
+    .forEach((node) => node.remove());
+
+  if (status !== 404) return;
+
+  const robots = document.createElement("meta");
+  robots.name = "robots";
+  robots.content = "noindex";
+  robots.setAttribute(ACTION_HTTP_FALLBACK_ROBOTS_META_ATTR, "robots");
+  document.head.appendChild(robots);
+}
 
 // Parses a URI-encoded JSON value carried in a response header (e.g.
 // `X-Vinext-Params`). Returns `null` on missing or malformed input so callers
@@ -579,6 +597,7 @@ async function renderNavigationPayload(
   traversalIntent: HistoryTraversalIntent | null = null,
   scrollIntent: AppRouterScrollIntent | null | undefined = null,
 ): Promise<NavigationPayloadOutcome> {
+  syncServerActionHttpFallbackHead(null);
   try {
     return await browserNavigationController.renderNavigationPayload({
       actionType,
@@ -603,6 +622,52 @@ async function renderNavigationPayload(
     pendingNavigationRecoveryHref = null;
     throw error;
   }
+}
+
+function resolveActionRedirectTarget(response: Response): { href: string; type: string } | null {
+  const actionRedirect = response.headers.get(ACTION_REDIRECT_HEADER);
+  if (!actionRedirect) return null;
+
+  if (isDangerousScheme(actionRedirect)) {
+    console.error(DANGEROUS_URL_BLOCK_MESSAGE);
+    return null;
+  }
+
+  try {
+    const redirectUrl = new URL(actionRedirect, window.location.origin);
+    if (redirectUrl.origin !== window.location.origin) {
+      browserNavigationController.performHardNavigation(actionRedirect);
+      return null;
+    }
+    return {
+      href: redirectUrl.href,
+      type: response.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "replace",
+    };
+  } catch {
+    browserNavigationController.performHardNavigation(actionRedirect);
+    return null;
+  }
+}
+
+class ServerActionRedirectError extends Error {
+  readonly digest: string;
+  readonly handled = true;
+
+  constructor(target: { href: string; type: string }) {
+    super("NEXT_REDIRECT");
+    const redirectUrl = new URL(target.href, window.location.origin);
+    const redirectHref = redirectUrl.pathname + redirectUrl.search + redirectUrl.hash;
+    const redirectType = target.type === "push" ? "push" : "replace";
+    this.digest = `NEXT_REDIRECT;${redirectType};${encodeURIComponent(redirectHref)}`;
+  }
+}
+
+function createServerActionRedirectError(target: { href: string; type: string }): Error {
+  return new ServerActionRedirectError(target);
+}
+
+function createPendingServerActionRedirectPromise(): Promise<never> {
+  return new Promise<never>(() => {});
 }
 
 async function commitSameUrlNavigatePayload(
@@ -1178,7 +1243,7 @@ function registerServerActionCallback(): void {
       previousNextUrl: actionInitiation.routerState.previousNextUrl,
     });
 
-    const fetchResponse = await fetch(await createRscRequestUrl(actionInitiation.path, headers), {
+    const fetchResponse = await fetch(createServerActionRequestUrl(actionInitiation.path), {
       method: "POST",
       headers,
       body,
@@ -1188,37 +1253,15 @@ function registerServerActionCallback(): void {
     // client/server deployment skew via `unstable_isUnrecognizedActionError`.
     throwOnServerActionNotFound(fetchResponse, id);
 
-    const actionRedirect = fetchResponse.headers.get(ACTION_REDIRECT_HEADER);
-    if (actionRedirect) {
-      if (isDangerousScheme(actionRedirect)) {
-        console.error(DANGEROUS_URL_BLOCK_MESSAGE);
-        return undefined;
-      }
-
-      const redirectType = fetchResponse.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "push";
-      const historyUpdateMode = redirectType === "push" ? "push" : "replace";
-      const hardNavigationMode = historyUpdateMode === "push" ? "assign" : "replace";
-      let redirectLocation: ReturnType<typeof resolveServerActionRedirectLocation>;
-      try {
-        redirectLocation = resolveServerActionRedirectLocation({
-          currentHref: actionInitiation.href,
-          location: actionRedirect,
-          origin: window.location.origin,
-        });
-      } catch {
-        clearClientNavigationCaches();
-        browserNavigationController.performHardNavigation(actionRedirect, hardNavigationMode);
-        return undefined;
-      }
-
-      clearClientNavigationCaches();
-      startTransition(() => {
-        void navigateClientSide(redirectLocation.href, historyUpdateMode, true, true);
-      });
+    const hasActionRedirect = fetchResponse.headers.has(ACTION_REDIRECT_HEADER);
+    const actionRedirectTarget = resolveActionRedirectTarget(fetchResponse);
+    if (hasActionRedirect && !actionRedirectTarget) {
       return undefined;
     }
 
     if (
+      !actionRedirectTarget &&
+      shouldCheckRscCompatibilityForServerActionResponse(fetchResponse) &&
       resolveRscCompatibilityNavigationDecision({
         clientCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
         currentHref: actionInitiation.href,
@@ -1232,12 +1275,66 @@ function registerServerActionCallback(): void {
     }
 
     const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
+    const invalidResponseError = await readInvalidServerActionResponseError(
+      fetchResponse.clone(),
+      actionRedirectTarget !== null,
+    );
+    if (invalidResponseError) {
+      throw invalidResponseError;
+    }
+    if (
+      actionRedirectTarget &&
+      !shouldCheckRscCompatibilityForServerActionResponse(fetchResponse)
+    ) {
+      browserNavigationController.performHardNavigation(actionRedirectTarget.href);
+      return undefined;
+    }
+    const flightResponse =
+      fetchResponse.status === 303
+        ? new Response(fetchResponse.body, {
+            headers: fetchResponse.headers,
+            status: 200,
+            statusText: "OK",
+          })
+        : fetchResponse;
     const result = await createFromFetch<ServerActionResult | AppWireElements>(
-      Promise.resolve(fetchResponse),
+      Promise.resolve(flightResponse),
       { temporaryReferences },
     );
+    syncServerActionHttpFallbackHead(fetchResponse.status);
     if (shouldClearClientNavigationCachesForServerActionResult(result, revalidation)) {
       clearClientNavigationCaches();
+    }
+
+    if (actionRedirectTarget) {
+      if (isServerActionResult(result) && result.root !== undefined) {
+        const decoded = AppElementsWire.decode(result.root);
+        void renderNavigationPayload(
+          Promise.resolve(decoded),
+          createClientNavigationRenderSnapshot(
+            actionRedirectTarget.href,
+            actionInitiation.routerState.navigationSnapshot.params,
+          ),
+          actionRedirectTarget.href,
+          actionInitiation.navigationId,
+          actionRedirectTarget.type === "push" ? "push" : "replace",
+          {},
+          null,
+          null,
+          FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+          actionRedirectTarget.type === "push" ? "navigate" : "replace",
+          "server-action",
+        ).catch(() => {
+          browserNavigationController.performHardNavigation(actionRedirectTarget.href);
+        });
+        if (args.length !== 0) {
+          throw createServerActionRedirectError(actionRedirectTarget);
+        }
+        return await createPendingServerActionRedirectPromise();
+      }
+
+      browserNavigationController.performHardNavigation(actionRedirectTarget.href);
+      return undefined;
     }
 
     // Server actions stay on the same URL and use commitSameUrlNavigatePayload()
@@ -1248,17 +1345,27 @@ function registerServerActionCallback(): void {
     // redirects), this would need renderNavigationPayload().
     if (isServerActionResult(result)) {
       if (result.root !== undefined) {
+        const returnValue =
+          result.returnValue && !result.returnValue.ok
+            ? {
+                ok: false,
+                data: normalizeServerActionThrownValue(
+                  result.returnValue.data,
+                  fetchResponse.status,
+                ),
+              }
+            : result.returnValue;
         return commitSameUrlNavigatePayload(
           Promise.resolve(AppElementsWire.decode(result.root)),
           actionInitiation,
-          result.returnValue,
+          returnValue,
           revalidation,
         );
       }
 
       if (result.returnValue) {
         if (!result.returnValue.ok) {
-          throw result.returnValue.data;
+          throw normalizeServerActionThrownValue(result.returnValue.data, fetchResponse.status);
         }
         return result.returnValue.data;
       }

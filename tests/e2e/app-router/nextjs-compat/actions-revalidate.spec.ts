@@ -19,7 +19,7 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     return page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        response.url().includes("/nextjs-compat/action-discarding.rsc"),
+        response.url().includes("/nextjs-compat/action-discarding"),
     );
   }
 

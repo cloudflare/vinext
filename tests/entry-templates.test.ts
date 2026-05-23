@@ -365,6 +365,45 @@ describe("App Router generated manifest construction", () => {
     ]);
   });
 
+  it("derives route-miss root boundaries when the app has no root page", () => {
+    const routes = [
+      {
+        pattern: "/server",
+        patternParts: ["server"],
+        pagePath: "/tmp/test/app/server/page.tsx",
+        routePath: null,
+        layouts: ["/tmp/test/app/layout.tsx"],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [null],
+        notFoundPath: "/tmp/test/app/not-found.tsx",
+        notFoundPaths: ["/tmp/test/app/not-found.tsx"],
+        forbiddenPath: null,
+        forbiddenPaths: ["/tmp/test/app/forbidden.tsx"],
+        unauthorizedPath: null,
+        unauthorizedPaths: ["/tmp/test/app/unauthorized.tsx"],
+        routeSegments: ["server"],
+        templateTreePositions: [],
+        layoutTreePositions: [0],
+        isDynamic: false,
+        params: [],
+      },
+    ] satisfies AppRoute[];
+
+    const manifest = buildAppRscManifestCode({
+      routes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+    });
+
+    expect(manifest.rootLayoutVars).toEqual(["mod_1"]);
+    expect(manifest.rootNotFoundVar).toBe("mod_2");
+    expect(manifest.rootForbiddenVar).toBe("mod_3");
+    expect(manifest.rootUnauthorizedVar).toBe("mod_4");
+  });
+
   it("exposes layout-level generateStaticParams to App Router prerender", () => {
     // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/generate-static-params.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-root-params-getters/generate-static-params.test.ts

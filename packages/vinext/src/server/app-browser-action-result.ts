@@ -1,4 +1,5 @@
 import { ACTION_REVALIDATED_HEADER } from "./headers.js";
+import { VINEXT_RSC_CONTENT_TYPE } from "./app-rsc-cache-busting.js";
 
 export type AppBrowserServerActionResult<TRoot> = {
   root?: TRoot;
@@ -98,6 +99,46 @@ export function resolveServerActionRedirectLocation(options: {
     href: redirectUrl.href,
     internal: redirectUrl.origin === currentUrl.origin,
   };
+}
+
+type DigestError = Error & { digest: string };
+
+function createServerActionHttpFallbackError(status: number): Error | null {
+  if (status < 400 || status > 599) return null;
+
+  const error = new Error(status === 404 ? "NEXT_NOT_FOUND" : `NEXT_HTTP_ERROR_FALLBACK;${status}`);
+  (error as DigestError).digest =
+    status === 404 ? "NEXT_HTTP_ERROR_FALLBACK;404" : `NEXT_HTTP_ERROR_FALLBACK;${status}`;
+  return error;
+}
+
+export function normalizeServerActionThrownValue(data: unknown, responseStatus: number): unknown {
+  return createServerActionHttpFallbackError(responseStatus) ?? data;
+}
+
+export async function readInvalidServerActionResponseError(
+  response: Pick<Response, "headers" | "status" | "text">,
+  hasRedirectLocation: boolean,
+): Promise<Error | null> {
+  const contentType = response.headers.get("content-type") ?? "";
+  const isRscResponse = contentType.startsWith(VINEXT_RSC_CONTENT_TYPE);
+  if (isRscResponse || hasRedirectLocation) return null;
+
+  // Parity with Next.js' server-action reducer: non-RSC action responses are
+  // surfaced to the action caller, using a plain text 4xx/5xx body when one is
+  // available and otherwise falling back to a stable generic message.
+  const message =
+    response.status >= 400 && contentType === "text/plain"
+      ? await response.text()
+      : "An unexpected response was received from the server.";
+
+  return new Error(message || "An unexpected response was received from the server.");
+}
+
+export function shouldCheckRscCompatibilityForServerActionResponse(
+  response: Pick<Response, "headers">,
+): boolean {
+  return (response.headers.get("content-type") ?? "").startsWith(VINEXT_RSC_CONTENT_TYPE);
 }
 
 export function shouldScheduleRefreshForDiscardedServerAction(
