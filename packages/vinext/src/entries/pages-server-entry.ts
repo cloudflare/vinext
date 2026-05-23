@@ -656,6 +656,8 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       if (!PageComponent) {
         return new Response("Page has no default export", { status: 500 });
       }
+      const pageModuleUrl = resolveClientModuleUrl(manifest, route.filePath);
+      const appModuleUrl = resolveClientModuleUrl(manifest, _appAssetPath);
       const scriptNonce = __getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
       // Build font Link header early so it's available for ISR cached responses too.
       // Font preloads are module-level state populated at import time and persist across requests.
@@ -737,6 +739,10 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         scriptNonce,
         statusCode: renderStatusCode,
         triggerBackgroundRegeneration,
+        vinext: {
+          pageModuleUrl,
+          appModuleUrl,
+        },
       });
       if (pageDataResult.kind === "response") {
         return pageDataResult.response;
@@ -796,8 +802,6 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       if (route.filePath) pageModuleIds.push(route.filePath);
       if (_appAssetPath) pageModuleIds.push(_appAssetPath);
       const assetTags = collectAssetTags(manifest, pageModuleIds, scriptNonce);
-      const pageModuleUrl = resolveClientModuleUrl(manifest, route.filePath);
-      const appModuleUrl = resolveClientModuleUrl(manifest, _appAssetPath);
 
       return __renderPagesPageResponse({
         assetTags,

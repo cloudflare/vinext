@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
 import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache";
@@ -93,6 +94,7 @@ type RenderPagesIsrHtmlOptions = {
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
   routePattern: string;
   safeJsonStringify: (value: unknown) => string;
+  vinext?: VinextNextData["__vinext"];
 };
 
 export type ResolvePagesPageDataOptions = {
@@ -138,6 +140,7 @@ export type ResolvePagesPageDataOptions = {
     errorContext?: { routerKind: "Pages Router"; routePath: string; routeType: "render" },
   ) => void;
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
+  vinext?: VinextNextData["__vinext"];
 };
 
 type ResolvePagesPageDataRenderResult = {
@@ -299,6 +302,7 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
     params: options.params,
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
+    vinext: options.vinext,
   });
 
   return rewritePagesCachedHtml(options.cachedHtml, freshBody, nextDataScript);
@@ -478,6 +482,7 @@ export async function resolvePagesPageData(
                 renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
                 routePattern: options.routePattern,
                 safeJsonStringify: options.safeJsonStringify,
+                vinext: options.vinext,
               });
 
               await options.isrSet(
