@@ -885,7 +885,8 @@ export default {
       if (typeof renderPage === "function") {
         const renderPageMatch =
           typeof matchPageRoute === "function" ? matchPageRoute(resolvedPathname, request) : null;
-        const shouldDeferErrorPageOnMiss = typeof matchPageRoute === "function" && !renderPageMatch;
+        const shouldDeferErrorPageOnMiss =
+          !isDataRequest && typeof matchPageRoute === "function" && !renderPageMatch;
         const initialRenderOptions = shouldDeferErrorPageOnMiss
           ? { renderErrorPageOnMiss: false }
           : undefined;
