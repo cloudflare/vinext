@@ -5,6 +5,7 @@ import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
   parseServerActionRevalidationHeader,
+  resolveServerActionRedirectLocation,
   shouldClearClientNavigationCachesForServerActionResult,
   shouldScheduleRefreshForDiscardedServerAction,
 } from "../packages/vinext/src/server/app-browser-action-result.js";
@@ -660,6 +661,65 @@ describe("app browser entry navigation scheduling", () => {
     expect(snapshot.navigationId).toBe(42);
     expect(snapshot.path).toBe("/a?tab=1");
     expect(snapshot.routerState).toBe(routerState);
+  });
+
+  it("resolves server action dot-relative redirects against the initiating route", () => {
+    expect(
+      resolveServerActionRedirectLocation({
+        currentHref: "https://example.com/subdir?tab=1#section",
+        location: "./subpage",
+        origin: "https://example.com",
+      }),
+    ).toEqual({
+      href: "https://example.com/subdir/subpage",
+      internal: true,
+    });
+
+    expect(
+      resolveServerActionRedirectLocation({
+        currentHref: "https://example.com/subdir?tab=1#section",
+        location: "../subpage",
+        origin: "https://example.com",
+      }),
+    ).toEqual({
+      href: "https://example.com/subpage",
+      internal: true,
+    });
+  });
+
+  it("classifies absolute server action redirects after URL resolution", () => {
+    expect(
+      resolveServerActionRedirectLocation({
+        currentHref: "https://example.com/subdir",
+        location: "/subpage",
+        origin: "https://example.com",
+      }),
+    ).toEqual({
+      href: "https://example.com/subpage",
+      internal: true,
+    });
+
+    expect(
+      resolveServerActionRedirectLocation({
+        currentHref: "https://example.com/subdir",
+        location: "https://other.example/subpage",
+        origin: "https://example.com",
+      }),
+    ).toEqual({
+      href: "https://other.example/subpage",
+      internal: false,
+    });
+
+    expect(
+      resolveServerActionRedirectLocation({
+        currentHref: "https://preview.example/subdir",
+        location: "/subpage",
+        origin: "https://fallback.example",
+      }),
+    ).toEqual({
+      href: "https://preview.example/subpage",
+      internal: true,
+    });
   });
 
   it("keeps client navigation caches for no-root server action results", () => {

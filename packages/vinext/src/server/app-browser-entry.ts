@@ -21,6 +21,7 @@ import {
   getClientNavigationRenderContext,
   getPrefetchCache,
   invalidatePrefetchCache,
+  navigateClientSide,
   pushHistoryStateWithoutNotify,
   replaceClientParamsWithoutNotify,
   replaceHistoryStateWithoutNotify,
@@ -60,6 +61,7 @@ import {
   createServerActionInitiationSnapshot,
   isServerActionResult,
   parseServerActionRevalidationHeader,
+  resolveServerActionRedirectLocation,
   shouldClearClientNavigationCachesForServerActionResult,
   type ServerActionRevalidationKind,
   type AppBrowserServerActionResult,
@@ -1178,28 +1180,26 @@ function registerServerActionCallback(): void {
         return undefined;
       }
 
-      // Check for external URLs that need a hard redirect.
+      const redirectType = fetchResponse.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "push";
+      const historyUpdateMode = redirectType === "push" ? "push" : "replace";
+      const hardNavigationMode = historyUpdateMode === "push" ? "assign" : "replace";
+      let redirectLocation: ReturnType<typeof resolveServerActionRedirectLocation>;
       try {
-        const redirectUrl = new URL(actionRedirect, window.location.origin);
-        if (redirectUrl.origin !== window.location.origin) {
-          browserNavigationController.performHardNavigation(actionRedirect);
-          return undefined;
-        }
+        redirectLocation = resolveServerActionRedirectLocation({
+          currentHref: actionInitiation.href,
+          location: actionRedirect,
+          origin: window.location.origin,
+        });
       } catch {
-        // Fall through to hard redirect below if URL parsing fails.
+        clearClientNavigationCaches();
+        browserNavigationController.performHardNavigation(actionRedirect, hardNavigationMode);
+        return undefined;
       }
 
-      // Use hard redirect for all action redirects because vinext's server
-      // currently returns an empty body for redirect responses. RSC navigation
-      // requires a valid RSC payload. This is a known parity gap with Next.js,
-      // which pre-renders the redirect target's RSC payload.
       clearClientNavigationCaches();
-      const redirectType = fetchResponse.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "replace";
-      if (redirectType === "push") {
-        browserNavigationController.performHardNavigation(actionRedirect, "assign");
-      } else {
-        browserNavigationController.performHardNavigation(actionRedirect, "replace");
-      }
+      startTransition(() => {
+        void navigateClientSide(redirectLocation.href, historyUpdateMode, true, true);
+      });
       return undefined;
     }
 
@@ -1713,16 +1713,19 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           void cacheBufferPromise.catch(() => {});
           return;
         }
-        const cacheBuffer = await cacheBufferPromise;
-        storeVisitedResponseSnapshot(
-          rscUrl,
-          resolveVisitedResponseInterceptionContext(
-            requestInterceptionContext,
-            metadata.interceptionContext,
-          ),
-          createCachedRscResponseSnapshot(navResponse, cacheBuffer, navResponseUrl),
-          navParams,
-        );
+        void cacheBufferPromise
+          .then((cacheBuffer) => {
+            storeVisitedResponseSnapshot(
+              rscUrl,
+              resolveVisitedResponseInterceptionContext(
+                requestInterceptionContext,
+                metadata.interceptionContext,
+              ),
+              createCachedRscResponseSnapshot(navResponse, cacheBuffer, navResponseUrl),
+              navParams,
+            );
+          })
+          .catch(() => {});
         return;
       }
     } catch (error) {
