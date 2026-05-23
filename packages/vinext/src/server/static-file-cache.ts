@@ -330,7 +330,7 @@ async function* walkFilesWithStats(
     const stats = await Promise.all(batch.map((f) => fsp.stat(f)));
     for (let j = 0; j < batch.length; j++) {
       yield {
-        relativePath: path.relative(base, batch[j]),
+        relativePath: path.relative(base, batch[j]).replaceAll(path.sep, "/"),
         fullPath: batch[j],
         stat: { size: stats[j].size, mtimeMs: stats[j].mtimeMs },
       };
