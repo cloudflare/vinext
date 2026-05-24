@@ -345,6 +345,24 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain('<div hidden=""><title>generated page</title></div>');
   });
 
+  it("renders generated metadata in the head for default html-limited bots", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    const html = await buildGeneratedMetadataRouteHtml("Twitterbot");
+
+    expect(html).toContain("<title>generated page</title>");
+    expect(html).not.toContain('<div hidden=""><title>generated page</title></div>');
+  });
+
+  it("falls back to the default html-limited bot list for an empty config string", async () => {
+    // Next.js normalizes a falsy htmlLimitedBots config to the default bot regex.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/streaming-metadata.ts
+    const html = await buildGeneratedMetadataRouteHtml("HeadlessChrome", "");
+
+    expect(html).not.toContain("<title>generated page</title><div");
+    expect(html).toContain('<div hidden=""><title>generated page</title></div>');
+  });
+
   it("resolves child segments from tree positions and preserves route groups", () => {
     expect(
       resolveAppPageChildSegments(["(marketing)", "blog", "[slug]", "[...parts]"], 1, {

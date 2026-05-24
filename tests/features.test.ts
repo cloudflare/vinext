@@ -2538,12 +2538,14 @@ describe("metadata OG/Twitter inheritance", () => {
 
 describe("MetadataHead rendering", () => {
   let MetadataHead: typeof import("../packages/vinext/src/shims/metadata.js").MetadataHead;
+  let renderMetadataToHtml: typeof import("../packages/vinext/src/shims/metadata.js").renderMetadataToHtml;
   let React: typeof import("react");
   let renderToStaticMarkup: typeof import("react-dom/server").renderToStaticMarkup;
 
   beforeAll(async () => {
     const mod = await import("../packages/vinext/src/shims/metadata.js");
     MetadataHead = mod.MetadataHead;
+    renderMetadataToHtml = mod.renderMetadataToHtml;
     React = await import("react");
     renderToStaticMarkup = (await import("react-dom/server")).renderToStaticMarkup;
   });
@@ -2659,6 +2661,56 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('rel="apple-touch-icon"');
     expect(html).toContain('sizes="180x180"');
     expect(html).toContain('rel="shortcut icon"');
+  });
+
+  it("serializes rich metadata for the streaming body outlet", () => {
+    const html = renderMetadataToHtml(
+      {
+        metadataBase: new URL("https://example.com"),
+        title: "Generated <Title>",
+        description: 'Description with "quotes"',
+        alternates: {
+          canonical: "/products",
+          languages: { "en-US": "/products/en" },
+        },
+        openGraph: {
+          images: [{ url: "/og.png", width: 1200, height: 630, type: "image/png" }],
+        },
+        icons: {
+          icon: [
+            {
+              url: "/icon.png",
+              sizes: "32x32",
+              type: "image/png",
+              media: "(prefers-color-scheme: dark)",
+            },
+          ],
+        },
+      },
+      "/products",
+    );
+
+    expect(html).toContain("<title>Generated &lt;Title&gt;</title>");
+    expect(html).toContain('name="description"');
+    expect(html).toContain('content="Description with &quot;quotes&quot;"');
+    expect(html).toContain('rel="canonical"');
+    expect(html).toContain('href="https://example.com/products"');
+    expect(html).toContain('property="og:image"');
+    expect(html).toContain('content="https://example.com/og.png"');
+    expect(html).toContain('property="og:image:width"');
+    expect(html).toContain('content="1200"');
+    expect(html).toContain('property="og:image:height"');
+    expect(html).toContain('content="630"');
+    expect(html).toContain('property="og:image:type"');
+    expect(html).toContain('content="image/png"');
+    expect(html).toContain('rel="alternate"');
+    expect(html).toContain('hreflang="en-US"');
+    expect(html).toContain('href="https://example.com/products/en"');
+    expect(html).toContain('rel="icon"');
+    expect(html).toContain('href="/icon.png"');
+    expect(html).toContain('sizes="32x32"');
+    expect(html).toContain('type="image/png"');
+    expect(html).toContain('media="(prefers-color-scheme: dark)"');
   });
 
   it("renders single descriptor icon objects", () => {

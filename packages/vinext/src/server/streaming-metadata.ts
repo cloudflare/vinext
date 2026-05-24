@@ -7,5 +7,5 @@ export function shouldServeStreamingMetadata(
   htmlLimitedBots: string | undefined,
 ): boolean {
   if (!userAgent) return true;
-  return !new RegExp(htmlLimitedBots ?? HTML_LIMITED_BOT_UA_RE_STRING, "i").test(userAgent);
+  return !new RegExp(htmlLimitedBots || HTML_LIMITED_BOT_UA_RE_STRING, "i").test(userAgent);
 }
