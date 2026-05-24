@@ -215,6 +215,8 @@ export type NextConfig = {
   allowedDevOrigins?: string[];
   /** Maximum age in seconds for stale ISR entries before blocking regeneration. */
   expireTime?: number;
+  /** User agents that require blocking metadata in the initial head. */
+  htmlLimitedBots?: RegExp | string;
   /**
    * Enable Cache Components (Next.js 16).
    * When true, enables the "use cache" directive for pages, components, and functions.
@@ -314,6 +316,8 @@ export type ResolvedNextConfig = {
   serverActionsBodySizeLimit: number;
   /** Route-level expire fallback in seconds for ISR entries with numeric revalidate. */
   expireTime: number;
+  /** Serialized htmlLimitedBots regexp source from next.config. */
+  htmlLimitedBots: string | undefined;
   /**
    * Packages that should be treated as server-external (not bundled by Vite).
    * Sourced from `serverExternalPackages` or the legacy
@@ -943,6 +947,7 @@ export async function resolveNextConfig(
       optimizePackageImports: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       expireTime: DEFAULT_EXPIRE_TIME,
+      htmlLimitedBots: undefined,
       serverExternalPackages: [],
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
@@ -1033,6 +1038,12 @@ export async function resolveNextConfig(
   // Next.js concatenates them: config value first, then env var.
   const configOutputHashSalt = experimental?.outputHashSalt as string | undefined;
   const hashSalt = (configOutputHashSalt ?? "") + (process.env.NEXT_HASH_SALT ?? "");
+  const htmlLimitedBots =
+    config.htmlLimitedBots instanceof RegExp
+      ? config.htmlLimitedBots.source
+      : typeof config.htmlLimitedBots === "string"
+        ? config.htmlLimitedBots
+        : undefined;
 
   // Resolve optimizePackageImports from experimental config
   const rawOptimize = experimental?.optimizePackageImports;
@@ -1151,6 +1162,7 @@ export async function resolveNextConfig(
     optimizePackageImports,
     serverActionsBodySizeLimit,
     expireTime: typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME,
+    htmlLimitedBots,
     serverExternalPackages,
     cacheHandler,
     cacheMaxMemorySize,

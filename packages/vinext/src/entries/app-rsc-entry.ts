@@ -108,6 +108,8 @@ type AppRouterConfig = {
   allowedDevOrigins?: string[];
   /** Body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). */
   bodySizeLimit?: number;
+  /** Serialized next.config htmlLimitedBots regexp source. */
+  htmlLimitedBots?: string;
   /**
    * Resolved `assetPrefix` from next.config. Empty string when unset.
    * Embedded in the generated entry so the App Router prod-server reads
@@ -168,6 +170,7 @@ export function generateRscEntry(
   const headers = config?.headers ?? [];
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;
+  const htmlLimitedBots = config?.htmlLimitedBots;
   const assetPrefix = config?.assetPrefix ?? "";
   const expireTime = config?.expireTime ?? DEFAULT_EXPIRE_TIME;
   const i18nConfig = config?.i18n ?? null;
@@ -452,6 +455,7 @@ async function buildPageElements(route, params, routePath, pageRequest) {
     rootUnauthorizedModule: ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"},
     metadataRoutes,
     basePath: __basePath,
+    htmlLimitedBots: __htmlLimitedBots,
   });
 }
 
@@ -463,6 +467,7 @@ const __configHeaders = ${JSON.stringify(headers)};
 const __publicFiles = new Set(${JSON.stringify(publicFiles)});
 const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
 const __expireTime = ${JSON.stringify(expireTime)};
+const __htmlLimitedBots = ${JSON.stringify(htmlLimitedBots)};
 // Re-exported for the App Router prod-server to consume at startup —
 // mirrors the embedded \`__basePath\` pattern (and Pages Router's
 // \`vinextConfig\` export). Empty string when unset.

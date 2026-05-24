@@ -723,6 +723,68 @@ type MetadataHeadProps = {
   pathname?: string;
 };
 
+function escapeHtmlText(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtmlText(value).replaceAll('"', "&quot;");
+}
+
+function renderMetadataText(node: unknown): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (Array.isArray(node)) return node.map(renderMetadataText).join("");
+  if (typeof node === "string" || typeof node === "number" || typeof node === "bigint") {
+    return escapeHtmlText(String(node));
+  }
+  return "";
+}
+
+function renderMetadataAttributes(props: object, names: readonly string[]): string {
+  const attributes: string[] = [];
+  for (const name of names) {
+    const value = Reflect.get(props, name);
+    if (value === null || value === undefined || typeof value === "boolean") continue;
+    const htmlName = name === "hrefLang" ? "hreflang" : name;
+    attributes.push(`${htmlName}="${escapeHtmlAttribute(String(value))}"`);
+  }
+  return attributes.length > 0 ? ` ${attributes.join(" ")}` : "";
+}
+
+function renderMetadataElementToHtml(node: unknown): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (Array.isArray(node)) return node.map(renderMetadataElementToHtml).join("");
+  if (!React.isValidElement(node)) return renderMetadataText(node);
+
+  const props = typeof node.props === "object" && node.props !== null ? node.props : {};
+  if (node.type === React.Fragment) {
+    return renderMetadataElementToHtml(Reflect.get(props, "children"));
+  }
+  if (typeof node.type !== "string") return "";
+
+  switch (node.type) {
+    case "title":
+      return `<title>${renderMetadataText(Reflect.get(props, "children"))}</title>`;
+    case "meta":
+      return `<meta${renderMetadataAttributes(props, ["name", "property", "content"])}>`;
+    case "link":
+      return `<link${renderMetadataAttributes(props, [
+        "rel",
+        "href",
+        "hrefLang",
+        "media",
+        "type",
+        "sizes",
+      ])}>`;
+    default:
+      return "";
+  }
+}
+
+export function renderMetadataToHtml(metadata: Metadata, pathname = "/"): string {
+  return renderMetadataElementToHtml(MetadataHead({ metadata, pathname }));
+}
+
 export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
   const elements: React.ReactElement[] = [];
   let key = 0;

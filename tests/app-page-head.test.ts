@@ -6,6 +6,33 @@ import {
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
 
 describe("app page head resolution", () => {
+  it("reports whether the matched route has generated metadata", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    const staticResult = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      pageModule: { metadata: { title: "static page" } },
+      params: {},
+      routePath: "/static",
+    });
+
+    const generatedResult = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      pageModule: {
+        async generateMetadata() {
+          return { title: "generated page" };
+        },
+      },
+      params: {},
+      routePath: "/generated",
+    });
+
+    expect(staticResult.hasDynamicMetadata).toBe(false);
+    expect(generatedResult.hasDynamicMetadata).toBe(true);
+  });
+
   it("collects repeated search params into a null-prototype object", () => {
     const { hasSearchParams, pageSearchParams } = collectAppPageSearchParams(
       new URLSearchParams("__proto__=safe&tag=a&tag=b"),

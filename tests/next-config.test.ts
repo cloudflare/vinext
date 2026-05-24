@@ -916,6 +916,7 @@ describe("detectNextIntlConfig", () => {
       serverActionsAllowedOrigins: [],
       optimizePackageImports: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      htmlLimitedBots: undefined,
       serverExternalPackages: [],
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
