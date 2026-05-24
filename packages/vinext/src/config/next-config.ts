@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
+import { getHtmlLimitedBotRegex } from "../server/streaming-metadata.js";
 import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigPathAliasesForRoot } from "./tsconfig-paths.js";
 
@@ -916,6 +917,23 @@ function resolveCacheHandlerPathToFilesystem(filePath: string): string {
   return filePath;
 }
 
+function resolveHtmlLimitedBots(value: NextConfig["htmlLimitedBots"]): string | undefined {
+  const source =
+    value instanceof RegExp ? value.source : typeof value === "string" ? value : undefined;
+  if (!source) return undefined;
+
+  try {
+    getHtmlLimitedBotRegex(source);
+  } catch (error) {
+    throw new Error(
+      'Invalid next.config option "htmlLimitedBots": expected a valid regular expression source',
+      { cause: error },
+    );
+  }
+
+  return source;
+}
+
 /**
  * Resolve a NextConfig into a fully-resolved ResolvedNextConfig.
  * Awaits async functions for redirects/rewrites/headers.
@@ -1038,12 +1056,7 @@ export async function resolveNextConfig(
   // Next.js concatenates them: config value first, then env var.
   const configOutputHashSalt = experimental?.outputHashSalt as string | undefined;
   const hashSalt = (configOutputHashSalt ?? "") + (process.env.NEXT_HASH_SALT ?? "");
-  const htmlLimitedBots =
-    config.htmlLimitedBots instanceof RegExp
-      ? config.htmlLimitedBots.source
-      : typeof config.htmlLimitedBots === "string"
-        ? config.htmlLimitedBots
-        : undefined;
+  const htmlLimitedBots = resolveHtmlLimitedBots(config.htmlLimitedBots);
 
   // Resolve optimizePackageImports from experimental config
   const rawOptimize = experimental?.optimizePackageImports;
