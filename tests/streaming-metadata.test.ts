@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import {
-  getHtmlLimitedBotRegex,
-  shouldServeStreamingMetadata,
-} from "../packages/vinext/src/server/streaming-metadata.js";
+import { shouldServeStreamingMetadata } from "../packages/vinext/src/server/streaming-metadata.js";
+import { getHtmlLimitedBotRegex } from "../packages/vinext/src/utils/html-limited-bots.js";
 
 describe("streaming metadata bot matching", () => {
   it("reuses compiled html-limited bot regexes by source", () => {

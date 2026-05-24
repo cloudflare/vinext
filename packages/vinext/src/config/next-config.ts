@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
-import { getHtmlLimitedBotRegex } from "../server/streaming-metadata.js";
+import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigPathAliasesForRoot } from "./tsconfig-paths.js";
