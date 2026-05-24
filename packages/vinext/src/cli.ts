@@ -28,6 +28,7 @@ import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
 import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
 import { emitStandaloneOutput } from "./build/standalone.js";
+import { cleanBuildOutput } from "./build/clean-output.js";
 import { resolveVinextPackageRoot } from "./utils/vinext-root.js";
 import { parseArgs } from "./cli-args.js";
 import {
@@ -210,12 +211,26 @@ function hasPagesDir(): boolean {
   );
 }
 
-function hasViteConfig(): boolean {
+function hasViteConfig(root = process.cwd()): boolean {
   return (
-    fs.existsSync(path.join(process.cwd(), "vite.config.ts")) ||
-    fs.existsSync(path.join(process.cwd(), "vite.config.js")) ||
-    fs.existsSync(path.join(process.cwd(), "vite.config.mjs"))
+    fs.existsSync(path.join(root, "vite.config.ts")) ||
+    fs.existsSync(path.join(root, "vite.config.js")) ||
+    fs.existsSync(path.join(root, "vite.config.mjs"))
   );
+}
+
+async function loadBuildEmptyOutDir(vite: ViteModule, root: string): Promise<boolean | undefined> {
+  if (!hasViteConfig(root)) return undefined;
+
+  // Read the raw user config before the multi-environment build so
+  // `build.emptyOutDir: false` remains an escape hatch for vinext's upfront clean.
+  const loaded = await vite.loadConfigFromFile(
+    { command: "build", mode: "production" },
+    undefined,
+    root,
+  );
+  const emptyOutDir = loaded?.config.build?.emptyOutDir;
+  return typeof emptyOutDir === "boolean" ? emptyOutDir : undefined;
 }
 
 /**
@@ -433,13 +448,14 @@ async function buildApp() {
 
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
+  const root = process.cwd();
   const isApp = hasAppDir();
   const resolvedNextConfig = await resolveNextConfig(
-    await loadNextConfig(process.cwd(), PHASE_PRODUCTION_BUILD),
-    process.cwd(),
+    await loadNextConfig(root, PHASE_PRODUCTION_BUILD),
+    root,
   );
   const outputMode = resolvedNextConfig.output;
-  const distDir = path.resolve(process.cwd(), "dist");
+  const distDir = path.resolve(root, "dist");
 
   // Pre-flight check: verify vinext's own dist/ exists before starting the build.
   // Without this, a missing dist/ (e.g. from a broken install) only surfaces after
@@ -475,6 +491,12 @@ async function buildApp() {
       });
     }
   }
+
+  cleanBuildOutput({
+    root,
+    outDir: distDir,
+    emptyOutDir: await loadBuildEmptyOutDir(vite, root),
+  });
 
   // All paths (App Router, Pages Router + Cloudflare, Pages Router plain Node)
   // use createBuilder + buildApp(). vinext() defines the appropriate environments

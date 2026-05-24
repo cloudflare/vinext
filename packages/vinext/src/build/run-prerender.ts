@@ -139,7 +139,8 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   process.env.VINEXT_PRERENDER = "1";
 
   // The manifest lands in dist/server/ alongside the server bundle so it's
-  // cleaned by Vite's emptyOutDir on rebuild and co-located with server artifacts.
+  // cleaned with the rest of vinext's build output on rebuild and co-located
+  // with server artifacts.
   const manifestDir = path.join(root, "dist", "server");
 
   const loadedConfig = await resolveNextConfig(await loadNextConfig(root), root);
