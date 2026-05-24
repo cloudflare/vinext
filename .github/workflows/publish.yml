@@ -17,9 +17,7 @@ concurrency:
   group: npm-publish
   cancel-in-progress: true
 
-permissions:
-  contents: write
-  id-token: write
+permissions: {}
 
 jobs:
   ci:
@@ -31,8 +29,11 @@ jobs:
     needs: ci
     if: github.repository_owner == 'cloudflare'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 # zizmor: ignore[artipacked] persisted creds are required for `git push origin v$VERSION` in the Tag release step
         with:
           fetch-depth: 0 # full history for changelog generation
 
@@ -80,15 +81,19 @@ jobs:
         run: vp pm publish --no-git-checks --access public -- --provenance
 
       - name: Tag release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          git tag "v${{ steps.version.outputs.version }}"
-          git push origin "v${{ steps.version.outputs.version }}"
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
 
       - name: Get changes since last version
         env:
           GH_TOKEN: ${{ github.token }}
+          PREVIOUS_VERSION: ${{ steps.version.outputs.previous }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          PREV_TAG="v${{ steps.version.outputs.previous }}"
+          PREV_TAG="v${PREVIOUS_VERSION}"
           FORMAT="%H %s"
           if git rev-parse "$PREV_TAG" >/dev/null 2>&1; then
             git log "$PREV_TAG"..HEAD --format="$FORMAT" --no-merges > /tmp/raw-commits.txt
@@ -101,7 +106,7 @@ jobs:
           while IFS= read -r line; do
             SHA=$(echo "$line" | cut -d' ' -f1)
             SUBJECT=$(echo "$line" | cut -d' ' -f2-)
-            LOGIN=$(gh api "repos/${{ github.repository }}/commits/${SHA}" --jq '.author.login // .commit.author.name' 2>/dev/null || echo "")
+            LOGIN=$(gh api "repos/${REPOSITORY}/commits/${SHA}" --jq '.author.login // .commit.author.name' 2>/dev/null || echo "")
             if [ -n "$LOGIN" ]; then
               echo "${SHA:0:7} ${SUBJECT} (@${LOGIN})"
             else
@@ -115,6 +120,8 @@ jobs:
           CF_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CF_GATEWAY_NAME: ${{ secrets.CF_AI_GATEWAY_NAME }}
           CF_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           COMMITS=$(cat /tmp/commits.txt)
           echo "::group::Commits since last release"
@@ -126,7 +133,7 @@ jobs:
             -H "Content-Type: application/json" \
             -H "cf-aig-authorization: Bearer ${CF_API_TOKEN}" \
             -H "anthropic-version: 2023-06-01" \
-            -d "$(jq -n --arg commits "$COMMITS" --arg version "${{ steps.version.outputs.version }}" '{
+            -d "$(jq -n --arg commits "$COMMITS" --arg version "${VERSION}" '{
               model: "claude-sonnet-4-20250514",
               max_tokens: 1024,
               messages: [{
@@ -147,7 +154,7 @@ jobs:
           fi
 
           if [ -z "$SUMMARY" ]; then
-            SUMMARY="See commits: https://github.com/${{ github.repository }}/commits/v${{ steps.version.outputs.version }}"
+            SUMMARY="See commits: https://github.com/${REPOSITORY}/commits/v${VERSION}"
           fi
 
           echo "::group::Release summary"
@@ -166,11 +173,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
           SUMMARY: ${{ steps.summary.outputs.text }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
             --notes-file - \
-            --repo "${{ github.repository }}" <<< "${SUMMARY}"
+            --repo "${REPOSITORY}" <<< "${SUMMARY}"
 
       - name: Notify Google Chat
         if: success()

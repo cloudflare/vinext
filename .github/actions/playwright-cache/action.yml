@@ -61,7 +61,7 @@ runs:
     - name: Restore Playwright browsers (restore-only)
       if: inputs.mode == 'restore'
       id: restore
-      uses: actions/cache/restore@v5
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: ~/.cache/ms-playwright
         key: playwright-${{ inputs.browser }}-${{ runner.os }}-v${{ steps.version.outputs.version }}
@@ -70,7 +70,7 @@ runs:
     - name: Cache Playwright browsers
       if: inputs.mode == 'cache'
       id: cache
-      uses: actions/cache@v5
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: ~/.cache/ms-playwright
         key: playwright-${{ inputs.browser }}-${{ runner.os }}-v${{ steps.version.outputs.version }}

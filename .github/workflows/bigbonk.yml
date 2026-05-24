@@ -29,14 +29,15 @@ jobs:
       pull-requests: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
           fetch-depth: 30 # 30 is a balance in providing enough context for the agent vs. pulling down the entire repo history. It is not a scientific number. 27 or 31 or 36 would likely work as well.
 
       - uses: ./.github/actions/setup
 
       - name: Run Bonk
-        uses: ask-bonk/ask-bonk/github@main
+        uses: ask-bonk/ask-bonk/github@8c7a8314f4f4865e2e41e5718dfabc4ab7a2274b # main
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
