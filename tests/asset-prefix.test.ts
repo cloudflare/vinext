@@ -35,6 +35,7 @@ import {
   assetPrefixPathname,
   ASSET_PREFIX_URL_DIR,
 } from "../packages/vinext/src/utils/asset-prefix.js";
+import { manifestFileWithAssetPrefix } from "../packages/vinext/src/utils/manifest-paths.js";
 import { resolveAppRouterAssetPath } from "../packages/vinext/src/server/prod-server.js";
 import { normalizeAssetPrefix } from "../packages/vinext/src/config/next-config.js";
 
@@ -127,6 +128,36 @@ describe("resolveAssetUrlPrefix", () => {
     expect(resolveAssetUrlPrefix("https://cdn.example.com/sub")).toBe(
       "https://cdn.example.com/sub/_next/static/",
     );
+  });
+});
+
+describe("manifestFileWithAssetPrefix", () => {
+  it("uses basePath-compatible base when assetPrefix is unset", () => {
+    expect(manifestFileWithAssetPrefix("_next/static/chunks/page.js", "/docs/", "")).toBe(
+      "docs/_next/static/chunks/page.js",
+    );
+  });
+
+  it("anchors unprefixed manifest files under a path assetPrefix", () => {
+    expect(manifestFileWithAssetPrefix("_next/static/chunks/page.js", "/", "/cdn")).toBe(
+      "cdn/_next/static/chunks/page.js",
+    );
+  });
+
+  it("does not double-prefix files already emitted under a path assetPrefix", () => {
+    expect(manifestFileWithAssetPrefix("cdn/_next/static/chunks/page.js", "/docs/", "/cdn")).toBe(
+      "cdn/_next/static/chunks/page.js",
+    );
+  });
+
+  it("anchors manifest files under an absolute assetPrefix", () => {
+    expect(
+      manifestFileWithAssetPrefix(
+        "_next/static/chunks/page.js",
+        "/docs/",
+        "https://cdn.example.com/assets",
+      ),
+    ).toBe("https://cdn.example.com/assets/_next/static/chunks/page.js");
   });
 });
 
@@ -292,6 +323,18 @@ async function buildFixtureWithConfig(
   return { fixtureRoot, outDir };
 }
 
+function directoryContainsFileWithExtension(dir: string, extension: string): boolean {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (directoryContainsFileWithExtension(entryPath, extension)) return true;
+      continue;
+    }
+    if (entry.isFile() && entry.name.endsWith(extension)) return true;
+  }
+  return false;
+}
+
 describe("assetPrefix end-to-end build", () => {
   // Track tmp dirs so we can clean up even if a build throws. `cleanups` is
   // populated by `buildFixtureWithConfig` synchronously right after the tmp
@@ -317,8 +360,7 @@ describe("assetPrefix end-to-end build", () => {
       "static",
     );
     expect(fs.existsSync(onDiskStatic), `expected on-disk layout under ${onDiskStatic}`).toBe(true);
-    const entries = fs.readdirSync(onDiskStatic);
-    expect(entries.some((f) => f.endsWith(".js"))).toBe(true);
+    expect(directoryContainsFileWithExtension(onDiskStatic, ".js")).toBe(true);
 
     // Serve the build via startProdServer and verify SSR HTML references
     // the assetPrefix-anchored URLs, and that those URLs return 200.

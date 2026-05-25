@@ -1,4 +1,11 @@
-function normalizeManifestFile(file: string): string {
+import {
+  ASSET_PREFIX_URL_DIR,
+  isAbsoluteAssetPrefix,
+  resolveAssetsDir,
+  resolveAssetUrlPrefix,
+} from "./asset-prefix.js";
+
+export function normalizeManifestFile(file: string): string {
   return file.startsWith("/") ? file.slice(1) : file;
 }
 
@@ -14,8 +21,28 @@ export function manifestFileWithBase(file: string, base: string): string {
   return normalizedBase + "/" + normalizedFile;
 }
 
-export function manifestFilesWithBase(files: string[], base: string): string[] {
-  return files.map((file) => manifestFileWithBase(file, base));
+export function manifestFileWithAssetPrefix(
+  file: string,
+  base: string,
+  assetPrefix: string,
+): string {
+  if (!assetPrefix) return manifestFileWithBase(file, base);
+
+  const normalizedFile = normalizeManifestFile(file);
+  const onDiskDir = normalizeManifestFile(resolveAssetsDir(assetPrefix));
+  const onDiskDirPrefix = onDiskDir + "/";
+  const staticDirPrefix = ASSET_PREFIX_URL_DIR + "/";
+  const stripped = normalizedFile.startsWith(onDiskDirPrefix)
+    ? normalizedFile.slice(onDiskDirPrefix.length)
+    : normalizedFile.startsWith(staticDirPrefix)
+      ? normalizedFile.slice(staticDirPrefix.length)
+      : normalizedFile;
+
+  const urlPrefix = resolveAssetUrlPrefix(assetPrefix);
+  const normalizedUrlPrefix = isAbsoluteAssetPrefix(assetPrefix)
+    ? urlPrefix
+    : normalizeManifestFile(urlPrefix);
+  return normalizedUrlPrefix + stripped;
 }
 
 /**

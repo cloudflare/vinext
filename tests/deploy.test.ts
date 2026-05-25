@@ -31,7 +31,10 @@ import {
   findInNodeModules,
   ensureViteConfigCompatibility,
 } from "../packages/vinext/src/utils/project.js";
-import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
+import {
+  manifestFileWithAssetPrefix,
+  manifestFileWithBase,
+} from "../packages/vinext/src/utils/manifest-paths.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
 import {
   computeDynamicImportPreloads,
@@ -2204,7 +2207,7 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
    * is at dist/server/index.js. The RSC plugin handles __VINEXT_CLIENT_ENTRY__,
    * but we still need to inject __VINEXT_LAZY_CHUNKS__ and __VINEXT_SSR_MANIFEST__.
    */
-  function simulateCloseBundleAppRouter(buildRoot: string, base = "/"): void {
+  function simulateCloseBundleAppRouter(buildRoot: string, base = "/", assetPrefix = ""): void {
     const distDir = path.resolve(buildRoot, "dist");
     if (!fs.existsSync(distDir)) return;
 
@@ -2218,12 +2221,12 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
       try {
         const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
         const lazy = computeLazyChunks(buildManifest).map((file) =>
-          manifestFileWithBase(file, base),
+          manifestFileWithAssetPrefix(file, base, assetPrefix),
         );
         if (lazy.length > 0) lazyChunksData = lazy;
         const dynamicPreloads = dynamicImportPreloadsWithBase(
           computeDynamicImportPreloads(buildManifest),
-          (file) => manifestFileWithBase(file, base),
+          (file) => manifestFileWithAssetPrefix(file, base, assetPrefix),
         );
         if (Object.keys(dynamicPreloads).length > 0) dynamicPreloadsData = dynamicPreloads;
       } catch {
@@ -2268,7 +2271,7 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
    * The worker entry is found by scanning dist/ for a directory containing
    * wrangler.json. All three globals are injected.
    */
-  function simulateCloseBundlePagesRouter(buildRoot: string, base = "/"): void {
+  function simulateCloseBundlePagesRouter(buildRoot: string, base = "/", assetPrefix = ""): void {
     const distDir = path.resolve(buildRoot, "dist");
     if (!fs.existsSync(distDir)) return;
 
@@ -2307,12 +2310,12 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
           }
         }
         const lazy = computeLazyChunks(buildManifest).map((file) =>
-          manifestFileWithBase(file, base),
+          manifestFileWithAssetPrefix(file, base, assetPrefix),
         );
         if (lazy.length > 0) lazyChunksData = lazy;
         const dynamicPreloads = dynamicImportPreloadsWithBase(
           computeDynamicImportPreloads(buildManifest),
-          (file) => manifestFileWithBase(file, base),
+          (file) => manifestFileWithAssetPrefix(file, base, assetPrefix),
         );
         if (Object.keys(dynamicPreloads).length > 0) dynamicPreloadsData = dynamicPreloads;
       } catch {
@@ -2469,6 +2472,38 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     expect(code).not.toContain(`"virtual:vinext-app-browser-entry"`);
   });
 
+  it("App Router: prefixes lazy chunks and dynamic preloads with assetPrefix", () => {
+    setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
+
+    simulateCloseBundleAppRouter(tmpDir, "/docs/", "/cdn-prefix");
+
+    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
+    const lazyMatch = code.match(/globalThis\.__VINEXT_LAZY_CHUNKS__\s*=\s*(\[.*?\]);/);
+    expect(lazyMatch).not.toBeNull();
+    const lazyChunks = JSON.parse(lazyMatch![1]);
+    expect(lazyChunks).toContain("cdn-prefix/_next/static/assets/mermaid-chart.js");
+    expect(lazyChunks).toContain("cdn-prefix/_next/static/assets/mermaid-vendor.js");
+    expect(lazyChunks).not.toContain("docs/assets/mermaid-chart.js");
+
+    const preloadMatch = code.match(/globalThis\.__VINEXT_DYNAMIC_PRELOADS__\s*=\s*(\{.*?\});/);
+    expect(preloadMatch).not.toBeNull();
+    const dynamicPreloads = JSON.parse(preloadMatch![1]);
+    expect(dynamicPreloads["src/components/MermaidChart.tsx"]).toEqual([
+      "cdn-prefix/_next/static/assets/mermaid-chart.js",
+      "cdn-prefix/_next/static/assets/mermaid-vendor.js",
+    ]);
+  });
+
+  it("App Router: emits absolute assetPrefix URLs in dynamic preload globals", () => {
+    setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
+
+    simulateCloseBundleAppRouter(tmpDir, "/docs/", "https://cdn.example.com/assets");
+
+    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
+    expect(code).toContain("https://cdn.example.com/assets/_next/static/assets/mermaid-chart.js");
+    expect(code).not.toContain("docs/assets/mermaid-chart.js");
+  });
+
   it("App Router: does NOT inject __VINEXT_CLIENT_ENTRY__", () => {
     setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
 
@@ -2600,6 +2635,23 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     expect(lazyChunks).toContain("docs/assets/mermaid-vendor.js");
     expect(code).toContain(
       `"src/components/MermaidChart.tsx":["docs/assets/mermaid-chart.js","docs/assets/mermaid-vendor.js"]`,
+    );
+  });
+
+  it("Pages Router: prefixes lazy chunks and dynamic preloads with assetPrefix", () => {
+    setupPagesRouterBuildOutput(tmpDir, manifestWithLazyChunks);
+
+    simulateCloseBundlePagesRouter(tmpDir, "/docs/", "/cdn-prefix");
+
+    const code = fs.readFileSync(path.join(tmpDir, "dist", "worker", "index.js"), "utf-8");
+    const lazyMatch = code.match(/globalThis\.__VINEXT_LAZY_CHUNKS__\s*=\s*(\[.*?\]);/);
+    expect(lazyMatch).not.toBeNull();
+    const lazyChunks = JSON.parse(lazyMatch![1]);
+    expect(lazyChunks).toContain("cdn-prefix/_next/static/assets/mermaid-chart.js");
+    expect(lazyChunks).toContain("cdn-prefix/_next/static/assets/mermaid-vendor.js");
+    expect(lazyChunks).not.toContain("docs/assets/mermaid-chart.js");
+    expect(code).toContain(
+      `"src/components/MermaidChart.tsx":["cdn-prefix/_next/static/assets/mermaid-chart.js","cdn-prefix/_next/static/assets/mermaid-vendor.js"]`,
     );
   });
 

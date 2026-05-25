@@ -60,7 +60,7 @@ import {
   computeLazyChunks,
   dynamicImportPreloadsWithBase,
 } from "../utils/lazy-chunks.js";
-import { manifestFileWithBase } from "../utils/manifest-paths.js";
+import { manifestFileWithAssetPrefix, manifestFileWithBase } from "../utils/manifest-paths.js";
 import {
   findClientEntryFile,
   findPagesClientEntryFile,
@@ -292,7 +292,11 @@ function stripHeaders(
   }
 }
 
-function installClientBuildManifestGlobals(clientDir: string, assetBase: string): void {
+function installClientBuildManifestGlobals(
+  clientDir: string,
+  assetBase: string,
+  assetPrefix: string,
+): void {
   globalThis.__VINEXT_LAZY_CHUNKS__ = undefined;
   globalThis.__VINEXT_DYNAMIC_PRELOADS__ = undefined;
 
@@ -302,7 +306,7 @@ function installClientBuildManifestGlobals(clientDir: string, assetBase: string)
   try {
     const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
     const lazyChunks = computeLazyChunks(buildManifest).map((file: string) =>
-      manifestFileWithBase(file, assetBase),
+      manifestFileWithAssetPrefix(file, assetBase, assetPrefix),
     );
     if (lazyChunks.length > 0) {
       globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks;
@@ -310,7 +314,7 @@ function installClientBuildManifestGlobals(clientDir: string, assetBase: string)
 
     const dynamicPreloads = dynamicImportPreloadsWithBase(
       computeDynamicImportPreloads(buildManifest),
-      (file) => manifestFileWithBase(file, assetBase),
+      (file) => manifestFileWithAssetPrefix(file, assetBase, assetPrefix),
     );
     if (Object.keys(dynamicPreloads).length > 0) {
       globalThis.__VINEXT_DYNAMIC_PRELOADS__ = dynamicPreloads;
@@ -1171,7 +1175,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       clientEntryLookup: "pages-client-entry",
     });
   }
-  installClientBuildManifestGlobals(clientDir, appAssetBase);
+  installClientBuildManifestGlobals(clientDir, appAssetBase, appRouterAssetPrefix);
 
   // Seed the memory cache with pre-rendered routes so the first request to
   // any pre-rendered page is a cache HIT instead of a full re-render.
@@ -1496,7 +1500,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     assetBase,
     clientEntryLookup: "any-client-entry",
   });
-  installClientBuildManifestGlobals(clientDir, assetBase);
+  installClientBuildManifestGlobals(clientDir, assetBase, assetPrefix);
 
   // Build the static file metadata cache at startup (same as App Router).
   const staticCache = await StaticFileCache.create(clientDir);

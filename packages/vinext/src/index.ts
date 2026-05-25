@@ -91,8 +91,12 @@ import {
 import { proxyExternalRequest } from "./config/config-matchers.js";
 import { detectPackageManager } from "./utils/project.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
-import { manifestFilesWithBase } from "./utils/manifest-paths.js";
-
+import {
+  manifestFileWithAssetPrefix,
+  manifestFileWithBase,
+} from "./utils/manifest-paths.js";
+import { hasBasePath } from "./utils/base-path.js";
+import { mergeRewriteQuery } from "./utils/query.js";
 import {
   ASSET_PREFIX_URL_DIR,
   resolveAssetUrlPrefix,
@@ -4706,18 +4710,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   assetBase: clientBase,
                 }) ?? null;
             }
-            const lazy = manifestFilesWithBase(computeLazyChunks(buildManifest), clientBase);
+            const lazy = computeLazyChunks(buildManifest).map((file) =>
+              manifestFileWithAssetPrefix(file, clientBase, nextConfig?.assetPrefix),
+            );
             if (lazy.length > 0) lazyChunksData = lazy;
             const dynamicPreloads = dynamicImportPreloadsWithBase(
               computeDynamicImportPreloads(buildManifest),
-              (file) => manifestFileWithBase(file, clientBase),
+              (file) => manifestFileWithAssetPrefix(file, clientBase, nextConfig?.assetPrefix),
             );
             if (Object.keys(dynamicPreloads).length > 0) {
               dynamicPreloadsData = dynamicPreloads;
             }
-            }
-            const lazy = manifestFilesWithBase(computeLazyChunks(buildManifest), clientBase);
-            if (lazy.length > 0) lazyChunksData = lazy;
           }
 
           // Read SSR manifest for per-page CSS/JS injection
