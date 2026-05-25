@@ -352,6 +352,29 @@ describe("vinext:local-fonts plugin", () => {
     expect(addedStyles).not.toContain("__local_font");
   });
 
+  it("does not dedupe distinct font-face rules by repeated transformed binding names", () => {
+    const beforeCount = getSSRFontStyles().length;
+    const first = localFont({
+      src: "/assets/module-a.woff2",
+      _vinext: { font: { family: "myFont" } },
+    } satisfies Parameters<typeof localFont>[0] & {
+      _vinext: { font: { family: string } };
+    });
+    const second = localFont({
+      src: "/assets/module-b.woff2",
+      _vinext: { font: { family: "myFont" } },
+    } satisfies Parameters<typeof localFont>[0] & {
+      _vinext: { font: { family: string } };
+    });
+
+    expect(first.style.fontFamily).toContain("myFont");
+    expect(second.style.fontFamily).toContain("myFont");
+
+    const addedStyles = getSSRFontStyles().slice(beforeCount).join("\n");
+    expect(addedStyles).toContain("/assets/module-a.woff2");
+    expect(addedStyles).toContain("/assets/module-b.woff2");
+  });
+
   it("matches Next.js style exports for a single local source", () => {
     // Ported from Next.js: test/e2e/next-font/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/next-font/index.test.ts

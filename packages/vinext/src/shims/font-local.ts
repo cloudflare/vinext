@@ -311,7 +311,9 @@ export default function localFont(options: LocalFontOptions): FontResult {
 
   // Inject @font-face declarations
   const css = generateFontFaceCSS(family, options, sources);
-  injectFontFaceCSS(css, family);
+  // The exposed family can repeat across modules; the generated class stays
+  // unique for each localFont call and is the correct injection identity.
+  injectFontFaceCSS(css, className);
 
   // Inject the className -> font-family CSS rule
   injectClassNameRule(className, style);
