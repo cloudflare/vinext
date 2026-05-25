@@ -29,6 +29,8 @@ import {
   getRscRenderModeCacheVariant,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
+import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js";
+import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import type { RenderObservation } from "./cache-proof.js";
 export { normalizeMountedSlotsHeader };
 
@@ -260,6 +262,11 @@ export function appIsrHtmlKey(pathname: string): string {
   return appIsrCacheKey(pathname, "html");
 }
 
+function normalizeInterceptionContextCacheVariant(interceptionContext: string): string {
+  if (!isInterceptionMatchedUrlPath(interceptionContext)) return interceptionContext;
+  return normalizePath(normalizePathnameForRouteMatch(interceptionContext));
+}
+
 /**
  * Build the ISR cache key for an RSC payload.
  *
@@ -275,8 +282,12 @@ export function appIsrRscKey(
   interceptionContext?: string | null,
 ): string {
   const normalizedMountedSlotsHeader = normalizeMountedSlotsHeader(mountedSlotsHeader);
+  const sourceVariant =
+    interceptionContext === undefined || interceptionContext === null
+      ? null
+      : normalizeInterceptionContextCacheVariant(interceptionContext);
   const variant = [
-    interceptionContext ? `source:${fnv1a64(interceptionContext)}` : null,
+    sourceVariant ? `source:${fnv1a64(sourceVariant)}` : null,
     normalizedMountedSlotsHeader ? `slots:${fnv1a64(normalizedMountedSlotsHeader)}` : null,
     getRscRenderModeCacheVariant(renderMode),
   ]

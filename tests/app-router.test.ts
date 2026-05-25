@@ -771,10 +771,9 @@ describe("App Router integration", () => {
     expect(rscPayload).toContain("__interceptionContext");
     expect(rscPayload).toContain("/feed");
     const nul = String.fromCharCode(0);
-    expect(
-      rscPayload.includes("route:/photos/42\\u0000/feed") ||
-        rscPayload.includes(`route:/photos/42${nul}/feed`),
-    ).toBe(true);
+    expect(rscPayload).toContain("route:/feed");
+    expect(rscPayload.includes("route:/photos/42\\u0000/feed")).toBe(false);
+    expect(rscPayload.includes(`route:/photos/42${nul}/feed`)).toBe(false);
   });
 
   // --- Intercepting routes with dynamic source route ---
