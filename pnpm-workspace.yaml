@@ -50,7 +50,7 @@ catalog:
   "@vitejs/plugin-rsc": ^0.5.26
   "@vitest/coverage-istanbul": 4.1.6
   better-auth: ^1.5.6
-  better-sqlite3: ^12.10.0
+  better-sqlite3: ^12.0.0
   class-variance-authority: ^0.7.1
   clsx: ^2.1.1
   codehike: 1.0.7
