@@ -219,6 +219,15 @@ describe("App Router ISR cache key primitives", () => {
     expect(duplicateSlash).toBe(decoded);
   });
 
+  it("ignores invalid source context before keying intercepted RSC variants", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const invalidSource = appIsrRscKey("/photos/42", "modal", undefined, "/feed?tab=popular");
+    const direct = appIsrRscKey("/photos/42", "modal");
+
+    expect(invalidSource).toBe(direct);
+  });
+
   it("keys RSC refresh variants separately from normal navigation variants", () => {
     delete process.env.__VINEXT_BUILD_ID;
 

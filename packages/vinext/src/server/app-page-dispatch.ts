@@ -45,6 +45,7 @@ import {
 import { resolveAppPageMethodResponse } from "./app-page-method.js";
 import {
   buildAppPageElement,
+  resolveAppPageInterceptionRerenderTarget,
   resolveAppPageIntercept,
   validateAppPageDynamicParams,
   type ValidateAppPageDynamicParamsOptions,
@@ -413,28 +414,47 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // cacheLife-only routes discover their actual revalidate during the
       // fresh render; this seed only gets them into the cache read path.
       revalidateSeconds: currentRevalidateSeconds ?? 0,
-      renderFreshPageForCache: async () =>
-        runAppPageRevalidationContext(
+      renderFreshPageForCache: async () => {
+        const revalidationTarget = resolveAppPageInterceptionRerenderTarget({
+          cleanPathname: options.cleanPathname,
+          currentParams: options.params,
+          currentRoute: route,
+          findIntercept: options.findIntercept,
+          getRouteParamNames(sourceRoute) {
+            return sourceRoute.params;
+          },
+          getSourceRoute(sourceRouteIndex) {
+            return options.getSourceRoute(sourceRouteIndex);
+          },
+          isRscRequest: options.isRscRequest,
+          toInterceptOpts(intercept) {
+            return toInterceptOptions(options.interceptionContext, intercept);
+          },
+        });
+
+        return runAppPageRevalidationContext(
           {
             cleanPathname: options.cleanPathname,
-            currentFetchCacheMode: options.fetchCache ?? null,
+            currentFetchCacheMode:
+              options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
+              (revalidationTarget.route === route ? (options.fetchCache ?? null) : null),
             draftModeSecret: options.draftModeSecret,
             dynamicConfig,
-            params: options.params,
-            routePattern: route.pattern,
-            routeSegments: route.routeSegments,
+            params: revalidationTarget.navigationParams,
+            routePattern: revalidationTarget.route.pattern,
+            routeSegments: revalidationTarget.route.routeSegments,
             setNavigationContext: options.setNavigationContext,
           },
           async () => {
             const revalidatedElement = await options.buildPageElement(
-              route,
-              options.params,
-              undefined,
+              revalidationTarget.route,
+              revalidationTarget.params,
+              revalidationTarget.interceptOpts,
               new URLSearchParams(),
             );
             const revalidatedOnError = options.createRscOnErrorHandler(
               options.cleanPathname,
-              route.pattern,
+              revalidationTarget.route.pattern,
             );
             // No inner runWithFetchDedupe here: this renderFn is already
             // wrapped in runWithFetchDedupe by runAppPageRevalidationContext.
@@ -472,7 +492,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             const tags = buildAppPageTags(
               options.cleanPathname,
               getCollectedFetchTags(),
-              route.routeSegments,
+              revalidationTarget.route.routeSegments,
             );
             // Consume once: HTML and RSC artifacts are produced by the same
             // regeneration render and should carry the same observation set.
@@ -492,9 +512,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                   element: revalidatedElement,
                   renderEpoch: null,
                   rootBoundaryId: null,
-                  routePattern: route.pattern,
+                  routePattern: revalidationTarget.route.pattern,
                 }),
-                params: options.params,
+                params: revalidationTarget.navigationParams,
                 state: observationState,
               }),
               rscData,
@@ -509,9 +529,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                   mountedSlotsHeader: options.mountedSlotsHeader,
                   renderEpoch: null,
                   rootBoundaryId: null,
-                  routePattern: route.pattern,
+                  routePattern: revalidationTarget.route.pattern,
                 }),
-                params: options.params,
+                params: revalidationTarget.navigationParams,
                 state: observationState,
               }),
               tags,
@@ -521,7 +541,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                   : undefined,
             };
           },
-        ),
+        );
+      },
       scheduleBackgroundRegeneration(key, renderFn) {
         options.scheduleBackgroundRegeneration(key, renderFn, {
           routerKind: "App Router",

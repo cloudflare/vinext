@@ -262,8 +262,8 @@ export function appIsrHtmlKey(pathname: string): string {
   return appIsrCacheKey(pathname, "html");
 }
 
-function normalizeInterceptionContextCacheVariant(interceptionContext: string): string {
-  if (!isInterceptionMatchedUrlPath(interceptionContext)) return interceptionContext;
+function normalizeInterceptionContextCacheVariant(interceptionContext: string): string | null {
+  if (!isInterceptionMatchedUrlPath(interceptionContext)) return null;
   return normalizePath(normalizePathnameForRouteMatch(interceptionContext));
 }
 
