@@ -8,6 +8,7 @@ import { isValidModulePath } from "../packages/vinext/src/client/validate-module
 import vinext from "../packages/vinext/src/index.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import { buildPagesNextDataScript } from "../packages/vinext/src/server/pages-page-response.js";
+import { setDraftModeSecret } from "../packages/vinext/src/server/draft-mode-secret.js";
 import type { Plugin } from "vite-plus";
 import type { NextRouter } from "../packages/vinext/src/shims/router.js";
 import type {
@@ -17,6 +18,7 @@ import type {
 } from "../packages/vinext/src/shims/cache.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
+const TEST_DRAFT_SECRET = "00000000-0000-4000-8000-000000000000";
 
 describe("vinext next data client helpers", () => {
   it("extracts __NEXT_DATA__ after carriage-return whitespace", () => {
@@ -1795,6 +1797,10 @@ describe("next/router withRouter HOC", () => {
 });
 
 describe("next/headers shim", () => {
+  beforeEach(() => {
+    setDraftModeSecret(TEST_DRAFT_SECRET);
+  });
+
   it("exports cookies, headers, draftMode", async () => {
     const mod = await import("../packages/vinext/src/shims/headers.js");
     expect(typeof mod.cookies).toBe("function");

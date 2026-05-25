@@ -334,12 +334,6 @@ declare global {
   namespace NodeJS {
     interface ProcessEnv {
       /**
-       * UUID secret used to sign/validate the Next.js draft-mode cookie.
-       * Generated once at build time and injected via Vite `define`.
-       */
-      __VINEXT_DRAFT_SECRET?: string;
-
-      /**
        * Build ID string injected via Vite `define` at production build time.
        * Matches `next.config.js` → `buildId` (or a generated UUID when unset).
        * `undefined` in dev mode.

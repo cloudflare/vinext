@@ -15,9 +15,12 @@
  * - fixtures/app-basic/app/nextjs-compat/api/draft-status/
  */
 
-import { describe, it, expect, beforeAll, afterAll, vi } from "vite-plus/test";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, startFixtureServer, fetchJson, fetchHtml } from "../helpers.js";
+import { setDraftModeSecret } from "../../packages/vinext/src/server/draft-mode-secret.js";
+
+const TEST_DRAFT_SECRET = "00000000-0000-4000-8000-000000000000";
 
 describe("Next.js compat: draft-mode", () => {
   let server: ViteDevServer;
@@ -33,6 +36,10 @@ describe("Next.js compat: draft-mode", () => {
 
   afterAll(async () => {
     await server?.close();
+  });
+
+  beforeEach(() => {
+    setDraftModeSecret(TEST_DRAFT_SECRET);
   });
 
   // ── draftMode().enable() ────────────────────────────────────

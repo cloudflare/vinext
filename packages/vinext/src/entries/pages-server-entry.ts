@@ -7,6 +7,7 @@
  *
  * Extracted from index.ts.
  */
+import { randomUUID } from "node:crypto";
 import { resolveEntryPath, normalizePathSeparators } from "./runtime-entry-module.js";
 import { pagesRouter, apiRouter, type Route } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
@@ -29,6 +30,7 @@ const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", impo
 const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 const _cspPath = resolveEntryPath("../server/csp.js", import.meta.url);
 const _serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
+const _draftModeSecretPath = resolveEntryPath("../server/draft-mode-secret.js", import.meta.url);
 
 /**
  * Generate the virtual SSR server entry module.
@@ -40,6 +42,7 @@ export async function generateServerEntry(
   fileMatcher: ReturnType<typeof createValidFileMatcher>,
   middlewarePath: string | null,
   instrumentationPath: string | null,
+  draftModeSecret = randomUUID(),
 ): Promise<string> {
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
   const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
@@ -241,8 +244,11 @@ import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } 
 import { resolvePagesPageData as __resolvePagesPageData } from ${JSON.stringify(_pagesPageDataPath)};
 import { buildNextDataJsonResponse as __buildNextDataJsonResponse, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse, isNextDataPathname as __isNextDataPathname, parseNextDataPathname as __parseNextDataPathname } from ${JSON.stringify(_pagesDataRoutePath)};
 import { renderPagesPageResponse as __renderPagesPageResponse } from ${JSON.stringify(_pagesPageResponsePath)};
+import { setDraftModeSecret as __setDraftModeSecret } from ${JSON.stringify(_draftModeSecretPath)};
 ${instrumentationImportCode}
 ${middlewareImportCode}
+
+__setDraftModeSecret(${JSON.stringify(draftModeSecret)});
 
 ${instrumentationInitCode}
 
