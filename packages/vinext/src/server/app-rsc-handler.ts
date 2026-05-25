@@ -183,6 +183,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     beforeFiles: NextRewrite[];
     fallback: NextRewrite[];
   };
+  draftModeSecret: string;
   dispatchMatchedPage: (options: DispatchMatchedPageOptions<TRoute>) => Promise<Response>;
   dispatchMatchedRouteHandler: (
     options: DispatchMatchedRouteHandlerOptions<TRoute>,
@@ -657,7 +658,9 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     const executionContext = isExecutionContextLike(ctx)
       ? ctx
       : (getRequestExecutionContext() ?? null);
-    const headersContext = headersContextFromRequest(request);
+    const headersContext = headersContextFromRequest(request, {
+      draftModeSecret: options.draftModeSecret,
+    });
     const requestContext = createRequestContext({
       headersContext,
       executionContext,

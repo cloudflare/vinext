@@ -17,7 +17,6 @@ import {
   validateCookieName,
 } from "./internal/cookie-serialize.js";
 import { parseCookieHeader } from "./internal/parse-cookie-header.js";
-import { getDraftModeSecret } from "../server/draft-mode-secret.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,
@@ -37,6 +36,11 @@ export type HeadersContext = {
   mutableCookies?: RequestCookies;
   readonlyCookies?: RequestCookies;
   readonlyHeaders?: Headers;
+  draftModeSecret?: string;
+};
+
+type HeadersContextFromRequestOptions = {
+  draftModeSecret?: string;
 };
 
 export type HeadersAccessPhase = "render" | "action" | "route-handler";
@@ -660,7 +664,10 @@ function _getReadonlyHeaders(ctx: HeadersContext): Headers {
  * Cookie parsing is also deferred: the `cookie` header string is not split
  * until the first call to `cookies()` or `draftMode()`.
  */
-export function headersContextFromRequest(request: Request): HeadersContext {
+export function headersContextFromRequest(
+  request: Request,
+  options?: HeadersContextFromRequestOptions,
+): HeadersContext {
   // ---------------------------------------------------------------------------
   // Lazy mutable Headers proxy
   // ---------------------------------------------------------------------------
@@ -711,6 +718,7 @@ export function headersContextFromRequest(request: Request): HeadersContext {
     get cookies(): Map<string, string> {
       return getCookies();
     },
+    draftModeSecret: options?.draftModeSecret,
   } satisfies HeadersContext;
 
   return ctx;
@@ -821,10 +829,42 @@ export function getDraftModeCookieHeader(): string | null {
   return header;
 }
 
-export function isDraftModeRequest(request: Request): boolean {
+function validateDraftModeSecret(secret: string): string {
+  if (secret.length === 0) {
+    throw new Error("[vinext] draft mode secret must be a non-empty string.");
+  }
+  return secret;
+}
+
+function createDraftModeSecret(): string {
+  const crypto = globalThis.crypto;
+  if (crypto && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  throw new Error(
+    "[vinext] draft mode secret is not initialized. " +
+      "This should be initialized by the server entry before handling requests.",
+  );
+}
+
+function ensureContextDraftModeSecret(ctx: HeadersContext): string {
+  if (ctx.draftModeSecret !== undefined) {
+    return validateDraftModeSecret(ctx.draftModeSecret);
+  }
+
+  const secret = createDraftModeSecret();
+  ctx.draftModeSecret = secret;
+  return secret;
+}
+
+export function isDraftModeRequest(request: Request, draftModeSecret: string): boolean {
   const cookieHeader = request.headers.get("cookie");
   if (!cookieHeader) return false;
-  return parseCookieHeader(cookieHeader).get(DRAFT_MODE_COOKIE) === getDraftModeSecret();
+  return (
+    parseCookieHeader(cookieHeader).get(DRAFT_MODE_COOKIE) ===
+    validateDraftModeSecret(draftModeSecret)
+  );
 }
 
 type DraftModeResult = {
@@ -860,7 +900,7 @@ export async function draftMode(): Promise<DraftModeResult> {
   // of static prerendering. Only `enable()`/`disable()` mutate state and
   // must be tracked as dynamic, mirroring Next.js's `trackDynamicDraftMode`
   // (see .nextjs-ref/packages/next/src/server/request/draft-mode.ts:152-165).
-  const secret = getDraftModeSecret();
+  const secret = state.headersContext ? ensureContextDraftModeSecret(state.headersContext) : null;
 
   return {
     get isEnabled(): boolean {
@@ -872,6 +912,12 @@ export async function draftMode(): Promise<DraftModeResult> {
       markDynamicUsage();
       if (state.headersContext?.accessError) {
         throw state.headersContext.accessError;
+      }
+      if (secret === null) {
+        throw new Error(
+          "draftMode().enable() can only be called from a Server Component, Route Handler, " +
+            "or Server Action.",
+        );
       }
       if (state.headersContext) {
         state.headersContext.cookies.set(DRAFT_MODE_COOKIE, secret);

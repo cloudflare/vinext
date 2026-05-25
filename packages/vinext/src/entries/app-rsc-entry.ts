@@ -90,7 +90,6 @@ const appHookWarningSuppressionPath = resolveEntryPath(
   import.meta.url,
 );
 const serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
-const draftModeSecretPath = resolveEntryPath("../server/draft-mode-secret.js", import.meta.url);
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -222,7 +221,6 @@ const renderToReadableStream = createRscRenderer(_renderToReadableStream);
 import { createElement } from "react";
 import { getNavigationContext as _getNavigationContext } from "next/navigation";
 import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, setHeadersAccessPhase } from "next/headers";
-import { setDraftModeSecret as __setDraftModeSecret } from ${JSON.stringify(draftModeSecretPath)};
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(normalizePathSeparators(middlewarePath))};` : ""}
 ${
@@ -309,7 +307,7 @@ import { clearAppRequestContext as __clearRequestContext, setAppNavigationContex
 import { createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver } from ${JSON.stringify(appPrerenderStaticParamsPath)};
 import { seedMemoryCacheFromPrerender as __seedMemoryCacheFromPrerender } from ${JSON.stringify(seedCachePath)};
 
-__setDraftModeSecret(${JSON.stringify(draftModeSecret)});
+const __draftModeSecret = ${JSON.stringify(draftModeSecret)};
 
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
@@ -519,6 +517,7 @@ export default __createAppRscHandler({
   configHeaders: __configHeaders,
   configRedirects: __configRedirects,
   configRewrites: __configRewrites,
+  draftModeSecret: __draftModeSecret,
   dispatchMatchedPage({
     cleanPathname,
     formState,
@@ -570,6 +569,7 @@ export default __createAppRscHandler({
         return createRscOnErrorHandler(request, pathname, routePath);
       },
       debugClassification: __classDebug,
+      draftModeSecret: __draftModeSecret,
       dynamicConfig: __segmentConfig.dynamicConfig,
       dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
       fetchCache: __segmentConfig.fetchCache ?? null,
@@ -669,6 +669,7 @@ export default __createAppRscHandler({
       clearRequestContext() {
         __clearRequestContext();
       },
+      draftModeSecret: __draftModeSecret,
       i18n: __i18nConfig,
       isrDebug: __isrDebug,
       isrGet: __isrGet,

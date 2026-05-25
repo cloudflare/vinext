@@ -62,6 +62,7 @@ type DispatchAppRouteHandlerOptions = {
   basePath?: string;
   cleanPathname: string;
   clearRequestContext: () => void;
+  draftModeSecret: string;
   expireSeconds?: number;
   i18n?: NextI18nConfig | null;
   isDevelopment?: boolean;
@@ -99,6 +100,7 @@ function buildRouteHandlerPageCacheTags(
 async function runInRouteHandlerRevalidationContext(
   options: {
     cleanPathname: string;
+    draftModeSecret: string;
     dynamicConfig?: string;
     routePattern: string;
     routeSegments: string[];
@@ -106,6 +108,7 @@ async function runInRouteHandlerRevalidationContext(
   renderFn: () => Promise<void>,
 ): Promise<void> {
   const headersContext = createStaticGenerationHeadersContext({
+    draftModeSecret: options.draftModeSecret,
     dynamicConfig: options.dynamicConfig,
     routeKind: "route",
     routePattern: options.routePattern,
@@ -212,6 +215,7 @@ export async function dispatchAppRouteHandler(
         return runInRouteHandlerRevalidationContext(
           {
             cleanPathname: options.cleanPathname,
+            draftModeSecret: options.draftModeSecret,
             dynamicConfig: handler.dynamic,
             routePattern: route.pattern,
             routeSegments: route.routeSegments,
@@ -243,6 +247,7 @@ export async function dispatchAppRouteHandler(
       cleanPathname: options.cleanPathname,
       clearRequestContext: options.clearRequestContext,
       consumeDynamicUsage,
+      draftModeSecret: options.draftModeSecret,
       executionContext: getRequestExecutionContext(),
       getAndClearPendingCookies,
       getCollectedFetchTags,

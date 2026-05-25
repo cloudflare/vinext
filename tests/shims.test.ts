@@ -17,8 +17,6 @@ import type {
 } from "../packages/vinext/src/shims/cache.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
-const TEST_DRAFT_SECRET = "00000000-0000-4000-8000-000000000000";
-
 describe("vinext next data client helpers", () => {
   it("extracts __NEXT_DATA__ after carriage-return whitespace", () => {
     const json = '{"props":{},"page":"/","query":{}}';
@@ -1796,12 +1794,6 @@ describe("next/router withRouter HOC", () => {
 });
 
 describe("next/headers shim", () => {
-  beforeEach(async () => {
-    const { setDraftModeSecret } =
-      await import("../packages/vinext/src/server/draft-mode-secret.js");
-    setDraftModeSecret(TEST_DRAFT_SECRET);
-  });
-
   it("exports cookies, headers, draftMode", async () => {
     const mod = await import("../packages/vinext/src/shims/headers.js");
     expect(typeof mod.cookies).toBe("function");
@@ -2395,6 +2387,36 @@ describe("next/headers shim", () => {
     const dm = await draftMode();
     expect(dm.isEnabled).toBe(false);
     setHeadersContext(null);
+  });
+
+  it("draft mode validation is scoped to the request context secret", async () => {
+    const { draftMode, headersContextFromRequest, isDraftModeRequest, runWithHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+
+    const firstContext = headersContextFromRequest(new Request("https://example.test/one"), {
+      draftModeSecret: "first-secret",
+    });
+    const secondContext = headersContextFromRequest(new Request("https://example.test/two"), {
+      draftModeSecret: "second-secret",
+    });
+
+    await runWithHeadersContext(firstContext, async () => {
+      const dm = await draftMode();
+      dm.enable();
+      expect(dm.isEnabled).toBe(true);
+    });
+
+    await runWithHeadersContext(secondContext, async () => {
+      const dm = await draftMode();
+      dm.enable();
+      expect(dm.isEnabled).toBe(true);
+    });
+
+    const firstCookieRequest = new Request("https://example.test/one", {
+      headers: { Cookie: "__prerender_bypass=first-secret" },
+    });
+    expect(isDraftModeRequest(firstCookieRequest, "first-secret")).toBe(true);
+    expect(isDraftModeRequest(firstCookieRequest, "second-secret")).toBe(false);
   });
 
   it("draftMode().enable() sets the bypass cookie in context", async () => {

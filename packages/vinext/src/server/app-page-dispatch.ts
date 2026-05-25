@@ -156,6 +156,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   clearRequestContext: () => void;
   createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
   debugClassification?: (layoutId: string, reason: ClassificationReason) => void;
+  draftModeSecret: string;
   dynamicConfig?: string;
   dynamicParamsConfig?: boolean;
   fetchCache?: FetchCacheMode | null;
@@ -264,6 +265,7 @@ async function runAppPageRevalidationContext<
   options: {
     cleanPathname: string;
     currentFetchCacheMode?: FetchCacheMode | null;
+    draftModeSecret: string;
     dynamicConfig?: string;
     params: AppPageParams;
     routePattern: string;
@@ -273,6 +275,7 @@ async function runAppPageRevalidationContext<
   renderFn: () => Promise<TResult>,
 ): Promise<TResult> {
   const headersContext = createStaticGenerationHeadersContext({
+    draftModeSecret: options.draftModeSecret,
     dynamicConfig: options.dynamicConfig,
     routeKind: "page",
     routePattern: options.routePattern,
@@ -338,7 +341,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
-  const isDraftMode = isDraftModeRequest(options.request);
+  const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
   setCurrentFetchCacheMode(options.fetchCache ?? null);
@@ -364,6 +367,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   if ((isForceStatic || isDynamicError) && !isDraftMode) {
     setHeadersContext(
       createStaticGenerationHeadersContext({
+        draftModeSecret: options.draftModeSecret,
         dynamicConfig,
         routeKind: "page",
         routePattern: route.pattern,
@@ -409,6 +413,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           {
             cleanPathname: options.cleanPathname,
             currentFetchCacheMode: options.fetchCache ?? null,
+            draftModeSecret: options.draftModeSecret,
             dynamicConfig,
             params: options.params,
             routePattern: route.pattern,

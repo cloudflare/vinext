@@ -696,7 +696,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       fileMatcher,
       middlewarePath,
       instrumentationPath,
-      draftModeSecret,
     );
   }
 

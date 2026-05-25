@@ -1,7 +1,6 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
-import { setDraftModeSecret } from "../packages/vinext/src/server/draft-mode-secret.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
@@ -105,6 +104,7 @@ function createDispatchOptions(
     createRscOnErrorHandler() {
       return () => null;
     },
+    draftModeSecret: "draft-secret",
     findIntercept() {
       return null;
     },
@@ -212,7 +212,6 @@ describe("app page dispatch", () => {
   });
 
   it("bypasses cached production HTML when draft mode is enabled", async () => {
-    setDraftModeSecret("draft-secret");
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>")),
     );
@@ -303,7 +302,6 @@ describe("app page dispatch", () => {
   });
 
   it("does not bypass cached production HTML for arbitrary draft cookie values", async () => {
-    setDraftModeSecret("draft-secret");
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached</html>")),
     );
