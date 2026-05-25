@@ -8,7 +8,6 @@ import { isValidModulePath } from "../packages/vinext/src/client/validate-module
 import vinext from "../packages/vinext/src/index.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import { buildPagesNextDataScript } from "../packages/vinext/src/server/pages-page-response.js";
-import { setDraftModeSecret } from "../packages/vinext/src/server/draft-mode-secret.js";
 import type { Plugin } from "vite-plus";
 import type { NextRouter } from "../packages/vinext/src/shims/router.js";
 import type {
@@ -1797,7 +1796,9 @@ describe("next/router withRouter HOC", () => {
 });
 
 describe("next/headers shim", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    const { setDraftModeSecret } =
+      await import("../packages/vinext/src/server/draft-mode-secret.js");
     setDraftModeSecret(TEST_DRAFT_SECRET);
   });
 
