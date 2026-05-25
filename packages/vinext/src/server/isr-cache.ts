@@ -272,9 +272,11 @@ export function appIsrRscKey(
   pathname: string,
   mountedSlotsHeader?: string | null,
   renderMode: AppRscRenderMode = APP_RSC_RENDER_MODE_NAVIGATION,
+  interceptionContext?: string | null,
 ): string {
   const normalizedMountedSlotsHeader = normalizeMountedSlotsHeader(mountedSlotsHeader);
   const variant = [
+    interceptionContext ? `source:${fnv1a64(interceptionContext)}` : null,
     normalizedMountedSlotsHeader ? `slots:${fnv1a64(normalizedMountedSlotsHeader)}` : null,
     getRscRenderModeCacheVariant(renderMode),
   ]

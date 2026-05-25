@@ -186,6 +186,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     pathname: string,
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
+    interceptionContext?: string | null,
   ) => string;
   isrSet: AppPageCacheSetter;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
@@ -403,6 +404,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       isrHtmlKey: options.isrHtmlKey,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
+      interceptionContext: options.interceptionContext,
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       mountedSlotsHeader: options.mountedSlotsHeader,
@@ -676,6 +678,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isrHtmlKey: options.isrHtmlKey,
     isrRscKey: options.isrRscKey,
     isrSet: options.isrSet,
+    interceptionContext: options.interceptionContext,
     expireSeconds: options.expireSeconds,
     layoutCount: route.layouts.length,
     loadSsrHandler: options.loadSsrHandler,

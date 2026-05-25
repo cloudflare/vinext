@@ -103,8 +103,10 @@ type RenderAppPageLifecycleOptions = {
     pathname: string,
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
+    interceptionContext?: string | null,
   ) => string;
   isrSet: AppPageCacheSetter;
+  interceptionContext?: string | null;
   layoutCount: number;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   middlewareContext: AppPageMiddlewareContext;
@@ -474,6 +476,7 @@ export async function renderAppPageLifecycle(
       isrDebug: options.isrDebug,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
+      interceptionContext: options.interceptionContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       renderMode: options.renderMode,
       preserveClientResponseHeaders: rscResponsePolicy.cacheState !== "MISS",
@@ -679,6 +682,7 @@ export async function renderAppPageLifecycle(
       isrHtmlKey: options.isrHtmlKey,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
+      interceptionContext: options.interceptionContext,
       preserveClientResponseHeaders: !htmlResponsePolicy.shouldWriteToCache,
       expireSeconds,
       revalidateSeconds,

@@ -29,6 +29,12 @@ type AppPageCacheSetter = (
   expireSeconds?: number,
 ) => Promise<void>;
 type AppPageBackgroundRegenerator = (key: string, renderFn: () => Promise<void>) => void;
+type AppPageRscCacheKeyBuilder = (
+  pathname: string,
+  mountedSlotsHeader?: string | null,
+  renderMode?: AppRscRenderMode,
+  interceptionContext?: string | null,
+) => string;
 type AppPageRequestCacheLife = {
   revalidate?: number;
   expire?: number;
@@ -85,12 +91,9 @@ type ReadAppPageCacheResponseOptions = {
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
   isrHtmlKey: (pathname: string) => string;
-  isrRscKey: (
-    pathname: string,
-    mountedSlotsHeader?: string | null,
-    renderMode?: AppRscRenderMode,
-  ) => string;
+  isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
+  interceptionContext?: string | null;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   mountedSlotsHeader?: string | null;
@@ -114,12 +117,9 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   getRequestCacheLife?: () => AppPageRequestCacheLife | null;
   isrDebug?: AppPageDebugLogger;
   isrHtmlKey: (pathname: string) => string;
-  isrRscKey: (
-    pathname: string,
-    mountedSlotsHeader?: string | null,
-    renderMode?: AppRscRenderMode,
-  ) => string;
+  isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
+  interceptionContext?: string | null;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
@@ -136,12 +136,9 @@ type ScheduleAppPageRscCacheWriteOptions = {
   getPageTags: () => string[];
   getRequestCacheLife?: () => AppPageRequestCacheLife | null;
   isrDebug?: AppPageDebugLogger;
-  isrRscKey: (
-    pathname: string,
-    mountedSlotsHeader?: string | null,
-    renderMode?: AppRscRenderMode,
-  ) => string;
+  isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
+  interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
   renderMode?: AppRscRenderMode;
   preserveClientResponseHeaders?: boolean;
@@ -309,7 +306,12 @@ export async function readAppPageCacheResponse(
   options: ReadAppPageCacheResponseOptions,
 ): Promise<Response | null> {
   const isrKey = options.isRscRequest
-    ? options.isrRscKey(options.cleanPathname, options.mountedSlotsHeader, options.renderMode)
+    ? options.isrRscKey(
+        options.cleanPathname,
+        options.mountedSlotsHeader,
+        options.renderMode,
+        options.interceptionContext,
+      )
     : options.isrHtmlKey(options.cleanPathname);
   const artifact = options.isRscRequest ? "rsc" : "html";
 
@@ -367,7 +369,12 @@ export async function readAppPageCacheResponse(
 
     if (cached?.isStale && cachedValue) {
       const regenerationKey = options.isRscRequest
-        ? options.isrRscKey(options.cleanPathname, options.mountedSlotsHeader, options.renderMode)
+        ? options.isrRscKey(
+            options.cleanPathname,
+            options.mountedSlotsHeader,
+            options.renderMode,
+            options.interceptionContext,
+          )
         : options.isrHtmlKey(options.cleanPathname);
 
       // Preserve the legacy behavior from the inline generator: stale entries
@@ -384,6 +391,7 @@ export async function readAppPageCacheResponse(
               options.cleanPathname,
               options.mountedSlotsHeader,
               options.renderMode,
+              options.interceptionContext,
             ),
             buildAppPageCacheValue(
               "",
@@ -490,7 +498,12 @@ export function finalizeAppPageHtmlCacheResponse(
 
   const [streamForClient, streamForCache] = response.body.tee();
   const htmlKey = options.isrHtmlKey(options.cleanPathname);
-  const rscKey = options.isrRscKey(options.cleanPathname, null);
+  const rscKey = options.isrRscKey(
+    options.cleanPathname,
+    null,
+    undefined,
+    options.interceptionContext,
+  );
   const clientHeaders = new Headers(response.headers);
   if (options.preserveClientResponseHeaders !== true) {
     // HTML Server Components can access request APIs while the stream is being
@@ -617,6 +630,7 @@ export function scheduleAppPageRscCacheWrite(
     options.cleanPathname,
     options.mountedSlotsHeader,
     options.renderMode,
+    options.interceptionContext,
   );
   const cachePromise = (async () => {
     try {

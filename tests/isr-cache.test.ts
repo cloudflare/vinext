@@ -196,6 +196,18 @@ describe("App Router ISR cache key primitives", () => {
     expect(keys.values().next().value).toBe("app:/feed:rsc");
   });
 
+  it("keys intercepted RSC variants by source context", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const fromFeed = appIsrRscKey("/photos/42", "modal", undefined, "/feed");
+    const fromGallery = appIsrRscKey("/photos/42", "modal", undefined, "/gallery");
+    const direct = appIsrRscKey("/photos/42", "modal");
+
+    expect(fromFeed).not.toBe(fromGallery);
+    expect(fromFeed).not.toBe(direct);
+    expect(fromFeed).toMatch(/^app:\/photos\/42:rsc:source:[a-z0-9]+:slots:[a-z0-9]+$/);
+  });
+
   it("keys RSC refresh variants separately from normal navigation variants", () => {
     delete process.env.__VINEXT_BUILD_ID;
 

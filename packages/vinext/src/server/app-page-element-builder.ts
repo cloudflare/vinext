@@ -10,11 +10,10 @@ import {
   type AppPageRouteWiringRoute,
   type AppPageSlotOverride,
 } from "./app-page-route-wiring.js";
-import { AppElementsWire, type AppElements, type AppElementsInterception } from "./app-elements.js";
+import { AppElementsWire, type AppElements } from "./app-elements.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
-import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
 import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js";

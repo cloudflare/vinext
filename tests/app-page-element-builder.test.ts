@@ -113,7 +113,7 @@ describe("buildPageElements", () => {
     expect(record["route:/test"]).toBeDefined();
   });
 
-  it("includes interception context in the error payload route ID", async () => {
+  it("keeps interception context out of the error payload route ID", async () => {
     const route = createSyntheticRoute({
       page: createSyntheticPageModuleWithoutDefault(),
       layouts: [],
@@ -130,7 +130,8 @@ describe("buildPageElements", () => {
     );
 
     const record = result as Record<string, unknown>;
-    expect(record[APP_ROUTE_KEY]).toBe("route:/intercepted\u0000ctx-abc");
+    expect(record[APP_ROUTE_KEY]).toBe("route:/intercepted");
+    expect(record[APP_INTERCEPTION_CONTEXT_KEY]).toBe("ctx-abc");
   });
 
   it("computes root layout tree path for error payload when layouts exist", async () => {
@@ -278,6 +279,63 @@ describe("buildPageElements", () => {
         state: "active",
       },
     ]);
+  });
+
+  it("uses the source route identity for intercepted source-route payload keys", async () => {
+    function TestPage(): React.ReactNode {
+      return React.createElement("div", null, "Feed");
+    }
+    function TestLayout({ children }: { children?: React.ReactNode }): React.ReactNode {
+      return children;
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(TestPage),
+      layouts: [createSyntheticPageModule(TestLayout), createSyntheticPageModule(TestLayout)],
+      layoutTreePositions: [0, 1],
+      routeSegments: ["feed"],
+      pattern: "/feed",
+      slots: {
+        "modal@feed/@modal": {
+          id: "slot:modal:/feed",
+          name: "modal",
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: 1,
+          routeSegments: null,
+        },
+      },
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({
+        route,
+        routePath: "/photos/42",
+        opts: {
+          interceptionContext: "/feed",
+          interceptSourceMatchedUrl: "/feed",
+          interceptSlotId: "slot:modal:/feed",
+          interceptSlotKey: "modal@feed/@modal",
+          interceptPage: createSyntheticPageModule(() =>
+            React.createElement("div", null, "Intercepted"),
+          ),
+          interceptParams: { id: "42" },
+        } as Record<string, unknown>,
+      }),
+    );
+    const record = result as Record<string, unknown>;
+
+    expect(record[APP_ROUTE_KEY]).toBe("route:/feed");
+    expect(Object.prototype.hasOwnProperty.call(record, "route:/feed")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(record, "page:/feed")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(record, "route:/photos/42\0/feed")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(record, "page:/photos/42\0/feed")).toBe(false);
+    expect(record[APP_INTERCEPTION_KEY]).toEqual({
+      sourceMatchedUrl: "/feed",
+      sourceRouteId: "route:/feed",
+      slotId: "slot:modal:/feed",
+      targetMatchedUrl: "/photos/42",
+      targetRouteId: "route:/photos/42",
+    });
   });
 
   it("normalizes encoded interception proof paths before encoding route IDs", async () => {
