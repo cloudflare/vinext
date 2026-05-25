@@ -55,7 +55,11 @@ import {
   isAbsoluteAssetPrefix,
   resolveAssetsDir,
 } from "../utils/asset-prefix.js";
-import { computeLazyChunks } from "../utils/lazy-chunks.js";
+import {
+  computeDynamicImportPreloads,
+  computeLazyChunks,
+  dynamicImportPreloadsWithBase,
+} from "../utils/lazy-chunks.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
 import {
   findClientEntryFile,
@@ -278,6 +282,43 @@ function matchesIfNoneMatchHeader(ifNoneMatch: string | undefined, etag: string)
     .some((value) => value === etag);
 }
 
+function stripHeaders(
+  headersRecord: Record<string, string | string[]>,
+  names: readonly string[],
+): void {
+  const targets = new Set(names.map((name) => name.toLowerCase()));
+  for (const key of Object.keys(headersRecord)) {
+    if (targets.has(key.toLowerCase())) delete headersRecord[key];
+  }
+}
+
+function installClientBuildManifestGlobals(clientDir: string, assetBase: string): void {
+  globalThis.__VINEXT_LAZY_CHUNKS__ = undefined;
+  globalThis.__VINEXT_DYNAMIC_PRELOADS__ = undefined;
+
+  const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
+  if (!fs.existsSync(buildManifestPath)) return;
+
+  try {
+    const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
+    const lazyChunks = computeLazyChunks(buildManifest).map((file: string) =>
+      manifestFileWithBase(file, assetBase),
+    );
+    if (lazyChunks.length > 0) {
+      globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks;
+    }
+
+    const dynamicPreloads = dynamicImportPreloadsWithBase(
+      computeDynamicImportPreloads(buildManifest),
+      (file) => manifestFileWithBase(file, assetBase),
+    );
+    if (Object.keys(dynamicPreloads).length > 0) {
+      globalThis.__VINEXT_DYNAMIC_PRELOADS__ = dynamicPreloads;
+    }
+  } catch {
+    /* ignore parse errors */
+  }
+}
 function isNoBodyResponseStatus(status: number): boolean {
   return NO_BODY_RESPONSE_STATUSES.has(status);
 }
@@ -1042,8 +1083,16 @@ function installPagesClientAssetGlobals(options: {
       manifestFileWithBase(file, options.assetBase),
     );
     globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks.length > 0 ? lazyChunks : undefined;
+
+    const dynamicPreloads = dynamicImportPreloadsWithBase(
+      computeDynamicImportPreloads(buildManifest),
+      (file) => manifestFileWithBase(file, options.assetBase),
+    );
+    globalThis.__VINEXT_DYNAMIC_PRELOADS__ =
+      Object.keys(dynamicPreloads).length > 0 ? dynamicPreloads : undefined;
   } else {
     globalThis.__VINEXT_LAZY_CHUNKS__ = undefined;
+    globalThis.__VINEXT_DYNAMIC_PRELOADS__ = undefined;
   }
 
   return ssrManifest;
@@ -1122,6 +1171,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       clientEntryLookup: "pages-client-entry",
     });
   }
+  installClientBuildManifestGlobals(clientDir, appAssetBase);
 
   // Seed the memory cache with pre-rendered routes so the first request to
   // any pre-rendered page is a cache HIT instead of a full re-render.
@@ -1446,6 +1496,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     assetBase,
     clientEntryLookup: "any-client-entry",
   });
+  installClientBuildManifestGlobals(clientDir, assetBase);
 
   // Build the static file metadata cache at startup (same as App Router).
   const staticCache = await StaticFileCache.create(clientDir);

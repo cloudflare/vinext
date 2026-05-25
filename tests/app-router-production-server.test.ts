@@ -242,6 +242,27 @@ describe("App Router Production server (startProdServer)", () => {
     expect(secondHtml).not.toContain('nonce="first"');
   });
 
+  it("preloads rendered next/dynamic chunks with the CSP nonce", async () => {
+    // Ported from Next.js: test/e2e/app-dir/next-dynamic-csp-nonce/next-dynamic-csp-nonce.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-dynamic-csp-nonce/next-dynamic-csp-nonce.test.ts
+    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic?csp-nonce=1`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+
+    const html = await res.text();
+    const dynamicScriptPreloads =
+      html.match(
+        /<link\b(?=[^>]*\brel="preload")(?=[^>]*\bas="script")(?=[^>]*\bhref="[^"]*\/_next\/static\/chunks\/[^"]*\.js")[^>]*>/g,
+      ) ?? [];
+
+    expect(dynamicScriptPreloads.length).toBeGreaterThan(0);
+    for (const tag of dynamicScriptPreloads) {
+      expect(tag).toContain('nonce="vinext-test-nonce"');
+    }
+  });
+
   it("does not collapse encoded slashes onto nested routes in production", async () => {
     const encodedRes = await fetch(`${baseUrl}/headers%2Foverride-from-middleware`);
     expect(encodedRes.status).toBe(404);
@@ -405,14 +426,13 @@ describe("App Router Production server (startProdServer)", () => {
   });
 
   it("serves static assets with cache headers", async () => {
-    // Find an actual hashed asset from the build (on disk under
-    // `_next/static/`, matching `resolveAssetsDir("")`).
-    const assetsDir = path.join(outDir, "client", "_next", "static");
+    // Find an actual hashed JS asset from the build.
+    const assetsDir = path.join(outDir, "client", "_next", "static", "chunks");
     const assets = fs.readdirSync(assetsDir);
     const jsFile = assets.find((f: string) => f.endsWith(".js"));
     expect(jsFile).toBeDefined();
 
-    const res = await fetch(`${baseUrl}/_next/static/${jsFile}`);
+    const res = await fetch(`${baseUrl}/_next/static/chunks/${jsFile}`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("javascript");
     expect(res.headers.get("cache-control")).toContain("immutable");

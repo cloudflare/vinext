@@ -132,11 +132,20 @@ export function createClientManualChunks(shimsDir: string) {
  * compression efficiency — small files restart the compression dictionary,
  * adding ~5-15% wire overhead vs fewer larger chunks.
  */
+export function createClientFileNameConfig(assetsDir: string) {
+  const chunksDir = `${assetsDir}/chunks`;
+  return {
+    entryFileNames: `${chunksDir}/[name]-[hash].js`,
+    chunkFileNames: `${chunksDir}/[name]-[hash].js`,
+  };
+}
+
 export function createClientOutputConfig(
   clientManualChunks: (id: string) => string | undefined,
   assetsDir: string,
 ) {
   return {
+    ...createClientFileNameConfig(assetsDir),
     assetFileNames: createClientAssetFileNames(assetsDir),
     manualChunks: clientManualChunks,
     experimentalMinChunkSize: 10_000,

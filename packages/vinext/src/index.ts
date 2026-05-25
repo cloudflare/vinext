@@ -109,6 +109,7 @@ import {
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
+import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
@@ -126,7 +127,11 @@ import {
   createLocalFontsPlugin,
 } from "./plugins/fonts.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
-import { computeLazyChunks } from "./utils/lazy-chunks.js";
+import {
+  computeDynamicImportPreloads,
+  computeLazyChunks,
+  dynamicImportPreloadsWithBase,
+} from "./utils/lazy-chunks.js";
 import {
   findClientEntryFile,
   findPagesClientEntryFile,
@@ -142,6 +147,7 @@ import {
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import { buildSassPreprocessorOptions, createSassTildeImporter } from "./plugins/sass.js";
 import {
+  createClientFileNameConfig,
   createClientManualChunks,
   createClientOutputConfig,
   createClientCodeSplittingConfig,
@@ -646,6 +652,7 @@ const clientCodeSplittingConfig = createClientCodeSplittingConfig(clientManualCh
 function getClientOutputConfigForVite(viteMajorVersion: number, assetsDir: string) {
   return viteMajorVersion >= 8
     ? {
+        ...createClientFileNameConfig(assetsDir),
         assetFileNames: createClientAssetFileNames(assetsDir),
         codeSplitting: clientCodeSplittingConfig,
       }
@@ -2228,11 +2235,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ],
               },
               build: {
-                // When targeting Cloudflare Workers or mixing app/ with pages/,
-                // enable manifest generation so production runtimes can read the
-                // client build manifest. Cloudflare uses it for lazy chunks; the
-                // hybrid Node/App fallback uses it to find the Pages client entry.
-                ...(hasCloudflarePlugin || hasPagesDir ? { manifest: true } : {}),
+                // Production App Router rendering needs Vite's client manifest
+                // to resolve next/dynamic module IDs to the exact JS/CSS files
+                // that should be preloaded when a dynamic boundary renders.
+                // Cloudflare builds also use it to inject lazy chunk metadata
+                // into the Worker entry.
+                manifest: true,
                 ...(hasPagesDir ? { ssrManifest: true } : {}),
                 // Client-scoped so RSC/SSR keep their normal asset handling
                 // unless the user configured Vite globally.
@@ -4062,6 +4070,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       () => nextConfig,
       () => root,
     ),
+    // next/dynamic preload metadata:
+    // Mirrors Next.js's react-loadable transform by recording which resolved
+    // module IDs belong to each dynamic() boundary. The runtime resolves those
+    // IDs through Vite's build manifest so it can emit boundary-scoped preload
+    // hints with the request CSP nonce.
+    createDynamicPreloadMetadataPlugin(),
     // "use cache" directive transform:
     // Detects "use cache" at file-level or function-level and wraps the
     // exports/functions with registerCachedFunction() from vinext/cache-runtime.
@@ -4633,16 +4647,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
     },
     // Cloudflare Workers production build integration:
-    // After all environments are built, compute lazy chunks from the client
-    // build manifest and inject globals into the worker entry.
+    // After all environments are built, compute dynamic chunk metadata from
+    // the client build manifest and inject globals into the worker entry.
     //
     // Pages Router: injects __VINEXT_CLIENT_ENTRY__, __VINEXT_SSR_MANIFEST__,
-    //   and __VINEXT_LAZY_CHUNKS__ into the worker entry (found via wrangler.json).
+    //   __VINEXT_LAZY_CHUNKS__, and __VINEXT_DYNAMIC_PRELOADS__ into the worker
+    //   entry (found via wrangler.json).
     // App Router: the RSC plugin handles App hydration via
-    //   loadBootstrapScriptContent(), but we still inject __VINEXT_LAZY_CHUNKS__
-    //   and __VINEXT_SSR_MANIFEST__ into the worker entry at dist/server/index.js.
-    //   Mixed app+pages builds also inject __VINEXT_CLIENT_ENTRY__ for Pages
-    //   Router fallback routes.
+    //   loadBootstrapScriptContent(), but we still inject __VINEXT_LAZY_CHUNKS__,
+    //   __VINEXT_DYNAMIC_PRELOADS__, and __VINEXT_SSR_MANIFEST__ into the worker
+    //   entry at dist/server/index.js. Mixed app+pages builds also inject
+    //   __VINEXT_CLIENT_ENTRY__ for Pages Router fallback routes.
     // Both: generates _headers file for immutable asset caching.
     {
       name: "vinext:cloudflare-build",
@@ -4666,11 +4681,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const clientBase = envConfig.base ?? "/";
 
           // Read build manifest and compute lazy chunks (only reachable via
-          // dynamic imports). This runs for BOTH App Router and Pages Router.
+          // dynamic imports), plus per-next/dynamic preload files. This runs
+          // for BOTH App Router and Pages Router.
           // App Router gets its app client bootstrap via the RSC plugin. This
           // Pages client entry is still needed for mixed app+pages fallback
           // routes rendered through the Pages Router entry.
           let lazyChunksData: string[] | null = null;
+          let dynamicPreloadsData: Record<string, string[]> | null = null;
           let clientEntryFile: string | null = null;
           const clientEntryManifest = readClientEntryManifest(clientDir);
           clientEntryFile =
@@ -4688,6 +4705,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   assetsSubdir: resolveAssetsDir(nextConfig?.assetPrefix),
                   assetBase: clientBase,
                 }) ?? null;
+            }
+            const lazy = manifestFilesWithBase(computeLazyChunks(buildManifest), clientBase);
+            if (lazy.length > 0) lazyChunksData = lazy;
+            const dynamicPreloads = dynamicImportPreloadsWithBase(
+              computeDynamicImportPreloads(buildManifest),
+              (file) => manifestFileWithBase(file, clientBase),
+            );
+            if (Object.keys(dynamicPreloads).length > 0) {
+              dynamicPreloadsData = dynamicPreloads;
+            }
             }
             const lazy = manifestFilesWithBase(computeLazyChunks(buildManifest), clientBase);
             if (lazy.length > 0) lazyChunksData = lazy;
@@ -4721,7 +4748,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
             if (
               fs.existsSync(workerEntry) &&
-              (lazyChunksData || ssrManifestData || (hasPagesDir && clientEntryFile))
+              (lazyChunksData || dynamicPreloadsData || ssrManifestData || (hasPagesDir && clientEntryFile))
             ) {
               let code = fs.readFileSync(workerEntry, "utf-8");
               const globals: string[] = [];
@@ -4738,6 +4765,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               if (lazyChunksData) {
                 globals.push(
                   `globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`,
+                );
+              }
+              if (dynamicPreloadsData) {
+                globals.push(
+                  `globalThis.__VINEXT_DYNAMIC_PRELOADS__ = ${JSON.stringify(dynamicPreloadsData)};`,
                 );
               }
               code = globals.join("\n") + "\n" + code;
@@ -4783,7 +4815,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             }
 
             // Prepend globals to worker entry
-            if (clientEntryFile || ssrManifestData || lazyChunksData) {
+            if (clientEntryFile || ssrManifestData || lazyChunksData || dynamicPreloadsData) {
               let code = fs.readFileSync(workerEntry, "utf-8");
               const globals: string[] = [];
               if (clientEntryFile) {
@@ -4799,6 +4831,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               if (lazyChunksData) {
                 globals.push(
                   `globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`,
+                );
+              }
+              if (dynamicPreloadsData) {
+                globals.push(
+                  `globalThis.__VINEXT_DYNAMIC_PRELOADS__ = ${JSON.stringify(dynamicPreloadsData)};`,
                 );
               }
               code = globals.join("\n") + "\n" + code;

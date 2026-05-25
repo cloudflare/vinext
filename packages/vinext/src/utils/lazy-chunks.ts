@@ -85,3 +85,89 @@ export function computeLazyChunks(buildManifest: Record<string, BuildManifestChu
 
   return lazyChunks;
 }
+
+function normalizeManifestKey(key: string): string {
+  return key.split("?")[0].replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+function addFile(files: string[], seen: Set<string>, file: string | undefined): void {
+  if (!file || seen.has(file)) return;
+  seen.add(file);
+  files.push(file);
+}
+
+function collectStaticChunkFiles(
+  buildManifest: Record<string, BuildManifestChunk>,
+  key: string,
+  files: string[],
+  seenFiles: Set<string>,
+  visitedChunks: Set<string>,
+): void {
+  if (visitedChunks.has(key)) return;
+  visitedChunks.add(key);
+
+  const chunk = buildManifest[key];
+  if (!chunk) return;
+
+  if (chunk.file.endsWith(".js")) {
+    addFile(files, seenFiles, chunk.file);
+  }
+  for (const cssFile of chunk.css ?? []) {
+    addFile(files, seenFiles, cssFile);
+  }
+
+  for (const importedKey of chunk.imports ?? []) {
+    collectStaticChunkFiles(buildManifest, importedKey, files, seenFiles, visitedChunks);
+  }
+}
+
+/**
+ * Compute the production preload files for each module referenced by a
+ * `next/dynamic()` boundary.
+ *
+ * Next.js records module IDs during compilation, then resolves those IDs
+ * against its react-loadable manifest at render time. Vinext's equivalent
+ * source of truth is Vite's build manifest: each chunk lists the modules it
+ * reaches through `dynamicImports`, and each dynamic entry lists the JS/CSS
+ * files required to evaluate it.
+ *
+ * @returns A map keyed by root-relative module ID, with JS/CSS files that
+ * should be preloaded when that dynamic boundary is rendered.
+ */
+export function computeDynamicImportPreloads(
+  buildManifest: Record<string, BuildManifestChunk>,
+): Record<string, string[]> {
+  const preloads: Record<string, string[]> = {};
+
+  for (const chunk of Object.values(buildManifest)) {
+    for (const dynamicKey of chunk.dynamicImports ?? []) {
+      const files: string[] = [];
+      const seenFiles = new Set<string>();
+      collectStaticChunkFiles(buildManifest, dynamicKey, files, seenFiles, new Set());
+      if (files.length === 0) continue;
+
+      const normalizedKey = normalizeManifestKey(dynamicKey);
+      const existing = preloads[normalizedKey] ?? [];
+      const merged = new Set(existing);
+      for (const file of files) {
+        if (merged.has(file)) continue;
+        merged.add(file);
+        existing.push(file);
+      }
+      preloads[normalizedKey] = existing;
+    }
+  }
+
+  return preloads;
+}
+
+export function dynamicImportPreloadsWithBase(
+  preloads: Record<string, string[]>,
+  applyBase: (file: string) => string,
+): Record<string, string[]> {
+  const withBase: Record<string, string[]> = {};
+  for (const [key, files] of Object.entries(preloads)) {
+    withBase[key] = files.map(applyBase);
+  }
+  return withBase;
+}

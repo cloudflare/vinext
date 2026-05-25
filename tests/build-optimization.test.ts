@@ -20,7 +20,11 @@ import {
   RSC_FRAMEWORK_CHUNK_TEST,
   isRscFrameworkModule,
 } from "../packages/vinext/src/build/client-build-config.js";
-import { computeLazyChunks } from "../packages/vinext/src/utils/lazy-chunks.js";
+import {
+  computeDynamicImportPreloads,
+  computeLazyChunks,
+} from "../packages/vinext/src/utils/lazy-chunks.js";
+import { transformNextDynamicPreloadMetadata as _transformNextDynamicPreloadMetadata } from "../packages/vinext/src/plugins/dynamic-preload-metadata.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
 
 // Create a clientManualChunks instance with a test shims directory.
@@ -913,6 +917,8 @@ describe("treeshake config integration", () => {
       // output config should include the min chunk size setting.
       const output = getBuildBundlerOptions(result).output;
       expect(output).toBeDefined();
+      expect(output.entryFileNames).toBe("_next/static/chunks/[name]-[hash].js");
+      expect(output.chunkFileNames).toBe("_next/static/chunks/[name]-[hash].js");
       if (output.codeSplitting) {
         expect(output.codeSplitting.minSize).toBe(10_000);
       } else {
@@ -923,12 +929,11 @@ describe("treeshake config integration", () => {
     }
   }, 15000);
 
-  it("App Router client env gets manifest: true when Cloudflare plugin is present", async () => {
-    // When deploying to Cloudflare Workers, the client environment must produce
-    // a build manifest (manifest.json) so the vinext:cloudflare-build plugin can
-    // read dynamicImports and compute lazy chunks. Without this, all chunks get
-    // modulepreloaded on every page, defeating code-splitting for React.lazy()
-    // and next/dynamic boundaries.
+  it("App Router client env gets manifest: true for dynamic preload metadata", async () => {
+    // App Router production rendering uses Vite's client manifest to map
+    // next/dynamic module IDs to the chunk files that need rendered preload
+    // hints. Cloudflare builds also read it during closeBundle to inject those
+    // globals into the Worker entry.
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
 
@@ -971,11 +976,13 @@ describe("treeshake config integration", () => {
       });
 
       // Client environment should have manifest: true for lazy chunk detection
+      // and rendered next/dynamic preload metadata.
       expect(result.environments).toBeDefined();
       expect(result.environments.client).toBeDefined();
       expect(result.environments.client.build.manifest).toBe(true);
 
-      // Without Cloudflare plugin, manifest should NOT be set (standard App Router)
+      // Node production App Router needs the same manifest at startProdServer()
+      // time, so this is no longer Cloudflare-only.
       const resultNoCf = await (mainPlugin as any).config(
         {
           root: tmpDir,
@@ -985,7 +992,7 @@ describe("treeshake config integration", () => {
         { command: "build" },
       );
 
-      expect(resultNoCf.environments.client.build.manifest).toBeUndefined();
+      expect(resultNoCf.environments.client.build.manifest).toBe(true);
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -1313,6 +1320,121 @@ describe("computeLazyChunks", () => {
     // Framework and entry should NOT be lazy
     expect(lazy).not.toContain("assets/vinext-client-entry-abc.js");
     expect(lazy).not.toContain("assets/framework-xyz.js");
+  });
+});
+
+describe("computeDynamicImportPreloads", () => {
+  it("maps each dynamic import to its own JS and static dependency files", () => {
+    const manifest = {
+      "virtual:vinext-app-browser-entry": {
+        file: "_next/static/app-entry.js",
+        isEntry: true,
+        imports: ["node_modules/react/index.js"],
+        dynamicImports: ["app/dynamic/widget.tsx"],
+      },
+      "node_modules/react/index.js": {
+        file: "_next/static/framework.js",
+      },
+      "app/dynamic/widget.tsx": {
+        file: "_next/static/widget.js",
+        isDynamicEntry: true,
+        imports: ["app/dynamic/widget-helper.ts"],
+        css: ["_next/static/widget.css"],
+      },
+      "app/dynamic/widget-helper.ts": {
+        file: "_next/static/widget-helper.js",
+      },
+      "app/dynamic/unrelated.tsx": {
+        file: "_next/static/unrelated.js",
+        isDynamicEntry: true,
+      },
+    };
+
+    expect(computeDynamicImportPreloads(manifest)).toEqual({
+      "app/dynamic/widget.tsx": [
+        "_next/static/widget.js",
+        "_next/static/widget.css",
+        "_next/static/widget-helper.js",
+      ],
+    });
+  });
+
+  it("does not pull nested dynamic imports into the parent boundary", () => {
+    const manifest = {
+      "app/page.tsx": {
+        file: "_next/static/page.js",
+        isEntry: true,
+        dynamicImports: ["app/dynamic/chart.tsx"],
+      },
+      "app/dynamic/chart.tsx": {
+        file: "_next/static/chart.js",
+        isDynamicEntry: true,
+        dynamicImports: ["app/dynamic/heavy-vendor.ts"],
+      },
+      "app/dynamic/heavy-vendor.ts": {
+        file: "_next/static/heavy-vendor.js",
+        isDynamicEntry: true,
+      },
+    };
+
+    expect(computeDynamicImportPreloads(manifest)).toEqual({
+      "app/dynamic/chart.tsx": ["_next/static/chart.js"],
+      "app/dynamic/heavy-vendor.ts": ["_next/static/heavy-vendor.js"],
+    });
+  });
+});
+
+describe("next/dynamic preload metadata transform", () => {
+  const root = path.resolve("/repo");
+  const importer = path.join(root, "app/page.tsx");
+  const resolveDynamicImport = async (specifier: string) =>
+    specifier === "./dynamic-widget"
+      ? path.join(root, "app/dynamic-widget.tsx")
+      : specifier === "./named"
+        ? path.join(root, "app/named.tsx")
+        : null;
+
+  it("adds loadableGenerated modules to dynamic loader calls", async () => {
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const Widget = dynamic(() => import("./dynamic-widget"), { loading: Loading });`,
+      ].join("\n"),
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+  });
+
+  it("preserves existing explicit loadableGenerated metadata", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const Widget = dynamic(() => import("./dynamic-widget"), { loadableGenerated: { modules: ["custom"] } });`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("supports the object loader form", async () => {
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const Widget = dynamic({ loader: () => import("./named"), ssr: true });`,
+      ].join("\n"),
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/named.tsx"] }`);
   });
 });
 

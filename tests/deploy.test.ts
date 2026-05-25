@@ -33,7 +33,11 @@ import {
 } from "../packages/vinext/src/utils/project.js";
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
-import { computeLazyChunks } from "../packages/vinext/src/utils/lazy-chunks.js";
+import {
+  computeDynamicImportPreloads,
+  computeLazyChunks,
+  dynamicImportPreloadsWithBase,
+} from "../packages/vinext/src/utils/lazy-chunks.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import {
   mergeHeaders,
@@ -2206,8 +2210,9 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
 
     const clientDir = path.resolve(buildRoot, "dist", "client");
 
-    // Read build manifest and compute lazy chunks
+    // Read build manifest and compute dynamic chunk metadata
     let lazyChunksData: string[] | null = null;
+    let dynamicPreloadsData: Record<string, string[]> | null = null;
     const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
     if (fs.existsSync(buildManifestPath)) {
       try {
@@ -2216,6 +2221,11 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
           manifestFileWithBase(file, base),
         );
         if (lazy.length > 0) lazyChunksData = lazy;
+        const dynamicPreloads = dynamicImportPreloadsWithBase(
+          computeDynamicImportPreloads(buildManifest),
+          (file) => manifestFileWithBase(file, base),
+        );
+        if (Object.keys(dynamicPreloads).length > 0) dynamicPreloadsData = dynamicPreloads;
       } catch {
         /* ignore */
       }
@@ -2234,7 +2244,7 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
 
     // App Router: inject into dist/server/index.js (NOT __VINEXT_CLIENT_ENTRY__)
     const workerEntry = path.resolve(distDir, "server", "index.js");
-    if (fs.existsSync(workerEntry) && (lazyChunksData || ssrManifestData)) {
+    if (fs.existsSync(workerEntry) && (lazyChunksData || dynamicPreloadsData || ssrManifestData)) {
       let code = fs.readFileSync(workerEntry, "utf-8");
       const globals: string[] = [];
       if (ssrManifestData) {
@@ -2242,6 +2252,11 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
       }
       if (lazyChunksData) {
         globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
+      }
+      if (dynamicPreloadsData) {
+        globals.push(
+          `globalThis.__VINEXT_DYNAMIC_PRELOADS__ = ${JSON.stringify(dynamicPreloadsData)};`,
+        );
       }
       code = globals.join("\n") + "\n" + code;
       fs.writeFileSync(workerEntry, code);
@@ -2277,8 +2292,9 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     const workerEntry = path.join(workerOutDir, "index.js");
     if (!fs.existsSync(workerEntry)) return;
 
-    // Read build manifest and compute lazy chunks
+    // Read build manifest and compute dynamic chunk metadata
     let lazyChunksData: string[] | null = null;
+    let dynamicPreloadsData: Record<string, string[]> | null = null;
     let clientEntryFile: string | null = null;
     const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
     if (fs.existsSync(buildManifestPath)) {
@@ -2294,6 +2310,11 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
           manifestFileWithBase(file, base),
         );
         if (lazy.length > 0) lazyChunksData = lazy;
+        const dynamicPreloads = dynamicImportPreloadsWithBase(
+          computeDynamicImportPreloads(buildManifest),
+          (file) => manifestFileWithBase(file, base),
+        );
+        if (Object.keys(dynamicPreloads).length > 0) dynamicPreloadsData = dynamicPreloads;
       } catch {
         /* ignore */
       }
@@ -2311,7 +2332,7 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     }
 
     // Pages Router: inject all three globals
-    if (clientEntryFile || ssrManifestData || lazyChunksData) {
+    if (clientEntryFile || ssrManifestData || lazyChunksData || dynamicPreloadsData) {
       let code = fs.readFileSync(workerEntry, "utf-8");
       const globals: string[] = [];
       if (clientEntryFile) {
@@ -2322,6 +2343,11 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
       }
       if (lazyChunksData) {
         globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
+      }
+      if (dynamicPreloadsData) {
+        globals.push(
+          `globalThis.__VINEXT_DYNAMIC_PRELOADS__ = ${JSON.stringify(dynamicPreloadsData)};`,
+        );
       }
       code = globals.join("\n") + "\n" + code;
       fs.writeFileSync(workerEntry, code);
@@ -2430,6 +2456,19 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     expect(lazyChunks).not.toContain("assets/framework.js");
   });
 
+  it("App Router: injects __VINEXT_DYNAMIC_PRELOADS__ into dist/server/index.js", () => {
+    setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
+
+    simulateCloseBundleAppRouter(tmpDir);
+
+    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
+    expect(code).toContain("globalThis.__VINEXT_DYNAMIC_PRELOADS__");
+    expect(code).toContain(
+      `"src/components/MermaidChart.tsx":["assets/mermaid-chart.js","assets/mermaid-vendor.js"]`,
+    );
+    expect(code).not.toContain(`"virtual:vinext-app-browser-entry"`);
+  });
+
   it("App Router: does NOT inject __VINEXT_CLIENT_ENTRY__", () => {
     setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
 
@@ -2481,8 +2520,10 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     simulateCloseBundleAppRouter(tmpDir);
 
     const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
-    // No globals should be injected since there are no lazy chunks and no SSR manifest
+    // No globals should be injected since there are no lazy chunks, no dynamic
+    // preload entries, and no SSR manifest
     expect(code).not.toContain("globalThis.__VINEXT_LAZY_CHUNKS__");
+    expect(code).not.toContain("globalThis.__VINEXT_DYNAMIC_PRELOADS__");
     expect(code).not.toContain("globalThis.__VINEXT_SSR_MANIFEST__");
     // Original code untouched
     expect(code).toBe("// RSC worker entry\nexport default { fetch() {} };");
@@ -2502,7 +2543,7 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
 
   // ── Pages Router tests ────────────────────────────────────────────────
 
-  it("Pages Router: injects all three globals into worker entry", () => {
+  it("Pages Router: injects all runtime globals into worker entry", () => {
     const ssrManifest = {
       "pages/index.tsx": ["/assets/page-index.js", "/assets/page-index.css"],
     };
@@ -2514,6 +2555,7 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     expect(code).toContain("globalThis.__VINEXT_CLIENT_ENTRY__");
     expect(code).toContain("globalThis.__VINEXT_SSR_MANIFEST__");
     expect(code).toContain("globalThis.__VINEXT_LAZY_CHUNKS__");
+    expect(code).toContain("globalThis.__VINEXT_DYNAMIC_PRELOADS__");
   });
 
   it("Pages Router: injects correct lazy chunks", () => {
@@ -2531,6 +2573,18 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     expect(lazyChunks).not.toContain("assets/framework.js");
   });
 
+  it("Pages Router: injects __VINEXT_DYNAMIC_PRELOADS__ into worker entry", () => {
+    setupPagesRouterBuildOutput(tmpDir, manifestWithLazyChunks);
+
+    simulateCloseBundlePagesRouter(tmpDir);
+
+    const code = fs.readFileSync(path.join(tmpDir, "dist", "worker", "index.js"), "utf-8");
+    expect(code).toContain("globalThis.__VINEXT_DYNAMIC_PRELOADS__");
+    expect(code).toContain(
+      `"src/components/MermaidChart.tsx":["assets/mermaid-chart.js","assets/mermaid-vendor.js"]`,
+    );
+  });
+
   it("Pages Router: prefixes client entry and lazy chunks with basePath", () => {
     setupPagesRouterBuildOutput(tmpDir, manifestWithLazyChunks);
 
@@ -2544,6 +2598,9 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     const lazyChunks = JSON.parse(match![1]);
     expect(lazyChunks).toContain("docs/assets/mermaid-chart.js");
     expect(lazyChunks).toContain("docs/assets/mermaid-vendor.js");
+    expect(code).toContain(
+      `"src/components/MermaidChart.tsx":["docs/assets/mermaid-chart.js","docs/assets/mermaid-vendor.js"]`,
+    );
   });
 
   it("Pages Router: finds worker entry via wrangler.json directory scan", () => {
