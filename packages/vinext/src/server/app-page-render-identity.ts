@@ -19,24 +19,24 @@ export type AppPageRenderIdentity = {
   targetMatchedPathname: string;
 };
 
-function normalizeMatchedPathname(pathname: string): string {
+function normalizeAppPageRenderMatchedPathname(pathname: string): string {
   if (!pathname.startsWith("/")) {
     throw new Error(`[vinext] App Router render pathname must be absolute: ${pathname}`);
   }
   return normalizePath(normalizePathnameForRouteMatch(pathname));
 }
 
-function normalizeInterceptionProofPathname(pathname: string | null): string | null {
+export function normalizeAppPageInterceptionProofPathname(pathname: string | null): string | null {
   if (pathname === null || !isInterceptionMatchedUrlPath(pathname)) return null;
-  return normalizeMatchedPathname(pathname);
+  return normalizeAppPageRenderMatchedPathname(pathname);
 }
 
 export function createAppPageRenderIdentity(
   input: AppPageRenderIdentityInput,
 ): AppPageRenderIdentity {
   const interceptionContext = input.interceptionContext ?? null;
-  const targetMatchedPathname = normalizeMatchedPathname(input.displayPathname);
-  const sourceMatchedPathname = normalizeInterceptionProofPathname(
+  const targetMatchedPathname = normalizeAppPageRenderMatchedPathname(input.displayPathname);
+  const sourceMatchedPathname = normalizeAppPageInterceptionProofPathname(
     input.interceptSourceMatchedUrl ?? null,
   );
   const slotId = input.interceptSlotId ?? null;

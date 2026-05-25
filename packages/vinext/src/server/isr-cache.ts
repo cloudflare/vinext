@@ -29,8 +29,7 @@ import {
   getRscRenderModeCacheVariant,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
-import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js";
-import { normalizePathnameForRouteMatch } from "../routing/utils.js";
+import { normalizeAppPageInterceptionProofPathname } from "./app-page-render-identity.js";
 import type { RenderObservation } from "./cache-proof.js";
 export { normalizeMountedSlotsHeader };
 
@@ -263,8 +262,7 @@ export function appIsrHtmlKey(pathname: string): string {
 }
 
 function normalizeInterceptionContextCacheVariant(interceptionContext: string): string | null {
-  if (!isInterceptionMatchedUrlPath(interceptionContext)) return null;
-  return normalizePath(normalizePathnameForRouteMatch(interceptionContext));
+  return normalizeAppPageInterceptionProofPathname(interceptionContext);
 }
 
 /**
