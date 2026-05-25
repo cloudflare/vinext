@@ -37,6 +37,12 @@ function sanitizeCSSProperty(prop: string): string | undefined {
   return undefined;
 }
 
+function sanitizeInternalFontFamily(name: string | undefined): string | undefined {
+  if (!name) return undefined;
+  if (/^[$_a-zA-Z][$_a-zA-Z0-9]*$/.test(name)) return name;
+  return undefined;
+}
+
 let classCounter = 0;
 const injectedFonts = new Set<string>();
 
@@ -56,6 +62,11 @@ type LocalFontOptions = {
   variable?: string;
   adjustFontFallback?: boolean | string;
   declarations?: Array<{ prop: string; value: string }>;
+  _vinext?: {
+    font?: {
+      family?: string;
+    };
+  };
 };
 
 type FontResult = {
@@ -277,7 +288,7 @@ export default function localFont(options: LocalFontOptions): FontResult {
   const id = classCounter++;
   const sources = normalizeSources(options);
   const singleSource = sources.length === 1 ? sources[0] : undefined;
-  const family = `__local_font_${id}`;
+  const family = sanitizeInternalFontFamily(options._vinext?.font?.family) ?? `__local_font_${id}`;
   const className = `__font_local_${id}`;
   const fallback = options.fallback ?? ["sans-serif"];
   // Sanitize each fallback name to prevent CSS injection via crafted values

@@ -106,6 +106,31 @@ describe("vinext:local-fonts plugin", () => {
     expect(result.map).toBeDefined();
   });
 
+  it("passes the local binding name through to the runtime font payload", () => {
+    // Ported from Next.js: test/e2e/app-dir/mdx-font-preload/mdx-font-preload.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/mdx-font-preload/mdx-font-preload.test.ts
+    //
+    // Next's font transform passes the variable name into the local font loader,
+    // and the loader uses it as the font-family for generated className styles.
+    // The MDX test observes that through getComputedStyle(document.body).fontFamily.
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      ``,
+      `const myFont = localFont({`,
+      `  src: "../fonts/font1_roboto.woff2",`,
+      `  variable: "--font-my-font",`,
+      `});`,
+    ].join("\n");
+
+    const result = transform.call(plugin, code, "/app/layout.tsx");
+
+    expect(result).not.toBeNull();
+    expectImported(result.code, "../fonts/font1_roboto.woff2");
+    expect(result.code).toContain(`_vinext: { font: { family: "myFont" } }`);
+  });
+
   // ── Object src with path property ────────────────────────────
 
   it("transforms a single source object with path property", () => {
@@ -302,6 +327,29 @@ describe("vinext:local-fonts plugin", () => {
     expect(result.className).toBeDefined();
     // variable returns a class name, not the variable name
     expect(result.variable).toMatch(/^__variable_local_\d+$/);
+  });
+
+  it("uses the transform-provided binding name as the class font-family", () => {
+    // Ported from Next.js: test/e2e/app-dir/mdx-font-preload/mdx-font-preload.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/mdx-font-preload/mdx-font-preload.test.ts
+    const beforeCount = getSSRFontStyles().length;
+    const options = {
+      src: "/assets/font1_roboto.woff2",
+      variable: "--font-my-font",
+      _vinext: { font: { family: "myFont" } },
+    } satisfies Parameters<typeof localFont>[0] & {
+      _vinext: { font: { family: string } };
+    };
+
+    const result = localFont(options);
+
+    expect(result.style.fontFamily).toContain("myFont");
+    expect(result.style.fontFamily).not.toContain("__local_font");
+
+    const addedStyles = getSSRFontStyles().slice(beforeCount).join("\n");
+    expect(addedStyles).toContain(`.${result.className}`);
+    expect(addedStyles).toContain("font-family: 'myFont'");
+    expect(addedStyles).not.toContain("__local_font");
   });
 
   it("matches Next.js style exports for a single local source", () => {
