@@ -415,6 +415,32 @@ describe("createTickBufferedTransform inline CSS", () => {
     expect(out).not.toContain("data-vinext-fonts");
   });
 
+  it("does not prepend SSR font CSS before stylesheet imports", async () => {
+    const out = await runTransform(
+      [
+        '<html><head><link rel="stylesheet" href="/_next/static/app.css" data-precedence="next"/></head></html>',
+      ],
+      {
+        inlineCss: {
+          "/_next/static/app.css": '@import url("/reset.css");\np { color: yellow; }',
+        },
+        inlineCssPrependCss:
+          "@font-face { font-family: '__local_font_0'; src: url('/_next/static/font.woff2'); }",
+        inlineCssPrependFallbackHTML:
+          "<style data-vinext-fonts>@font-face { font-family: '__local_font_0'; src: url('/_next/static/font.woff2'); }</style>",
+      },
+    );
+
+    const inlineStyleStart = out.indexOf("<style data-vinext-inline-css");
+    const inlineStyleEnd = out.indexOf("</style>", inlineStyleStart);
+    const inlineStyle = out.slice(inlineStyleStart, inlineStyleEnd);
+    const fallbackStyleStart = out.indexOf("<style data-vinext-fonts>");
+
+    expect(inlineStyle).toContain('>@import url("/reset.css");');
+    expect(inlineStyle).not.toContain("@font-face");
+    expect(fallbackStyleStart).toBeGreaterThan(inlineStyleEnd);
+  });
+
   it("emits fallback SSR font CSS when no stylesheet link is inlined", async () => {
     const out = await runTransform(["<html><head></head><body>No CSS link</body></html>"], {
       inlineCss: {

@@ -183,6 +183,12 @@ function escapeStyleText(css: string): string {
   return css.replace(/<\/style/gi, "<\\/style");
 }
 
+const CSS_PREPEND_UNSAFE_PREAMBLE_RE = /^\uFEFF?(?:\s|\/\*[\s\S]*?\*\/)*@(charset|import|layer)\b/i;
+
+function canPrependCss(css: string): boolean {
+  return !CSS_PREPEND_UNSAFE_PREAMBLE_RE.test(css);
+}
+
 function rewriteInlineCssStylesheetLinks(
   html: string,
   inlineCssManifest: InlineCssManifest | undefined,
@@ -206,7 +212,8 @@ function rewriteInlineCssStylesheetLinks(
 
     const nonce = getHtmlAttribute(tag, "nonce");
     const nonceAttr = nonce ? ` nonce="${escapeHtmlAttr(nonce)}"` : "";
-    const cssPrefix = !consumedPrependCss && prependCss ? `${prependCss}\n` : "";
+    const shouldPrependCss = !consumedPrependCss && prependCss && canPrependCss(css);
+    const cssPrefix = shouldPrependCss ? `${prependCss}\n` : "";
     consumedPrependCss ||= cssPrefix.length > 0;
 
     return (
