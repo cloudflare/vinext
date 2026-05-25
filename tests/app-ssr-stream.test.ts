@@ -329,6 +329,41 @@ describe("createTickBufferedTransform inline CSS", () => {
     );
   });
 
+  it("replaces stylesheet links when rel contains multiple tokens", async () => {
+    const out = await runTransform(
+      [
+        '<html><head><link rel="preload stylesheet" as="stylesheet" href="/_next/static/app.css" data-precedence="next"/></head></html>',
+      ],
+      {
+        inlineCss: {
+          "/_next/static/app.css": "p { color: yellow; }",
+        },
+      },
+    );
+
+    expect(out).toContain("data-vinext-inline-css");
+    expect(out).toContain("p { color: yellow; }");
+    expect(out).not.toContain('rel="preload stylesheet"');
+  });
+
+  it("replaces stylesheet links split across stream chunks", async () => {
+    const out = await runTransform(
+      [
+        '<html><head><link rel="style',
+        'sheet" href="/_next/static/app.css" data-precedence="next"/></head></html>',
+      ],
+      {
+        inlineCss: {
+          "/_next/static/app.css": "p { color: yellow; }",
+        },
+      },
+    );
+
+    expect(out).toContain("data-vinext-inline-css");
+    expect(out).toContain("p { color: yellow; }");
+    expect(out).not.toContain('<link rel="stylesheet"');
+  });
+
   it("leaves stylesheet links intact when the emitted CSS asset is not in the inline manifest", async () => {
     const html =
       '<html><head><link rel="stylesheet" href="/_next/static/missing.css" data-precedence="vite-rsc/importer-resources"/></head><body></body></html>';

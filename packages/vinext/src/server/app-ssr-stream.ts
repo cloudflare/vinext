@@ -148,7 +148,8 @@ export function fixPreloadAs(html: string): string {
   );
 }
 
-const LINK_TAG_RE = /<link\b[^>]*>/g;
+const LINK_TAG_RE = /<link\b[^>]*>/gi;
+const HTML_SPACE_RE = /[\t\n\f\r ]+/;
 
 function getHtmlAttribute(tag: string, name: string): string | null {
   const attrRe = /\s([^\s"'=<>`]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
@@ -160,6 +161,14 @@ function getHtmlAttribute(tag: string, name: string): string | null {
   }
 
   return null;
+}
+
+function htmlAttributeHasToken(tag: string, name: string, token: string): boolean {
+  const value = getHtmlAttribute(tag, name);
+  if (value === null) return false;
+  return value
+    .split(HTML_SPACE_RE)
+    .some((part) => part.length > 0 && part.toLowerCase() === token.toLowerCase());
 }
 
 function getInlineCss(manifest: InlineCssManifest, href: string): string | null {
@@ -177,6 +186,17 @@ function getInlineCss(manifest: InlineCssManifest, href: string): string | null 
   }
 
   return null;
+}
+
+function splitTrailingIncompleteLinkTag(html: string): { complete: string; trailing: string } {
+  const linkStart = html.toLowerCase().lastIndexOf("<link");
+  if (linkStart === -1) return { complete: html, trailing: "" };
+  const close = html.indexOf(">", linkStart);
+  if (close !== -1) return { complete: html, trailing: "" };
+  return {
+    complete: html.slice(0, linkStart),
+    trailing: html.slice(linkStart),
+  };
 }
 
 function escapeStyleText(css: string): string {
@@ -200,7 +220,7 @@ function rewriteInlineCssStylesheetLinks(
   let consumedPrependCss = false;
 
   const rewritten = html.replace(LINK_TAG_RE, (tag) => {
-    if (getHtmlAttribute(tag, "rel") !== "stylesheet") return tag;
+    if (!htmlAttributeHasToken(tag, "rel", "stylesheet")) return tag;
 
     const href = getHtmlAttribute(tag, "href");
     const precedence =
@@ -212,7 +232,7 @@ function rewriteInlineCssStylesheetLinks(
 
     const nonce = getHtmlAttribute(tag, "nonce");
     const nonceAttr = nonce ? ` nonce="${escapeHtmlAttr(nonce)}"` : "";
-    const shouldPrependCss = !consumedPrependCss && prependCss && canPrependCss(css);
+    const shouldPrependCss = !consumedPrependCss && prependCss.length > 0 && canPrependCss(css);
     const cssPrefix = shouldPrependCss ? `${prependCss}\n` : "";
     consumedPrependCss ||= cssPrefix.length > 0;
 
@@ -276,6 +296,7 @@ export function createTickBufferedTransform(
   let injected = false;
   let preHeadInjected = false;
   let buffered: string[] = [];
+  let pendingHtml = "";
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   const readInsertion = (): string =>
     typeof injectHTML === "function" ? injectHTML() : injectHTML;
@@ -301,11 +322,11 @@ export function createTickBufferedTransform(
    * rewritten chunk and a flag indicating whether the splice happened, so the
    * caller can mark `preHeadInjected` and stop scanning further chunks.
    *
-   * NOTE: This is called only when `<head ...>` lies fully inside `chunk` —
-   * we deliberately avoid stitching across chunk boundaries because doing so
-   * would force the transform to hold output until it had seen `<head ...>`,
-   * which both delays TTFB and complicates the existing `</head>` injection
-   * path. In practice React Fizz emits the opening shell as a single chunk.
+   * NOTE: This is called only when `<head ...>` lies fully inside the current
+   * tick-buffered batch. We deliberately avoid retaining arbitrary output until
+   * a future chunk completes `<head ...>`, which would delay TTFB and complicate
+   * the existing `</head>` injection path. In practice React Fizz emits the
+   * opening shell as a single batch.
    */
   const spliceAfterHeadOpen = (chunk: string): { chunk: string; spliced: boolean } => {
     if (preHeadInjected) return { chunk, spliced: false };
@@ -320,8 +341,22 @@ export function createTickBufferedTransform(
     };
   };
 
-  const flushBuffered = (controller: TransformStreamDefaultController<Uint8Array>): void => {
-    if (buffered.length === 0) return;
+  const flushBuffered = (
+    controller: TransformStreamDefaultController<Uint8Array>,
+    final = false,
+  ): void => {
+    if (buffered.length === 0 && !pendingHtml) return;
+    const rawHtml = pendingHtml + buffered.join("");
+    buffered = [];
+    pendingHtml = "";
+
+    const split = final
+      ? { complete: rawHtml, trailing: "" }
+      : splitTrailingIncompleteLinkTag(rawHtml);
+    if (split.trailing) {
+      pendingHtml = split.trailing;
+    }
+    if (!split.complete) return;
 
     if (injected && insertsPerFlush) {
       // Emit newly collected server-inserted HTML before the next Fizz HTML
@@ -329,43 +364,41 @@ export function createTickBufferedTransform(
       emitInsertion(controller);
     }
 
-    for (const chunk of buffered) {
-      let working = chunk;
-      if (!preHeadInjected) {
-        const result = spliceAfterHeadOpen(working);
-        if (result.spliced) {
-          working = result.chunk;
-          preHeadInjected = true;
-        }
-      }
-      if (!injected) {
-        const headEnd = working.indexOf("</head>");
-        if (headEnd !== -1) {
-          const before = working.slice(0, headEnd);
-          const after = working.slice(headEnd);
-          controller.enqueue(
-            encoder.encode(before + readInlineCssPrependFallback() + readInsertion() + after),
-          );
-          injected = true;
-          continue;
-        }
-      }
-      controller.enqueue(encoder.encode(working));
+    const inlineCssResult = rewriteInlineCssStylesheetLinks(
+      fixPreloadAs(split.complete),
+      inlineCssManifest,
+      inlineCssPrependCss,
+    );
+    if (inlineCssResult.consumedPrependCss) {
+      inlineCssPrependCss = "";
     }
-    buffered = [];
+
+    let working = inlineCssResult.html;
+    if (!preHeadInjected) {
+      const result = spliceAfterHeadOpen(working);
+      if (result.spliced) {
+        working = result.chunk;
+        preHeadInjected = true;
+      }
+    }
+    if (!injected) {
+      const headEnd = working.indexOf("</head>");
+      if (headEnd !== -1) {
+        const before = working.slice(0, headEnd);
+        const after = working.slice(headEnd);
+        controller.enqueue(
+          encoder.encode(before + readInlineCssPrependFallback() + readInsertion() + after),
+        );
+        injected = true;
+        return;
+      }
+    }
+    controller.enqueue(encoder.encode(working));
   };
 
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
-      const inlineCssResult = rewriteInlineCssStylesheetLinks(
-        fixPreloadAs(decoder.decode(chunk, { stream: true })),
-        inlineCssManifest,
-        inlineCssPrependCss,
-      );
-      buffered.push(inlineCssResult.html);
-      if (inlineCssResult.consumedPrependCss) {
-        inlineCssPrependCss = "";
-      }
+      buffered.push(decoder.decode(chunk, { stream: true }));
 
       if (timeoutId !== null) return;
 
@@ -392,8 +425,12 @@ export function createTickBufferedTransform(
         clearTimeout(timeoutId);
         timeoutId = null;
       }
+      const remainder = decoder.decode();
+      if (remainder) {
+        buffered.push(remainder);
+      }
 
-      flushBuffered(controller);
+      flushBuffered(controller, true);
 
       if (!injected) {
         emitInsertion(controller);

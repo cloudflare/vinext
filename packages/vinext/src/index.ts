@@ -4046,8 +4046,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const buildRoot = envConfig.root ?? process.cwd();
           const clientDir = path.resolve(buildRoot, "dist", "client");
           const manifest = collectInlineCssManifest(clientDir, nextConfig.assetPrefix);
-          const serverEntry = path.resolve(buildRoot, "dist", "server", "index.js");
-          injectInlineCssManifestGlobal(serverEntry, manifest);
+          const rscOutDir = path.resolve(
+            buildRoot,
+            options.rscOutDir ?? path.join("dist", "server"),
+          );
+          for (const entryFile of ["index.js", "index.mjs"]) {
+            if (injectInlineCssManifestGlobal(path.join(rscOutDir, entryFile), manifest)) break;
+          }
         },
       },
     },
