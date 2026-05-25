@@ -66,6 +66,7 @@ import {
 } from "./server/instrumentation.js";
 import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { precompressAssets } from "./build/precompress.js";
+import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import {
   isExternalUrl,
@@ -2207,6 +2208,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
               assetPrefix: nextConfig?.assetPrefix,
               expireTime: nextConfig?.expireTime,
+              inlineCss: nextConfig?.inlineCss,
               i18n: nextConfig?.i18n,
               hasPagesDir,
               publicFiles: scanPublicFileRoutes(root),
@@ -4027,6 +4029,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       };
     })(),
+    {
+      name: "vinext:inline-css-manifest",
+      apply: "build",
+      enforce: "post",
+      closeBundle: {
+        sequential: true,
+        order: "post",
+        handler() {
+          if (this.environment?.name !== "client") return;
+          if (!hasAppDir || nextConfig?.inlineCss !== true) return;
+
+          const envConfig = this.environment?.config;
+          if (!envConfig) return;
+
+          const buildRoot = envConfig.root ?? process.cwd();
+          const clientDir = path.resolve(buildRoot, "dist", "client");
+          const manifest = collectInlineCssManifest(clientDir, nextConfig.assetPrefix);
+          const serverEntry = path.resolve(buildRoot, "dist", "server", "index.js");
+          injectInlineCssManifestGlobal(serverEntry, manifest);
+        },
+      },
+    },
     // Cloudflare Workers production build integration:
     // After all environments are built, compute lazy chunks from the client
     // build manifest and inject globals into the worker entry.

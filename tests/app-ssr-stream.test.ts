@@ -180,6 +180,9 @@ async function runTransform(
   options: {
     injectHTML?: string;
     injectAfterHeadOpenHTML?: string;
+    inlineCss?: Record<string, string>;
+    inlineCssPrependCss?: string;
+    inlineCssPrependFallbackHTML?: string;
   } = {},
 ): Promise<string> {
   const noopRsc = {
@@ -191,6 +194,9 @@ async function runTransform(
     noopRsc,
     options.injectHTML ?? "",
     options.injectAfterHeadOpenHTML ?? "",
+    options.inlineCss,
+    options.inlineCssPrependCss,
+    options.inlineCssPrependFallbackHTML,
   );
   const source = createTextStream(chunks);
   const piped = source.pipeThrough(transform);
@@ -301,5 +307,126 @@ describe("createTickBufferedTransform pre-head splice", () => {
     // it's a small, bounded number rather than per-chunk.
     expect(calls).toBeGreaterThanOrEqual(1);
     expect(calls).toBeLessThan(10);
+  });
+});
+
+describe("createTickBufferedTransform inline CSS", () => {
+  it("replaces React stylesheet links with hoistable inline style tags", async () => {
+    const out = await runTransform(
+      [
+        '<html><head><link rel="stylesheet" href="/_next/static/app.css" data-precedence="vite-rsc/importer-resources"/></head><body></body></html>',
+      ],
+      {
+        inlineCss: {
+          "/_next/static/app.css": "p { color: yellow; }",
+        },
+      },
+    );
+
+    expect(out).not.toContain('rel="stylesheet"');
+    expect(out).toContain(
+      '<style data-vinext-inline-css data-precedence="vite-rsc/importer-resources" data-href="/_next/static/app.css">p { color: yellow; }</style>',
+    );
+  });
+
+  it("leaves stylesheet links intact when the emitted CSS asset is not in the inline manifest", async () => {
+    const html =
+      '<html><head><link rel="stylesheet" href="/_next/static/missing.css" data-precedence="vite-rsc/importer-resources"/></head><body></body></html>';
+
+    await expect(
+      runTransform([html], {
+        inlineCss: {
+          "/_next/static/app.css": "p { color: yellow; }",
+        },
+      }),
+    ).resolves.toContain('href="/_next/static/missing.css"');
+  });
+
+  it("does not rewrite preload or modulepreload links", async () => {
+    const html =
+      '<html><head><link rel="preload" href="/_next/static/app.css" as="stylesheet"/><link rel="modulepreload" href="/_next/static/app.js"/></head></html>';
+
+    const out = await runTransform([html], {
+      inlineCss: {
+        "/_next/static/app.css": "p { color: yellow; }",
+      },
+    });
+
+    expect(out).toContain('<link rel="preload" href="/_next/static/app.css" as="style"/>');
+    expect(out).toContain('<link rel="modulepreload" href="/_next/static/app.js"/>');
+    expect(out).not.toContain("data-vinext-inline-css");
+  });
+
+  it("escapes CSS closing style tags before embedding in HTML", async () => {
+    const out = await runTransform(
+      [
+        '<html><head><link rel="stylesheet" href="/_next/static/app.css" data-precedence="next"/></head></html>',
+      ],
+      {
+        inlineCss: {
+          "/_next/static/app.css": "body::before { content: '</style><script>x</script>'; }",
+        },
+      },
+    );
+
+    expect(out).toContain("<\\/style><script>x</script>");
+    expect(out).not.toContain("</style><script>x</script>");
+  });
+
+  it("matches absolute assetPrefix stylesheet URLs by pathname fallback", async () => {
+    const out = await runTransform(
+      [
+        '<html><head><link rel="stylesheet" href="https://cdn.example.com/_next/static/app.css" data-precedence="next"/></head></html>',
+      ],
+      {
+        inlineCss: {
+          "/_next/static/app.css": "p { color: yellow; }",
+        },
+      },
+    );
+
+    expect(out).toContain('data-href="https://cdn.example.com/_next/static/app.css"');
+    expect(out).toContain("p { color: yellow; }");
+  });
+
+  it("prepends SSR font CSS to the first inlined stylesheet", async () => {
+    const out = await runTransform(
+      [
+        '<html><head><link rel="stylesheet" href="/_next/static/app.css" data-precedence="next"/><link rel="stylesheet" href="/_next/static/route.css" data-precedence="next"/></head></html>',
+      ],
+      {
+        inlineCss: {
+          "/_next/static/app.css": "p { color: yellow; }",
+          "/_next/static/route.css": ".page { font-size: 100px; }",
+        },
+        inlineCssPrependCss:
+          "@font-face { font-family: '__local_font_0'; src: url('/_next/static/font.woff2'); }",
+        inlineCssPrependFallbackHTML:
+          "<style data-vinext-fonts>@font-face { font-family: '__local_font_0'; src: url('/_next/static/font.woff2'); }</style>",
+      },
+    );
+
+    const firstStyleStart = out.indexOf("<style");
+    const secondStyleStart = out.indexOf("<style", firstStyleStart + 1);
+    expect(firstStyleStart).toBeGreaterThanOrEqual(0);
+    expect(secondStyleStart).toBeGreaterThan(firstStyleStart);
+    expect(out.slice(firstStyleStart, secondStyleStart)).toContain("@font-face");
+    expect(out.slice(secondStyleStart)).not.toContain("@font-face");
+    expect(out).not.toContain("data-vinext-fonts");
+  });
+
+  it("emits fallback SSR font CSS when no stylesheet link is inlined", async () => {
+    const out = await runTransform(["<html><head></head><body>No CSS link</body></html>"], {
+      inlineCss: {
+        "/_next/static/app.css": "p { color: yellow; }",
+      },
+      inlineCssPrependCss:
+        "@font-face { font-family: '__local_font_0'; src: url('/_next/static/font.woff2'); }",
+      inlineCssPrependFallbackHTML:
+        "<style data-vinext-fonts>@font-face { font-family: '__local_font_0'; src: url('/_next/static/font.woff2'); }</style>",
+    });
+
+    expect(out).toContain("<style data-vinext-fonts>");
+    expect(out).toContain("@font-face");
   });
 });

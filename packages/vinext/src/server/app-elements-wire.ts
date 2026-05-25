@@ -21,6 +21,7 @@ export const APP_INTERCEPTION_KEY = "__interception";
 export const APP_INTERCEPTION_CONTEXT_KEY = "__interceptionContext";
 export const APP_LAYOUT_IDS_KEY = "__layoutIds";
 export const APP_LAYOUT_FLAGS_KEY = "__layoutFlags";
+export const APP_NEXT_PAGE_MARKER_KEY = "__PAGE__";
 export const APP_RENDER_OBSERVATION_KEY = "__renderObservation";
 export const APP_ROUTE_KEY = "__route";
 export const APP_ROOT_LAYOUT_KEY = "__rootLayout";
@@ -207,6 +208,7 @@ type AppElementsWireMetadataEntries = Readonly<{
   [APP_INTERCEPTION_KEY]?: AppElementsInterception;
   [APP_INTERCEPTION_CONTEXT_KEY]: string | null;
   [APP_LAYOUT_IDS_KEY]: readonly string[];
+  [APP_NEXT_PAGE_MARKER_KEY]: true;
   [APP_ROOT_LAYOUT_KEY]: string | null;
   [APP_SLOT_BINDINGS_KEY]?: readonly AppElementsSlotBinding[];
 }>;
@@ -376,6 +378,7 @@ function createAppElementsWireMetadataEntries(
     [APP_ROUTE_KEY]: input.routeId,
     [APP_INTERCEPTION_CONTEXT_KEY]: input.interceptionContext,
     [APP_LAYOUT_IDS_KEY]: layoutIds,
+    [APP_NEXT_PAGE_MARKER_KEY]: true,
     [APP_ROOT_LAYOUT_KEY]: input.rootLayoutTreePath,
   };
   // Empty slot binding metadata is intentionally omitted. Missing

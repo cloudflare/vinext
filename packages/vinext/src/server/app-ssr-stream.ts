@@ -1,4 +1,4 @@
-import { createInlineScriptTag, safeJsonStringify } from "./html.js";
+import { createInlineScriptTag, escapeHtmlAttr, safeJsonStringify } from "./html.js";
 import {
   bytesToBase64,
   concatUint8Arrays,
@@ -15,6 +15,11 @@ type RscEmbedTransform = {
 };
 
 type HtmlInsertion = string | (() => string);
+type InlineCssManifest = Record<string, string>;
+type InlineCssRewriteResult = {
+  html: string;
+  consumedPrependCss: boolean;
+};
 
 const NAVIGATION_RUNTIME_REFERENCE = `self[Symbol.for(${safeJsonStringify(
   NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION,
@@ -143,6 +148,78 @@ export function fixPreloadAs(html: string): string {
   );
 }
 
+const LINK_TAG_RE = /<link\b[^>]*>/g;
+
+function getHtmlAttribute(tag: string, name: string): string | null {
+  const attrRe = /\s([^\s"'=<>`]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = attrRe.exec(tag)) !== null) {
+    if (match[1]?.toLowerCase() !== name.toLowerCase()) continue;
+    return match[2] ?? match[3] ?? match[4] ?? "";
+  }
+
+  return null;
+}
+
+function getInlineCss(manifest: InlineCssManifest, href: string): string | null {
+  if (Object.prototype.hasOwnProperty.call(manifest, href)) {
+    return manifest[href] ?? "";
+  }
+
+  try {
+    const pathname = new URL(href).pathname;
+    if (Object.prototype.hasOwnProperty.call(manifest, pathname)) {
+      return manifest[pathname] ?? "";
+    }
+  } catch {
+    // Relative asset URLs are looked up by their emitted href.
+  }
+
+  return null;
+}
+
+function escapeStyleText(css: string): string {
+  return css.replace(/<\/style/gi, "<\\/style");
+}
+
+function rewriteInlineCssStylesheetLinks(
+  html: string,
+  inlineCssManifest: InlineCssManifest | undefined,
+  prependCss: string,
+): InlineCssRewriteResult {
+  if (!inlineCssManifest || Object.keys(inlineCssManifest).length === 0) {
+    return { html, consumedPrependCss: false };
+  }
+  let consumedPrependCss = false;
+
+  const rewritten = html.replace(LINK_TAG_RE, (tag) => {
+    if (getHtmlAttribute(tag, "rel") !== "stylesheet") return tag;
+
+    const href = getHtmlAttribute(tag, "href");
+    const precedence =
+      getHtmlAttribute(tag, "data-precedence") ?? getHtmlAttribute(tag, "precedence");
+    if (!href || !precedence) return tag;
+
+    const css = getInlineCss(inlineCssManifest, href);
+    if (css === null) return tag;
+
+    const nonce = getHtmlAttribute(tag, "nonce");
+    const nonceAttr = nonce ? ` nonce="${escapeHtmlAttr(nonce)}"` : "";
+    const cssPrefix = !consumedPrependCss && prependCss ? `${prependCss}\n` : "";
+    consumedPrependCss ||= cssPrefix.length > 0;
+
+    return (
+      `<style data-vinext-inline-css${nonceAttr}` +
+      ` data-precedence="${escapeHtmlAttr(precedence)}"` +
+      ` data-href="${escapeHtmlAttr(href)}">` +
+      `${escapeStyleText(cssPrefix + css)}</style>`
+    );
+  });
+
+  return { html: rewritten, consumedPrependCss };
+}
+
 /**
  * Match the `<head ...>` opening tag in a chunk. Matches both bare `<head>`
  * and `<head class="foo">` shapes. Used to splice HTML immediately after the
@@ -182,6 +259,9 @@ export function createTickBufferedTransform(
   rscEmbed: RscEmbedTransform,
   injectHTML: HtmlInsertion = "",
   injectAfterHeadOpenHTML: HtmlInsertion = "",
+  inlineCssManifest?: InlineCssManifest,
+  inlineCssPrependCss = "",
+  inlineCssPrependFallbackHTML = "",
 ): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -196,8 +276,13 @@ export function createTickBufferedTransform(
     typeof injectAfterHeadOpenHTML === "function"
       ? injectAfterHeadOpenHTML()
       : injectAfterHeadOpenHTML;
+  const readInlineCssPrependFallback = (): string => {
+    if (!inlineCssPrependCss || !inlineCssPrependFallbackHTML) return "";
+    inlineCssPrependCss = "";
+    return inlineCssPrependFallbackHTML;
+  };
   const emitInsertion = (controller: TransformStreamDefaultController<Uint8Array>): void => {
-    const insertion = readInsertion();
+    const insertion = readInlineCssPrependFallback() + readInsertion();
     if (insertion) {
       controller.enqueue(encoder.encode(insertion));
     }
@@ -251,7 +336,9 @@ export function createTickBufferedTransform(
         if (headEnd !== -1) {
           const before = working.slice(0, headEnd);
           const after = working.slice(headEnd);
-          controller.enqueue(encoder.encode(before + readInsertion() + after));
+          controller.enqueue(
+            encoder.encode(before + readInlineCssPrependFallback() + readInsertion() + after),
+          );
           injected = true;
           continue;
         }
@@ -263,7 +350,15 @@ export function createTickBufferedTransform(
 
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
-      buffered.push(fixPreloadAs(decoder.decode(chunk, { stream: true })));
+      const inlineCssResult = rewriteInlineCssStylesheetLinks(
+        fixPreloadAs(decoder.decode(chunk, { stream: true })),
+        inlineCssManifest,
+        inlineCssPrependCss,
+      );
+      buffered.push(inlineCssResult.html);
+      if (inlineCssResult.consumedPrependCss) {
+        inlineCssPrependCss = "";
+      }
 
       if (timeoutId !== null) return;
 
