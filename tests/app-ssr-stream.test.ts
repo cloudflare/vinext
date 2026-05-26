@@ -212,6 +212,26 @@ async function runTransform(
   return out;
 }
 
+async function readSingleTransformChunk(
+  transform: TransformStream<Uint8Array, Uint8Array>,
+  chunk: string,
+): Promise<string> {
+  const source = new TransformStream<Uint8Array, Uint8Array>();
+  const reader = source.readable.pipeThrough(transform).getReader();
+  const writer = source.writable.getWriter();
+
+  await writer.write(new TextEncoder().encode(chunk));
+  const result = await reader.read();
+  await writer.close();
+  await reader.cancel();
+
+  if (result.done) {
+    throw new Error("Expected transform to emit a chunk");
+  }
+
+  return new TextDecoder().decode(result.value);
+}
+
 describe("createTickBufferedTransform pre-head splice", () => {
   it("emits injectAfterHeadOpenHTML immediately after <head> opens", async () => {
     const html =
@@ -362,6 +382,22 @@ describe("createTickBufferedTransform inline CSS", () => {
     expect(out).toContain("data-vinext-inline-css");
     expect(out).toContain("p { color: yellow; }");
     expect(out).not.toContain('<link rel="stylesheet"');
+  });
+
+  it("does not buffer incomplete link-like text when inline CSS is disabled", async () => {
+    const noopRsc = {
+      flush: () => "",
+      finalize: async () => "",
+      getRawBuffer: async () => new ArrayBuffer(0),
+    };
+    const transform = createTickBufferedTransform(noopRsc);
+
+    const out = await readSingleTransformChunk(
+      transform,
+      "<html><body><script>const marker = '<link'",
+    );
+
+    expect(out).toContain("const marker = '<link'");
   });
 
   it("leaves stylesheet links intact when the emitted CSS asset is not in the inline manifest", async () => {

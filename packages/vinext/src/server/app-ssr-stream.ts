@@ -1,4 +1,9 @@
-import { createInlineScriptTag, escapeHtmlAttr, safeJsonStringify } from "./html.js";
+import {
+  createInlineScriptTag,
+  escapeHtmlAttr,
+  htmlTokenListContains,
+  safeJsonStringify,
+} from "./html.js";
 import {
   bytesToBase64,
   concatUint8Arrays,
@@ -149,7 +154,6 @@ export function fixPreloadAs(html: string): string {
 }
 
 const LINK_TAG_RE = /<link\b[^>]*>/gi;
-const HTML_SPACE_RE = /[\t\n\f\r ]+/;
 
 function getHtmlAttribute(tag: string, name: string): string | null {
   const attrRe = /\s([^\s"'=<>`]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
@@ -164,11 +168,7 @@ function getHtmlAttribute(tag: string, name: string): string | null {
 }
 
 function htmlAttributeHasToken(tag: string, name: string, token: string): boolean {
-  const value = getHtmlAttribute(tag, name);
-  if (value === null) return false;
-  return value
-    .split(HTML_SPACE_RE)
-    .some((part) => part.length > 0 && part.toLowerCase() === token.toLowerCase());
+  return htmlTokenListContains(getHtmlAttribute(tag, name), token);
 }
 
 function getInlineCss(manifest: InlineCssManifest, href: string): string | null {
@@ -298,6 +298,8 @@ export function createTickBufferedTransform(
   let buffered: string[] = [];
   let pendingHtml = "";
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const shouldBufferSplitInlineCssLinks =
+    inlineCssManifest !== undefined && Object.keys(inlineCssManifest).length > 0;
   const readInsertion = (): string =>
     typeof injectHTML === "function" ? injectHTML() : injectHTML;
   const readPreHeadInsertion = (): string =>
@@ -350,9 +352,10 @@ export function createTickBufferedTransform(
     buffered = [];
     pendingHtml = "";
 
-    const split = final
-      ? { complete: rawHtml, trailing: "" }
-      : splitTrailingIncompleteLinkTag(rawHtml);
+    const split =
+      final || !shouldBufferSplitInlineCssLinks
+        ? { complete: rawHtml, trailing: "" }
+        : splitTrailingIncompleteLinkTag(rawHtml);
     if (split.trailing) {
       pendingHtml = split.trailing;
     }

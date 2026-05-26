@@ -35,6 +35,16 @@ export function escapeHtmlAttr(value: string): string {
     .replace(/>/g, "&gt;");
 }
 
+const HTML_SPACE_RE = /[\t\n\f\r ]+/;
+
+export function htmlTokenListContains(value: string | null, token: string): boolean {
+  if (value === null) return false;
+
+  return value
+    .split(HTML_SPACE_RE)
+    .some((part) => part.length > 0 && part.toLowerCase() === token.toLowerCase());
+}
+
 export function createNonceAttribute(nonce?: string): string {
   if (!nonce) {
     return "";
