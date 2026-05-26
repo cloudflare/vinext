@@ -71,6 +71,52 @@ export function readTrustedPrerenderRouteParams(
   return readTrustedPrerenderRouteParamsFromHeaders(request.headers);
 }
 
+function decodePrerenderRouteParam(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+function decodedPrerenderRouteParamEquals(
+  prerenderValue: string | string[],
+  matchedValue: string | string[],
+): boolean {
+  if (Array.isArray(prerenderValue) || Array.isArray(matchedValue)) {
+    if (!Array.isArray(prerenderValue) || !Array.isArray(matchedValue)) return false;
+    if (prerenderValue.length !== matchedValue.length) return false;
+
+    return prerenderValue.every((item, index) => {
+      const decoded = decodePrerenderRouteParam(item);
+      return decoded !== null && decoded === matchedValue[index];
+    });
+  }
+
+  const decoded = decodePrerenderRouteParam(prerenderValue);
+  return decoded !== null && decoded === matchedValue;
+}
+
+export function prerenderRouteParamsPayloadMatchesRoute(
+  payload: PrerenderRouteParamsPayload | null,
+  routePattern: string,
+  params: PrerenderRouteParams,
+): payload is PrerenderRouteParamsPayload {
+  if (payload === null) return false;
+  if (payload.routePattern !== routePattern) return false;
+
+  const prerenderParamKeys = Object.keys(payload.params);
+  if (prerenderParamKeys.length !== Object.keys(params).length) return false;
+
+  for (const [key, prerenderValue] of Object.entries(payload.params)) {
+    const matchedValue = params[key];
+    if (matchedValue === undefined) return false;
+    if (!decodedPrerenderRouteParamEquals(prerenderValue, matchedValue)) return false;
+  }
+
+  return true;
+}
+
 export function encodePrerenderRouteParams(
   pattern: string,
   params: PrerenderRouteParams,

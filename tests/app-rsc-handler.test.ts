@@ -235,6 +235,64 @@ describe("createAppRscHandler", () => {
     }
   });
 
+  it("ignores encoded prerender route params when a same-pattern rewrite changes the matched params", async () => {
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const productRoute = createPageRoute({
+      isDynamic: true,
+      pattern: "/product/:id",
+      routeSegments: ["product", "[id]"],
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [{ source: "/product/:id", destination: "/product/sticks-and-stones" }],
+        afterFiles: [],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      matchRoute(pathname: string) {
+        return pathname === "/product/sticks-and-stones"
+          ? {
+              params: { id: "sticks-and-stones" },
+              route: productRoute,
+            }
+          : null;
+      },
+    });
+
+    try {
+      const response = await handler(
+        new Request("https://example.test/docs/product/sticks%20%26%20stones", {
+          headers: {
+            "x-vinext-prerender-secret": "test-secret",
+            "x-vinext-prerender-route-params": prerenderRouteParamsHeader({
+              routePattern: "/product/:id",
+              params: { id: "sticks%20%26%20stones" },
+            }),
+          },
+        }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cleanPathname: "/product/sticks-and-stones",
+          params: { id: "sticks-and-stones" },
+          staticParamsValidationParams: undefined,
+        }),
+      );
+    } finally {
+      if (previousPrerender === undefined) {
+        delete process.env.VINEXT_PRERENDER;
+      } else {
+        process.env.VINEXT_PRERENDER = previousPrerender;
+      }
+    }
+  });
+
   it("ignores forged prerender route params outside trusted prerender requests", async () => {
     const previousPrerender = process.env.VINEXT_PRERENDER;
     delete process.env.VINEXT_PRERENDER;

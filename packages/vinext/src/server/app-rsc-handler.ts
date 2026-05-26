@@ -61,6 +61,7 @@ import {
   validateImageUrl,
 } from "./request-pipeline.js";
 import {
+  prerenderRouteParamsPayloadMatchesRoute,
   readTrustedPrerenderRouteParams,
   serializePrerenderRouteParamsHeader,
 } from "./prerender-route-params.js";
@@ -587,10 +588,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   const { route, params } = match;
   const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
-  const prerenderRouteParams =
-    prerenderRouteParamsPayload?.routePattern === route.pattern
-      ? prerenderRouteParamsPayload.params
-      : null;
+  const prerenderRouteParams = prerenderRouteParamsPayloadMatchesRoute(
+    prerenderRouteParamsPayload,
+    route.pattern,
+    params,
+  )
+    ? prerenderRouteParamsPayload.params
+    : null;
   const renderParams = prerenderRouteParams ?? params;
   options.setNavigationContext({
     pathname: canonicalPathname,
