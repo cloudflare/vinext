@@ -87,6 +87,7 @@ import {
   resolveRequestProtocol,
   resolveRequestHost as resolveHost,
 } from "./proxy-trust.js";
+import { isUnknownRecord } from "../utils/record.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -1320,6 +1321,9 @@ type PagesServerEntryPageRoute = {
   };
 };
 
+type ClientBuildManifest = Parameters<typeof computeLazyChunks>[0];
+type ClientBuildManifestChunk = ClientBuildManifest[string];
+
 function isPagesServerEntryPageRoute(value: unknown): value is PagesServerEntryPageRoute {
   if (!value || typeof value !== "object" || !("pattern" in value)) return false;
   if (typeof value.pattern !== "string") return false;
@@ -1333,6 +1337,59 @@ function isPagesServerEntryPageRoute(value: unknown): value is PagesServerEntryP
 
 function readPagesServerEntryPageRoutes(value: unknown): PagesServerEntryPageRoute[] | undefined {
   return Array.isArray(value) && value.every(isPagesServerEntryPageRoute) ? value : undefined;
+}
+
+function readStringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.every((item): item is string => typeof item === "string")
+    ? value
+    : undefined;
+}
+
+function readClientBuildManifest(manifestPath: string): ClientBuildManifest | undefined {
+  if (!fs.existsSync(manifestPath)) return undefined;
+
+  try {
+    const value: unknown = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    if (!isUnknownRecord(value)) return undefined;
+
+    const manifest: ClientBuildManifest = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (!isUnknownRecord(entry) || typeof entry.file !== "string") continue;
+
+      const imports = readStringArray(entry.imports);
+      const dynamicImports = readStringArray(entry.dynamicImports);
+      const css = readStringArray(entry.css);
+      const assets = readStringArray(entry.assets);
+      const chunk: ClientBuildManifestChunk = {
+        file: entry.file,
+        ...(entry.isEntry === true ? { isEntry: true } : {}),
+        ...(entry.isDynamicEntry === true ? { isDynamicEntry: true } : {}),
+        ...(imports ? { imports } : {}),
+        ...(dynamicImports ? { dynamicImports } : {}),
+        ...(css ? { css } : {}),
+        ...(assets ? { assets } : {}),
+      };
+
+      manifest[key] = chunk;
+    }
+
+    return manifest;
+  } catch {
+    return undefined;
+  }
+}
+
+function findClientEntryFile(
+  buildManifest: ClientBuildManifest,
+  assetBase: string,
+): string | undefined {
+  for (const entry of Object.values(buildManifest)) {
+    if (entry.isEntry && entry.file) {
+      return manifestFileWithBase(entry.file, assetBase);
+    }
+  }
+
+  return undefined;
 }
 
 /**
@@ -1406,22 +1463,22 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     ssrManifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
   }
 
-  // Load the build manifest to compute lazy chunks — chunks only reachable via
-  // dynamic imports (React.lazy, next/dynamic). These should not be
-  // modulepreloaded since they are fetched on demand.
+  // Load the build manifest to expose the Pages Router client entry and compute
+  // lazy chunks. Prerendered HTML is rendered through this Node server too, so
+  // it needs the same client-entry global that Cloudflare builds inject into
+  // the Worker entry at build time.
   const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
-  if (fs.existsSync(buildManifestPath)) {
-    try {
-      const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
-      const lazyChunks = computeLazyChunks(buildManifest).map((file: string) =>
-        manifestFileWithBase(file, assetBase),
-      );
-      if (lazyChunks.length > 0) {
-        globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks;
-      }
-    } catch {
-      /* ignore parse errors */
-    }
+  const buildManifest = readClientBuildManifest(buildManifestPath);
+  if (buildManifest) {
+    globalThis.__VINEXT_CLIENT_ENTRY__ = findClientEntryFile(buildManifest, assetBase);
+
+    const lazyChunks = computeLazyChunks(buildManifest).map((file) =>
+      manifestFileWithBase(file, assetBase),
+    );
+    globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks.length > 0 ? lazyChunks : undefined;
+  } else {
+    globalThis.__VINEXT_CLIENT_ENTRY__ = undefined;
+    globalThis.__VINEXT_LAZY_CHUNKS__ = undefined;
   }
 
   // Build the static file metadata cache at startup (same as App Router).

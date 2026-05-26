@@ -137,6 +137,7 @@ import {
 } from "./build/ssr-manifest.js";
 import { stripServerExports } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
+import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -3812,6 +3813,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
+    createImportMetaUrlPlugin({
+      getRoot: () => root,
+    }),
     // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
     // see src/plugins/og-assets.ts
     createOgInlineFetchAssetsPlugin(),
