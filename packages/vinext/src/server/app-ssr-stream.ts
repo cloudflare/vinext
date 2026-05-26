@@ -154,6 +154,9 @@ export function fixPreloadAs(html: string): string {
 }
 
 const LINK_TAG_RE = /<link\b[^>]*>/gi;
+const HTML_REWRITE_EXCLUDED_REGION_RE =
+  /<!--[\s\S]*?-->|<(script|style|textarea|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+const HTML_REWRITE_EXCLUDED_REGION_START_RE = /<!--|<(script|style|textarea|title)\b[^>]*>/gi;
 
 function getHtmlAttribute(tag: string, name: string): string | null {
   const attrRe = /\s([^\s"'=<>`]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
@@ -199,14 +202,95 @@ function splitTrailingIncompleteLinkTag(html: string): { complete: string; trail
   };
 }
 
+function findTrailingOpenHtmlRewriteExcludedRegionStart(html: string): number | null {
+  let match: RegExpExecArray | null;
+
+  HTML_REWRITE_EXCLUDED_REGION_START_RE.lastIndex = 0;
+  while ((match = HTML_REWRITE_EXCLUDED_REGION_START_RE.exec(html)) !== null) {
+    const start = match.index;
+    if (match[0] === "<!--") {
+      const close = html.indexOf("-->", HTML_REWRITE_EXCLUDED_REGION_START_RE.lastIndex);
+      if (close === -1) return start;
+      HTML_REWRITE_EXCLUDED_REGION_START_RE.lastIndex = close + 3;
+      continue;
+    }
+
+    const tagName = match[1]?.toLowerCase();
+    if (!tagName) continue;
+
+    const closeTagRe = new RegExp(`</${tagName}\\s*>`, "i");
+    const close = closeTagRe.exec(html.slice(HTML_REWRITE_EXCLUDED_REGION_START_RE.lastIndex));
+    if (!close) return start;
+    HTML_REWRITE_EXCLUDED_REGION_START_RE.lastIndex += close.index + close[0].length;
+  }
+
+  return null;
+}
+
+function splitTrailingInlineCssRewriteBoundary(html: string): {
+  complete: string;
+  trailing: string;
+} {
+  const linkSplit = splitTrailingIncompleteLinkTag(html);
+  const incompleteLinkStart = linkSplit.trailing ? linkSplit.complete.length : null;
+  const openRegionStart = findTrailingOpenHtmlRewriteExcludedRegionStart(html);
+  const trailingStart =
+    incompleteLinkStart === null
+      ? openRegionStart
+      : openRegionStart === null
+        ? incompleteLinkStart
+        : Math.min(incompleteLinkStart, openRegionStart);
+
+  if (trailingStart === null) return { complete: html, trailing: "" };
+
+  return {
+    complete: html.slice(0, trailingStart),
+    trailing: html.slice(trailingStart),
+  };
+}
+
 function escapeStyleText(css: string): string {
   return css.replace(/<\/style/gi, "<\\/style");
 }
 
-const CSS_PREPEND_UNSAFE_PREAMBLE_RE = /^\uFEFF?(?:\s|\/\*[\s\S]*?\*\/)*@(charset|import|layer)\b/i;
+const CSS_PREPEND_UNSAFE_PREAMBLE_RE =
+  /^\uFEFF?(?:\s|\/\*[\s\S]*?\*\/)*@(charset|import|layer|namespace)\b/i;
 
 function canPrependCss(css: string): boolean {
   return !CSS_PREPEND_UNSAFE_PREAMBLE_RE.test(css);
+}
+
+function replaceLinkTags(html: string, replaceLinkTag: (tag: string) => string): string {
+  LINK_TAG_RE.lastIndex = 0;
+  return html.replace(LINK_TAG_RE, replaceLinkTag);
+}
+
+function replaceLinkTagsOutsideRawText(
+  html: string,
+  replaceLinkTag: (tag: string) => string,
+): string {
+  let rewritten = "";
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  HTML_REWRITE_EXCLUDED_REGION_RE.lastIndex = 0;
+  while ((match = HTML_REWRITE_EXCLUDED_REGION_RE.exec(html)) !== null) {
+    rewritten += replaceLinkTags(html.slice(cursor, match.index), replaceLinkTag);
+    rewritten += match[0];
+    cursor = match.index + match[0].length;
+  }
+
+  const tail = html.slice(cursor);
+  const openRegionStart = findTrailingOpenHtmlRewriteExcludedRegionStart(tail);
+  if (openRegionStart === null) {
+    return rewritten + replaceLinkTags(tail, replaceLinkTag);
+  }
+
+  return (
+    rewritten +
+    replaceLinkTags(tail.slice(0, openRegionStart), replaceLinkTag) +
+    tail.slice(openRegionStart)
+  );
 }
 
 function rewriteInlineCssStylesheetLinks(
@@ -219,7 +303,7 @@ function rewriteInlineCssStylesheetLinks(
   }
   let consumedPrependCss = false;
 
-  const rewritten = html.replace(LINK_TAG_RE, (tag) => {
+  const rewritten = replaceLinkTagsOutsideRawText(html, (tag) => {
     if (!htmlAttributeHasToken(tag, "rel", "stylesheet")) return tag;
 
     const href = getHtmlAttribute(tag, "href");
@@ -298,7 +382,7 @@ export function createTickBufferedTransform(
   let buffered: string[] = [];
   let pendingHtml = "";
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  const shouldBufferSplitInlineCssLinks =
+  const shouldBufferInlineCssRewriteBoundaries =
     inlineCssManifest !== undefined && Object.keys(inlineCssManifest).length > 0;
   const readInsertion = (): string =>
     typeof injectHTML === "function" ? injectHTML() : injectHTML;
@@ -353,9 +437,9 @@ export function createTickBufferedTransform(
     pendingHtml = "";
 
     const split =
-      final || !shouldBufferSplitInlineCssLinks
+      final || !shouldBufferInlineCssRewriteBoundaries
         ? { complete: rawHtml, trailing: "" }
-        : splitTrailingIncompleteLinkTag(rawHtml);
+        : splitTrailingInlineCssRewriteBoundary(rawHtml);
     if (split.trailing) {
       pendingHtml = split.trailing;
     }
