@@ -196,6 +196,10 @@ function findTsconfigPath(projectRoot: string): string | null {
   return null;
 }
 
+// Cache materialized aliases per (root, format) so the `config` hook (run once
+// per Vite environment: RSC, SSR, client) does not re-parse tsconfig per env.
+const aliasCache = new Map<string, Record<string, string>>();
+
 /**
  * Read the project's tsconfig.json (or jsconfig.json) and return its
  * `compilerOptions.paths` as Vite `resolve.alias` entries.
@@ -208,15 +212,18 @@ export function loadTsconfigPathAliasesForRoot(
   projectRoot: string,
   options: TsconfigPathAliasOptions = {},
 ): Record<string, string> {
-  const configPath = findTsconfigPath(projectRoot);
-  if (!configPath) return {};
+  const format = options.format ?? "absolute";
+  const cacheKey = `${format}\0${projectRoot}`;
+  const cached = aliasCache.get(cacheKey);
+  if (cached) return cached;
 
-  return loadAliasesFromTsconfigFile(
-    configPath,
-    projectRoot,
-    new Set(),
-    options.format ?? "absolute",
-  );
+  const configPath = findTsconfigPath(projectRoot);
+  const aliases = configPath
+    ? loadAliasesFromTsconfigFile(configPath, projectRoot, new Set(), format)
+    : {};
+
+  aliasCache.set(cacheKey, aliases);
+  return aliases;
 }
 
 export function loadNearestTsconfigPathAliases(
