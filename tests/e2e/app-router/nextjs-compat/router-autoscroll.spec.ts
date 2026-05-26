@@ -145,4 +145,20 @@ test.describe("Next.js compat: App Router autoscroll", () => {
       .poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null))
       .toBe("segment-container");
   });
+
+  test("preserves horizontal scroll when focusing the navigated segment", async ({ page }) => {
+    // Next's horizontal autoscroll coverage uses a non-focusable route root, so it
+    // misses the second browser scroll caused by focusing an offscreen target.
+    // Vinext intentionally prevents that extra focus scroll.
+    await page.goto(`${ROUTE_BASE}/0/0/10000/10000/page1`);
+    await waitForControls(page);
+
+    await scrollTo(page, { x: 1000, y: 1000 });
+    await push(page, "/nextjs-compat/router-autoscroll/focus-target");
+    await expect(page.locator('[data-testid="segment-container"]')).toHaveCount(1);
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null))
+      .toBe("segment-container");
+    await expectScroll(page, { x: 1000, y: 0 });
+  });
 });

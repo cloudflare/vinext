@@ -121,7 +121,10 @@ export class AppRouterScrollTarget extends React.Component<{ children: React.Rea
     if (consumed === null) return;
 
     scrollToElement(target, consumed.hash);
-    target.focus();
+    // Next's default handler uses plain focus(), but that lets the browser run
+    // a second implicit scroll after our explicit navigation scroll. Keep the
+    // focus transfer while preserving the scroll position we just chose.
+    target.focus({ preventScroll: true });
   };
 
   componentDidMount() {
