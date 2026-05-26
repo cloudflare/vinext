@@ -115,7 +115,9 @@ describe("Next.js compat: global-not-found initial CSS order", () => {
       const homeHtml = await fetchText(`${baseUrl}/`);
       expect(await findFinalBodyBackground(baseUrl, outDir, homeHtml)).toBe("green");
 
-      const notFoundRes = await fetch(`${baseUrl}/404`);
+      // Use an arbitrary unmatched path, not `/404`, so the assertion exercises
+      // the route-miss global-not-found path rather than any literal `/404` route.
+      const notFoundRes = await fetch(`${baseUrl}/does-not-exist`);
       expect(notFoundRes.status).toBe(404);
       const notFoundHtml = await notFoundRes.text();
       expect(notFoundHtml).toContain("not found");
