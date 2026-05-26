@@ -586,7 +586,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const { route, params } = match;
-  const prerenderRouteParams = readTrustedPrerenderRouteParams(request);
+  const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
+  const prerenderRouteParams =
+    prerenderRouteParamsPayload?.routePattern === route.pattern
+      ? prerenderRouteParamsPayload.params
+      : null;
   const renderParams = prerenderRouteParams ?? params;
   options.setNavigationContext({
     pathname: canonicalPathname,
@@ -659,12 +663,14 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     // protocol needs to know whether the inbound request was a `_next/data`
     // fetch to emit `x-nextjs-redirect` instead of an HTTP redirect.
     const isDataRequest = rawRequest.headers.get("x-nextjs-data") === "1";
-    const prerenderRouteParams = readTrustedPrerenderRouteParams(rawRequest);
+    const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(rawRequest);
     const filteredHeaders = filterInternalHeaders(rawRequest.headers);
     if (mwCtx !== null) {
       filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
     }
-    const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(prerenderRouteParams);
+    const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
+      prerenderRouteParamsPayload,
+    );
     if (prerenderRouteParamsHeader !== null) {
       filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
     }

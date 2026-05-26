@@ -47,7 +47,7 @@ import {
 import {
   encodePrerenderRouteParams,
   serializePrerenderRouteParamsHeader,
-  type PrerenderRouteParams,
+  type PrerenderRouteParamsPayload,
 } from "../server/prerender-route-params.js";
 import { startProdServer } from "../server/prod-server.js";
 import { readPrerenderSecret } from "./server-manifest.js";
@@ -1022,7 +1022,7 @@ export async function prerenderApp({
       urlPath: string;
       /** The file-system route pattern this URL was expanded from (e.g. `/blog/:slug`). */
       routePattern: string;
-      prerenderRouteParams: PrerenderRouteParams | null;
+      prerenderRouteParams: PrerenderRouteParamsPayload | null;
       revalidate: number | false;
       isSpeculative: boolean; // 'unknown' route — mark skipped if render fails
     };

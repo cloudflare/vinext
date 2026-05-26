@@ -3,11 +3,15 @@ import { isUnknownRecord } from "../utils/record.js";
 
 export type PrerenderRouteParams = Record<string, string | string[]>;
 
+export type PrerenderRouteParamsPayload = {
+  params: PrerenderRouteParams;
+  routePattern: string;
+};
+
 function isPrerenderRouteParams(value: unknown): value is PrerenderRouteParams {
   if (!isUnknownRecord(value)) return false;
 
-  for (const key in value) {
-    const param = value[key];
+  for (const [, param] of Object.entries(value)) {
     if (typeof param === "string") continue;
     if (Array.isArray(param) && param.every((item) => typeof item === "string")) continue;
     return false;
@@ -16,19 +20,29 @@ function isPrerenderRouteParams(value: unknown): value is PrerenderRouteParams {
   return true;
 }
 
-export function serializePrerenderRouteParamsHeader(
-  params: PrerenderRouteParams | null,
-): string | null {
-  if (params === null || Object.keys(params).length === 0) return null;
-  return encodeURIComponent(JSON.stringify(params));
+function isPrerenderRouteParamsPayload(value: unknown): value is PrerenderRouteParamsPayload {
+  if (!isUnknownRecord(value)) return false;
+  if (Object.keys(value).length !== 2) return false;
+  return (
+    typeof value.routePattern === "string" &&
+    value.routePattern.startsWith("/") &&
+    isPrerenderRouteParams(value.params)
+  );
 }
 
-function parsePrerenderRouteParamsHeader(value: string | null): PrerenderRouteParams | null {
+export function serializePrerenderRouteParamsHeader(
+  payload: PrerenderRouteParamsPayload | null,
+): string | null {
+  if (payload === null || Object.keys(payload.params).length === 0) return null;
+  return encodeURIComponent(JSON.stringify(payload));
+}
+
+function parsePrerenderRouteParamsHeader(value: string | null): PrerenderRouteParamsPayload | null {
   if (value === null || value === "") return null;
 
   try {
     const parsed: unknown = JSON.parse(decodeURIComponent(value));
-    return isPrerenderRouteParams(parsed) ? parsed : null;
+    return isPrerenderRouteParamsPayload(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -37,7 +51,7 @@ function parsePrerenderRouteParamsHeader(value: string | null): PrerenderRoutePa
 export function readTrustedPrerenderRouteParamsFromHeaders(
   headers: Headers,
   expectedSecret?: string,
-): PrerenderRouteParams | null {
+): PrerenderRouteParamsPayload | null {
   if (process.env.VINEXT_PRERENDER !== "1") return null;
   const secret = headers.get(VINEXT_PRERENDER_SECRET_HEADER);
   if (secret === null) return null;
@@ -51,14 +65,16 @@ export function readTrustedPrerenderRouteParamsFromHeaders(
   return params;
 }
 
-export function readTrustedPrerenderRouteParams(request: Request): PrerenderRouteParams | null {
+export function readTrustedPrerenderRouteParams(
+  request: Request,
+): PrerenderRouteParamsPayload | null {
   return readTrustedPrerenderRouteParamsFromHeaders(request.headers);
 }
 
 export function encodePrerenderRouteParams(
   pattern: string,
   params: PrerenderRouteParams,
-): PrerenderRouteParams | null {
+): PrerenderRouteParamsPayload | null {
   const encoded: PrerenderRouteParams = {};
 
   for (const part of pattern.split("/").filter(Boolean)) {
@@ -78,5 +94,5 @@ export function encodePrerenderRouteParams(
     }
   }
 
-  return Object.keys(encoded).length > 0 ? encoded : null;
+  return Object.keys(encoded).length > 0 ? { routePattern: pattern, params: encoded } : null;
 }

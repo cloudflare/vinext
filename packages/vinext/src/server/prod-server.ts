@@ -764,13 +764,15 @@ function nodeToWebRequest(
   const url = new URL(urlOverride ?? req.url ?? "/", origin);
 
   const rawHeaders = nodeHeadersToWebHeaders(req.headers);
-  const prerenderRouteParams = readTrustedPrerenderRouteParamsFromHeaders(
+  const prerenderRouteParamsPayload = readTrustedPrerenderRouteParamsFromHeaders(
     rawHeaders,
     prerenderSecret,
   );
   // Strip internal headers that should not be honored from external requests.
   const headers = filterInternalHeaders(rawHeaders);
-  const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(prerenderRouteParams);
+  const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
+    prerenderRouteParamsPayload,
+  );
   if (prerenderRouteParamsHeader !== null) {
     headers.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
   }
