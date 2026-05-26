@@ -1,7 +1,7 @@
 import { convertSegmentsToRouteParts, type AppRoute } from "../routing/app-router.js";
 import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
-import { normalizePathSeparators } from "./runtime-entry-module.js";
+import { normalizePathSeparators } from "../utils/path.js";
 
 type AppRscManifestCode = {
   imports: string[];

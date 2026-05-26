@@ -9,7 +9,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
-import { resolveEntryPath, normalizePathSeparators } from "./runtime-entry-module.js";
+import { resolveEntryPath } from "./runtime-entry-module.js";
+import { normalizePathSeparators } from "../utils/path.js";
 import type {
   NextHeader,
   NextI18nConfig,

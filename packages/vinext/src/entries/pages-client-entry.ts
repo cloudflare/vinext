@@ -17,7 +17,7 @@ import {
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
-import { normalizePathSeparators } from "./runtime-entry-module.js";
+import { normalizePathSeparators } from "../utils/path.js";
 
 export async function generateClientEntry(
   pagesDir: string,
