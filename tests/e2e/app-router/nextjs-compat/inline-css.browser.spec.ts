@@ -28,6 +28,7 @@ async function writeInlineCssFixture(fixtureRoot: string): Promise<void> {
   await fs.symlink(
     path.resolve(process.cwd(), "node_modules"),
     path.join(fixtureRoot, "node_modules"),
+    "junction",
   );
   await fs.copyFile(
     path.resolve(
