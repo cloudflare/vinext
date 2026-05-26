@@ -28,6 +28,10 @@ function getArray(node: AstRecord, key: string): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+function getBoolean(node: AstRecord, key: string): boolean {
+  return node[key] === true;
+}
+
 function nodeName(node: unknown): string | null {
   if (!isRecord(node)) return null;
   const name = node.name;
@@ -98,6 +102,216 @@ function isDynamicCall(node: AstRecord, dynamicLocals: Set<string>): boolean {
   return isIdentifierNamed(node.callee, dynamicLocals);
 }
 
+function addBindingName(pattern: unknown, names: Set<string>): void {
+  if (!isRecord(pattern)) return;
+
+  const type = getString(pattern, "type");
+  if (type === null) return;
+
+  switch (type) {
+    case "Identifier": {
+      const name = getString(pattern, "name");
+      if (name) names.add(name);
+      return;
+    }
+    case "AssignmentPattern":
+      addBindingName(pattern.left, names);
+      return;
+    case "RestElement":
+      addBindingName(pattern.argument, names);
+      return;
+    case "ArrayPattern":
+      for (const element of getArray(pattern, "elements")) {
+        addBindingName(element, names);
+      }
+      return;
+    case "ObjectPattern":
+      for (const property of getArray(pattern, "properties")) {
+        if (!isRecord(property)) continue;
+        if (getString(property, "type") === "RestElement") {
+          addBindingName(property.argument, names);
+          continue;
+        }
+        addBindingName(property.value, names);
+      }
+      return;
+    default:
+      return;
+  }
+}
+
+function addVariableDeclarationBindingNames(node: unknown, names: Set<string>): void {
+  if (!isRecord(node) || getString(node, "type") !== "VariableDeclaration") return;
+  for (const declaration of getArray(node, "declarations")) {
+    if (isRecord(declaration)) addBindingName(declaration.id, names);
+  }
+}
+
+function collectBlockScopedBindingNames(body: readonly unknown[]): Set<string> {
+  const names = new Set<string>();
+
+  for (const statement of body) {
+    if (!isRecord(statement)) continue;
+
+    const type = getString(statement, "type");
+    if (type === "VariableDeclaration") {
+      if (getString(statement, "kind") !== "var") {
+        addVariableDeclarationBindingNames(statement, names);
+      }
+      continue;
+    }
+
+    if (type === "FunctionDeclaration" || type === "ClassDeclaration") {
+      const name = nodeName(statement.id);
+      if (name) names.add(name);
+    }
+  }
+
+  return names;
+}
+
+function collectVarBindingNames(value: unknown, names: Set<string>): void {
+  if (!isRecord(value)) return;
+
+  const type = getString(value, "type");
+  if (
+    type === "FunctionDeclaration" ||
+    type === "FunctionExpression" ||
+    type === "ArrowFunctionExpression"
+  ) {
+    return;
+  }
+
+  if (type === "VariableDeclaration" && getString(value, "kind") === "var") {
+    addVariableDeclarationBindingNames(value, names);
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "parent") continue;
+    if (Array.isArray(child)) {
+      for (const item of child) {
+        collectVarBindingNames(item, names);
+      }
+    } else if (isRecord(child)) {
+      collectVarBindingNames(child, names);
+    }
+  }
+}
+
+function collectFunctionScopeBindingNames(node: AstRecord): Set<string> {
+  const names = new Set<string>();
+
+  if (getString(node, "type") === "FunctionExpression") {
+    const name = nodeName(node.id);
+    if (name) names.add(name);
+  }
+
+  for (const param of getArray(node, "params")) {
+    addBindingName(param, names);
+  }
+
+  collectVarBindingNames(node.body, names);
+  return names;
+}
+
+function collectForBindingNames(node: AstRecord): Set<string> {
+  const names = new Set<string>();
+  addVariableDeclarationBindingNames(node.init, names);
+  addVariableDeclarationBindingNames(node.left, names);
+  return names;
+}
+
+function withoutBindings(activeNames: Set<string>, localNames: Set<string>): Set<string> {
+  if (activeNames.size === 0 || localNames.size === 0) return activeNames;
+
+  let scoped: Set<string> | null = null;
+  for (const name of localNames) {
+    if (!activeNames.has(name)) continue;
+    scoped ??= new Set(activeNames);
+    scoped.delete(name);
+  }
+
+  return scoped ?? activeNames;
+}
+
+function visitChildren(
+  node: AstRecord,
+  dynamicLocals: Set<string>,
+  visitor: (node: AstRecord) => void,
+): void {
+  for (const [key, child] of Object.entries(node)) {
+    if (key === "parent") continue;
+    if (Array.isArray(child)) {
+      for (const item of child) {
+        visitDynamicCalls(item, dynamicLocals, visitor);
+      }
+    } else if (isRecord(child)) {
+      visitDynamicCalls(child, dynamicLocals, visitor);
+    }
+  }
+}
+
+function visitDynamicCalls(
+  value: unknown,
+  dynamicLocals: Set<string>,
+  visitor: (node: AstRecord) => void,
+): void {
+  if (!isRecord(value) || dynamicLocals.size === 0) return;
+
+  const type = getString(value, "type");
+  if (type === "Program") {
+    const scoped = withoutBindings(
+      dynamicLocals,
+      collectBlockScopedBindingNames(getArray(value, "body")),
+    );
+    for (const statement of getArray(value, "body")) {
+      visitDynamicCalls(statement, scoped, visitor);
+    }
+    return;
+  }
+
+  if (type === "BlockStatement") {
+    const scoped = withoutBindings(
+      dynamicLocals,
+      collectBlockScopedBindingNames(getArray(value, "body")),
+    );
+    for (const statement of getArray(value, "body")) {
+      visitDynamicCalls(statement, scoped, visitor);
+    }
+    return;
+  }
+
+  if (
+    type === "FunctionDeclaration" ||
+    type === "FunctionExpression" ||
+    type === "ArrowFunctionExpression"
+  ) {
+    visitChildren(
+      value,
+      withoutBindings(dynamicLocals, collectFunctionScopeBindingNames(value)),
+      visitor,
+    );
+    return;
+  }
+
+  if (type === "ForStatement" || type === "ForInStatement" || type === "ForOfStatement") {
+    visitChildren(value, withoutBindings(dynamicLocals, collectForBindingNames(value)), visitor);
+    return;
+  }
+
+  if (type === "CatchClause") {
+    const names = new Set<string>();
+    addBindingName(value.param, names);
+    visitChildren(value, withoutBindings(dynamicLocals, names), visitor);
+    return;
+  }
+
+  if (isDynamicCall(value, dynamicLocals)) {
+    visitor(value);
+  }
+  visitChildren(value, dynamicLocals, visitor);
+}
+
 function collectImportSpecifiers(node: unknown): string[] {
   const specifiers: string[] = [];
   const seen = new Set<string>();
@@ -128,6 +342,7 @@ function collectImportSpecifiers(node: unknown): string[] {
 
 function propertyKeyName(property: unknown): string | null {
   if (!isRecord(property)) return null;
+  if (getBoolean(property, "computed")) return null;
   return nodeName(property.key);
 }
 
@@ -138,6 +353,17 @@ function objectProperties(node: unknown): AstRecord[] {
 
 function hasObjectProperty(node: unknown, name: string): boolean {
   return objectProperties(node).some((property) => propertyKeyName(property) === name);
+}
+
+function findObjectProperty(node: unknown, name: string): AstRecord | null {
+  return objectProperties(node).find((property) => propertyKeyName(property) === name) ?? null;
+}
+
+function dynamicLoaderNode(firstArg: unknown): unknown {
+  if (!isRecord(firstArg) || getString(firstArg, "type") !== "ObjectExpression") return firstArg;
+  const loaderProperty =
+    findObjectProperty(firstArg, "loader") ?? findObjectProperty(firstArg, "modules");
+  return loaderProperty?.value;
 }
 
 function findLastEndedProperty(node: AstRecord): AstRecord | null {
@@ -290,10 +516,9 @@ export async function transformNextDynamicPreloadMetadata(
   let changed = false;
   const pending: Promise<void>[] = [];
 
-  walkAst(ast, (node) => {
-    if (!isDynamicCall(node, dynamicLocals)) return;
+  visitDynamicCalls(ast, dynamicLocals, (node) => {
     const args = getArray(node, "arguments");
-    const specifiers = collectImportSpecifiers(args[0]);
+    const specifiers = collectImportSpecifiers(dynamicLoaderNode(args[0]));
     if (specifiers.length === 0) return;
 
     pending.push(

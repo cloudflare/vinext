@@ -1392,7 +1392,9 @@ describe("next/dynamic preload metadata transform", () => {
       ? path.join(root, "app/dynamic-widget.tsx")
       : specifier === "./named"
         ? path.join(root, "app/named.tsx")
-        : null;
+        : specifier === "./ignored"
+          ? path.join(root, "app/ignored.tsx")
+          : null;
 
   it("adds loadableGenerated modules to dynamic loader calls", async () => {
     const result = await _transformNextDynamicPreloadMetadata(
@@ -1435,6 +1437,88 @@ describe("next/dynamic preload metadata transform", () => {
     );
 
     expect(result?.code).toContain(`loadableGenerated: { modules: ["app/named.tsx"] }`);
+  });
+
+  it("does not transform a function parameter that shadows the next/dynamic import", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `function makeThing(dynamic) {`,
+      `  return dynamic(() => import("./dynamic-widget"));`,
+      `}`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not transform an arrow parameter that shadows the next/dynamic import", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const makeThing = (dynamic) => dynamic(() => import("./dynamic-widget"));`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not transform a block binding that shadows the next/dynamic import", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `{`,
+      `  const dynamic = customFactory;`,
+      `  dynamic(() => import("./dynamic-widget"));`,
+      `}`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("transforms renamed next/dynamic imports", async () => {
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import loadDynamic from "next/dynamic";`,
+        `const Widget = loadDynamic(() => import("./dynamic-widget"));`,
+      ].join("\n"),
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+  });
+
+  it("only records the object-form loader import", async () => {
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const Widget = dynamic({`,
+        `  loader: () => import("./dynamic-widget"),`,
+        `  debugOnly: () => import("./ignored"),`,
+        `});`,
+      ].join("\n"),
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).not.toContain("app/ignored.tsx");
   });
 });
 
