@@ -15,6 +15,16 @@ export default function RouterAutoscrollIndexPage() {
         </Link>
       </div>
       <div>
+        <Link href="/nextjs-compat/router-autoscroll/new-metadata" id="to-new-metadata">
+          To new metadata
+        </Link>
+      </div>
+      <div>
+        <Link href="/nextjs-compat/router-autoscroll/hoisted" id="to-hoisted">
+          To hoisted
+        </Link>
+      </div>
+      <div>
         <Link
           href="/nextjs-compat/router-autoscroll/skipped-target/display-none"
           id="to-display-none-first-element"

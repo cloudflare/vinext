@@ -1496,6 +1496,29 @@ export async function navigateClientSide(
 // useEffect dependency arrays, React.memo bailouts).
 // ---------------------------------------------------------------------------
 
+// `router.refresh()` can run in the same outer transition after push/replace
+// while the nested navigation transition is still being scheduled.
+let scheduledAppRouterNavigationCount = 0;
+
+function trackScheduledAppRouterNavigation(): () => void {
+  scheduledAppRouterNavigationCount += 1;
+  let released = false;
+
+  return () => {
+    if (released) return;
+    released = true;
+    scheduledAppRouterNavigationCount = Math.max(0, scheduledAppRouterNavigationCount - 1);
+  };
+}
+
+function hasScheduledAppRouterNavigation(): boolean {
+  return scheduledAppRouterNavigationCount > 0;
+}
+
+function releaseScheduledAppRouterNavigationAfterCurrentTask(release: () => void): void {
+  queueMicrotask(release);
+}
+
 /**
  * App Router public router instance. Mirrors Next.js's
  * `publicAppRouterInstance` from
@@ -1510,16 +1533,30 @@ const _appRouter = {
   push(href: string, options?: { scroll?: boolean }): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
-    React.startTransition(() => {
-      void navigateClientSide(href, "push", options?.scroll !== false, true);
-    });
+    const releaseNavigation = trackScheduledAppRouterNavigation();
+    try {
+      React.startTransition(() => {
+        void navigateClientSide(href, "push", options?.scroll !== false, true);
+      });
+    } catch (error) {
+      releaseNavigation();
+      throw error;
+    }
+    releaseScheduledAppRouterNavigationAfterCurrentTask(releaseNavigation);
   },
   replace(href: string, options?: { scroll?: boolean }): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
-    React.startTransition(() => {
-      void navigateClientSide(href, "replace", options?.scroll !== false, true);
-    });
+    const releaseNavigation = trackScheduledAppRouterNavigation();
+    try {
+      React.startTransition(() => {
+        void navigateClientSide(href, "replace", options?.scroll !== false, true);
+      });
+    } catch (error) {
+      releaseNavigation();
+      throw error;
+    }
+    releaseScheduledAppRouterNavigationAfterCurrentTask(releaseNavigation);
   },
   back(): void {
     if (isServer) return;
@@ -1538,6 +1575,7 @@ const _appRouter = {
     // gated by a session that has since been cleared) would still satisfy a
     // subsequent client navigation and bypass the server's redirect logic.
     getNavigationRuntime()?.functions.clearNavigationCaches?.();
+    if (hasScheduledAppRouterNavigation()) return;
     // Re-fetch the current page's RSC stream
     const rscNavigate = getNavigationRuntime()?.functions.navigate;
     if (rscNavigate) {

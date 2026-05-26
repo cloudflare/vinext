@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect } from "react";
+import { startTransition, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 type RouterAutoscrollControls = {
   push: (href: string) => void;
+  pushThenRefresh: (href: string) => void;
   pushNoScroll: (href: string) => void;
+  refresh: () => void;
 };
 
 declare global {
@@ -20,7 +22,14 @@ export function RouterAutoscrollControls() {
   useEffect(() => {
     const controls: RouterAutoscrollControls = {
       push: (href) => router.push(href),
+      pushThenRefresh: (href) => {
+        startTransition(() => {
+          router.push(href);
+          router.refresh();
+        });
+      },
       pushNoScroll: (href) => router.push(href, { scroll: false }),
+      refresh: () => router.refresh(),
     };
     window.__vinextRouterAutoscroll = controls;
 
