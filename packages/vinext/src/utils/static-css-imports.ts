@@ -45,11 +45,19 @@ function isCssSpecifier(specifier: string): boolean {
 }
 
 function existsFile(filePath: string): boolean {
-  return fs.existsSync(filePath) && fs.statSync(filePath).isFile();
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
 }
 
 function existsDirectory(filePath: string): boolean {
-  return fs.existsSync(filePath) && fs.statSync(filePath).isDirectory();
+  try {
+    return fs.statSync(filePath).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 function resolveAliasedSpecifier(specifier: string, aliases: readonly AliasEntry[]): string | null {
