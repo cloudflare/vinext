@@ -416,6 +416,9 @@ export async function handleSsr(
           await htmlStream.allReady;
         }
 
+        // Populated before any SSR request runs: at prod-server startup
+        // (prod-server.ts) or via build-time bundle injection (index.ts). Left
+        // undefined in dev, which naturally disables inline CSS there.
         const inlineCssManifest = globalThis.__VINEXT_INLINE_CSS__;
         const fontStyles = fontData?.styles ?? [];
         const mergeFontStylesIntoInlineCss =

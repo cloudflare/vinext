@@ -153,6 +153,10 @@ export function fixPreloadAs(html: string): string {
   );
 }
 
+// These `g`-flag regexes carry mutable `lastIndex` state. Every consumer below
+// resets `lastIndex` before use, which is safe only because they run to
+// completion synchronously within a single call. They must not be shared across
+// concurrent/interleaved call paths.
 const LINK_TAG_RE = /<link\b[^>]*>/gi;
 const HTML_REWRITE_EXCLUDED_REGION_RE =
   /<!--[\s\S]*?-->|<(script|style|textarea|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
@@ -382,7 +386,10 @@ export function createTickBufferedTransform(
   let buffered: string[] = [];
   let pendingHtml = "";
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  const shouldBufferInlineCssRewriteBoundaries =
+  // Computed once at transform creation: every flush is a hot path, so we
+  // avoid re-running Object.keys() on the manifest per chunk. Gates both the
+  // split-link boundary buffering and the inline-css link rewrite below.
+  const hasInlineCssManifest =
     inlineCssManifest !== undefined && Object.keys(inlineCssManifest).length > 0;
   const readInsertion = (): string =>
     typeof injectHTML === "function" ? injectHTML() : injectHTML;
@@ -437,7 +444,7 @@ export function createTickBufferedTransform(
     pendingHtml = "";
 
     const split =
-      final || !shouldBufferInlineCssRewriteBoundaries
+      final || !hasInlineCssManifest
         ? { complete: rawHtml, trailing: "" }
         : splitTrailingInlineCssRewriteBoundary(rawHtml);
     if (split.trailing) {
@@ -451,11 +458,10 @@ export function createTickBufferedTransform(
       emitInsertion(controller);
     }
 
-    const inlineCssResult = rewriteInlineCssStylesheetLinks(
-      fixPreloadAs(split.complete),
-      inlineCssManifest,
-      inlineCssPrependCss,
-    );
+    const preparedHtml = fixPreloadAs(split.complete);
+    const inlineCssResult = hasInlineCssManifest
+      ? rewriteInlineCssStylesheetLinks(preparedHtml, inlineCssManifest, inlineCssPrependCss)
+      : { html: preparedHtml, consumedPrependCss: false };
     if (inlineCssResult.consumedPrependCss) {
       inlineCssPrependCss = "";
     }
