@@ -63,11 +63,16 @@ export function createExternalHistoryStatePreservingMetadata(
   currentHistoryState: unknown,
 ): unknown {
   const previousNextUrl = readHistoryStatePreviousNextUrl(currentHistoryState);
-  if (previousNextUrl === null) {
+  const traversalIndex = readHistoryStateTraversalIndex(currentHistoryState);
+
+  if (previousNextUrl === null && traversalIndex === null) {
     return callerState;
   }
 
-  return createHistoryStateWithPreviousNextUrl(callerState, previousNextUrl);
+  return createHistoryStateWithNavigationMetadata(callerState, {
+    previousNextUrl,
+    traversalIndex,
+  });
 }
 
 export function readHistoryStatePreviousNextUrl(state: unknown): string | null {

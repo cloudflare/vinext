@@ -253,7 +253,8 @@ describe("next/navigation shim", () => {
     // Covered by Next.js shallow-routing tests for object, null, and undefined state:
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/shallow-routing/shallow-routing.test.ts
     const previousWindow = (globalThis as any).window;
-    const historyMetadataKey = "__vinext_previousNextUrl";
+    const historyPreviousNextUrlKey = "__vinext_previousNextUrl";
+    const historyTraversalIndexKey = "__vinext_historyIndex";
     const win = {
       location: {
         pathname: "/photo/1",
@@ -263,7 +264,10 @@ describe("next/navigation shim", () => {
         origin: "http://localhost",
       },
       history: {
-        state: { [historyMetadataKey]: "/feed" } as unknown,
+        state: {
+          [historyPreviousNextUrlKey]: "/feed",
+          [historyTraversalIndexKey]: 4,
+        } as unknown,
         pushState(data: unknown, _unused: string, url?: string | URL | null) {
           this.state = data;
           if (!url) return;
@@ -293,23 +297,34 @@ describe("next/navigation shim", () => {
 
       win.history.pushState({ myData: { foo: "bar" } }, "", "/photo/1?filter=active");
       expect(win.history.state).toEqual({
+        [historyPreviousNextUrlKey]: "/feed",
+        [historyTraversalIndexKey]: 4,
         myData: { foo: "bar" },
-        [historyMetadataKey]: "/feed",
       });
 
       win.history.pushState(null, "", "/photo/1?filter=pending");
       expect(win.history.state).toEqual({
-        [historyMetadataKey]: "/feed",
+        [historyPreviousNextUrlKey]: "/feed",
+        [historyTraversalIndexKey]: 4,
       });
 
       win.history.replaceState(null, "", "/photo/1?filter=archived");
       expect(win.history.state).toEqual({
-        [historyMetadataKey]: "/feed",
+        [historyPreviousNextUrlKey]: "/feed",
+        [historyTraversalIndexKey]: 4,
       });
 
       win.history.replaceState(undefined, "", "/photo/1?filter=all");
       expect(win.history.state).toEqual({
-        [historyMetadataKey]: "/feed",
+        [historyPreviousNextUrlKey]: "/feed",
+        [historyTraversalIndexKey]: 4,
+      });
+
+      win.history.state = { [historyTraversalIndexKey]: 7 };
+      win.history.pushState({ next: true }, "", "/photo/1?filter=done");
+      expect(win.history.state).toEqual({
+        [historyTraversalIndexKey]: 7,
+        next: true,
       });
     } finally {
       vi.resetModules();
