@@ -37,8 +37,8 @@ function sanitizeCSSProperty(prop: string): string | undefined {
   return undefined;
 }
 
-function sanitizeInternalFontFamily(name: string | undefined): string | undefined {
-  if (!name) return undefined;
+function sanitizeInternalFontFamily(name: unknown): string | undefined {
+  if (typeof name !== "string" || name.length === 0) return undefined;
   if (/^[$_a-zA-Z][$_a-zA-Z0-9]*$/.test(name)) return name;
   return undefined;
 }
@@ -64,7 +64,7 @@ type LocalFontOptions = {
   declarations?: Array<{ prop: string; value: string }>;
   _vinext?: {
     font?: {
-      family?: string;
+      family?: unknown;
     };
   };
 };

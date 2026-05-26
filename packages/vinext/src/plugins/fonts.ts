@@ -1171,7 +1171,7 @@ export function createLocalFontsPlugin(): Plugin {
         }
 
         const localFontCallRe = new RegExp(
-          String.raw`(?:^|[;\n])\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*${escapeRegExp(localFontIdentifier)}\s*\(\s*(?=\{)`,
+          String.raw`(?:^|[;{}\n])\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*${escapeRegExp(localFontIdentifier)}\s*\(\s*(?=\{)`,
           "g",
         );
         const familyPayloadInsertions = new Set<number>();

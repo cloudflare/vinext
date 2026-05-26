@@ -131,6 +131,21 @@ describe("vinext:local-fonts plugin", () => {
     expect(result.code).toContain(`_vinext: { font: { family: "myFont" } }`);
   });
 
+  it("passes the local binding name through for same-line block declarations", () => {
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `export default function Layout(){const myFont = localFont({ src: "./font.woff2" }); return null;}`,
+    ].join("\n");
+
+    const result = transform.call(plugin, code, "/app/layout.tsx");
+
+    expect(result).not.toBeNull();
+    expectImported(result.code, "./font.woff2");
+    expect(result.code).toContain(`_vinext: { font: { family: "myFont" } }`);
+  });
+
   // ── Object src with path property ────────────────────────────
 
   it("transforms a single source object with path property", () => {
@@ -386,6 +401,30 @@ describe("vinext:local-fonts plugin", () => {
 
     expect(result.style.fontFamily).toMatch(/__local_font_\d+/);
     expect(result.style.fontFamily).not.toContain("myFont");
+
+    const addedStyles = getSSRFontStyles().slice(beforeCount).join("\n");
+    expect(addedStyles).toContain("font-family: '__local_font_");
+    expect(addedStyles).not.toContain("myFont");
+    expect(addedStyles).not.toContain("color: red");
+  });
+
+  it("rejects non-string transform-provided binding names before regex validation", () => {
+    let toStringCalls = 0;
+    const statefulFamily = {
+      toString() {
+        toStringCalls++;
+        return toStringCalls === 1 ? "myFont" : "myFont'} body { color: red; }";
+      },
+    };
+    const beforeCount = getSSRFontStyles().length;
+    const result = localFont({
+      src: "/assets/non-string-family.woff2",
+      _vinext: { font: { family: statefulFamily } },
+    });
+
+    expect(result.style.fontFamily).toMatch(/__local_font_\d+/);
+    expect(result.style.fontFamily).not.toContain("myFont");
+    expect(toStringCalls).toBe(0);
 
     const addedStyles = getSSRFontStyles().slice(beforeCount).join("\n");
     expect(addedStyles).toContain("font-family: '__local_font_");
