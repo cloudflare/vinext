@@ -30,6 +30,11 @@ function isPrerenderRouteParamsPayload(value: unknown): value is PrerenderRouteP
   );
 }
 
+// A payload with no dynamic params serializes to `null`, which is
+// indistinguishable from an absent header on the read side. This is intentional:
+// the only producer, `encodePrerenderRouteParams`, already returns `null` for
+// param-less patterns, so an empty-params payload never carries information worth
+// propagating. Routes with no dynamic segments need no encoded-render override.
 export function serializePrerenderRouteParamsHeader(
   payload: PrerenderRouteParamsPayload | null,
 ): string | null {
@@ -65,6 +70,15 @@ export function readTrustedPrerenderRouteParamsFromHeaders(
   return params;
 }
 
+// Convenience wrapper for reads that happen AFTER the prerender secret has
+// already been verified at the trust boundary. The only entry point that
+// receives raw external input, `prod-server`'s `nodeToWebRequest`, calls
+// `readTrustedPrerenderRouteParamsFromHeaders` WITH `expectedSecret` and
+// re-serializes the validated payload onto a clean header. Every downstream
+// reader (the App Router handler) therefore operates on an already-trusted
+// request and deliberately omits `expectedSecret`. The `VINEXT_PRERENDER=1`
+// gate still ensures this never activates outside the build-time prerender
+// phase. Do not call this on unverified external input.
 export function readTrustedPrerenderRouteParams(
   request: Request,
 ): PrerenderRouteParamsPayload | null {

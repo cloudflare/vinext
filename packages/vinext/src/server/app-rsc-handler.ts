@@ -667,6 +667,14 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     // protocol needs to know whether the inbound request was a `_next/data`
     // fetch to emit `x-nextjs-redirect` instead of an HTTP redirect.
     const isDataRequest = rawRequest.headers.get("x-nextjs-data") === "1";
+    // Read the trusted prerender route params before filtering strips the
+    // route-params header (it IS in VINEXT_INTERNAL_HEADERS), then re-attach the
+    // validated value below so the second read in handleAppRscRequest still sees
+    // it. The secret was already verified upstream at prod-server's
+    // nodeToWebRequest boundary; the surviving secret header (NOT in either
+    // internal-header list) lets readTrustedPrerenderRouteParams's
+    // VINEXT_PRERENDER gate pass on the reconstructed request. If the secret
+    // header is ever added to VINEXT_INTERNAL_HEADERS, that second read breaks.
     const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(rawRequest);
     const filteredHeaders = filterInternalHeaders(rawRequest.headers);
     if (mwCtx !== null) {
