@@ -880,6 +880,27 @@ function draftModeCookieAttributes(): string {
   return "Path=/; HttpOnly; SameSite=None; Secure";
 }
 
+function createDraftModeScopeError(expression: string): Error {
+  return new Error(
+    `${expression} can only be called from a Server Component, Route Handler, or Server Action.`,
+  );
+}
+
+function requireActiveDraftModeContext(
+  state: VinextHeadersShimState,
+  expectedContext: HeadersContext,
+  expression: string,
+): HeadersContext {
+  const currentContext = state.headersContext;
+  if (currentContext !== expectedContext) {
+    throw createDraftModeScopeError(expression);
+  }
+  if (currentContext.accessError) {
+    throw currentContext.accessError;
+  }
+  return currentContext;
+}
+
 /**
  * Draft mode — check/toggle via a `__prerender_bypass` cookie.
  *
@@ -892,46 +913,34 @@ export async function draftMode(): Promise<DraftModeResult> {
   throwIfInsideCacheScope("draftMode()");
 
   const state = _getState();
-  if (state.headersContext?.accessError) {
-    throw state.headersContext.accessError;
+  const context = state.headersContext;
+  if (!context) {
+    throw createDraftModeScopeError("draftMode()");
+  }
+  if (context.accessError) {
+    throw context.accessError;
   }
   // Reading `draftMode()` itself is not dynamic — `isEnabled` is a plain
   // getter and merely calling `draftMode()` does not require bailing out
   // of static prerendering. Only `enable()`/`disable()` mutate state and
   // must be tracked as dynamic, mirroring Next.js's `trackDynamicDraftMode`
   // (see .nextjs-ref/packages/next/src/server/request/draft-mode.ts:152-165).
-  const secret = state.headersContext ? ensureContextDraftModeSecret(state.headersContext) : null;
+  const secret = ensureContextDraftModeSecret(context);
 
   return {
     get isEnabled(): boolean {
-      return state.headersContext
-        ? state.headersContext.cookies.get(DRAFT_MODE_COOKIE) === secret
-        : false;
+      return context.cookies.get(DRAFT_MODE_COOKIE) === secret;
     },
     enable(): void {
+      const activeContext = requireActiveDraftModeContext(state, context, "draftMode().enable()");
       markDynamicUsage();
-      if (state.headersContext?.accessError) {
-        throw state.headersContext.accessError;
-      }
-      if (secret === null) {
-        throw new Error(
-          "draftMode().enable() can only be called from a Server Component, Route Handler, " +
-            "or Server Action.",
-        );
-      }
-      if (state.headersContext) {
-        state.headersContext.cookies.set(DRAFT_MODE_COOKIE, secret);
-      }
+      activeContext.cookies.set(DRAFT_MODE_COOKIE, secret);
       state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=${secret}; ${draftModeCookieAttributes()}`;
     },
     disable(): void {
+      const activeContext = requireActiveDraftModeContext(state, context, "draftMode().disable()");
       markDynamicUsage();
-      if (state.headersContext?.accessError) {
-        throw state.headersContext.accessError;
-      }
-      if (state.headersContext) {
-        state.headersContext.cookies.delete(DRAFT_MODE_COOKIE);
-      }
+      activeContext.cookies.delete(DRAFT_MODE_COOKIE);
       state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=; ${draftModeCookieAttributes()}; Expires=${DRAFT_MODE_EXPIRED_DATE}`;
     },
   };
