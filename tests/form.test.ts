@@ -278,6 +278,8 @@ describe("Form client GET interception", () => {
       "push",
       undefined,
       false,
+      undefined,
+      expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
     );
   });
 
@@ -310,6 +312,8 @@ describe("Form client GET interception", () => {
       "push",
       undefined,
       false,
+      undefined,
+      expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
     );
   });
 
@@ -340,6 +344,8 @@ describe("Form client GET interception", () => {
       "push",
       undefined,
       false,
+      undefined,
+      expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
     );
   });
 
@@ -384,6 +390,8 @@ describe("Form client GET interception", () => {
       "push",
       undefined,
       false,
+      undefined,
+      expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
     );
   });
 
@@ -444,6 +452,8 @@ describe("Form client GET interception", () => {
       "replace",
       undefined,
       false,
+      undefined,
+      expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
     );
   });
 });

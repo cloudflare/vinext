@@ -73,6 +73,16 @@ async function readElementDocumentTop(page: Page, selector: string) {
     .evaluate((element) => Math.round(element.getBoundingClientRect().top + window.scrollY));
 }
 
+async function expectActiveElementId(page: Page, id: string) {
+  await expect.poll(() => page.evaluate(() => document.activeElement?.id ?? null)).toBe(id);
+}
+
+async function expectActiveElementTestId(page: Page, testId: string) {
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null))
+    .toBe(testId);
+}
+
 test.describe("Next.js compat: App Router autoscroll", () => {
   // Ported from Next.js:
   // test/e2e/app-dir/router-autoscroll/router-autoscroll.test.ts
@@ -121,6 +131,54 @@ test.describe("Next.js compat: App Router autoscroll", () => {
     await expectScroll(page, { x: 1000, y: 0 });
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/router-autoscroll/router-autoscroll.test.ts
+  for (const [kind, label] of [
+    ["display-none", "display: none"],
+    ["fixed", "position: fixed"],
+    ["sticky", "position: sticky"],
+  ] as const) {
+    test(`skips first child ${label} and targets the first renderable sibling`, async ({
+      page,
+    }) => {
+      await page.goto(`${ROUTE_BASE}`);
+      await waitForControls(page);
+
+      await scrollTo(page, { x: 1000, y: 500 });
+      await push(page, `/nextjs-compat/router-autoscroll/skipped-target/${kind}`);
+      await expect(page.locator('[data-testid="selected-scroll-target"]')).toHaveText(
+        `Selected target: ${kind}`,
+      );
+      await expectScroll(page, { x: 1000, y: 0 });
+      await expectActiveElementTestId(page, "selected-scroll-target");
+    });
+  }
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/router-autoscroll/router-autoscroll.test.ts
+  test("applies scroll when loading commits and keeps it stable for final content", async ({
+    page,
+  }) => {
+    await page.goto(`${ROUTE_BASE}`);
+    await waitForControls(page);
+
+    await scrollTo(page, { x: 1000, y: 500 });
+    await page.evaluate(() => {
+      const controls = window.__vinextRouterAutoscroll;
+      if (!controls) {
+        throw new Error("router autoscroll controls are not installed");
+      }
+      controls.push("/nextjs-compat/router-autoscroll/loading-scroll");
+    });
+    await expectScroll(page, { x: 1000, y: 500 });
+
+    await expect(page.locator("#loading-component")).toBeVisible();
+    await expectScroll(page, { x: 1000, y: 0 });
+
+    await expect(page.locator("#content-that-is-visible")).toBeVisible();
+    await expectScroll(page, { x: 1000, y: 0 });
+  });
+
   test("does not scroll when scroll is false", async ({ page }) => {
     await page.goto(`${ROUTE_BASE}/0/0/100/10000/page1`);
     await waitForControls(page);
@@ -131,6 +189,34 @@ test.describe("Next.js compat: App Router autoscroll", () => {
     });
     await expect(page.locator("#page")).toHaveText("page2");
     await expectScroll(page, { x: 0, y: 1000 });
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/router-autoscroll/router-autoscroll.test.ts
+  test("scrolls on same-page search param changes while preserving scroll false", async ({
+    page,
+  }) => {
+    await page.goto(`${ROUTE_BASE}/loading-scroll?skipSleep=1`);
+    await waitForControls(page);
+    await expect(page.locator("#content-that-is-visible")).toBeVisible();
+
+    await page.locator("#pages").scrollIntoViewIfNeeded();
+    const samePageScrollY = await page.evaluate(() => Math.round(window.scrollY));
+    expect(samePageScrollY).toBeGreaterThan(0);
+
+    await push(page, "/nextjs-compat/router-autoscroll/loading-scroll?page=2&skipSleep=1");
+    await expect(page.locator("#current-page")).toHaveText("2");
+    await expectScroll(page, { x: 0, y: 0 });
+
+    await page.locator("#pages").scrollIntoViewIfNeeded();
+    const noScrollY = await page.evaluate(() => Math.round(window.scrollY));
+    expect(noScrollY).toBeGreaterThan(0);
+
+    await push(page, "/nextjs-compat/router-autoscroll/loading-scroll?page=3&skipSleep=1", {
+      scroll: false,
+    });
+    await expect(page.locator("#current-page")).toHaveText("3");
+    await expectScroll(page, { x: 0, y: noScrollY });
   });
 
   // Ported from Next.js:
@@ -160,5 +246,44 @@ test.describe("Next.js compat: App Router autoscroll", () => {
       .poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null))
       .toBe("segment-container");
     await expectScroll(page, { x: 1000, y: 0 });
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/navigation-focus/navigation-focus.test.ts
+  test("does not steal focus for a non-focusable selected target", async ({ page }) => {
+    await page.goto(`${ROUTE_BASE}`);
+    await waitForControls(page);
+
+    await scrollTo(page, { x: 0, y: 500 });
+    await page.click("#to-non-focusable");
+    await expect(page.locator('[data-testid="non-focusable-target"]')).toBeVisible();
+    await expectScroll(page, { x: 0, y: 0 });
+    await expectActiveElementId(page, "to-non-focusable");
+  });
+
+  test("only the latest rapid navigation consumes the scroll intent", async ({ page }) => {
+    await page.goto(`${ROUTE_BASE}`);
+    await waitForControls(page);
+
+    await scrollTo(page, { x: 1000, y: 500 });
+    await page.evaluate(() => {
+      const controls = window.__vinextRouterAutoscroll;
+      if (!controls) {
+        throw new Error("router autoscroll controls are not installed");
+      }
+      controls.push("/nextjs-compat/router-autoscroll/race/a");
+      controls.push("/nextjs-compat/router-autoscroll/race/b");
+      controls.push("/nextjs-compat/router-autoscroll/race/c");
+    });
+
+    await expect(page.locator('[data-testid="race-target"]')).toHaveText("Race target c");
+    await expectScroll(page, { x: 1000, y: 0 });
+    await expectActiveElementTestId(page, "race-target");
+
+    await page.waitForTimeout(700);
+    await expect(page).toHaveURL(`${ROUTE_BASE}/race/c`);
+    await expect(page.locator('[data-testid="race-target"]')).toHaveText("Race target c");
+    await expectScroll(page, { x: 1000, y: 0 });
+    await expectActiveElementTestId(page, "race-target");
   });
 });

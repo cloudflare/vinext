@@ -1453,7 +1453,16 @@ export async function navigateClientSide(
   const appNavigate = getNavigationRuntime()?.functions.navigate;
   try {
     if (appNavigate) {
-      await appNavigate(fullHref, 0, "navigate", mode, undefined, programmaticTransition);
+      await appNavigate(
+        fullHref,
+        0,
+        "navigate",
+        mode,
+        undefined,
+        programmaticTransition,
+        undefined,
+        scrollIntent,
+      );
     } else {
       if (mode === "replace") {
         replaceHistoryStateWithoutNotify(null, "", fullHref);

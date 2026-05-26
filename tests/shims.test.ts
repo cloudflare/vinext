@@ -10954,6 +10954,40 @@ describe("next/amp shim", () => {
   });
 });
 
+describe("app router scroll intent state", () => {
+  it("only lets the claimed render commit consume its own scroll intent", async () => {
+    const {
+      beginAppRouterScrollIntent,
+      claimAppRouterScrollIntentForCommit,
+      clearAppRouterScrollIntent,
+      consumeAppRouterScrollIntent,
+      getPendingAppRouterScrollIntent,
+    } = await import("../packages/vinext/src/shims/app-router-scroll-state.js");
+
+    clearAppRouterScrollIntent();
+
+    const staleIntent = beginAppRouterScrollIntent(null);
+    const latestIntent = beginAppRouterScrollIntent(null);
+
+    claimAppRouterScrollIntentForCommit(staleIntent, 1);
+    expect(getPendingAppRouterScrollIntent()?.commitId).toBeNull();
+    expect(consumeAppRouterScrollIntent(undefined)).toBeNull();
+    expect(getPendingAppRouterScrollIntent()?.id).toBe(latestIntent.id);
+    expect(consumeAppRouterScrollIntent(null)).toBeNull();
+    expect(getPendingAppRouterScrollIntent()?.id).toBe(latestIntent.id);
+    expect(consumeAppRouterScrollIntent(latestIntent, 1)).toBeNull();
+    expect(getPendingAppRouterScrollIntent()?.id).toBe(latestIntent.id);
+
+    claimAppRouterScrollIntentForCommit(latestIntent, 2);
+    expect(consumeAppRouterScrollIntent(latestIntent, 1)).toBeNull();
+
+    const consumed = consumeAppRouterScrollIntent(latestIntent, 2);
+    expect(consumed?.id).toBe(latestIntent.id);
+    expect(consumed?.commitId).toBe(2);
+    expect(getPendingAppRouterScrollIntent()).toBeNull();
+  });
+});
+
 describe("next/compat/router shim", () => {
   it("exports useRouter as a function", async () => {
     const mod = await import("../packages/vinext/src/shims/compat-router.js");

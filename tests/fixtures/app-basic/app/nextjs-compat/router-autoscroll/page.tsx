@@ -9,6 +9,36 @@ export default function RouterAutoscrollIndexPage() {
       <Link href="/nextjs-compat/router-autoscroll/focus-target" id="to-focus-target">
         To focus target
       </Link>
+      <div>
+        <Link href="/nextjs-compat/router-autoscroll/loading-scroll" id="to-loading-scroll">
+          To loading scroll
+        </Link>
+      </div>
+      <div>
+        <Link
+          href="/nextjs-compat/router-autoscroll/skipped-target/display-none"
+          id="to-display-none-first-element"
+        >
+          To display none first element
+        </Link>
+      </div>
+      <div>
+        <Link
+          href="/nextjs-compat/router-autoscroll/skipped-target/fixed"
+          id="to-fixed-first-element"
+        >
+          To fixed first element
+        </Link>
+      </div>
+      <div>
+        <Link
+          href="/nextjs-compat/router-autoscroll/skipped-target/sticky"
+          id="to-sticky-first-element"
+        >
+          To sticky first element
+        </Link>
+      </div>
+      <div style={{ height: 1, width: 10000 }} />
     </>
   );
 }

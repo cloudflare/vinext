@@ -1,4 +1,5 @@
 export type AppRouterScrollIntent = Readonly<{
+  commitId: number | null;
   hash: string | null;
   id: number;
 }>;
@@ -33,6 +34,7 @@ export function beginAppRouterScrollIntent(hash: string | null): AppRouterScroll
   const store = getScrollIntentStore();
   store.nextId += 1;
   const intent = {
+    commitId: null,
     hash,
     id: store.nextId,
   };
@@ -48,13 +50,31 @@ export function getPendingAppRouterScrollIntent(): AppRouterScrollIntent | null 
   return getScrollIntentStore().pending;
 }
 
+export function claimAppRouterScrollIntentForCommit(
+  expected: AppRouterScrollIntent | null | undefined,
+  commitId: number,
+): void {
+  const store = getScrollIntentStore();
+  const intent = store.pending;
+  if (expected === null || expected === undefined || intent === null) return;
+  if (intent.id !== expected.id) return;
+
+  store.pending = {
+    ...intent,
+    commitId,
+  };
+}
+
 export function consumeAppRouterScrollIntent(
-  expected?: AppRouterScrollIntent,
+  expected: AppRouterScrollIntent | null | undefined,
+  commitId?: number,
 ): AppRouterScrollIntent | null {
+  if (expected === null || expected === undefined) return null;
   const store = getScrollIntentStore();
   const intent = store.pending;
   if (intent === null) return null;
-  if (expected && intent.id !== expected.id) return null;
+  if (intent.id !== expected.id) return null;
+  if (commitId !== undefined && intent.commitId !== commitId) return null;
 
   store.pending = null;
   return intent;
