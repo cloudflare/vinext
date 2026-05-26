@@ -13660,6 +13660,23 @@ describe("image optimization request parsing", () => {
     expect(IMAGE_OPTIMIZATION_PATH).toBe("/_next/image");
   });
 
+  it("VINEXT_IMAGE_OPTIMIZATION_PATH is /_vinext/image", async () => {
+    const { VINEXT_IMAGE_OPTIMIZATION_PATH } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    expect(VINEXT_IMAGE_OPTIMIZATION_PATH).toBe("/_vinext/image");
+  });
+
+  it("isImageOptimizationPath accepts both supported endpoints", async () => {
+    const { isImageOptimizationPath } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    expect(isImageOptimizationPath("/_next/image")).toBe(true);
+    expect(isImageOptimizationPath("/_vinext/image")).toBe(true);
+    expect(isImageOptimizationPath("/_next/image/")).toBe(false);
+    expect(isImageOptimizationPath("/_next/image.png")).toBe(false);
+    expect(isImageOptimizationPath("/_next/data")).toBe(false);
+    expect(isImageOptimizationPath("/")).toBe(false);
+  });
+
   it("exports DEFAULT_DEVICE_SIZES and DEFAULT_IMAGE_SIZES matching Next.js defaults", async () => {
     const { DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } =
       await import("../packages/vinext/src/server/image-optimization.js");

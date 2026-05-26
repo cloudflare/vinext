@@ -36,7 +36,7 @@ import {
 } from "../config/config-matchers.js";
 import type { RequestContext } from "../config/config-matchers.js";
 import {
-  IMAGE_OPTIMIZATION_PATH,
+  isImageOptimizationPath,
   IMAGE_CONTENT_SECURITY_POLICY,
   parseImageParams,
   isSafeImageContentType,
@@ -1182,7 +1182,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
     // Image optimization passthrough (Node.js prod server has no Images binding;
     // serves the original file with cache headers and security headers)
-    if (pathname === IMAGE_OPTIMIZATION_PATH) {
+    if (isImageOptimizationPath(pathname)) {
       const parsedUrl = new URL(rawUrl, "http://localhost");
       const defaultAllowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
       const params = parseImageParams(parsedUrl, defaultAllowedWidths);
@@ -1528,7 +1528,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     }
 
     // ── Image optimization passthrough ──────────────────────────────
-    if (pathname === IMAGE_OPTIMIZATION_PATH || staticLookupPath === IMAGE_OPTIMIZATION_PATH) {
+    if (isImageOptimizationPath(pathname) || isImageOptimizationPath(staticLookupPath)) {
       const parsedUrl = new URL(rawUrl, "http://localhost");
       const params = parseImageParams(parsedUrl, allowedImageWidths);
       if (!params) {

@@ -144,6 +144,17 @@ function runLocalImageUrlParitySuite(router: "app" | "pages"): void {
       const res = await fetch(imageUrl);
       expect(res.status).toBe(200);
     });
+
+    // Both /_next/image and /_vinext/image are accepted so apps wired to
+    // either prefix get images served through the same optimizer pipeline.
+    it("routes /_vinext/image requests through the optimizer", async () => {
+      const vinextUrl = new URL("/_vinext/image", baseUrl);
+      vinextUrl.searchParams.set("url", "/hello world.png");
+      vinextUrl.searchParams.set("w", "64");
+      vinextUrl.searchParams.set("q", "75");
+      const res = await fetch(vinextUrl);
+      expect(res.status).toBe(200);
+    });
   });
 }
 
