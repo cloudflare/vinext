@@ -103,6 +103,10 @@ function scrollToElement(target: HTMLElement, hash: string | null): void {
   }
 }
 
+// Must stay a class component: findDOMNode() needs a mounted class instance to
+// locate the first DOM node rendered by the children without introducing a
+// wrapper element. Converting this to a function component would break the
+// wrapperless targeting that mirrors Next's default scroll handler.
 export class AppRouterScrollTarget extends React.Component<{ children: React.ReactNode }> {
   handlePotentialScroll = () => {
     const intent = getPendingAppRouterScrollIntent();
