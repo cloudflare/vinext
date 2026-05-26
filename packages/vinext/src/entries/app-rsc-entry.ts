@@ -269,6 +269,7 @@ import {
   resolveAppPageGenerateStaticParamsSources as __resolveAppPageGenerateStaticParamsSources,
 } from ${JSON.stringify(appPageRequestPath)};
 import {
+  isEdgeRuntime as __isEdgeRuntime,
   resolveAppPageFetchCacheMode as __resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig as __resolveAppPageSegmentConfig,
 } from ${JSON.stringify(appSegmentConfigPath)};
@@ -565,6 +566,7 @@ export default __createAppRscHandler({
       dynamicConfig: __segmentConfig.dynamicConfig,
       dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
       fetchCache: __segmentConfig.fetchCache ?? null,
+      isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
       findIntercept(pathname) {
         return findIntercept(pathname, interceptionContext);
       },

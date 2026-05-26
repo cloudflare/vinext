@@ -58,6 +58,7 @@ type AppPageHtmlResponsePolicy = {
 } & AppPageResponsePolicy;
 
 type BuildAppPageRscResponseOptions = {
+  isEdgeRuntime?: boolean;
   middlewareContext: AppPageMiddlewareContext;
   mountedSlotsHeader?: string | null;
   params?: Record<string, unknown>;
@@ -68,6 +69,7 @@ type BuildAppPageRscResponseOptions = {
 type BuildAppPageHtmlResponseOptions = {
   draftCookie?: string | null;
   fontLinkHeader?: string;
+  isEdgeRuntime?: boolean;
   middlewareContext: AppPageMiddlewareContext;
   policy: AppPageResponsePolicy;
   timing?: AppPageResponseTiming;
@@ -223,12 +225,15 @@ export function buildAppPageRscResponse(
   const headers = new Headers({
     "Content-Type": VINEXT_RSC_CONTENT_TYPE,
     Vary: VINEXT_RSC_VARY_HEADER,
-    // Mirror Next.js' edge runtime marker. vinext serves every App Router
-    // response from a Worker (edge-equivalent runtime), so the test that
-    // asserts `x-edge-runtime: '1'` on RSC responses must see this header.
-    // See edge-ssr-app.ts in the Next.js source for the canonical emission.
-    "x-edge-runtime": "1",
   });
+
+  // Mirror Next.js' edge-runtime marker (set in edge-ssr-app.ts). Only routes
+  // whose resolved segment config is `runtime = "edge"` should advertise it —
+  // nodejs-runtime routes must not, otherwise downstream consumers can't tell
+  // the configured runtime from the response.
+  if (options.isEdgeRuntime) {
+    headers.set("x-edge-runtime", "1");
+  }
 
   if (options.params && Object.keys(options.params).length > 0) {
     // encodeURIComponent so non-ASCII params (e.g. Korean slugs) survive the
@@ -262,12 +267,15 @@ export function buildAppPageHtmlResponse(
   const headers = new Headers({
     "Content-Type": "text/html; charset=utf-8",
     Vary: VINEXT_RSC_VARY_HEADER,
-    // Mirror Next.js' edge runtime marker. vinext serves every App Router
-    // response from a Worker (edge-equivalent runtime), so the test that
-    // asserts `x-edge-runtime: '1'` on HTML responses must see this header.
-    // See edge-ssr-app.ts in the Next.js source for the canonical emission.
-    "x-edge-runtime": "1",
   });
+
+  // Mirror Next.js' edge-runtime marker (set in edge-ssr-app.ts). Only routes
+  // whose resolved segment config is `runtime = "edge"` should advertise it —
+  // nodejs-runtime routes must not, otherwise downstream consumers can't tell
+  // the configured runtime from the response.
+  if (options.isEdgeRuntime) {
+    headers.set("x-edge-runtime", "1");
+  }
 
   if (options.policy.cacheControl) {
     headers.set("Cache-Control", options.policy.cacheControl);
