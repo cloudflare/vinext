@@ -17,19 +17,29 @@
  *     detection — matches the subset Next.js supports
  *   - Only the common `"@/*": ["./src/*"]` / `"@/*": ["src/*"]` pattern is
  *     supported; non-wildcard paths and exact aliases also work
- *   - Returned alias values are always absolute paths so they work with
- *     `runnerImport`'s inline environment (which has its own root).
+ *   - Returned alias values default to absolute paths so they work with
+ *     `runnerImport`'s inline environment (which has its own root). Callers
+ *     that need project-root-relative Vite aliases can request `format: "vite"`.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { parseStaticObjectLiteral } from "../plugins/fonts.js";
+import { relativeWithinRoot, tryRealpathSync } from "../build/ssr-manifest.js";
+import { isUnknownRecord } from "../utils/record.js";
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
+type AliasFormat = "absolute" | "vite";
+
+type TsconfigPathAliasOptions = {
+  format?: AliasFormat;
+};
+
+type TsconfigPathAliasResolution = {
+  projectRoot: string;
+  aliases: Record<string, string>;
+};
 
 function resolveTsconfigPathCandidate(candidate: string): string | null {
   const candidates = candidate.endsWith(".json")
@@ -63,9 +73,42 @@ function resolveTsconfigExtends(configPath: string, specifier: string): string |
   return null;
 }
 
+function toViteAliasReplacement(absolutePath: string, projectRoot: string): string {
+  const normalizedPath = absolutePath.replace(/\\/g, "/");
+  const rootCandidates = new Set<string>([projectRoot]);
+  const realRoot = tryRealpathSync(projectRoot);
+  if (realRoot) rootCandidates.add(realRoot);
+
+  const pathCandidates = new Set<string>([absolutePath]);
+  const realPath = tryRealpathSync(absolutePath);
+  if (realPath) pathCandidates.add(realPath);
+
+  for (const rootCandidate of rootCandidates) {
+    for (const pathCandidate of pathCandidates) {
+      if (pathCandidate === rootCandidate) {
+        return normalizedPath;
+      }
+      const relativeId = relativeWithinRoot(rootCandidate, pathCandidate);
+      if (relativeId) return "/" + relativeId;
+    }
+  }
+
+  return normalizedPath;
+}
+
+function formatAliasReplacement(
+  absolutePath: string,
+  projectRoot: string,
+  format: AliasFormat,
+): string {
+  return format === "vite" ? toViteAliasReplacement(absolutePath, projectRoot) : absolutePath;
+}
+
 function materializeAliases(
   pathsConfig: Record<string, unknown>,
   baseUrl: string,
+  projectRoot: string,
+  format: AliasFormat,
 ): Record<string, string> {
   const aliases: Record<string, string> = {};
 
@@ -88,11 +131,15 @@ function materializeAliases(
       const targetDir = target.slice(0, -2);
       if (!aliasKey || !targetDir) continue;
 
-      aliases[aliasKey] = path.resolve(baseUrl, targetDir);
+      aliases[aliasKey] = formatAliasReplacement(
+        path.resolve(baseUrl, targetDir),
+        projectRoot,
+        format,
+      );
       continue;
     }
 
-    aliases[find] = path.resolve(baseUrl, target);
+    aliases[find] = formatAliasReplacement(path.resolve(baseUrl, target), projectRoot, format);
   }
 
   return aliases;
@@ -100,7 +147,9 @@ function materializeAliases(
 
 function loadAliasesFromTsconfigFile(
   configPath: string,
+  projectRoot: string,
   seen: Set<string>,
+  format: AliasFormat,
 ): Record<string, string> {
   if (seen.has(configPath)) return {};
   seen.add(configPath);
@@ -117,13 +166,13 @@ function loadAliasesFromTsconfigFile(
   if (typeof parsed.extends === "string") {
     const extendedPath = resolveTsconfigExtends(configPath, parsed.extends);
     if (extendedPath) {
-      aliases = loadAliasesFromTsconfigFile(extendedPath, seen);
+      aliases = loadAliasesFromTsconfigFile(extendedPath, projectRoot, seen, format);
     }
   }
 
-  const compilerOptions = isRecord(parsed.compilerOptions) ? parsed.compilerOptions : null;
+  const compilerOptions = isUnknownRecord(parsed.compilerOptions) ? parsed.compilerOptions : null;
   const pathsConfig =
-    compilerOptions && isRecord(compilerOptions.paths) ? compilerOptions.paths : null;
+    compilerOptions && isUnknownRecord(compilerOptions.paths) ? compilerOptions.paths : null;
   if (!pathsConfig) return aliases;
 
   const baseUrl =
@@ -132,23 +181,63 @@ function loadAliasesFromTsconfigFile(
 
   return {
     ...aliases,
-    ...materializeAliases(pathsConfig, resolvedBaseUrl),
+    ...materializeAliases(pathsConfig, resolvedBaseUrl, projectRoot, format),
   };
+}
+
+function findTsconfigPath(projectRoot: string): string | null {
+  for (const name of TSCONFIG_FILES) {
+    const candidate = path.join(projectRoot, name);
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 /**
  * Read the project's tsconfig.json (or jsconfig.json) and return its
- * `compilerOptions.paths` as absolute-path Vite `resolve.alias` entries.
+ * `compilerOptions.paths` as Vite `resolve.alias` entries.
  *
  * Returns an empty object if no config is found or no paths are configured.
  * Errors during parsing are swallowed — this is a best-effort helper that
  * must not break config loading.
  */
-export function loadTsconfigPathAliasesForRoot(projectRoot: string): Record<string, string> {
-  for (const name of TSCONFIG_FILES) {
-    const candidate = path.join(projectRoot, name);
-    if (!fs.existsSync(candidate)) continue;
-    return loadAliasesFromTsconfigFile(candidate, new Set());
+export function loadTsconfigPathAliasesForRoot(
+  projectRoot: string,
+  options: TsconfigPathAliasOptions = {},
+): Record<string, string> {
+  const configPath = findTsconfigPath(projectRoot);
+  if (!configPath) return {};
+
+  return loadAliasesFromTsconfigFile(
+    configPath,
+    projectRoot,
+    new Set(),
+    options.format ?? "absolute",
+  );
+}
+
+export function loadNearestTsconfigPathAliases(
+  fromPath: string,
+  options: TsconfigPathAliasOptions = {},
+): TsconfigPathAliasResolution | null {
+  let dir =
+    fs.existsSync(fromPath) && fs.statSync(fromPath).isDirectory()
+      ? fromPath
+      : path.dirname(fromPath);
+
+  while (true) {
+    if (findTsconfigPath(dir)) {
+      return {
+        projectRoot: dir,
+        aliases: loadTsconfigPathAliasesForRoot(dir, options),
+      };
+    }
+
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
   }
-  return {};
 }

@@ -52,6 +52,23 @@ describe("loadTsconfigPathAliasesForRoot", () => {
     expect(aliases["@"]).toBe(path.join(tmpDir, "src"));
   });
 
+  it("can return Vite-root relative alias replacements", () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          paths: {
+            "@/*": ["./src/*"],
+          },
+        },
+      }),
+    );
+
+    const aliases = loadTsconfigPathAliasesForRoot(tmpDir, { format: "vite" });
+    expect(aliases["@"]).toBe("/src");
+  });
+
   it("follows 'extends' for inherited paths", () => {
     tmpDir = makeTempDir();
     fs.writeFileSync(
