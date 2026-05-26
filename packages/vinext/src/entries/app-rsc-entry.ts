@@ -7,6 +7,7 @@
  *
  * Previously housed in server/app-dev-server.ts.
  */
+import { randomUUID } from "node:crypto";
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
 import { resolveEntryPath, normalizePathSeparators } from "./runtime-entry-module.js";
 import type {
@@ -108,6 +109,8 @@ type AppRouterConfig = {
   allowedDevOrigins?: string[];
   /** Body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). */
   bodySizeLimit?: number;
+  /** Serialized next.config htmlLimitedBots regexp source. */
+  htmlLimitedBots?: string;
   /**
    * Resolved `assetPrefix` from next.config. Empty string when unset.
    * Embedded in the generated entry so the App Router prod-server reads
@@ -141,6 +144,8 @@ type AppRouterConfig = {
   hasPagesDir?: boolean;
   /** Exact public/ file routes, using normalized leading-slash pathnames. */
   publicFiles?: string[];
+  /** Server-only token used to validate the draft-mode bypass cookie. */
+  draftModeSecret?: string;
 };
 
 /**
@@ -168,11 +173,13 @@ export function generateRscEntry(
   const headers = config?.headers ?? [];
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;
+  const htmlLimitedBots = config?.htmlLimitedBots;
   const assetPrefix = config?.assetPrefix ?? "";
   const expireTime = config?.expireTime ?? DEFAULT_EXPIRE_TIME;
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
+  const draftModeSecret = config?.draftModeSecret ?? randomUUID();
   const manifestCode = buildAppRscManifestCode({
     routes,
     metadataRoutes,
@@ -269,6 +276,7 @@ import {
   resolveAppPageGenerateStaticParamsSources as __resolveAppPageGenerateStaticParamsSources,
 } from ${JSON.stringify(appPageRequestPath)};
 import {
+  isEdgeRuntime as __isEdgeRuntime,
   resolveAppPageFetchCacheMode as __resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig as __resolveAppPageSegmentConfig,
 } from ${JSON.stringify(appSegmentConfigPath)};
@@ -302,6 +310,8 @@ import { suppressHookWarningAls } from ${JSON.stringify(appHookWarningSuppressio
 import { clearAppRequestContext as __clearRequestContext, setAppNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestContextPath)};
 import { createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver } from ${JSON.stringify(appPrerenderStaticParamsPath)};
 import { seedMemoryCacheFromPrerender as __seedMemoryCacheFromPrerender } from ${JSON.stringify(seedCachePath)};
+
+const __draftModeSecret = ${JSON.stringify(draftModeSecret)};
 
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
@@ -452,6 +462,7 @@ async function buildPageElements(route, params, routePath, pageRequest) {
     rootUnauthorizedModule: ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"},
     metadataRoutes,
     basePath: __basePath,
+    htmlLimitedBots: __htmlLimitedBots,
   });
 }
 
@@ -463,6 +474,7 @@ const __configHeaders = ${JSON.stringify(headers)};
 const __publicFiles = new Set(${JSON.stringify(publicFiles)});
 const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
 const __expireTime = ${JSON.stringify(expireTime)};
+const __htmlLimitedBots = ${JSON.stringify(htmlLimitedBots)};
 // Re-exported for the App Router prod-server to consume at startup —
 // mirrors the embedded \`__basePath\` pattern (and Pages Router's
 // \`vinextConfig\` export). Empty string when unset.
@@ -511,6 +523,7 @@ export default __createAppRscHandler({
   configHeaders: __configHeaders,
   configRedirects: __configRedirects,
   configRewrites: __configRewrites,
+  draftModeSecret: __draftModeSecret,
   dispatchMatchedPage({
     cleanPathname,
     formState,
@@ -562,9 +575,11 @@ export default __createAppRscHandler({
         return createRscOnErrorHandler(request, pathname, routePath);
       },
       debugClassification: __classDebug,
+      draftModeSecret: __draftModeSecret,
       dynamicConfig: __segmentConfig.dynamicConfig,
       dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
       fetchCache: __segmentConfig.fetchCache ?? null,
+      isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
       findIntercept(pathname) {
         return findIntercept(pathname, interceptionContext);
       },
@@ -620,10 +635,10 @@ export default __createAppRscHandler({
         });
       },
       renderErrorBoundaryPage(renderErr) {
-        return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, scriptNonce, middlewareContext);
+        return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, scriptNonce, middlewareContext, { isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime) });
       },
       renderHttpAccessFallbackPage(statusCode, opts, currentMiddlewareContext) {
-        return __fallbackRenderer.renderHttpAccessFallback(route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext);
+        return __fallbackRenderer.renderHttpAccessFallback(route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, { isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime) });
       },
       renderToReadableStream,
       request,
@@ -661,6 +676,7 @@ export default __createAppRscHandler({
       clearRequestContext() {
         __clearRequestContext();
       },
+      draftModeSecret: __draftModeSecret,
       i18n: __i18nConfig,
       isrDebug: __isrDebug,
       isrGet: __isrGet,
@@ -725,10 +741,15 @@ export default __createAppRscHandler({
     request,
     searchParams,
   }) {
+    const __actionMatch = matchRoute(cleanPathname);
+    const __actionIsEdgeRuntime = __actionMatch
+      ? __isEdgeRuntime(__resolveAppPageSegmentConfig({ layouts: __actionMatch.route.layouts, page: __actionMatch.route.page }).runtime)
+      : false;
     return __handleServerActionRscRequest({
       actionId,
       allowedOrigins: __allowedOrigins,
       basePath: __basePath,
+      isEdgeRuntime: __actionIsEdgeRuntime,
       buildPageElement({
         route: actionRoute,
         params: actionParams,
@@ -825,7 +846,8 @@ export default __createAppRscHandler({
   middlewareModule: ${middlewarePath ? "middlewareModule" : "null"},
   publicFiles: __publicFiles,
   renderNotFound({ isRscRequest, matchedParams, middlewareContext, request, route, scriptNonce }) {
-    return __fallbackRenderer.renderNotFound(route, isRscRequest, request, matchedParams, scriptNonce, middlewareContext);
+    const __isEdge = route ? __isEdgeRuntime(__resolveAppPageSegmentConfig({ layouts: route.layouts, page: route.page }).runtime) : false;
+    return __fallbackRenderer.renderNotFound(route, isRscRequest, request, matchedParams, scriptNonce, middlewareContext, { isEdgeRuntime: __isEdge });
   },
   ${
     hasPagesDir

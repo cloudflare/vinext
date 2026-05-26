@@ -31,6 +31,7 @@ import {
 import { loadNextConfig, resolveNextConfig } from "../config/next-config.js";
 import { pagesRouter, apiRouter } from "../routing/pages-router.js";
 import { appRouter } from "../routing/app-router.js";
+import { scanMetadataFiles } from "../server/metadata-routes.js";
 import { findDir } from "./report.js";
 import { startProdServer } from "../server/prod-server.js";
 
@@ -139,7 +140,8 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   process.env.VINEXT_PRERENDER = "1";
 
   // The manifest lands in dist/server/ alongside the server bundle so it's
-  // cleaned by Vite's emptyOutDir on rebuild and co-located with server artifacts.
+  // cleaned with the rest of vinext's build output on rebuild and co-located
+  // with server artifacts.
   const manifestDir = path.join(root, "dist", "server");
 
   const loadedConfig = await resolveNextConfig(await loadNextConfig(root), root);
@@ -155,6 +157,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // build errors rather than silently skipped.
   const mode = config.output === "export" ? "export" : "default";
   const allRoutes: PrerenderRouteResult[] = [];
+  const allOutputFiles: string[] = [];
 
   // Count total renderable URLs across both phases upfront so we can show a
   // single combined progress bar. We track completed ourselves and pass an
@@ -208,6 +211,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     // ── App Router phase ──────────────────────────────────────────────────────
     if (appDir) {
       const routes = await appRouter(appDir, config.pageExtensions);
+      const metadataRoutes = scanMetadataFiles(appDir);
 
       // We don't know the exact render-queue size until prerenderApp starts, so
       // use the progress callback's `total` to update our combined total on the
@@ -216,6 +220,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       const result = await prerenderApp({
         mode,
         routes,
+        metadataRoutes,
         outDir,
         skipManifest: true,
         config,
@@ -235,6 +240,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       });
 
       allRoutes.push(...result.routes);
+      if (result.outputFiles) allOutputFiles.push(...result.outputFiles);
     }
 
     // ── Pages Router phase ────────────────────────────────────────────────────
@@ -273,6 +279,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       });
 
       allRoutes.push(...result.routes);
+      if (result.outputFiles) allOutputFiles.push(...result.outputFiles);
     }
   } finally {
     // Close the shared prod server if we started one.
@@ -322,5 +329,8 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     );
   }
 
-  return { routes: allRoutes };
+  return {
+    routes: allRoutes,
+    ...(allOutputFiles.length > 0 ? { outputFiles: allOutputFiles } : {}),
+  };
 }

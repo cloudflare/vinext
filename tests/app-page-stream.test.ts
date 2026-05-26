@@ -381,4 +381,39 @@ describe("app page stream helpers", () => {
       }),
     ).toBe(false);
   });
+
+  it("emits the `x-edge-runtime: 1` marker on HTML stream responses for edge-runtime routes", async () => {
+    const response = await renderAppPageHtmlResponse({
+      clearRequestContext: vi.fn(),
+      fontData: { links: [], preloads: [], styles: [] },
+      isEdgeRuntime: true,
+      navigationContext: null,
+      rscStream: createStream(["flight"]),
+      ssrHandler: {
+        async handleSsr() {
+          return createStream(["<html>page</html>"]);
+        },
+      },
+      status: 200,
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("omits the `x-edge-runtime` marker on HTML stream responses for nodejs-runtime routes", async () => {
+    const response = await renderAppPageHtmlResponse({
+      clearRequestContext: vi.fn(),
+      fontData: { links: [], preloads: [], styles: [] },
+      navigationContext: null,
+      rscStream: createStream(["flight"]),
+      ssrHandler: {
+        async handleSsr() {
+          return createStream(["<html>page</html>"]);
+        },
+      },
+      status: 200,
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBeNull();
+  });
 });

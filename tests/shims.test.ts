@@ -17,7 +17,6 @@ import type {
 } from "../packages/vinext/src/shims/cache.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
-
 describe("vinext next data client helpers", () => {
   it("extracts __NEXT_DATA__ after carriage-return whitespace", () => {
     const json = '{"props":{},"page":"/","query":{}}';
@@ -253,7 +252,8 @@ describe("next/navigation shim", () => {
     // Covered by Next.js shallow-routing tests for object, null, and undefined state:
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/shallow-routing/shallow-routing.test.ts
     const previousWindow = (globalThis as any).window;
-    const historyMetadataKey = "__vinext_previousNextUrl";
+    const historyPreviousNextUrlKey = "__vinext_previousNextUrl";
+    const historyTraversalIndexKey = "__vinext_historyIndex";
     const win = {
       location: {
         pathname: "/photo/1",
@@ -263,7 +263,10 @@ describe("next/navigation shim", () => {
         origin: "http://localhost",
       },
       history: {
-        state: { [historyMetadataKey]: "/feed" } as unknown,
+        state: {
+          [historyPreviousNextUrlKey]: "/feed",
+          [historyTraversalIndexKey]: 4,
+        } as unknown,
         pushState(data: unknown, _unused: string, url?: string | URL | null) {
           this.state = data;
           if (!url) return;
@@ -293,23 +296,34 @@ describe("next/navigation shim", () => {
 
       win.history.pushState({ myData: { foo: "bar" } }, "", "/photo/1?filter=active");
       expect(win.history.state).toEqual({
+        [historyPreviousNextUrlKey]: "/feed",
+        [historyTraversalIndexKey]: 4,
         myData: { foo: "bar" },
-        [historyMetadataKey]: "/feed",
       });
 
       win.history.pushState(null, "", "/photo/1?filter=pending");
       expect(win.history.state).toEqual({
-        [historyMetadataKey]: "/feed",
+        [historyPreviousNextUrlKey]: "/feed",
+        [historyTraversalIndexKey]: 4,
       });
 
       win.history.replaceState(null, "", "/photo/1?filter=archived");
       expect(win.history.state).toEqual({
-        [historyMetadataKey]: "/feed",
+        [historyPreviousNextUrlKey]: "/feed",
+        [historyTraversalIndexKey]: 4,
       });
 
       win.history.replaceState(undefined, "", "/photo/1?filter=all");
       expect(win.history.state).toEqual({
-        [historyMetadataKey]: "/feed",
+        [historyPreviousNextUrlKey]: "/feed",
+        [historyTraversalIndexKey]: 4,
+      });
+
+      win.history.state = { [historyTraversalIndexKey]: 7 };
+      win.history.pushState({ next: true }, "", "/photo/1?filter=done");
+      expect(win.history.state).toEqual({
+        [historyTraversalIndexKey]: 7,
+        next: true,
       });
     } finally {
       vi.resetModules();
@@ -1501,6 +1515,75 @@ describe("window.next debug global", () => {
     }
   });
 
+  // Issue #1467 — `window.next.router.push(...)` must resolve to a boolean
+  // (true on success, false if blocked), matching Next.js's contract in
+  // `packages/next/src/shared/lib/router/router.ts:1025-1048` where push/replace
+  // delegate to `change()` which returns `Promise<boolean>`. The Next.js deploy
+  // test suite (prerender, use-router-with-rewrites, etc.) reads the resolved
+  // value via `browser.eval('await window.next.router.push("/foo")')` and
+  // asserts truthiness; resolving to `undefined` is observable as a regression
+  // even when the navigation otherwise succeeds.
+  it("window.next.router.push resolves to true on shallow success", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win: any = {
+      location: {
+        pathname: "/",
+        search: "",
+        hash: "",
+        href: "http://localhost/",
+        origin: "http://localhost",
+      },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+      dispatchEvent() {},
+      scrollTo() {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      // Shallow push avoids the HTML fetch + render path so this unit test
+      // does not need a navigateClient stub. The boolean-return contract
+      // applies equally to shallow and non-shallow navigations.
+      const result = await win.next.router.push("/foo", undefined, { shallow: true });
+      expect(result).toBe(true);
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("window.next.router.replace resolves to true on shallow success", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win: any = {
+      location: {
+        pathname: "/",
+        search: "",
+        hash: "",
+        href: "http://localhost/",
+        origin: "http://localhost",
+      },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+      dispatchEvent() {},
+      scrollTo() {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      const result = await win.next.router.replace("/foo", undefined, { shallow: true });
+      expect(result).toBe(true);
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
   it("appRouterInstance exported from the navigation shim has the public router surface", async () => {
     vi.resetModules();
     const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
@@ -2346,13 +2429,14 @@ describe("next/headers shim", () => {
   });
 
   it("throws when called outside request context", async () => {
-    const { headers, cookies } = await import("../packages/vinext/src/shims/headers.js");
+    const { headers, cookies, draftMode } = await import("../packages/vinext/src/shims/headers.js");
     // Ensure context is cleared
     const { setHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
     setHeadersContext(null);
 
     await expect(headers()).rejects.toThrow("Server Component");
     await expect(cookies()).rejects.toThrow("Server Component");
+    await expect(draftMode()).rejects.toThrow("draftMode() can only be called");
   });
 
   it("legacy sync access still throws the request-context error outside request context", async () => {
@@ -2388,6 +2472,36 @@ describe("next/headers shim", () => {
     const dm = await draftMode();
     expect(dm.isEnabled).toBe(false);
     setHeadersContext(null);
+  });
+
+  it("draft mode validation is scoped to the request context secret", async () => {
+    const { draftMode, headersContextFromRequest, isDraftModeRequest, runWithHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+
+    const firstContext = headersContextFromRequest(new Request("https://example.test/one"), {
+      draftModeSecret: "first-secret",
+    });
+    const secondContext = headersContextFromRequest(new Request("https://example.test/two"), {
+      draftModeSecret: "second-secret",
+    });
+
+    await runWithHeadersContext(firstContext, async () => {
+      const dm = await draftMode();
+      dm.enable();
+      expect(dm.isEnabled).toBe(true);
+    });
+
+    await runWithHeadersContext(secondContext, async () => {
+      const dm = await draftMode();
+      dm.enable();
+      expect(dm.isEnabled).toBe(true);
+    });
+
+    const firstCookieRequest = new Request("https://example.test/one", {
+      headers: { Cookie: "__prerender_bypass=first-secret" },
+    });
+    expect(isDraftModeRequest(firstCookieRequest, "first-secret")).toBe(true);
+    expect(isDraftModeRequest(firstCookieRequest, "second-secret")).toBe(false);
   });
 
   it("draftMode().enable() sets the bypass cookie in context", async () => {
@@ -2447,6 +2561,24 @@ describe("next/headers shim", () => {
     expect(cookieHeader).toContain("Expires=Thu, 01 Jan 1970 00:00:00 GMT");
     expect(cookieHeader).not.toContain("Max-Age=0");
     setHeadersContext(null);
+  });
+
+  it("draftMode().disable() throws after its request context has been cleared", async () => {
+    const { setHeadersContext, draftMode, getDraftModeCookieHeader } =
+      await import("../packages/vinext/src/shims/headers.js");
+
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["__prerender_bypass", "draft-secret"]]),
+      draftModeSecret: "draft-secret",
+    });
+    const dm = await draftMode();
+    expect(dm.isEnabled).toBe(true);
+
+    setHeadersContext(null);
+
+    expect(() => dm.disable()).toThrow("draftMode().disable() can only be called");
+    expect(getDraftModeCookieHeader()).toBeNull();
   });
 
   it('draftMode() throws the dynamic = "error" access error before exposing draft controls', async () => {
@@ -11546,6 +11678,28 @@ describe("Pages Router concurrent navigation", () => {
     return `<html><head></head><body>${nextDataScript}</body></html>`;
   }
 
+  function buildNavHtmlWithVinext(
+    page: string,
+    vinext: { pageModuleUrl?: string; appModuleUrl?: string; hasMiddleware?: boolean },
+  ): string {
+    const nextDataScript = buildPagesNextDataScript({
+      buildId: null,
+      i18n: {},
+      pageProps: { page },
+      params: {},
+      routePattern: page,
+      safeJsonStringify,
+      vinext,
+    });
+    return `<html><head></head><body>${nextDataScript}</body></html>`;
+  }
+
+  function getFetchHref(url: RequestInfo | URL): string {
+    if (typeof url === "string") return url;
+    if (url instanceof URL) return url.href;
+    return url.url;
+  }
+
   /**
    * Create a deferred promise for controlling fetch timing.
    */
@@ -12394,6 +12548,259 @@ describe("Pages Router concurrent navigation", () => {
       expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/fr/about");
       expect(win.location.href).toBe("http://localhost/fr/about");
       expect(win.__VINEXT_LOCALE__).toBe("fr");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("handles Pages Router middleware internal redirects as client-side redirects", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, replaceState, render } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    Object.assign(win.location, { origin: "http://localhost" });
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "en",
+      __VINEXT_LOCALES__: ["en", "fr", "nl", "es"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    });
+    Object.assign(win.__NEXT_DATA__, {
+      buildId: "build-1",
+      __vinext: { ...win.__NEXT_DATA__.__vinext, hasMiddleware: true },
+    });
+    Object.assign(win, {
+      __VINEXT_PAGE_LOADERS__: {
+        "/new-home": async () => import(pageModuleUrl),
+      },
+    });
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getFetchHref(url);
+      if (href === "/_next/data/build-1/old-home.json") {
+        return new Response("{}", {
+          headers: { "x-nextjs-redirect": "/new-home" },
+          status: 200,
+        });
+      }
+      if (href === "/new-home") {
+        return new Response(buildNavHtmlWithVinext("/new-home", { hasMiddleware: true }));
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/old-home");
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenNthCalledWith(
+        1,
+        "/_next/data/build-1/old-home.json",
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-nextjs-data": "1" }),
+        }),
+      );
+      expect(fetch).toHaveBeenNthCalledWith(2, "/new-home", expect.any(Object));
+      expect(replaceState).toHaveBeenLastCalledWith({}, "", "/new-home");
+      expect(win.location.pathname).toBe("/new-home");
+      expect(render).toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not double-prefix basePath for middleware data redirects", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const { win, replaceState, render } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    Object.assign(win.location, {
+      origin: "http://localhost",
+      pathname: "/docs",
+      href: "http://localhost/docs",
+    });
+    Object.assign(win.__NEXT_DATA__, {
+      buildId: "build-1",
+      __vinext: { ...win.__NEXT_DATA__.__vinext, hasMiddleware: true },
+    });
+    Object.assign(win, {
+      __VINEXT_PAGE_LOADERS__: {
+        "/new-home": async () => import(pageModuleUrl),
+      },
+    });
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getFetchHref(url);
+      if (href === "/docs/_next/data/build-1/old-home.json") {
+        return new Response("{}", {
+          headers: { "x-nextjs-redirect": "/docs/new-home" },
+          status: 200,
+        });
+      }
+      if (href === "/docs/new-home") {
+        return new Response(buildNavHtmlWithVinext("/new-home", { hasMiddleware: true }));
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/old-home");
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenNthCalledWith(
+        1,
+        "/docs/_next/data/build-1/old-home.json",
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-nextjs-data": "1" }),
+        }),
+      );
+      expect(fetch).toHaveBeenNthCalledWith(2, "/docs/new-home", expect.any(Object));
+      expect(fetch).not.toHaveBeenCalledWith("/docs/docs/new-home", expect.any(Object));
+      expect(replaceState).toHaveBeenLastCalledWith({}, "", "/docs/new-home");
+      expect(win.location.href).toBe("http://localhost/docs/new-home");
+      expect(render).toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("falls through to normal page navigation when the middleware data probe fails", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, render } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    Object.assign(win.location, { origin: "http://localhost" });
+    Object.assign(win.__NEXT_DATA__, {
+      buildId: "build-1",
+      __vinext: { ...win.__NEXT_DATA__.__vinext, hasMiddleware: true },
+    });
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getFetchHref(url);
+      if (href === "/_next/data/build-1/old-home.json") {
+        throw new TypeError("probe failed");
+      }
+      if (href === "/old-home") {
+        return new Response(buildNavHtml("/old-home", pageModuleUrl));
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/old-home");
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenNthCalledWith(
+        1,
+        "/_next/data/build-1/old-home.json",
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-nextjs-data": "1" }),
+        }),
+      );
+      expect(fetch).toHaveBeenNthCalledWith(2, "/old-home", expect.any(Object));
+      expect(win.location.href).toBe("http://localhost/old-home");
+      expect(render).toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("hard-navigates to the final middleware redirect URL when it is not a page", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const hrefAssignments = trackHrefAssignments(win);
+    Object.assign(win.location, { origin: "http://localhost" });
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "en",
+      __VINEXT_LOCALES__: ["en", "fr", "nl", "es"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    });
+    Object.assign(win.__NEXT_DATA__, {
+      buildId: "build-1",
+      __vinext: { ...win.__NEXT_DATA__.__vinext, hasMiddleware: true },
+    });
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getFetchHref(url);
+      if (href === "/_next/data/build-1/nl/to.json?pathname=/api/ok") {
+        return new Response("{}", {
+          headers: { "x-nextjs-redirect": "/nl/api/ok" },
+          status: 200,
+        });
+      }
+      if (href === "/api/ok") return new Response("ok", { status: 200 });
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/to?pathname=/api/ok", undefined, { locale: "nl" });
+
+      expect(result).toBe(false);
+      expect(fetch).toHaveBeenNthCalledWith(
+        1,
+        "/_next/data/build-1/nl/to.json?pathname=/api/ok",
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-nextjs-data": "1" }),
+        }),
+      );
+      expect(hrefAssignments).toContain("http://localhost/nl/to?pathname=/api/ok");
+      expect(hrefAssignments).toContain("/api/ok");
+      expect(hrefAssignments).not.toContain("/nl/api/ok");
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
@@ -13768,7 +14175,7 @@ describe("next/image enhancements", () => {
       priority: true,
     });
     // Local images now route through the optimization endpoint
-    expect(result.props.src).toContain("/_vinext/image");
+    expect(result.props.src).toContain("/_next/image");
     expect(result.props.src).toContain("url=%2Fphoto.jpg");
     expect(result.props.src).toContain("w=800");
     expect(result.props.alt).toBe("Test");
@@ -13795,7 +14202,7 @@ describe("next/image enhancements", () => {
       src: { src: "/imported.jpg", width: 1200, height: 800, blurDataURL: "data:..." },
       alt: "Imported",
     });
-    expect(result.props.src).toContain("/_vinext/image");
+    expect(result.props.src).toContain("/_next/image");
     expect(result.props.src).toContain("url=%2Fimported.jpg");
     expect(result.props.src).toContain("w=1200");
     expect(result.props.width).toBe(1200);
@@ -13811,8 +14218,8 @@ describe("next/image enhancements", () => {
       height: 800,
     });
     expect(result.props.srcSet).toBeDefined();
-    // srcSet entries point to /_vinext/image optimization endpoint
-    expect(result.props.srcSet).toContain("/_vinext/image");
+    // srcSet entries point to /_next/image optimization endpoint
+    expect(result.props.srcSet).toContain("/_next/image");
     expect(result.props.srcSet).toContain("url=%2Fphoto.jpg");
     expect(result.props.srcSet).toContain("w");
   });
@@ -13883,12 +14290,12 @@ describe("next/image enhancements", () => {
       height: 600,
       loader: ({ src, width, quality }) => `https://cdn.example.com${src}?w=${width}&q=${quality}`,
     });
-    // Custom loader bypasses the /_vinext/image endpoint
+    // Custom loader bypasses the /_next/image endpoint
     expect(result.props.src).toBe("https://cdn.example.com/photo.jpg?w=800&q=75");
-    expect(result.props.src).not.toContain("/_vinext/image");
+    expect(result.props.src).not.toContain("/_next/image");
   });
 
-  it("unoptimized prop bypasses /_vinext/image endpoint", async () => {
+  it("unoptimized prop bypasses /_next/image endpoint", async () => {
     const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
     const result = getImageProps({
       src: "/photo.jpg",
@@ -13899,7 +14306,7 @@ describe("next/image enhancements", () => {
     });
     // unoptimized=true should serve the raw src, not the optimization endpoint
     expect(result.props.src).toBe("/photo.jpg");
-    expect(result.props.src).not.toContain("/_vinext/image");
+    expect(result.props.src).not.toContain("/_next/image");
   });
 
   it("SVG src auto-skips optimization endpoint (default behavior)", async () => {
@@ -13912,7 +14319,7 @@ describe("next/image enhancements", () => {
     });
     // By default (dangerouslyAllowSVG not set), .svg sources bypass the optimizer
     expect(result.props.src).toBe("/logo.svg");
-    expect(result.props.src).not.toContain("/_vinext/image");
+    expect(result.props.src).not.toContain("/_next/image");
   });
 
   it("non-SVG src still uses optimization endpoint", async () => {
@@ -13923,7 +14330,7 @@ describe("next/image enhancements", () => {
       width: 256,
       height: 256,
     });
-    expect(result.props.src).toContain("/_vinext/image");
+    expect(result.props.src).toContain("/_next/image");
   });
 });
 
@@ -13937,7 +14344,7 @@ describe("next/image component rendering", () => {
       React.createElement(Image, { src: "/photo.jpg", alt: "Test photo", width: 800, height: 600 }),
     );
     // Local images route through the optimization endpoint
-    expect(html).toContain("/_vinext/image");
+    expect(html).toContain("/_next/image");
     expect(html).toContain("url=%2Fphoto.jpg");
     expect(html).toContain('alt="Test photo"');
     expect(html).toContain('width="800"');
@@ -13998,8 +14405,8 @@ describe("next/image component rendering", () => {
       React.createElement(Image, { src: "/photo.jpg", alt: "Photo", width: 1200, height: 800 }),
     );
     expect(html).toContain("srcSet");
-    // srcSet entries point to /_vinext/image optimization endpoint
-    expect(html).toContain("/_vinext/image");
+    // srcSet entries point to /_next/image optimization endpoint
+    expect(html).toContain("/_next/image");
     expect(html).toContain("url=%2Fphoto.jpg");
   });
 
@@ -14084,7 +14491,7 @@ describe("next/image component rendering", () => {
     const html = renderToStaticMarkup(
       React.createElement(Image, { src: staticImport, alt: "Imported" }),
     );
-    expect(html).toContain("/_vinext/image");
+    expect(html).toContain("/_next/image");
     expect(html).toContain("url=%2Fimported.jpg");
     expect(html).toContain('width="1200"');
     expect(html).toContain('height="800"');
@@ -14150,7 +14557,7 @@ describe("next/image component rendering", () => {
     );
     // SSR should render without errors — the onError replay is client-side only
     expect(html).toContain("<img");
-    expect(html).toContain("/_vinext/image");
+    expect(html).toContain("/_next/image");
   });
 
   it("renders with both onLoad and onError callbacks (SSR smoke test)", async () => {
@@ -14169,7 +14576,7 @@ describe("next/image component rendering", () => {
       }),
     );
     expect(html).toContain("<img");
-    expect(html).toContain("/_vinext/image");
+    expect(html).toContain("/_next/image");
   });
 
   it("forwards ref to img element via mergedRef (SSR smoke test)", async () => {
@@ -14189,7 +14596,7 @@ describe("next/image component rendering", () => {
       }),
     );
     expect(html).toContain("<img");
-    expect(html).toContain("/_vinext/image");
+    expect(html).toContain("/_next/image");
     // ref.current is null after SSR — that's expected since refs don't hydrate in SSR
     expect(ref.current).toBeNull();
   });
@@ -14211,7 +14618,7 @@ describe("next/image component rendering", () => {
       }),
     );
     expect(html).toContain("<img");
-    expect(html).not.toContain("/_vinext/image");
+    expect(html).not.toContain("/_next/image");
     expect(html).toContain("cdn.example.com");
   });
 });
@@ -14340,7 +14747,7 @@ describe("image optimization URL generation", () => {
   it("imageOptimizationUrl generates correct URL", async () => {
     const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
     const url = imageOptimizationUrl("/images/hero.webp", 1200, 75);
-    expect(url).toBe("/_vinext/image?url=%2Fimages%2Fhero.webp&w=1200&q=75");
+    expect(url).toBe("/_next/image?url=%2Fimages%2Fhero.webp&w=1200&q=75");
   });
 
   it("imageOptimizationUrl encodes special characters", async () => {
@@ -14362,7 +14769,7 @@ describe("image optimization request parsing", () => {
   it("parseImageParams extracts url, width, quality", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const url = new URL("http://localhost/_vinext/image?url=%2Fimages%2Fhero.webp&w=1200&q=75");
+    const url = new URL("http://localhost/_next/image?url=%2Fimages%2Fhero.webp&w=1200&q=75");
     const params = parseImageParams(url);
     expect(params).not.toBeNull();
     expect(params!.imageUrl).toBe("/images/hero.webp");
@@ -14373,37 +14780,35 @@ describe("image optimization request parsing", () => {
   it("parseImageParams returns null when url is missing", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const url = new URL("http://localhost/_vinext/image?w=800&q=75");
+    const url = new URL("http://localhost/_next/image?w=800&q=75");
     expect(parseImageParams(url)).toBeNull();
   });
 
   it("parseImageParams blocks absolute http URLs", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const url = new URL("http://localhost/_vinext/image?url=http%3A%2F%2Fevil.com%2Fimg.jpg&w=800");
+    const url = new URL("http://localhost/_next/image?url=http%3A%2F%2Fevil.com%2Fimg.jpg&w=800");
     expect(parseImageParams(url)).toBeNull();
   });
 
   it("parseImageParams blocks absolute https URLs", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const url = new URL(
-      "http://localhost/_vinext/image?url=https%3A%2F%2Fevil.com%2Fimg.jpg&w=800",
-    );
+    const url = new URL("http://localhost/_next/image?url=https%3A%2F%2Fevil.com%2Fimg.jpg&w=800");
     expect(parseImageParams(url)).toBeNull();
   });
 
   it("parseImageParams blocks protocol-relative URLs", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const url = new URL("http://localhost/_vinext/image?url=%2F%2Fevil.com%2Fimg.jpg&w=800");
+    const url = new URL("http://localhost/_next/image?url=%2F%2Fevil.com%2Fimg.jpg&w=800");
     expect(parseImageParams(url)).toBeNull();
   });
 
   it("parseImageParams defaults width to 0 and quality to 75", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const url = new URL("http://localhost/_vinext/image?url=%2Fimg.jpg");
+    const url = new URL("http://localhost/_next/image?url=%2Fimg.jpg");
     const params = parseImageParams(url);
     expect(params).not.toBeNull();
     expect(params!.width).toBe(0);
@@ -14416,7 +14821,7 @@ describe("image optimization request parsing", () => {
     expect(
       parseImageParams(
         new URL(
-          "http://localhost/_vinext/image?url=data%3Atext%2Fhtml%2C%3Cscript%3Ealert(1)%3C%2Fscript%3E&w=800",
+          "http://localhost/_next/image?url=data%3Atext%2Fhtml%2C%3Cscript%3Ealert(1)%3C%2Fscript%3E&w=800",
         ),
       ),
     ).toBeNull();
@@ -14426,26 +14831,22 @@ describe("image optimization request parsing", () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=javascript%3Aalert(1)&w=800")),
+      parseImageParams(new URL("http://localhost/_next/image?url=javascript%3Aalert(1)&w=800")),
     ).toBeNull();
   });
 
   it("parseImageParams blocks bare filenames (no leading slash)", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=img.jpg&w=800")),
-    ).toBeNull();
+    expect(parseImageParams(new URL("http://localhost/_next/image?url=img.jpg&w=800"))).toBeNull();
   });
 
   it("parseImageParams rejects quality outside 1-100", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
+    expect(parseImageParams(new URL("http://localhost/_next/image?url=%2Fimg.jpg&q=0"))).toBeNull();
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&q=0")),
-    ).toBeNull();
-    expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&q=101")),
+      parseImageParams(new URL("http://localhost/_next/image?url=%2Fimg.jpg&q=101")),
     ).toBeNull();
   });
 
@@ -14454,7 +14855,7 @@ describe("image optimization request parsing", () => {
       await import("../packages/vinext/src/server/image-optimization.js");
     // /\evil.com — browsers and the URL constructor treat this as //evil.com
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=%2F%5Cevil.com&w=800")),
+      parseImageParams(new URL("http://localhost/_next/image?url=%2F%5Cevil.com&w=800")),
     ).toBeNull();
   });
 
@@ -14463,13 +14864,11 @@ describe("image optimization request parsing", () => {
       await import("../packages/vinext/src/server/image-optimization.js");
     // /\evil.com/img.jpg
     expect(
-      parseImageParams(
-        new URL("http://localhost/_vinext/image?url=%2F%5Cevil.com%2Fimg.jpg&w=800"),
-      ),
+      parseImageParams(new URL("http://localhost/_next/image?url=%2F%5Cevil.com%2Fimg.jpg&w=800")),
     ).toBeNull();
     // /\\evil.com (double backslash)
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=%2F%5C%5Cevil.com&w=800")),
+      parseImageParams(new URL("http://localhost/_next/image?url=%2F%5C%5Cevil.com&w=800")),
     ).toBeNull();
   });
 
@@ -14480,7 +14879,7 @@ describe("image optimization request parsing", () => {
     // the origin check catches it.
     // A valid relative URL should pass
     const good = parseImageParams(
-      new URL("http://localhost/_vinext/image?url=%2Fimages%2Fhero.webp&w=800"),
+      new URL("http://localhost/_next/image?url=%2Fimages%2Fhero.webp&w=800"),
     );
     expect(good).not.toBeNull();
     expect(good!.imageUrl).toBe("/images/hero.webp");
@@ -14492,7 +14891,7 @@ describe("image optimization request parsing", () => {
     // /images\hero.webp should be normalized to /images/hero.webp
     // (backslash in the middle of a valid path)
     const result = parseImageParams(
-      new URL("http://localhost/_vinext/image?url=%2Fimages%5Chero.webp&w=800"),
+      new URL("http://localhost/_next/image?url=%2Fimages%5Chero.webp&w=800"),
     );
     expect(result).not.toBeNull();
     expect(result!.imageUrl).toBe("/images/hero.webp");
@@ -14502,22 +14901,20 @@ describe("image optimization request parsing", () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=3841")),
+      parseImageParams(new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=3841")),
     ).toBeNull();
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=999999999")),
+      parseImageParams(new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=999999999")),
     ).toBeNull();
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=2147483647")),
+      parseImageParams(new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=2147483647")),
     ).toBeNull();
   });
 
   it("parseImageParams accepts width at the absolute maximum (3840)", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const params = parseImageParams(
-      new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=3840"),
-    );
+    const params = parseImageParams(new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=3840"));
     expect(params).not.toBeNull();
     expect(params!.width).toBe(3840);
   });
@@ -14528,21 +14925,18 @@ describe("image optimization request parsing", () => {
     const allowedWidths = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
     // Allowed width passes
     const params = parseImageParams(
-      new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=1080"),
+      new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=1080"),
       allowedWidths,
     );
     expect(params).not.toBeNull();
     expect(params!.width).toBe(1080);
     // Non-allowed width is rejected
     expect(
-      parseImageParams(
-        new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=999"),
-        allowedWidths,
-      ),
+      parseImageParams(new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=999"), allowedWidths),
     ).toBeNull();
     // w=0 (no resize) is always allowed even with allowedWidths
     const noResize = parseImageParams(
-      new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=0"),
+      new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=0"),
       allowedWidths,
     );
     expect(noResize).not.toBeNull();
@@ -14556,7 +14950,7 @@ describe("image optimization request parsing", () => {
       16, 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840,
     ];
     const params = parseImageParams(
-      new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=64"),
+      new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=64"),
       allowedWidths,
     );
     expect(params).not.toBeNull();
@@ -14582,10 +14976,27 @@ describe("image optimization request parsing", () => {
     expect(negotiateImageFormat(null)).toBe("image/jpeg");
   });
 
-  it("IMAGE_OPTIMIZATION_PATH is /_vinext/image", async () => {
+  it("IMAGE_OPTIMIZATION_PATH is /_next/image", async () => {
     const { IMAGE_OPTIMIZATION_PATH } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    expect(IMAGE_OPTIMIZATION_PATH).toBe("/_vinext/image");
+    expect(IMAGE_OPTIMIZATION_PATH).toBe("/_next/image");
+  });
+
+  it("VINEXT_IMAGE_OPTIMIZATION_PATH is /_vinext/image", async () => {
+    const { VINEXT_IMAGE_OPTIMIZATION_PATH } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    expect(VINEXT_IMAGE_OPTIMIZATION_PATH).toBe("/_vinext/image");
+  });
+
+  it("isImageOptimizationPath accepts both supported endpoints", async () => {
+    const { isImageOptimizationPath } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    expect(isImageOptimizationPath("/_next/image")).toBe(true);
+    expect(isImageOptimizationPath("/_vinext/image")).toBe(true);
+    expect(isImageOptimizationPath("/_next/image/")).toBe(false);
+    expect(isImageOptimizationPath("/_next/image.png")).toBe(false);
+    expect(isImageOptimizationPath("/_next/data")).toBe(false);
+    expect(isImageOptimizationPath("/")).toBe(false);
   });
 
   it("exports DEFAULT_DEVICE_SIZES and DEFAULT_IMAGE_SIZES matching Next.js defaults", async () => {
@@ -14670,7 +15081,7 @@ describe("handleImageOptimization", () => {
   it("returns 400 for invalid params", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image");
+    const request = new Request("http://localhost/_next/image");
     const handlers = {
       fetchAsset: async () => new Response("", { status: 200 }),
     };
@@ -14681,7 +15092,7 @@ describe("handleImageOptimization", () => {
   it("returns 404 when fetchAsset fails", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800");
     const handlers = {
       fetchAsset: async () => new Response("", { status: 404 }),
     };
@@ -14692,7 +15103,7 @@ describe("handleImageOptimization", () => {
   it("returns original image when no transformImage handler", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800");
     const handlers = {
       fetchAsset: async () =>
         new Response("original-image-data", {
@@ -14710,7 +15121,7 @@ describe("handleImageOptimization", () => {
   it("calls transformImage when provided", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=90", {
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800&q=90", {
       headers: { Accept: "image/webp" },
     });
     let capturedOptions: { width: number; format: string; quality: number } | null = null;
@@ -14737,7 +15148,7 @@ describe("handleImageOptimization", () => {
   it("falls back to original on transform error", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800");
     let fetchCount = 0;
     const handlers = {
       fetchAsset: async () => {
@@ -14760,7 +15171,7 @@ describe("handleImageOptimization", () => {
   it("refetches the source when transform consumes the stream before failing", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800");
     let fetchCount = 0;
     const handlers = {
       fetchAsset: async () => {
@@ -14784,7 +15195,7 @@ describe("handleImageOptimization", () => {
   it("uses refetched source headers when consumed transform falls back", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800");
     let fetchCount = 0;
     const handlers = {
       fetchAsset: async () => {
@@ -14814,7 +15225,7 @@ describe("handleImageOptimization", () => {
   it("returns 404 when refetch fallback cannot reload the source image", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800");
     let fetchCount = 0;
     const handlers = {
       fetchAsset: async () => {
@@ -14840,7 +15251,7 @@ describe("handleImageOptimization", () => {
   it("returns 400 when refetch fallback reloads an unsafe content type", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800");
     let fetchCount = 0;
     const handlers = {
       fetchAsset: async () => {
@@ -14866,7 +15277,7 @@ describe("handleImageOptimization", () => {
   it("returns 400 for backslash open redirect (/\\evil.com)", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2F%5Cevil.com&w=800");
+    const request = new Request("http://localhost/_next/image?url=%2F%5Cevil.com&w=800");
     const handlers = {
       fetchAsset: async () => new Response("should not be called", { status: 200 }),
     };
@@ -14878,7 +15289,7 @@ describe("handleImageOptimization", () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
     const request = new Request(
-      "http://localhost/_vinext/image?url=%2F%5Cgoogle.com%2Fimg.jpg&w=800",
+      "http://localhost/_next/image?url=%2F%5Cgoogle.com%2Fimg.jpg&w=800",
     );
     let fetchCalled = false;
     const handlers = {
@@ -14895,7 +15306,7 @@ describe("handleImageOptimization", () => {
   it("blocks SVG content type", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fmalicious.svg&w=100&q=75");
+    const request = new Request("http://localhost/_next/image?url=%2Fmalicious.svg&w=100&q=75");
     const handlers = {
       fetchAsset: async () =>
         new Response("<svg><script>alert(1)</script></svg>", {
@@ -14911,7 +15322,7 @@ describe("handleImageOptimization", () => {
   it("blocks text/html content type", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Ffake.jpg&w=100&q=75");
+    const request = new Request("http://localhost/_next/image?url=%2Ffake.jpg&w=100&q=75");
     const handlers = {
       fetchAsset: async () =>
         new Response("<html><script>alert(1)</script></html>", {
@@ -14926,7 +15337,7 @@ describe("handleImageOptimization", () => {
   it("blocks responses with no Content-Type", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800");
     const handlers = {
       fetchAsset: async () => new Response("data", { status: 200 }),
     };
@@ -14937,7 +15348,7 @@ describe("handleImageOptimization", () => {
   it("sets Content-Security-Policy header on fallback responses", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800");
     const handlers = {
       fetchAsset: async () =>
         new Response("image-data", {
@@ -14957,7 +15368,7 @@ describe("handleImageOptimization", () => {
   it("sets Content-Security-Policy header on transformed responses", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=90", {
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800&q=90", {
       headers: { Accept: "image/webp" },
     });
     const handlers = {
@@ -14983,7 +15394,7 @@ describe("handleImageOptimization", () => {
   it("overrides unsafe Content-Type from transform handler", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=90", {
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800&q=90", {
       headers: { Accept: "image/webp" },
     });
     const handlers = {
@@ -15004,7 +15415,7 @@ describe("handleImageOptimization", () => {
   it("allows SVG passthrough with dangerouslyAllowSVG: true", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    const request = new Request("http://localhost/_next/image?url=%2Flogo.svg&w=100&q=75");
     const handlers = {
       fetchAsset: async () =>
         new Response('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>', {
@@ -15023,7 +15434,7 @@ describe("handleImageOptimization", () => {
   it("still blocks SVG when dangerouslyAllowSVG is false", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    const request = new Request("http://localhost/_next/image?url=%2Flogo.svg&w=100&q=75");
     const handlers = {
       fetchAsset: async () =>
         new Response("<svg></svg>", {
@@ -15040,7 +15451,7 @@ describe("handleImageOptimization", () => {
   it("SVG passthrough skips transformImage", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    const request = new Request("http://localhost/_next/image?url=%2Flogo.svg&w=100&q=75");
     let transformCalled = false;
     const handlers = {
       fetchAsset: async () =>
@@ -15064,7 +15475,7 @@ describe("handleImageOptimization", () => {
   it("applies security headers on SVG passthrough", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    const request = new Request("http://localhost/_next/image?url=%2Flogo.svg&w=100&q=75");
     const handlers = {
       fetchAsset: async () =>
         new Response("<svg></svg>", {
@@ -15086,7 +15497,7 @@ describe("handleImageOptimization", () => {
   it("applies custom contentDispositionType", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800");
     const handlers = {
       fetchAsset: async () =>
         new Response("image-data", {
@@ -15104,7 +15515,7 @@ describe("handleImageOptimization", () => {
   it("defaults Content-Disposition to inline when contentDispositionType is invalid", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800");
     const handlers = {
       fetchAsset: async () =>
         new Response("image-data", {
@@ -15122,7 +15533,7 @@ describe("handleImageOptimization", () => {
   it("applies custom contentSecurityPolicy", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800");
     const handlers = {
       fetchAsset: async () =>
         new Response("image-data", {
@@ -15141,7 +15552,7 @@ describe("handleImageOptimization", () => {
   it("default behavior unchanged when no imageConfig provided", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_next/image?url=%2Fimg.jpg&w=800");
     const handlers = {
       fetchAsset: async () =>
         new Response("image-data", {

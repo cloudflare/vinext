@@ -413,6 +413,10 @@ function propertyNameToGoogleFontFamily(prop: string): string {
   return prop.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // ── Font fetching and caching ─────────────────────────────────────────────────
 
 /**
@@ -1133,9 +1137,13 @@ export function createLocalFontsPlugin(): Plugin {
         // in comments that would be incorrectly rewritten.
         if (id.includes("font-local")) return null;
 
-        // Verify there's actually an import from next/font/local
-        const importRe = /import\s+\w+\s+from\s*['"]next\/font\/local['"]/;
-        if (!importRe.test(code)) return null;
+        // Verify there's actually a default import from next/font/local and
+        // remember its local binding so family payloads only attach to real
+        // localFont calls.
+        const importMatch =
+          /\bimport\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s*(['"])next\/font\/local\2/.exec(code);
+        if (!importMatch) return null;
+        const localFontIdentifier = importMatch[1];
 
         const s = new MagicString(code);
         let hasChanges = false;
@@ -1162,10 +1170,40 @@ export function createLocalFontsPlugin(): Plugin {
           hasChanges = true;
         }
 
+        const localFontCallRe = new RegExp(
+          String.raw`(?:^|[;{}\n])\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*${escapeRegExp(localFontIdentifier)}\s*\(\s*(?=\{)`,
+          "g",
+        );
+        const familyPayloadInsertions = new Set<number>();
+        let localFontCallMatch;
+        while ((localFontCallMatch = localFontCallRe.exec(code)) !== null) {
+          const bindingName = localFontCallMatch[1];
+          const objRange = _findBalancedObject(code, localFontCallRe.lastIndex);
+          if (!objRange) continue;
+          if (_findCallEnd(code, objRange[1]) === null) continue;
+
+          const insertAt = objRange[1] - 1;
+          if (familyPayloadInsertions.has(insertAt)) continue;
+          const optionsStr = code.slice(objRange[0], objRange[1]);
+          if (/(?:^|[,{])\s*_vinext\s*:/.test(optionsStr)) continue;
+
+          const beforeClosingBrace = optionsStr.slice(0, -1).trim();
+          const separator =
+            beforeClosingBrace.endsWith("{") || beforeClosingBrace.endsWith(",") ? "" : ", ";
+          s.appendLeft(
+            insertAt,
+            `${separator}_vinext: { font: { family: ${JSON.stringify(bindingName)} } }`,
+          );
+          familyPayloadInsertions.add(insertAt);
+          hasChanges = true;
+        }
+
         if (!hasChanges) return null;
 
         // Prepend the asset imports at the top of the file
-        s.prepend(imports.join("\n") + "\n");
+        if (imports.length > 0) {
+          s.prepend(imports.join("\n") + "\n");
+        }
 
         return {
           code: s.toString(),

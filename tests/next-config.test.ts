@@ -832,6 +832,32 @@ describe("resolveNextConfig hashSalt", () => {
   });
 });
 
+describe("resolveNextConfig htmlLimitedBots", () => {
+  it("serializes RegExp config values to their source", async () => {
+    const resolved = await resolveNextConfig({ htmlLimitedBots: /Minibot/i });
+
+    expect(resolved.htmlLimitedBots).toBe("Minibot");
+  });
+
+  it("accepts valid serialized regex source strings", async () => {
+    const resolved = await resolveNextConfig({ htmlLimitedBots: "Minibot|Weebot" });
+
+    expect(resolved.htmlLimitedBots).toBe("Minibot|Weebot");
+  });
+
+  it("treats empty string config as unset", async () => {
+    const resolved = await resolveNextConfig({ htmlLimitedBots: "" });
+
+    expect(resolved.htmlLimitedBots).toBeUndefined();
+  });
+
+  it("throws a config error for invalid serialized regex sources", async () => {
+    await expect(resolveNextConfig({ htmlLimitedBots: "[" })).rejects.toThrow(
+      'Invalid next.config option "htmlLimitedBots"',
+    );
+  });
+});
+
 describe("resolveNextConfig expireTime", () => {
   it("defaults to the Next.js route expire fallback", async () => {
     const resolved = await resolveNextConfig(null);
@@ -916,6 +942,7 @@ describe("detectNextIntlConfig", () => {
       serverActionsAllowedOrigins: [],
       optimizePackageImports: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      htmlLimitedBots: undefined,
       serverExternalPackages: [],
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,

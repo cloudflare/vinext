@@ -156,6 +156,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   clearRequestContext: () => void;
   createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
   debugClassification?: (layoutId: string, reason: ClassificationReason) => void;
+  draftModeSecret: string;
   dynamicConfig?: string;
   dynamicParamsConfig?: boolean;
   fetchCache?: FetchCacheMode | null;
@@ -174,6 +175,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   hasPageModule: boolean;
   handlerStart: number;
   interceptionContext: string | null;
+  isEdgeRuntime?: boolean;
   isProgressiveActionRender?: boolean;
   isProduction: boolean;
   isRscRequest: boolean;
@@ -264,6 +266,7 @@ async function runAppPageRevalidationContext<
   options: {
     cleanPathname: string;
     currentFetchCacheMode?: FetchCacheMode | null;
+    draftModeSecret: string;
     dynamicConfig?: string;
     params: AppPageParams;
     routePattern: string;
@@ -273,6 +276,7 @@ async function runAppPageRevalidationContext<
   renderFn: () => Promise<TResult>,
 ): Promise<TResult> {
   const headersContext = createStaticGenerationHeadersContext({
+    draftModeSecret: options.draftModeSecret,
     dynamicConfig: options.dynamicConfig,
     routeKind: "page",
     routePattern: options.routePattern,
@@ -338,7 +342,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
-  const isDraftMode = isDraftModeRequest(options.request);
+  const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
   setCurrentFetchCacheMode(options.fetchCache ?? null);
@@ -364,6 +368,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   if ((isForceStatic || isDynamicError) && !isDraftMode) {
     setHeadersContext(
       createStaticGenerationHeadersContext({
+        draftModeSecret: options.draftModeSecret,
         dynamicConfig,
         routeKind: "page",
         routePattern: route.pattern,
@@ -390,6 +395,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     const cachedPageResponse = await readAppPageCacheResponse({
       cleanPathname: options.cleanPathname,
       clearRequestContext: options.clearRequestContext,
+      isEdgeRuntime: options.isEdgeRuntime,
       isRscRequest: options.isRscRequest,
       isrDebug: options.isrDebug,
       isrGet: options.isrGet,
@@ -409,6 +415,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           {
             cleanPathname: options.cleanPathname,
             currentFetchCacheMode: options.fetchCache ?? null,
+            draftModeSecret: options.draftModeSecret,
             dynamicConfig,
             params: options.params,
             routePattern: route.pattern,
@@ -660,6 +667,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isDraftMode,
     isForceDynamic,
     isForceStatic,
+    isEdgeRuntime: options.isEdgeRuntime === true,
     isPrerender: process.env.VINEXT_PRERENDER === "1",
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,
@@ -774,6 +782,7 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
       buildRscRedirectFlightStream(options, rscOptions.digest),
     clearRequestContext: options.clearRequestContext,
     getAndClearPendingCookies,
+    isEdgeRuntime: options.isEdgeRuntime,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {
@@ -812,6 +821,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
       buildRscRedirectFlightStream(options, rscOptions.digest),
     clearRequestContext: options.clearRequestContext,
     getAndClearPendingCookies,
+    isEdgeRuntime: options.isEdgeRuntime,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {

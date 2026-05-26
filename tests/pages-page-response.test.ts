@@ -322,6 +322,89 @@ describe("pages page response", () => {
     expect(callOrder).toEqual(["render", "clear"]);
   });
 
+  // Matches Next.js's `pages-handler.ts` (revalidate: 0 →
+  // getCacheControlHeader). gSSP responses with no user-set Cache-Control
+  // must default to no-store so middlebox caches do not pin per-request
+  // server-rendered HTML. See packages/vinext/src/server/dev-server.ts for
+  // the dev-server twin. Fixes #1461.
+  it("applies default no-store Cache-Control for gSSP responses without one", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      gsspRes: {
+        statusCode: 200,
+        getHeaders() {
+          return { "x-test": "1" };
+        },
+      },
+    });
+
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
+
+  it("preserves user-set Cache-Control from gSSP res.setHeader", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      gsspRes: {
+        statusCode: 200,
+        getHeaders() {
+          return { "Cache-Control": "public, max-age=60" };
+        },
+      },
+    });
+
+    expect(response.headers.get("cache-control")).toBe("public, max-age=60");
+  });
+
+  it("preserves user-set Cache-Control regardless of header name case", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      gsspRes: {
+        statusCode: 200,
+        getHeaders() {
+          return { "cache-control": "s-maxage=120" };
+        },
+      },
+    });
+
+    expect(response.headers.get("cache-control")).toBe("s-maxage=120");
+  });
+
+  it("lets ISR Cache-Control win over the gSSP default when both apply", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      gsspRes: {
+        statusCode: 200,
+        getHeaders() {
+          return { "x-test": "1" };
+        },
+      },
+      isrRevalidateSeconds: 60,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate");
+  });
+
+  it("does not set a gSSP default Cache-Control when there is no gSSP response", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      gsspRes: null,
+    });
+
+    expect(response.headers.get("cache-control")).toBeNull();
+  });
+
   it("disables pages ISR caching when a script nonce is present", async () => {
     const common = createCommonOptions();
 

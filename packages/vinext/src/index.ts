@@ -13,6 +13,7 @@ import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
 import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
+import { isImageOptimizationPath } from "./server/image-optimization.js";
 import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
@@ -658,6 +659,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
   let rscCompatibilityId: string | undefined;
+  const draftModeSecret = randomUUID();
 
   // Build-time layout classification manifest, captured in the RSC virtual
   // module's load hook and consumed in generateBundle to patch the generated
@@ -1128,10 +1130,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP"] = JSON.stringify(
           String(nextConfig.images?.dangerouslyAllowLocalIP ?? false),
         );
-        // Draft mode secret — generated once at build time so the
-        // __prerender_bypass cookie is consistent across all server
-        // instances (e.g. multiple Cloudflare Workers isolates).
-        defines["process.env.__VINEXT_DRAFT_SECRET"] = JSON.stringify(crypto.randomUUID());
         // Build ID — resolved from next.config generateBuildId() or random UUID.
         // Exposed so server entries and the next/server shim can inject it.
         // Also used to namespace ISR cache keys so old cached entries from a
@@ -2205,12 +2203,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
               allowedDevOrigins: nextConfig?.allowedDevOrigins,
               bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
+              htmlLimitedBots: nextConfig?.htmlLimitedBots,
               assetPrefix: nextConfig?.assetPrefix,
               expireTime: nextConfig?.expireTime,
               i18n: nextConfig?.i18n,
               hasPagesDir,
               publicFiles: scanPublicFileRoutes(root),
               globalNotFoundPath,
+              draftModeSecret,
             },
             instrumentationPath,
           );
@@ -2797,7 +2797,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
               // ── Image optimization passthrough (dev mode) ─────────────
               // In dev, redirect to the original asset URL so Vite serves it.
-              if (url.split("?")[0] === "/_vinext/image") {
+              if (isImageOptimizationPath(url.split("?")[0]!)) {
                 const imgParams = new URLSearchParams(url.split("?")[1] ?? "");
                 const rawImgUrl = imgParams.get("url");
                 // Normalize backslashes: browsers and the URL constructor treat
@@ -3317,6 +3317,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 fileMatcher,
                 nextConfig?.basePath ?? "",
                 nextConfig?.trailingSlash ?? false,
+                middlewarePath !== null,
               );
               const mwStatus = req.__vinextMiddlewareStatus;
 

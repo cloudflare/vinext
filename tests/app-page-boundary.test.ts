@@ -234,4 +234,53 @@ describe("app page boundary helpers", () => {
     expect(createHtmlResponse).toHaveBeenCalledTimes(1);
     await expect(response.text()).resolves.toBe("200:HTML boundary");
   });
+
+  it("emits the `x-edge-runtime: 1` marker on boundary RSC responses for edge-runtime routes", async () => {
+    const response = await renderAppPageBoundaryResponse({
+      async createHtmlResponse() {
+        return new Response("html");
+      },
+      createRscOnErrorHandler() {
+        return () => null;
+      },
+      element: "boundary",
+      isEdgeRuntime: true,
+      isRscRequest: true,
+      renderToReadableStream(element) {
+        return new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(String(element)));
+            controller.close();
+          },
+        });
+      },
+      status: 404,
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("omits the `x-edge-runtime` marker on boundary RSC responses for nodejs-runtime routes", async () => {
+    const response = await renderAppPageBoundaryResponse({
+      async createHtmlResponse() {
+        return new Response("html");
+      },
+      createRscOnErrorHandler() {
+        return () => null;
+      },
+      element: "boundary",
+      isRscRequest: true,
+      renderToReadableStream(element) {
+        return new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(String(element)));
+            controller.close();
+          },
+        });
+      },
+      status: 404,
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBeNull();
+  });
 });

@@ -5,7 +5,7 @@
  *
  * Translates Next.js Image props to @unpic/react Image component.
  * @unpic/react auto-detects CDN from URL and uses native transforms.
- * For local images (relative paths), routes through `/_vinext/image`
+ * For local images (relative paths), routes through `/_next/image`
  * for server-side optimization (resize, format negotiation, quality).
  *
  * Remote images are validated against `images.remotePatterns` and
@@ -264,14 +264,14 @@ function resolveImageSource(v: {
 const RESPONSIVE_WIDTHS = __imageDeviceSizes;
 
 /**
- * Build a `/_vinext/image` optimization URL.
+ * Build a `/_next/image` optimization URL.
  *
  * In production (Cloudflare Workers), the worker intercepts this path and uses
  * the Images binding to resize/transcode on the fly. In dev, the Vite dev
  * server handles it as a passthrough (serves the original file).
  */
 export function imageOptimizationUrl(src: string, width: number, quality: number = 75): string {
-  return `/_vinext/image?url=${encodeURIComponent(src)}&w=${width}&q=${quality}`;
+  return `/_next/image?url=${encodeURIComponent(src)}&w=${width}&q=${quality}`;
 }
 
 function preloadImageResource(input: {
@@ -294,7 +294,7 @@ function preloadImageResource(input: {
 /**
  * Generate a srcSet string for responsive images.
  *
- * Each width points to the `/_vinext/image` optimization endpoint so the
+ * Each width points to the `/_next/image` optimization endpoint so the
  * server can resize and transcode the image. Only includes widths that are
  * <= 2x the original image width to avoid pointless upscaling.
  */
@@ -589,7 +589,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     // (unpic requires them for constrained layout)
   }
 
-  // Route local images through the /_vinext/image optimization endpoint.
+  // Route local images through the /_next/image optimization endpoint.
   // In production on Cloudflare Workers, this resizes and transcodes via
   // the Images binding. In dev, it serves the original file as a passthrough.
   // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
@@ -600,7 +600,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   const skipOptimization = _unoptimized === true || (isSvg && !__dangerouslyAllowSVG);
 
   // Build srcSet for responsive local images (common breakpoints).
-  // Each entry points to /_vinext/image with the appropriate width.
+  // Each entry points to /_next/image with the appropriate width.
   const srcSet =
     imgWidth && !fill && !skipOptimization
       ? generateSrcSet(src, imgWidth, imgQuality)
@@ -641,7 +641,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   });
 
   // For local images, render a standard <img> tag with srcSet and blur support.
-  // The src and srcSet point to the /_vinext/image optimization endpoint.
+  // The src and srcSet point to the /_next/image optimization endpoint.
   return (
     <img
       ref={mergedRef}
@@ -740,7 +740,7 @@ export function getImageProps(props: ImageProps): {
       ? imageOptimizationUrl(resolvedSrc, imgWidth, imgQuality)
       : imageOptimizationUrl(resolvedSrc, RESPONSIVE_WIDTHS[0], imgQuality);
 
-  // Build srcSet for local images — each width points to /_vinext/image
+  // Build srcSet for local images — each width points to /_next/image
   const srcSet =
     imgWidth && !fill && !isRemoteUrl(resolvedSrc) && !loader && !skipOpt
       ? generateSrcSet(resolvedSrc, imgWidth, imgQuality)

@@ -19,6 +19,7 @@ import {
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import { buildPageElements as buildResolvedPageElements } from "../packages/vinext/src/server/app-page-element-builder.js";
 
 function readNode(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -270,6 +271,49 @@ function PageProbe() {
   return createElement("main", { "data-page-segments": segments.join("|") }, "Page");
 }
 
+async function buildGeneratedMetadataRouteHtml(
+  userAgent: string,
+  htmlLimitedBots?: string,
+): Promise<string> {
+  const elements = await buildResolvedPageElements({
+    route: {
+      error: null,
+      errors: [null],
+      layoutTreePositions: [0],
+      layouts: [{ default: RootLayout }],
+      loading: null,
+      notFound: null,
+      notFounds: [null],
+      page: {
+        default: PageProbe,
+        async generateMetadata() {
+          return { title: "generated page" };
+        },
+      },
+      params: [],
+      pattern: "/generated",
+      routeSegments: ["generated"],
+      slots: {},
+      templateTreePositions: [],
+      templates: [],
+    },
+    params: {},
+    routePath: "/generated",
+    pageRequest: {
+      isRscRequest: false,
+      mountedSlotsHeader: null,
+      request: new Request("http://localhost/generated", {
+        headers: { "user-agent": userAgent },
+      }),
+      searchParams: null,
+    },
+    metadataRoutes: [],
+    htmlLimitedBots,
+  });
+
+  return renderRouteEntry(elements, "route:/generated");
+}
+
 function RouteLoadingProbe() {
   return createElement("p", null, "Route loading");
 }
@@ -283,6 +327,42 @@ function LayoutWithoutChildren() {
 }
 
 describe("app page route wiring helpers", () => {
+  it("renders generated metadata in a hidden body outlet for streaming-capable requests", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    const html = await buildGeneratedMetadataRouteHtml("HeadlessChrome");
+
+    expect(html).not.toContain("<title>generated page</title><div");
+    expect(html).toContain('<div hidden=""><title>generated page</title></div>');
+  });
+
+  it("renders generated metadata in the head for configured html-limited bots", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming-customized-rule.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming/metadata-streaming-customized-rule.test.ts
+    const html = await buildGeneratedMetadataRouteHtml("Minibot", "Minibot");
+
+    expect(html).toContain("<title>generated page</title>");
+    expect(html).not.toContain('<div hidden=""><title>generated page</title></div>');
+  });
+
+  it("renders generated metadata in the head for default html-limited bots", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    const html = await buildGeneratedMetadataRouteHtml("Twitterbot");
+
+    expect(html).toContain("<title>generated page</title>");
+    expect(html).not.toContain('<div hidden=""><title>generated page</title></div>');
+  });
+
+  it("falls back to the default html-limited bot list for an empty config string", async () => {
+    // Next.js normalizes a falsy htmlLimitedBots config to the default bot regex.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/streaming-metadata.ts
+    const html = await buildGeneratedMetadataRouteHtml("HeadlessChrome", "");
+
+    expect(html).not.toContain("<title>generated page</title><div");
+    expect(html).toContain('<div hidden=""><title>generated page</title></div>');
+  });
+
   it("resolves child segments from tree positions and preserves route groups", () => {
     expect(
       resolveAppPageChildSegments(["(marketing)", "blog", "[slug]", "[...parts]"], 1, {
