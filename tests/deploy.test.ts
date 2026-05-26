@@ -455,7 +455,7 @@ describe("generateAppRouterWorkerEntry", () => {
 
   it("includes /_next/image handler", () => {
     const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("/_next/image");
+    expect(content).toContain("IMAGE_OPTIMIZATION_PATH");
     expect(content).toContain("handleImageOptimization");
   });
 
@@ -668,7 +668,7 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("includes /_next/image handler", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("/_next/image");
+    expect(content).toContain("IMAGE_OPTIMIZATION_PATH");
     expect(content).toContain("handleImageOptimization");
   });
 
@@ -920,7 +920,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("checks image optimization after basePath stripping", () => {
     const content = generatePagesRouterWorkerEntry();
     const basePathPos = content.indexOf("const stripped = stripBasePath(pathname, basePath);");
-    const imagePos = content.indexOf('pathname === "/_next/image"');
+    const imagePos = content.indexOf("pathname === IMAGE_OPTIMIZATION_PATH");
     expect(basePathPos).toBeGreaterThan(-1);
     expect(imagePos).toBeGreaterThan(-1);
     expect(basePathPos).toBeLessThan(imagePos);
