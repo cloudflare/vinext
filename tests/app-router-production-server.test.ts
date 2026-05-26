@@ -263,6 +263,78 @@ describe("App Router Production server (startProdServer)", () => {
     }
   });
 
+  it("preloads rendered next/dynamic chunks with assetPrefix and the CSP nonce", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-dynamic-asset-prefix-"));
+    const fixtureRoot = path.join(tmpDir, "fixture");
+    const prefixedOutDir = path.join(fixtureRoot, "dist");
+    let assetPrefixServer: import("node:http").Server | undefined;
+
+    try {
+      fs.cpSync(APP_FIXTURE_DIR, fixtureRoot, { recursive: true });
+      fs.rmSync(prefixedOutDir, { recursive: true, force: true });
+      const fixtureNodeModules = path.join(fixtureRoot, "node_modules");
+      if (!fs.existsSync(fixtureNodeModules)) {
+        fs.symlinkSync(
+          path.resolve(__dirname, "..", "node_modules"),
+          fixtureNodeModules,
+          "junction",
+        );
+      }
+
+      const nextConfigPath = path.join(fixtureRoot, "next.config.ts");
+      const nextConfig = fs.readFileSync(nextConfigPath, "utf-8");
+      fs.writeFileSync(
+        nextConfigPath,
+        nextConfig.replace(
+          "const nextConfig: NextConfig = {",
+          'const nextConfig: NextConfig = {\n  assetPrefix: "/cdn",',
+        ),
+      );
+
+      const builder = await createBuilder({
+        root: fixtureRoot,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureRoot })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      ({ server: assetPrefixServer } = await startProdServer({
+        port: 0,
+        outDir: prefixedOutDir,
+        noCompression: true,
+      }));
+      const addr = assetPrefixServer.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      const tmpBaseUrl = `http://localhost:${port}`;
+
+      const res = await fetch(`${tmpBaseUrl}/nextjs-compat/dynamic?csp-nonce=1`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-security-policy")).toBe(
+        "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+      );
+
+      const html = await res.text();
+      // DynamicPreloadChunks emits ReactDOM.preload(..., { fetchPriority: "low" });
+      // use that signal to avoid matching route bootstrap modulepreload links.
+      const dynamicScriptPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+        (tag) =>
+          tag.includes('fetchPriority="low"') &&
+          tag.includes('nonce="vinext-test-nonce"') &&
+          tag.includes("/_next/static/chunks/"),
+      );
+
+      expect(dynamicScriptPreloads.length).toBeGreaterThan(0);
+      for (const tag of dynamicScriptPreloads) {
+        expect(tag).toMatch(/\bhref="\/cdn\/_next\/static\/chunks\/[^"]+\.js"/);
+      }
+    } finally {
+      assetPrefixServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
   it("does not collapse encoded slashes onto nested routes in production", async () => {
     const encodedRes = await fetch(`${baseUrl}/headers%2Foverride-from-middleware`);
     expect(encodedRes.status).toBe(404);
