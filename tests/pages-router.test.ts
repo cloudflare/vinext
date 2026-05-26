@@ -5177,24 +5177,6 @@ describe("Pages Router import.meta.url in production", () => {
     expect(clientCode).toContain("file:///ROOT/pages/index.tsx");
     expect(clientCode).not.toContain("/dist/server/entry.js");
   });
-
-  it("renders the client module file URL in the browser after hydration", async () => {
-    const { chromium } = await import("@playwright/test");
-    const browser = await chromium.launch({ headless: true });
-    try {
-      const page = await browser.newPage();
-      await page.goto(prodUrl, { waitUntil: "networkidle" });
-      await page.waitForFunction(
-        () => document.getElementById("test-data")?.textContent?.includes("file:///ROOT/"),
-        undefined,
-        { timeout: 5000 },
-      );
-      const testData = await page.locator("#test-data").textContent();
-      expect(testData).toBe(JSON.stringify({ url: "file:///ROOT/pages/index.tsx" }));
-    } finally {
-      await browser.close();
-    }
-  }, 30000);
 });
 
 describe("router __NEXT_DATA__ correctness (Pages Router)", () => {

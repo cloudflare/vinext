@@ -18,19 +18,40 @@ type RewriteResult = {
   map: ReturnType<MagicString["generateMap"]>;
 };
 
+type RootPaths = {
+  root: string;
+  canonicalRoot: string;
+  normalizedRoot: string;
+};
+
 export function createImportMetaUrlPlugin(options: { getRoot: () => string | undefined }): Plugin {
+  let rootPaths: RootPaths | undefined;
+
+  function getRootPaths(): RootPaths | undefined {
+    const root = options.getRoot();
+    if (!root) return rootPaths;
+    if (!rootPaths || rootPaths.root !== root) {
+      rootPaths = createRootPaths(root);
+    }
+    return rootPaths;
+  }
+
   return {
     name: "vinext:import-meta-url",
     enforce: "post",
+    configResolved(config) {
+      rootPaths = createRootPaths(options.getRoot() ?? config.root);
+    },
     transform(code, id) {
-      const root = options.getRoot();
-      if (!root) return null;
+      if (!code.includes("import.meta.url")) return null;
+      const paths = getRootPaths();
+      if (!paths) return null;
       const cleanId = cleanModuleId(id);
-      if (!isTransformableUserModule(cleanId, root)) return null;
+      if (!isTransformableUserModule(cleanId, paths)) return null;
 
       const environment: ImportMetaUrlEnvironment =
         this.environment?.name === "client" ? "client" : "server";
-      const rewritten = rewriteImportMetaUrl(code, cleanId, root, environment);
+      const rewritten = rewriteImportMetaUrlWithRootPaths(code, cleanId, paths, environment);
       if (!rewritten) return null;
       return {
         code: rewritten.code,
@@ -47,6 +68,16 @@ export function rewriteImportMetaUrl(
   environment: ImportMetaUrlEnvironment,
 ): RewriteResult | null {
   if (!code.includes("import.meta.url")) return null;
+  return rewriteImportMetaUrlWithRootPaths(code, id, createRootPaths(root), environment);
+}
+
+function rewriteImportMetaUrlWithRootPaths(
+  code: string,
+  id: string,
+  rootPaths: RootPaths,
+  environment: ImportMetaUrlEnvironment,
+): RewriteResult | null {
+  if (!code.includes("import.meta.url")) return null;
 
   let ast: unknown;
   try {
@@ -58,7 +89,7 @@ export function rewriteImportMetaUrl(
   const ranges = collectImportMetaUrlRanges(ast);
   if (ranges.length === 0) return null;
 
-  const replacement = JSON.stringify(importMetaUrlValue(id, root, environment));
+  const replacement = JSON.stringify(importMetaUrlValue(id, rootPaths, environment));
   const output = new MagicString(code);
   for (const range of ranges) {
     output.overwrite(range.start, range.end, replacement);
@@ -74,19 +105,26 @@ function cleanModuleId(id: string): string {
   return id.split("?", 1)[0];
 }
 
-function isTransformableUserModule(id: string, root: string): boolean {
+function createRootPaths(root: string): RootPaths {
+  const canonicalRoot = canonicalizePath(root);
+  return {
+    root,
+    canonicalRoot,
+    normalizedRoot: normalizePath(canonicalRoot),
+  };
+}
+
+function isTransformableUserModule(id: string, rootPaths: RootPaths): boolean {
   if (!id || id.startsWith("\0")) return false;
   if (!path.isAbsolute(id)) return false;
   if (id.includes("/node_modules/") || id.includes("\\node_modules\\")) return false;
   if (!/\.(tsx?|jsx?|mjs)$/.test(id)) return false;
 
   const canonicalId = canonicalizePath(id);
-  const canonicalRoot = canonicalizePath(root);
   const normalizedId = normalizePath(canonicalId);
-  const normalizedRoot = normalizePath(canonicalRoot);
-  if (!isPathWithin(normalizedId, normalizedRoot)) return false;
+  if (!isPathWithin(normalizedId, rootPaths.normalizedRoot)) return false;
 
-  const relativePath = normalizePath(path.relative(canonicalRoot, canonicalId));
+  const relativePath = normalizePath(path.relative(rootPaths.canonicalRoot, canonicalId));
   const firstSegment = relativePath.split("/")[0];
   return (
     firstSegment !== ".next" && firstSegment !== ".vinext-local-package" && firstSegment !== "dist"
@@ -99,12 +137,12 @@ function isPathWithin(candidate: string, root: string): boolean {
 
 function importMetaUrlValue(
   id: string,
-  root: string,
+  rootPaths: RootPaths,
   environment: ImportMetaUrlEnvironment,
 ): string {
   const canonicalId = canonicalizePath(id);
   if (environment === "client") {
-    const relativePath = normalizePath(path.relative(canonicalizePath(root), canonicalId));
+    const relativePath = normalizePath(path.relative(rootPaths.canonicalRoot, canonicalId));
     return `file:///ROOT/${relativePath}`;
   }
 
