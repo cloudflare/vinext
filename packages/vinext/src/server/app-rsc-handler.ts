@@ -19,6 +19,7 @@ import {
   RSC_ACTION_HEADER,
   RSC_HEADER,
   VINEXT_MW_CTX_HEADER,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
 } from "./headers.js";
 import { ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
@@ -59,6 +60,10 @@ import {
   resolvePublicFileRoute,
   validateImageUrl,
 } from "./request-pipeline.js";
+import {
+  readTrustedPrerenderRouteParams,
+  serializePrerenderRouteParamsHeader,
+} from "./prerender-route-params.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -97,6 +102,7 @@ type DispatchMatchedPageOptions<TRoute> = {
   middlewareContext: AppRscMiddlewareContext;
   mountedSlotsHeader: string | null;
   params: AppPageParams;
+  staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
   request: Request;
   route: TRoute;
@@ -580,12 +586,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const { route, params } = match;
+  const prerenderRouteParams = readTrustedPrerenderRouteParams(request);
+  const renderParams = prerenderRouteParams ?? params;
   options.setNavigationContext({
     pathname: canonicalPathname,
     searchParams: url.searchParams,
-    params,
+    params: renderParams,
   });
-  const rootParams = pickRootParams(params, route.rootParamNames);
+  const rootParams = pickRootParams(renderParams, route.rootParamNames);
   setRootParams(rootParams);
 
   if (route.routeHandler) {
@@ -599,7 +607,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // bookkeeping above (navigation context, root params) keeps the matched
       // object (always `{}` for non-dynamic) so `useParams()` etc. still see
       // an object shape; only the user-facing handler context surfaces null.
-      params: route.isDynamic ? params : null,
+      params: route.isDynamic ? renderParams : null,
       request,
       route,
       searchParams: url.searchParams,
@@ -617,7 +625,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     isRscRequest,
     middlewareContext,
     mountedSlotsHeader,
-    params,
+    params: renderParams,
+    staticParamsValidationParams: prerenderRouteParams === null ? undefined : params,
     rootParams,
     request,
     route,
@@ -650,9 +659,14 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     // protocol needs to know whether the inbound request was a `_next/data`
     // fetch to emit `x-nextjs-redirect` instead of an HTTP redirect.
     const isDataRequest = rawRequest.headers.get("x-nextjs-data") === "1";
+    const prerenderRouteParams = readTrustedPrerenderRouteParams(rawRequest);
     const filteredHeaders = filterInternalHeaders(rawRequest.headers);
     if (mwCtx !== null) {
       filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
+    }
+    const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(prerenderRouteParams);
+    if (prerenderRouteParamsHeader !== null) {
+      filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
     }
     const request = cloneRequestWithHeaders(rawRequest, filteredHeaders);
 

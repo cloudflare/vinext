@@ -31,6 +31,9 @@ export const VINEXT_TIMING_HEADER = "x-vinext-timing";
 /** Build-time prerender authentication secret. */
 export const VINEXT_PRERENDER_SECRET_HEADER = "x-vinext-prerender-secret";
 
+/** URL-encoded JSON route params for build-time prerender renders. */
+export const VINEXT_PRERENDER_ROUTE_PARAMS_HEADER = "x-vinext-prerender-route-params";
+
 /** TPR (Tailored Per-Request) revalidation interval in seconds. */
 export const VINEXT_REVALIDATE_HEADER = "x-vinext-revalidate";
 
@@ -184,4 +187,5 @@ export const INTERNAL_HEADERS = [
   NEXTJS_DATA_HEADER,
   NEXT_RESUME_STATE_LENGTH_HEADER,
   ACTION_FORWARDED_HEADER,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
 ];

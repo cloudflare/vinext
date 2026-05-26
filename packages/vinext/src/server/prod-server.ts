@@ -70,7 +70,15 @@ import { manifestFileWithBase } from "../utils/manifest-paths.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { readPrerenderSecret } from "../build/server-manifest.js";
-import { VINEXT_PRERENDER_SECRET_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
+import {
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_STATIC_FILE_HEADER,
+} from "./headers.js";
+import {
+  readTrustedPrerenderRouteParamsFromHeaders,
+  serializePrerenderRouteParamsHeader,
+} from "./prerender-route-params.js";
 import { seedMemoryCacheFromPrerender as seedMemoryCacheFromPrerenderFallback } from "./seed-cache.js";
 import { installSocketErrorBackstop } from "./socket-error-backstop.js";
 
@@ -717,7 +725,11 @@ const trustProxy = process.env.VINEXT_TRUST_PROXY === "1" || trustedHosts.size >
  * Router prod server normalizes before static-asset lookup, and can pass
  * the result here so the downstream RSC handler doesn't re-normalize).
  */
-function nodeToWebRequest(req: IncomingMessage, urlOverride?: string): Request {
+function nodeToWebRequest(
+  req: IncomingMessage,
+  urlOverride?: string,
+  prerenderSecret?: string,
+): Request {
   const rawProto = trustProxy
     ? (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim()
     : undefined;
@@ -735,8 +747,16 @@ function nodeToWebRequest(req: IncomingMessage, urlOverride?: string): Request {
       rawHeaders.set(key, value);
     }
   }
+  const prerenderRouteParams = readTrustedPrerenderRouteParamsFromHeaders(
+    rawHeaders,
+    prerenderSecret,
+  );
   // Strip internal headers that should not be honored from external requests.
   const headers = filterInternalHeaders(rawHeaders);
+  const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(prerenderRouteParams);
+  if (prerenderRouteParamsHeader !== null) {
+    headers.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
+  }
 
   const method = req.method ?? "GET";
   const hasBody = method !== "GET" && method !== "HEAD";
@@ -1234,7 +1254,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       const normalizedUrl = pathname + qs;
 
       // Convert Node.js request to Web Request and call the RSC handler
-      const request = nodeToWebRequest(req, normalizedUrl);
+      const request = nodeToWebRequest(req, normalizedUrl, prerenderSecret);
       const response = await rscHandler(request);
 
       const staticFileSignal = response.headers.get(VINEXT_STATIC_FILE_HEADER);

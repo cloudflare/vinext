@@ -121,6 +121,110 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  it("uses encoded prerender route params for rendering while retaining decoded params for static validation", async () => {
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const prerenderRoute = createPageRoute({
+      isDynamic: true,
+      pattern: "/prerender-encoding/:id",
+      routeSegments: ["prerender-encoding", "[id]"],
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchRoute(pathname: string) {
+        return pathname === "/prerender-encoding/sticks & stones"
+          ? {
+              params: { id: "sticks & stones" },
+              route: prerenderRoute,
+            }
+          : null;
+      },
+    });
+
+    try {
+      const response = await handler(
+        new Request("https://example.test/docs/prerender-encoding/sticks%20%26%20stones", {
+          headers: {
+            "x-vinext-prerender-secret": "test-secret",
+            "x-vinext-prerender-route-params": encodeURIComponent(
+              JSON.stringify({ id: "sticks%20%26%20stones" }),
+            ),
+          },
+        }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          params: { id: "sticks%20%26%20stones" },
+          staticParamsValidationParams: { id: "sticks & stones" },
+        }),
+      );
+    } finally {
+      if (previousPrerender === undefined) {
+        delete process.env.VINEXT_PRERENDER;
+      } else {
+        process.env.VINEXT_PRERENDER = previousPrerender;
+      }
+    }
+  });
+
+  it("ignores forged prerender route params outside trusted prerender requests", async () => {
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    delete process.env.VINEXT_PRERENDER;
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const prerenderRoute = createPageRoute({
+      isDynamic: true,
+      pattern: "/prerender-encoding/:id",
+      routeSegments: ["prerender-encoding", "[id]"],
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchRoute(pathname: string) {
+        return pathname === "/prerender-encoding/sticks & stones"
+          ? {
+              params: { id: "sticks & stones" },
+              route: prerenderRoute,
+            }
+          : null;
+      },
+    });
+
+    try {
+      const response = await handler(
+        new Request("https://example.test/docs/prerender-encoding/sticks%20%26%20stones", {
+          headers: {
+            "x-vinext-prerender-secret": "test-secret",
+            "x-vinext-prerender-route-params": encodeURIComponent(JSON.stringify({ id: "forged" })),
+          },
+        }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          params: { id: "sticks & stones" },
+        }),
+      );
+      expect(dispatchMatchedPage).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          staticParamsValidationParams: expect.anything(),
+        }),
+      );
+    } finally {
+      if (previousPrerender === undefined) {
+        delete process.env.VINEXT_PRERENDER;
+      } else {
+        process.env.VINEXT_PRERENDER = previousPrerender;
+      }
+    }
+  });
+
   it("returns config redirects before route dispatch and skips finalization", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
     const handler = createHandler({
