@@ -223,7 +223,7 @@ test.describe("App Router experimental.inlineCss production parity", () => {
           },
         })
       ).text();
-      expect(rscPayload).toContain("__PAGE__");
+      expect(rscPayload).toContain("__route");
       expect(rscPayload).not.toContain("font-size");
 
       const htmlPayload = await (await page.request.get(`${app.baseUrl}/a?_rsc`)).text();

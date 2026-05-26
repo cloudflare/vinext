@@ -11,7 +11,6 @@ import {
   APP_INTERCEPTION_CONTEXT_KEY,
   APP_LAYOUT_IDS_KEY,
   APP_LAYOUT_FLAGS_KEY,
-  APP_NEXT_PAGE_MARKER_KEY,
   APP_RENDER_OBSERVATION_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
@@ -96,7 +95,6 @@ describe("AppElementsWire", () => {
     expect(metadata).toEqual({
       [APP_INTERCEPTION_CONTEXT_KEY]: null,
       [APP_LAYOUT_IDS_KEY]: ["layout:/(dashboard)"],
-      [APP_NEXT_PAGE_MARKER_KEY]: true,
       [APP_ROOT_LAYOUT_KEY]: "/(dashboard)",
       [APP_ROUTE_KEY]: "route:/dashboard",
     });
