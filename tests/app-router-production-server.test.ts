@@ -268,6 +268,29 @@ describe("App Router Production server (startProdServer)", () => {
     const fixtureRoot = path.join(tmpDir, "fixture");
     const prefixedOutDir = path.join(fixtureRoot, "dist");
     let assetPrefixServer: import("node:http").Server | undefined;
+    const prodGlobalKeys = [
+      "__VINEXT_CLIENT_ENTRY__",
+      "__VINEXT_DYNAMIC_PRELOADS__",
+      "__VINEXT_LAZY_CHUNKS__",
+      "__VINEXT_SSR_MANIFEST__",
+      "__vite_rsc_client_require__",
+      "__vite_rsc_require__",
+      "__vite_rsc_server_require__",
+      "__webpack_chunk_load__",
+      "__webpack_require__",
+    ];
+    // startProdServer installs build/runtime globals process-wide. This test
+    // starts a second prod server while the shared server is still alive, so
+    // restore the shared server's globals before later tests run.
+    const previousGlobals = new Map(
+      prodGlobalKeys.map((key) => [
+        key,
+        {
+          exists: Reflect.has(globalThis, key),
+          value: Reflect.get(globalThis, key),
+        },
+      ]),
+    );
 
     try {
       fs.cpSync(APP_FIXTURE_DIR, fixtureRoot, { recursive: true });
@@ -331,6 +354,13 @@ describe("App Router Production server (startProdServer)", () => {
       }
     } finally {
       assetPrefixServer?.close();
+      for (const [key, previous] of previousGlobals) {
+        if (previous.exists) {
+          Reflect.set(globalThis, key, previous.value);
+        } else {
+          Reflect.deleteProperty(globalThis, key);
+        }
+      }
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   }, 60000);
