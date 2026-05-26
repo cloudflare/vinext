@@ -183,7 +183,18 @@ test.describe("Intercepting Routes", () => {
       const nextState =
         currentState && typeof currentState === "object" ? Object.assign({}, currentState) : {};
       Reflect.set(nextState, "__vinext_previousNextUrl", "/feed");
-      window.history.replaceState(nextState, "", window.location.href);
+
+      const clientNavigationState = Reflect.get(window, Symbol.for("vinext.clientNavigationState"));
+      const originalReplaceState =
+        clientNavigationState && typeof clientNavigationState === "object"
+          ? Reflect.get(clientNavigationState, "originalReplaceState")
+          : null;
+
+      if (typeof originalReplaceState !== "function") {
+        throw new Error("Expected Vinext original history.replaceState to be installed");
+      }
+
+      originalReplaceState.call(window.history, nextState, "", window.location.href);
     });
     await expect
       .poll(() =>
