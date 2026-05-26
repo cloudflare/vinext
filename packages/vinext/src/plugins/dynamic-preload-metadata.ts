@@ -170,6 +170,21 @@ function collectBlockScopedBindingNames(body: readonly unknown[]): Set<string> {
   return names;
 }
 
+function collectSwitchScopedBindingNames(node: AstRecord): Set<string> {
+  const names = new Set<string>();
+
+  for (const switchCase of getArray(node, "cases")) {
+    if (!isRecord(switchCase)) continue;
+    for (const statement of getArray(switchCase, "consequent")) {
+      for (const name of collectBlockScopedBindingNames([statement])) {
+        names.add(name);
+      }
+    }
+  }
+
+  return names;
+}
+
 function collectVarBindingNames(value: unknown, names: Set<string>): void {
   if (!isRecord(value)) return;
 
@@ -281,6 +296,16 @@ function visitDynamicCalls(
     return;
   }
 
+  if (type === "SwitchStatement") {
+    visitDynamicCalls(value.discriminant, dynamicLocals, visitor);
+
+    const scoped = withoutBindings(dynamicLocals, collectSwitchScopedBindingNames(value));
+    for (const switchCase of getArray(value, "cases")) {
+      visitDynamicCalls(switchCase, scoped, visitor);
+    }
+    return;
+  }
+
   if (
     type === "FunctionDeclaration" ||
     type === "FunctionExpression" ||
@@ -291,6 +316,14 @@ function visitDynamicCalls(
       withoutBindings(dynamicLocals, collectFunctionScopeBindingNames(value)),
       visitor,
     );
+    return;
+  }
+
+  if (type === "ClassDeclaration" || type === "ClassExpression") {
+    const names = new Set<string>();
+    const name = nodeName(value.id);
+    if (name) names.add(name);
+    visitChildren(value, withoutBindings(dynamicLocals, names), visitor);
     return;
   }
 

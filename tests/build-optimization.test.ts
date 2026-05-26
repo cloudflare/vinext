@@ -1489,6 +1489,42 @@ describe("next/dynamic preload metadata transform", () => {
     expect(result).toBeNull();
   });
 
+  it("does not transform a switch case binding that shadows the next/dynamic import", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `switch (kind) {`,
+      `  case "x":`,
+      `    const dynamic = customFactory;`,
+      `    dynamic(() => import("./dynamic-widget"));`,
+      `}`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not transform inside a named class expression that shadows the next/dynamic import", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const Component = class dynamic {`,
+      `  static Widget = dynamic(() => import("./dynamic-widget"));`,
+      `};`,
+    ].join("\n");
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
+
   it("transforms renamed next/dynamic imports", async () => {
     const result = await _transformNextDynamicPreloadMetadata(
       [
