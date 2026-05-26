@@ -14,8 +14,13 @@
  */
 import React, { useEffect, useRef } from "react";
 import * as ReactDOM from "react-dom";
+import { hasAppNavigationRuntimeBootstrap } from "../client/navigation-runtime.js";
 import { escapeInlineContent } from "./head.js";
 import { useScriptNonce } from "./script-nonce-context.js";
+import {
+  useBeforeInteractiveRegister,
+  type BeforeInteractiveInlineScript,
+} from "./before-interactive-context.js";
 
 export type ScriptProps = {
   /** Script source URL */
@@ -98,6 +103,78 @@ function buildBeforeInteractiveScriptProps(options: {
     };
   }
   return scriptProps;
+}
+
+/**
+ * Extract the inline script content for a `beforeInteractive` Script element
+ * with no `src`. Returns `null` when the element has neither a string-shaped
+ * `children` value nor a valid `dangerouslySetInnerHTML.__html` payload — in
+ * that case the caller should fall through to React's regular rendering path.
+ *
+ * The returned string is the raw author-supplied JavaScript content. Callers
+ * are responsible for passing it through `escapeInlineContent(..., "script")`
+ * before emitting it inside a `<script>` tag (we keep that escape adjacent
+ * to the emit point so the rule is obvious at the boundary).
+ */
+function extractBeforeInteractiveInlineContent(
+  children: React.ReactNode,
+  dangerouslySetInnerHTML?: { __html: string },
+): string | null {
+  if (
+    dangerouslySetInnerHTML &&
+    typeof dangerouslySetInnerHTML.__html === "string" &&
+    dangerouslySetInnerHTML.__html.length > 0
+  ) {
+    return dangerouslySetInnerHTML.__html;
+  }
+  if (typeof children === "string" && children.length > 0) {
+    return children;
+  }
+  if (Array.isArray(children) && children.every((c) => typeof c === "string")) {
+    const joined = (children as string[]).join("");
+    return joined.length > 0 ? joined : null;
+  }
+  return null;
+}
+
+/**
+ * Convert the residual `<Script>` props into a plain string-attributes record
+ * for emission inside a hoisted `<script>` tag. Drops React-only props
+ * (event handlers, children, etc.) and reserved keys already handled by the
+ * pre-head-injection emitter (id, nonce). Skips `undefined`/`null` so they
+ * round-trip as "attribute absent" rather than `attr="undefined"`.
+ */
+function collectBeforeInteractiveAttributes(
+  rest: Record<string, unknown>,
+): Record<string, string | boolean> {
+  const RESERVED = new Set([
+    "id",
+    "nonce",
+    "src",
+    "children",
+    "strategy",
+    "dangerouslySetInnerHTML",
+    "onLoad",
+    "onReady",
+    "onError",
+  ]);
+  const out: Record<string, string | boolean> = {};
+  for (const [key, value] of Object.entries(rest)) {
+    if (RESERVED.has(key)) continue;
+    if (value === undefined || value === null || value === false) continue;
+    if (typeof value === "boolean") {
+      out[key] = true;
+      continue;
+    }
+    if (typeof value === "string" || typeof value === "number") {
+      out[key] = String(value);
+      continue;
+    }
+    // Skip anything else (functions, objects) — they cannot serialise into an
+    // HTML attribute and only the developer-controlled string/boolean shape
+    // is expected for native `<script>` attributes here.
+  }
+  return out;
 }
 
 function setBooleanScriptAttribute(el: HTMLScriptElement, attr: string, value: unknown): boolean {
@@ -270,6 +347,10 @@ function Script(props: ScriptProps): React.ReactElement | null {
   const key = id ?? src ?? "";
   const contextualNonce = useScriptNonce();
   const resolvedNonce = resolveScriptNonce(rest.nonce, contextualNonce);
+  // Available only during SSR — the provider lives in app-ssr-entry.ts. When
+  // missing (Pages Router SSR, raw renderToString, client render) we keep the
+  // inline `<script>` element in source order.
+  const registerBeforeInteractive = useBeforeInteractiveRegister();
 
   // Client path: load scripts via useEffect based on strategy.
   // useEffect never runs during SSR, so it's safe to call unconditionally.
@@ -378,6 +459,31 @@ function Script(props: ScriptProps): React.ReactElement | null {
     }
 
     if (strategy === "beforeInteractive") {
+      // Inline beforeInteractive scripts (no src) need to run BEFORE any
+      // stylesheets, modulepreload links, or other resource hints React Float
+      // hoists into <head>. React Fizz emits user-rendered head children
+      // AFTER the hoisted resources, so leaving the script in source order
+      // breaks the no-flash dark-mode pattern. We instead capture the inline
+      // content through BeforeInteractiveContext and the SSR pipeline emits
+      // it immediately after `<head>` opens — guaranteeing it precedes every
+      // React-emitted hint in the streamed HTML.
+      const inlineContent = src
+        ? null
+        : extractBeforeInteractiveInlineContent(children, dangerouslySetInnerHTML);
+      if (inlineContent !== null && registerBeforeInteractive) {
+        const inline: BeforeInteractiveInlineScript = {
+          id,
+          // Escape `</script>` sequences exactly as the inline render path does
+          // (see buildBeforeInteractiveScriptProps); keep the escape colocated
+          // with the emit boundary so it never gets accidentally skipped.
+          innerHTML: escapeInlineContent(inlineContent, "script"),
+          nonce: resolvedNonce,
+          attributes: collectBeforeInteractiveAttributes(rest),
+        };
+        registerBeforeInteractive(inline);
+        return null;
+      }
+
       return React.createElement(
         "script",
         buildBeforeInteractiveScriptProps({
@@ -395,6 +501,29 @@ function Script(props: ScriptProps): React.ReactElement | null {
   }
 
   if (strategy === "beforeInteractive") {
+    // On the client, only suppress the `<script>` render for inline
+    // beforeInteractive Scripts in App Router pages. The pre-head splice
+    // in app-ssr-entry/app-ssr-stream already put the tag in the DOM, so
+    // rendering it again would either duplicate the script (for Scripts
+    // outside `<head>`) or cause a hydration mismatch (positions differ).
+    //
+    // For Pages Router and any other SSR path that didn't run through
+    // app-ssr-entry, the server rendered the `<script>` inline in source
+    // order, so the client must match. We detect "App Router" via the
+    // navigation runtime that the App Router bootstrap installs before
+    // calling hydrateRoot — it is the most reliable runtime signal we
+    // can read from inside a `"use client"` shim.
+    //
+    // External-`src` beforeInteractive scripts always keep rendering
+    // inline. They are not captured by the pre-head splice and must mount
+    // through React so their `src` attribute is fetched on the client.
+    const inlineContent = src
+      ? null
+      : extractBeforeInteractiveInlineContent(children, dangerouslySetInnerHTML);
+    if (inlineContent !== null && hasAppNavigationRuntimeBootstrap()) {
+      return null;
+    }
+
     return React.createElement(
       "script",
       buildBeforeInteractiveScriptProps({

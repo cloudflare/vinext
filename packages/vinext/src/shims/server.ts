@@ -98,6 +98,14 @@ export class NextRequest extends Request {
       };
     },
   ) {
+    // Match Next.js: reject relative URLs with the canonical error before any
+    // fallback URL parsing kicks in. Next.js calls `validateURL(url)` at the
+    // top of its NextRequest constructor; we mirror that here so middleware
+    // tests asserting on the error message text get the documented string.
+    // Reuse the local `validateURL` helper so the message format stays in lockstep
+    // with NextResponse, and so `javascript:` / `data:` URIs are blocked too.
+    const rawUrl = typeof input !== "string" && "url" in input ? input.url : String(input);
+    validateURL(rawUrl);
     // Strip nextConfig before passing to super() — it's vinext-internal,
     // not a valid RequestInit property.
     const { nextConfig: _nextConfig, ...requestInit } = init ?? {};

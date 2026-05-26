@@ -8,7 +8,6 @@
  * We support both the sync (legacy) and async patterns.
  */
 
-import type { AsyncLocalStorage } from "node:async_hooks";
 import { MIDDLEWARE_SET_COOKIE_HEADER } from "../server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
@@ -206,16 +205,44 @@ export function consumeRenderRequestApiUsage(): RenderRequestApiKind[] {
 const _USE_CACHE_ALS_KEY = Symbol.for("vinext.cacheRuntime.contextAls");
 /** Symbol used by cache.ts to store the unstable_cache ALS on globalThis */
 const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
-const _gHeaders = globalThis as unknown as Record<PropertyKey, unknown>;
 
-function _isInsideUseCache(): boolean {
-  const als = _gHeaders[_USE_CACHE_ALS_KEY] as AsyncLocalStorage<unknown> | undefined;
-  return als?.getStore() != null;
+type UseCacheGuardContext = {
+  variant?: unknown;
+};
+
+type CacheScopeStorage = {
+  getStore: () => unknown;
+};
+
+function _getGlobalCacheScopeStorage(key: symbol): CacheScopeStorage | null {
+  const value = Reflect.get(globalThis, key);
+  if (!value || typeof value !== "object") return null;
+
+  const getStore = Reflect.get(value, "getStore");
+  if (typeof getStore !== "function") return null;
+
+  return {
+    getStore: () => getStore.call(value),
+  };
+}
+
+function _getUseCacheGuardContext(): UseCacheGuardContext | null {
+  const store = _getGlobalCacheScopeStorage(_USE_CACHE_ALS_KEY)?.getStore();
+  if (!store || typeof store !== "object") return null;
+  return store;
+}
+
+function _isInsidePublicUseCache(): boolean {
+  const ctx = _getUseCacheGuardContext();
+  // Next.js models "use cache: private" as a private-cache work unit that
+  // carries request headers and cookies. Only public "use cache" scopes freeze
+  // request APIs into persisted cache entries and must reject these reads.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/work-unit-async-storage.external.ts
+  return ctx !== null && ctx.variant !== "private";
 }
 
 function _isInsideUnstableCache(): boolean {
-  const als = _gHeaders[_UNSTABLE_CACHE_ALS_KEY] as AsyncLocalStorage<unknown> | undefined;
-  return als?.getStore() === true;
+  return _getGlobalCacheScopeStorage(_UNSTABLE_CACHE_ALS_KEY)?.getStore() === true;
 }
 
 /**
@@ -226,7 +253,7 @@ function _isInsideUnstableCache(): boolean {
  * @param apiName - The name of the API being called (e.g. "connection()")
  */
 export function throwIfInsideCacheScope(apiName: string): void {
-  if (_isInsideUseCache()) {
+  if (_isInsidePublicUseCache()) {
     const error = new Error(
       `\`${apiName}\` cannot be called inside "use cache". ` +
         `If you need this data inside a cached function, call \`${apiName}\` ` +

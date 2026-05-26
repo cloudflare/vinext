@@ -304,3 +304,19 @@ export function subscribeNavigationRuntimeRscChunk(
 export function hasAppNavigationRuntime(): boolean {
   return typeof getNavigationRuntime()?.functions.navigate === "function";
 }
+
+/**
+ * True when the App Router has installed its runtime bootstrap on `window`,
+ * which the inline runtime-metadata script does synchronously in `<head>`.
+ *
+ * This is a stronger early-life signal than `hasAppNavigationRuntime()` — the
+ * latter checks for the fully-wired `navigate` function and so returns false
+ * during the brief window between HTML parse and the bootstrap module
+ * finishing initialization. Code that needs to differentiate App Router from
+ * Pages Router *during hydration* (e.g. the Script shim deciding whether the
+ * server-side pre-head splice already emitted the inline beforeInteractive
+ * tag) should call this instead.
+ */
+export function hasAppNavigationRuntimeBootstrap(): boolean {
+  return getNavigationRuntime() !== null;
+}

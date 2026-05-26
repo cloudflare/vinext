@@ -65,6 +65,10 @@ import type { VinextLinkPrefetchRoute, VinextNextData } from "../client/vinext-n
 import { navigatePagesRouterLink } from "../client/pages-router-link-navigation.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../routing/route-matching.js";
 import { stripBasePath } from "../utils/base-path.js";
+import {
+  prefetchPagesData,
+  resolvePagesDataNavigationTarget,
+} from "./internal/pages-data-target.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
 
 type NavigateEvent = {
@@ -150,6 +154,72 @@ function resolveHref(href: LinkProps["href"]): string {
     url = appendSearchParamsToUrl(url, params);
   }
   return url;
+}
+
+/**
+ * Collapse repeated forward-slashes (and convert backslashes to forward-slashes)
+ * in the path portion of a URL, preserving any query string.
+ *
+ * Ported from Next.js: packages/next/src/shared/lib/utils/normalize-repeated-slashes.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/utils/normalize-repeated-slashes.ts
+ */
+function normalizeRepeatedSlashes(url: string): string {
+  const urlParts = url.split("?");
+  const urlNoQueryString = urlParts.shift() ?? "";
+  const queryString = urlParts.join("?");
+  return (
+    urlNoQueryString.replace(/\\/g, "/").replace(/\/\/+/g, "/") +
+    (queryString ? `?${queryString}` : "")
+  );
+}
+
+/**
+ * Emit Next.js's "Invalid href" `console.error` when `href` contains repeated
+ * forward slashes or backslashes in its path portion, and return the
+ * normalized URL (with `\\` converted to `/` and runs of `/` collapsed). If
+ * the href is already well-formed, the original string is returned unchanged.
+ *
+ * Ported from Next.js: packages/next/src/client/resolve-href.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/client/resolve-href.ts
+ *
+ * Matches the message asserted by:
+ * test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts
+ *
+ * Note: Next.js fires this warning unconditionally on every call to
+ * `resolveHref`. We mirror that behaviour (no dedup) for exact parity.
+ *
+ * Note: Next.js uses `router.pathname` (the route pattern, e.g.
+ * `/posts/[id]`) for the "in page" segment of the message. We do not have
+ * cheap access to the route pattern from inside the Link shim, so we
+ * fall back to `window.location.pathname` (or `"/"` during SSR). The text
+ * is cosmetic and is not asserted by the Next.js compat test.
+ */
+function warnAndNormalizeRepeatedSlashesInHref(urlAsString: string): string {
+  // Protocol-relative URLs (e.g. "//example.com/path") are treated by vinext
+  // as external — see `isAbsoluteOrProtocolRelativeUrl` in url-utils. We
+  // intentionally skip the repeated-slash warning and normalization for them
+  // so that locale prefixing and same-origin detection elsewhere in this
+  // shim continue to receive the original href. (Next.js itself does flag
+  // these, but our external-URL handling supersedes that behaviour.)
+  if (urlAsString.startsWith("//")) return urlAsString;
+
+  // Strip any protocol prefix (e.g. "https://") so we do not flag the
+  // legitimate `//` that separates the scheme from the authority.
+  const urlProtoMatch = urlAsString.match(/^[a-z][a-z0-9+.-]*:\/\//i);
+  const urlAsStringNoProto = urlProtoMatch
+    ? urlAsString.slice(urlProtoMatch[0].length)
+    : urlAsString;
+  const urlParts = urlAsStringNoProto.split("?", 1);
+  if (!(urlParts[0] || "").match(/(\/\/|\\)/)) return urlAsString;
+
+  const pathname =
+    typeof window !== "undefined" && window.location ? window.location.pathname : "/";
+  console.error(
+    `Invalid href '${urlAsString}' passed to next/router in page: '${pathname}'. Repeated forward-slashes (//) or backslashes \\ are not valid in the href.`,
+  );
+
+  const normalizedNoProto = normalizeRepeatedSlashes(urlAsStringNoProto);
+  return (urlProtoMatch ? urlProtoMatch[0] : "") + normalizedNoProto;
 }
 
 export function resolveLinkPrefetchMode(
@@ -306,16 +376,31 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
           },
         );
-      } else if ((window.__NEXT_DATA__ as VinextNextData | undefined)?.__vinext?.pageModuleUrl) {
-        // Pages Router: inject a prefetch link for the target page module
-        // We can't easily resolve the target page's module URL from the Link,
-        // so we create a <link rel="prefetch"> for the HTML page which helps
-        // the browser's preload scanner.
-        const link = document.createElement("link");
-        link.rel = "prefetch";
-        link.href = fullHref;
-        link.as = "document";
-        document.head.appendChild(link);
+      } else if (window.__NEXT_DATA__) {
+        // Pages Router prefetch. When a code-split loader is registered for
+        // the target route (prod builds expose them on window via the
+        // generated client entry), prefetch the data JSON + warm the page
+        // chunk in parallel — matching the actual navigation, so the click
+        // is a double cache hit. Otherwise (dev, or unmapped route) fall
+        // back to the legacy `<link rel="prefetch" as="document">` so the
+        // browser still preloads the HTML.
+        //
+        // The decision helper + prefetch action live in shims/internal/ so
+        // this file does not pull in the router shim at module init time,
+        // which would create a circular import and grow the SSR module graph.
+        const dataTarget = resolvePagesDataNavigationTarget(fullHref, __basePath);
+        if (dataTarget) {
+          prefetchPagesData(dataTarget);
+        } else {
+          // Legacy fallback: hint the browser to preload the HTML document.
+          // Used in dev (no loader map populated) and for routes not in the
+          // client loader map.
+          const link = document.createElement("link");
+          link.rel = "prefetch";
+          link.href = fullHref;
+          link.as = "document";
+          document.head.appendChild(link);
+        }
       }
     })().catch((error) => {
       console.error("[vinext] RSC prefetch setup error:", error);
@@ -535,7 +620,16 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
 
   // If `as` is provided, use it as the actual URL (legacy Next.js pattern
   // where href is a route pattern like "/user/[id]" and as is "/user/1")
-  const resolvedHref = as ?? resolveHref(href);
+  const rawResolvedHref = as ?? resolveHref(href);
+
+  // Mirror Next.js: emit a console.error when the href contains repeated
+  // forward-slashes (e.g. "/foo//bar") or backslashes, and then normalize the
+  // href so navigation targets the collapsed path rather than the raw one.
+  // See packages/next/src/client/resolve-href.ts.
+  const resolvedHref =
+    typeof rawResolvedHref === "string"
+      ? warnAndNormalizeRepeatedSlashesInHref(rawResolvedHref)
+      : rawResolvedHref;
 
   const isDangerous = typeof resolvedHref === "string" && isDangerousScheme(resolvedHref);
 

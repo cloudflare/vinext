@@ -386,7 +386,11 @@ export async function resolvePagesPageData(
     }
 
     if (result?.props) {
-      pageProps = result.props;
+      // Next.js explicitly supports a Promise value for `props`. Await it
+      // before serialising; otherwise pageProps would be a Promise and the
+      // rendered page would receive empty props. See
+      // packages/next/src/server/render.tsx (deferredContent).
+      pageProps = (await Promise.resolve(result.props)) as Record<string, unknown>;
     }
 
     if (result?.redirect) {

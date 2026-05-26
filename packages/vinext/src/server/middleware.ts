@@ -97,13 +97,20 @@ export function findMiddlewareFile(root: string, fileMatcher: ValidFileMatcher):
   // Fall back to middleware.ts (deprecated in Next.js 16).
   // This is a warning, not an error: middleware.ts is still fully supported
   // by both Next.js 16 and vinext. Do not change to `throw` or `process.exit`.
+  //
+  // Warning text matches Next.js canonical wording from
+  // packages/next/src/build/index.ts (search for "file convention is
+  // deprecated") so Next.js's own deprecation-warnings and app-middleware
+  // e2e suites pass when run against vinext.
   for (const dir of MIDDLEWARE_LOCATIONS) {
     for (const ext of fileMatcher.dottedExtensions) {
       const fullPath = path.join(root, dir, `middleware${ext}`);
       if (fs.existsSync(fullPath)) {
         console.warn(
-          "[vinext] middleware.ts is deprecated in Next.js 16. " +
-            "Rename to proxy.ts and export a default or named proxy function.",
+          `The "middleware" file convention is deprecated. Please use "proxy" instead.\n\n` +
+            `  To migrate automatically, run:\n` +
+            `  npx @next/codemod@canary middleware-to-proxy .\n\n` +
+            `  Learn more: https://nextjs.org/docs/messages/middleware-to-proxy`,
         );
         return fullPath;
       }

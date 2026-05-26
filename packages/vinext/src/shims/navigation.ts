@@ -28,6 +28,7 @@ import {
   isHashOnlyBrowserUrlChange,
   toBrowserNavigationHref,
   toSameOriginAppPath,
+  withBasePath,
 } from "./url-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
@@ -1511,6 +1512,20 @@ const _appRouter = {
   prefetch(href: string, options?: PrefetchOptions): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
+    // Validate the URL is parseable. Mirrors Next.js's createPrefetchURL:
+    // `packages/next/src/client/components/app-router-utils.ts` — when the URL
+    // cannot be converted, Next.js throws so the call site (and its surrounding
+    // error boundary, in the App Router) surfaces the failure. Without this
+    // guard, vinext silently swallows unparseable hrefs and the test app's
+    // error boundary never renders. basePath is applied before parsing to match
+    // Next.js exactly: a non-empty basePath can make an otherwise broken-looking
+    // href parseable (e.g. `new URL("/app///", origin)` succeeds while
+    // `new URL("///", origin)` throws).
+    try {
+      new URL(withBasePath(href, __basePath), window.location.href);
+    } catch {
+      throw new Error(`Cannot prefetch '${href}' because it cannot be converted to a URL.`);
+    }
     void (async () => {
       // Normalize same-origin absolute URLs to local paths; no-op for external
       // origins so we don't pollute the prefetch cache with a same-path .rsc on

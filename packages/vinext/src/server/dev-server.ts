@@ -531,7 +531,11 @@ export function createSSRHandler(
             return;
           }
           if (result && "props" in result) {
-            pageProps = result.props;
+            // Next.js explicitly supports a Promise value for `props`. Await
+            // it before serialising; otherwise pageProps would be a Promise
+            // and the rendered page would receive empty props. See
+            // packages/next/src/server/render.tsx (deferredContent).
+            pageProps = await Promise.resolve(result.props);
           }
           if (result && "redirect" in result) {
             const { redirect } = result;
@@ -583,6 +587,19 @@ export function createSSRHandler(
             } else {
               gsspExtraHeaders[key] = String(val);
             }
+          }
+
+          // Default Cache-Control for getServerSideProps responses, matching
+          // Next.js's pages-handler.ts (revalidate: 0 → getCacheControlHeader).
+          // Skip when gSSP already set one via res.setHeader (case-insensitive)
+          // or when ISR is layered on top below — that branch overwrites this
+          // default with the ISR cache-control. Fixes #1461.
+          const hasUserCacheControl = Object.keys(gsspExtraHeaders).some(
+            (k) => k.toLowerCase() === "cache-control",
+          );
+          if (!hasUserCacheControl) {
+            gsspExtraHeaders["Cache-Control"] =
+              "private, no-cache, no-store, max-age=0, must-revalidate";
           }
         }
         // Collect font preloads early so ISR cached responses can include
