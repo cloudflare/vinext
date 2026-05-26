@@ -254,6 +254,46 @@ describe("app page cache helpers", () => {
     ).toBeNull();
   });
 
+  it("emits the `x-edge-runtime: 1` marker on cached responses for edge-runtime routes", () => {
+    const rscData = new TextEncoder().encode("flight").buffer;
+    const cached = buildCachedAppPageValue("<h1>cached</h1>", rscData);
+
+    const htmlResponse = buildAppPageCachedResponse(cached, {
+      cacheState: "HIT",
+      isEdgeRuntime: true,
+      isRscRequest: false,
+      revalidateSeconds: 60,
+    });
+    expect(htmlResponse?.headers.get("x-edge-runtime")).toBe("1");
+
+    const rscResponse = buildAppPageCachedResponse(cached, {
+      cacheState: "HIT",
+      isEdgeRuntime: true,
+      isRscRequest: true,
+      revalidateSeconds: 60,
+    });
+    expect(rscResponse?.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("omits the `x-edge-runtime` marker on cached responses for nodejs-runtime routes", () => {
+    const rscData = new TextEncoder().encode("flight").buffer;
+    const cached = buildCachedAppPageValue("<h1>cached</h1>", rscData);
+
+    const htmlResponse = buildAppPageCachedResponse(cached, {
+      cacheState: "HIT",
+      isRscRequest: false,
+      revalidateSeconds: 60,
+    });
+    expect(htmlResponse?.headers.get("x-edge-runtime")).toBeNull();
+
+    const rscResponse = buildAppPageCachedResponse(cached, {
+      cacheState: "HIT",
+      isRscRequest: true,
+      revalidateSeconds: 60,
+    });
+    expect(rscResponse?.headers.get("x-edge-runtime")).toBeNull();
+  });
+
   it("returns cached HIT responses and clears request state", async () => {
     let didClearRequestContext = false;
     const middlewareHeaders = new Headers({ "X-From-Middleware": "hit" });

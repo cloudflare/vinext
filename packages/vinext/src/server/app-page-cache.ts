@@ -6,6 +6,7 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { buildCachedRevalidateCacheControl } from "./cache-control.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
+import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { buildAppPageCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
@@ -68,6 +69,7 @@ type BuildAppPageCachedResponseOptions = {
   cacheControl?: CacheControlMetadata;
   cacheState: "HIT" | "STALE";
   expireSeconds?: number;
+  isEdgeRuntime?: boolean;
   isRscRequest: boolean;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
@@ -78,6 +80,7 @@ type BuildAppPageCachedResponseOptions = {
 type ReadAppPageCacheResponseOptions = {
   cleanPathname: string;
   clearRequestContext: () => void;
+  isEdgeRuntime?: boolean;
   isRscRequest: boolean;
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
@@ -196,6 +199,7 @@ function buildAppPageCachedHeaders(options: {
   cacheControl: string;
   cacheState: BuildAppPageCachedResponseOptions["cacheState"];
   contentType: string;
+  isEdgeRuntime?: boolean;
   middlewareHeaders?: Headers | null;
   mountedSlotsHeader?: string | null;
 }): Headers {
@@ -205,6 +209,7 @@ function buildAppPageCachedHeaders(options: {
     Vary: VINEXT_RSC_VARY_HEADER,
   });
   setCacheStateHeaders(headers, options.cacheState);
+  applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 
   if (options.mountedSlotsHeader) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
@@ -270,6 +275,7 @@ export function buildAppPageCachedResponse(
       cacheControl,
       cacheState: options.cacheState,
       contentType: VINEXT_RSC_CONTENT_TYPE,
+      isEdgeRuntime: options.isEdgeRuntime,
       middlewareHeaders: options.middlewareHeaders,
       mountedSlotsHeader: options.mountedSlotsHeader,
     });
@@ -289,6 +295,7 @@ export function buildAppPageCachedResponse(
     cacheControl,
     cacheState: options.cacheState,
     contentType: "text/html; charset=utf-8",
+    isEdgeRuntime: options.isEdgeRuntime,
     middlewareHeaders: options.middlewareHeaders,
   });
 
@@ -326,6 +333,7 @@ export async function readAppPageCacheResponse(
         cacheState: "HIT",
         cacheControl: cached?.value.cacheControl,
         expireSeconds: options.expireSeconds,
+        isEdgeRuntime: options.isEdgeRuntime,
         isRscRequest: options.isRscRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
@@ -418,6 +426,7 @@ export async function readAppPageCacheResponse(
         cacheState: "STALE",
         cacheControl: cached.value.cacheControl,
         expireSeconds: options.expireSeconds,
+        isEdgeRuntime: options.isEdgeRuntime,
         isRscRequest: options.isRscRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,

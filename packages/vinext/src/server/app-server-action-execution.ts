@@ -16,6 +16,7 @@ import {
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
 } from "./app-rsc-cache-busting.js";
+import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import {
@@ -186,6 +187,7 @@ export type HandleServerActionRscRequestOptions<
   getDraftModeCookieHeader: () => string | null | undefined;
   getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
+  isEdgeRuntime?: boolean;
   isRscRequest: boolean;
   loadServerAction: (actionId: string) => Promise<unknown>;
   matchRoute: (pathname: string) => AppServerActionMatch<TRoute> | null;
@@ -698,6 +700,7 @@ export async function handleServerActionRscRequest<
         "Content-Type": VINEXT_RSC_CONTENT_TYPE,
         Vary: VINEXT_RSC_VARY_HEADER,
       });
+      applyEdgeRuntimeHeader(redirectHeaders, options.isEdgeRuntime);
       mergeMiddlewareResponseHeaders(redirectHeaders, options.middlewareHeaders);
       applyRscCompatibilityIdHeader(redirectHeaders);
       // Prefix basePath onto the redirect target. The client-side handler in
@@ -742,6 +745,7 @@ export async function handleServerActionRscRequest<
         "Content-Type": VINEXT_RSC_CONTENT_TYPE,
         Vary: VINEXT_RSC_VARY_HEADER,
       });
+      applyEdgeRuntimeHeader(actionHeaders, options.isEdgeRuntime);
       mergeMiddlewareResponseHeaders(actionHeaders, options.middlewareHeaders);
       applyRscCompatibilityIdHeader(actionHeaders);
 
@@ -806,6 +810,7 @@ export async function handleServerActionRscRequest<
       "Content-Type": VINEXT_RSC_CONTENT_TYPE,
       Vary: VINEXT_RSC_VARY_HEADER,
     });
+    applyEdgeRuntimeHeader(actionHeaders, options.isEdgeRuntime);
     mergeMiddlewareResponseHeaders(actionHeaders, options.middlewareHeaders);
     applyRscCompatibilityIdHeader(actionHeaders);
     setActionRevalidatedHeader(actionHeaders, actionRevalidationKind);

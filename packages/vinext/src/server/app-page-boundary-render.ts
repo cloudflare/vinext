@@ -68,6 +68,7 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
   getFontStyles: () => string[];
   getNavigationContext: () => unknown;
   globalErrorModule?: TModule | null;
+  isEdgeRuntime?: boolean;
   isRscRequest: boolean;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   makeThenableParams: (params: AppPageParams) => unknown;
@@ -266,6 +267,7 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
         clearRequestContext: options.clearRequestContext,
         fontData,
         fontLinkHeader: options.buildFontLinkHeader(fontData.preloads),
+        isEdgeRuntime: options.isEdgeRuntime,
         middlewareHeaders: options.middlewareContext.headers,
         navigationContext: options.getNavigationContext(),
         rscStream,
@@ -278,6 +280,7 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
       return options.createRscOnErrorHandler(pathname, options.routePattern ?? pathname);
     },
     element: payload,
+    isEdgeRuntime: options.isEdgeRuntime,
     isRscRequest: options.isRscRequest,
     middlewareHeaders: options.middlewareContext.headers,
     renderToReadableStream: options.renderToReadableStream,

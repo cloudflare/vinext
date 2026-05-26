@@ -218,6 +218,19 @@ export function resolveAppPageHtmlResponsePolicy(
 
 export { mergeMiddlewareResponseHeaders };
 
+/**
+ * Mirror Next.js' edge-runtime marker (set in edge-ssr-app.ts). Only routes
+ * whose resolved segment config is `runtime = "edge"` should advertise it —
+ * nodejs-runtime routes must not, otherwise downstream consumers can't tell
+ * the configured runtime from the response. Centralized so every response
+ * construction site can opt in without re-deriving the header name.
+ */
+export function applyEdgeRuntimeHeader(headers: Headers, isEdgeRuntime: boolean | undefined): void {
+  if (isEdgeRuntime) {
+    headers.set("x-edge-runtime", "1");
+  }
+}
+
 export function buildAppPageRscResponse(
   body: ReadableStream,
   options: BuildAppPageRscResponseOptions,
@@ -227,13 +240,7 @@ export function buildAppPageRscResponse(
     Vary: VINEXT_RSC_VARY_HEADER,
   });
 
-  // Mirror Next.js' edge-runtime marker (set in edge-ssr-app.ts). Only routes
-  // whose resolved segment config is `runtime = "edge"` should advertise it —
-  // nodejs-runtime routes must not, otherwise downstream consumers can't tell
-  // the configured runtime from the response.
-  if (options.isEdgeRuntime) {
-    headers.set("x-edge-runtime", "1");
-  }
+  applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 
   if (options.params && Object.keys(options.params).length > 0) {
     // encodeURIComponent so non-ASCII params (e.g. Korean slugs) survive the
@@ -269,13 +276,7 @@ export function buildAppPageHtmlResponse(
     Vary: VINEXT_RSC_VARY_HEADER,
   });
 
-  // Mirror Next.js' edge-runtime marker (set in edge-ssr-app.ts). Only routes
-  // whose resolved segment config is `runtime = "edge"` should advertise it —
-  // nodejs-runtime routes must not, otherwise downstream consumers can't tell
-  // the configured runtime from the response.
-  if (options.isEdgeRuntime) {
-    headers.set("x-edge-runtime", "1");
-  }
+  applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 
   if (options.policy.cacheControl) {
     headers.set("Cache-Control", options.policy.cacheControl);
