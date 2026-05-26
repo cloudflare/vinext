@@ -5012,13 +5012,6 @@ export default class MyDocument extends Document {
     );
 
     await buildPagesFixtureToOutDir(tmpRoot, outDir);
-    const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
-    await runPrerender({
-      root: tmpRoot,
-      pagesBundlePath: path.join(outDir, "server", "entry.js"),
-      concurrency: 1,
-    });
-
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
     prodServer = unwrapStartedProdServer(
       await startProdServer({
