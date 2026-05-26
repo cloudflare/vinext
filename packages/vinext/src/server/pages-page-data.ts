@@ -149,6 +149,12 @@ export type ResolvePagesPageDataOptions = {
    * `getStaticProps` is invoked. Mirrors Next.js's
    * `renderOpts.isOnDemandRevalidate` flag — see
    * `.nextjs-ref/packages/next/src/server/render.tsx`.
+   *
+   * Forward-looking plumbing: no caller currently sets this — `res.revalidate()`
+   * is not yet implemented in vinext. The `"on-demand"` branch in the
+   * `revalidateReason` resolver is intentionally unreachable today; keeping the
+   * typed contract here means wiring it up will be a one-line change once the
+   * trigger lands.
    */
   isOnDemandRevalidate?: boolean;
   pageModule: PagesPageModule;

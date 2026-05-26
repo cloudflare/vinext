@@ -384,6 +384,16 @@ export async function renderPagesPageResponse(
       buildRevalidateCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
     );
     setCacheStateHeaders(responseHeaders, "MISS");
+  } else if (options.gsspRes && !responseHeaders.has("Cache-Control")) {
+    // Default Cache-Control for getServerSideProps responses, matching
+    // Next.js's pages-handler.ts (revalidate: 0 → getCacheControlHeader).
+    // applyGsspHeaders has already copied any user-set Cache-Control from
+    // res.setHeader into responseHeaders, so we only default when missing.
+    // Mirrors the dev-server branch in `dev-server.ts`. Fixes #1461.
+    responseHeaders.set(
+      "Cache-Control",
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
   }
   if (options.fontLinkHeader) {
     responseHeaders.set("Link", options.fontLinkHeader);

@@ -643,12 +643,31 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       // cookies set on the gsspRes by getServerSideProps are forwarded so
       // middleware/auth flows work the same as the HTML page.
       if (isDataReq) {
-        const init = {};
-        if (gsspRes && gsspRes.headers) {
-          init.headers = {};
-          for (const [k, v] of Object.entries(gsspRes.headers)) {
+        const init = { headers: {} };
+        if (gsspRes && typeof gsspRes.getHeaders === "function") {
+          const gsspHeaders = gsspRes.getHeaders();
+          for (const k of Object.keys(gsspHeaders)) {
+            const v = gsspHeaders[k];
             if (v === undefined || v === null) continue;
             init.headers[k] = Array.isArray(v) ? v.join(", ") : String(v);
+          }
+        }
+        if (gsspRes) {
+          // Default Cache-Control for gSSP-driven _next/data responses,
+          // matching Next.js's pages-handler.ts (revalidate: 0 →
+          // getCacheControlHeader). Skip when gSSP already set one via
+          // res.setHeader (case-insensitive). Mirrors the HTML branch in
+          // pages-page-response.ts and the dev-server branch. Fixes #1461.
+          var hasUserCacheControl = false;
+          for (const headerKey of Object.keys(init.headers)) {
+            if (headerKey.toLowerCase() === "cache-control") {
+              hasUserCacheControl = true;
+              break;
+            }
+          }
+          if (!hasUserCacheControl) {
+            init.headers["Cache-Control"] =
+              "private, no-cache, no-store, max-age=0, must-revalidate";
           }
         }
         return __buildNextDataJsonResponse(pageProps, safeJsonStringify, init);
