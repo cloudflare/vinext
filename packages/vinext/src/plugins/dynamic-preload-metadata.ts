@@ -2,10 +2,9 @@ import type { Plugin } from "vite";
 import { parseAst } from "vite";
 import MagicString from "magic-string";
 import path from "node:path";
+import { isUnknownRecord as isRecord } from "../utils/record.js";
 
-type AstRecord = {
-  [key: string]: unknown;
-};
+type AstRecord = Record<string, unknown>;
 
 type TransformResult = {
   code: string;
@@ -13,10 +12,6 @@ type TransformResult = {
 };
 
 type ResolveDynamicImport = (specifier: string, importer: string) => Promise<string | null>;
-
-function isRecord(value: unknown): value is AstRecord {
-  return !!value && typeof value === "object";
-}
 
 function getString(node: AstRecord, key: string): string | null {
   const value = node[key];
