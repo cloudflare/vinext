@@ -18,12 +18,17 @@
  * layout, a homepage, a `/call-not-found` page, and `global-not-found.tsx`.
  */
 
+import fs from "node:fs";
 import path from "node:path";
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
-import { startFixtureServer, fetchHtml } from "../helpers.js";
+import { buildAppFixture, startFixtureServer, fetchHtml } from "../helpers.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "../fixtures/global-not-found-basic");
+const CSS_ORDER_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "../fixtures/global-not-found-css-order",
+);
 
 describe("Next.js compat: global-not-found (basic)", () => {
   let server: ViteDevServer;
@@ -93,3 +98,115 @@ describe("Next.js compat: global-not-found (basic)", () => {
     expect(html).not.toContain('id="global-error-title"');
   });
 });
+
+describe("Next.js compat: global-not-found initial CSS order", () => {
+  // Ported from Next.js: test/e2e/app-dir/initial-css-order/initial-css-order.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/initial-css-order/initial-css-order.test.ts
+  it("serves global-not-found styles independently from the root layout CSS", async () => {
+    const rscBundlePath = await buildAppFixture(CSS_ORDER_FIXTURE_DIR);
+    const outDir = path.dirname(path.dirname(rscBundlePath));
+    const { startProdServer } = await import("../../packages/vinext/src/server/prod-server.js");
+    const { server } = await startProdServer({ port: 0, outDir, noCompression: true });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+    const baseUrl = `http://127.0.0.1:${port}`;
+
+    try {
+      const homeHtml = await fetchText(`${baseUrl}/`);
+      expect(await findFinalBodyBackground(baseUrl, outDir, homeHtml)).toBe("green");
+
+      const notFoundRes = await fetch(`${baseUrl}/404`);
+      expect(notFoundRes.status).toBe(404);
+      const notFoundHtml = await notFoundRes.text();
+      expect(notFoundHtml).toContain("not found");
+      expect(await findFinalBodyBackground(baseUrl, outDir, notFoundHtml)).toBe("red");
+    } finally {
+      server.close();
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+});
+
+async function fetchText(url: string): Promise<string> {
+  const res = await fetch(url);
+  expect(res.status).toBe(200);
+  return res.text();
+}
+
+async function findFinalBodyBackground(
+  baseUrl: string,
+  outDir: string,
+  html: string,
+): Promise<string | undefined> {
+  const cssBlocks = await collectStylesheetBlocks(baseUrl, outDir, html);
+  let finalColor: string | undefined;
+
+  for (const css of cssBlocks) {
+    const bodyBackground = /body\s*\{[^}]*\bbackground(?:-color)?\s*:\s*([^;}]+)/gi;
+    for (const match of css.matchAll(bodyBackground)) {
+      finalColor = match[1]?.trim().toLowerCase();
+    }
+  }
+
+  return finalColor;
+}
+
+async function collectStylesheetBlocks(
+  baseUrl: string,
+  outDir: string,
+  html: string,
+): Promise<string[]> {
+  const blocks: string[] = [];
+  const stylesheetTags = /<link\b[^>]*>|<style\b[^>]*>[\s\S]*?<\/style>/gi;
+
+  for (const tagMatch of html.matchAll(stylesheetTags)) {
+    const tag = tagMatch[0];
+    if (/^<style\b/i.test(tag)) {
+      blocks.push(tag.replace(/^<style\b[^>]*>/i, "").replace(/<\/style>$/i, ""));
+      continue;
+    }
+
+    if (!/\brel=["']stylesheet["']/i.test(tag)) {
+      continue;
+    }
+
+    const href = extractHtmlAttribute(tag, "href");
+    if (!href) {
+      continue;
+    }
+
+    const stylesheetUrl = new URL(href, baseUrl);
+    const localStaticAsset = readBuiltStaticAsset(outDir, stylesheetUrl.pathname);
+    if (localStaticAsset !== undefined) {
+      blocks.push(localStaticAsset);
+      continue;
+    }
+
+    const stylesheetUrlString = stylesheetUrl.toString();
+    const stylesheetRes = await fetch(stylesheetUrlString);
+    expect(stylesheetRes.status, `expected stylesheet ${stylesheetUrlString} to load`).toBe(200);
+    blocks.push(await stylesheetRes.text());
+  }
+
+  return blocks;
+}
+
+function extractHtmlAttribute(tag: string, name: string): string | undefined {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return tag.match(new RegExp(`\\b${escapedName}=["']([^"']+)["']`, "i"))?.[1];
+}
+
+function readBuiltStaticAsset(outDir: string, pathname: string): string | undefined {
+  if (!pathname.startsWith("/_next/static/")) {
+    return undefined;
+  }
+
+  for (const bundleDir of ["client", "server"]) {
+    const assetPath = path.join(outDir, bundleDir, pathname);
+    if (fs.existsSync(assetPath)) {
+      return fs.readFileSync(assetPath, "utf8");
+    }
+  }
+
+  return undefined;
+}

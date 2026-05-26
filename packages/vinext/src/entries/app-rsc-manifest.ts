@@ -1,6 +1,7 @@
 import { convertSegmentsToRouteParts, type AppRoute } from "../routing/app-router.js";
 import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
+import { collectStandaloneCssImports } from "../utils/static-css-imports.js";
 import { normalizePathSeparators } from "./runtime-entry-module.js";
 
 type AppRscManifestCode = {
@@ -15,6 +16,7 @@ type AppRscManifestCode = {
   rootLayoutVars: string[];
   globalErrorVar: string | null;
   globalNotFoundVar: string | null;
+  globalNotFoundStyleVars: string[];
 };
 
 type BuildAppRscManifestCodeOptions = {
@@ -322,6 +324,15 @@ export function buildAppRscManifestCode(
   const globalNotFoundVar = options.globalNotFoundPath
     ? imports.getImportVar(options.globalNotFoundPath)
     : null;
+  const globalNotFoundStyleVars = options.globalNotFoundPath
+    ? collectStandaloneCssImports(options.globalNotFoundPath).map((cssPath, idx) => {
+        const varName = `globalNotFoundCss_${idx}`;
+        imports.imports.push(
+          `import ${varName} from ${JSON.stringify(`${normalizePathSeparators(cssPath)}?inline`)};`,
+        );
+        return varName;
+      })
+    : [];
 
   const dynamicMetadataRoutes = metadataRoutes.filter((r) => r.isDynamic);
   for (const route of dynamicMetadataRoutes) {
@@ -346,5 +357,6 @@ export function buildAppRscManifestCode(
     rootLayoutVars,
     globalErrorVar,
     globalNotFoundVar,
+    globalNotFoundStyleVars,
   };
 }

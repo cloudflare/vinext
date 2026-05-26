@@ -55,6 +55,12 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
    * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx
    */
   globalNotFoundModule?: TModule | null;
+  /**
+   * Compiled CSS imported by `app/global-not-found.*`. Next keeps this
+   * standalone entry's CSS isolated from route/layout CSS; vinext injects the
+   * compiled CSS only for route-miss global-not-found HTML responses.
+   */
+  globalNotFoundStyles?: readonly string[];
   makeThenableParams: (params: AppPageParams) => unknown;
   metadataRoutes: MetadataFileRoute[];
   /** Configured next.config `basePath`, threaded into file-based metadata href emission. */
@@ -119,6 +125,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
     getNavigationContext,
     globalErrorModule,
     globalNotFoundModule,
+    globalNotFoundStyles,
     makeThenableParams,
     metadataRoutes,
     resolveChildSegments,
@@ -193,6 +200,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
             renderToReadableStream: rscRenderer,
             scriptNonce,
             skipLayoutWrapping: true,
+            standaloneStyles: globalNotFoundStyles,
             statusCode,
           });
         }

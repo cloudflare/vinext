@@ -191,6 +191,7 @@ export function generateRscEntry(
     rootLayoutVars,
     globalErrorVar,
     globalNotFoundVar,
+    globalNotFoundStyleVars,
   } = manifestCode;
   const loadPrerenderPagesRoutesCode = hasPagesDir
     ? `
@@ -391,6 +392,7 @@ const rootLayouts = [${rootLayoutVars.join(", ")}];
 // calls still use the regular not-found.tsx boundary inside the layouts.
 // See https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
 const globalNotFoundModule = ${globalNotFoundVar ? globalNotFoundVar : "null"};
+const globalNotFoundStyles = [${globalNotFoundStyleVars.join(", ")}];
 
 const createRscOnErrorHandler = (request, pathname, routePath) =>
   createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
@@ -405,6 +407,7 @@ const __fallbackRenderer = __createAppFallbackRenderer({
   },
   globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
   globalNotFoundModule,
+  globalNotFoundStyles,
   metadataRoutes,
   ssrLoader() {
     return import.meta.viteRsc.loadModule("ssr", "index");

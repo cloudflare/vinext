@@ -203,6 +203,7 @@ function buildHeadInjectionHtml(
   formState: ReactFormState | null,
   insertedHTML: string,
   fontHTML: string,
+  extraHeadHTML: string | undefined,
   scriptNonce?: string,
 ): string {
   const navPayload = {
@@ -226,7 +227,8 @@ function buildHeadInjectionHtml(
     formStateScript +
     buildModulePreloadHtml(bootstrapModuleUrl, scriptNonce) +
     insertedHTML +
-    fontHTML
+    fontHTML +
+    (extraHeadHTML ?? "")
   );
 }
 
@@ -242,6 +244,7 @@ export async function handleSsr(
     sideStream?: ReadableStream<Uint8Array>;
     /** Out-parameter: filled with accumulated raw RSC bytes when sideStream is consumed. */
     capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+    extraHeadHTML?: string;
     formState?: ReactFormState | null;
     basePath?: string;
     rootParams?: RootParams;
@@ -421,6 +424,7 @@ export async function handleSsr(
             options?.formState ?? null,
             insertedHTML + errorMetaHTML,
             fontHTML,
+            options?.extraHeadHTML,
             options?.scriptNonce,
           );
         };

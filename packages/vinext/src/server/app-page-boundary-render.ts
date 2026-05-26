@@ -1,6 +1,7 @@
 import { Fragment, createElement, type ComponentType, type ReactNode } from "react";
 import { buildClientHookErrorMessage } from "vinext/shims/client-hook-error";
 import { ErrorBoundary } from "vinext/shims/error-boundary";
+import { escapeInlineContent } from "vinext/shims/head";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import { MetadataHead, ViewportHead } from "vinext/shims/metadata";
 import type { AppPageFontPreload } from "./app-page-execution.js";
@@ -21,6 +22,7 @@ import {
 } from "./app-page-stream.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
 import { createAppPageLayoutEntries } from "./app-page-route-wiring.js";
+import { createNonceAttribute } from "./html.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = ComponentType<any>;
@@ -87,6 +89,7 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
   ) => string[];
   rootLayouts: readonly (TModule | null | undefined)[];
   scriptNonce?: string;
+  extraHeadHTML?: string;
 };
 
 type RenderAppPageHttpAccessFallbackOptions<TModule extends AppPageModule = AppPageModule> = {
@@ -105,6 +108,11 @@ type RenderAppPageHttpAccessFallbackOptions<TModule extends AppPageModule = AppP
    * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
    */
   skipLayoutWrapping?: boolean;
+  /**
+   * Standalone CSS that should apply only to this access-fallback document,
+   * after React-emitted shared stylesheet links.
+   */
+  standaloneStyles?: readonly string[];
   statusCode: number;
 } & AppPageBoundaryRenderCommonOptions<TModule>;
 
@@ -264,6 +272,7 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
       const ssrHandler = await options.loadSsrHandler();
       return renderAppPageHtmlResponse({
         clearRequestContext: options.clearRequestContext,
+        extraHeadHTML: options.extraHeadHTML,
         fontData,
         fontLinkHeader: options.buildFontLinkHeader(fontData.preloads),
         middlewareHeaders: options.middlewareContext.headers,
@@ -351,10 +360,31 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
     // would expect a root-layout tree path that doesn't exist in the markup.
     element,
     layoutModules: skipLayoutWrapping ? [] : layoutModules,
+    extraHeadHTML: renderStandaloneStyles(options.standaloneStyles, options.scriptNonce),
     route: skipLayoutWrapping ? null : options.route,
     routePattern: options.route?.pattern,
     status: options.statusCode,
   });
+}
+
+function renderStandaloneStyles(
+  styles: readonly string[] | undefined,
+  nonce: string | undefined,
+): string | undefined {
+  if (!styles || styles.length === 0) {
+    return undefined;
+  }
+
+  const nonceAttr = createNonceAttribute(nonce);
+  return styles
+    .map(
+      (style, index) =>
+        `<style data-vinext-standalone-style="${index}"${nonceAttr}>${escapeInlineContent(
+          style,
+          "style",
+        )}</style>`,
+    )
+    .join("\n");
 }
 
 export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(

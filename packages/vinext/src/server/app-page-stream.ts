@@ -28,6 +28,7 @@ export type AppPageSsrHandler = {
       rootParams?: RootParams;
       sideStream?: ReadableStream<Uint8Array>;
       capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+      extraHeadHTML?: string;
       /** When true, wait for the full React tree before emitting bytes. */
       waitForAllReady?: boolean;
     },
@@ -48,6 +49,7 @@ type RenderAppPageHtmlStreamOptions = {
   sideStream?: ReadableStream<Uint8Array>;
   /** Out-parameter filled with accumulated raw RSC bytes after stream consumption. */
   capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+  extraHeadHTML?: string;
   /** When true, wait for the full React tree before emitting bytes. */
   waitForAllReady?: boolean;
 };
@@ -107,6 +109,7 @@ export async function renderAppPageHtmlStream(
     rootParams: options.rootParams,
     sideStream: options.sideStream,
     capturedRscDataRef: options.capturedRscDataRef,
+    extraHeadHTML: options.extraHeadHTML,
     waitForAllReady: options.waitForAllReady,
   };
 
