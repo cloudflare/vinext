@@ -443,7 +443,20 @@ describe("Link App Router navigation scheduling", () => {
 
     expect(clickEvent.defaultPrevented).toBe(true);
     expect(startTransition).toHaveBeenCalledTimes(1);
-    expect(navigate).toHaveBeenCalledWith("/target", 0, "navigate", "push", undefined, true);
+    expect(navigate).toHaveBeenCalledWith(
+      "/target",
+      0,
+      "navigate",
+      "push",
+      undefined,
+      true,
+      undefined,
+      expect.objectContaining({
+        commitId: null,
+        hash: null,
+        id: expect.any(Number),
+      }),
+    );
     expect(transitionStates).toEqual([true]);
   });
 
