@@ -47,11 +47,12 @@ export function createImportMetaUrlPlugin(options: { getRoot: () => string | und
       const paths = getRootPaths();
       if (!paths) return null;
       const cleanId = cleanModuleId(id);
-      if (!isTransformableUserModule(cleanId, paths)) return null;
+      const canonicalId = transformableModuleCanonicalId(cleanId, paths);
+      if (!canonicalId) return null;
 
       const environment: ImportMetaUrlEnvironment =
         this.environment?.name === "client" ? "client" : "server";
-      const rewritten = rewriteImportMetaUrlWithRootPaths(code, cleanId, paths, environment);
+      const rewritten = rewriteCanonicalImportMetaUrl(code, canonicalId, paths, environment);
       if (!rewritten) return null;
       return {
         code: rewritten.code,
@@ -68,17 +69,20 @@ export function rewriteImportMetaUrl(
   environment: ImportMetaUrlEnvironment,
 ): RewriteResult | null {
   if (!code.includes("import.meta.url")) return null;
-  return rewriteImportMetaUrlWithRootPaths(code, id, createRootPaths(root), environment);
+  return rewriteCanonicalImportMetaUrl(
+    code,
+    canonicalizePath(id),
+    createRootPaths(root),
+    environment,
+  );
 }
 
-function rewriteImportMetaUrlWithRootPaths(
+function rewriteCanonicalImportMetaUrl(
   code: string,
-  id: string,
+  canonicalId: string,
   rootPaths: RootPaths,
   environment: ImportMetaUrlEnvironment,
 ): RewriteResult | null {
-  if (!code.includes("import.meta.url")) return null;
-
   let ast: unknown;
   try {
     ast = parseAst(code);
@@ -89,7 +93,7 @@ function rewriteImportMetaUrlWithRootPaths(
   const ranges = collectImportMetaUrlRanges(ast);
   if (ranges.length === 0) return null;
 
-  const replacement = JSON.stringify(importMetaUrlValue(id, rootPaths, environment));
+  const replacement = JSON.stringify(importMetaUrlValue(canonicalId, rootPaths, environment));
   const output = new MagicString(code);
   for (const range of ranges) {
     output.overwrite(range.start, range.end, replacement);
@@ -114,21 +118,29 @@ function createRootPaths(root: string): RootPaths {
   };
 }
 
-function isTransformableUserModule(id: string, rootPaths: RootPaths): boolean {
-  if (!id || id.startsWith("\0")) return false;
-  if (!path.isAbsolute(id)) return false;
-  if (id.includes("/node_modules/") || id.includes("\\node_modules\\")) return false;
-  if (!/\.(tsx?|jsx?|mjs)$/.test(id)) return false;
+// Returns the canonical module id when the module is eligible for rewriting,
+// or null otherwise. Threading the canonical id back to the caller avoids a
+// second realpathSync when computing the replacement value.
+function transformableModuleCanonicalId(id: string, rootPaths: RootPaths): string | null {
+  if (!id || id.startsWith("\0")) return null;
+  if (!path.isAbsolute(id)) return null;
+  if (id.includes("/node_modules/") || id.includes("\\node_modules\\")) return null;
+  if (!/\.[cm]?[jt]sx?$/.test(id)) return null;
 
   const canonicalId = canonicalizePath(id);
   const normalizedId = normalizePath(canonicalId);
-  if (!isPathWithin(normalizedId, rootPaths.normalizedRoot)) return false;
+  if (!isPathWithin(normalizedId, rootPaths.normalizedRoot)) return null;
 
   const relativePath = normalizePath(path.relative(rootPaths.canonicalRoot, canonicalId));
   const firstSegment = relativePath.split("/")[0];
-  return (
-    firstSegment !== ".next" && firstSegment !== ".vinext-local-package" && firstSegment !== "dist"
-  );
+  if (
+    firstSegment === ".next" ||
+    firstSegment === ".vinext-local-package" ||
+    firstSegment === "dist"
+  ) {
+    return null;
+  }
+  return canonicalId;
 }
 
 function isPathWithin(candidate: string, root: string): boolean {
@@ -136,11 +148,10 @@ function isPathWithin(candidate: string, root: string): boolean {
 }
 
 function importMetaUrlValue(
-  id: string,
+  canonicalId: string,
   rootPaths: RootPaths,
   environment: ImportMetaUrlEnvironment,
 ): string {
-  const canonicalId = canonicalizePath(id);
   if (environment === "client") {
     const relativePath = normalizePath(path.relative(rootPaths.canonicalRoot, canonicalId));
     return `file:///ROOT/${relativePath}`;
@@ -220,6 +231,8 @@ function isImportMetaUrlNode(value: unknown): value is NodeLike & { start: numbe
   );
 }
 
+// Only matches bare `new URL(...)`, not `new globalThis.URL(...)` or
+// `new window.URL(...)`. Matches Vite's own asset-detection scope.
 function isNewUrlExpression(value: NodeLike): boolean {
   return value.type === "NewExpression" && isIdentifierNamed(value.callee, "URL");
 }
