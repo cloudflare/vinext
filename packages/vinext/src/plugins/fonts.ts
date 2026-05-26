@@ -1180,8 +1180,7 @@ export function createLocalFontsPlugin(): Plugin {
           const bindingName = localFontCallMatch[1];
           const objRange = _findBalancedObject(code, localFontCallRe.lastIndex);
           if (!objRange) continue;
-          const callEnd = _findCallEnd(code, objRange[1]);
-          if (callEnd === null) continue;
+          if (_findCallEnd(code, objRange[1]) === null) continue;
 
           const insertAt = objRange[1] - 1;
           if (familyPayloadInsertions.has(insertAt)) continue;

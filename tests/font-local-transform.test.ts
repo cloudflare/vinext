@@ -108,7 +108,7 @@ describe("vinext:local-fonts plugin", () => {
 
   it("passes the local binding name through to the runtime font payload", () => {
     // Ported from Next.js: test/e2e/app-dir/mdx-font-preload/mdx-font-preload.test.ts
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/mdx-font-preload/mdx-font-preload.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/mdx-font-preload/mdx-font-preload.test.ts
     //
     // Next's font transform passes the variable name into the local font loader,
     // and the loader uses it as the font-family for generated className styles.
@@ -331,7 +331,7 @@ describe("vinext:local-fonts plugin", () => {
 
   it("uses the transform-provided binding name as the class font-family", () => {
     // Ported from Next.js: test/e2e/app-dir/mdx-font-preload/mdx-font-preload.test.ts
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/mdx-font-preload/mdx-font-preload.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/mdx-font-preload/mdx-font-preload.test.ts
     const beforeCount = getSSRFontStyles().length;
     const options = {
       src: "/assets/font1_roboto.woff2",
@@ -373,6 +373,24 @@ describe("vinext:local-fonts plugin", () => {
     const addedStyles = getSSRFontStyles().slice(beforeCount).join("\n");
     expect(addedStyles).toContain("/assets/module-a.woff2");
     expect(addedStyles).toContain("/assets/module-b.woff2");
+  });
+
+  it("rejects invalid transform-provided binding names and uses the generated family", () => {
+    const beforeCount = getSSRFontStyles().length;
+    const result = localFont({
+      src: "/assets/invalid-family.woff2",
+      _vinext: { font: { family: "myFont'} body { color: red; }" } },
+    } satisfies Parameters<typeof localFont>[0] & {
+      _vinext: { font: { family: string } };
+    });
+
+    expect(result.style.fontFamily).toMatch(/__local_font_\d+/);
+    expect(result.style.fontFamily).not.toContain("myFont");
+
+    const addedStyles = getSSRFontStyles().slice(beforeCount).join("\n");
+    expect(addedStyles).toContain("font-family: '__local_font_");
+    expect(addedStyles).not.toContain("myFont");
+    expect(addedStyles).not.toContain("color: red");
   });
 
   it("matches Next.js style exports for a single local source", () => {
