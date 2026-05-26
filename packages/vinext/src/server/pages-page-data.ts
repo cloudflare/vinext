@@ -392,11 +392,7 @@ export async function resolvePagesPageData(
       // before serialising; otherwise pageProps would be a Promise and the
       // rendered page would receive empty props. See
       // packages/next/src/server/render.tsx (deferredContent).
-      const rawProps = result.props as unknown;
-      pageProps =
-        rawProps && typeof (rawProps as { then?: unknown }).then === "function"
-          ? await (rawProps as Promise<Record<string, unknown>>)
-          : (rawProps as Record<string, unknown>);
+      pageProps = (await Promise.resolve(result.props)) as Record<string, unknown>;
     }
 
     if (result?.redirect) {

@@ -534,10 +534,7 @@ export function createSSRHandler(
             // it before serialising; otherwise pageProps would be a Promise
             // and the rendered page would receive empty props. See
             // packages/next/src/server/render.tsx (deferredContent).
-            pageProps =
-              result.props && typeof (result.props as { then?: unknown }).then === "function"
-                ? await (result.props as Promise<Record<string, unknown>>)
-                : result.props;
+            pageProps = await Promise.resolve(result.props);
           }
           if (result && "redirect" in result) {
             const { redirect } = result;
