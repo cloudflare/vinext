@@ -1,13 +1,10 @@
 import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, VINEXT_PRERENDER_SECRET_HEADER } from "./headers.js";
+import { isUnknownRecord } from "../utils/record.js";
 
 export type PrerenderRouteParams = Record<string, string | string[]>;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function isPrerenderRouteParams(value: unknown): value is PrerenderRouteParams {
-  if (!isRecord(value)) return false;
+  if (!isUnknownRecord(value)) return false;
 
   for (const key in value) {
     const param = value[key];

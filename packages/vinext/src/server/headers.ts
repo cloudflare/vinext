@@ -187,5 +187,7 @@ export const INTERNAL_HEADERS = [
   NEXTJS_DATA_HEADER,
   NEXT_RESUME_STATE_LENGTH_HEADER,
   ACTION_FORWARDED_HEADER,
-  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
 ];
+
+/** Vinext-only internal headers stripped alongside Next.js protocol internals. */
+export const VINEXT_INTERNAL_HEADERS = [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER];

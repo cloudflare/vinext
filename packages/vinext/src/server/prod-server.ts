@@ -217,13 +217,41 @@ function mergeResponseHeaders(
 function toWebHeaders(headersRecord: Record<string, string | string[]>): Headers {
   const headers = new Headers();
   for (const [key, value] of Object.entries(headersRecord)) {
-    if (Array.isArray(value)) {
-      for (const item of value) headers.append(key, item);
-    } else {
-      headers.set(key, value);
-    }
+    appendWebHeader(headers, key, value);
   }
   return headers;
+}
+
+function appendWebHeader(
+  headers: Headers,
+  key: string,
+  value: string | string[] | undefined,
+): void {
+  if (value === undefined) return;
+  if (Array.isArray(value)) {
+    for (const item of value) headers.append(key, item);
+    return;
+  }
+  headers.set(key, value);
+}
+
+function nodeHeadersToWebHeaders(headersRecord: IncomingMessage["headers"]): Headers {
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(headersRecord)) {
+    appendWebHeader(headers, key, value);
+  }
+  return headers;
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function resolveRequestProtocol(req: IncomingMessage): "http" | "https" {
+  const rawProto = trustProxy
+    ? firstHeaderValue(req.headers["x-forwarded-proto"])?.split(",")[0]?.trim()
+    : undefined;
+  return rawProto === "https" || rawProto === "http" ? rawProto : "http";
 }
 
 const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
@@ -686,7 +714,7 @@ async function statIfFile(filePath: string): Promise<{ size: number; mtimeMs: nu
  * itself, so this is only a concern for the Node.js prod-server.
  */
 function resolveHost(req: IncomingMessage, fallback: string): string {
-  const rawForwarded = req.headers["x-forwarded-host"] as string | undefined;
+  const rawForwarded = firstHeaderValue(req.headers["x-forwarded-host"]);
   const hostHeader = req.headers.host;
 
   if (rawForwarded) {
@@ -730,23 +758,12 @@ function nodeToWebRequest(
   urlOverride?: string,
   prerenderSecret?: string,
 ): Request {
-  const rawProto = trustProxy
-    ? (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim()
-    : undefined;
-  const proto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
+  const proto = resolveRequestProtocol(req);
   const host = resolveHost(req, "localhost");
   const origin = `${proto}://${host}`;
   const url = new URL(urlOverride ?? req.url ?? "/", origin);
 
-  const rawHeaders = new Headers();
-  for (const [key, value] of Object.entries(req.headers)) {
-    if (value === undefined) continue;
-    if (Array.isArray(value)) {
-      for (const v of value) rawHeaders.append(key, v);
-    } else {
-      rawHeaders.set(key, value);
-    }
-  }
+  const rawHeaders = nodeHeadersToWebHeaders(req.headers);
   const prerenderRouteParams = readTrustedPrerenderRouteParamsFromHeaders(
     rawHeaders,
     prerenderSecret,
@@ -1647,15 +1664,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
 
       // Convert Node.js req to Web Request for the server entry
-      const rawProtocol = trustProxy
-        ? (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim()
-        : undefined;
-      const protocol = rawProtocol === "https" || rawProtocol === "http" ? rawProtocol : "http";
+      const protocol = resolveRequestProtocol(req);
       const hostHeader = resolveHost(req, `${host}:${port}`);
-      const rawReqHeaders = Object.entries(req.headers).reduce((h, [k, v]) => {
-        if (v) h.set(k, Array.isArray(v) ? v.join(", ") : v);
-        return h;
-      }, new Headers());
+      const rawReqHeaders = nodeHeadersToWebHeaders(req.headers);
       // Capture `x-nextjs-data` before filterInternalHeaders strips it — the
       // middleware redirect protocol needs to know whether the inbound request
       // was a `_next/data` fetch to emit `x-nextjs-redirect` instead of a 3xx.

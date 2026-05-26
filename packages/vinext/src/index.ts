@@ -59,6 +59,7 @@ import {
   INTERNAL_HEADERS,
   isOpenRedirectShaped,
   normalizeTrailingSlash,
+  VINEXT_INTERNAL_HEADERS,
 } from "./server/request-pipeline.js";
 import {
   findInstrumentationClientFile,
@@ -2976,6 +2977,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // (which reads req.headers directly) must see clean headers.
               const nodeRequestHeaders = filterInternalHeaders(rawHeaders);
               for (const header of INTERNAL_HEADERS) {
+                delete req.headers[header];
+              }
+              for (const header of VINEXT_INTERNAL_HEADERS) {
                 delete req.headers[header];
               }
 
