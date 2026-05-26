@@ -323,10 +323,10 @@ describe("pages page response", () => {
   });
 
   // Matches Next.js's `pages-handler.ts` (revalidate: 0 →
-   // getCacheControlHeader). gSSP responses with no user-set Cache-Control
-   // must default to no-store so middlebox caches do not pin per-request
-   // server-rendered HTML. See packages/vinext/src/server/dev-server.ts for
-   // the dev-server twin. Fixes #1461.
+  // getCacheControlHeader). gSSP responses with no user-set Cache-Control
+  // must default to no-store so middlebox caches do not pin per-request
+  // server-rendered HTML. See packages/vinext/src/server/dev-server.ts for
+  // the dev-server twin. Fixes #1461.
   it("applies default no-store Cache-Control for gSSP responses without one", async () => {
     const common = createCommonOptions();
 
