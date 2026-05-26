@@ -6,6 +6,7 @@ import {
   type AppPageBoundaryRoute,
 } from "./app-page-boundary-render.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
+import { DEFAULT_NOT_FOUND_MODULE } from "./default-not-found-module.js";
 import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
@@ -140,6 +141,16 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
   const effectiveGlobalErrorModule: TModule | null =
     globalErrorModule ?? (DEFAULT_GLOBAL_ERROR_MODULE as unknown as TModule);
 
+  // When the app does not define `app/not-found.tsx` (and has not opted into
+  // `app/global-not-found.tsx`), fall back to vinext's built-in default
+  // not-found component so route-miss 404s render the canonical Next.js
+  // markup (status + "This page could not be found." message). Matches the
+  // default not-found UI shipped with Next.js's app loader.
+  // See packages/vinext/src/shims/default-not-found.tsx and
+  // packages/vinext/src/server/default-not-found-module.ts.
+  const effectiveRootNotFoundModule: TModule | null =
+    rootNotFoundModule ?? (DEFAULT_NOT_FOUND_MODULE as unknown as TModule);
+
   return {
     renderHttpAccessFallback(
       route,
@@ -222,7 +233,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         resolveChildSegments,
         rootForbiddenModule,
         rootLayouts,
-        rootNotFoundModule,
+        rootNotFoundModule: effectiveRootNotFoundModule,
         rootUnauthorizedModule,
         route,
         renderToReadableStream: rscRenderer,

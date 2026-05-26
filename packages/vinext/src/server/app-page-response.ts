@@ -58,6 +58,7 @@ type AppPageHtmlResponsePolicy = {
 } & AppPageResponsePolicy;
 
 type BuildAppPageRscResponseOptions = {
+  isEdgeRuntime?: boolean;
   middlewareContext: AppPageMiddlewareContext;
   mountedSlotsHeader?: string | null;
   params?: Record<string, unknown>;
@@ -68,6 +69,7 @@ type BuildAppPageRscResponseOptions = {
 type BuildAppPageHtmlResponseOptions = {
   draftCookie?: string | null;
   fontLinkHeader?: string;
+  isEdgeRuntime?: boolean;
   middlewareContext: AppPageMiddlewareContext;
   policy: AppPageResponsePolicy;
   timing?: AppPageResponseTiming;
@@ -225,6 +227,14 @@ export function buildAppPageRscResponse(
     Vary: VINEXT_RSC_VARY_HEADER,
   });
 
+  // Mirror Next.js' edge-runtime marker (set in edge-ssr-app.ts). Only routes
+  // whose resolved segment config is `runtime = "edge"` should advertise it —
+  // nodejs-runtime routes must not, otherwise downstream consumers can't tell
+  // the configured runtime from the response.
+  if (options.isEdgeRuntime) {
+    headers.set("x-edge-runtime", "1");
+  }
+
   if (options.params && Object.keys(options.params).length > 0) {
     // encodeURIComponent so non-ASCII params (e.g. Korean slugs) survive the
     // HTTP ByteString constraint — Headers.set() rejects chars above U+00FF.
@@ -258,6 +268,14 @@ export function buildAppPageHtmlResponse(
     "Content-Type": "text/html; charset=utf-8",
     Vary: VINEXT_RSC_VARY_HEADER,
   });
+
+  // Mirror Next.js' edge-runtime marker (set in edge-ssr-app.ts). Only routes
+  // whose resolved segment config is `runtime = "edge"` should advertise it —
+  // nodejs-runtime routes must not, otherwise downstream consumers can't tell
+  // the configured runtime from the response.
+  if (options.isEdgeRuntime) {
+    headers.set("x-edge-runtime", "1");
+  }
 
   if (options.policy.cacheControl) {
     headers.set("Cache-Control", options.policy.cacheControl);

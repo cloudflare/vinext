@@ -1,7 +1,7 @@
 /**
  * Image optimization request handler.
  *
- * Handles `/_vinext/image?url=...&w=...&q=...` requests. In production
+ * Handles `/_next/image?url=...&w=...&q=...` requests. In production
  * on Cloudflare Workers, uses the Images binding (`env.IMAGES`) to
  * resize and transcode on the fly. On other runtimes (Node.js dev/prod
  * server), serves the original file as a passthrough with appropriate
@@ -19,8 +19,21 @@
 
 import { badRequestResponse } from "./http-error-responses.js";
 
-/** The pathname that triggers image optimization. */
-export const IMAGE_OPTIMIZATION_PATH = "/_vinext/image";
+/** The pathname that triggers image optimization (matches Next.js). */
+export const IMAGE_OPTIMIZATION_PATH = "/_next/image";
+
+/**
+ * Vinext-prefixed alias for the image optimization endpoint. Accepted
+ * alongside IMAGE_OPTIMIZATION_PATH so apps that wire image URLs to the
+ * vinext-prefixed path continue to work; emit IMAGE_OPTIMIZATION_PATH
+ * for any newly generated URLs.
+ */
+export const VINEXT_IMAGE_OPTIMIZATION_PATH = "/_vinext/image";
+
+/** Returns true when `pathname` is either supported image optimization endpoint. */
+export function isImageOptimizationPath(pathname: string): boolean {
+  return pathname === IMAGE_OPTIMIZATION_PATH || pathname === VINEXT_IMAGE_OPTIMIZATION_PATH;
+}
 
 /**
  * Image security configuration from next.config.js `images` section.

@@ -24,6 +24,7 @@ const _pagesPageResponsePath = resolveEntryPath(
 );
 const _pagesPageDataPath = resolveEntryPath("../server/pages-page-data.js", import.meta.url);
 const _pagesDataRoutePath = resolveEntryPath("../server/pages-data-route.js", import.meta.url);
+const _pagesDefault404Path = resolveEntryPath("../server/pages-default-404.js", import.meta.url);
 const _pagesNodeCompatPath = resolveEntryPath("../server/pages-node-compat.js", import.meta.url);
 const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", import.meta.url);
 const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
@@ -161,20 +162,45 @@ if (typeof _instrumentation.onRequestError === "function") {
   const middlewareExportCode = middlewarePath
     ? `
 export async function runMiddleware(request, ctx, options) {
-  return __runGeneratedMiddleware({
+  // Auto-detect /_next/data/<buildId>/<page>.json requests so user-written
+  // worker entries don't need to know about the data endpoint protocol.
+  // Mismatched buildId → JSON 404 short-circuit. Matched → middleware sees
+  // the normalized page path via the request URL, and the worker sees the
+  // normalized URL via result.rewriteUrl (if middleware didn't already
+  // rewrite to something else).
+  const __dataNorm = __normalizePagesDataRequest(request);
+  if (__dataNorm.notFoundResponse) {
+    return { continue: false, response: __dataNorm.notFoundResponse };
+  }
+  const __result = await __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
     ctx,
     i18nConfig,
-    isDataRequest: options?.isDataRequest === true,
+    isDataRequest: options?.isDataRequest === true || __dataNorm.isDataReq,
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
-    request,
+    request: __dataNorm.request,
     trailingSlash: vinextConfig.trailingSlash,
   });
+  if (__dataNorm.isDataReq && __result.continue && !__result.rewriteUrl && !__result.redirectUrl) {
+    return { ...__result, rewriteUrl: __dataNorm.normalizedPathname + __dataNorm.search };
+  }
+  return __result;
 }
 `
     : `
-export async function runMiddleware() { return { continue: true }; }
+export async function runMiddleware(request) {
+  // Even without user middleware, the data-endpoint URL must be normalized so
+  // the worker pipeline sees the page path. Mismatched buildId → JSON 404.
+  const __dataNorm = __normalizePagesDataRequest(request);
+  if (__dataNorm.notFoundResponse) {
+    return { continue: false, response: __dataNorm.notFoundResponse };
+  }
+  if (__dataNorm.isDataReq) {
+    return { continue: true, rewriteUrl: __dataNorm.normalizedPathname + __dataNorm.search };
+  }
+  return { continue: true };
+}
 `;
 
   // The server entry is a self-contained module that uses Web-standard APIs
@@ -214,7 +240,8 @@ import {
 } from ${JSON.stringify(_isrCachePath)};
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from ${JSON.stringify(_cspPath)};
 import { resolvePagesPageData as __resolvePagesPageData } from ${JSON.stringify(_pagesPageDataPath)};
-import { buildNextDataJsonResponse as __buildNextDataJsonResponse, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse } from ${JSON.stringify(_pagesDataRoutePath)};
+import { buildNextDataJsonResponse as __buildNextDataJsonResponse, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse, isNextDataPathname as __isNextDataPathname, parseNextDataPathname as __parseNextDataPathname } from ${JSON.stringify(_pagesDataRoutePath)};
+import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
 import { renderPagesPageResponse as __renderPagesPageResponse } from ${JSON.stringify(_pagesPageResponsePath)};
 ${instrumentationImportCode}
 ${middlewareImportCode}
@@ -248,6 +275,40 @@ function triggerBackgroundRegeneration(key, renderFn, errorContext) {
 }
 function isrCacheKey(router, pathname) {
   return __sharedIsrCacheKey(router, pathname, buildId || undefined);
+}
+
+/**
+ * Detect and normalize /_next/data/<buildId>/<page>.json requests in one
+ * place so user-written worker entries don't need to know about the data
+ * endpoint protocol. Returns the normalized request (with the page path as
+ * its URL), an isDataReq flag, and notFoundResponse when the buildId in
+ * the URL does not match this server's buildId — callers should return that
+ * response immediately so a stale client falls back to a hard navigation.
+ */
+function __normalizePagesDataRequest(request) {
+  const reqUrl = new URL(request.url);
+  if (!__isNextDataPathname(reqUrl.pathname)) {
+    return { isDataReq: false, request, normalizedPathname: null, search: "", notFoundResponse: null };
+  }
+  const dataMatch = buildId ? __parseNextDataPathname(reqUrl.pathname, buildId) : null;
+  if (!dataMatch) {
+    return {
+      isDataReq: false,
+      request,
+      normalizedPathname: null,
+      search: "",
+      notFoundResponse: __buildNextDataNotFoundResponse(),
+    };
+  }
+  const normalizedUrl = new URL(reqUrl);
+  normalizedUrl.pathname = dataMatch.pagePathname;
+  return {
+    isDataReq: true,
+    request: new Request(normalizedUrl, request),
+    normalizedPathname: dataMatch.pagePathname,
+    search: reqUrl.search,
+    notFoundResponse: null,
+  };
 }
 
 async function renderToStringAsync(element) {
@@ -312,7 +373,14 @@ export function matchPageRoute(url, request) {
 }
 
 function parseQuery(url) {
-  const qs = url.split("?")[1];
+  // Per RFC 3986 only the first "?" separates path from query, so additional
+  // "?" chars belong to the query string (e.g. /linker?href=/about?hello=world
+  // has query "href=/about?hello=world"). split("?")[1] would drop everything
+  // after the second "?" and strip embedded query strings from values.
+  const queryIndex = url.indexOf("?");
+  if (queryIndex === -1) return {};
+  const hashIndex = url.indexOf("#", queryIndex + 1);
+  const qs = hashIndex === -1 ? url.slice(queryIndex + 1) : url.slice(queryIndex + 1, hashIndex);
   if (!qs) return {};
   const p = new URLSearchParams(qs);
   const q = {};
@@ -455,7 +523,22 @@ export async function renderPage(request, url, manifest, ctx, middlewareHeaders,
 }
 
 async function _renderPage(request, url, manifest, middlewareHeaders, options) {
-  const isDataReq = !!(options && options.isDataReq);
+  let isDataReq = !!(options && options.isDataReq);
+  // Auto-detect /_next/data/... requests by inspecting the incoming request
+  // URL. The worker pipeline does not need to know about the data endpoint
+  // protocol — when it forwards an unrewritten data URL as the url arg, we
+  // normalize it to the page path here.
+  if (!isDataReq) {
+    const __dataNorm = __normalizePagesDataRequest(request);
+    if (__dataNorm.notFoundResponse) return __dataNorm.notFoundResponse;
+    if (__dataNorm.isDataReq) {
+      isDataReq = true;
+      if (url && url.startsWith("/_next/data/")) {
+        const __qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+        url = __dataNorm.normalizedPathname + __qs;
+      }
+    }
+  }
   const localeInfo = i18nConfig
     ? resolvePagesI18nRequest(
         url,
@@ -482,8 +565,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     if (isDataReq) {
       return __buildNextDataNotFoundResponse();
     }
-    return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
-      { status: 404, headers: { "Content-Type": "text/html" } });
+    return __buildDefaultPagesNotFoundResponse();
   }
 
   const { route, params } = match;

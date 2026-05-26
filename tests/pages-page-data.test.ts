@@ -115,7 +115,7 @@ describe("pages page data", () => {
       throw new Error("expected response result");
     }
     expect(result.response.status).toBe(404);
-    await expect(result.response.text()).resolves.toContain("404 - Page not found");
+    await expect(result.response.text()).resolves.toContain("This page could not be found.");
   });
 
   it("short-circuits getServerSideProps responses after res.end()", async () => {

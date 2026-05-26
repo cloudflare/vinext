@@ -174,6 +174,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   hasPageModule: boolean;
   handlerStart: number;
   interceptionContext: string | null;
+  isEdgeRuntime?: boolean;
   isProgressiveActionRender?: boolean;
   isProduction: boolean;
   isRscRequest: boolean;
@@ -660,6 +661,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isDraftMode,
     isForceDynamic,
     isForceStatic,
+    isEdgeRuntime: options.isEdgeRuntime === true,
     isPrerender: process.env.VINEXT_PRERENDER === "1",
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,

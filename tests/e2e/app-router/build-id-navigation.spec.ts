@@ -11,7 +11,10 @@ async function pushAppRoute(page: Page, pathname: string): Promise<void> {
     if (!router) {
       throw new Error("window.next.router is not installed");
     }
-    router.push(target);
+    // App Router push returns void; Pages Router push returns Promise<boolean>.
+    // The union surface flags this as a possibly-floating promise — we don't
+    // need the resolution here so explicitly void it.
+    void router.push(target);
   }, pathname);
 }
 
@@ -99,7 +102,10 @@ test.describe("App Router RSC compatibility navigation", () => {
       if (!router) {
         throw new Error("window.next.router is not installed");
       }
-      router.push("/");
+      // App Router push returns void; Pages Router push returns Promise<boolean>.
+      // The union surface flags this as a possibly-floating promise — we don't
+      // need the resolution here so explicitly void it.
+      void router.push("/");
     }, VISITED_CACHE_MARKER);
     await expect(page.locator("h1")).toHaveText("Welcome to App Router");
     await waitForLastRscNavigation(page);

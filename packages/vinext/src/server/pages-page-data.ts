@@ -10,6 +10,7 @@ import {
   type PagesGsspResponse,
   type PagesI18nRenderContext,
 } from "./pages-page-response.js";
+import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 
 type PagesRedirectResult = {
   destination: string;
@@ -199,10 +200,7 @@ type ResolvePagesPageDataResult =
   | ResolvePagesPageDataResponseResult;
 
 function buildPagesNotFoundResponse(): Response {
-  return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>", {
-    status: 404,
-    headers: { "Content-Type": "text/html" },
-  });
+  return buildDefaultPagesNotFoundResponse();
 }
 
 function buildPagesDataNotFoundResponse(): Response {
@@ -424,7 +422,11 @@ export async function resolvePagesPageData(
     }
 
     if (result?.props) {
-      pageProps = result.props;
+      // Next.js explicitly supports a Promise value for `props`. Await it
+      // before serialising; otherwise pageProps would be a Promise and the
+      // rendered page would receive empty props. See
+      // packages/next/src/server/render.tsx (deferredContent).
+      pageProps = (await Promise.resolve(result.props)) as Record<string, unknown>;
     }
 
     if (result?.redirect) {
