@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import { parseSync } from "vite";
+import type { ESTree } from "vite";
 import { loadNearestTsconfigPathAliases } from "../config/tsconfig-paths.js";
 
-const STATIC_MODULE_SPECIFIER_RE =
-  /^\s*(?:import\s+(?!type\b)(?:[^'"]*?\s+from\s*)?["']([^"']+)["']|export\s+(type\s+)?(\*(?:\s+as\s+[\w$]+)?|\{[^}]*\})\s+from\s*["']([^"']+)["'])\s*;?\s*(?:\/\/.*)?$/gm;
 const CSS_IMPORT_RE = /\.(?:css|scss|sass|less|styl|stylus|pcss|postcss)$/i;
 const SOURCE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js", ".mts", ".mjs", ".cts", ".cjs"];
 const EXPLICIT_JS_SOURCE_EXTENSIONS: Record<string, string[]> = {
@@ -16,6 +16,19 @@ const EXPLICIT_JS_SOURCE_EXTENSIONS: Record<string, string[]> = {
 type AliasEntry = {
   find: string;
   replacement: string;
+};
+
+type ParseLang = "js" | "jsx" | "ts" | "tsx";
+
+const SOURCE_PARSE_LANGS: Record<string, readonly ParseLang[]> = {
+  ".ts": ["ts"],
+  ".mts": ["ts"],
+  ".cts": ["ts"],
+  ".tsx": ["tsx"],
+  ".js": ["jsx", "js"],
+  ".mjs": ["jsx", "js"],
+  ".cjs": ["jsx", "js"],
+  ".jsx": ["jsx"],
 };
 
 function hasQueryOrHash(specifier: string): boolean {
@@ -135,16 +148,59 @@ function resolveSourceSpecifier(
   return basePath ? resolveSourceFile(basePath) : null;
 }
 
-function isTypeOnlyNamedExportClause(clause: string): boolean {
-  if (!clause.startsWith("{")) {
-    return false;
+function parseModule(filePath: string, source: string): ESTree.Program | null {
+  const langs = SOURCE_PARSE_LANGS[path.extname(filePath)] ?? ["tsx", "ts"];
+
+  for (const lang of langs) {
+    try {
+      const result = parseSync(filePath, source, {
+        astType: "ts",
+        lang,
+        sourceType: "module",
+      });
+
+      if (result.errors.some((error) => error.severity === "Error")) {
+        continue;
+      }
+
+      return result.program;
+    } catch {
+      continue;
+    }
   }
 
-  const specifiers = clause
-    .slice(1, -1)
-    .split(",")
-    .map((specifier) => specifier.trim());
-  return specifiers.length > 0 && specifiers.every((specifier) => specifier.startsWith("type "));
+  return null;
+}
+
+function moduleSpecifierValue(
+  node: ESTree.ImportDeclaration | ESTree.ExportNamedDeclaration | ESTree.ExportAllDeclaration,
+): string | null {
+  const sourceValue = node.source?.value;
+  return typeof sourceValue === "string" ? sourceValue : null;
+}
+
+function isTypeOnlyImport(node: ESTree.ImportDeclaration): boolean {
+  if (node.importKind === "type") {
+    return true;
+  }
+
+  return (
+    node.specifiers.length > 0 &&
+    node.specifiers.every(
+      (specifier) => specifier.type === "ImportSpecifier" && specifier.importKind === "type",
+    )
+  );
+}
+
+function isTypeOnlyNamedExport(node: ESTree.ExportNamedDeclaration): boolean {
+  if (node.exportKind === "type") {
+    return true;
+  }
+
+  return (
+    node.specifiers.length > 0 &&
+    node.specifiers.every((specifier) => specifier.exportKind === "type")
+  );
 }
 
 function readStaticModuleSpecifiers(filePath: string): string[] {
@@ -155,24 +211,32 @@ function readStaticModuleSpecifiers(filePath: string): string[] {
     return [];
   }
 
+  const program = parseModule(filePath, source);
+  if (!program) {
+    return [];
+  }
+
   const specifiers: string[] = [];
-  for (const match of source.matchAll(STATIC_MODULE_SPECIFIER_RE)) {
-    const importSpecifier = match[1];
-    if (importSpecifier) {
-      specifiers.push(importSpecifier);
+  for (const node of program.body) {
+    if (node.type === "ImportDeclaration") {
+      if (!isTypeOnlyImport(node)) {
+        const specifier = moduleSpecifierValue(node);
+        if (specifier) specifiers.push(specifier);
+      }
       continue;
     }
 
-    const exportKind = match[2];
-    const exportClause = match[3];
-    const exportSpecifier = match[4];
-    if (
-      exportSpecifier &&
-      exportKind !== "type " &&
-      exportClause &&
-      !isTypeOnlyNamedExportClause(exportClause)
-    ) {
-      specifiers.push(exportSpecifier);
+    if (node.type === "ExportNamedDeclaration") {
+      if (!isTypeOnlyNamedExport(node)) {
+        const specifier = moduleSpecifierValue(node);
+        if (specifier) specifiers.push(specifier);
+      }
+      continue;
+    }
+
+    if (node.type === "ExportAllDeclaration" && node.exportKind !== "type") {
+      const specifier = moduleSpecifierValue(node);
+      if (specifier) specifiers.push(specifier);
     }
   }
   return specifiers;

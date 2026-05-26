@@ -360,7 +360,9 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
     // would expect a root-layout tree path that doesn't exist in the markup.
     element,
     layoutModules: skipLayoutWrapping ? [] : layoutModules,
-    extraHeadHTML: renderStandaloneStyles(options.standaloneStyles, options.scriptNonce),
+    extraHeadHTML: skipLayoutWrapping
+      ? renderStandaloneStyles(options.standaloneStyles, options.scriptNonce)
+      : undefined,
     route: skipLayoutWrapping ? null : options.route,
     routePattern: options.route?.pattern,
     status: options.statusCode,

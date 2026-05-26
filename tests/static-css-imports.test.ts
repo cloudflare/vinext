@@ -54,4 +54,51 @@ describe("collectStandaloneCssImports", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("does not follow type-only named imports", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-static-css-imports-"));
+    try {
+      fs.mkdirSync(path.join(root, "app"), { recursive: true });
+      fs.mkdirSync(path.join(root, "src"), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(root, "tsconfig.json"),
+        JSON.stringify({
+          compilerOptions: {
+            paths: {
+              "@/*": ["src/*"],
+            },
+          },
+        }),
+      );
+      fs.writeFileSync(
+        path.join(root, "app", "global-not-found.tsx"),
+        [
+          'import { type ButtonProps } from "@/button";',
+          "import {",
+          "  type LinkProps,",
+          '} from "@/link";',
+          'import "./entry.css";',
+          "",
+        ].join("\n"),
+      );
+      fs.writeFileSync(path.join(root, "app", "entry.css"), "body { color: red; }\n");
+      fs.writeFileSync(
+        path.join(root, "src", "button.tsx"),
+        'import "./button.css"; export type ButtonProps = {};\n',
+      );
+      fs.writeFileSync(path.join(root, "src", "button.css"), "body { color: blue; }\n");
+      fs.writeFileSync(
+        path.join(root, "src", "link.tsx"),
+        'import "./link.css"; export type LinkProps = {};\n',
+      );
+      fs.writeFileSync(path.join(root, "src", "link.css"), "body { color: green; }\n");
+
+      expect(collectStandaloneCssImports(path.join(root, "app", "global-not-found.tsx"))).toEqual([
+        path.join(root, "app", "entry.css"),
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
