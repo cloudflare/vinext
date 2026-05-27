@@ -71,7 +71,10 @@ export async function pagesRouter(
 async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Promise<Route[]> {
   const routes: Route[] = [];
 
-  // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14)
+  // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14).
+  // The `RESERVED_PAGE_NAMES` check here is a directory-traversal optimization only — glob's
+  // exclude callback fires on directory names, not file names, so root-level files like
+  // `_app.tsx` still get yielded and are filtered by the guard in `fileToRoute()` below.
   for await (const file of scanWithExtensions(
     "**/*",
     pagesDir,
@@ -158,7 +161,9 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
 
   // Skip Next.js special pages (_app, _document, _error) at the root level only.
   // Subdirectory files like admin/_app.tsx are not reserved and should be served.
-  if (segments.length === 1 && RESERVED_PAGE_NAMES.has(lastSegment)) {
+  // Read segments[0] after the index pop so this is correct for both `_app.tsx`
+  // and `_app/index.tsx` shapes, independent of the glob-level exclude.
+  if (segments.length === 1 && RESERVED_PAGE_NAMES.has(segments[0])) {
     return null;
   }
 
