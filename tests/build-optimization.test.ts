@@ -240,6 +240,172 @@ describe("optimizeDeps.exclude for vinext", () => {
     }
   }, 15000);
 
+  it("uses server export conditions for RSC and SSR dependency optimization only", async () => {
+    // Next.js reference: test/e2e/import-conditions/import-conditions.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/import-conditions/import-conditions.test.ts
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-optdeps-conditions-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await (mainPlugin as any).config(mockConfig, {
+        command: "serve",
+      });
+
+      const rscConditions =
+        result.environments.rsc.optimizeDeps?.rolldownOptions?.resolve?.conditionNames ?? [];
+      const ssrConditions =
+        result.environments.ssr.optimizeDeps?.rolldownOptions?.resolve?.conditionNames ?? [];
+      const clientConditions =
+        result.environments.client.optimizeDeps?.rolldownOptions?.resolve?.conditionNames ?? [];
+      const rscResolveConditions = result.environments.rsc.resolve?.conditions ?? [];
+      const ssrResolveConditions = result.environments.ssr.resolve?.conditions ?? [];
+      const clientResolveConditions = result.environments.client.resolve?.conditions ?? [];
+
+      expect(rscConditions).toContain("node");
+      expect(ssrConditions).toContain("node");
+      expect(clientConditions).not.toContain("node");
+      expect(rscResolveConditions).toContain("node");
+      expect(ssrResolveConditions).toContain("node");
+      expect(clientResolveConditions).not.toContain("node");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("keeps server export conditions for RSC and SSR when Cloudflare plugin is present", async () => {
+    // Next.js reference: test/e2e/import-conditions/import-conditions.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/import-conditions/import-conditions.test.ts
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-cf-conditions-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const result = await (mainPlugin as any).config(
+        {
+          root: tmpDir,
+          build: {},
+          plugins: [{ name: "vite-plugin-cloudflare" }],
+        },
+        { command: "serve" },
+      );
+
+      const rscConditions =
+        result.environments.rsc.optimizeDeps?.rolldownOptions?.resolve?.conditionNames ?? [];
+      const ssrConditions =
+        result.environments.ssr.optimizeDeps?.rolldownOptions?.resolve?.conditionNames ?? [];
+      const clientConditions =
+        result.environments.client.optimizeDeps?.rolldownOptions?.resolve?.conditionNames ?? [];
+      const rscResolveConditions = result.environments.rsc.resolve?.conditions ?? [];
+      const ssrResolveConditions = result.environments.ssr.resolve?.conditions ?? [];
+      const clientResolveConditions = result.environments.client.resolve?.conditions ?? [];
+
+      expect(rscConditions).toContain("node");
+      expect(ssrConditions).toContain("node");
+      expect(clientConditions).not.toContain("node");
+      expect(rscResolveConditions).toContain("node");
+      expect(ssrResolveConditions).toContain("node");
+      expect(clientResolveConditions).not.toContain("node");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("excludes Cloudflare dev CLI packages from RSC and SSR dependency optimization", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-server-external-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const result = await (mainPlugin as any).config(
+        {
+          root: tmpDir,
+          build: {},
+          plugins: [{ name: "vite-plugin-cloudflare" }],
+        },
+        { command: "serve" },
+      );
+
+      const rscExclude = result.environments.rsc.optimizeDeps?.exclude ?? [];
+      const ssrExclude = result.environments.ssr.optimizeDeps?.exclude ?? [];
+
+      expect(rscExclude).toContain("wrangler");
+      expect(ssrExclude).toContain("wrangler");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
   it("excludes vinext in all environments for App Router builds", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();

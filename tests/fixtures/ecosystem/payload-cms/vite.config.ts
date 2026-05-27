@@ -5,12 +5,6 @@ import vinext from "vinext"
 
 const require = createRequire(import.meta.url)
 
-// export is not detected correctly
-const payloadHTMLDiffCompat = new URL("./src/payload-html-diff-rsc.ts", import.meta.url).pathname
-const payloadFileTypeNodeEntry = require.resolve("file-type", {
-  paths: [path.dirname(require.resolve("payload"))],
-})
-
 const payloadBrowserInteropDependencies = [
   { importer: "payload", specifier: "ajv" },
   { importer: "payload", specifier: "bson-objectid" },
@@ -42,9 +36,7 @@ export default {
   ],
   resolve: {
     alias: {
-      "../../elements/HTMLDiff/index.js": payloadHTMLDiffCompat,
       ...payloadBrowserInteropAliases,
-      "file-type": payloadFileTypeNodeEntry,
     },
   },
 }

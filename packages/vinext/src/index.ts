@@ -1,5 +1,5 @@
-import type { Plugin, PluginOption, UserConfig, ViteDevServer } from "vite";
-import { loadEnv, parseAst, transformWithOxc } from "vite";
+import type { DepOptimizationOptions, Plugin, PluginOption, UserConfig, ViteDevServer } from "vite";
+import { defaultServerConditions, loadEnv, parseAst, transformWithOxc } from "vite";
 import {
   pagesRouter,
   apiRouter,
@@ -93,6 +93,7 @@ import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
+import { createRscSourceMappingCommentBoundaryPlugin } from "./plugins/rsc-sourcemap-comment-boundary.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
@@ -160,6 +161,45 @@ type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
 
 const __dirname = import.meta.dirname;
 type VitePluginReactModule = typeof import("@vitejs/plugin-react");
+type OptimizeDepsRolldownOptions = NonNullable<DepOptimizationOptions["rolldownOptions"]>;
+
+function mergeConditionNames(
+  ...conditionSets: readonly (readonly string[] | undefined)[]
+): string[] {
+  return [...new Set(conditionSets.flatMap((conditions) => (conditions ? [...conditions] : [])))];
+}
+
+const RSC_SERVER_EXPORT_CONDITIONS = mergeConditionNames(
+  ["react-server"],
+  defaultServerConditions,
+  ["import", "module-sync", "default"],
+);
+const SSR_SERVER_EXPORT_CONDITIONS = mergeConditionNames(defaultServerConditions, [
+  "import",
+  "module-sync",
+  "default",
+]);
+
+function createDepOptimizeRolldownOptions(
+  base: OptimizeDepsRolldownOptions | undefined,
+  conditionNames: readonly string[],
+): OptimizeDepsRolldownOptions {
+  const baseResolve = (
+    base as
+      | (OptimizeDepsRolldownOptions & {
+          resolve?: { conditionNames?: readonly string[] };
+        })
+      | undefined
+  )?.resolve;
+
+  return {
+    ...base,
+    resolve: {
+      ...baseResolve,
+      conditionNames: mergeConditionNames(conditionNames, baseResolve?.conditionNames),
+    },
+  } as OptimizeDepsRolldownOptions;
+}
 
 function resolveOptionalDependency(projectRoot: string, specifier: string): string | null {
   try {
@@ -1747,13 +1787,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             instrumentationClientPath,
           ].flatMap((entry) => (entry ? [toRelativeFileEntry(root, entry)] : []));
           const optimizeEntries = [...new Set([...appEntries, ...explicitInstrumentationEntries])];
+          const serverOptimizeDepsExclude = hasCloudflarePlugin ? ["wrangler"] : [];
 
           viteConfig.environments = {
             rsc: {
-              ...(hasCloudflarePlugin || hasNitroPlugin
-                ? {}
-                : {
-                    resolve: {
+              resolve: {
+                conditions: RSC_SERVER_EXPORT_CONDITIONS,
+                ...(hasCloudflarePlugin || hasNitroPlugin
+                  ? {}
+                  : {
                       // Externalize native/heavy packages so the RSC environment
                       // loads them natively via Node rather than through Vite's
                       // ESM module evaluator (which can't handle native addons).
@@ -1771,11 +1813,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       // When user sets `ssr.external: true`, skip noExternal since
                       // everything is already externalized.
                       ...(userSsrExternal === true ? {} : { noExternal: true as const }),
-                    },
-                  }),
+                    }),
+              },
               optimizeDeps: {
-                exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
+                exclude: mergeOptimizeDepsExclude(
+                  incomingExclude,
+                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  serverOptimizeDepsExclude,
+                ),
                 entries: optimizeEntries,
+                rolldownOptions: createDepOptimizeRolldownOptions(
+                  { plugins: [depOptimizeAliasPlugin] },
+                  RSC_SERVER_EXPORT_CONDITIONS,
+                ),
               },
               build: {
                 outDir: options.rscOutDir ?? "dist/server",
@@ -1785,10 +1835,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
             },
             ssr: {
-              ...(hasCloudflarePlugin || hasNitroPlugin
-                ? {}
-                : {
-                    resolve: {
+              resolve: {
+                conditions: SSR_SERVER_EXPORT_CONDITIONS,
+                ...(hasCloudflarePlugin || hasNitroPlugin
+                  ? {}
+                  : {
                       external: userSsrExternal === true ? true : [...userSsrExternal, "ipaddr.js"],
                       // Force all node_modules through Vite's transform pipeline
                       // so non-JS imports (CSS, images) don't hit Node's native
@@ -1796,8 +1847,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       // When user sets `ssr.external: true`, skip noExternal since
                       // everything is already externalized.
                       ...(userSsrExternal === true ? {} : { noExternal: true as const }),
-                    },
-                  }),
+                    }),
+              },
               optimizeDeps: {
                 // When userSsrExternal === true, exclude React from the SSR
                 // optimizer so plugin-rsc's crawlFrameworkPkgs doesn't pre-bundle
@@ -1819,9 +1870,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   incomingExclude,
                   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
                   ["ipaddr.js"],
+                  serverOptimizeDepsExclude,
                   userSsrExternal === true ? SSR_EXTERNAL_REACT_ENTRIES : [],
                 ),
                 entries: optimizeEntries,
+                rolldownOptions: createDepOptimizeRolldownOptions(
+                  { plugins: [depOptimizeAliasPlugin] },
+                  SSR_SERVER_EXPORT_CONDITIONS,
+                ),
               },
               build: {
                 outDir: options.ssrOutDir ?? "dist/server/ssr",
@@ -1934,6 +1990,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             },
             ssr: {
               resolve: {
+                conditions: SSR_SERVER_EXPORT_CONDITIONS,
                 external: ["react", "react-dom", "react-dom/server", "ipaddr.js"],
                 noExternal: true as const,
               },
@@ -1945,6 +2002,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // reload the first time a Pages Router page renders an
                 // <Image>.
                 exclude: ["ipaddr.js"],
+                rolldownOptions: createDepOptimizeRolldownOptions(
+                  { plugins: [depOptimizeAliasPlugin] },
+                  SSR_SERVER_EXPORT_CONDITIONS,
+                ),
               },
               build: {
                 outDir: "dist/server",
@@ -4311,6 +4372,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // Append auto-injected RSC plugins if applicable
   if (rscPluginPromise) {
     plugins.push(rscPluginPromise);
+    plugins.push(createRscSourceMappingCommentBoundaryPlugin());
     plugins.push(createRscClientReferenceLoadersPlugin());
   }
 
