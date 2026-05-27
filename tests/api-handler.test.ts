@@ -824,7 +824,10 @@ describe("handleApiRoute", () => {
       expect(res._body.toString()).toBe(JSON.stringify({ id: "req-42" }));
     });
 
-    it("uses the first x-forwarded-proto value for edge API request URLs", async () => {
+    it("ignores x-forwarded-proto by default (untrusted proxy) for edge API request URLs", async () => {
+      // Regression test for F-PROD-7. Without `VINEXT_TRUST_PROXY` set, an
+      // attacker who can reach the dev server directly must not be able to
+      // flip `request.url.protocol` to "https:" via a forged header.
       let capturedUrl = "";
       const handler = vi.fn((request: Request) => {
         capturedUrl = request.url;
@@ -842,7 +845,7 @@ describe("handleApiRoute", () => {
 
       await handleApiRoute(server, req, res, "/api/users?name=alice", [route("/api/users")]);
 
-      expect(capturedUrl).toBe("https://example.com/api/users?name=alice");
+      expect(capturedUrl).toBe("http://example.com/api/users?name=alice");
     });
 
     it("falls back to http for unsupported x-forwarded-proto values", async () => {

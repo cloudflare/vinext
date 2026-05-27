@@ -14,6 +14,7 @@ import {
   RedirectBoundary,
   UnauthorizedBoundary,
 } from "vinext/shims/error-boundary";
+import { AppRouterScrollTarget } from "vinext/shims/app-router-scroll";
 import type { AppRouteSemanticIds } from "../routing/app-route-graph.js";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import {
@@ -667,7 +668,9 @@ export function buildAppPageElements<
 
   let routeChildren: ReactNode = (
     <LayoutSegmentProvider segmentMap={{ children: [] }}>
-      <Slot id={pageId} />
+      <AppRouterScrollTarget>
+        <Slot id={pageId} />
+      </AppRouterScrollTarget>
     </LayoutSegmentProvider>
   );
 

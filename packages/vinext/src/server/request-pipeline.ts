@@ -5,6 +5,7 @@ import { matchHeaders } from "../config/config-matchers.js";
 import {
   INTERNAL_HEADERS,
   MIDDLEWARE_HEADER_PREFIX,
+  VINEXT_INTERNAL_HEADERS,
   VINEXT_STATIC_FILE_HEADER,
 } from "./headers.js";
 import { forbiddenResponse, notFoundResponse } from "./http-error-responses.js";
@@ -603,7 +604,9 @@ export function processMiddlewareHeaders(headers: Headers): void {
  *
  * @see `./headers.ts` for the canonical definition.
  */
-export { INTERNAL_HEADERS } from "./headers.js";
+export { INTERNAL_HEADERS, VINEXT_INTERNAL_HEADERS } from "./headers.js";
+
+const STRIPPED_INTERNAL_HEADERS = new Set([...INTERNAL_HEADERS, ...VINEXT_INTERNAL_HEADERS]);
 
 type RequestInitWithCf = RequestInit & { cf?: unknown };
 
@@ -620,12 +623,12 @@ type RequestInitWithCf = RequestInit & { cf?: unknown };
  * for the same cloning pattern).
  *
  * @param headers - The source Headers (never modified)
- * @returns A new Headers with INTERNAL_HEADERS removed
+ * @returns A new Headers with internal framework headers removed
  */
 export function filterInternalHeaders(headers: Headers): Headers {
   const filtered = new Headers();
   for (const [key, value] of headers) {
-    if (!INTERNAL_HEADERS.includes(key.toLowerCase())) {
+    if (!STRIPPED_INTERNAL_HEADERS.has(key.toLowerCase())) {
       filtered.append(key, value);
     }
   }

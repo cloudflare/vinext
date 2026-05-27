@@ -163,6 +163,44 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(htmlEntry?.value?.kind).toBe("APP_PAGE");
   });
 
+  it("seeds encoded dynamic App Router paths under the runtime-normalized cache key", async () => {
+    const buildId = "encoded-path-test";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/:id",
+            status: "rendered",
+            revalidate: false,
+            path: "/sticks%20%26%20stones",
+            router: "app",
+          },
+        ],
+      },
+      {
+        "sticks%20%26%20stones.html":
+          "<html><body>params.id is sticks%20%26%20stones</body></html>",
+        "sticks%20%26%20stones.rsc": "RSC encoded payload",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const htmlKey = isrCacheKey("app", "/sticks & stones", buildId) + ":html";
+    const htmlEntry = await getCacheHandler().get(htmlKey);
+    expect(htmlEntry).not.toBeNull();
+    if (htmlEntry?.value?.kind === "APP_PAGE") {
+      expect(htmlEntry.value.html).toBe(
+        "<html><body>params.id is sticks%20%26%20stones</body></html>",
+      );
+    }
+
+    const staleEncodedKey = isrCacheKey("app", "/sticks%20%26%20stones", buildId) + ":html";
+    expect(await getCacheHandler().get(staleEncodedKey)).toBeNull();
+  });
+
   // ── Return value ──────────────────────────────────────────────────────────
 
   it("returns the number of seeded routes", async () => {

@@ -70,9 +70,23 @@ import { manifestFileWithBase } from "../utils/manifest-paths.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { readPrerenderSecret } from "../build/server-manifest.js";
-import { VINEXT_PRERENDER_SECRET_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
+import {
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_STATIC_FILE_HEADER,
+} from "./headers.js";
+import {
+  readTrustedPrerenderRouteParamsFromHeaders,
+  serializePrerenderRouteParamsHeader,
+} from "./prerender-route-params.js";
 import { seedMemoryCacheFromPrerender as seedMemoryCacheFromPrerenderFallback } from "./seed-cache.js";
 import { installSocketErrorBackstop } from "./socket-error-backstop.js";
+import {
+  trustProxy,
+  trustedHosts,
+  resolveRequestProtocol,
+  resolveRequestHost as resolveHost,
+} from "./proxy-trust.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -209,14 +223,34 @@ function mergeResponseHeaders(
 function toWebHeaders(headersRecord: Record<string, string | string[]>): Headers {
   const headers = new Headers();
   for (const [key, value] of Object.entries(headersRecord)) {
-    if (Array.isArray(value)) {
-      for (const item of value) headers.append(key, item);
-    } else {
-      headers.set(key, value);
-    }
+    appendWebHeader(headers, key, value);
   }
   return headers;
 }
+
+function appendWebHeader(
+  headers: Headers,
+  key: string,
+  value: string | string[] | undefined,
+): void {
+  if (value === undefined) return;
+  if (Array.isArray(value)) {
+    for (const item of value) headers.append(key, item);
+    return;
+  }
+  headers.set(key, value);
+}
+
+function nodeHeadersToWebHeaders(headersRecord: IncomingMessage["headers"]): Headers {
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(headersRecord)) {
+    appendWebHeader(headers, key, value);
+  }
+  return headers;
+}
+
+// `resolveRequestProtocol` is now imported from `./proxy-trust.js` so the
+// same trust policy applies in api-handler.ts (dev edge API bridge).
 
 const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
 
@@ -665,48 +699,10 @@ async function statIfFile(filePath: string): Promise<{ size: number; mtimeMs: nu
   }
 }
 
-/**
- * Resolve the host for a request, ignoring X-Forwarded-Host to prevent
- * host header poisoning attacks (open redirects, cache poisoning).
- *
- * X-Forwarded-Host is only trusted when the VINEXT_TRUSTED_HOSTS env var
- * lists the forwarded host value. Without this, an attacker can send
- * X-Forwarded-Host: evil.com and poison any redirect that resolves
- * against request.url.
- *
- * On Cloudflare Workers, X-Forwarded-Host is always set by Cloudflare
- * itself, so this is only a concern for the Node.js prod-server.
- */
-function resolveHost(req: IncomingMessage, fallback: string): string {
-  const rawForwarded = req.headers["x-forwarded-host"] as string | undefined;
-  const hostHeader = req.headers.host;
-
-  if (rawForwarded) {
-    // X-Forwarded-Host can be comma-separated when passing through
-    // multiple proxies — take only the first (client-facing) value.
-    const forwardedHost = rawForwarded.split(",")[0].trim().toLowerCase();
-    if (forwardedHost && trustedHosts.has(forwardedHost)) {
-      return forwardedHost;
-    }
-  }
-
-  return hostHeader || fallback;
-}
-
-/** Hosts that are allowed as X-Forwarded-Host values (stored lowercase). */
-const trustedHosts: Set<string> = new Set(
-  (process.env.VINEXT_TRUSTED_HOSTS ?? "")
-    .split(",")
-    .map((h) => h.trim().toLowerCase())
-    .filter(Boolean),
-);
-
-/**
- * Whether to trust X-Forwarded-Proto from upstream proxies.
- * Enabled when VINEXT_TRUST_PROXY=1 or when VINEXT_TRUSTED_HOSTS is set
- * (having trusted hosts implies a trusted proxy).
- */
-const trustProxy = process.env.VINEXT_TRUST_PROXY === "1" || trustedHosts.size > 0;
+// `resolveHost`, `trustedHosts`, and `trustProxy` are now imported from
+// `./proxy-trust.js` so the same trust policy applies in api-handler.ts
+// (the dev edge API bridge) and any future server code path that needs
+// to gate `X-Forwarded-*` headers.
 
 /**
  * Convert a Node.js IncomingMessage to a Web Request object.
@@ -717,26 +713,29 @@ const trustProxy = process.env.VINEXT_TRUST_PROXY === "1" || trustedHosts.size >
  * Router prod server normalizes before static-asset lookup, and can pass
  * the result here so the downstream RSC handler doesn't re-normalize).
  */
-function nodeToWebRequest(req: IncomingMessage, urlOverride?: string): Request {
-  const rawProto = trustProxy
-    ? (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim()
-    : undefined;
-  const proto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
+function nodeToWebRequest(
+  req: IncomingMessage,
+  urlOverride?: string,
+  prerenderSecret?: string,
+): Request {
+  const proto = resolveRequestProtocol(req);
   const host = resolveHost(req, "localhost");
   const origin = `${proto}://${host}`;
   const url = new URL(urlOverride ?? req.url ?? "/", origin);
 
-  const rawHeaders = new Headers();
-  for (const [key, value] of Object.entries(req.headers)) {
-    if (value === undefined) continue;
-    if (Array.isArray(value)) {
-      for (const v of value) rawHeaders.append(key, v);
-    } else {
-      rawHeaders.set(key, value);
-    }
-  }
+  const rawHeaders = nodeHeadersToWebHeaders(req.headers);
+  const prerenderRouteParamsPayload = readTrustedPrerenderRouteParamsFromHeaders(
+    rawHeaders,
+    prerenderSecret,
+  );
   // Strip internal headers that should not be honored from external requests.
   const headers = filterInternalHeaders(rawHeaders);
+  const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
+    prerenderRouteParamsPayload,
+  );
+  if (prerenderRouteParamsHeader !== null) {
+    headers.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
+  }
 
   const method = req.method ?? "GET";
   const hasBody = method !== "GET" && method !== "HEAD";
@@ -1234,7 +1233,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       const normalizedUrl = pathname + qs;
 
       // Convert Node.js request to Web Request and call the RSC handler
-      const request = nodeToWebRequest(req, normalizedUrl);
+      const request = nodeToWebRequest(req, normalizedUrl, prerenderSecret);
       const response = await rscHandler(request);
 
       const staticFileSignal = response.headers.get(VINEXT_STATIC_FILE_HEADER);
@@ -1627,15 +1626,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
 
       // Convert Node.js req to Web Request for the server entry
-      const rawProtocol = trustProxy
-        ? (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim()
-        : undefined;
-      const protocol = rawProtocol === "https" || rawProtocol === "http" ? rawProtocol : "http";
+      const protocol = resolveRequestProtocol(req);
       const hostHeader = resolveHost(req, `${host}:${port}`);
-      const rawReqHeaders = Object.entries(req.headers).reduce((h, [k, v]) => {
-        if (v) h.set(k, Array.isArray(v) ? v.join(", ") : v);
-        return h;
-      }, new Headers());
+      const rawReqHeaders = nodeHeadersToWebHeaders(req.headers);
       // Capture `x-nextjs-data` before filterInternalHeaders strips it — the
       // middleware redirect protocol needs to know whether the inbound request
       // was a `_next/data` fetch to emit `x-nextjs-redirect` instead of a 3xx.
@@ -1971,18 +1964,31 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       let response: Response | undefined;
       if (typeof renderPage === "function") {
         const middlewareResponseHeaders = toWebHeaders(middlewareHeaders);
-        const renderOptions = isDataReq ? { isDataReq: true } : undefined;
+        const renderPageMatch = matchPageRoute
+          ? matchPageRoute(resolvedPathname, webRequest)
+          : null;
+        const shouldDeferErrorPageOnMiss = !isDataReq && !!matchPageRoute && !renderPageMatch;
+        const dataRenderOptions = isDataReq ? { isDataReq: true } : undefined;
+        const initialRenderOptions = shouldDeferErrorPageOnMiss
+          ? { renderErrorPageOnMiss: false }
+          : dataRenderOptions;
         response = await renderPage(
           webRequest,
           resolvedUrl,
           ssrManifest,
           undefined,
           middlewareResponseHeaders,
-          renderOptions,
+          initialRenderOptions,
         );
 
         // ── 11. Fallback rewrites (if SSR returned 404) ─────────────
-        if (response && response.status === 404 && configRewrites.fallback?.length) {
+        let matchedFallbackRewrite = false;
+        if (
+          response &&
+          response.status === 404 &&
+          shouldDeferErrorPageOnMiss &&
+          configRewrites.fallback?.length
+        ) {
           const fallbackRewrite = matchRewrite(
             matchResolvedPathname(resolvedPathname),
             configRewrites.fallback,
@@ -1995,15 +2001,30 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
               await sendWebResponse(proxyResponse, req, res, compress);
               return;
             }
+            matchedFallbackRewrite = true;
             response = await renderPage(
               webRequest,
               mergeRewriteQuery(resolvedUrl, fallbackRewrite),
               ssrManifest,
               undefined,
               middlewareResponseHeaders,
-              renderOptions,
+              dataRenderOptions,
             );
           }
+        }
+        if (
+          response &&
+          response.status === 404 &&
+          shouldDeferErrorPageOnMiss &&
+          !matchedFallbackRewrite
+        ) {
+          response = await renderPage(
+            webRequest,
+            resolvedUrl,
+            ssrManifest,
+            undefined,
+            middlewareResponseHeaders,
+          );
         }
       }
 

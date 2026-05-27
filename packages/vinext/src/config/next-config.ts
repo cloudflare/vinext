@@ -213,6 +213,12 @@ export type NextConfig = {
   output?: "export" | "standalone";
   /** File extensions treated as routable pages/routes (Next.js pageExtensions) */
   pageExtensions?: string[];
+  /**
+   * Module specifiers that are required for side effects on the client before
+   * hydration, in array order, ahead of the user's `instrumentation-client.{ts,js}`.
+   * Each entry may be a bare npm package name or a path relative to the project root.
+   */
+  instrumentationClientInject?: string[];
   /** Extra origins allowed to access the dev server. */
   allowedDevOrigins?: string[];
   /** Maximum age in seconds for stale ISR entries before blocking regeneration. */
@@ -241,6 +247,14 @@ export type NextConfig = {
   serverExternalPackages?: string[];
   /** Webpack config (ignored — we use Vite) */
   webpack?: unknown;
+  /**
+   * Compiler options for build-time code transforms.
+   * vinext supports the subset that maps to Vite-compatible transforms.
+   */
+  compiler?: {
+    /** Remove `console.*` calls from the client bundle. */
+    removeConsole?: boolean | { exclude?: string[] };
+  };
   /**
    * Path to a custom cache handler module (e.g., KV, Redis, DynamoDB).
    * Accepts relative paths, absolute paths, or file:// URLs from import.meta.resolve().
@@ -294,6 +308,7 @@ export type ResolvedNextConfig = {
   trailingSlash: boolean;
   output: "" | "export" | "standalone";
   pageExtensions: string[];
+  instrumentationClientInject: string[];
   cacheComponents: boolean;
   redirects: NextRedirect[];
   rewrites: {
@@ -360,6 +375,13 @@ export type ResolvedNextConfig = {
    * the object is forwarded to Sass and may contain any modern Sass option.
    */
   sassOptions: Record<string, unknown> | null;
+  /**
+   * When enabled, strip `console.*` calls from the client bundle.
+   * Mirrors Next.js `compiler.removeConsole` option.
+   * `true` strips all console calls; `{ exclude: ["error"] }` strips all
+   * except the specified method names (case-insensitive).
+   */
+  removeConsole: boolean | { exclude: string[] };
 };
 
 // Mirrors Next.js's accepted set in packages/next/src/shared/lib/constants.ts
@@ -993,6 +1015,8 @@ export async function resolveNextConfig(
       buildId,
       deploymentId,
       sassOptions: null,
+      removeConsole: false,
+      instrumentationClientInject: [],
     };
     detectNextIntlConfig(root, resolved);
     return resolved;
@@ -1182,6 +1206,11 @@ export async function resolveNextConfig(
     trailingSlash: config.trailingSlash ?? false,
     output: output === "export" || output === "standalone" ? output : "",
     pageExtensions,
+    instrumentationClientInject: Array.isArray(config.instrumentationClientInject)
+      ? (config.instrumentationClientInject as unknown[]).filter(
+          (x): x is string => typeof x === "string",
+        )
+      : [],
     cacheComponents: config.cacheComponents ?? false,
     redirects,
     rewrites,
@@ -1204,6 +1233,12 @@ export async function resolveNextConfig(
     buildId,
     deploymentId,
     sassOptions: readOptionalRecord(config.sassOptions) ?? null,
+    removeConsole:
+      config.compiler?.removeConsole === true
+        ? true
+        : isUnknownRecord(config.compiler?.removeConsole)
+          ? { exclude: readStringArray(config.compiler!.removeConsole.exclude) }
+          : false,
   };
 
   // Auto-detect next-intl (lowest priority — explicit aliases from

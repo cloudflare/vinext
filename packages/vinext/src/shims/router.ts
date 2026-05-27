@@ -166,6 +166,8 @@ function resolveUrl(url: string | UrlObject): string {
  * data fetching, as for the browser URL). We collapse them because vinext's
  * navigateClient() fetches HTML from the target URL, so `as` must be a
  * server-resolvable path. Purely decorative `as` values are not supported.
+ * Pages error routes are handled as a narrow exception below because Next.js
+ * treats their href as the component route while preserving `as` in history.
  */
 function resolveNavigationTarget(
   url: string | UrlObject,
@@ -181,6 +183,54 @@ function getCurrentUrlLocale(): string | undefined {
     domainLocales: getDomainLocales(),
     hostname: getCurrentHostname(),
   });
+}
+
+function getLocalPathname(url: string): string | null {
+  if (typeof window === "undefined") return null;
+  if (isAbsoluteOrProtocolRelativeUrl(url)) {
+    const localPath = toSameOriginAppPath(url, __basePath);
+    if (localPath == null) return null;
+    return stripBasePath(new URL(localPath, window.location.href).pathname, __basePath);
+  }
+  try {
+    return stripBasePath(new URL(url, window.location.href).pathname, __basePath);
+  } catch {
+    return null;
+  }
+}
+
+function resolvePagesErrorHtmlFetchUrl(
+  url: string | UrlObject,
+  locale: string | undefined,
+): string | null {
+  const href = resolveUrl(url);
+  const errorRoutePathname = getLocalPathname(href);
+  if (errorRoutePathname !== "/404" && errorRoutePathname !== "/_error") return null;
+
+  const fetchHref = errorRoutePathname === "/_error" ? replaceUrlPathname(href, "/404") : href;
+  const resolvedUrl = applyNavigationLocale(fetchHref, locale);
+
+  let parsed: URL;
+  try {
+    parsed = new URL(resolvedUrl, window.location.href);
+  } catch {
+    return null;
+  }
+  const appPathname = stripBasePath(parsed.pathname, __basePath);
+  const fetchTarget = `${appPathname}${parsed.search}${parsed.hash}`;
+  return normalizePathTrailingSlash(
+    toBrowserNavigationHref(fetchTarget, window.location.href, __basePath),
+    __trailingSlash,
+  );
+}
+
+function replaceUrlPathname(url: string, pathname: string): string {
+  try {
+    const parsed = new URL(url, window.location.href);
+    return `${pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return pathname;
+  }
 }
 
 function resolveTransitionLocale(locale: TransitionOptions["locale"]): string | undefined {
@@ -581,6 +631,10 @@ function scheduleHardNavigationAndThrow(url: string, message: string): never {
   throw new HardNavigationScheduledError(message);
 }
 
+type NavigateClientOptions = {
+  allowNotFoundResponse?: boolean;
+};
+
 /** Wire format of `/_next/data/<id>/<page>.json` response bodies. */
 type PagesDataResponse = {
   pageProps?: Record<string, unknown>;
@@ -897,6 +951,7 @@ async function navigateClientHtml(
   controller: AbortController,
   navId: number,
   assertStillCurrent: () => void,
+  options: NavigateClientOptions = {},
 ): Promise<void> {
   let browserUrl = url;
   let pendingRedirectHistoryUrl: string | null = fetchUrl === url ? null : url;
@@ -931,7 +986,7 @@ async function navigateClientHtml(
     }
   }
 
-  if (!res.ok) {
+  if (!res.ok && !(options.allowNotFoundResponse === true && res.status === 404)) {
     // Set window.location.href first so the browser navigates to the correct
     // page even if the caller suppresses the error.  The assignment schedules
     // the navigation asynchronously (as a task), so synchronous routeChangeError
@@ -1066,7 +1121,11 @@ async function navigateClientHtml(
  * fixups). The JSON path derives its own URL from the browser-facing `url`
  * because the data endpoint speaks the unprefixed path.
  */
-async function navigateClient(url: string, fetchUrl = url): Promise<void> {
+async function navigateClient(
+  url: string,
+  fetchUrl = url,
+  options: NavigateClientOptions = {},
+): Promise<void> {
   if (typeof window === "undefined") return;
 
   // Cancel any in-flight navigation (abort its fetch, mark it stale)
@@ -1084,36 +1143,52 @@ async function navigateClient(url: string, fetchUrl = url): Promise<void> {
   }
 
   try {
-    let browserUrl = url;
-    let htmlFetchUrl = fetchUrl;
-    const dataTarget = resolvePagesDataNavigationTarget(browserUrl, __basePath);
-    if (!dataTarget) {
-      let redirectLocation: string | null;
-      try {
-        redirectLocation = await resolveMiddlewareDataRedirect(browserUrl, controller.signal);
-      } catch (err: unknown) {
-        if (err instanceof DOMException && err.name === "AbortError") {
-          throw new NavigationCancelledError(browserUrl);
-        }
-        throw err;
-      }
-      assertStillCurrent();
-      if (redirectLocation) {
-        const redirectedUrl = resolveLocalRedirectUrl(redirectLocation);
-        if (!redirectedUrl) {
-          scheduleHardNavigationAndThrow(redirectLocation, "Navigation redirected externally");
-        }
-        window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
-        _lastPathnameAndSearch = window.location.pathname + window.location.search;
-        browserUrl = redirectedUrl;
-        htmlFetchUrl = redirectedUrl;
-      }
-    }
-
-    if (dataTarget) {
-      await navigateClientData(browserUrl, dataTarget, controller, navId, assertStillCurrent);
+    // Error-route navigation (`router.push('/404'|'/_error', as)`): the masked
+    // browser URL and the component route differ, and the error page has no
+    // data endpoint. Skip data navigation and middleware-redirect probing
+    // (both would target the fictional masked URL) and fetch the resolved
+    // error HTML directly, allowing a 404 response to hydrate.
+    if (options.allowNotFoundResponse === true) {
+      await navigateClientHtml(url, fetchUrl, controller, navId, assertStillCurrent, options);
     } else {
-      await navigateClientHtml(browserUrl, htmlFetchUrl, controller, navId, assertStillCurrent);
+      let browserUrl = url;
+      let htmlFetchUrl = fetchUrl;
+      const dataTarget = resolvePagesDataNavigationTarget(browserUrl, __basePath);
+      if (!dataTarget) {
+        let redirectLocation: string | null;
+        try {
+          redirectLocation = await resolveMiddlewareDataRedirect(browserUrl, controller.signal);
+        } catch (err: unknown) {
+          if (err instanceof DOMException && err.name === "AbortError") {
+            throw new NavigationCancelledError(browserUrl);
+          }
+          throw err;
+        }
+        assertStillCurrent();
+        if (redirectLocation) {
+          const redirectedUrl = resolveLocalRedirectUrl(redirectLocation);
+          if (!redirectedUrl) {
+            scheduleHardNavigationAndThrow(redirectLocation, "Navigation redirected externally");
+          }
+          window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
+          _lastPathnameAndSearch = window.location.pathname + window.location.search;
+          browserUrl = redirectedUrl;
+          htmlFetchUrl = redirectedUrl;
+        }
+      }
+
+      if (dataTarget) {
+        await navigateClientData(browserUrl, dataTarget, controller, navId, assertStillCurrent);
+      } else {
+        await navigateClientHtml(
+          browserUrl,
+          htmlFetchUrl,
+          controller,
+          navId,
+          assertStillCurrent,
+          options,
+        );
+      }
     }
   } finally {
     // Clean up the abort controller if this navigation is still the active one
@@ -1139,9 +1214,10 @@ async function runNavigateClient(
   fullUrl: string,
   resolvedUrl: string,
   fetchUrl = fullUrl,
+  options: NavigateClientOptions = {},
 ): Promise<"completed" | "cancelled" | "failed"> {
   try {
-    await navigateClient(fullUrl, fetchUrl);
+    await navigateClient(fullUrl, fetchUrl, options);
     return "completed";
   } catch (err: unknown) {
     routerEvents.emit("routeChangeError", err, resolvedUrl, { shallow: false });
@@ -1312,7 +1388,11 @@ async function performNavigation(
     toBrowserNavigationHref(resolved, window.location.href, __basePath),
     __trailingSlash,
   );
-  const htmlFetchUrl = getPagesHtmlFetchUrl(full, navigationLocale);
+  const errorRouteHtmlFetchUrl = resolvePagesErrorHtmlFetchUrl(url, navigationLocale);
+  const htmlFetchUrl = errorRouteHtmlFetchUrl ?? getPagesHtmlFetchUrl(full, navigationLocale);
+  const navigateOptions: NavigateClientOptions = errorRouteHtmlFetchUrl
+    ? { allowNotFoundResponse: true }
+    : {};
   const shallow = options?.shallow ?? false;
   const doScroll = options?.scroll !== false;
 
@@ -1333,7 +1413,7 @@ async function performNavigation(
   routerEvents.emit("beforeHistoryChange", resolved, { shallow });
   updateHistory(mode, full);
   if (!shallow) {
-    const result = await runNavigateClient(full, resolved, htmlFetchUrl);
+    const result = await runNavigateClient(full, resolved, htmlFetchUrl, navigateOptions);
     if (result === "cancelled") return true;
     if (result === "failed") return false;
   }
