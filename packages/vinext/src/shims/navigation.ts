@@ -35,6 +35,12 @@ import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { AppRouterContext } from "./internal/app-router-context.js";
 import { scrollToHashTarget } from "./hash-scroll.js";
+import {
+  beginAppRouterScrollIntent,
+  clearAppRouterScrollIntent,
+  consumeAppRouterScrollIntent,
+  type AppRouterScrollIntent,
+} from "./app-router-scroll-state.js";
 
 // ─── Layout segment context ───────────────────────────────────────────────────
 // Stores the child segments below the current layout. Each layout wraps its
@@ -1324,6 +1330,19 @@ function commitHashOnlyHistoryState(href: string, mode: "push" | "replace", scro
   }
 }
 
+function applyAppRouterScrollFallback(intent: AppRouterScrollIntent): void {
+  if (typeof document === "undefined" || typeof window === "undefined") {
+    return;
+  }
+
+  if (intent.hash !== null) {
+    scrollToHashTarget(intent.hash);
+    return;
+  }
+
+  document.documentElement.scrollTop = 0;
+}
+
 /**
  * Restore scroll position from a history state object (used on popstate).
  *
@@ -1418,6 +1437,10 @@ export async function navigateClientSide(
   // Extract hash for post-navigation scrolling
   const hashIdx = fullHref.indexOf("#");
   const hash = hashIdx !== -1 ? fullHref.slice(hashIdx) : "";
+  const scrollIntent = scroll ? beginAppRouterScrollIntent(hash || null) : null;
+  if (!scroll) {
+    clearAppRouterScrollIntent();
+  }
 
   // Trigger RSC re-fetch if available, and wait for the new content to render
   // before scrolling. This prevents the old page from visibly jumping to the
@@ -1428,22 +1451,28 @@ export async function navigateClientSide(
   // double-push and ensures window.location still reflects the *current* URL
   // when navigateRsc publishes the committed URL.
   const appNavigate = getNavigationRuntime()?.functions.navigate;
-  if (appNavigate) {
-    await appNavigate(fullHref, 0, "navigate", mode, undefined, programmaticTransition);
-  } else {
-    if (mode === "replace") {
-      replaceHistoryStateWithoutNotify(null, "", fullHref);
+  try {
+    if (appNavigate) {
+      await appNavigate(fullHref, 0, "navigate", mode, undefined, programmaticTransition);
     } else {
-      pushHistoryStateWithoutNotify(null, "", fullHref);
+      if (mode === "replace") {
+        replaceHistoryStateWithoutNotify(null, "", fullHref);
+      } else {
+        pushHistoryStateWithoutNotify(null, "", fullHref);
+      }
+      commitClientNavigationState();
     }
-    commitClientNavigationState();
+  } catch (error) {
+    if (scrollIntent) {
+      consumeAppRouterScrollIntent(scrollIntent);
+    }
+    throw error;
   }
 
-  if (scroll) {
-    if (hash) {
-      scrollToHashTarget(hash);
-    } else {
-      window.scrollTo(0, 0);
+  if (scrollIntent) {
+    const fallbackIntent = consumeAppRouterScrollIntent(scrollIntent);
+    if (fallbackIntent) {
+      applyAppRouterScrollFallback(fallbackIntent);
     }
   }
 }

@@ -81,6 +81,12 @@ import {
 } from "./prerender-route-params.js";
 import { seedMemoryCacheFromPrerender as seedMemoryCacheFromPrerenderFallback } from "./seed-cache.js";
 import { installSocketErrorBackstop } from "./socket-error-backstop.js";
+import {
+  trustProxy,
+  trustedHosts,
+  resolveRequestProtocol,
+  resolveRequestHost as resolveHost,
+} from "./proxy-trust.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -243,16 +249,8 @@ function nodeHeadersToWebHeaders(headersRecord: IncomingMessage["headers"]): Hea
   return headers;
 }
 
-function firstHeaderValue(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
-}
-
-function resolveRequestProtocol(req: IncomingMessage): "http" | "https" {
-  const rawProto = trustProxy
-    ? firstHeaderValue(req.headers["x-forwarded-proto"])?.split(",")[0]?.trim()
-    : undefined;
-  return rawProto === "https" || rawProto === "http" ? rawProto : "http";
-}
+// `resolveRequestProtocol` is now imported from `./proxy-trust.js` so the
+// same trust policy applies in api-handler.ts (dev edge API bridge).
 
 const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
 
@@ -701,48 +699,10 @@ async function statIfFile(filePath: string): Promise<{ size: number; mtimeMs: nu
   }
 }
 
-/**
- * Resolve the host for a request, ignoring X-Forwarded-Host to prevent
- * host header poisoning attacks (open redirects, cache poisoning).
- *
- * X-Forwarded-Host is only trusted when the VINEXT_TRUSTED_HOSTS env var
- * lists the forwarded host value. Without this, an attacker can send
- * X-Forwarded-Host: evil.com and poison any redirect that resolves
- * against request.url.
- *
- * On Cloudflare Workers, X-Forwarded-Host is always set by Cloudflare
- * itself, so this is only a concern for the Node.js prod-server.
- */
-function resolveHost(req: IncomingMessage, fallback: string): string {
-  const rawForwarded = firstHeaderValue(req.headers["x-forwarded-host"]);
-  const hostHeader = req.headers.host;
-
-  if (rawForwarded) {
-    // X-Forwarded-Host can be comma-separated when passing through
-    // multiple proxies — take only the first (client-facing) value.
-    const forwardedHost = rawForwarded.split(",")[0].trim().toLowerCase();
-    if (forwardedHost && trustedHosts.has(forwardedHost)) {
-      return forwardedHost;
-    }
-  }
-
-  return hostHeader || fallback;
-}
-
-/** Hosts that are allowed as X-Forwarded-Host values (stored lowercase). */
-const trustedHosts: Set<string> = new Set(
-  (process.env.VINEXT_TRUSTED_HOSTS ?? "")
-    .split(",")
-    .map((h) => h.trim().toLowerCase())
-    .filter(Boolean),
-);
-
-/**
- * Whether to trust X-Forwarded-Proto from upstream proxies.
- * Enabled when VINEXT_TRUST_PROXY=1 or when VINEXT_TRUSTED_HOSTS is set
- * (having trusted hosts implies a trusted proxy).
- */
-const trustProxy = process.env.VINEXT_TRUST_PROXY === "1" || trustedHosts.size > 0;
+// `resolveHost`, `trustedHosts`, and `trustProxy` are now imported from
+// `./proxy-trust.js` so the same trust policy applies in api-handler.ts
+// (the dev edge API bridge) and any future server code path that needs
+// to gate `X-Forwarded-*` headers.
 
 /**
  * Convert a Node.js IncomingMessage to a Web Request object.
