@@ -453,9 +453,9 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).toContain("Promise<Response>");
   });
 
-  it("includes /_vinext/image handler", () => {
+  it("includes image optimization handler", () => {
     const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("/_vinext/image");
+    expect(content).toContain("isImageOptimizationPath");
     expect(content).toContain("handleImageOptimization");
   });
 
@@ -666,9 +666,9 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("Internal Server Error");
   });
 
-  it("includes /_vinext/image handler", () => {
+  it("includes image optimization handler", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("/_vinext/image");
+    expect(content).toContain("isImageOptimizationPath");
     expect(content).toContain("handleImageOptimization");
   });
 
@@ -920,7 +920,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("checks image optimization after basePath stripping", () => {
     const content = generatePagesRouterWorkerEntry();
     const basePathPos = content.indexOf("const stripped = stripBasePath(pathname, basePath);");
-    const imagePos = content.indexOf('pathname === "/_vinext/image"');
+    const imagePos = content.indexOf("isImageOptimizationPath(pathname)");
     expect(basePathPos).toBeGreaterThan(-1);
     expect(imagePos).toBeGreaterThan(-1);
     expect(basePathPos).toBeLessThan(imagePos);

@@ -388,6 +388,28 @@ describe("app page response helpers", () => {
     await expect(response.text()).resolves.toBe("flight");
   });
 
+  it("emits the `x-edge-runtime: 1` marker on RSC responses when the route opts into the edge runtime (issue #1531)", () => {
+    // Next.js sets `x-edge-runtime: 1` on edge-runtime app responses (see
+    // edge-ssr-app.ts in the Next.js source). Mirror that only for routes
+    // whose resolved segment config is `runtime = "edge"`.
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      isEdgeRuntime: true,
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("omits the `x-edge-runtime` marker on RSC responses for nodejs-runtime routes", () => {
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBeNull();
+  });
+
   it("builds RSC responses with the current compatibility ID header", () => {
     const response = withEnvVar("__VINEXT_RSC_COMPATIBILITY_ID", "compat-a", () =>
       buildAppPageRscResponse(createBody("flight"), {
@@ -477,6 +499,28 @@ describe("app page response helpers", () => {
     expect(setCookies).toContain("__prerender_bypass=token; Path=/");
     expect(setCookies).toContain("mw=1; Path=/");
     await expect(response.text()).resolves.toBe("<h1>page</h1>");
+  });
+
+  it("emits the `x-edge-runtime: 1` marker on HTML responses when the route opts into the edge runtime (issue #1531)", () => {
+    // Next.js sets `x-edge-runtime: 1` on edge-runtime app responses (see
+    // edge-ssr-app.ts in the Next.js source). Mirror that only for routes
+    // whose resolved segment config is `runtime = "edge"`.
+    const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
+      isEdgeRuntime: true,
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("omits the `x-edge-runtime` marker on HTML responses for nodejs-runtime routes", () => {
+    const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get("x-edge-runtime")).toBeNull();
   });
 });
 

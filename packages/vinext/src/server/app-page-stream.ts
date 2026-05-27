@@ -1,6 +1,7 @@
 import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { ReactFormState } from "react-dom/client";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
+import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import type { RootParams } from "vinext/shims/root-params";
 
@@ -55,6 +56,7 @@ type RenderAppPageHtmlStreamOptions = {
 type RenderAppPageHtmlResponseOptions = {
   clearRequestContext: () => void;
   fontLinkHeader?: string;
+  isEdgeRuntime?: boolean;
   middlewareHeaders?: Headers | null;
   status: number;
 } & RenderAppPageHtmlStreamOptions;
@@ -190,6 +192,8 @@ export async function renderAppPageHtmlResponse(
     "Content-Type": "text/html; charset=utf-8",
     Vary: VINEXT_RSC_VARY_HEADER,
   });
+
+  applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 
   if (options.fontLinkHeader) {
     headers.set("Link", options.fontLinkHeader);

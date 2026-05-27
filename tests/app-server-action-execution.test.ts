@@ -1078,6 +1078,54 @@ describe("app server action execution helpers", () => {
       });
     }
   });
+
+  it("emits the `x-edge-runtime: 1` marker on rerendered RSC action responses for edge-runtime routes", async () => {
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        isEdgeRuntime: true,
+      }),
+    );
+
+    expect(response?.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("omits the `x-edge-runtime` marker on rerendered RSC action responses for nodejs-runtime routes", async () => {
+    const response = await handleServerActionRscRequest(createRscOptions());
+
+    expect(response?.headers.get("x-edge-runtime")).toBeNull();
+  });
+
+  it("emits the `x-edge-runtime: 1` marker on action redirect responses for edge-runtime routes", async () => {
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        isEdgeRuntime: true,
+        loadServerAction() {
+          return Promise.resolve(() => {
+            throw { digest: "NEXT_REDIRECT;;%2Fdashboard;307" };
+          });
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("emits the `x-edge-runtime: 1` marker on no-revalidate action responses for edge-runtime routes", async () => {
+    // createRscOptions defaults already return no cookies + no draft cookie,
+    // which selects the no-revalidate branch (skips page rerender).
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        isEdgeRuntime: true,
+        loadServerAction() {
+          return Promise.resolve(async () => "no-revalidate-result");
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("x-edge-runtime")).toBe("1");
+  });
 });
 
 // The client-side counterpart of `createServerActionNotFoundResponse`: when the

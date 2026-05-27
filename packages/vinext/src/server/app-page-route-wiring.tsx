@@ -16,7 +16,13 @@ import {
 } from "vinext/shims/error-boundary";
 import type { AppRouteSemanticIds } from "../routing/app-route-graph.js";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
-import { MetadataHead, ViewportHead, type Metadata, type Viewport } from "vinext/shims/metadata";
+import {
+  MetadataHead,
+  ViewportHead,
+  renderMetadataToHtml,
+  type Metadata,
+  type Viewport,
+} from "vinext/shims/metadata";
 import { Children, ParallelSlot, Slot } from "vinext/shims/slot";
 import type { AppPageParams } from "./app-page-boundary.js";
 import {
@@ -145,6 +151,7 @@ type BuildAppPageRouteElementOptions<
   globalErrorModule?: TErrorModule | null;
   makeThenableParams: (params: AppPageParams) => unknown;
   matchedParams: AppPageParams;
+  metadataPlacement?: "body" | "head";
   resolvedMetadata: Metadata | null;
   resolvedMetadataPathname?: string;
   resolvedViewport: Viewport;
@@ -354,13 +361,27 @@ function createAppPageRouteHead(
   metadata: Metadata | null,
   viewport: Viewport,
   pathname: string,
+  metadataPlacement: "body" | "head",
 ): ReactNode {
   return (
     <>
       <meta charSet="utf-8" />
-      {metadata ? <MetadataHead metadata={metadata} pathname={pathname} /> : null}
+      {metadata && metadataPlacement === "head" ? (
+        <MetadataHead metadata={metadata} pathname={pathname} />
+      ) : null}
       <ViewportHead viewport={viewport} />
     </>
+  );
+}
+
+function createAppPageRouteBodyMetadata(
+  metadata: Metadata | null,
+  pathname: string,
+  metadataPlacement: "body" | "head",
+): ReactNode {
+  if (!metadata || metadataPlacement !== "body") return null;
+  return (
+    <div hidden dangerouslySetInnerHTML={{ __html: renderMetadataToHtml(metadata, pathname) }} />
   );
 }
 
@@ -377,6 +398,7 @@ export function buildAppPageElements<
   const layoutEntries = createAppPageLayoutEntries(options.route);
   const templateEntries = createAppPageTemplateEntries(options.route);
   const errorEntries = createAppPageErrorEntries(options.route);
+  const metadataPlacement = options.metadataPlacement ?? "head";
   const layoutEntriesByTreePosition = new Map<number, AppPageLayoutEntry<TModule, TErrorModule>>();
   const templateEntriesByTreePosition = new Map<number, AppPageTemplateEntry<TModule>>();
   const errorEntriesByTreePosition = new Map<number, AppPageErrorEntry<TErrorModule>>();
@@ -864,8 +886,14 @@ export function buildAppPageElements<
         options.resolvedMetadata,
         options.resolvedViewport,
         options.resolvedMetadataPathname ?? options.routePath,
+        metadataPlacement,
       )}
       {routeChildren}
+      {createAppPageRouteBodyMetadata(
+        options.resolvedMetadata,
+        options.resolvedMetadataPathname ?? options.routePath,
+        metadataPlacement,
+      )}
     </>
   );
 

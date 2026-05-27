@@ -45,6 +45,7 @@ import {
   parseCookieLocaleFromHeader,
   resolvePagesI18nRequest,
 } from "./pages-i18n.js";
+import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -252,6 +253,7 @@ export function createSSRHandler(
   fileMatcher?: ValidFileMatcher,
   basePath = "",
   trailingSlash = false,
+  hasMiddleware = false,
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -530,7 +532,11 @@ export function createSSRHandler(
             return;
           }
           if (result && "props" in result) {
-            pageProps = result.props;
+            // Next.js explicitly supports a Promise value for `props`. Await
+            // it before serialising; otherwise pageProps would be a Promise
+            // and the rendered page would receive empty props. See
+            // packages/next/src/server/render.tsx (deferredContent).
+            pageProps = await Promise.resolve(result.props);
           }
           if (result && "redirect" in result) {
             const { redirect } = result;
@@ -582,6 +588,19 @@ export function createSSRHandler(
             } else {
               gsspExtraHeaders[key] = String(val);
             }
+          }
+
+          // Default Cache-Control for getServerSideProps responses, matching
+          // Next.js's pages-handler.ts (revalidate: 0 → getCacheControlHeader).
+          // Skip when gSSP already set one via res.setHeader (case-insensitive)
+          // or when ISR is layered on top below — that branch overwrites this
+          // default with the ISR cache-control. Fixes #1461.
+          const hasUserCacheControl = Object.keys(gsspExtraHeaders).some(
+            (k) => k.toLowerCase() === "cache-control",
+          );
+          if (!hasUserCacheControl) {
+            gsspExtraHeaders["Cache-Control"] =
+              "private, no-cache, no-store, max-age=0, must-revalidate";
           }
         }
         // Collect font preloads early so ISR cached responses can include
@@ -673,6 +692,9 @@ export function createSSRHandler(
                     locale: locale ?? currentDefaultLocale,
                     locales: i18nConfig?.locales,
                     defaultLocale: currentDefaultLocale,
+                    // Stale-while-revalidate background regeneration — mirrors
+                    // Next.js `render.tsx`'s `revalidateReason` resolution.
+                    revalidateReason: "stale",
                   });
                   if (freshResult && "props" in freshResult) {
                     const revalidate =
@@ -758,6 +780,7 @@ export function createSSRHandler(
                         __vinext: {
                           pageModuleUrl: regenPageUrl,
                           appModuleUrl: regenAppUrl,
+                          hasMiddleware,
                         },
                       })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}</script>`;
 
@@ -796,12 +819,17 @@ export function createSSRHandler(
             return;
           }
 
-          // Cache miss — call getStaticProps normally
+          // Cache miss — call getStaticProps normally.
+          // Dev has no build-time prerender phase, so every dev hit is
+          // treated as a stale-while-revalidate refresh — mirrors Next.js
+          // `render.tsx` (`isBuildTimeSSG ? "build" : "stale"`).
+          // See `.nextjs-ref/test/e2e/revalidate-reason/revalidate-reason.test.ts`.
           const context = {
             params: userFacingParams,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
+            revalidateReason: "stale" as const,
           };
           const result = await pageModule.getStaticProps(context);
           if (result && "props" in result) {
@@ -1032,6 +1060,7 @@ hydrate();
             __vinext: {
               pageModuleUrl,
               appModuleUrl,
+              hasMiddleware,
             },
           })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}`,
           scriptNonce,
@@ -1288,7 +1317,21 @@ async function renderErrorPage(
     }
   }
 
-  // No custom error page found — use plain text fallback
+  // No custom error page found — fall back to vinext's default. The 404 case
+  // renders the canonical Next.js HTML body (matching `pages/_error.tsx`) so
+  // dev-server responses include "This page could not be found." just like
+  // production. Other status codes keep the plain-text fallback because
+  // Next.js's `_error.tsx` defaults already handle those cases when present.
+  if (statusCode === 404) {
+    const defaultResponse = buildDefaultPagesNotFoundResponse();
+    const headers: Record<string, string> = {};
+    defaultResponse.headers.forEach((value, key) => {
+      headers[key] = value;
+    });
+    res.writeHead(defaultResponse.status, headers);
+    res.end(await defaultResponse.text());
+    return;
+  }
   res.writeHead(statusCode, { "Content-Type": "text/plain" });
-  res.end(`${statusCode} - ${statusCode === 404 ? "Page not found" : "Internal Server Error"}`);
+  res.end(`${statusCode} - Internal Server Error`);
 }

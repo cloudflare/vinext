@@ -138,6 +138,107 @@ describe("Link rendering", () => {
   });
 });
 
+// ─── Repeated-slash warning (parity with Next.js) ───────────────────────
+//
+// Ported from Next.js: test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts
+//
+// Next.js's `resolveHref` emits a `console.error` when an href contains
+// repeated forward-slashes (e.g. "/hello//world") or backslashes. Navigation
+// is not blocked; only a warning is surfaced.
+
+describe("Link repeated-slash warning", () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+  });
+
+  it("logs a console.error when href contains repeated forward slashes", () => {
+    ReactDOMServer.renderToString(React.createElement(Link, { href: "/hello//world" }, "Hello"));
+    expect(consoleSpy).toHaveBeenCalled();
+    const message = consoleSpy.mock.calls[0]?.[0] as string;
+    expect(message).toContain("Invalid href '/hello//world'");
+    expect(message).toContain(
+      "Repeated forward-slashes (//) or backslashes \\ are not valid in the href.",
+    );
+  });
+
+  it("logs a console.error when href contains a backslash", () => {
+    ReactDOMServer.renderToString(React.createElement(Link, { href: "/foo\\bar" }, "Bad"));
+    expect(consoleSpy).toHaveBeenCalled();
+    const message = consoleSpy.mock.calls[0]?.[0] as string;
+    expect(message).toContain("Invalid href '/foo\\bar'");
+  });
+
+  it("does not warn for absolute URLs whose only '//' is the protocol separator", () => {
+    ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "https://example.com/path" }, "Ext"),
+    );
+    expect(consoleSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not warn for hrefs without repeated slashes", () => {
+    ReactDOMServer.renderToString(React.createElement(Link, { href: "/normal/path" }, "Normal"));
+    expect(consoleSpy).not.toHaveBeenCalled();
+  });
+
+  it("ignores repeated slashes inside the query string", () => {
+    // Next.js only checks the path portion (everything before '?'), so a
+    // query string containing '//' must not trigger the warning.
+    ReactDOMServer.renderToString(React.createElement(Link, { href: "/ok?next=//foo//bar" }, "Q"));
+    expect(consoleSpy).not.toHaveBeenCalled();
+  });
+
+  it("fires on every render (no dedup, matches Next.js behaviour)", () => {
+    // Next.js's resolve-href.ts does NOT dedupe these warnings — every call
+    // emits a console.error. Confirm we do the same so repeated renders
+    // surface every offending href.
+    const el = React.createElement(Link, { href: "/dup//slash" }, "Dup");
+    ReactDOMServer.renderToString(el);
+    ReactDOMServer.renderToString(el);
+    expect(consoleSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("normalises repeated forward slashes in the rendered href", () => {
+    // Next.js mirrors Vercel's gateway behaviour: after warning, the href is
+    // collapsed so the browser navigates to the canonical path.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/hello//world" }, "Hello"),
+    );
+    expect(html).toContain('href="/hello/world"');
+    expect(html).not.toContain("//world");
+  });
+
+  it("normalises backslashes to forward slashes in the rendered href", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/foo\\bar" }, "Bad"),
+    );
+    expect(html).toContain('href="/foo/bar"');
+    expect(html).not.toContain("\\");
+  });
+
+  it("preserves the query string when normalising repeated slashes", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/a//b?x=1&y=2" }, "Q"),
+    );
+    expect(html).toContain('href="/a/b?x=1&amp;y=2"');
+  });
+
+  it("preserves the protocol when normalising absolute URLs", () => {
+    // The "//" between scheme and authority must survive normalisation, but
+    // a duplicate slash in the *path* portion must still collapse.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "https://example.com//foo//bar" }, "Ext"),
+    );
+    expect(html).toContain('href="https://example.com/foo/bar"');
+  });
+});
+
 // ─── useLinkStatus ──────────────────────────────────────────────────────
 
 describe("useLinkStatus", () => {
@@ -1014,6 +1115,28 @@ describe("toSameOriginAppPath", () => {
 
     try {
       expect(toSameOriginAppPath("http://localhost:3000/base/about", "/base")).toBe("/about");
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+    }
+  });
+
+  it("falls back to location.href when location.origin is unavailable", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: {
+        href: "http://localhost:3000/base/posts/1",
+      },
+    };
+
+    try {
+      expect(toSameOriginAppPath("http://localhost:3000/base/about", "/base")).toBe("/about");
+      expect(toSameOriginAppPath("//localhost:3000/base/about?tab=1#top", "/base")).toBe(
+        "/about?tab=1#top",
+      );
     } finally {
       if (originalWindow === undefined) {
         delete (globalThis as any).window;

@@ -415,6 +415,24 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Rendered at:");
   });
 
+  // Regression test for #1459: Next.js explicitly supports a Promise value
+  // for `getServerSideProps` `props`. vinext must `await` the value before
+  // serialising — otherwise pageProps end up as a Promise and the rendered
+  // page shows empty values.
+  it("awaits Promise-shaped getServerSideProps props", async () => {
+    const res = await fetch(`${baseUrl}/ssr-promise-props`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("SSR Promise Props");
+    expect(html).toContain("world");
+    // React SSR inserts a `<!-- -->` comment between text and expressions.
+    expect(html).toMatch(/count:\s*(<!--\s*-->)?\s*42/);
+    // The serialized __NEXT_DATA__ payload must contain the resolved values
+    // (not an empty pageProps object).
+    expect(html).toMatch(/"pageProps":\s*\{[^}]*"hello":\s*"world"/);
+  });
+
   // Regression test for #1354: when a page declares `getServerSideProps` as
   // a local `const` and exports it via `export { getServerSideProps }`, the
   // client-bundle transform must strip the export specifier without
@@ -439,6 +457,26 @@ describe("Pages Router integration", () => {
     // Cookie set via res.setHeader("set-cookie", ...)
     const setCookie = res.headers.get("set-cookie");
     expect(setCookie).toContain("gssp_token=abc123");
+  });
+
+  // Regression for #1461: gSSP responses must carry the default Cache-Control
+  // header that Next.js applies for getServerSideProps pages so CDNs and
+  // browsers do not cache the per-request payload.
+  it("sets the default Cache-Control header on getServerSideProps responses", async () => {
+    const res = await fetch(`${baseUrl}/ssr`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
+
+  // Regression for #1461: when getServerSideProps overrides Cache-Control via
+  // res.setHeader, the user-provided value must reach the final HTTP response
+  // instead of being clobbered by the default.
+  it("preserves res.setHeader Cache-Control overrides set in getServerSideProps", async () => {
+    const res = await fetch(`${baseUrl}/ssr-cache-control`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("public, max-age=42");
   });
 
   it("getServerSideProps calling res.end() short-circuits the response", async () => {
@@ -1088,6 +1126,33 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Server-Side Rendered");
   });
 
+  // Regression for cloudflare/vinext#1471: when a query value itself contains
+  // a query string (e.g. `?href=/about?hello=world`), the embedded `?hello=world`
+  // is part of the `href` value per RFC 3986 — only the first `?` separates the
+  // path from the query string. `getServerSideProps({ query })` must surface
+  // the full value so `<Link href={query.href}>` renders the complete target.
+  // Mirrors `test/e2e/trailing-slashes/pages/linker.js` from the Next.js suite.
+  it("Pages Router Link preserves an embedded query string in the href prop", async () => {
+    const res = await fetch(`${baseUrl}/linker?href=/about?hello=world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // The rendered link target must include the embedded `?hello=world`. The
+    // anchor uses `id="link"` to match Next.js's linker fixture; the literal
+    // anchor href is what `<Link>` resolves through normalizePathTrailingSlash
+    // and withBasePath. With trailingSlash:false and no basePath this is the
+    // exact source string.
+    expect(html).toContain('href="/about?hello=world"');
+  });
+
+  it("Pages Router Link strips trailing slash before an embedded query string", async () => {
+    const res = await fetch(`${baseUrl}/linker?href=/about/?hello=world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // trailingSlash defaults to false — `/about/?hello=world` collapses to
+    // `/about?hello=world` while preserving the query.
+    expect(html).toContain('href="/about?hello=world"');
+  });
+
   // Ported from Next.js: test/e2e/edge-pages-support/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-pages-support/index.test.ts
   // Closes cloudflare/vinext#1342: original query params must survive a
@@ -1518,14 +1583,14 @@ describe("Pages Router dev server origin check", () => {
   });
 
   it("blocks image endpoint redirect to /@* internal paths", async () => {
-    const res = await fetch(`${baseUrl}/_vinext/image?url=/@fs/etc/passwd&w=100&q=75`, {
+    const res = await fetch(`${baseUrl}/_next/image?url=/@fs/etc/passwd&w=100&q=75`, {
       redirect: "manual",
     });
     expect(res.status).toBe(400);
   });
 
   it("blocks image endpoint redirect to /__vite internal paths", async () => {
-    const res = await fetch(`${baseUrl}/_vinext/image?url=/__vite_hmr&w=100&q=75`, {
+    const res = await fetch(`${baseUrl}/_next/image?url=/__vite_hmr&w=100&q=75`, {
       redirect: "manual",
     });
     expect(res.status).toBe(400);
@@ -1533,7 +1598,7 @@ describe("Pages Router dev server origin check", () => {
 
   it("blocks image endpoint redirect to /node_modules paths", async () => {
     const res = await fetch(
-      `${baseUrl}/_vinext/image?url=/node_modules/.vite/manifest.json&w=100&q=75`,
+      `${baseUrl}/_next/image?url=/node_modules/.vite/manifest.json&w=100&q=75`,
       {
         redirect: "manual",
       },
@@ -2847,8 +2912,18 @@ export default function CounterPage() {
       // Test: SSR page with getServerSideProps
       const ssrRes = await fetch(`${prodUrl}/ssr`);
       expect(ssrRes.status).toBe(200);
+      // Regression for #1461: gssp pages get the default Cache-Control header.
+      expect(ssrRes.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
       const ssrHtml = await ssrRes.text();
       expect(ssrHtml).toContain("Server-Side Rendered");
+
+      // Regression for #1461: user-set Cache-Control via res.setHeader sticks.
+      const ssrCcRes = await fetch(`${prodUrl}/ssr-cache-control`);
+      expect(ssrCcRes.status).toBe(200);
+      expect(ssrCcRes.headers.get("cache-control")).toBe("public, max-age=42");
+      await ssrCcRes.text();
 
       // Regression test for #1354: a page that exports `getServerSideProps`
       // via a separate `export { getServerSideProps }` re-export must build
@@ -3690,6 +3765,20 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.headers.get("content-type")).toBe("application/json");
     expect(res.headers.get("content-length")).toBe("35");
     expect(await res.json()).toEqual({ ok: true, source: "gssp-res-end" });
+  });
+
+  // Regression test for #1459: Next.js supports a Promise value for `props`
+  // returned from getServerSideProps. The prod worker entry must await it
+  // before serialising into __NEXT_DATA__ / pageProps.
+  it("awaits Promise-shaped getServerSideProps props in production", async () => {
+    const res = await fetch(`${prodUrl}/ssr-promise-props`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("SSR Promise Props");
+    expect(html).toContain("world");
+    // React SSR inserts a `<!-- -->` comment between text and expressions.
+    expect(html).toMatch(/count:\s*(<!--\s*-->)?\s*42/);
+    expect(html).toMatch(/"pageProps":\s*\{[^}]*"hello":\s*"world"/);
   });
 
   it("returns 400 for malformed percent-encoded path (not crash)", async () => {

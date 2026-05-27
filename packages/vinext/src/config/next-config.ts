@@ -12,6 +12,8 @@ import { randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
+import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
+import { isUnknownRecord } from "../utils/record.js";
 import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigPathAliasesForRoot } from "./tsconfig-paths.js";
 
@@ -215,6 +217,8 @@ export type NextConfig = {
   allowedDevOrigins?: string[];
   /** Maximum age in seconds for stale ISR entries before blocking regeneration. */
   expireTime?: number;
+  /** User agents that require blocking metadata in the initial head. */
+  htmlLimitedBots?: RegExp | string;
   /**
    * Enable Cache Components (Next.js 16).
    * When true, enables the "use cache" directive for pages, components, and functions.
@@ -314,6 +318,8 @@ export type ResolvedNextConfig = {
   serverActionsBodySizeLimit: number;
   /** Route-level expire fallback in seconds for ISR entries with numeric revalidate. */
   expireTime: number;
+  /** Serialized htmlLimitedBots regexp source from next.config. */
+  htmlLimitedBots: string | undefined;
   /**
    * Packages that should be treated as server-external (not bundled by Vite).
    * Sourced from `serverExternalPackages` or the legacy
@@ -912,6 +918,41 @@ function resolveCacheHandlerPathToFilesystem(filePath: string): string {
   return filePath;
 }
 
+function resolveHtmlLimitedBots(value: NextConfig["htmlLimitedBots"]): string | undefined {
+  const source =
+    value instanceof RegExp ? value.source : typeof value === "string" ? value : undefined;
+  if (!source) return undefined;
+
+  try {
+    getHtmlLimitedBotRegex(source);
+  } catch (error) {
+    throw new Error(
+      'Invalid next.config option "htmlLimitedBots": expected a valid regular expression source',
+      { cause: error },
+    );
+  }
+
+  return source;
+}
+
+function readOptionalRecord(value: unknown): Record<string, unknown> | undefined {
+  return isUnknownRecord(value) ? value : undefined;
+}
+
+function readOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function readOptionalBodySizeLimit(value: unknown): string | number | undefined {
+  return typeof value === "string" || typeof value === "number" ? value : undefined;
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
 /**
  * Resolve a NextConfig into a fully-resolved ResolvedNextConfig.
  * Awaits async functions for redirects/rewrites/headers.
@@ -943,6 +984,7 @@ export async function resolveNextConfig(
       optimizePackageImports: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       expireTime: DEFAULT_EXPIRE_TIME,
+      htmlLimitedBots: undefined,
       serverExternalPackages: [],
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
@@ -964,10 +1006,14 @@ export async function resolveNextConfig(
   }
 
   // Resolve rewrites
-  let rewrites = {
-    beforeFiles: [] as NextRewrite[],
-    afterFiles: [] as NextRewrite[],
-    fallback: [] as NextRewrite[],
+  let rewrites: {
+    beforeFiles: NextRewrite[];
+    afterFiles: NextRewrite[];
+    fallback: NextRewrite[];
+  } = {
+    beforeFiles: [],
+    afterFiles: [],
+    fallback: [],
   };
   if (config.rewrites) {
     const result = await config.rewrites();
@@ -1020,19 +1066,18 @@ export async function resolveNextConfig(
   const allowedDevOrigins = Array.isArray(config.allowedDevOrigins) ? config.allowedDevOrigins : [];
 
   // Resolve serverActions.allowedOrigins and bodySizeLimit from experimental config
-  const experimental = config.experimental as Record<string, unknown> | undefined;
-  const serverActionsConfig = experimental?.serverActions as Record<string, unknown> | undefined;
-  const serverActionsAllowedOrigins = Array.isArray(serverActionsConfig?.allowedOrigins)
-    ? (serverActionsConfig.allowedOrigins as string[])
-    : [];
+  const experimental = readOptionalRecord(config.experimental);
+  const serverActionsConfig = readOptionalRecord(experimental?.serverActions);
+  const serverActionsAllowedOrigins = readStringArray(serverActionsConfig?.allowedOrigins);
   const serverActionsBodySizeLimit = parseBodySizeLimit(
-    serverActionsConfig?.bodySizeLimit as string | number | undefined,
+    readOptionalBodySizeLimit(serverActionsConfig?.bodySizeLimit),
   );
 
   // Resolve hashSalt from experimental.outputHashSalt config + NEXT_HASH_SALT env var.
   // Next.js concatenates them: config value first, then env var.
-  const configOutputHashSalt = experimental?.outputHashSalt as string | undefined;
+  const configOutputHashSalt = readOptionalString(experimental?.outputHashSalt);
   const hashSalt = (configOutputHashSalt ?? "") + (process.env.NEXT_HASH_SALT ?? "");
+  const htmlLimitedBots = resolveHtmlLimitedBots(config.htmlLimitedBots);
 
   // Resolve optimizePackageImports from experimental config
   const rawOptimize = experimental?.optimizePackageImports;
@@ -1043,12 +1088,13 @@ export async function resolveNextConfig(
   // Resolve serverExternalPackages — support the current top-level key and the
   // legacy experimental.serverComponentsExternalPackages name that Next.js still
   // accepts (it moved out of experimental in Next.js 14.2).
-  const legacyServerComponentsExternal = experimental?.serverComponentsExternalPackages;
-  const serverExternalPackages: string[] = Array.isArray(config.serverExternalPackages)
-    ? (config.serverExternalPackages as string[])
-    : Array.isArray(legacyServerComponentsExternal)
-      ? (legacyServerComponentsExternal as string[])
-      : [];
+  const topLevelServerExternalPackages = Array.isArray(config.serverExternalPackages)
+    ? readStringArray(config.serverExternalPackages)
+    : undefined;
+  const legacyServerComponentsExternal = readStringArray(
+    experimental?.serverComponentsExternalPackages,
+  );
+  const serverExternalPackages = topLevelServerExternalPackages ?? legacyServerComponentsExternal;
 
   // Warn about unsupported experimental.swcEnvOptions. vinext uses Vite for
   // transforms, not SWC, so automatic polyfill injection is not applicable.
@@ -1082,9 +1128,9 @@ export async function resolveNextConfig(
     }
   }
 
-  const output = config.output ?? "";
+  const output = readOptionalString(config.output) ?? "";
   if (output && output !== "export" && output !== "standalone") {
-    console.warn(`[vinext] Unknown output mode "${output as string}", ignoring`);
+    console.warn(`[vinext] Unknown output mode "${output}", ignoring`);
   }
 
   const pageExtensions = normalizePageExtensions(config.pageExtensions);
@@ -1100,9 +1146,7 @@ export async function resolveNextConfig(
     };
   }
 
-  const buildId = await resolveBuildId(
-    config.generateBuildId as (() => string | null | Promise<string | null>) | undefined,
-  );
+  const buildId = await resolveBuildId(config.generateBuildId);
   const deploymentId = resolveDeploymentId(config.deploymentId);
 
   // Resolve cacheHandler path — handle file:// URLs from import.meta.resolve()
@@ -1151,6 +1195,7 @@ export async function resolveNextConfig(
     optimizePackageImports,
     serverActionsBodySizeLimit,
     expireTime: typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME,
+    htmlLimitedBots,
     serverExternalPackages,
     cacheHandler,
     cacheMaxMemorySize,
@@ -1158,10 +1203,7 @@ export async function resolveNextConfig(
     hashSalt,
     buildId,
     deploymentId,
-    sassOptions:
-      config.sassOptions && typeof config.sassOptions === "object"
-        ? (config.sassOptions as Record<string, unknown>)
-        : null,
+    sassOptions: readOptionalRecord(config.sassOptions) ?? null,
   };
 
   // Auto-detect next-intl (lowest priority — explicit aliases from
@@ -1204,19 +1246,13 @@ function normalizeAliasEntries(
 }
 
 function extractTurboAliases(config: NextConfig, root: string): Record<string, string> {
-  const experimental = config.experimental as Record<string, unknown> | undefined;
-  const experimentalTurbo = experimental?.turbo as Record<string, unknown> | undefined;
-  const topLevelTurbopack = config.turbopack as Record<string, unknown> | undefined;
+  const experimental = readOptionalRecord(config.experimental);
+  const experimentalTurbo = readOptionalRecord(experimental?.turbo);
+  const topLevelTurbopack = readOptionalRecord(config.turbopack);
 
   return {
-    ...normalizeAliasEntries(
-      experimentalTurbo?.resolveAlias as Record<string, unknown> | undefined,
-      root,
-    ),
-    ...normalizeAliasEntries(
-      topLevelTurbopack?.resolveAlias as Record<string, unknown> | undefined,
-      root,
-    ),
+    ...normalizeAliasEntries(readOptionalRecord(experimentalTurbo?.resolveAlias), root),
+    ...normalizeAliasEntries(readOptionalRecord(topLevelTurbopack?.resolveAlias), root),
   };
 }
 
@@ -1230,9 +1266,10 @@ async function probeWebpackConfig(
 
   // oxlint-disable-next-line typescript/no-explicit-any
   const mockModuleRules: any[] = [];
+  const mockResolve: { alias: Record<string, unknown> } = { alias: {} };
   const mockConfig = {
     context: root,
-    resolve: { alias: {} as Record<string, unknown> },
+    resolve: mockResolve,
     module: { rules: mockModuleRules },
     // oxlint-disable-next-line typescript/no-explicit-any
     plugins: [] as any[],

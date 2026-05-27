@@ -83,6 +83,7 @@ describe("pages page data", () => {
       safeJsonStringify(value: unknown) {
         return JSON.stringify(value);
       },
+      vinext: { hasMiddleware: true },
     });
 
     expect(html).toContain("<div>fresh-body</div>");
@@ -90,6 +91,7 @@ describe("pages page data", () => {
     expect(html).toContain('<script src="/tail.js"></script>');
     expect(html).toContain('"page":"/posts/[slug]"');
     expect(html).toContain('"slug":"post"');
+    expect(html).toContain('"__vinext":{"hasMiddleware":true}');
   });
 
   it("returns an HTML 404 when getStaticPaths excludes a dynamic path", async () => {
@@ -115,7 +117,7 @@ describe("pages page data", () => {
       throw new Error("expected response result");
     }
     expect(result.response.status).toBe(404);
-    await expect(result.response.text()).resolves.toContain("404 - Page not found");
+    await expect(result.response.text()).resolves.toContain("This page could not be found.");
   });
 
   it("short-circuits getServerSideProps responses after res.end()", async () => {
@@ -198,6 +200,7 @@ describe("pages page data", () => {
         },
         runInFreshUnifiedContext,
         triggerBackgroundRegeneration,
+        vinext: { hasMiddleware: true },
       }),
     );
 
@@ -229,6 +232,17 @@ describe("pages page data", () => {
       expect.objectContaining({
         kind: "PAGES",
         html: expect.stringContaining("<div>fresh-body</div>"),
+        pageData: { title: "fresh" },
+      }),
+      15,
+      undefined,
+      300,
+    );
+    expect(isrSet).toHaveBeenCalledWith(
+      "pages:/posts/post",
+      expect.objectContaining({
+        kind: "PAGES",
+        html: expect.stringContaining('"__vinext":{"hasMiddleware":true}'),
         pageData: { title: "fresh" },
       }),
       15,
@@ -344,6 +358,110 @@ describe("pages page data", () => {
     );
 
     expect(received).toEqual({ id: "123" });
+  });
+
+  // `getStaticProps` receives `context.revalidateReason` describing why the
+  // function was called. Mirrors Next.js's render.tsx — see
+  // `.nextjs-ref/test/e2e/revalidate-reason/revalidate-reason.test.ts` for
+  // the authoritative tri-state assertions.
+  it("passes revalidateReason: 'build' to getStaticProps during build-time prerendering", async () => {
+    let received: unknown = "untouched";
+    await resolvePagesPageData(
+      createOptions({
+        isBuildTimePrerendering: true,
+        pageModule: {
+          async getStaticProps(context) {
+            received = context.revalidateReason;
+            return { props: {} };
+          },
+        },
+      }),
+    );
+
+    expect(received).toBe("build");
+  });
+
+  it("passes revalidateReason: 'on-demand' to getStaticProps when on-demand revalidation is signalled", async () => {
+    let received: unknown = "untouched";
+    await resolvePagesPageData(
+      createOptions({
+        isOnDemandRevalidate: true,
+        pageModule: {
+          async getStaticProps(context) {
+            received = context.revalidateReason;
+            return { props: {} };
+          },
+        },
+      }),
+    );
+
+    expect(received).toBe("on-demand");
+  });
+
+  it("passes revalidateReason: 'stale' to getStaticProps for runtime cache-miss requests", async () => {
+    let received: unknown = "untouched";
+    await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticProps(context) {
+            received = context.revalidateReason;
+            return { props: {} };
+          },
+        },
+      }),
+    );
+
+    expect(received).toBe("stale");
+  });
+
+  it("passes revalidateReason: 'stale' to getStaticProps during stale-while-revalidate regeneration", async () => {
+    let received: unknown = "untouched";
+    let regenPromise: Promise<void> | null = null;
+    const runInFreshUnifiedContext = vi.fn(
+      async <T>(callback: () => Promise<T>): Promise<T> => callback(),
+    ) as ResolvePagesPageDataOptions["runInFreshUnifiedContext"];
+    const triggerBackgroundRegeneration = vi.fn((_key: string, renderFn: () => Promise<void>) => {
+      regenPromise = renderFn();
+    });
+
+    await resolvePagesPageData(
+      createOptions({
+        // Even when the dispatch itself is a build-time prerender, the SWR
+        // refresh path is still a stale regeneration — matches Next.js.
+        isBuildTimePrerendering: true,
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: true,
+          value: {
+            lastModified: 1,
+            cacheState: "stale",
+            value: {
+              kind: "PAGES",
+              html: '<!DOCTYPE html><html><body><div id="__next"><div>stale</div></div><script>window.__NEXT_DATA__ = {}</script></body></html>',
+              pageData: {},
+              headers: undefined,
+              status: undefined,
+            },
+          },
+        }),
+        pageModule: {
+          async getStaticProps(context) {
+            received = context.revalidateReason;
+            return { props: {}, revalidate: 5 };
+          },
+        },
+        runInFreshUnifiedContext,
+        triggerBackgroundRegeneration,
+      }),
+    );
+
+    expect(triggerBackgroundRegeneration).toHaveBeenCalledOnce();
+    if (!regenPromise) {
+      throw new Error("expected stale regeneration to start");
+    }
+    const pendingRegen: Promise<void> = regenPromise;
+    await pendingRegen;
+
+    expect(received).toBe("stale");
   });
 
   // Matches Next.js behavior: for non-dynamic routes, `params` in

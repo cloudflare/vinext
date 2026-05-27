@@ -70,6 +70,7 @@ type RenderPagesPageResponseOptions = {
   routeUrl: string;
   safeJsonStringify: (value: unknown) => string;
   scriptNonce?: string;
+  vinext?: VinextNextData["__vinext"];
 };
 
 function buildPagesFontHeadHtml(
@@ -318,6 +319,7 @@ export async function renderPagesPageResponse(
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
     scriptNonce: options.scriptNonce,
+    vinext: options.vinext,
   });
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
   // Render the page FIRST so that <Head> and other SSR state collectors
@@ -375,6 +377,11 @@ export async function renderPagesPageResponse(
 
   const responseHeaders = new Headers({ "Content-Type": "text/html" });
   const finalStatus = applyGsspHeaders(responseHeaders, options.gsspRes);
+  // Capture user-set Cache-Control (from getServerSideProps's res.setHeader)
+  // so a downstream user override survives the gssp default below — and only
+  // the default, never ISR/nonce Cache-Control which the runtime owns. Matches
+  // Next.js's pages-handler.ts: `if (!res.getHeader('Cache-Control'))`.
+  const userSetCacheControl = responseHeaders.has("Cache-Control");
 
   if (options.scriptNonce) {
     responseHeaders.set("Cache-Control", "no-store, must-revalidate");
@@ -384,6 +391,11 @@ export async function renderPagesPageResponse(
       buildRevalidateCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
     );
     setCacheStateHeaders(responseHeaders, "MISS");
+  } else if (options.gsspRes && !userSetCacheControl) {
+    // Default for getServerSideProps responses, matching Next.js
+    // pages-handler.ts (revalidate: 0 → getCacheControlHeader). Without this,
+    // CDNs and browsers could cache per-request gssp responses.
+    responseHeaders.set("Cache-Control", "private, no-cache, no-store, max-age=0, must-revalidate");
   }
   if (options.fontLinkHeader) {
     responseHeaders.set("Link", options.fontLinkHeader);

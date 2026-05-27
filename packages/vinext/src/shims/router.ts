@@ -28,13 +28,16 @@ import {
   resolvePagesDataNavigationTarget,
   type PagesDataTarget,
 } from "./internal/pages-data-target.js";
+import { buildPagesDataHref } from "./internal/pages-data-url.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
+import { isUnknownRecord } from "../utils/record.js";
 import {
   isAbsoluteOrProtocolRelativeUrl,
   isHashOnlyBrowserUrlChange,
   normalizePathTrailingSlash,
   toBrowserNavigationHref,
   toSameOriginAppPath,
+  getWindowOrigin,
 } from "./url-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import {
@@ -587,6 +590,121 @@ type PagesDataResponse = {
   [key: string]: unknown;
 };
 
+function isPageComponent(value: unknown): value is ComponentType<Record<string, unknown>> {
+  if (typeof value === "function") return true;
+  if (!isUnknownRecord(value)) return false;
+  return (
+    value.$$typeof === Symbol.for("react.forward_ref") ||
+    value.$$typeof === Symbol.for("react.memo")
+  );
+}
+
+function isAppComponent(value: unknown): value is NonNullable<Window["__VINEXT_APP__"]> {
+  return isPageComponent(value);
+}
+
+function resolveSameOriginRedirectedUrl(responseUrl: string): string | null {
+  const appPath = toSameOriginAppPath(responseUrl, __basePath);
+  if (appPath === null) return null;
+  return normalizePathTrailingSlash(
+    toBrowserNavigationHref(appPath, window.location.href, __basePath),
+    __trailingSlash,
+  );
+}
+
+function stripLocalePrefixForApiRedirect(appPath: string): string {
+  const locales = window.__VINEXT_LOCALES__;
+  if (!locales || locales.length === 0) return appPath;
+
+  try {
+    const parsed = new URL(appPath, "http://vinext.local");
+    const pathname = stripBasePath(parsed.pathname, __basePath);
+    const firstSegment = pathname.split("/")[1];
+    if (!firstSegment || !locales.includes(firstSegment)) return appPath;
+
+    const withoutLocale = pathname.slice(firstSegment.length + 1) || "/"; // +1 for leading `/`
+    if (withoutLocale !== "/api" && !withoutLocale.startsWith("/api/")) {
+      return appPath;
+    }
+
+    return `${withoutLocale}${parsed.search}${parsed.hash}`;
+  } catch {
+    return appPath;
+  }
+}
+
+function resolveLocalRedirectUrl(location: string): string | null {
+  let appPath: string | null;
+  if (location.startsWith("/") && !location.startsWith("//")) {
+    try {
+      // Data redirect headers can already be browser paths with basePath.
+      // Convert back to app paths before toBrowserNavigationHref re-applies it.
+      const parsed = new URL(location, "http://vinext.local");
+      appPath = stripBasePath(parsed.pathname, __basePath) + parsed.search + parsed.hash;
+    } catch {
+      appPath = location;
+    }
+  } else {
+    appPath = toSameOriginAppPath(location, __basePath);
+  }
+
+  if (appPath === null) return null;
+  return normalizePathTrailingSlash(
+    toBrowserNavigationHref(
+      stripLocalePrefixForApiRedirect(appPath),
+      window.location.href,
+      __basePath,
+    ),
+    __trailingSlash,
+  );
+}
+
+function hasVinextMiddleware(nextData: unknown): boolean {
+  if (!isUnknownRecord(nextData)) return false;
+  const vinext = nextData.__vinext;
+  return isUnknownRecord(vinext) && vinext.hasMiddleware === true;
+}
+
+function getMiddlewarePagesDataFetchUrl(browserUrl: string): string | null {
+  const nextData = window.__NEXT_DATA__;
+  if (!nextData || !hasVinextMiddleware(nextData)) return null;
+  const buildId = nextData.buildId;
+  if (typeof buildId !== "string" || buildId.length === 0) return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(browserUrl, window.location.href);
+  } catch {
+    return null;
+  }
+  if (parsed.origin !== getWindowOrigin()) return null;
+
+  const appPathname = stripBasePath(parsed.pathname, __basePath);
+  return buildPagesDataHref(__basePath, buildId, appPathname, parsed.search);
+}
+
+async function resolveMiddlewareDataRedirect(
+  browserUrl: string,
+  signal: AbortSignal,
+): Promise<string | null> {
+  const dataUrl = getMiddlewarePagesDataFetchUrl(browserUrl);
+  if (!dataUrl) return null;
+
+  try {
+    const res = await fetch(dataUrl, {
+      headers: {
+        Accept: "application/json",
+        "x-nextjs-data": "1",
+      },
+      signal,
+    });
+    return res.headers.get("x-nextjs-redirect");
+  } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === "AbortError") throw err;
+    return null;
+  }
+}
+
 /**
  * Perform client-side navigation via the `/_next/data/<id>/<page>.json`
  * endpoint. Used when `__VINEXT_PAGE_LOADERS__` has a matching code-split
@@ -630,12 +748,18 @@ async function navigateClientData(
   assertStillCurrent();
 
   // Soft-redirect protocol: the data endpoint emits 200 + x-nextjs-redirect
-  // when middleware (or gSSP/gSP) chose a redirect for this URL. For now we
-  // hard-reload to the target; a future iteration can wire this through
-  // Router.replace so the redirect stays a client-side navigation.
+  // when middleware (or gSSP/gSP) chose a redirect for this URL.
   const softRedirect = res.headers.get("x-nextjs-redirect");
   if (softRedirect) {
-    scheduleHardNavigationAndThrow(softRedirect, "Navigation soft-redirected by data endpoint");
+    const redirectedUrl = resolveLocalRedirectUrl(softRedirect);
+    if (!redirectedUrl) {
+      scheduleHardNavigationAndThrow(softRedirect, "Navigation redirected externally");
+    }
+
+    window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
+    _lastPathnameAndSearch = window.location.pathname + window.location.search;
+    await navigateClientHtml(redirectedUrl, redirectedUrl, controller, navId, assertStillCurrent);
+    return;
   }
 
   if (!res.ok) {
@@ -669,11 +793,11 @@ async function navigateClientData(
   }
   assertStillCurrent();
 
-  const PageComponent = pageModule.default as React.ComponentType<unknown> | undefined;
-  if (!PageComponent) {
+  const PageComponent = pageModule.default;
+  if (!isPageComponent(PageComponent)) {
     scheduleHardNavigationAndThrow(
       url,
-      "Data navigation failed: page module has no default export",
+      "Data navigation failed: page module default export is not a component",
     );
   }
 
@@ -682,7 +806,7 @@ async function navigateClientData(
   if (!AppComponent && typeof window.__VINEXT_APP_LOADER__ === "function") {
     try {
       const appModule = await window.__VINEXT_APP_LOADER__();
-      AppComponent = appModule.default as Window["__VINEXT_APP__"];
+      AppComponent = isAppComponent(appModule.default) ? appModule.default : undefined;
       if (AppComponent) window.__VINEXT_APP__ = AppComponent;
     } catch {
       // _app load failed — fall through and render without it. This matches
@@ -695,14 +819,14 @@ async function navigateClientData(
   const React = (await import("react")).default;
   assertStillCurrent();
 
-  let element: React.ReactElement;
+  let element: ReactElement;
   if (AppComponent) {
     element = React.createElement(AppComponent, {
-      Component: PageComponent as React.ComponentType<unknown>,
+      Component: PageComponent,
       pageProps,
     });
   } else {
-    element = React.createElement(PageComponent as React.ComponentType<unknown>, pageProps);
+    element = React.createElement(PageComponent, pageProps);
   }
   element = wrapWithRouterContext(element);
 
@@ -774,10 +898,12 @@ async function navigateClientHtml(
   navId: number,
   assertStillCurrent: () => void,
 ): Promise<void> {
+  let browserUrl = url;
+  let pendingRedirectHistoryUrl: string | null = fetchUrl === url ? null : url;
   const root = window.__VINEXT_ROOT__;
   if (!root) {
     // No React root yet — fall back to hard navigation
-    window.location.href = url;
+    window.location.href = browserUrl;
     return;
   }
 
@@ -797,6 +923,14 @@ async function navigateClientHtml(
   }
   assertStillCurrent();
 
+  if (res.redirected && res.url) {
+    const redirectedUrl = resolveSameOriginRedirectedUrl(res.url);
+    if (redirectedUrl) {
+      browserUrl = redirectedUrl;
+      pendingRedirectHistoryUrl = redirectedUrl;
+    }
+  }
+
   if (!res.ok) {
     // Set window.location.href first so the browser navigates to the correct
     // page even if the caller suppresses the error.  The assignment schedules
@@ -807,7 +941,10 @@ async function navigateClientHtml(
     // must NOT schedule a second hard navigation — this assignment already queues
     // the browser fallback, and the helper-level HardNavigationScheduledError
     // makes that contract explicit to callers.
-    scheduleHardNavigationAndThrow(url, `Navigation failed: ${res.status} ${res.statusText}`);
+    scheduleHardNavigationAndThrow(
+      browserUrl,
+      `Navigation failed: ${res.status} ${res.statusText}`,
+    );
   }
 
   const html = await res.text();
@@ -836,25 +973,32 @@ async function navigateClientHtml(
     pageModuleUrl = moduleMatch?.[1] ?? altMatch?.[1] ?? undefined;
   }
 
+  let pageModule: { default?: unknown; [key: string]: unknown };
   if (!pageModuleUrl) {
-    scheduleHardNavigationAndThrow(url, "Navigation failed: no page module URL found");
-  }
+    const loader = window.__VINEXT_PAGE_LOADERS__?.[nextData.page];
+    if (!loader) {
+      scheduleHardNavigationAndThrow(browserUrl, "Navigation failed: no page module URL found");
+    }
+    pageModule = await loader();
+  } else {
+    // Validate the module URL before importing — defense-in-depth against
+    // unexpected __NEXT_DATA__ or malformed HTML responses
+    if (!isValidModulePath(pageModuleUrl)) {
+      console.error("[vinext] Blocked import of invalid page module path:", pageModuleUrl);
+      scheduleHardNavigationAndThrow(browserUrl, "Navigation failed: invalid page module path");
+    }
 
-  // Validate the module URL before importing — defense-in-depth against
-  // unexpected __NEXT_DATA__ or malformed HTML responses
-  if (!isValidModulePath(pageModuleUrl)) {
-    console.error("[vinext] Blocked import of invalid page module path:", pageModuleUrl);
-    scheduleHardNavigationAndThrow(url, "Navigation failed: invalid page module path");
+    // Dynamically import the new page module
+    pageModule = await import(/* @vite-ignore */ pageModuleUrl);
   }
-
-  // Dynamically import the new page module
-  const pageModule = await import(/* @vite-ignore */ pageModuleUrl);
   assertStillCurrent();
 
   const PageComponent = pageModule.default;
-
-  if (!PageComponent) {
-    scheduleHardNavigationAndThrow(url, "Navigation failed: page module has no default export");
+  if (!isPageComponent(PageComponent)) {
+    scheduleHardNavigationAndThrow(
+      browserUrl,
+      "Navigation failed: page module default export is not a component",
+    );
   }
 
   // Import React for createElement
@@ -871,7 +1015,7 @@ async function navigateClientHtml(
     } else {
       try {
         const appModule = await import(/* @vite-ignore */ appModuleUrl);
-        AppComponent = appModule.default;
+        AppComponent = isAppComponent(appModule.default) ? appModule.default : undefined;
         window.__VINEXT_APP__ = AppComponent;
       } catch {
         // _app not available — continue without it
@@ -899,6 +1043,10 @@ async function navigateClientHtml(
   // checkpoint immediately after the optional _app import) through
   // root.render() is synchronous. If any step here ever becomes async, add
   // another assertStillCurrent() before writing __NEXT_DATA__.
+  if (pendingRedirectHistoryUrl) {
+    window.history.replaceState(window.history.state ?? {}, "", pendingRedirectHistoryUrl);
+    _lastPathnameAndSearch = window.location.pathname + window.location.search;
+  }
   window.__NEXT_DATA__ = nextData;
   applyVinextLocaleGlobals(window, nextData);
   root.render(element);
@@ -936,11 +1084,36 @@ async function navigateClient(url: string, fetchUrl = url): Promise<void> {
   }
 
   try {
-    const dataTarget = resolvePagesDataNavigationTarget(url, __basePath);
+    let browserUrl = url;
+    let htmlFetchUrl = fetchUrl;
+    const dataTarget = resolvePagesDataNavigationTarget(browserUrl, __basePath);
+    if (!dataTarget) {
+      let redirectLocation: string | null;
+      try {
+        redirectLocation = await resolveMiddlewareDataRedirect(browserUrl, controller.signal);
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          throw new NavigationCancelledError(browserUrl);
+        }
+        throw err;
+      }
+      assertStillCurrent();
+      if (redirectLocation) {
+        const redirectedUrl = resolveLocalRedirectUrl(redirectLocation);
+        if (!redirectedUrl) {
+          scheduleHardNavigationAndThrow(redirectLocation, "Navigation redirected externally");
+        }
+        window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
+        _lastPathnameAndSearch = window.location.pathname + window.location.search;
+        browserUrl = redirectedUrl;
+        htmlFetchUrl = redirectedUrl;
+      }
+    }
+
     if (dataTarget) {
-      await navigateClientData(url, dataTarget, controller, navId, assertStillCurrent);
+      await navigateClientData(browserUrl, dataTarget, controller, navId, assertStillCurrent);
     } else {
-      await navigateClientHtml(url, fetchUrl, controller, navId, assertStillCurrent);
+      await navigateClientHtml(browserUrl, htmlFetchUrl, controller, navId, assertStillCurrent);
     }
   } finally {
     // Clean up the abort controller if this navigation is still the active one
@@ -1108,14 +1281,13 @@ async function performNavigation(
     throwNoRouterInstance();
   }
 
-  // Block dangerous URI schemes (javascript:, data:, vbscript:) before any
-  // navigation work happens. Mirrors Next.js's Pages Router guard at
-  // packages/next/src/shared/lib/router/router.ts:1020-1028,1052-1060, which
-  // throws and (via React's event-handler runtime) surfaces a console.error
-  // that the `test/e2e/app-dir/javascript-urls/javascript-urls.test.ts` suite
-  // asserts on. `assertSafeNavigationUrl` emits the matching console.error
-  // before throwing so the same observable behaviour holds when the throw is
-  // swallowed by an async event handler (e.g. Link's click delegation).
+  // Defence-in-depth dangerous-scheme guard. The synchronous guard inside
+  // `Router.push` / `Router.replace` (see RouterMethods below) is the primary
+  // line of defence and is what surfaces the matching console.error to React's
+  // event-handler runtime. This inner guard catches any future call sites
+  // that bypass the public Router methods and call `performNavigation`
+  // directly. Mirrors Next.js's Pages Router check at
+  // packages/next/src/shared/lib/router/router.ts:1025-1033,1057-1065.
   assertSafeNavigationUrl(resolveUrl(url));
   if (as !== undefined) {
     assertSafeNavigationUrl(String(as));
@@ -1444,10 +1616,28 @@ export function withRouter<P extends WithRouterProps>(
 const RouterMethods = {
   push: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
     if (typeof window === "undefined") throwNoRouterInstance();
+    // Synchronously guard dangerous URI schemes (javascript:, data:, vbscript:)
+    // before the async performNavigation kicks off. Mirrors Next.js's
+    // Pages Router `push` at packages/next/src/shared/lib/router/router.ts:1025-1033,
+    // where the check runs synchronously inside push() so the throw bubbles up
+    // through React's event-handler error reporter (surfacing console.error).
+    // Without this synchronous hoist, the throw inside `performNavigation`
+    // (an async function) becomes a rejected Promise that React does not
+    // observe from an event handler that does not await it (e.g.
+    // `<button onClick={() => router.push(...)}>`).
+    assertSafeNavigationUrl(resolveUrl(url));
+    if (as !== undefined) {
+      assertSafeNavigationUrl(String(as));
+    }
     return performNavigation(url, as, options, "push");
   },
   replace: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
     if (typeof window === "undefined") throwNoRouterInstance();
+    // See `push` above for the rationale on the synchronous guard.
+    assertSafeNavigationUrl(resolveUrl(url));
+    if (as !== undefined) {
+      assertSafeNavigationUrl(String(as));
+    }
     return performNavigation(url, as, options, "replace");
   },
   back: () => {

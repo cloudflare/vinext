@@ -60,7 +60,10 @@ declare global {
      * client-side navigation.
      */
     __VINEXT_APP__:
-      | React.ComponentType<{ Component: React.ComponentType<unknown>; pageProps: unknown }>
+      | React.ComponentType<{
+          Component: React.ComponentType<Record<string, unknown>>;
+          pageProps: unknown;
+        }>
       | undefined;
 
     /**
@@ -333,12 +336,6 @@ declare global {
 declare global {
   namespace NodeJS {
     interface ProcessEnv {
-      /**
-       * UUID secret used to sign/validate the Next.js draft-mode cookie.
-       * Generated once at build time and injected via Vite `define`.
-       */
-      __VINEXT_DRAFT_SECRET?: string;
-
       /**
        * Build ID string injected via Vite `define` at production build time.
        * Matches `next.config.js` → `buildId` (or a generated UUID when unset).
