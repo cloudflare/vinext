@@ -453,6 +453,15 @@ describe("instrumentationClientInject plugin pipeline", () => {
     );
   });
 
+  it("falls back to empty-module fallback when injects is empty and no user file exists", async () => {
+    await withInjectClientServer({ instrumentationClientInject: [] }, async ({ container }) => {
+      const resolved = await container.resolveId("private-next-instrumentation-client");
+      expect(resolved).toBeTruthy();
+      expect(resolved!.id).not.toBe(RESOLVED_INSTRUMENTATION_CLIENT);
+      expect(resolved!.id.replace(/\\/g, "/")).toContain("empty-module");
+    });
+  });
+
   it("serves and composes the virtual module in inject order", async () => {
     await withInjectClientServer(
       {
@@ -475,7 +484,12 @@ describe("instrumentationClientInject plugin pipeline", () => {
         const entryPath = path.join(tmpDir, ".vinext-composed-instrumentation-client.mjs");
         fs.writeFileSync(entryPath, code);
         delete (globalThis as { __injectOrder?: string[] }).__injectOrder;
-        const mod = (await import(pathToFileURL(entryPath).href)) as {
+        // Node's ESM loader permanently caches imports based on their URL. Since integration
+        // tests reuse temporary workspace directories, we use a cache-busting query parameter
+        // to force Node to load the newly generated virtual module instead of a stale cached version.
+        const mod = (await import(
+          pathToFileURL(entryPath).href + `?t=${Date.now()}-${Math.random()}`
+        )) as {
           onRouterTransitionStart?: (url: string, type: string) => void;
         };
         mod.onRouterTransitionStart?.("/x", "push");
@@ -500,7 +514,12 @@ describe("instrumentationClientInject plugin pipeline", () => {
         fs.writeFileSync(entryPath, getLoadedCode(await container.load(resolved!.id)));
 
         delete (globalThis as { __sideEffect?: boolean }).__sideEffect;
-        const mod = (await import(pathToFileURL(entryPath).href)) as {
+        // Node's ESM loader permanently caches imports based on their URL. Since integration
+        // tests reuse temporary workspace directories, we use a cache-busting query parameter
+        // to force Node to load the newly generated virtual module instead of a stale cached version.
+        const mod = (await import(
+          pathToFileURL(entryPath).href + `?t=${Date.now()}-${Math.random()}`
+        )) as {
           onRouterTransitionStart?: (url: string, type: string) => void;
         };
         expect((globalThis as { __sideEffect?: boolean }).__sideEffect).toBe(true);

@@ -657,8 +657,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasAppDir = false;
   let hasPagesDir = false;
   let nextConfig: ResolvedNextConfig;
-  /** Tracks which project root {@link nextConfig} was loaded for (guards multi-env / test setups). */
-  let nextConfigRoot: string | undefined;
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   let middlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
@@ -1059,11 +1057,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Note: fileMatcher, instrumentationPath, etc. are intentionally set
         // outside this guard — they are cheap and deterministic, and keeping
         // them here ensures they reflect the final resolved root on every call.
-        // Reload when the project root changes. Vite's multi-environment config()
-        // can fire once per environment; the first call may see a different root
-        // (e.g. Vitest's workspace root) before the final createServer({ root }).
-        if (!nextConfig || nextConfigRoot !== root) {
-          nextConfigRoot = root;
+        if (!nextConfig) {
           const phase =
             env?.command === "build" ? PHASE_PRODUCTION_BUILD : PHASE_DEVELOPMENT_SERVER;
           let rawConfig: NextConfig | null;
