@@ -121,7 +121,7 @@ describe("pagesRouter - route discovery", () => {
       await writeFile(path.join(pagesDir, "index.tsx"), EMPTY_PAGE);
       await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
 
-      invalidateRouteCache();
+      invalidateRouteCache(pagesDir);
       const routes = await pagesRouter(pagesDir);
       const patterns = routes.map((r) => r.pattern);
 

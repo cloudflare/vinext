@@ -23,7 +23,7 @@ import type { Server as HttpServer } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
-import { BLOCKED_PAGES } from "../shims/constants.js";
+import { BLOCKED_PAGES } from "vinext/shims/constants";
 import { classifyPagesRoute, classifyAppRoute, getAppRouteRenderEntryPath } from "./report.js";
 import {
   concatUint8Arrays,
