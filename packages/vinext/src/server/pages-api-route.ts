@@ -9,6 +9,7 @@ import {
   type PagesReqResResponse,
   PagesApiBodyParseError,
 } from "./pages-node-compat.js";
+import { resolveBodyParserConfig } from "./pages-body-parser-config.js";
 import { internalServerErrorResponse } from "./http-error-responses.js";
 import { isEdgeApiRuntime } from "./edge-api-runtime.js";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
@@ -16,6 +17,22 @@ import { NextRequest } from "vinext/shims/server";
 
 type PagesApiRouteConfig = {
   runtime?: string;
+  /**
+   * `export const config = { api: { bodyParser: false | { sizeLimit: '4mb' } } }`
+   * — controls whether vinext parses the request body for the route handler.
+   *
+   * `bodyParser: false` is critical for webhook handlers (Stripe, GitHub,
+   * Slack, etc.) that need to read the raw bytes to verify an HMAC
+   * signature. With it set, `req.body` is left undefined and the raw stream
+   * is exposed on `req.body` as a Web `ReadableStream<Uint8Array>` so user
+   * code can consume it.
+   *
+   * @see https://nextjs.org/docs/pages/building-your-application/routing/api-routes#custom-config
+   */
+  api?: {
+    bodyParser?: boolean | { sizeLimit?: string | number };
+    responseLimit?: boolean | string | number;
+  };
 };
 
 type PagesNodeApiRouteHandler = (
@@ -118,7 +135,18 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     }
 
     const query = buildPagesApiQuery(options.url, params);
-    const body = await parsePagesApiBody(options.request);
+
+    // Honour `export const config = { api: { bodyParser: ... } }` on the
+    // route module. When the handler opts out (`bodyParser: false`) we must
+    // not consume the stream — leave `req.body` as the raw Web
+    // `ReadableStream<Uint8Array>` so user code (e.g. a Stripe/GitHub
+    // webhook) can read the raw bytes for HMAC verification.
+    const bodyParserConfig = resolveBodyParserConfig(route.module.config);
+
+    const body = bodyParserConfig.enabled
+      ? await parsePagesApiBody(options.request, bodyParserConfig.sizeLimit)
+      : (options.request.body ?? undefined);
+
     const { req, res, responsePromise } = createPagesReqRes({
       body,
       query,

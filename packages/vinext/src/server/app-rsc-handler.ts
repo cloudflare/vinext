@@ -19,6 +19,7 @@ import {
   RSC_ACTION_HEADER,
   RSC_HEADER,
   VINEXT_MW_CTX_HEADER,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
 } from "./headers.js";
 import { ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
@@ -59,6 +60,11 @@ import {
   resolvePublicFileRoute,
   validateImageUrl,
 } from "./request-pipeline.js";
+import {
+  prerenderRouteParamsPayloadMatchesRoute,
+  readTrustedPrerenderRouteParams,
+  serializePrerenderRouteParamsHeader,
+} from "./prerender-route-params.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -97,6 +103,7 @@ type DispatchMatchedPageOptions<TRoute> = {
   middlewareContext: AppRscMiddlewareContext;
   mountedSlotsHeader: string | null;
   params: AppPageParams;
+  staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
   request: Request;
   route: TRoute;
@@ -553,6 +560,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   if (!match) {
+    // Dev-only favicon short-circuit: browsers auto-request /favicon.ico on
+    // every page load. Don't compile/render the not-found page for it.
+    // Check `canonicalPathname` (the original browser-requested URL) so a
+    // middleware rewrite that lands on `/favicon.ico` still falls through to
+    // the normal not-found render.
+    // Matches Next.js: packages/next/src/server/lib/router-server.ts —
+    // condition `parsedUrl.pathname === '/favicon.ico'`.
+    if (process.env.NODE_ENV !== "production" && canonicalPathname === "/favicon.ico") {
+      options.clearRequestContext();
+      return new Response("", { status: 404 });
+    }
+
     const pagesFallbackResponse = await options.renderPagesFallback?.({
       isRscRequest,
       middlewareContext,
@@ -580,12 +599,21 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const { route, params } = match;
+  const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
+  const prerenderRouteParams = prerenderRouteParamsPayloadMatchesRoute(
+    prerenderRouteParamsPayload,
+    route.pattern,
+    params,
+  )
+    ? prerenderRouteParamsPayload.params
+    : null;
+  const renderParams = prerenderRouteParams ?? params;
   options.setNavigationContext({
     pathname: canonicalPathname,
     searchParams: url.searchParams,
-    params,
+    params: renderParams,
   });
-  const rootParams = pickRootParams(params, route.rootParamNames);
+  const rootParams = pickRootParams(renderParams, route.rootParamNames);
   setRootParams(rootParams);
 
   if (route.routeHandler) {
@@ -599,7 +627,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // bookkeeping above (navigation context, root params) keeps the matched
       // object (always `{}` for non-dynamic) so `useParams()` etc. still see
       // an object shape; only the user-facing handler context surfaces null.
-      params: route.isDynamic ? params : null,
+      params: route.isDynamic ? renderParams : null,
       request,
       route,
       searchParams: url.searchParams,
@@ -617,7 +645,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     isRscRequest,
     middlewareContext,
     mountedSlotsHeader,
-    params,
+    params: renderParams,
+    staticParamsValidationParams: prerenderRouteParams === null ? undefined : params,
     rootParams,
     request,
     route,
@@ -650,9 +679,24 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     // protocol needs to know whether the inbound request was a `_next/data`
     // fetch to emit `x-nextjs-redirect` instead of an HTTP redirect.
     const isDataRequest = rawRequest.headers.get("x-nextjs-data") === "1";
+    // Read the trusted prerender route params before filtering strips the
+    // route-params header (it IS in VINEXT_INTERNAL_HEADERS), then re-attach the
+    // validated value below so the second read in handleAppRscRequest still sees
+    // it. The secret was already verified upstream at prod-server's
+    // nodeToWebRequest boundary; the surviving secret header (NOT in either
+    // internal-header list) lets readTrustedPrerenderRouteParams's
+    // VINEXT_PRERENDER gate pass on the reconstructed request. If the secret
+    // header is ever added to VINEXT_INTERNAL_HEADERS, that second read breaks.
+    const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(rawRequest);
     const filteredHeaders = filterInternalHeaders(rawRequest.headers);
     if (mwCtx !== null) {
       filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
+    }
+    const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
+      prerenderRouteParamsPayload,
+    );
+    if (prerenderRouteParamsHeader !== null) {
+      filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
     }
     const request = cloneRequestWithHeaders(rawRequest, filteredHeaders);
 

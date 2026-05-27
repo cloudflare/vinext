@@ -34,6 +34,8 @@ import path from "node:path";
 import type { CachedAppPageValue } from "vinext/shims/cache";
 import { isrCacheKey, isrSetPrerenderedAppPage } from "./isr-cache.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
+import { normalizePathnameForRouteMatch } from "../routing/utils.js";
+import { normalizePath } from "./normalize-path.js";
 
 // ─── Manifest types ───────────────────────────────────────────────────────────
 
@@ -105,13 +107,14 @@ export async function seedMemoryCacheFromPrerender(
     if (route.status !== "rendered") continue;
     if (route.router !== "app") continue;
 
-    const pathname = route.path ?? route.route;
+    const artifactPathname = route.path ?? route.route;
+    const cachePathname = normalizePrerenderCachePathname(artifactPathname);
     // Fallback keys support older generated entries that do not export their
     // runtime key builders. Current App Router entries inject buildAppPage*Key
     // so seeded keys match process.env.__VINEXT_BUILD_ID exactly.
-    const baseKey = isrCacheKey("app", pathname, buildId);
-    const htmlKey = options?.buildAppPageHtmlKey?.(pathname) ?? baseKey + ":html";
-    const rscKey = options?.buildAppPageRscKey?.(pathname) ?? baseKey + ":rsc";
+    const baseKey = isrCacheKey("app", cachePathname, buildId);
+    const htmlKey = options?.buildAppPageHtmlKey?.(cachePathname) ?? baseKey + ":html";
+    const rscKey = options?.buildAppPageRscKey?.(cachePathname) ?? baseKey + ":rsc";
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
     const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
 
@@ -120,7 +123,7 @@ export async function seedMemoryCacheFromPrerender(
         writeAppPageEntry,
         prerenderDir,
         htmlKey,
-        pathname,
+        artifactPathname,
         trailingSlash,
         revalidateSeconds,
         expireSeconds,
@@ -130,7 +133,7 @@ export async function seedMemoryCacheFromPrerender(
         writeAppPageEntry,
         prerenderDir,
         rscKey,
-        pathname,
+        artifactPathname,
         revalidateSeconds,
         expireSeconds,
       );
@@ -142,6 +145,10 @@ export async function seedMemoryCacheFromPrerender(
 }
 
 // ─── Internals ────────────────────────────────────────────────────────────────
+
+function normalizePrerenderCachePathname(pathname: string): string {
+  return normalizePath(normalizePathnameForRouteMatch(pathname));
+}
 
 function createDefaultAppPageEntryWriter(): NonNullable<
   PrerenderCacheSeedOptions["writeAppPageEntry"]
