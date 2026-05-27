@@ -5,15 +5,60 @@
  * rendered, which changes across navigations. This normalizes to a canonical form
  * (sorted, deduplicated) so equivalent slot sets map to the same RSC cache entry.
  *
+ * Security: the value flows into the ISR RSC cache key (`appIsrRscKey`). Without
+ * bounds, an attacker who controls this header can fabricate unbounded distinct
+ * values to fan out KV writes (per-write billing) or fragment the cache. See
+ * `SECURITY-AUDIT-2026-05.md` finding F-PROD-1. The legitimate wire format is a
+ * whitespace-separated list of `slot:<name>:<treePath>` tokens (see
+ * `createAppPayloadSlotId` in `app-elements-wire.ts`); anything else is rejected.
+ *
+ * Bounds applied:
+ *   - Total raw header value capped at MAX_RAW_HEADER_LENGTH bytes (returns null
+ *     if exceeded so the request is treated as if the header were absent).
+ *   - Each token capped at MAX_TOKEN_LENGTH bytes.
+ *   - Token count capped at MAX_SLOT_TOKENS (extras are dropped after sort + dedup).
+ *   - Each token must match the legitimate `slot:<name>:<treePath>` shape where
+ *     `<name>` is non-empty and `<treePath>` starts with `/`. Malformed tokens
+ *     are dropped silently rather than rejecting the whole request — this matches
+ *     the prior forgiving behavior for browsers that send legitimate but stale
+ *     formats during rolling deploys.
+ *
  * Consumed by:
  *   - app-rsc-request-normalization (request lifecycle, reads incoming header)
  *   - app-elements (outgoing x-vinext-mounted-slots construction)
  *   - isr-cache (RSC cache key generation)
  */
+
+/** Hard cap on the raw header value byte length. Real values are <1 KB. */
+const MAX_RAW_HEADER_LENGTH = 4096;
+/** Hard cap on a single slot token byte length. */
+const MAX_TOKEN_LENGTH = 256;
+/** Hard cap on the number of slot tokens kept after normalization. */
+const MAX_SLOT_TOKENS = 16;
+
+/**
+ * Validate a single mounted-slot token against the wire format.
+ *
+ * Format: `slot:<name>:<treePath>` where:
+ *   - `<name>` is non-empty and contains no `:` (matches `parseAppElementsWireElementKey`
+ *     which splits on the first `:` in the body).
+ *   - `<treePath>` starts with `/` (matches `parseTreePath`).
+ */
+function isValidSlotToken(token: string): boolean {
+  if (token.length === 0 || token.length > MAX_TOKEN_LENGTH) return false;
+  if (!token.startsWith("slot:")) return false;
+  const body = token.slice("slot:".length);
+  const separatorIndex = body.indexOf(":");
+  if (separatorIndex <= 0) return false;
+  // body[separatorIndex + 1] must be `/` so the tree path is absolute.
+  return body.charCodeAt(separatorIndex + 1) === 0x2f;
+}
+
 export function normalizeMountedSlotsHeader(raw: string | null | undefined): string | null {
   if (!raw) return null;
-  const normalized = Array.from(new Set(raw.split(/\s+/).filter(Boolean)))
-    .sort()
-    .join(" ");
+  if (raw.length > MAX_RAW_HEADER_LENGTH) return null;
+  const validTokens = raw.split(/\s+/).filter((token) => token && isValidSlotToken(token));
+  if (validTokens.length === 0) return null;
+  const normalized = Array.from(new Set(validTokens)).sort().slice(0, MAX_SLOT_TOKENS).join(" ");
   return normalized || null;
 }

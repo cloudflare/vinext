@@ -156,11 +156,44 @@ describe("App Router ISR cache key primitives", () => {
   it("keys mounted-slot RSC variants by normalized mounted-slot header", () => {
     delete process.env.__VINEXT_BUILD_ID;
 
-    const first = appIsrRscKey("/feed", "modal sidebar");
-    const second = appIsrRscKey("/feed", "sidebar modal");
+    const first = appIsrRscKey("/feed", "slot:modal:/ slot:sidebar:/");
+    const second = appIsrRscKey("/feed", "slot:sidebar:/ slot:modal:/");
 
     expect(first).toBe(second);
     expect(first).toMatch(/^app:\/feed:rsc:slots:[a-z0-9]+$/);
+  });
+
+  it("bounds RSC cache-key cardinality against attacker-supplied mounted-slot values", () => {
+    // SECURITY-AUDIT-2026-05 F-PROD-1: an attacker who forges
+    // X-Vinext-Mounted-Slots: <unique-value> must not be able to fan out
+    // unbounded distinct cache keys (per-write KV billing / wallet attack).
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const keys = new Set<string>();
+    for (let i = 0; i < 1000; i++) {
+      // Each of these violates the legitimate slot:<name>:<treePath> wire
+      // shape and must be dropped by normalization.
+      keys.add(appIsrRscKey("/feed", `attacker-${i}`));
+    }
+    // All 1000 distinct attacker values collapse to the same "no slots" key.
+    expect(keys.size).toBe(1);
+    expect(keys.values().next().value).toBe("app:/feed:rsc");
+  });
+
+  it("caps cache-key cardinality when an attacker pads the mounted-slots header", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    // Even when every token has the legitimate wire shape, the raw header
+    // length is capped (4096 bytes). When attacker payloads exceed the cap
+    // they are dropped to null, collapsing into the no-slots cache key.
+    const keys = new Set<string>();
+    for (let batch = 0; batch < 100; batch++) {
+      // 1000 legitimate tokens per batch easily exceeds the 4 KiB length cap.
+      const tokens = Array.from({ length: 1000 }, (_, i) => `slot:b${batch}_s${i}:/`).join(" ");
+      keys.add(appIsrRscKey("/feed", tokens));
+    }
+    expect(keys.size).toBe(1);
+    expect(keys.values().next().value).toBe("app:/feed:rsc");
   });
 
   it("keys RSC refresh variants separately from normal navigation variants", () => {
@@ -169,7 +202,7 @@ describe("App Router ISR cache key primitives", () => {
     expect(appIsrRscKey("/feed", null, APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI)).toBe(
       "app:/feed:rsc:preserve-ui",
     );
-    expect(appIsrRscKey("/feed", "modal", APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI)).toMatch(
+    expect(appIsrRscKey("/feed", "slot:modal:/", APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI)).toMatch(
       /^app:\/feed:rsc:slots:[a-z0-9]+:preserve-ui$/,
     );
   });
@@ -180,9 +213,9 @@ describe("App Router ISR cache key primitives", () => {
     expect(appIsrRscKey("/feed", null, APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL)).toBe(
       "app:/feed:rsc:prefetch-loading-shell",
     );
-    expect(appIsrRscKey("/feed", "modal", APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL)).toMatch(
-      /^app:\/feed:rsc:slots:[a-z0-9]+:prefetch-loading-shell$/,
-    );
+    expect(
+      appIsrRscKey("/feed", "slot:modal:/", APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL),
+    ).toMatch(/^app:\/feed:rsc:slots:[a-z0-9]+:prefetch-loading-shell$/);
   });
 
   it("round-trips normal and preserve-current-UI RSC payloads under separate keys", async () => {
@@ -221,9 +254,9 @@ describe("normalizeMountedSlotsHeader", () => {
   });
 
   it("deduplicates and sorts whitespace-separated slot ids", () => {
-    expect(normalizeMountedSlotsHeader(" sidebar  modal sidebar\tcart ")).toBe(
-      "cart modal sidebar",
-    );
+    expect(
+      normalizeMountedSlotsHeader(" slot:sidebar:/  slot:modal:/ slot:sidebar:/\tslot:cart:/ "),
+    ).toBe("slot:cart:/ slot:modal:/ slot:sidebar:/");
   });
 });
 

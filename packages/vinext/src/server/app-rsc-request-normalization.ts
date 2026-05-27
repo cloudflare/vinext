@@ -12,6 +12,7 @@ import {
   parseClientReuseManifestHeader,
   type ClientReuseManifestParseResult,
 } from "./client-reuse-manifest.js";
+import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import { stripRscSuffix } from "./app-rsc-cache-busting.js";
 import {
@@ -111,10 +112,16 @@ export function normalizeRscRequest(
   const isRscRequest = pathname.endsWith(".rsc");
   const cleanPathname = stripRscSuffix(pathname);
 
-  // Step 8: Sanitize X-Vinext-Interception-Context.
-  // Null bytes in header values can be used for injection in some HTTP stacks.
-  const interceptionContextHeader =
-    request.headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER)?.replaceAll("\0", "") || null;
+  // Step 8: Validate and sanitize X-Vinext-Interception-Context.
+  //
+  // The legitimate value is always a same-origin URL pathname (`/feed`,
+  // `/photos/42`, …) emitted by the vinext browser entry. We strip null bytes
+  // (header-injection defense), bound length, and require a pathname-shaped
+  // value so an attacker cannot fan out unbounded distinct values into the
+  // RSC / optimistic-route cache keys. See SECURITY-AUDIT-2026-05.md F-PROD-1.
+  const interceptionContextHeader = normalizeInterceptionContextHeader(
+    request.headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
+  );
 
   // Step 9: Normalize mounted-slots header for canonical cache keying.
   const mountedSlotsHeader = normalizeMountedSlotsHeader(
