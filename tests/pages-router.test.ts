@@ -357,6 +357,17 @@ describe("Pages Router integration", () => {
     expect(html).toContain("This is the about page.");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/action-in-pages-router/action-in-pages-router.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/action-in-pages-router/action-in-pages-router.test.ts
+  it("preserves literal action:foo in form action attribute", async () => {
+    const res = await fetch(`${baseUrl}/action-string-test`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // React 19 may strip action: strings if it mistakes them for server action IDs.
+    expect(html).toContain('action="action:foo"');
+  });
+
   // Ported from Next.js: test/e2e/async-modules/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/async-modules/index.test.ts
   it("renders pages that use top-level await (async modules)", async () => {
