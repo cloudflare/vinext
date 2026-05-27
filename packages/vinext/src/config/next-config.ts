@@ -213,6 +213,12 @@ export type NextConfig = {
   output?: "export" | "standalone";
   /** File extensions treated as routable pages/routes (Next.js pageExtensions) */
   pageExtensions?: string[];
+  /**
+   * Module specifiers that are required for side effects on the client before
+   * hydration, in array order, ahead of the user's `instrumentation-client.{ts,js}`.
+   * Each entry may be a bare npm package name or a path relative to the project root.
+   */
+  instrumentationClientInject?: string[];
   /** Extra origins allowed to access the dev server. */
   allowedDevOrigins?: string[];
   /** Maximum age in seconds for stale ISR entries before blocking regeneration. */
@@ -302,6 +308,7 @@ export type ResolvedNextConfig = {
   trailingSlash: boolean;
   output: "" | "export" | "standalone";
   pageExtensions: string[];
+  instrumentationClientInject: string[];
   cacheComponents: boolean;
   redirects: NextRedirect[];
   rewrites: {
@@ -1009,6 +1016,7 @@ export async function resolveNextConfig(
       deploymentId,
       sassOptions: null,
       removeConsole: false,
+      instrumentationClientInject: [],
     };
     detectNextIntlConfig(root, resolved);
     return resolved;
@@ -1198,6 +1206,11 @@ export async function resolveNextConfig(
     trailingSlash: config.trailingSlash ?? false,
     output: output === "export" || output === "standalone" ? output : "",
     pageExtensions,
+    instrumentationClientInject: Array.isArray(config.instrumentationClientInject)
+      ? (config.instrumentationClientInject as unknown[]).filter(
+          (x): x is string => typeof x === "string",
+        )
+      : [],
     cacheComponents: config.cacheComponents ?? false,
     redirects,
     rewrites,

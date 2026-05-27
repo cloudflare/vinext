@@ -16,7 +16,9 @@ import {
   validateServerActionPayload,
   validateImageUrl,
   processMiddlewareHeaders,
+  VINEXT_INTERNAL_HEADERS,
 } from "../packages/vinext/src/server/request-pipeline.js";
+import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER } from "../packages/vinext/src/server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/server/middleware-request-headers.js";
 
 // ── guardProtocolRelativeUrl ────────────────────────────────────────────
@@ -716,6 +718,20 @@ describe("filterInternalHeaders", () => {
     }
     expect(result.get("user-agent")).toBe("test");
     expect(result.get("cookie")).toBe("session=abc");
+  });
+
+  it("strips vinext-only internal headers without extending Next.js INTERNAL_HEADERS", () => {
+    const headers = new Headers({
+      [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: "forged",
+      "user-agent": "test",
+    });
+
+    const result = filterInternalHeaders(headers);
+
+    expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER);
+    expect(VINEXT_INTERNAL_HEADERS).toEqual([VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]);
+    expect(result.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)).toBe(false);
+    expect(result.get("user-agent")).toBe("test");
   });
 
   it("strips headers case-insensitively", () => {

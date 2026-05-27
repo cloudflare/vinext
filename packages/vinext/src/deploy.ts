@@ -883,10 +883,23 @@ export default {
       // ── 9. Page routes ────────────────────────────────────────────
       let response: Response | undefined;
       if (typeof renderPage === "function") {
-        response = await renderPage(request, resolvedUrl, null, ctx);
+        const renderPageMatch =
+          typeof matchPageRoute === "function" ? matchPageRoute(resolvedPathname, request) : null;
+        const shouldDeferErrorPageOnMiss =
+          !isDataRequest && typeof matchPageRoute === "function" && !renderPageMatch;
+        const initialRenderOptions = shouldDeferErrorPageOnMiss
+          ? { renderErrorPageOnMiss: false }
+          : undefined;
+        response = await renderPage(request, resolvedUrl, null, ctx, undefined, initialRenderOptions);
 
         // ── 10. Fallback rewrites (if SSR returned 404) ─────────────
-        if (response && response.status === 404 && configRewrites.fallback?.length) {
+        let matchedFallbackRewrite = false;
+        if (
+          response &&
+          response.status === 404 &&
+          shouldDeferErrorPageOnMiss &&
+          configRewrites.fallback?.length
+        ) {
           const fallbackRewrite = matchRewrite(
             matchResolvedPathname(resolvedPathname),
             configRewrites.fallback,
@@ -897,6 +910,7 @@ export default {
             if (isExternalUrl(fallbackRewrite)) {
               return proxyExternalRequest(request, fallbackRewrite);
             }
+            matchedFallbackRewrite = true;
             response = await renderPage(
               request,
               mergeRewriteQuery(resolvedUrl, fallbackRewrite),
@@ -904,6 +918,14 @@ export default {
               ctx,
             );
           }
+        }
+        if (
+          response &&
+          response.status === 404 &&
+          shouldDeferErrorPageOnMiss &&
+          !matchedFallbackRewrite
+        ) {
+          response = await renderPage(request, resolvedUrl, null, ctx);
         }
       }
 
