@@ -131,6 +131,7 @@ import {
   type BundleBackfillChunk,
 } from "./build/ssr-manifest.js";
 import { stripServerExports } from "./plugins/strip-server-exports.js";
+import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -3401,6 +3402,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (/\/_(?:app|document|error)\b/.test(relativePath)) return null;
 
           const result = stripServerExports(code);
+          if (!result) return null;
+          return { code: result, map: null };
+        },
+      },
+    },
+    // Strip console.* calls from the client bundle when compiler.removeConsole
+    // is enabled in next.config. Mirrors Next.js's SWC remove_console transform.
+    // Only applies to client builds; SSR/server-side console logging is left
+    // untouched so debugging server code remains possible.
+    {
+      name: "vinext:remove-console",
+      transform: {
+        // Only match source files, not node_modules or virtual modules
+        filter: { id: /\.(tsx?|jsx?|mjs)$/ },
+        handler(code, id) {
+          const ssr = this.environment?.name !== "client";
+          if (ssr) return null;
+          if (!nextConfig.removeConsole) return null;
+          // Skip node_modules — Next.js only strips application code
+          if (id.includes("/node_modules/")) return null;
+
+          const result = removeConsoleCalls(code, nextConfig.removeConsole);
           if (!result) return null;
           return { code: result, map: null };
         },

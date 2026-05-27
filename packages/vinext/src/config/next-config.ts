@@ -242,6 +242,14 @@ export type NextConfig = {
   /** Webpack config (ignored — we use Vite) */
   webpack?: unknown;
   /**
+   * Compiler options for build-time code transforms.
+   * vinext supports the subset that maps to Vite-compatible transforms.
+   */
+  compiler?: {
+    /** Remove `console.*` calls from the client bundle. */
+    removeConsole?: boolean | { exclude?: string[] };
+  };
+  /**
    * Path to a custom cache handler module (e.g., KV, Redis, DynamoDB).
    * Accepts relative paths, absolute paths, or file:// URLs from import.meta.resolve().
    * When "type": "module" is set in package.json, use import.meta.resolve() instead of
@@ -360,6 +368,13 @@ export type ResolvedNextConfig = {
    * the object is forwarded to Sass and may contain any modern Sass option.
    */
   sassOptions: Record<string, unknown> | null;
+  /**
+   * When enabled, strip `console.*` calls from the client bundle.
+   * Mirrors Next.js `compiler.removeConsole` option.
+   * `true` strips all console calls; `{ exclude: ["error"] }` strips all
+   * except the specified method names (case-insensitive).
+   */
+  removeConsole: boolean | { exclude: string[] };
 };
 
 // Mirrors Next.js's accepted set in packages/next/src/shared/lib/constants.ts
@@ -993,6 +1008,7 @@ export async function resolveNextConfig(
       buildId,
       deploymentId,
       sassOptions: null,
+      removeConsole: false,
     };
     detectNextIntlConfig(root, resolved);
     return resolved;
@@ -1204,6 +1220,12 @@ export async function resolveNextConfig(
     buildId,
     deploymentId,
     sassOptions: readOptionalRecord(config.sassOptions) ?? null,
+    removeConsole:
+      config.compiler?.removeConsole === true
+        ? true
+        : isUnknownRecord(config.compiler?.removeConsole)
+          ? { exclude: readStringArray(config.compiler!.removeConsole.exclude) }
+          : false,
   };
 
   // Auto-detect next-intl (lowest priority — explicit aliases from
