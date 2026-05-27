@@ -3453,8 +3453,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // getBaseSWCOptions, which feeds both isServer:true and isServer:false
     // configs); vinext scopes it to client-only so server-side console logging
     // remains available for debugging. Tracked as a known parity gap.
+    // Production-only — Next.js documents removeConsole as a production-build
+    // feature, and stripping logs in dev would silently hide debugging output.
     {
       name: "vinext:remove-console",
+      apply: "build",
       transform: {
         // Only match source files, not node_modules or virtual modules
         filter: { id: /\.(tsx?|jsx?|mjs)$/ },

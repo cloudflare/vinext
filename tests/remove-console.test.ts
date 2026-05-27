@@ -157,6 +157,91 @@ function foo({ console }) {
     expect(result).toBeNull();
   });
 
+  it("preserves console with default in destructured param: ({ console = {} })", () => {
+    const code = `
+function foo({ console = {} }) {
+  console.log("destructured-default");
+}
+`;
+    expect(removeConsoleCalls(code, true)).toBeNull();
+  });
+
+  it("preserves console as default-valued positional param: (console = {})", () => {
+    const code = `
+function foo(console = { log: () => {} }) {
+  console.log("default-param");
+}
+`;
+    expect(removeConsoleCalls(code, true)).toBeNull();
+  });
+
+  it("preserves console bound as a rest param: (...console)", () => {
+    const code = `
+function foo(...console) {
+  console.log("rest");
+}
+`;
+    expect(removeConsoleCalls(code, true)).toBeNull();
+  });
+
+  it("preserves console bound via array destructuring", () => {
+    const code = `
+const [console] = [{ log: () => {} }];
+console.log("array-destructured");
+`;
+    expect(removeConsoleCalls(code, true)).toBeNull();
+  });
+
+  it("preserves console bound via nested array destructuring", () => {
+    const code = `
+const [[console]] = [[{ log: () => {} }]];
+console.log("nested-array-destructured");
+`;
+    expect(removeConsoleCalls(code, true)).toBeNull();
+  });
+
+  it("preserves console bound via rest in array destructuring", () => {
+    const code = `
+const [, ...console] = [1, 2, 3];
+console.log("rest-destructured");
+`;
+    expect(removeConsoleCalls(code, true)).toBeNull();
+  });
+
+  it("preserves console when shadowed by a function declaration name", () => {
+    const code = `
+function console(...args) {}
+console.log("function-decl-name");
+`;
+    expect(removeConsoleCalls(code, true)).toBeNull();
+  });
+
+  it("preserves console when shadowed by a class declaration name", () => {
+    const code = `
+class console {}
+console.log("class-decl-name");
+`;
+    expect(removeConsoleCalls(code, true)).toBeNull();
+  });
+
+  it("preserves console inside a named FunctionExpression named console", () => {
+    const code = `
+const x = function console() {
+  console.log("named-fn-expr");
+};
+`;
+    expect(removeConsoleCalls(code, true)).toBeNull();
+  });
+
+  it("preserves console when shadowed by a CatchClause param", () => {
+    const code = `
+try { throw 0; } catch (console) {
+  console.log("catch-param");
+}
+`;
+    expect(removeConsoleCalls(code, true)).toBeNull();
+  });
+
   it("preserves computed property access console[prop]()", () => {
     const code = `
 const method = "log";

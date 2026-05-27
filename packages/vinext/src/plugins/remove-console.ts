@@ -86,8 +86,11 @@ export function removeConsoleCalls(code: string, config: RemoveConsoleConfig): s
 
   /**
    * Check if a node introduces a binding named "console" and mark scope.
+   * Recurses into all binding-pattern node types (destructuring shapes,
+   * defaults, rest elements).
    */
-  function checkBinding(node: BindingNode): void {
+  function checkBinding(node: BindingNode | null | undefined): void {
+    if (!node) return;
     // oxlint-disable-next-line typescript/switch-exhaustiveness-check
     switch (node.type) {
       case "Identifier": {
@@ -103,12 +106,35 @@ export function removeConsoleCalls(code: string, config: RemoveConsoleConfig): s
         break;
       }
       case "Property": {
+        // For `{ key: value }` and `{ console }` (shorthand) — the binding name
+        // is in `value`, not `key`. Recurse so AssignmentPattern defaults,
+        // nested patterns, etc. are all handled.
         const propertyNode = node as unknown as { value?: BindingNode };
-        if (propertyNode.value?.type === "Identifier" && propertyNode.value.name === "console") {
-          currentScope().shadowed = true;
-        } else if (propertyNode.value) {
-          checkBinding(propertyNode.value);
+        if (propertyNode.value) checkBinding(propertyNode.value);
+        break;
+      }
+      case "ArrayPattern": {
+        // oxlint-disable-next-line typescript/no-explicit-any
+        const elements = (node as any).elements as Array<BindingNode | null> | undefined;
+        if (elements) {
+          for (const el of elements) {
+            checkBinding(el);
+          }
         }
+        break;
+      }
+      case "AssignmentPattern": {
+        // `x = default` — the binding is `left`, the default value is `right`.
+        // oxlint-disable-next-line typescript/no-explicit-any
+        const left = (node as any).left as BindingNode | undefined;
+        checkBinding(left);
+        break;
+      }
+      case "RestElement": {
+        // `...x` — the binding is `argument`.
+        // oxlint-disable-next-line typescript/no-explicit-any
+        const argument = (node as any).argument as BindingNode | undefined;
+        checkBinding(argument);
         break;
       }
       default:
@@ -175,9 +201,29 @@ export function removeConsoleCalls(code: string, config: RemoveConsoleConfig): s
       return; // don't recurse into children of a removed call
     }
 
+    // `function console() {}` and `class console {}` bind `console` in the
+    // *enclosing* scope (function declarations are hoisted to function/module
+    // scope, class declarations are block-scoped). Check `id` against the
+    // current scope BEFORE pushing the function's own scope, so the binding
+    // is visible both outside and inside the function (via scope inheritance).
+    if (node.type === "FunctionDeclaration" || node.type === "ClassDeclaration") {
+      // oxlint-disable-next-line typescript/no-explicit-any
+      const id = (node as any).id as BindingNode | undefined;
+      checkBinding(id);
+    }
+
     const isScopeEntering = SCOPE_ENTERING_TYPES.has(node.type);
     if (isScopeEntering) {
       pushScope();
+
+      // Named FunctionExpressions (`const x = function console() {}`) bind
+      // their name only in their *own* scope — not the enclosing one — so
+      // mark after pushing.
+      if (node.type === "FunctionExpression") {
+        // oxlint-disable-next-line typescript/no-explicit-any
+        const id = (node as any).id as BindingNode | undefined;
+        checkBinding(id);
+      }
 
       // Mark params/destructured params
       // oxlint-disable-next-line typescript/no-explicit-any
