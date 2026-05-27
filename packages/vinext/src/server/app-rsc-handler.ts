@@ -553,6 +553,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   if (!match) {
+    // Dev-only favicon short-circuit: browsers auto-request /favicon.ico on
+    // every page load. Don't compile/render the not-found page for it.
+    // Matches Next.js: packages/next/src/server/lib/router-server.ts
+    if (process.env.NODE_ENV !== "production" && cleanPathname === "/favicon.ico") {
+      options.clearRequestContext();
+      return new Response("", { status: 404 });
+    }
+
     const pagesFallbackResponse = await options.renderPagesFallback?.({
       isRscRequest,
       middlewareContext,
