@@ -22,6 +22,15 @@ type BindingNode = Extract<ASTNode, { type: string }>;
 
 type RemoveConsoleConfig = boolean | { exclude: string[] };
 
+// Node types that introduce a new function-style scope. Hoisted to a module-
+// level Set so the membership check in walk() is O(1) and doesn't allocate
+// per recursive call.
+const SCOPE_ENTERING_TYPES = new Set([
+  "FunctionDeclaration",
+  "FunctionExpression",
+  "ArrowFunctionExpression",
+]);
+
 /**
  * Walk the AST body looking for expression statements whose expression is a
  * CallExpression with a callee of `console.<identifier>`. When found, check
@@ -166,14 +175,7 @@ export function removeConsoleCalls(code: string, config: RemoveConsoleConfig): s
       return; // don't recurse into children of a removed call
     }
 
-    // Scope-entering nodes
-    const scopeEnteringTypes = [
-      "FunctionDeclaration",
-      "FunctionExpression",
-      "ArrowFunctionExpression",
-    ];
-
-    const isScopeEntering = scopeEnteringTypes.includes(node.type);
+    const isScopeEntering = SCOPE_ENTERING_TYPES.has(node.type);
     if (isScopeEntering) {
       pushScope();
 
@@ -187,8 +189,29 @@ export function removeConsoleCalls(code: string, config: RemoveConsoleConfig): s
       }
     }
 
+    // CatchClause introduces a binding for its param (`catch (e) { ... }`).
+    // If the param shadows "console", the catch block must treat console as
+    // local. We push a scope just for the param binding; the BlockStatement
+    // body below will push its own scope on top, which inherits the shadow.
+    const isCatchScope = node.type === "CatchClause";
+    if (isCatchScope) {
+      pushScope();
+      // oxlint-disable-next-line typescript/no-explicit-any
+      const param = (node as any).param as BindingNode | undefined;
+      if (param) {
+        checkBinding(param);
+      }
+    }
+
     // Also enter a new scope for BlockStatement / Program bodies so that
     // variable declarations are checked in the right frame.
+    //
+    // KNOWN LIMITATION: `var` is function-scoped, not block-scoped. A `var
+    // console = ...` inside a nested block (if/for/etc.) is hoisted to the
+    // enclosing function, but we treat it as block-scoped here, so console
+    // references after the block exits its scope frame will be incorrectly
+    // stripped. `let`/`const` are block-scoped so this only affects `var`.
+    // In real-world code, shadowing `console` with `var` is exceedingly rare.
     const isBlockScope =
       node.type === "BlockStatement" || node.type === "Program" || node.type === "SwitchCase";
     if (isBlockScope && !isScopeEntering) {
@@ -221,7 +244,7 @@ export function removeConsoleCalls(code: string, config: RemoveConsoleConfig): s
       }
     }
 
-    if (isScopeEntering || isBlockScope) {
+    if (isScopeEntering || isBlockScope || isCatchScope) {
       popScope();
     }
   }

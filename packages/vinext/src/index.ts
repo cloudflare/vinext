@@ -3448,9 +3448,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
     },
     // Strip console.* calls from the client bundle when compiler.removeConsole
-    // is enabled in next.config. Mirrors Next.js's SWC remove_console transform.
-    // Only applies to client builds; SSR/server-side console logging is left
-    // untouched so debugging server code remains possible.
+    // is enabled in next.config. Inspired by Next.js's SWC remove_console transform.
+    // NOTE: Next.js applies this to both client and server (set in
+    // getBaseSWCOptions, which feeds both isServer:true and isServer:false
+    // configs); vinext scopes it to client-only so server-side console logging
+    // remains available for debugging. Tracked as a known parity gap.
     {
       name: "vinext:remove-console",
       transform: {
@@ -3460,7 +3462,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const ssr = this.environment?.name !== "client";
           if (ssr) return null;
           if (!nextConfig.removeConsole) return null;
-          // Skip node_modules — Next.js only strips application code
+          // Skip node_modules to avoid transform overhead on application
+          // dependencies. Next.js applies removeConsole to node_modules too
+          // (the SWC option in getBaseSWCOptions runs on every file the SWC
+          // loader processes); this is a minor divergence in exchange for
+          // faster builds.
           if (id.includes("/node_modules/")) return null;
 
           const result = removeConsoleCalls(code, nextConfig.removeConsole);

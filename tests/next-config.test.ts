@@ -855,6 +855,48 @@ describe("resolveNextConfig instrumentationClientInject", () => {
   });
 });
 
+describe("resolveNextConfig removeConsole", () => {
+  it("resolves `compiler: { removeConsole: true }` to `true`", async () => {
+    const resolved = await resolveNextConfig({ compiler: { removeConsole: true } });
+    expect(resolved.removeConsole).toBe(true);
+  });
+
+  it("resolves `compiler: { removeConsole: { exclude: ['error'] } }` to the same shape", async () => {
+    const resolved = await resolveNextConfig({
+      compiler: { removeConsole: { exclude: ["error"] } },
+    });
+    expect(resolved.removeConsole).toEqual({ exclude: ["error"] });
+  });
+
+  it("resolves `compiler: { removeConsole: {} }` to `{ exclude: [] }`", async () => {
+    const resolved = await resolveNextConfig({ compiler: { removeConsole: {} } });
+    expect(resolved.removeConsole).toEqual({ exclude: [] });
+  });
+
+  it("resolves missing `compiler` to `false`", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.removeConsole).toBe(false);
+  });
+
+  it("resolves `compiler: {}` (no removeConsole key) to `false`", async () => {
+    const resolved = await resolveNextConfig({ compiler: {} });
+    expect(resolved.removeConsole).toBe(false);
+  });
+
+  it("resolves `compiler: { removeConsole: false }` to `false`", async () => {
+    const resolved = await resolveNextConfig({ compiler: { removeConsole: false } });
+    expect(resolved.removeConsole).toBe(false);
+  });
+
+  it("coerces non-string entries in `exclude` away (sanitization)", async () => {
+    const resolved = await resolveNextConfig({
+      // oxlint-disable-next-line typescript/no-explicit-any
+      compiler: { removeConsole: { exclude: ["error", 42, null, "warn"] as any } },
+    });
+    expect(resolved.removeConsole).toEqual({ exclude: ["error", "warn"] });
+  });
+});
+
 describe("resolveNextConfig htmlLimitedBots", () => {
   it("serializes RegExp config values to their source", async () => {
     const resolved = await resolveNextConfig({ htmlLimitedBots: /Minibot/i });
