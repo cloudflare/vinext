@@ -16,6 +16,7 @@ import { reportRequestError, importModule, type ModuleImporter } from "./instrum
 import { mergeRouteParamsIntoQuery, parseQueryString } from "../utils/query.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 import { isEdgeApiRuntime } from "./edge-api-runtime.js";
+import { resolveRequestProtocol, resolveRequestHost } from "./proxy-trust.js";
 import { NextRequest } from "vinext/shims/server";
 
 /**
@@ -166,10 +167,15 @@ function createEdgeApiRequest(req: IncomingMessage, url: string): Request {
     }
   }
 
-  const rawProto = headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
-  const forwardedProto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
-  const host = headers.get("host") ?? "localhost";
-  const requestUrl = new URL(url, `${forwardedProto}://${host}`);
+  // Honor `X-Forwarded-Proto` / `X-Forwarded-Host` only when running behind
+  // a trusted proxy (gated on `VINEXT_TRUST_PROXY` / `VINEXT_TRUSTED_HOSTS`).
+  // Without this gate a client could send `X-Forwarded-Proto: https` and
+  // trick edge API handlers that check `request.url.startsWith("https")`
+  // (e.g. to gate Secure-cookie issuance) into believing the request was
+  // TLS-terminated. See: Finding F-PROD-7 in SECURITY-AUDIT-2026-05.md.
+  const proto = resolveRequestProtocol(req);
+  const host = resolveRequestHost(req, "localhost");
+  const requestUrl = new URL(url, `${proto}://${host}`);
   const body = readEdgeRequestBody(req);
 
   const init: RequestInit & { duplex?: "half" } = {
