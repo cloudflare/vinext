@@ -14,7 +14,7 @@
   "d1_databases": [
     {
       "binding": "D1",
-      "database_id": "",
+      "database_id": "DATABASE_ID",
       "database_name": "my-app",
     },
   ],

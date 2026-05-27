@@ -212,6 +212,39 @@ jobs:
           echo "Server did not respond with HTTP 200 before the retry limit"
           exit 1
 
+  payload-fixture:
+    name: Payload fixture
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Build plugin
+        run: vp run build
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: ./.github/actions/playwright-cache
+        with:
+          browser: chromium
+          mode: cache
+          restore-keys: |
+            playwright-chromium-${{ runner.os }}-
+      - name: Install Playwright Chromium
+        if: ${{ steps.playwright-cache.outputs.cache-hit != 'true' }}
+        run: vp exec playwright install chromium
+      - name: Run Payload generated tests
+        run: pnpm --dir tests/fixtures/ecosystem/payload-cms test
+        env:
+          CI: true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: payload-fixture-playwright-report
+          path: tests/fixtures/ecosystem/payload-cms/playwright-report/
+          retention-days: 7
+
   e2e:
     name: E2E (${{ matrix.project }})
     runs-on: ubuntu-latest
@@ -315,7 +348,7 @@ jobs:
   ci:
     name: CI
     if: ${{ always() }}
-    needs: [check, test-unit, test-integration-merge, create-next-app, e2e]
+    needs: [check, test-unit, test-integration-merge, create-next-app, payload-fixture, e2e]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed
