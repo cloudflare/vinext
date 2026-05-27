@@ -23,10 +23,6 @@ catalog:
   "@mdx-js/rollup": ^3.1.1
   "@phosphor-icons/react": ^2.1.10
   "@playwright/test": ^1.58.2
-  "@payloadcms/db-sqlite": 3.84.1
-  "@payloadcms/next": 3.84.1
-  "@payloadcms/ui": 3.84.1
-  "@payloadcms/richtext-lexical": 3.84.1
   "@radix-ui/react-dialog": ^1.1.14
   "@radix-ui/react-dropdown-menu": ^2.1.15
   "@radix-ui/react-slot": ^1.2.3
@@ -61,13 +57,26 @@ catalog:
   fumadocs-core: 16.7.9
   fumadocs-mdx: 14.2.10
   fumadocs-ui: 16.7.9
-  graphql: ^16.8.1
   image-size: 2.0.2
   ipaddr.js: ^2.1.0
   lucide-react: ^0.577.0
   magic-string: ^0.30.21
   "@mswjs/interceptors": ^0.41.3
   msw: ^2.14.6
+  "@payloadcms/db-sqlite": 3.84.1
+  "@payloadcms/db-d1-sqlite": 3.84.1
+  "@payloadcms/next": 3.84.1
+  "@payloadcms/richtext-lexical": 3.84.1
+  "@payloadcms/storage-r2": 3.84.1
+  "@payloadcms/ui": 3.84.1
+  payload: 3.84.1
+  "@eslint/eslintrc": ^3.2.0
+  "@testing-library/react": 16.3.0
+  cross-env: ^7.0.3
+  dotenv: 16.4.7
+  graphql: ^16.8.1
+  jsdom: 28.0.0
+  tsx: 4.21.0
   ms: 3.0.0-canary.1
   next: 16.2.6
   next-intl: ^4.9.2
@@ -75,7 +84,6 @@ catalog:
   next-view-transitions: ^0.3.5
   nitro: npm:nitro-nightly@latest
   nuqs: ^2.8.8
-  payload: 3.84.1
   playwright: ^1.52.0
   postcss: 8.5.10
   react: ^19.2.6
@@ -102,6 +110,7 @@ overrides:
   vitest: "catalog:"
   picomatch: ">=2.3.2"
   srvx: ">=0.11.13"
+  undici: 7.24.4
 
 peerDependencyRules:
   allowAny:

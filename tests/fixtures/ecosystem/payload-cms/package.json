@@ -1,5 +1,5 @@
 {
-  "name": "payload-template",
+  "name": "payload-cms",
   "version": "1.0.0",
   "description": "A blank template to get started with Payload 3.0",
   "license": "MIT",
@@ -10,30 +10,41 @@
     "start": "vinext start",
     "generate:importmap": "payload generate:importmap",
     "generate:types": "payload generate:types",
-    "payload": "payload"
+    "payload": "payload",
+    "test": "pnpm run test:int && pnpm run test:e2e",
+    "test:e2e": "playwright test --config=playwright.config.ts",
+    "test:int": "vp test run --config ./vitest.config.mts"
   },
   "dependencies": {
+    "@cloudflare/vite-plugin": "catalog:",
+    "@payloadcms/db-d1-sqlite": "catalog:",
     "@payloadcms/next": "catalog:",
     "@payloadcms/richtext-lexical": "catalog:",
+    "@payloadcms/storage-r2": "catalog:",
     "@payloadcms/ui": "catalog:",
+    "@vitejs/plugin-rsc": "catalog:",
+    "cross-env": "catalog:",
+    "dotenv": "catalog:",
     "graphql": "catalog:",
     "next": "catalog:",
-    "vite": "catalog:",
-    "@vitejs/plugin-rsc": "catalog:",
-    "vinext": "workspace:*",
     "payload": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
-    "vite-tsconfig-paths": "catalog:",
-    "@payloadcms/db-sqlite": "catalog:"
+    "vinext": "workspace:*",
+    "vite": "catalog:"
   },
   "devDependencies": {
+    "@playwright/test": "catalog:",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
+    "jsdom": "catalog:",
     "typescript": "catalog:",
-    "vite-tsconfig-paths": "catalog:"
+    "vite-plus": "catalog:",
+    "vite-tsconfig-paths": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   },
   "engines": {
     "node": "^18.20.2 || >=20.9.0",

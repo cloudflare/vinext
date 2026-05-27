@@ -1,9 +1,15 @@
 import { createRequire } from "node:module"
 import path from "node:path"
-import { defineConfig } from "vite"
+import { cloudflare } from "@cloudflare/vite-plugin"
 import vinext from "vinext"
 
 const require = createRequire(import.meta.url)
+
+// export is not detected correctly
+const payloadHTMLDiffCompat = new URL("./src/payload-html-diff-rsc.ts", import.meta.url).pathname
+const payloadFileTypeNodeEntry = require.resolve("file-type", {
+  paths: [path.dirname(require.resolve("payload"))],
+})
 
 const payloadBrowserInteropDependencies = [
   { importer: "payload", specifier: "ajv" },
@@ -23,12 +29,22 @@ const payloadBrowserInteropAliases = Object.fromEntries(
   ]),
 )
 
-export default defineConfig({
+export default {
   optimizeDeps: {
-    include: payloadBrowserInteropDependencies.map(({ specifier }) => specifier),
+    exclude: ["@payloadcms/next", "@payloadcms/ui"],
+    include: ["ajv", "bson-objectid", "deepmerge", "md5", "pluralize", "react/compiler-runtime"],
   },
-  plugins: [vinext()],
+  plugins: [
+    vinext(),
+    ...(cloudflare({
+      viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
+    }) as []),
+  ],
   resolve: {
-    alias: payloadBrowserInteropAliases,
+    alias: {
+      "../../elements/HTMLDiff/index.js": payloadHTMLDiffCompat,
+      ...payloadBrowserInteropAliases,
+      "file-type": payloadFileTypeNodeEntry,
+    },
   },
-})
+}
