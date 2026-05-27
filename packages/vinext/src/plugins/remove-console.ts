@@ -20,7 +20,7 @@ import MagicString from "magic-string";
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
 type BindingNode = Extract<ASTNode, { type: string }>;
 
-export type RemoveConsoleConfig = boolean | { exclude: string[] };
+type RemoveConsoleConfig = boolean | { exclude: string[] };
 
 /**
  * Walk the AST body looking for expression statements whose expression is a
