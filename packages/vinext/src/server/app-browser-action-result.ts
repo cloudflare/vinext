@@ -70,6 +70,36 @@ export function parseServerActionRevalidationHeader(
   }
 }
 
+type ServerActionRedirectLocation = {
+  href: string;
+  internal: boolean;
+};
+
+/**
+ * Resolve a server-action redirect target against the URL that initiated the
+ * action. Dot-relative redirects intentionally resolve as if the current route
+ * pathname were a directory, matching Next.js' `assignLocation()` behavior:
+ * `./subpage` from `/subdir` lands on `/subdir/subpage`, not `/subpage`.
+ */
+export function resolveServerActionRedirectLocation(options: {
+  currentHref: string;
+  location: string;
+  origin: string;
+}): ServerActionRedirectLocation {
+  const currentUrl = new URL(options.currentHref, options.origin);
+  const redirectUrl = options.location.startsWith(".")
+    ? new URL(
+        options.location,
+        `${currentUrl.origin}${currentUrl.pathname.endsWith("/") ? currentUrl.pathname : `${currentUrl.pathname}/`}`,
+      )
+    : new URL(options.location, currentUrl.href);
+
+  return {
+    href: redirectUrl.href,
+    internal: redirectUrl.origin === currentUrl.origin,
+  };
+}
+
 export function shouldScheduleRefreshForDiscardedServerAction(
   revalidation: ServerActionRevalidationKind,
 ): boolean {

@@ -18,6 +18,7 @@ import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
 import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js";
+import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 
 export type { AppPageErrorModule, AppPageRouteWiringRoute } from "./app-page-route-wiring.js";
 
@@ -84,6 +85,8 @@ export type BuildPageElementsOptions<
    * so file-based metadata route URLs emitted in <head> are prefixed.
    */
   basePath?: string;
+  /** Serialized next.config `htmlLimitedBots` regexp source. */
+  htmlLimitedBots?: string;
 };
 
 /**
@@ -159,6 +162,7 @@ export async function buildPageElements<
 
   const {
     hasSearchParams,
+    hasDynamicMetadata,
     metadata: resolvedMetadata,
     pageSearchParams,
     viewport: resolvedViewport,
@@ -195,6 +199,14 @@ export async function buildPageElements<
   const mountedSlotIds = mountedSlotsHeader ? new Set(mountedSlotsHeader.split(" ")) : null;
 
   const slotOverrides = buildSlotOverrides(route, params, routePath, opts);
+  const metadataPlacement =
+    hasDynamicMetadata &&
+    shouldServeStreamingMetadata(
+      pageRequest.request.headers.get("user-agent") ?? "",
+      options.htmlLimitedBots,
+    )
+      ? "body"
+      : "head";
 
   return buildAppPageElements({
     element: PageComponent ? createElement(PageComponent, pageProps) : null,
@@ -208,6 +220,7 @@ export async function buildPageElements<
     mountedSlotIds,
     makeThenableParams,
     matchedParams: params,
+    metadataPlacement,
     resolvedMetadata,
     resolvedMetadataPathname: routePath,
     resolvedViewport,

@@ -3,6 +3,7 @@ import type { HeadersContext } from "vinext/shims/headers";
 type AppStaticGenerationRouteKind = "page" | "route";
 
 type CreateStaticGenerationHeadersContextOptions = {
+  draftModeSecret?: string;
   dynamicConfig?: string;
   routeKind: AppStaticGenerationRouteKind;
   routePattern?: string;
@@ -36,6 +37,7 @@ export function createStaticGenerationHeadersContext(
   const context: HeadersContext = {
     headers: new Headers(),
     cookies: new Map(),
+    draftModeSecret: options.draftModeSecret,
   };
 
   if (options.dynamicConfig === "force-static") {

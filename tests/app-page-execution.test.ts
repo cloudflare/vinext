@@ -955,4 +955,43 @@ describe("app page execution helpers", () => {
       "</font-a.woff2>; rel=preload; as=font; type=font/woff2; crossorigin, </font-b.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );
   });
+
+  it("emits the `x-edge-runtime: 1` marker on RSC redirect flight responses for edge-runtime routes", async () => {
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream: ({ digest }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`E:${digest}`));
+            controller.close();
+          },
+        }),
+      clearRequestContext: vi.fn(),
+      isEdgeRuntime: true,
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: { kind: "redirect", location: "/redirected", statusCode: 307 },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-edge-runtime")).toBe("1");
+  });
+
+  it("omits the `x-edge-runtime` marker on RSC redirect flight responses for nodejs-runtime routes", async () => {
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream: ({ digest }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`E:${digest}`));
+            controller.close();
+          },
+        }),
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: { kind: "redirect", location: "/redirected", statusCode: 307 },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-edge-runtime")).toBeNull();
+  });
 });

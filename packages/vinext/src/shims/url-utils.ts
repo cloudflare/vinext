@@ -22,16 +22,28 @@ export function isAbsoluteOrProtocolRelativeUrl(url: string): boolean {
   return isAbsoluteUrl(url) || url.startsWith("//");
 }
 
+export function getWindowOrigin(): string | null {
+  if (typeof window === "undefined") return null;
+  const { origin, href } = window.location;
+  if (origin) return origin;
+  try {
+    return new URL(href).origin;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * If `url` is an absolute same-origin URL, return the local path
  * (pathname + search + hash). Returns null for truly external URLs
  * or on the server (where origin is unknown).
  */
 export function toSameOriginPath(url: string): string | null {
-  if (typeof window === "undefined") return null;
+  const origin = getWindowOrigin();
+  if (!origin) return null;
   try {
-    const parsed = url.startsWith("//") ? new URL(url, window.location.origin) : new URL(url);
-    if (parsed.origin === window.location.origin) {
+    const parsed = url.startsWith("//") ? new URL(url, origin) : new URL(url);
+    if (parsed.origin === origin) {
       return parsed.pathname + parsed.search + parsed.hash;
     }
   } catch {

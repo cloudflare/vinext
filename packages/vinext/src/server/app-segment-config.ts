@@ -1,4 +1,5 @@
 import type { FetchCacheMode } from "vinext/shims/fetch-cache";
+import { isEdgeApiRuntime } from "./edge-api-runtime.js";
 
 type AppRouteSegmentDynamic = "auto" | "error" | "force-dynamic" | "force-static";
 
@@ -7,6 +8,7 @@ type AppRouteSegmentConfigModule = {
   dynamicParams?: unknown;
   fetchCache?: unknown;
   revalidate?: unknown;
+  runtime?: unknown;
 };
 
 type EffectiveAppPageSegmentConfig = {
@@ -14,6 +16,7 @@ type EffectiveAppPageSegmentConfig = {
   dynamicParamsConfig?: boolean;
   fetchCache?: FetchCacheMode;
   revalidateSeconds: number | null;
+  runtime?: string;
 };
 
 type ResolveAppPageSegmentConfigOptions = {
@@ -147,6 +150,10 @@ export function resolveAppPageSegmentConfig(
       config.revalidateSeconds,
       segment.revalidate,
     );
+
+    if (typeof segment.runtime === "string") {
+      config.runtime = segment.runtime;
+    }
   }
 
   if (config.dynamicConfig === "force-dynamic") {
@@ -177,4 +184,8 @@ export function resolveAppPageFetchCacheMode(
   options: ResolveAppPageSegmentConfigOptions,
 ): FetchCacheMode | null {
   return resolveAppPageSegmentConfig(options).fetchCache ?? null;
+}
+
+export function isEdgeRuntime(runtime: string | undefined): boolean {
+  return isEdgeApiRuntime(runtime);
 }

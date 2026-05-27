@@ -104,6 +104,7 @@ function createDispatchOptions(
     createRscOnErrorHandler() {
       return () => null;
     },
+    draftModeSecret: "draft-secret",
     findIntercept() {
       return null;
     },
@@ -211,7 +212,6 @@ describe("app page dispatch", () => {
   });
 
   it("bypasses cached production HTML when draft mode is enabled", async () => {
-    vi.stubEnv("__VINEXT_DRAFT_SECRET", "draft-secret");
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>")),
     );
@@ -302,7 +302,6 @@ describe("app page dispatch", () => {
   });
 
   it("does not bypass cached production HTML for arbitrary draft cookie values", async () => {
-    vi.stubEnv("__VINEXT_DRAFT_SECRET", "draft-secret");
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached</html>")),
     );

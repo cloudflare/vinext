@@ -45,6 +45,7 @@ import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
+import { isImageOptimizationPath } from "./image-optimization.js";
 import { handleMetadataRouteRequest } from "./metadata-route-response.js";
 import type { MiddlewareModule } from "./middleware-runtime.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
@@ -183,6 +184,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     beforeFiles: NextRewrite[];
     fallback: NextRewrite[];
   };
+  draftModeSecret: string;
   dispatchMatchedPage: (options: DispatchMatchedPageOptions<TRoute>) => Promise<Response>;
   dispatchMatchedRouteHandler: (
     options: DispatchMatchedRouteHandlerOptions<TRoute>,
@@ -444,7 +446,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (beforeFilesRewrite instanceof Response) return beforeFilesRewrite;
   if (beforeFilesRewrite) cleanPathname = beforeFilesRewrite;
 
-  if (cleanPathname === "/_vinext/image") {
+  if (isImageOptimizationPath(cleanPathname)) {
     const imageUrlResult = validateImageUrl(url.searchParams.get("url"), request.url);
     if (imageUrlResult instanceof Response) return imageUrlResult;
     return Response.redirect(new URL(imageUrlResult, url.origin).href, 302);
@@ -657,7 +659,9 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     const executionContext = isExecutionContextLike(ctx)
       ? ctx
       : (getRequestExecutionContext() ?? null);
-    const headersContext = headersContextFromRequest(request);
+    const headersContext = headersContextFromRequest(request, {
+      draftModeSecret: options.draftModeSecret,
+    });
     const requestContext = createRequestContext({
       headersContext,
       executionContext,

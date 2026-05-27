@@ -47,6 +47,7 @@ function createHandler(overrides: Partial<HandlerOptions> = {}) {
       beforeFiles: [],
       fallback: [],
     },
+    draftModeSecret: overrides.draftModeSecret ?? "test-draft-secret",
     dispatchMatchedPage:
       overrides.dispatchMatchedPage ??
       (async () => new Response("page", { status: 200, headers: { "x-from-dispatch": "page" } })),

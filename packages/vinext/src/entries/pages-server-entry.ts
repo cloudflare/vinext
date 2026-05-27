@@ -24,6 +24,7 @@ const _pagesPageResponsePath = resolveEntryPath(
 );
 const _pagesPageDataPath = resolveEntryPath("../server/pages-page-data.js", import.meta.url);
 const _pagesDataRoutePath = resolveEntryPath("../server/pages-data-route.js", import.meta.url);
+const _pagesDefault404Path = resolveEntryPath("../server/pages-default-404.js", import.meta.url);
 const _pagesNodeCompatPath = resolveEntryPath("../server/pages-node-compat.js", import.meta.url);
 const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", import.meta.url);
 const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
@@ -240,6 +241,7 @@ import {
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from ${JSON.stringify(_cspPath)};
 import { resolvePagesPageData as __resolvePagesPageData } from ${JSON.stringify(_pagesPageDataPath)};
 import { buildNextDataJsonResponse as __buildNextDataJsonResponse, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse, isNextDataPathname as __isNextDataPathname, parseNextDataPathname as __parseNextDataPathname } from ${JSON.stringify(_pagesDataRoutePath)};
+import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
 import { renderPagesPageResponse as __renderPagesPageResponse } from ${JSON.stringify(_pagesPageResponsePath)};
 ${instrumentationImportCode}
 ${middlewareImportCode}
@@ -253,6 +255,7 @@ const i18nConfig = ${i18nConfigJson};
 // match _next/data requests against the embedded buildId without needing
 // to load next.config.js at runtime.
 export const buildId = ${buildIdJson};
+const __hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
@@ -371,7 +374,14 @@ export function matchPageRoute(url, request) {
 }
 
 function parseQuery(url) {
-  const qs = url.split("?")[1];
+  // Per RFC 3986 only the first "?" separates path from query, so additional
+  // "?" chars belong to the query string (e.g. /linker?href=/about?hello=world
+  // has query "href=/about?hello=world"). split("?")[1] would drop everything
+  // after the second "?" and strip embedded query strings from values.
+  const queryIndex = url.indexOf("?");
+  if (queryIndex === -1) return {};
+  const hashIndex = url.indexOf("#", queryIndex + 1);
+  const qs = hashIndex === -1 ? url.slice(queryIndex + 1) : url.slice(queryIndex + 1, hashIndex);
   if (!qs) return {};
   const p = new URLSearchParams(qs);
   const q = {};
@@ -556,8 +566,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     if (isDataReq) {
       return __buildNextDataNotFoundResponse();
     }
-    return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
-      { status: 404, headers: { "Content-Type": "text/html" } });
+    return __buildDefaultPagesNotFoundResponse();
   }
 
   const { route, params } = match;
@@ -654,6 +663,13 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         isrGet,
         isrSet,
         expireSeconds: vinextConfig.expireTime,
+        // The vinext build phase boots the prod server with VINEXT_PRERENDER=1
+        // and fetches every statically-generated page through it. That hit is
+        // the "build" prerender for revalidateReason; runtime hits are not.
+        // Mirrors Next.js's \`renderOpts.isBuildTimePrerendering\`. See
+        // \`.nextjs-ref/packages/next/src/server/render.tsx\` and
+        // \`packages/vinext/src/build/prerender.ts\`.
+        isBuildTimePrerendering: typeof process !== "undefined" && process.env && process.env.VINEXT_PRERENDER === "1",
         pageModule,
         params,
         query,
@@ -675,6 +691,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         safeJsonStringify,
         sanitizeDestination: sanitizeDestinationLocal,
         scriptNonce,
+        vinext: { hasMiddleware: __hasMiddleware },
         triggerBackgroundRegeneration,
       });
       if (pageDataResult.kind === "response") {
@@ -710,12 +727,31 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       // cookies set on the gsspRes by getServerSideProps are forwarded so
       // middleware/auth flows work the same as the HTML page.
       if (isDataReq) {
-        const init = {};
-        if (gsspRes && gsspRes.headers) {
-          init.headers = {};
-          for (const [k, v] of Object.entries(gsspRes.headers)) {
+        const init = { headers: {} };
+        if (gsspRes && typeof gsspRes.getHeaders === "function") {
+          const gsspHeaders = gsspRes.getHeaders();
+          for (const k of Object.keys(gsspHeaders)) {
+            const v = gsspHeaders[k];
             if (v === undefined || v === null) continue;
             init.headers[k] = Array.isArray(v) ? v.join(", ") : String(v);
+          }
+        }
+        if (gsspRes) {
+          // Default Cache-Control for gSSP-driven _next/data responses,
+          // matching Next.js's pages-handler.ts (revalidate: 0 →
+          // getCacheControlHeader). Skip when gSSP already set one via
+          // res.setHeader (case-insensitive). Mirrors the HTML branch in
+          // pages-page-response.ts and the dev-server branch. Fixes #1461.
+          var hasUserCacheControl = false;
+          for (const headerKey of Object.keys(init.headers)) {
+            if (headerKey.toLowerCase() === "cache-control") {
+              hasUserCacheControl = true;
+              break;
+            }
+          }
+          if (!hasUserCacheControl) {
+            init.headers["Cache-Control"] =
+              "private, no-cache, no-store, max-age=0, must-revalidate";
           }
         }
         return __buildNextDataJsonResponse(pageProps, safeJsonStringify, init);
@@ -795,6 +831,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         routeUrl,
         safeJsonStringify,
         scriptNonce,
+        vinext: { hasMiddleware: __hasMiddleware },
       });
     } catch (e) {
       console.error("[vinext] SSR error:", e);

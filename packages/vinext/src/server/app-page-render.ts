@@ -90,6 +90,7 @@ type RenderAppPageLifecycleOptions = {
   hasLoadingBoundary: boolean;
   isDynamicError: boolean;
   isDraftMode: boolean;
+  isEdgeRuntime?: boolean;
   isForceDynamic: boolean;
   isForceStatic: boolean;
   isProgressiveActionRender?: boolean;
@@ -415,6 +416,7 @@ export async function renderAppPageLifecycle(
       revalidateSeconds,
     });
     const rscResponse = buildAppPageRscResponse(rscForResponse, {
+      isEdgeRuntime: options.isEdgeRuntime,
       middlewareContext: options.middlewareContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       params: options.params,
@@ -625,6 +627,7 @@ export async function renderAppPageLifecycle(
     const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
       draftCookie,
       fontLinkHeader,
+      isEdgeRuntime: options.isEdgeRuntime,
       middlewareContext: options.middlewareContext,
       policy: htmlResponsePolicy,
       timing: htmlResponseTiming,
@@ -688,6 +691,7 @@ export async function renderAppPageLifecycle(
   return buildAppPageHtmlResponse(safeHtmlStream, {
     draftCookie,
     fontLinkHeader,
+    isEdgeRuntime: options.isEdgeRuntime,
     middlewareContext: options.middlewareContext,
     policy: htmlResponsePolicy,
     timing: htmlResponseTiming,

@@ -6,6 +6,7 @@ import {
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
 import { VINEXT_RSC_REDIRECT_HEADER } from "./headers.js";
+import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 import { addBasePathToPathname } from "../utils/base-path.js";
@@ -126,6 +127,7 @@ type BuildAppPageSpecialErrorResponseOptions = {
    * the http-access-fallback path leaves cookies to the rendered boundary.
    */
   getAndClearPendingCookies?: () => string[];
+  isEdgeRuntime?: boolean;
   isRscRequest: boolean;
   middlewareContext?: { headers: Headers | null };
   renderFallbackPage?: (statusCode: number) => Promise<Response | null>;
@@ -330,6 +332,7 @@ export async function buildAppPageSpecialErrorResponse(
         // `VINEXT_RSC_REDIRECT_HEADER` in server/headers.ts for the rationale.
         [VINEXT_RSC_REDIRECT_HEADER]: digestUrl,
       });
+      applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
       // Mirror the regular RSC response by stamping the build-time compatibility
       // ID. Without it, the client treats the response as cross-build and hard-
       // navigates instead of following the redirect through the soft-nav loop.

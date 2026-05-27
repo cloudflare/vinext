@@ -465,7 +465,7 @@ function filterTrafficPaths(entries: TrafficEntry[]): TrafficEntry[] {
     // API routes
     if (e.path.startsWith("/api/")) return false;
     // Internal routes
-    if (e.path.startsWith("/_vinext/") || e.path.startsWith("/_next/")) return false;
+    if (e.path.startsWith("/_next/") || e.path.startsWith("/__vinext/")) return false;
     // RSC requests
     if (e.path.endsWith(".rsc")) return false;
     return true;

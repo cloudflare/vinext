@@ -1,3 +1,7 @@
+export function generateStaticParams() {
+  return [{ slug: "demo" }];
+}
+
 export default async function MetadataDynamicStaticPage({
   params,
 }: {
