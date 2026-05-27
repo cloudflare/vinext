@@ -65,11 +65,19 @@ function getClientAutoNonce(): string | undefined {
   if (typeof document === "undefined") return undefined;
 
   const existingNonceElement = document.querySelector("[nonce]");
-  if (!(existingNonceElement instanceof HTMLElement)) {
-    return undefined;
+  if (!existingNonceElement) return undefined;
+
+  // `HTMLElement` is not defined in some SSR/edge runtimes that polyfill
+  // `document` but stop short of the full DOM surface. Guarding the
+  // constructor before `instanceof` keeps SSR from crashing in those hosts;
+  // when the constructor *is* present we still prefer the typed `.nonce`
+  // property because browsers strip the `nonce` attribute from serialised
+  // HTML for CSP reasons.
+  if (typeof HTMLElement !== "undefined" && existingNonceElement instanceof HTMLElement) {
+    return existingNonceElement.nonce || existingNonceElement.getAttribute("nonce") || undefined;
   }
 
-  return existingNonceElement.nonce || existingNonceElement.getAttribute("nonce") || undefined;
+  return existingNonceElement.getAttribute("nonce") || undefined;
 }
 
 function resolveScriptNonce(explicitNonce: unknown, contextualNonce?: string): string | undefined {
@@ -77,8 +85,12 @@ function resolveScriptNonce(explicitNonce: unknown, contextualNonce?: string): s
     return explicitNonce;
   }
 
-  if (typeof window === "undefined") {
+  if (typeof contextualNonce === "string" && contextualNonce.length > 0) {
     return contextualNonce;
+  }
+
+  if (typeof window === "undefined") {
+    return undefined;
   }
 
   return getClientAutoNonce();

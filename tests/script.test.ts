@@ -313,3 +313,157 @@ describe("Script SSR rendering", () => {
     expect(appendedScripts[0]!.attrs).not.toHaveProperty("async");
   });
 });
+
+// ─── nonce resolution ───────────────────────────────────────────────────
+//
+// Regression coverage for https://github.com/cloudflare/vinext/issues/1607:
+// some SSR/edge runtimes polyfill `document` but stop short of defining the
+// `HTMLElement` constructor. Before the guard landed, `getClientAutoNonce`
+// reached `instanceof HTMLElement` and crashed the render with
+// "ReferenceError: HTMLElement is not defined".
+
+describe("Script nonce resolution", () => {
+  it("does not throw during SSR when window/document exist but HTMLElement is undefined", () => {
+    // Exact minimal repro shape from the upstream bug report: window and
+    // document are defined, HTMLElement is not. Pre-fix this threw inside
+    // `getClientAutoNonce` because the `instanceof` reference was unguarded.
+    setGlobalValue("window", {});
+    setGlobalValue("document", {
+      querySelector: () => ({ getAttribute: () => "test-nonce" }),
+    });
+    setGlobalValue("HTMLElement", undefined);
+
+    expect(() =>
+      ReactDOMServer.renderToString(
+        React.createElement(Script, {
+          strategy: "beforeInteractive",
+          dangerouslySetInnerHTML: { __html: "console.log('init')" },
+        } as ScriptProps),
+      ),
+    ).not.toThrow();
+  });
+
+  it("picks up the nonce attribute when HTMLElement is unavailable but the [nonce] element is present", () => {
+    // Same runtime shape as above, plus a Script with no explicit/contextual
+    // nonce: the DOM fallback must still find the nonce via `getAttribute`.
+    setGlobalValue("window", {});
+    setGlobalValue("document", {
+      querySelector: () => ({ getAttribute: () => "attr-nonce" }),
+    });
+    setGlobalValue("HTMLElement", undefined);
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        src: "/x.js",
+        strategy: "beforeInteractive",
+      } as ScriptProps),
+    );
+
+    expect(html).toContain('nonce="attr-nonce"');
+  });
+
+  it("prefers the contextual nonce over a DOM nonce and does not query the document", () => {
+    // DOM auto-detection is a browser-only convenience. When the server has
+    // already provided a contextual nonce we should never reach into the DOM,
+    // and the contextual value must win regardless of what `[nonce]` returns.
+    let querySelectorCalls = 0;
+    class MockHTMLElement {
+      nonce = "wrong-nonce";
+      getAttribute(_name: string): string | null {
+        return "wrong-nonce";
+      }
+    }
+    setGlobalValue("HTMLElement", MockHTMLElement);
+    setGlobalValue("window", {});
+    setGlobalValue("document", {
+      querySelector(_selector: string) {
+        querySelectorCalls += 1;
+        return new MockHTMLElement();
+      },
+    });
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        ScriptNonceProvider,
+        { nonce: "context-nonce" },
+        React.createElement(Script, {
+          src: "/x.js",
+          strategy: "beforeInteractive",
+        } as ScriptProps),
+      ),
+    );
+
+    expect(html).toContain('nonce="context-nonce"');
+    expect(html).not.toContain("wrong-nonce");
+    expect(querySelectorCalls).toBe(0);
+  });
+
+  it("uses the DOM nonce when HTMLElement is defined and no explicit/contextual nonce is provided", () => {
+    // The browser-only fallback: HTMLElement is real, the element matches,
+    // and the resolver reads the typed `.nonce` property first (browsers
+    // strip the serialised attribute under CSP).
+    class MockHTMLElement {
+      nonce = "dom-nonce";
+      getAttribute(_name: string): string | null {
+        return null;
+      }
+    }
+    setGlobalValue("HTMLElement", MockHTMLElement);
+    setGlobalValue("window", {});
+    setGlobalValue("document", {
+      querySelector(_selector: string) {
+        return new MockHTMLElement();
+      },
+    });
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        src: "/x.js",
+        strategy: "beforeInteractive",
+      } as ScriptProps),
+    );
+
+    expect(html).toContain('nonce="dom-nonce"');
+  });
+
+  it("emits no nonce in pure Node SSR when no explicit or contextual nonce is provided", () => {
+    // `afterEach` already restores these to undefined; we set them explicitly
+    // here so the test reads as a pure-Node assertion regardless of any host
+    // polyfill that leaked into the test process.
+    setGlobalValue("window", undefined);
+    setGlobalValue("document", undefined);
+    setGlobalValue("HTMLElement", undefined);
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        src: "/x.js",
+        strategy: "beforeInteractive",
+      } as ScriptProps),
+    );
+
+    expect(html).toContain('src="/x.js"');
+    expect(html).not.toContain("nonce=");
+  });
+
+  it("returns no nonce when the document has no [nonce] element", () => {
+    // Exercises the "querySelector returned null" branch of getClientAutoNonce.
+    class MockHTMLElement {}
+    setGlobalValue("HTMLElement", MockHTMLElement);
+    setGlobalValue("window", {});
+    setGlobalValue("document", {
+      querySelector(_selector: string) {
+        return null;
+      },
+    });
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        src: "/x.js",
+        strategy: "beforeInteractive",
+      } as ScriptProps),
+    );
+
+    expect(html).toContain('src="/x.js"');
+    expect(html).not.toContain("nonce=");
+  });
+});

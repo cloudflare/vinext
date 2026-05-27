@@ -645,6 +645,10 @@ export async function prerenderPages({
       // Skip internal pages (_app, _document, _error, etc.)
       const routeName = path.basename(route.filePath, path.extname(route.filePath));
       if (routeName.startsWith("_")) continue;
+      // `/404` is rendered by the dedicated 404 block below. Production serves
+      // it with a 404 status, so the generic static-page loop must not treat
+      // that non-2xx response as a prerender failure.
+      if (route.pattern === "/404") continue;
 
       // Cross-reference with file-system route scan.
       const fsRoute = routes.find(
@@ -802,14 +806,13 @@ export async function prerenderPages({
     results.push(...pageResults);
 
     // ── Render 404 page ───────────────────────────────────────────────────
-    const has404 =
-      findFileWithExtensions(path.join(pagesDir, "404"), fileMatcher) ||
-      findFileWithExtensions(path.join(pagesDir, "_error"), fileMatcher);
-    if (has404) {
+    const hasCustom404 = findFileWithExtensions(path.join(pagesDir, "404"), fileMatcher);
+    const hasErrorPage = findFileWithExtensions(path.join(pagesDir, "_error"), fileMatcher);
+    if (hasCustom404 || hasErrorPage) {
       try {
-        const notFoundRes = await renderPage(NOT_FOUND_SENTINEL_PATH);
+        const notFoundRes = await renderPage(hasCustom404 ? "/404" : NOT_FOUND_SENTINEL_PATH);
         const contentType = notFoundRes.headers.get("content-type") ?? "";
-        if (contentType.includes("text/html")) {
+        if (notFoundRes.status === 404 && contentType.includes("text/html")) {
           const html404 = await notFoundRes.text();
           const fullPath = path.join(outDir, "404.html");
           fs.writeFileSync(fullPath, html404, "utf-8");

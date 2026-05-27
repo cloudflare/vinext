@@ -68,9 +68,10 @@ export async function generateServerEntry(
       `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: api_${i} }`,
   );
 
-  // Check for _app and _document
+  // Check for _app, _document, and _error.
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
   const docFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
+  const errorFilePath = findFileWithExts(pagesDir, "_error", fileMatcher);
   // Embed the resolved _app path (or null) so the runtime can look it up
   // in the SSR manifest and include any CSS/JS chunks `_app` brings in
   // (e.g. global stylesheets imported by `_app.tsx`) alongside the page's
@@ -87,6 +88,13 @@ export async function generateServerEntry(
     docFilePath !== null
       ? `import { default as DocumentComponent } from ${JSON.stringify(normalizePathSeparators(docFilePath))};`
       : `const DocumentComponent = null;`;
+
+  const errorAssetPathJson =
+    errorFilePath !== null ? JSON.stringify(normalizePathSeparators(errorFilePath)) : "null";
+  const errorImportCode =
+    errorFilePath !== null
+      ? `import * as ErrorPageModule from ${JSON.stringify(normalizePathSeparators(errorFilePath))};`
+      : `const ErrorPageModule = null;`;
 
   // Serialize i18n config for embedding in the server entry
   const i18nConfigJson = nextConfig?.i18n
@@ -338,11 +346,22 @@ ${apiImports.join("\n")}
 
 ${appImportCode}
 ${docImportCode}
+${errorImportCode}
 
 export const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
 ];
 const _pageRouteTrie = _buildRouteTrie(pageRoutes);
+const _errorPageRoute = ErrorPageModule
+  ? {
+      pattern: "/_error",
+      patternParts: ["_error"],
+      isDynamic: false,
+      params: [],
+      module: ErrorPageModule,
+      filePath: ${errorAssetPathJson},
+    }
+  : null;
 
 const apiRoutes = [
 ${apiRouteEntries.join(",\n")}
@@ -409,11 +428,29 @@ function patternToNextFormat(pattern) {
     .replace(/:([^\\/]+?)(?=\\/|$)/g, "[$1]");
 }
 
-function collectAssetTags(manifest, moduleIds, scriptNonce) {
+function resolveSsrManifest(manifest) {
   // Fall back to embedded manifest (set by vinext:cloudflare-build for Workers)
-  const m = (manifest && Object.keys(manifest).length > 0)
+  return (manifest && Object.keys(manifest).length > 0)
     ? manifest
     : (typeof globalThis !== "undefined" && globalThis.__VINEXT_SSR_MANIFEST__) || null;
+}
+
+function getManifestFilesForModule(manifest, moduleId) {
+  if (!manifest || !moduleId) return null;
+
+  var files = manifest[moduleId];
+  if (files) return files;
+
+  for (var key in manifest) {
+    if (moduleId.endsWith("/" + key) || moduleId === key) {
+      return manifest[key];
+    }
+  }
+  return null;
+}
+
+function collectAssetTags(manifest, moduleIds, scriptNonce) {
+  const m = resolveSsrManifest(manifest);
   const tags = [];
   const seen = new Set();
   const nonceAttr = __createNonceAttribute(scriptNonce);
@@ -446,18 +483,7 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
       // Collect assets for the requested page modules
       for (var mi = 0; mi < moduleIds.length; mi++) {
         var id = moduleIds[mi];
-        var files = m[id];
-        if (!files) {
-          // Absolute path didn't match — try matching by suffix.
-          // Manifest keys are relative (e.g. "pages/about.tsx") while
-          // moduleIds may be absolute (e.g. "/home/.../pages/about.tsx").
-          for (var mk in m) {
-            if (id.endsWith("/" + mk) || id === mk) {
-              files = m[mk];
-              break;
-            }
-          }
-        }
+        var files = getManifestFilesForModule(m, id);
         if (files) {
           for (var fi = 0; fi < files.length; fi++) allFiles.push(files[fi]);
         }
@@ -518,6 +544,18 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
   return tags.join("\\n  ");
 }
 
+function resolveClientModuleUrl(manifest, moduleId) {
+  const files = getManifestFilesForModule(resolveSsrManifest(manifest), moduleId);
+  if (!files) return undefined;
+  for (var i = 0; i < files.length; i++) {
+    var file = files[i];
+    if (!file || !file.endsWith(".js")) continue;
+    if (file.charAt(0) !== "/") file = "/" + file;
+    return file;
+  }
+  return undefined;
+}
+
 export async function renderPage(request, url, manifest, ctx, middlewareHeaders, options) {
   if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders, options));
   return _renderPage(request, url, manifest, middlewareHeaders, options);
@@ -540,6 +578,9 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       }
     }
   }
+  const statusCode = options && typeof options.statusCode === "number" ? options.statusCode : undefined;
+  const asPath = options && typeof options.asPath === "string" ? options.asPath : undefined;
+  const renderErrorPageOnMiss = !(options && options.renderErrorPageOnMiss === false);
   const localeInfo = i18nConfig
     ? resolvePagesI18nRequest(
         url,
@@ -561,12 +602,29 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     return new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } });
   }
 
-  const match = matchRoute(routeUrl, pageRoutes);
+  let match = matchRoute(routeUrl, pageRoutes);
+  let renderStatusCodeOverride = statusCode;
+  let renderAsPath = asPath;
   if (!match) {
     if (isDataReq) {
       return __buildNextDataNotFoundResponse();
     }
-    return __buildDefaultPagesNotFoundResponse();
+    if (!renderErrorPageOnMiss) {
+      return __buildDefaultPagesNotFoundResponse();
+    }
+    const notFoundMatch = matchRoute("/404", pageRoutes);
+    // matchRoute may match a catch-all (e.g. [...slug]); only use the explicit pages/404 route.
+    if (notFoundMatch && notFoundMatch.route.pattern === "/404") {
+      match = notFoundMatch;
+      renderStatusCodeOverride = 404;
+      renderAsPath = routeUrl;
+    } else if (_errorPageRoute) {
+      match = { route: _errorPageRoute, params: {} };
+      renderStatusCodeOverride = 404;
+      renderAsPath = routeUrl;
+    } else {
+      return __buildDefaultPagesNotFoundResponse();
+    }
   }
 
   const { route, params } = match;
@@ -577,12 +635,13 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     ensureFetchPatch();
     try {
       const routePattern = patternToNextFormat(route.pattern);
+      const renderStatusCode = renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
       const query = mergeRouteParamsIntoQuery(parseQuery(routeUrl), params);
       if (typeof setSSRContext === "function") {
         setSSRContext({
           pathname: routePattern,
           query,
-          asPath: routeUrl,
+          asPath: renderAsPath || routeUrl,
           locale: locale,
           locales: i18nConfig ? i18nConfig.locales : undefined,
           defaultLocale: currentDefaultLocale,
@@ -605,6 +664,8 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       if (!PageComponent) {
         return new Response("Page has no default export", { status: 500 });
       }
+      const pageModuleUrl = resolveClientModuleUrl(manifest, route.filePath);
+      const appModuleUrl = resolveClientModuleUrl(manifest, _appAssetPath);
       const scriptNonce = __getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
       // Build font Link header early so it's available for ISR cached responses too.
       // Font preloads are module-level state populated at import time and persist across requests.
@@ -625,7 +686,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
             setSSRContext({
               pathname: routePattern,
               query,
-              asPath: routeUrl,
+              asPath: renderAsPath || routeUrl,
               locale: locale,
               locales: i18nConfig ? i18nConfig.locales : undefined,
               defaultLocale: currentDefaultLocale,
@@ -691,13 +752,21 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         safeJsonStringify,
         sanitizeDestination: sanitizeDestinationLocal,
         scriptNonce,
-        vinext: { hasMiddleware: __hasMiddleware },
+        statusCode: renderStatusCode,
         triggerBackgroundRegeneration,
+        vinext: {
+          pageModuleUrl,
+          appModuleUrl,
+          hasMiddleware: __hasMiddleware,
+        },
       });
       if (pageDataResult.kind === "response") {
         return pageDataResult.response;
       }
       let pageProps = pageDataResult.pageProps;
+      if (routePattern === "/_error" && typeof renderStatusCode === "number") {
+        pageProps = { ...pageProps, statusCode: renderStatusCode };
+      }
       var gsspRes = pageDataResult.gsspRes;
       let isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
       const isFallbackRender = pageDataResult.isFallback === true;
@@ -710,7 +779,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         setSSRContext({
           pathname: routePattern,
           query,
-          asPath: routeUrl,
+          asPath: renderAsPath || routeUrl,
           locale: locale,
           locales: i18nConfig ? i18nConfig.locales : undefined,
           defaultLocale: currentDefaultLocale,
@@ -831,7 +900,12 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         routeUrl,
         safeJsonStringify,
         scriptNonce,
-        vinext: { hasMiddleware: __hasMiddleware },
+        statusCode: renderStatusCode,
+        vinext: {
+          pageModuleUrl,
+          appModuleUrl,
+          hasMiddleware: __hasMiddleware,
+        },
       });
     } catch (e) {
       console.error("[vinext] SSR error:", e);

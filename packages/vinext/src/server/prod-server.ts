@@ -1971,18 +1971,31 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       let response: Response | undefined;
       if (typeof renderPage === "function") {
         const middlewareResponseHeaders = toWebHeaders(middlewareHeaders);
-        const renderOptions = isDataReq ? { isDataReq: true } : undefined;
+        const renderPageMatch = matchPageRoute
+          ? matchPageRoute(resolvedPathname, webRequest)
+          : null;
+        const shouldDeferErrorPageOnMiss = !isDataReq && !!matchPageRoute && !renderPageMatch;
+        const dataRenderOptions = isDataReq ? { isDataReq: true } : undefined;
+        const initialRenderOptions = shouldDeferErrorPageOnMiss
+          ? { renderErrorPageOnMiss: false }
+          : dataRenderOptions;
         response = await renderPage(
           webRequest,
           resolvedUrl,
           ssrManifest,
           undefined,
           middlewareResponseHeaders,
-          renderOptions,
+          initialRenderOptions,
         );
 
         // ── 11. Fallback rewrites (if SSR returned 404) ─────────────
-        if (response && response.status === 404 && configRewrites.fallback?.length) {
+        let matchedFallbackRewrite = false;
+        if (
+          response &&
+          response.status === 404 &&
+          shouldDeferErrorPageOnMiss &&
+          configRewrites.fallback?.length
+        ) {
           const fallbackRewrite = matchRewrite(
             matchResolvedPathname(resolvedPathname),
             configRewrites.fallback,
@@ -1995,15 +2008,30 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
               await sendWebResponse(proxyResponse, req, res, compress);
               return;
             }
+            matchedFallbackRewrite = true;
             response = await renderPage(
               webRequest,
               mergeRewriteQuery(resolvedUrl, fallbackRewrite),
               ssrManifest,
               undefined,
               middlewareResponseHeaders,
-              renderOptions,
+              dataRenderOptions,
             );
           }
+        }
+        if (
+          response &&
+          response.status === 404 &&
+          shouldDeferErrorPageOnMiss &&
+          !matchedFallbackRewrite
+        ) {
+          response = await renderPage(
+            webRequest,
+            resolvedUrl,
+            ssrManifest,
+            undefined,
+            middlewareResponseHeaders,
+          );
         }
       }
 
