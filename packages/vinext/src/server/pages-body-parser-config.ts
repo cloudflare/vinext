@@ -30,7 +30,7 @@ export const DEFAULT_PAGES_API_BODY_SIZE_LIMIT = 1 * 1024 * 1024;
  * MUST be passed through to the handler as a raw stream (or left unparsed
  * with `req.body === undefined`), so user code can read it itself.
  */
-export type ResolvedBodyParserConfig = { enabled: false } | { enabled: true; sizeLimit: number };
+type ResolvedBodyParserConfig = { enabled: false } | { enabled: true; sizeLimit: number };
 
 const SIZE_UNITS: Record<string, number> = {
   b: 1,
