@@ -23,6 +23,7 @@ import type { Server as HttpServer } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
+import { BLOCKED_PAGES } from "../shims/constants.js";
 import { classifyPagesRoute, classifyAppRoute, getAppRouteRenderEntryPath } from "./report.js";
 import {
   concatUint8Arrays,
@@ -642,9 +643,8 @@ export async function prerenderPages({
     const pagesToRender: PageToRender[] = [];
 
     for (const route of bundlePageRoutes) {
-      // Skip internal pages (_app, _document, _error, etc.)
-      const routeName = path.basename(route.filePath, path.extname(route.filePath));
-      if (routeName.startsWith("_")) continue;
+      // Skip Next.js special pages (_app, _document, _error)
+      if (BLOCKED_PAGES.includes(route.pattern)) continue;
 
       // Cross-reference with file-system route scan.
       const fsRoute = routes.find(

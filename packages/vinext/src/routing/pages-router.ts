@@ -21,6 +21,9 @@ export type Route = {
   params: string[];
 };
 
+/** Next.js special pages that should not produce routes. */
+const RESERVED_PAGE_NAMES = new Set(["_app", "_document", "_error"]);
+
 // Route cache — invalidated when pages directory changes
 const routeCache = new Map<string, { routes: Route[]; promise: Promise<Route[]> }>();
 
@@ -45,7 +48,7 @@ export function invalidateRouteCache(pagesDir: string): void {
  * - pages/about.tsx -> /about
  * - pages/posts/[id].tsx -> /posts/:id
  * - pages/[...slug].tsx -> /:slug+
- * - Ignores _app.tsx, _document.tsx, _error.tsx, files starting with _
+ * - Ignores _app.tsx, _document.tsx, _error.tsx (Next.js special files)
  * - Ignores pages/api/ (handled separately later)
  */
 export async function pagesRouter(
@@ -73,7 +76,7 @@ async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Prom
     "**/*",
     pagesDir,
     matcher.extensions,
-    (name: string) => name === "api" || name.startsWith("_"),
+    (name: string) => name === "api" || RESERVED_PAGE_NAMES.has(name),
   )) {
     const route = fileToRoute(file, pagesDir, matcher);
     if (route) routes.push(route);
@@ -153,6 +156,12 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
 
   const pattern = "/" + urlSegments.join("/");
 
+  // Skip Next.js special pages (_app, _document, _error) at the root level only.
+  // Subdirectory files like admin/_app.tsx are not reserved and should be served.
+  if (segments.length === 1 && RESERVED_PAGE_NAMES.has(lastSegment)) {
+    return null;
+  }
+
   return {
     pattern: pattern === "/" ? "/" : pattern,
     patternParts: urlSegments.filter(Boolean),
@@ -210,7 +219,6 @@ async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promi
       "**/*",
       apiDir,
       matcher.extensions,
-      (name: string) => name.startsWith("_"),
     )) {
       files.push(file);
     }
