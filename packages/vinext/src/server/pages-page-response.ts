@@ -7,6 +7,7 @@ import { buildRevalidateCacheControl } from "./cache-control.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
 import { reportRequestError } from "./instrumentation.js";
+import { loadUserDocumentInitialProps } from "./pages-document-initial-props.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 
 type PagesFontPreload = {
@@ -156,7 +157,11 @@ async function buildPagesShellHtml(
   },
 ): Promise<string> {
   if (options.DocumentComponent) {
-    let html = await options.renderDocumentToString(React.createElement(options.DocumentComponent));
+    const docProps = await loadUserDocumentInitialProps(options.DocumentComponent);
+    const docElement = docProps
+      ? React.createElement(options.DocumentComponent, docProps)
+      : React.createElement(options.DocumentComponent);
+    let html = await options.renderDocumentToString(docElement);
     html = html.replace("__NEXT_MAIN__", bodyMarker);
     if (options.ssrHeadHTML || options.assetTags || fontHeadHTML) {
       html = html.replace(

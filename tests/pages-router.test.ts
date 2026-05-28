@@ -5185,27 +5185,47 @@ export default function handler(_req: any, res: any) {
 
     // Class-based Document. Mirrors the original Next.js async-modules
     // fixture (pages/_document.jsx) which uses `class MyDocument extends
-    // Document`. This requires the `next/document` default export to be a
-    // class, not a function — otherwise React refuses to construct
-    // MyDocument and throws "Class constructor cannot be invoked without
-    // 'new'", which surfaces in e2e as an empty/500 SSR response.
+    // Document` and provides `docValue` through a `static async
+    // getInitialProps()` override that itself uses top-level `await`. This
+    // requires (a) the `next/document` default export to be a class, not a
+    // function — otherwise React refuses to construct MyDocument and throws
+    // "Class constructor cannot be invoked without 'new'", and (b) the SSR
+    // pipeline to invoke `Document.getInitialProps()` and pass the resolved
+    // props to the Document element, so `this.props.docValue` is defined at
+    // render time (Next.js's render.tsx does this in `documentElement`).
     await fsp.writeFile(
       path.join(tmpRoot, "pages", "_document.tsx"),
       `import Document, { Html, Head, Main, NextScript } from "next/document";
 const docValue = await Promise.resolve("doc value");
-export default class MyDocument extends Document {
+export default class MyDocument extends Document<{ docValue: string }> {
+  static async getInitialProps(ctx: any) {
+    const initialProps = await Document.getInitialProps(ctx);
+    return { ...initialProps, docValue };
+  }
   render() {
     return (
       <Html>
         <Head />
         <body>
-          <div id="doc-value">{docValue}</div>
+          <div id="doc-value">{(this.props as any).docValue}</div>
           <Main />
           <NextScript />
         </body>
       </Html>
     );
   }
+}
+`,
+    );
+
+    // Custom 404 page using top-level await. Mirrors Next.js async-modules
+    // pages/404.jsx — the page module must resolve its top-level await before
+    // the 404 handler renders it.
+    await fsp.writeFile(
+      path.join(tmpRoot, "pages", "404.tsx"),
+      `const content = await Promise.resolve("hi y'all");
+export default function Custom404() {
+  return <h1 id="content-404">{content}</h1>;
 }
 `,
     );
@@ -5266,6 +5286,17 @@ export default class MyDocument extends Document {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('<div id="doc-value">doc value</div>');
+  });
+
+  // Ported from Next.js: test/e2e/async-modules/index.test.ts
+  //   ('can render async 404 pages')
+  // The 404 page module uses top-level `await`. When the prod server falls
+  // through to the custom 404 it must render that module's resolved content.
+  it("renders a custom 404.tsx whose module uses top-level await", async () => {
+    const res = await fetch(`${prodUrl}/dhiuhefoiahjeoij`);
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    expect(html).toContain(`<h1 id="content-404">hi y&#x27;all</h1>`);
   });
 });
 
