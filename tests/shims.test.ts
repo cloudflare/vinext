@@ -12522,10 +12522,12 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
-  it("treats a non-locale-prefixed current path as the default locale for root Link navigations", async () => {
-    // Ported from Next.js:
-    // test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+  it("keeps the active locale for root Link navigations from a non-locale-prefixed path", async () => {
+    // i18n sticky-locale (issue #1336): a default-locale path served under a
+    // non-default locale must keep reporting its active `__VINEXT_LOCALE__` so
+    // a subsequent client-side root navigation stays in that locale rather
+    // than snapping back to the configured default. See
+    // tests/pages-router-i18n-sticky-locale.test.ts for the broader contract.
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
     const { win } = createNavWindow();
@@ -12533,8 +12535,6 @@ describe("Pages Router concurrent navigation", () => {
     win.location.pathname = "/new";
     win.location.href = "http://localhost/new";
     Object.assign(win, {
-      // Simulate a stale/preferred locale signal that must not override the
-      // URL-derived Pages Router locale for an unprefixed path.
       __VINEXT_LOCALE__: "id",
       __VINEXT_LOCALES__: ["en", "id"],
       __VINEXT_DEFAULT_LOCALE__: "en",
@@ -12549,7 +12549,7 @@ describe("Pages Router concurrent navigation", () => {
             pageModuleUrl,
             {},
             {
-              locale: "en",
+              locale: "id",
               locales: ["en", "id"],
               defaultLocale: "en",
             },
@@ -12567,14 +12567,14 @@ describe("Pages Router concurrent navigation", () => {
       const result = await Router.push("/");
 
       expect(result).toBe(true);
-      expect(fetch).toHaveBeenCalledWith("/en", expect.any(Object));
+      expect(fetch).toHaveBeenCalledWith("/id", expect.any(Object));
       expect(win.history.pushState).toHaveBeenCalledWith(
-        expect.objectContaining({ __N: true }),
+        expect.objectContaining({ __N: true, options: expect.objectContaining({ locale: "id" }) }),
         "",
-        "/",
+        "/id",
       );
-      expect(win.location.href).toBe("http://localhost/");
-      expect(win.__VINEXT_LOCALE__).toBe("en");
+      expect(win.location.href).toBe("http://localhost/id");
+      expect(win.__VINEXT_LOCALE__).toBe("id");
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {

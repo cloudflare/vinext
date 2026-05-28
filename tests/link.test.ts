@@ -524,10 +524,10 @@ describe("Link locale handling", () => {
     expect(html).toContain('href="/en"');
   });
 
-  it("locale=undefined treats a non-locale-prefixed browser path as the default locale", () => {
-    // Ported from Next.js:
-    // test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+  it("locale=undefined keeps the active locale for a non-locale-prefixed browser path", () => {
+    // i18n sticky-locale (issue #1336): a default-locale path served under a
+    // non-default locale must keep reporting its active `__VINEXT_LOCALE__`
+    // for Link href resolution so the user stays in their current locale.
     (globalThis as any).window = {
       location: {
         pathname: "/new",
@@ -541,7 +541,7 @@ describe("Link locale handling", () => {
 
     const html = ReactDOMServer.renderToString(React.createElement(Link, { href: "/" }, "x"));
 
-    expect(html).toContain('href="/en"');
+    expect(html).toContain('href="/id"');
   });
 
   it("locale=undefined keeps the current locale for locale-prefixed browser paths", () => {
