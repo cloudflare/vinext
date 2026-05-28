@@ -594,6 +594,11 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
   const statusCode = options && typeof options.statusCode === "number" ? options.statusCode : undefined;
   const asPath = options && typeof options.asPath === "string" ? options.asPath : undefined;
   const renderErrorPageOnMiss = !(options && options.renderErrorPageOnMiss === false);
+  // Guard against infinite recursion when the user's custom 500/error page
+  // itself throws during render. When this flag is set, the catch block below
+  // returns the plain "Internal Server Error" text response instead of trying
+  // to render an error page again. Fixes #1458.
+  const isInternalErrorRender = !!(options && options.__isInternalErrorRender);
   const localeInfo = i18nConfig
     ? resolvePagesI18nRequest(
         url,
@@ -615,7 +620,13 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     return new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } });
   }
 
-  let match = matchRoute(routeUrl, pageRoutes);
+  // Internal error render path: caller has pinned a specific route (the
+  // user's pages/500 or pages/_error) to render in response to an SSR throw.
+  // Skip route matching so we don't accidentally double-route, and skip the
+  // missing-route 404 fallback. See catch block below. Fixes #1458.
+  let match = options && options.__forcedRoute
+    ? { route: options.__forcedRoute, params: {} }
+    : matchRoute(routeUrl, pageRoutes);
   let renderStatusCodeOverride = statusCode;
   let renderAsPath = asPath;
   if (!match) {
@@ -950,6 +961,37 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
       ).catch(() => { /* ignore reporting errors */ });
+      // Data (_next/data) requests can't render HTML, and avoid recursion if
+      // we're already in the middle of rendering the error page itself.
+      // Mirrors Next.js base-server.ts which renders /500 (or _error) when
+      // SSR throws. Fixes #1458.
+      if (!isInternalErrorRender && !isDataReq) {
+        // Look for an explicit pages/500.tsx first, then fall back to _error.
+        // Only match the literal /500 pattern — never a catch-all/dynamic route.
+        let errorRoute = null;
+        for (var __i = 0; __i < pageRoutes.length; __i++) {
+          if (pageRoutes[__i].pattern === "/500") {
+            errorRoute = pageRoutes[__i];
+            break;
+          }
+        }
+        if (!errorRoute && _errorPageRoute) {
+          errorRoute = _errorPageRoute;
+        }
+        if (errorRoute) {
+          try {
+            return await _renderPage(request, url, manifest, middlewareHeaders, {
+              statusCode: 500,
+              asPath: url,
+              renderErrorPageOnMiss: false,
+              __isInternalErrorRender: true,
+              __forcedRoute: errorRoute,
+            });
+          } catch (errorPageErr) {
+            console.error("[vinext] Error page render failed:", errorPageErr);
+          }
+        }
+      }
       return new Response("Internal Server Error", { status: 500 });
     }
   });
