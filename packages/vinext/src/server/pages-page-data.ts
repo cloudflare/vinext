@@ -13,6 +13,7 @@ import {
 } from "./pages-page-response.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
+import { isBotUserAgent } from "../utils/html-limited-bots.js";
 
 type PagesRedirectResult = {
   destination: string;
@@ -161,6 +162,25 @@ export type ResolvePagesPageDataOptions = {
    * trigger lands.
    */
   isOnDemandRevalidate?: boolean;
+  /**
+   * Request `User-Agent` header. Used to detect crawlers/bots so that an
+   * unlisted `fallback: true` path is rendered synchronously (with real
+   * props) for bots instead of shipping the loading shell. Mirrors Next.js
+   * `pages-handler.ts`:
+   *
+   *   if ((isIsrFallback && isBot(req.headers['user-agent'])) || isMinimalMode) {
+   *     isIsrFallback = false
+   *   }
+   *
+   * See: `.nextjs-ref/packages/next/src/server/route-modules/pages/pages-handler.ts`.
+   */
+  userAgent?: string;
+  /**
+   * Serialized `htmlLimitedBots` regexp source from `next.config`. When set,
+   * extends the default bot list used by `isBotUserAgent` for the fallback
+   * flip — keeps the override consistent with streaming metadata gating.
+   */
+  htmlLimitedBots?: string;
   pageModule: PagesPageModule;
   params: Record<string, unknown>;
   query: Record<string, unknown>;
@@ -393,6 +413,20 @@ export async function resolvePagesPageData(
     if (fallback === true && !isValidPath && !options.isDataReq) {
       isFallback = true;
     }
+  }
+
+  // Crawler/bot deopt: a bot hitting an unlisted `fallback: true` path
+  // should get a blocking synchronous render (real content) rather than the
+  // loading shell, so the crawler indexes the actual page and not
+  // `Loading...`. Mirrors Next.js's bot check in `pages-handler.ts`:
+  // `.nextjs-ref/packages/next/src/server/route-modules/pages/pages-handler.ts`.
+  // Refs #1543.
+  if (
+    isFallback &&
+    options.userAgent &&
+    isBotUserAgent(options.userAgent, options.htmlLimitedBots)
+  ) {
+    isFallback = false;
   }
 
   let pageProps: Record<string, unknown> = {};

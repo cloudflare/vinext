@@ -50,6 +50,7 @@ import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import { loadUserDocumentInitialProps } from "./pages-document-initial-props.js";
+import { isBotUserAgent } from "../utils/html-limited-bots.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -267,6 +268,14 @@ export function createSSRHandler(
    * `next.config`. When undefined or empty, no meta tags are emitted.
    */
   clientTraceMetadata?: readonly string[],
+  /**
+   * Serialized `htmlLimitedBots` regexp source from `next.config`. Used by the
+   * bot-aware fallback path (#1543): when a crawler hits an unlisted
+   * `fallback: true` path we render synchronously with real props instead of
+   * the `Loading...` shell. Mirrors the Next.js production check in
+   * `.nextjs-ref/packages/next/src/server/route-modules/pages/pages-handler.ts`.
+   */
+  htmlLimitedBots?: string,
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -526,19 +535,30 @@ export function createSSRHandler(
           // Render the loading shell for `fallback: true` when the path
           // wasn't pre-rendered. Data requests still resolve real props so
           // the client can swap in after the shell ships.
+          //
+          // Crawler/bot deopt (#1543): if the request is from a known
+          // crawler, skip the fallback shell and synchronously render the
+          // full page so the bot indexes real content (not `Loading...`).
+          // Mirrors Next.js's bot check in
+          // `.nextjs-ref/packages/next/src/server/route-modules/pages/pages-handler.ts`.
           if (fallback === true && !isValidPath && !isDataReq) {
-            isFallbackRender = true;
-            if (typeof routerShim.setSSRContext === "function") {
-              routerShim.setSSRContext({
-                pathname: patternToNextFormat(route.pattern),
-                query,
-                asPath: url,
-                locale: locale ?? currentDefaultLocale,
-                locales: i18nConfig?.locales,
-                defaultLocale: currentDefaultLocale,
-                domainLocales,
-                isFallback: true,
-              });
+            const userAgentHeader = req.headers["user-agent"];
+            const userAgent = Array.isArray(userAgentHeader) ? userAgentHeader[0] : userAgentHeader;
+            const isBotReq = !!userAgent && isBotUserAgent(userAgent, htmlLimitedBots);
+            if (!isBotReq) {
+              isFallbackRender = true;
+              if (typeof routerShim.setSSRContext === "function") {
+                routerShim.setSSRContext({
+                  pathname: patternToNextFormat(route.pattern),
+                  query,
+                  asPath: url,
+                  locale: locale ?? currentDefaultLocale,
+                  locales: i18nConfig?.locales,
+                  defaultLocale: currentDefaultLocale,
+                  domainLocales,
+                  isFallback: true,
+                });
+              }
             }
           }
         }

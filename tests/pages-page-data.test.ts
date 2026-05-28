@@ -120,6 +120,70 @@ describe("pages page data", () => {
     await expect(result.response.text()).resolves.toContain("This page could not be found.");
   });
 
+  // Refs #1543: a crawler/bot UA hitting an unlisted `fallback: true` path
+  // must NOT receive the loading shell — it should render synchronously so
+  // the bot indexes real content. Mirrors Next.js's bot check in
+  // `.nextjs-ref/packages/next/src/server/route-modules/pages/pages-handler.ts`.
+  it("does not set isFallback for bot User-Agent on unlisted fallback: true paths", async () => {
+    let gspCalled = false;
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: true,
+              paths: [{ params: { slug: "hello-world" } }],
+            };
+          },
+          async getStaticProps({ params }) {
+            gspCalled = true;
+            return { props: { slug: params?.slug ?? null } };
+          },
+        },
+        params: { slug: "unknown" },
+        query: { slug: "unknown" },
+        route: { isDynamic: true },
+        routeUrl: "/posts/unknown",
+        userAgent: "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+      }),
+    );
+
+    expect(result.kind).toBe("render");
+    if (result.kind !== "render") throw new Error("expected render result");
+    expect(result.isFallback).toBe(false);
+    expect(gspCalled).toBe(true);
+    expect(result.pageProps).toMatchObject({ slug: "unknown" });
+  });
+
+  it("sets isFallback for normal browser User-Agent on unlisted fallback: true paths", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: true,
+              paths: [{ params: { slug: "hello-world" } }],
+            };
+          },
+          async getStaticProps() {
+            throw new Error("getStaticProps should not run on a fallback shell render");
+          },
+        },
+        params: { slug: "unknown" },
+        query: { slug: "unknown" },
+        route: { isDynamic: true },
+        routeUrl: "/posts/unknown",
+        userAgent:
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36",
+      }),
+    );
+
+    expect(result.kind).toBe("render");
+    if (result.kind !== "render") throw new Error("expected render result");
+    expect(result.isFallback).toBe(true);
+    expect(result.pageProps).toEqual({});
+  });
+
   it("short-circuits getServerSideProps responses after res.end()", async () => {
     const responsePromise = Promise.resolve(
       new Response('{"ok":true}', {

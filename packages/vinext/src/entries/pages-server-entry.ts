@@ -122,6 +122,10 @@ export async function generateServerEntry(
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
     headers: nextConfig?.headers ?? [],
     expireTime: nextConfig?.expireTime,
+    // Serialized regex source — see `.nextjs-ref/packages/next/src/shared/lib/router/utils/html-bots.ts`.
+    // Used by the bot-aware fallback path (#1543) so the override stays
+    // consistent with streaming metadata gating.
+    htmlLimitedBots: nextConfig?.htmlLimitedBots,
     i18n: nextConfig?.i18n ?? null,
     // Mirrors Next.js `experimental.disableOptimizedLoading` — when false
     // (the default), page scripts are emitted with `defer` in <head>. See
@@ -789,6 +793,12 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         },
         routePattern,
         routeUrl,
+        // Bot-aware fallback flip (#1543). When a crawler hits an unlisted
+        // \`fallback: true\` path we want a synchronous render with real
+        // props, not the \`Loading...\` shell. Mirrors Next.js's bot check in
+        // \`.nextjs-ref/packages/next/src/server/route-modules/pages/pages-handler.ts\`.
+        userAgent: request.headers.get("user-agent") || undefined,
+        htmlLimitedBots: vinextConfig.htmlLimitedBots,
         runInFreshUnifiedContext(callback) {
           var revalCtx = _createUnifiedCtx({
             executionContext: _getRequestExecutionContext(),
