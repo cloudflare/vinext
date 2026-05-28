@@ -138,5 +138,5 @@ test.describe("Pages Router Production Build", () => {
 });
 
 function decodeHtmlText(text: string): string {
-  return text.replaceAll("&quot;", '"').replaceAll("&amp;", "&");
+  return text.replaceAll("&amp;", "&").replaceAll("&quot;", '"');
 }

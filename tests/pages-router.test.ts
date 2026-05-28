@@ -5078,7 +5078,7 @@ describe("Pages Router import.meta.url in production", () => {
   let prodUrl: string;
 
   function decodeHtmlText(text: string): string {
-    return text.replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+    return text.replace(/&amp;/g, "&").replace(/&quot;/g, '"');
   }
 
   function collectJavaScriptFiles(dir: string): string[] {

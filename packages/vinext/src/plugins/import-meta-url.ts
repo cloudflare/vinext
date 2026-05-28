@@ -142,6 +142,10 @@ function transformableModuleCanonicalId(id: string, rootPaths: RootPaths): strin
   if (!id || id.startsWith("\0")) return null;
   if (!path.isAbsolute(id)) return null;
   const normalizedInputId = normalizePath(id);
+  // Early-exit optimization: skip the realpathSync below for node_modules
+  // paths, which are the majority of modules in a typical project. The
+  // isPathWithin check at line 150 provides a second safety net in case a
+  // symlink causes the canonical path to land outside node_modules.
   if (normalizedInputId.includes("/node_modules/")) return null;
   if (!TRANSFORMABLE_SCRIPT_EXTENSIONS.has(path.extname(normalizedInputId))) return null;
 
@@ -163,6 +167,11 @@ function excludedRelativePrefixes(
   normalizedRoot: string,
   options: { outputDirs?: string[] },
 ): string[] {
+  // Static list of known output/build directories whose modules must
+  // never have import.meta.url rewritten (they are build artifacts, not
+  // user source). Custom output directories are added dynamically from
+  // config.build.outDir in configResolved. Using .gitignore was considered
+  // but adds unnecessary filesystem overhead for this narrow use case.
   const prefixes = new Set([".next", ".vinext", ".vinext-local-package", "dist", "out"]);
 
   for (const outputDir of options.outputDirs ?? []) {
@@ -222,10 +231,15 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
       return;
     }
 
+    if (isChainExpressionWrappingImportMetaUrl(value)) {
+      ranges.push({ start: value.start, end: value.end });
+      return;
+    }
+
     if (isNewUrlExpression(value)) {
       const args = nodeArray(value.arguments);
       for (let index = 0; index < args.length; index += 1) {
-        if (index === 1 && isImportMetaUrlNode(args[index])) continue;
+        if (index === 1 && isImportMetaUrlOrChainedNode(args[index])) continue;
         visit(args[index]);
       }
       visit(value.callee);
@@ -271,6 +285,33 @@ function isImportMetaUrlNode(value: unknown): value is NodeLike & { start: numbe
     typeof value.end === "number" &&
     isImportMetaNode(value.object) &&
     isIdentifierNamed(value.property, "url")
+  );
+}
+
+// Accepts both import.meta.url (MemberExpression) and import.meta?.url
+// (ChainExpression wrapping a MemberExpression) so that the new URL() skip
+// correctly handles optional-chained base arguments.
+function isImportMetaUrlOrChainedNode(
+  value: unknown,
+): value is NodeLike & { start: number; end: number } {
+  if (isImportMetaUrlNode(value)) return true;
+  return (
+    isNodeLike(value) && value.type === "ChainExpression" && isImportMetaUrlNode(value.expression)
+  );
+}
+
+// Catches the ChainExpression wrapper so we record the outer node range
+// and avoid descending into the inner MemberExpression (which happens
+// to share the same start/end, but this is more explicit).
+function isChainExpressionWrappingImportMetaUrl(
+  value: unknown,
+): value is NodeLike & { start: number; end: number } {
+  return (
+    isNodeLike(value) &&
+    value.type === "ChainExpression" &&
+    typeof value.start === "number" &&
+    typeof value.end === "number" &&
+    isImportMetaUrlNode(value.expression)
   );
 }
 
