@@ -301,13 +301,7 @@ function readSetCookieNameValue(setCookie: string): { name: string; value: strin
 
   const name = setCookie.slice(0, equalsIndex).trim();
   const valueEnd = setCookie.indexOf(";", equalsIndex + 1);
-  const encodedValue = setCookie.slice(equalsIndex + 1, valueEnd === -1 ? undefined : valueEnd);
-  let value: string;
-  try {
-    value = decodeURIComponent(encodedValue);
-  } catch {
-    value = encodedValue;
-  }
+  const value = setCookie.slice(equalsIndex + 1, valueEnd === -1 ? undefined : valueEnd);
 
   return { name, value };
 }
@@ -603,6 +597,13 @@ function isStaleChildSiblingRouteRedirect(
   return commonPrefixLength > 0 && commonPrefixLength < targetSegments.length;
 }
 
+function normalizeRuntime(runtime: AppServerActionRouteRuntime): "edge" | "nodejs" {
+  if (runtime === "edge" || runtime === "experimental-edge") {
+    return "edge";
+  }
+  return "nodejs";
+}
+
 function shouldUseForwardedActionRedirectStatus<TRoute extends AppServerActionRoute>(options: {
   actionWasForwarded: boolean;
   currentPathname: string;
@@ -618,9 +619,9 @@ function shouldUseForwardedActionRedirectStatus<TRoute extends AppServerActionRo
   }
   if (!options.currentRoute || !options.resolveRouteRuntime) return false;
 
-  const currentRuntime = options.resolveRouteRuntime(options.currentRoute);
-  const targetRuntime = options.resolveRouteRuntime(options.targetRoute);
-  return currentRuntime !== null && currentRuntime !== targetRuntime;
+  const currentRuntime = normalizeRuntime(options.resolveRouteRuntime(options.currentRoute));
+  const targetRuntime = normalizeRuntime(options.resolveRouteRuntime(options.targetRoute));
+  return currentRuntime !== targetRuntime;
 }
 
 function canRenderActionRedirectTarget(route: AppServerActionRoute): boolean {

@@ -158,10 +158,6 @@ export function resolveAppPageSegmentConfig(
       config.revalidateSeconds,
       segment.revalidate,
     );
-
-    if (typeof segment.runtime === "string" && isRouteSegmentRuntime(segment.runtime)) {
-      config.runtime = segment.runtime;
-    }
   }
 
   if (config.dynamicConfig === "force-dynamic") {

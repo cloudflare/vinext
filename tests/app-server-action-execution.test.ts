@@ -1567,6 +1567,56 @@ describe("app server action execution helpers", () => {
     });
   });
 
+  it("returns cross-runtime action redirects with a 200 wrapper response (implicit Node -> Edge)", async () => {
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        cleanPathname: "/delayed-action/node",
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/delayed-action/edge"));
+        },
+        matchRoute(pathname) {
+          if (pathname === "/delayed-action/node") {
+            return {
+              params: {},
+              route: {
+                id: "delayed-action-node",
+                params: [],
+                pattern: "/delayed-action/node",
+                runtime: null, // implicit Node
+              },
+            };
+          }
+          if (pathname === "/delayed-action/edge") {
+            return {
+              params: {},
+              route: {
+                id: "delayed-action-edge",
+                params: [],
+                pattern: "/delayed-action/edge",
+                runtime: "edge",
+              },
+            };
+          }
+          return null;
+        },
+        resolveRouteRuntime(route) {
+          return route.runtime ?? null;
+        },
+        request: createFetchActionRequest({
+          "next-action": "action-id",
+          rsc: "1",
+        }),
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("x-action-redirect")).toBe("/delayed-action/edge");
+    expect(JSON.parse(await response!.text())).toEqual({
+      root: "delayed-action-edge:{}:none",
+      returnValue: { ok: true },
+    });
+  });
+
   it("returns stale child sibling action redirects with a 200 wrapper response", async () => {
     // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts

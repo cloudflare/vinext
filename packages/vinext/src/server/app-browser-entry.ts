@@ -666,14 +666,6 @@ function createServerActionRedirectError(target: { href: string; type: string })
   return new ServerActionRedirectError(target);
 }
 
-function createPendingServerActionRedirectPromise(): Promise<never> {
-  // Ported from Next.js: a never-resolving promise that suspends the React
-  // render while the redirect navigation payload processes on-screen. Once
-  // the navigation commits the new URL, React tears down this suspended
-  // boundary and the component re-renders at the new route.
-  return new Promise<never>(() => {});
-}
-
 async function commitSameUrlNavigatePayload(
   nextElements: Promise<AppElements>,
   actionInitiation: ActionInitiationSnapshot,
@@ -1346,14 +1338,12 @@ function registerServerActionCallback(): void {
         ).catch(() => {
           browserNavigationController.performHardNavigation(actionRedirectTarget.href);
         });
-        // Ported from Next.js: programmatic actions (args.length === 0) throw a
-        // redirect error to abort the action call, while form actions (args.length !== 0)
-        // suspend via a pending promise so the UI stays at the form route. The
-        // distinction mirrors React's action dispatch semantics.
-        if (args.length !== 0) {
-          throw createServerActionRedirectError(actionRedirectTarget);
-        }
-        return await createPendingServerActionRedirectPromise();
+        // Action redirects must throw a redirect error to abort the action call and
+        // propagate the redirect to the caller. Unlike Next.js which can suspend
+        // form actions on the client, vinext commits the SPA redirect navigation
+        // asynchronously in the background; returning a pending promise would suspend
+        // the React tree and block the background navigation's state update from committing.
+        throw createServerActionRedirectError(actionRedirectTarget);
       }
 
       browserNavigationController.performHardNavigation(actionRedirectTarget.href);
