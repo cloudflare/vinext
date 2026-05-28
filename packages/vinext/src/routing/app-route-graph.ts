@@ -833,6 +833,12 @@ export async function buildAppRouteGraph(
   // any URL containing the marker).
   //
   // See https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/interception-routes.ts
+  //
+  // TODO(#1426): When PPR (Partial Prerendering) is supported, ensure dynamic routes
+  // remain in the route manifest regardless of their revalidate value. Next.js includes
+  // PPR dynamic routes in the routes manifest even when revalidate=0 (force-dynamic).
+  // The filesystem-based scan already does this correctly, but any future filtering
+  // logic must preserve this behavior.
   const routes: AppRouteGraphRoute[] = [];
 
   const excludeDir = (name: string) =>
