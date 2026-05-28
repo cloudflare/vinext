@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   detectNextIntlConfig,
+  lightningCssFeatureNamesToMask,
   loadNextConfig,
   parseBodySizeLimit,
   reassignsModuleExports,
@@ -1194,6 +1195,8 @@ describe("detectNextIntlConfig", () => {
       instrumentationClientInject: [],
       clientTraceMetadata: undefined,
       staleTimes: { dynamic: 0, static: 300 },
+      useLightningcss: false,
+      lightningCssFeatures: { include: 0, exclude: 0 },
       ...overrides,
     };
   }
@@ -1780,5 +1783,92 @@ describe("resolveNextConfig staleTimes (#1490)", () => {
       experimental: { staleTimes: { dynamic: -5, static: -1 } },
     });
     expect(resolved.staleTimes).toEqual({ dynamic: 0, static: 300 });
+  });
+});
+
+describe("lightningCssFeatureNamesToMask", () => {
+  // Bit values are copied from `lightningcss/node/targets.d.ts` (`Features` enum)
+  // and `.nextjs-ref/crates/next-core/src/next_config.rs`
+  // (`lightningcss_feature_names_to_mask`).
+  it("returns 0 for an empty list", () => {
+    expect(lightningCssFeatureNamesToMask([])).toBe(0);
+  });
+
+  it("maps individual feature names to their canonical bit values", () => {
+    expect(lightningCssFeatureNamesToMask(["nesting"])).toBe(1);
+    expect(lightningCssFeatureNamesToMask(["not-selector-list"])).toBe(2);
+    expect(lightningCssFeatureNamesToMask(["light-dark"])).toBe(1048576);
+    expect(lightningCssFeatureNamesToMask(["logical-properties"])).toBe(524288);
+  });
+
+  it("maps composite groups to the OR of their constituent bits", () => {
+    expect(lightningCssFeatureNamesToMask(["selectors"])).toBe(31);
+    expect(lightningCssFeatureNamesToMask(["media-queries"])).toBe(448);
+    expect(lightningCssFeatureNamesToMask(["colors"])).toBe(1113088);
+  });
+
+  it("OR-merges multiple names into a single bitmask", () => {
+    expect(lightningCssFeatureNamesToMask(["nesting", "light-dark"])).toBe(1 | 1048576);
+  });
+
+  it("warns and skips unknown feature names", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(lightningCssFeatureNamesToMask(["nesting", "not-a-real-feature"])).toBe(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("not-a-real-feature"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe("resolveNextConfig experimental.lightningCssFeatures", () => {
+  it("defaults to disabled with empty bitmasks when unset", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.useLightningcss).toBe(false);
+    expect(resolved.lightningCssFeatures).toEqual({ include: 0, exclude: 0 });
+  });
+
+  it("plumbs `useLightningcss: true` through", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { useLightningcss: true },
+    });
+    expect(resolved.useLightningcss).toBe(true);
+  });
+
+  it("converts dash-case feature names into the canonical bitmask", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: {
+        useLightningcss: true,
+        lightningCssFeatures: {
+          include: ["nesting"],
+          exclude: ["light-dark", "logical-properties"],
+        },
+      },
+    });
+    expect(resolved.lightningCssFeatures).toEqual({
+      include: 1,
+      exclude: 1048576 | 524288,
+    });
+  });
+
+  it("warns when lightningCssFeatures is set without useLightningcss", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const resolved = await resolveNextConfig({
+        experimental: {
+          lightningCssFeatures: { exclude: ["light-dark"] },
+        },
+      });
+      expect(resolved.useLightningcss).toBe(false);
+      // Mask still resolved (so the user can see exactly what they configured),
+      // but it has no effect downstream without `useLightningcss`.
+      expect(resolved.lightningCssFeatures.exclude).toBe(1048576);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("lightningCssFeatures is set but experimental.useLightningcss"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

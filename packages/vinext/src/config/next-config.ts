@@ -444,6 +444,25 @@ export type ResolvedNextConfig = {
    * Mirrors Next.js' `process.env.__NEXT_CLIENT_ROUTER_{DYNAMIC,STATIC}_STALETIME`.
    */
   staleTimes: { dynamic: number; static: number };
+  /**
+   * Mirrors Next.js `experimental.useLightningcss`. When `true`, switch
+   * Vite's CSS pipeline from PostCSS to lightningcss for both transforms
+   * and minification, so the user's `lightningCssFeatures` config takes
+   * effect (without this flag set, Next.js's own
+   * `lightningCssFeatures` option is also a no-op).
+   *
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/useLightningcss
+   */
+  useLightningcss: boolean;
+  /**
+   * Resolved `experimental.lightningCssFeatures` from next.config, converted
+   * from dash-case feature names into the numeric bitmask form expected by
+   * the lightningcss `transform()` API (`include` / `exclude` options). When
+   * the user did not supply the option, both masks are `0` (a no-op).
+   *
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/lightningCssFeatures
+   */
+  lightningCssFeatures: { include: number; exclude: number };
 };
 
 // Mirrors Next.js's accepted set in packages/next/src/shared/lib/constants.ts
@@ -1038,6 +1057,64 @@ function readStringArray(value: unknown): string[] {
 }
 
 /**
+ * Convert lightningcss feature names from `experimental.lightningCssFeatures`
+ * into a numeric bitmask consumable by the `lightningcss` `transform()` /
+ * `bundle()` API (the `include` / `exclude` options).
+ *
+ * The mapping mirrors Next.js exactly so the same dash-case feature names
+ * accepted by `next.config` produce the same bits on both sides. See:
+ *  - `.nextjs-ref/packages/next/src/server/config-shared.ts` (`LIGHTNINGCSS_FEATURE_NAMES`)
+ *  - `.nextjs-ref/crates/next-core/src/next_config.rs` (`lightningcss_feature_names_to_mask`)
+ *  - `lightningcss/node/targets.d.ts` (`Features` enum bits)
+ *
+ * Unknown names emit a warning (matching the Next.js Rust path, which errors;
+ * we warn instead so a stray name doesn't break the whole build).
+ */
+const LIGHTNINGCSS_FEATURE_BITS: Record<string, number> = {
+  // Individual features (bits 0–20)
+  nesting: 1,
+  "not-selector-list": 2,
+  "dir-selector": 4,
+  "lang-selector-list": 8,
+  "is-selector": 16,
+  "text-decoration-thickness-percent": 32,
+  "media-interval-syntax": 64,
+  "media-range-syntax": 128,
+  "custom-media-queries": 256,
+  "clamp-function": 512,
+  "color-function": 1024,
+  "oklab-colors": 2048,
+  "lab-colors": 4096,
+  "p3-colors": 8192,
+  "hex-alpha-colors": 16384,
+  "space-separated-color-notation": 32768,
+  "font-family-system-ui": 65536,
+  "double-position-gradients": 131072,
+  "vendor-prefixes": 262144,
+  "logical-properties": 524288,
+  "light-dark": 1048576,
+  // Composite groups (OR of their constituent individual feature bits)
+  selectors: 31,
+  "media-queries": 448,
+  colors: 1113088,
+};
+
+export function lightningCssFeatureNamesToMask(names: readonly string[]): number {
+  let mask = 0;
+  for (const name of names) {
+    const bit = LIGHTNINGCSS_FEATURE_BITS[name];
+    if (bit === undefined) {
+      console.warn(
+        `[vinext] Unknown lightningcss feature name "${name}" in experimental.lightningCssFeatures — ignoring.`,
+      );
+      continue;
+    }
+    mask |= bit;
+  }
+  return mask;
+}
+
+/**
  * Serialize a `compiler.define` / `compiler.defineServer` map into the
  * Vite-friendly `Record<string, string>` shape where each value is already
  * a JSON-encoded literal of source code. Entries whose values are not a
@@ -1137,6 +1214,8 @@ export async function resolveNextConfig(
       instrumentationClientInject: [],
       clientTraceMetadata: undefined,
       staleTimes: { ...DEFAULT_STALE_TIMES },
+      useLightningcss: false,
+      lightningCssFeatures: { include: 0, exclude: 0 },
     };
     detectNextIntlConfig(root, resolved);
     return resolved;
@@ -1258,6 +1337,23 @@ export async function resolveNextConfig(
     );
   }
 
+  // Resolve experimental.useLightningcss + experimental.lightningCssFeatures.
+  // The two options are paired: `lightningCssFeatures` is only honoured when
+  // `useLightningcss` is also set, matching Next.js (see Next.js
+  // packages/next/src/server/config.ts which warns otherwise).
+  const useLightningcss = experimental?.useLightningcss === true;
+  const rawLightningCssFeatures = readOptionalRecord(experimental?.lightningCssFeatures);
+  const lightningCssFeatures = {
+    include: lightningCssFeatureNamesToMask(readStringArray(rawLightningCssFeatures?.include)),
+    exclude: lightningCssFeatureNamesToMask(readStringArray(rawLightningCssFeatures?.exclude)),
+  };
+  if (rawLightningCssFeatures && !useLightningcss) {
+    console.warn(
+      "[vinext] experimental.lightningCssFeatures is set but experimental.useLightningcss is not enabled. " +
+        "The lightningCssFeatures option has no effect without useLightningcss.",
+    );
+  }
+
   // Warn about unsupported webpack usage. We preserve alias injection and
   // extract MDX settings, but all other webpack customization is still ignored.
   if (config.webpack !== undefined) {
@@ -1372,6 +1468,8 @@ export async function resolveNextConfig(
         )
       : undefined,
     staleTimes: resolveStaleTimes(experimental),
+    useLightningcss,
+    lightningCssFeatures,
   };
 
   // Auto-detect next-intl (lowest priority — explicit aliases from

@@ -1748,14 +1748,36 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 },
               }
             : {}),
-          // Inject resolved PostCSS plugins (when found) and any
-          // sassOptions translated from next.config. Both end up on
+          // Inject resolved PostCSS plugins (when found), any sassOptions
+          // translated from next.config, and the lightningcss bridge (when
+          // `experimental.useLightningcss` is enabled). All three end up on
           // `css.*`, so we merge them into a single `css` object rather
           // than emitting `{ css: ... }` twice (the second would clobber
           // the first).
-          ...(postcssOverride || sassPreprocessorOptions
+          //
+          // `experimental.lightningCssFeatures` is plumbed through to
+          // `css.lightningcss.include` / `css.lightningcss.exclude` as a
+          // numeric bitmask so users can force-transpile or preserve
+          // specific CSS features regardless of the resolved browser
+          // targets, matching Next.js. The transformer flag is required —
+          // without it, Vite uses PostCSS and the include/exclude options
+          // would silently be dropped.
+          ...(postcssOverride || sassPreprocessorOptions || nextConfig.useLightningcss
             ? {
                 css: {
+                  ...(nextConfig.useLightningcss
+                    ? {
+                        transformer: "lightningcss" as const,
+                        lightningcss: {
+                          ...(nextConfig.lightningCssFeatures.include
+                            ? { include: nextConfig.lightningCssFeatures.include }
+                            : {}),
+                          ...(nextConfig.lightningCssFeatures.exclude
+                            ? { exclude: nextConfig.lightningCssFeatures.exclude }
+                            : {}),
+                        },
+                      }
+                    : {}),
                   ...(postcssOverride ? { postcss: postcssOverride } : {}),
                   ...(sassPreprocessorOptions
                     ? {
