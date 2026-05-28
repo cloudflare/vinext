@@ -774,6 +774,38 @@ describe("Pages Router integration", () => {
     expect(res.status).toBe(404);
   });
 
+  // Regression coverage for cloudflare/vinext#1338 — Pages Router edge
+  // runtime API routes (`export const config = { runtime: 'edge' }`) must
+  // execute and return the user's Web Response (200), not 500.
+  //
+  // Ported from Next.js: test/e2e/edge-pages-support/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-pages-support/index.test.ts
+  it("serves Pages Router edge runtime API routes (export const config = { runtime: 'edge' })", async () => {
+    const res = await fetch(`${baseUrl}/api/edge-hello?a=b`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+
+    const data = await res.json();
+    expect(data).toEqual({
+      hello: "world",
+      query: { a: "b" },
+    });
+  });
+
+  // Regression coverage for cloudflare/vinext#1338 — Pages Router OG image
+  // routes using `next/og` ImageResponse with `runtime: 'edge'` must execute
+  // and return image/png, not 404.
+  //
+  // Ported from Next.js: test/e2e/og-api/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/og-api/index.test.ts
+  it("serves Pages Router OG image routes (next/og + edge runtime)", async () => {
+    const res = await fetch(`${baseUrl}/api/og`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("image/png");
+    const body = await res.blob();
+    expect(body.size).toBeGreaterThan(0);
+  });
+
   // --- Client Hydration ---
 
   it("includes hydration script for client-side rendering", async () => {
@@ -3252,6 +3284,23 @@ export default function CounterPage() {
       });
       expect(ldJsonRes.status).toBe(200);
       expect(await ldJsonRes.json()).toEqual({ title: "doc" });
+
+      // Test: Pages Router edge runtime API route. Regression coverage for
+      // cloudflare/vinext#1338 — edge runtime API routes were reported as
+      // returning 500 against the Next.js deploy suite. Verifies the
+      // production server entry correctly dispatches edge handlers.
+      const edgeApiRes = await fetch(`${prodUrl}/api/edge-hello?a=b`);
+      expect(edgeApiRes.status).toBe(200);
+      expect(edgeApiRes.headers.get("content-type")).toContain("application/json");
+      expect(await edgeApiRes.json()).toEqual({ hello: "world", query: { a: "b" } });
+
+      // Test: Pages Router edge runtime OG image route. Regression coverage
+      // for cloudflare/vinext#1338 — OG routes were reported as returning
+      // 404 against the Next.js deploy suite.
+      const ogRes = await fetch(`${prodUrl}/api/og`);
+      expect(ogRes.status).toBe(200);
+      expect(ogRes.headers.get("content-type")).toContain("image/png");
+      expect((await ogRes.blob()).size).toBeGreaterThan(0);
 
       // Test: 404 for unknown route
       const notFoundRes = await fetch(`${prodUrl}/nonexistent`);
