@@ -1060,6 +1060,12 @@ export async function prerenderApp({
       // BUT: if isDynamic=true and there's no explicit dynamic/revalidate config,
       // classifyAppRoute also returns 'ssr'. In that case we must still check
       // generateStaticParams before giving up.
+      //
+      // NOTE(#1426): Routes with revalidate=0 (force-dynamic) are skipped during
+      // prerender because they cannot be statically generated. However, they MUST
+      // remain in the route manifest — PPR requires dynamic routes to be included
+      // regardless of revalidate value. The route table is filesystem-based and
+      // already preserves them; this skip only affects static generation.
       const isConfiguredDynamic = type === "ssr" && !route.isDynamic;
 
       if (isConfiguredDynamic) {
