@@ -83,6 +83,32 @@ describe("Next.js compat: navigation", () => {
     expect(html).toMatch(NOINDEX_META_TAG_RE);
   });
 
+  // ── Streaming meta tags for not-found / redirect ─────────────
+  // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts#L732-L772
+  //
+  // When notFound() or redirect() is called from inside a Suspense
+  // boundary, the error surfaces AFTER the shell has already started
+  // streaming. The response can no longer return a 4xx/3xx status, so
+  // Next.js communicates the not-found / redirect intent via inline
+  // <meta> tags injected into the HTML stream. The exact substring is
+  // asserted in Next.js tests, so vinext must use the same format
+  // (React's void-element serialization — no space before `/>`).
+  //
+  // Source: packages/next/src/server/app-render/make-get-server-inserted-html.tsx
+
+  it("notFound() in Suspense streams noindex robots meta tag (exact substring)", async () => {
+    const { html } = await fetchHtml(baseUrl, "/suspense-notfound-test");
+    expect(html).toContain('<meta name="robots" content="noindex"/>');
+  });
+
+  it("redirect() in Suspense streams refresh meta tag (exact substring)", async () => {
+    const { html } = await fetchHtml(baseUrl, "/suspense-redirect-test");
+    expect(html).toContain(
+      '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/about"/>',
+    );
+  });
+
   // ── Browser-only tests (documented, not ported) ──────────────
   //
   // The following tests ALL require Playwright and are N/A for HTTP-level testing:
@@ -140,7 +166,4 @@ describe("Next.js compat: navigation", () => {
   //
   // N/A: Metadata await promise during navigation
   //   Tests async metadata loading during client nav
-  //
-  // N/A: Redirect refresh meta tag
-  //   Tests HTML meta refresh tag — would need streaming-specific fixture
 });
