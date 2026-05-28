@@ -1261,6 +1261,11 @@ describe("next/error shim — unstable_catchError", () => {
       fallback: Fallback,
       forwardedProps: {},
     });
+    // Manually instantiating the class skips React's context machinery,
+    // so `this.context` is undefined. Seed it to `null` (matching the
+    // App Router default) so the Pages Router branch in `unstable_retry`
+    // doesn't fire.
+    (instance as unknown as { context: null }).context = null;
     instance.state = { error: { thrownValue: new Error("boom") } };
 
     // typeof window === "undefined" in this Node test environment, so
@@ -1324,6 +1329,11 @@ describe("next/error shim — unstable_catchError", () => {
         fallback: Fallback,
         forwardedProps: {},
       });
+      // Manually instantiating the class skips React's context machinery,
+      // so `this.context` is undefined. Seed it to `null` (matching the
+      // App Router default) so the Pages Router branch in `unstable_retry`
+      // doesn't fire — this test exercises the App Router branch.
+      (instance as unknown as { context: null }).context = null;
 
       // Seed an error so reset has something to clear, and replace setState
       // with a spy so we can confirm the boundary self-resets.
@@ -1351,6 +1361,53 @@ describe("next/error shim — unstable_catchError", () => {
       }
       vi.resetModules();
     }
+  });
+
+  // Regression for cloudflare/vinext#1448.
+  // Ported from Next.js test:
+  //   .nextjs-ref/test/e2e/app-dir/catch-error/catch-error.test.ts
+  //   "should throw when unstable_retry is called on Pages Router"
+  // Mirrors the App Router-only branch in Next.js's catch-error source:
+  //   .nextjs-ref/packages/next/src/client/components/catch-error.tsx
+  // The boundary detects Pages Router via `RouterContext` (set as the inner
+  // class component's `contextType`). When a non-null Pages Router instance
+  // is in context, `unstable_retry()` must throw the verbatim Next.js
+  // message instead of calling App Router's `refresh()`.
+  it("unstable_retry under Pages Router throws Next.js parity error message", async () => {
+    const React = (await import("react")).default;
+    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
+
+    function Fallback() {
+      return null;
+    }
+    const Boundary = unstable_catchError(Fallback);
+    const wrapperResult = (Boundary as unknown as (p: Record<string, never>) => { type: unknown })(
+      {},
+    );
+    const InnerCatchError = wrapperResult.type as unknown as new (props: object) => {
+      state: { error: { thrownValue: unknown } | null };
+      unstable_retry: () => void;
+    };
+    const instance = new InnerCatchError({
+      fallback: Fallback,
+      forwardedProps: {},
+    });
+    instance.state = { error: { thrownValue: new Error("boom") } };
+
+    // Seed `this.context` with a truthy value so the Pages Router branch
+    // fires. In production React fills this from RouterContext when the
+    // boundary is rendered under `RouterContext.Provider` (every Pages
+    // Router page). Casting via unknown keeps the seed type-safe under
+    // the class's declared `context` type.
+    (instance as unknown as { context: object }).context = {
+      route: "/some-page",
+    };
+
+    void React; // keep React import for parity with sibling tests
+
+    expect(() => instance.unstable_retry()).toThrow(
+      "`unstable_retry()` can only be used in the App Router. Use `reset()` in the Pages Router.",
+    );
   });
 });
 
