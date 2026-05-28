@@ -1220,6 +1220,22 @@ describe("Pages Router integration", () => {
     expect(nextData.props.pageProps.query).toEqual({});
   });
 
+  // Regression for cloudflare/vinext#1342: middleware that explicitly deletes
+  // search params from `request.nextUrl` and rewrites to it must observe only
+  // the keys it kept — vinext must NOT silently re-merge the original query.
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // ("should clear query parameters")
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+  it("middleware rewrite respects searchParams.delete on the rewrite-target URL", async () => {
+    const res = await fetch(`${baseUrl}/mw-clear-query-params?a=1&b=2&foo=bar&allowed=kept`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    expect(nextDataMatch).toBeTruthy();
+    const nextData = JSON.parse(nextDataMatch![1]!);
+    expect(nextData.props.pageProps.query).toEqual({ allowed: "kept" });
+  });
+
   it("middleware blocks /blocked with 403", async () => {
     const res = await fetch(`${baseUrl}/blocked`);
     expect(res.status).toBe(403);
@@ -3825,6 +3841,47 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.headers.get("x-rewrite-source-header")).toBe("1");
     const html = await res.text();
     expect(html).toContain("Server-Side Rendered");
+  });
+
+  // Regression for cloudflare/vinext#1342: original request query params must
+  // survive a middleware rewrite into the rewrite target's getServerSideProps.
+  // Mirrors the dev-server coverage so the production prod-server is exercised.
+  // Ported from Next.js: test/e2e/edge-pages-support/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-pages-support/index.test.ts
+  it("middleware rewrite preserves original query params into getServerSideProps in production", async () => {
+    const res = await fetch(`${prodUrl}/mw-rewrite-query?hello=world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    expect(nextDataMatch).toBeTruthy();
+    const nextData = JSON.parse(nextDataMatch![1]!);
+    expect(nextData.props.pageProps.query).toMatchObject({ hello: "world" });
+  });
+
+  it("middleware rewrite to a dynamic route merges original query with route params in production", async () => {
+    const res = await fetch(`${prodUrl}/mw-rewrite-dynamic-query?hello=world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    expect(nextDataMatch).toBeTruthy();
+    const nextData = JSON.parse(nextDataMatch![1]!);
+    expect(nextData.props.pageProps.query).toMatchObject({ id: "first", hello: "world" });
+  });
+
+  // /_next/data fetch for a middleware-rewritten page must also surface the
+  // original request query params in the JSON props envelope. Client-side
+  // navigations go through this code path, so a regression here would silently
+  // break query state after a rewrite even when the HTML render is correct.
+  it("middleware rewrite preserves original query params on _next/data JSON in production", async () => {
+    const res = await fetch(
+      `${prodUrl}/_next/data/test-build-id/mw-rewrite-query.json?hello=world`,
+      { headers: { "x-nextjs-data": "1" } },
+    );
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as {
+      pageProps: { query: Record<string, string | string[]> };
+    };
+    expect(data.pageProps.query).toMatchObject({ hello: "world" });
   });
 
   // Ported from Next.js:

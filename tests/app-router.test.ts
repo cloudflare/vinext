@@ -4547,6 +4547,21 @@ describe("App Router middleware with NextRequest", () => {
     expect(html).toContain("from-rewrite");
   });
 
+  // Regression for cloudflare/vinext#1342: when middleware rewrites a request,
+  // the ORIGINAL request's query params must survive into the rewrite target.
+  // Next.js merges via `Object.assign(parsedUrl.query, rewrittenParsedUrl.query)`,
+  // i.e. original-first, rewrite-target overrides on key conflicts.
+  // Ported from Next.js: test/e2e/edge-pages-support/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-pages-support/index.test.ts
+  it("middleware rewrite preserves original request query params into the rewrite target", async () => {
+    const res = await fetch(
+      `${baseUrl}/middleware-rewrite-keep-original-query?searchParams=from-original`,
+    );
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("from-original");
+  });
+
   it("does not leak x-middleware-next or x-middleware-rewrite headers to the client", async () => {
     // NextResponse.next() sets x-middleware-next internally.
     // The dev server must strip it (and all x-middleware-* headers) before

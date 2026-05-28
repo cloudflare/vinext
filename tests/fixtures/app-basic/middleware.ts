@@ -97,6 +97,17 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     );
   }
 
+  // Issue #1342 / Next.js parity: middleware preserves the original request's
+  // query by mutating `request.nextUrl` (which carries the existing search)
+  // rather than constructing a fresh path-only URL. Mirrors Next.js:
+  // test/e2e/middleware-rewrites/app/middleware.js — `url.pathname = '/x'` then
+  // `NextResponse.rewrite(url)`.
+  if (pathname === "/middleware-rewrite-keep-original-query") {
+    const target = request.nextUrl.clone();
+    target.pathname = "/search-query";
+    return NextResponse.rewrite(target);
+  }
+
   // Rewrite with custom status code
   // Ref: opennextjs-cloudflare middleware.ts — NextResponse.rewrite with status
   if (pathname === "/middleware-rewrite-status") {
@@ -304,6 +315,7 @@ export const config = {
     "/middleware-rewritten-use-pathname",
     "/middleware-external-rewrite",
     "/middleware-rewrite-query",
+    "/middleware-rewrite-keep-original-query",
     "/middleware-rewrite-status",
     "/middleware-blocked",
     "/middleware-throw",
