@@ -600,47 +600,6 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     expect(config.aliases).toEqual({});
   });
 
-  it("invokes webpack loader callbacks so build-time process.env mutations land in the Node process", async () => {
-    // Regression test for #1500.
-    // Some Next.js webpack loaders mutate `process.env.X = ...` at build
-    // time, expecting the value to be visible to other modules during the
-    // same build. vinext doesn't run the webpack loader pipeline, so the
-    // env mutation never happens. We compensate by invoking each loader's
-    // callback once during config probing with a dummy source.
-    tmpDir = makeTempDir();
-
-    const loaderPath = path.join(tmpDir, "vinext-1500-loader.cjs");
-    fs.writeFileSync(
-      loaderPath,
-      `module.exports = function (source) {\n` +
-        `  process.env.VINEXT_ISSUE_1500_LOADER_RAN = "yes";\n` +
-        `  return source;\n` +
-        `};\n`,
-    );
-
-    const previous = process.env.VINEXT_ISSUE_1500_LOADER_RAN;
-    delete process.env.VINEXT_ISSUE_1500_LOADER_RAN;
-    try {
-      const rawConfig = {
-        webpack: (webpackConfig: any) => {
-          webpackConfig.module = webpackConfig.module || { rules: [] };
-          webpackConfig.module.rules.push({
-            test: /\.svg$/,
-            use: [loaderPath],
-          });
-          return webpackConfig;
-        },
-      };
-
-      await resolveNextConfig(rawConfig, tmpDir);
-
-      expect(process.env.VINEXT_ISSUE_1500_LOADER_RAN).toBe("yes");
-    } finally {
-      if (previous === undefined) delete process.env.VINEXT_ISSUE_1500_LOADER_RAN;
-      else process.env.VINEXT_ISSUE_1500_LOADER_RAN = previous;
-    }
-  });
-
   it("extracts aliases and mdx from a single async webpack probe", async () => {
     tmpDir = makeTempDir();
 
@@ -1767,6 +1726,16 @@ describe("resolveNextConfig staleTimes (#1490)", () => {
       experimental: {
         staleTimes: { dynamic: "oops" as unknown as number, static: undefined },
       },
+    });
+    expect(resolved.staleTimes).toEqual({ dynamic: 0, static: 300 });
+  });
+
+  it("falls back to defaults when staleTimes contains negative values", async () => {
+    // Negative values are rejected at resolution time so we don't pass them
+    // downstream to `resolvePrefetchCacheTtl`, where they'd be re-validated.
+    // Matches the `seconds < 0` guard in `shims/navigation.ts`.
+    const resolved = await resolveNextConfig({
+      experimental: { staleTimes: { dynamic: -5, static: -1 } },
     });
     expect(resolved.staleTimes).toEqual({ dynamic: 0, static: 300 });
   });

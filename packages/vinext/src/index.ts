@@ -1115,12 +1115,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
         // Expose basePath to client-side code
         defines["process.env.__NEXT_ROUTER_BASEPATH"] = JSON.stringify(nextConfig.basePath);
-        // Expose experimental.staleTimes to client-side code so the App Router
-        // prefetch cache can honor the configured freshness windows. Values are
-        // in seconds; matches Next.js' `define-env.ts` plumbing for these vars.
-        defines["process.env.__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME"] = JSON.stringify(
-          String(nextConfig.staleTimes.dynamic),
-        );
+        // Expose experimental.staleTimes.static to client-side code so the
+        // App Router prefetch cache can honor the configured freshness window.
+        // Value is in seconds; matches Next.js' `define-env.ts` plumbing.
+        //
+        // Note: Next.js also defines `__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME`
+        // to control partial/hover-prefetch TTL, but vinext currently uses
+        // a single PREFETCH_CACHE_TTL for all prefetches without
+        // distinguishing prefetch kind. Wire that up alongside the consumer
+        // when prefetch-kind differentiation lands.
         defines["process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME"] = JSON.stringify(
           String(nextConfig.staleTimes.static),
         );

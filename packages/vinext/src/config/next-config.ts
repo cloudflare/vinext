@@ -1065,8 +1065,9 @@ const DEFAULT_STALE_TIMES = { dynamic: 0, static: 300 };
  * Parse `experimental.staleTimes` from a raw next.config object.
  *
  * Mirrors Next.js' `build/define-env.ts` parsing logic:
- *   - missing / NaN values fall back to the documented defaults
- *     (`dynamic: 0`, `static: 300`) — matching Next.js parity
+ *   - missing / NaN / negative values fall back to the documented defaults
+ *     (`dynamic: 0`, `static: 300`) — matching Next.js parity and the
+ *     non-negative guard in `resolvePrefetchCacheTtl`
  *   - all values are in seconds
  *
  * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/staleTimes
@@ -1080,8 +1081,9 @@ function resolveStaleTimes(experimental: Record<string, unknown> | undefined): {
   const staticRaw = Number(staleTimes?.static);
 
   return {
-    dynamic: Number.isFinite(dynamicRaw) ? dynamicRaw : DEFAULT_STALE_TIMES.dynamic,
-    static: Number.isFinite(staticRaw) ? staticRaw : DEFAULT_STALE_TIMES.static,
+    dynamic:
+      Number.isFinite(dynamicRaw) && dynamicRaw >= 0 ? dynamicRaw : DEFAULT_STALE_TIMES.dynamic,
+    static: Number.isFinite(staticRaw) && staticRaw >= 0 ? staticRaw : DEFAULT_STALE_TIMES.static,
   };
 }
 
@@ -1448,14 +1450,6 @@ async function probeWebpackConfig(
     const finalConfig = result ?? mockConfig;
     // oxlint-disable-next-line typescript/no-explicit-any
     const rules: any[] = finalConfig.module?.rules ?? mockModuleRules;
-    // Invoke loader callbacks for any side effects they have on
-    // `process.env`. Next.js webpack loaders sometimes mutate
-    // `process.env.X = ...` at compile time (see issue #1500), and vinext
-    // otherwise never sees the value because we don't run the webpack loader
-    // pipeline. We call each loader with a dummy source so build-time env
-    // mutations land in the shared Node process and become visible to defines
-    // (NEXT_PUBLIC_* / next.config env passthrough) and server-side code.
-    invokeLoaderSideEffects(rules, root);
     return {
       aliases: normalizeAliasEntries(finalConfig.resolve?.alias, root),
       mdx: extractMdxOptionsFromRules(rules),
@@ -1463,113 +1457,6 @@ async function probeWebpackConfig(
   } catch {
     return { aliases: {}, mdx: null };
   }
-}
-
-/**
- * Walk webpack module rules and invoke each referenced loader once with a
- * dummy source string. Loaders that mutate `process.env` at compile time (a
- * pattern supported by Next.js' webpack pipeline) get a chance to land their
- * mutations before vinext computes defines. Failures are swallowed: a broken
- * loader must not break the build, since vinext doesn't actually use the
- * loader's transform output.
- */
-// oxlint-disable-next-line typescript/no-explicit-any
-function invokeLoaderSideEffects(rules: any[], root: string): void {
-  const require = createRequire(path.join(root, "package.json"));
-  const seen = new Set<unknown>();
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const visit = (rule: any): void => {
-    if (!rule || typeof rule !== "object") return;
-    if (Array.isArray(rule)) {
-      for (const child of rule) visit(child);
-      return;
-    }
-    if (Array.isArray(rule.oneOf)) for (const child of rule.oneOf) visit(child);
-    if (Array.isArray(rule.rules)) for (const child of rule.rules) visit(child);
-    const uses = Array.isArray(rule.use) ? rule.use : rule.use ? [rule.use] : [];
-    for (const use of uses) invokeLoaderEntry(use);
-    if (rule.loader !== undefined) invokeLoaderEntry(rule.loader, rule.options);
-  };
-
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const invokeLoaderEntry = (entry: any, ruleOptions?: unknown): void => {
-    if (!entry) return;
-    let loaderPath: string | undefined;
-    let loaderFn: unknown;
-    let options: unknown = ruleOptions;
-    if (typeof entry === "string") {
-      loaderPath = entry;
-    } else if (typeof entry === "function") {
-      loaderFn = entry;
-    } else if (typeof entry === "object") {
-      if (typeof entry.loader === "string") loaderPath = entry.loader;
-      else if (typeof entry.loader === "function") loaderFn = entry.loader;
-      if (entry.options !== undefined) options = entry.options;
-    }
-    if (loaderPath !== undefined) {
-      if (seen.has(loaderPath)) return;
-      seen.add(loaderPath);
-      // Skip well-known framework loaders we wouldn't want to import and
-      // execute at probe time. These don't typically mutate process.env and
-      // may pull in heavy dependencies or fail to resolve outside webpack.
-      if (
-        loaderPath.includes("next-babel-loader") ||
-        loaderPath.includes("mdx") ||
-        loaderPath.startsWith("next/dist/build/webpack")
-      ) {
-        return;
-      }
-      try {
-        loaderFn = require(loaderPath);
-        // ESM interop: handle default-export modules
-        if (
-          loaderFn &&
-          typeof loaderFn === "object" &&
-          // oxlint-disable-next-line typescript/no-explicit-any
-          typeof (loaderFn as any).default === "function"
-        ) {
-          // oxlint-disable-next-line typescript/no-explicit-any
-          loaderFn = (loaderFn as any).default;
-        }
-      } catch {
-        return;
-      }
-    }
-    if (typeof loaderFn !== "function") return;
-    if (seen.has(loaderFn)) return;
-    seen.add(loaderFn);
-    try {
-      // Mimic the webpack loader runtime: `this` carries getOptions(),
-      // query, resourcePath, async(), callback(), emitError(), etc. We
-      // stub the minimum a typical loader might touch. We don't care about
-      // the return value — only side effects on process.env.
-      const loaderThis = {
-        // oxlint-disable-next-line typescript/no-unused-vars
-        async: () => () => {},
-        // oxlint-disable-next-line typescript/no-unused-vars
-        callback: () => {},
-        // oxlint-disable-next-line typescript/no-unused-vars
-        emitError: () => {},
-        // oxlint-disable-next-line typescript/no-unused-vars
-        emitWarning: () => {},
-        cacheable: () => {},
-        getOptions: () => options ?? {},
-        query: options ?? {},
-        resourcePath: "",
-        resource: "",
-        rootContext: root,
-        context: root,
-        mode: "production",
-      };
-      // oxlint-disable-next-line typescript/no-unsafe-function-type
-      (loaderFn as Function).call(loaderThis, "");
-    } catch {
-      // Ignore — the loader may have thrown on the dummy source.
-      // process.env mutations made before the throw still apply.
-    }
-  };
-
-  for (const rule of rules) visit(rule);
 }
 
 /**
