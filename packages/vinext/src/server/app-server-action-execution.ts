@@ -564,7 +564,17 @@ function resolveInternalActionRedirectTarget(
     return parsed;
   }
 
-  return new URL(redirectUrl, requestUrl);
+  let resolvedBase = requestUrl;
+  if (!redirectUrl.startsWith("/") && !/^[a-z]+:/i.test(redirectUrl)) {
+    const parsedRequestUrl = new URL(requestUrl);
+    let pathname = parsedRequestUrl.pathname;
+    if (!pathname.endsWith("/")) {
+      pathname = pathname + "/";
+    }
+    resolvedBase = `${parsedRequestUrl.origin}${pathname}${parsedRequestUrl.search}`;
+  }
+
+  return new URL(redirectUrl, resolvedBase);
 }
 
 function isAncestorRouteRedirect(targetPathname: string, currentPathname: string): boolean {

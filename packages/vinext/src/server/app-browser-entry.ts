@@ -25,6 +25,7 @@ import {
   replaceClientParamsWithoutNotify,
   replaceHistoryStateWithoutNotify,
   restoreRscResponse,
+  saveScrollPosition,
   setClientParams,
   setPendingPathname,
   setMountedSlotsHeader,
@@ -43,6 +44,7 @@ import {
 import { scrollToHashTargetOnNextFrame } from "vinext/shims/hash-scroll";
 import { AppRouterScrollCommitProvider } from "vinext/shims/app-router-scroll";
 import {
+  beginAppRouterScrollIntent,
   consumeAppRouterScrollIntent,
   type AppRouterScrollIntent,
 } from "vinext/shims/app-router-scroll-state";
@@ -140,6 +142,7 @@ import {
 } from "./app-optimistic-routing.js";
 import {
   ACTION_REDIRECT_HEADER,
+  ACTION_REDIRECT_STATUS_HEADER,
   ACTION_REDIRECT_TYPE_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
@@ -624,7 +627,9 @@ async function renderNavigationPayload(
   }
 }
 
-function resolveActionRedirectTarget(response: Response): { href: string; type: string } | null {
+function resolveActionRedirectTarget(
+  response: Response,
+): { href: string; type: string; status: number } | null {
   const actionRedirect = response.headers.get(ACTION_REDIRECT_HEADER);
   if (!actionRedirect) return null;
 
@@ -634,14 +639,28 @@ function resolveActionRedirectTarget(response: Response): { href: string; type: 
   }
 
   try {
-    const redirectUrl = new URL(actionRedirect, window.location.origin);
+    let redirectUrl: URL;
+    if (actionRedirect.startsWith("/") || /^[a-z]+:/i.test(actionRedirect)) {
+      redirectUrl = new URL(actionRedirect, window.location.href);
+    } else {
+      const baseParsed = new URL(window.location.href);
+      let baseDir = baseParsed.pathname;
+      if (!baseDir.endsWith("/")) {
+        baseDir = baseDir + "/";
+      }
+      redirectUrl = new URL(actionRedirect, `${baseParsed.origin}${baseDir}${baseParsed.search}`);
+    }
+
     if (redirectUrl.origin !== window.location.origin) {
       browserNavigationController.performHardNavigation(actionRedirect);
       return null;
     }
+    const statusHeader = response.headers.get(ACTION_REDIRECT_STATUS_HEADER);
+    const status = statusHeader ? parseInt(statusHeader, 10) : 307;
     return {
       href: redirectUrl.href,
       type: response.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "replace",
+      status,
     };
   } catch {
     browserNavigationController.performHardNavigation(actionRedirect);
@@ -653,16 +672,20 @@ class ServerActionRedirectError extends Error {
   readonly digest: string;
   readonly handled = true;
 
-  constructor(target: { href: string; type: string }) {
+  constructor(target: { href: string; type: string; status: number }) {
     super("NEXT_REDIRECT");
-    const redirectUrl = new URL(target.href, window.location.origin);
+    const redirectUrl = new URL(target.href, window.location.href);
     const redirectHref = redirectUrl.pathname + redirectUrl.search + redirectUrl.hash;
     const redirectType = target.type === "push" ? "push" : "replace";
-    this.digest = `NEXT_REDIRECT;${redirectType};${encodeURIComponent(redirectHref)}`;
+    this.digest = `NEXT_REDIRECT;${redirectType};${encodeURIComponent(redirectHref)};${target.status};`;
   }
 }
 
-function createServerActionRedirectError(target: { href: string; type: string }): Error {
+function createServerActionRedirectError(target: {
+  href: string;
+  type: string;
+  status: number;
+}): Error {
   return new ServerActionRedirectError(target);
 }
 
@@ -1220,6 +1243,7 @@ function applyRuntimeRscBootstrap(rsc: NavigationRuntimeRscBootstrap): void {
 
 function registerServerActionCallback(): void {
   setServerCallback(async (id, args) => {
+    syncServerActionHttpFallbackHead(null);
     const temporaryReferences = createTemporaryReferenceSet();
 
     // Carry the interception context + mounted slots from the current router
@@ -1320,6 +1344,12 @@ function registerServerActionCallback(): void {
     if (actionRedirectTarget) {
       if (isServerActionResult(result) && result.root !== undefined) {
         const decoded = AppElementsWire.decode(result.root);
+        const hashIdx = actionRedirectTarget.href.indexOf("#");
+        const hash = hashIdx !== -1 ? actionRedirectTarget.href.slice(hashIdx) : "";
+        beginAppRouterScrollIntent(hash || null);
+        if (actionRedirectTarget.type === "push") {
+          saveScrollPosition();
+        }
         void renderNavigationPayload(
           Promise.resolve(decoded),
           createClientNavigationRenderSnapshot(

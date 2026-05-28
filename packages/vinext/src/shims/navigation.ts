@@ -1329,7 +1329,7 @@ export function replaceHistoryStateWithoutNotify(
  * Uses replaceHistoryStateWithoutNotify to avoid triggering the patched
  * history.replaceState interception (which would cause spurious re-renders).
  */
-function saveScrollPosition(): void {
+export function saveScrollPosition(): void {
   const state = window.history.state ?? {};
   replaceHistoryStateWithoutNotify(
     { ...state, __vinext_scrollX: window.scrollX, __vinext_scrollY: window.scrollY },
