@@ -12012,7 +12012,11 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).toHaveBeenCalledWith("/docs/404", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/docs/slug-2");
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/docs/slug-2",
+      );
       expect(win.location.pathname).toBe("/docs/slug-2");
       expect(win.__NEXT_DATA__.page).toBe("/404");
     } finally {
@@ -12059,7 +12063,11 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).toHaveBeenCalledWith("/docs/404", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/docs/slug-2");
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/docs/slug-2",
+      );
       expect(win.location.pathname).toBe("/docs/slug-2");
       expect(win.__NEXT_DATA__.page).toBe("/404");
     } finally {
@@ -12119,7 +12127,11 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).toHaveBeenCalledWith("/docs/fr/404", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/docs/fr/slug-2");
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/docs/fr/slug-2",
+      );
       expect(win.location.pathname).toBe("/docs/fr/slug-2");
       expect(win.__NEXT_DATA__.page).toBe("/404");
     } finally {
@@ -12179,7 +12191,11 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).toHaveBeenCalledWith("/docs/fr/404", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/docs/fr/slug-2");
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/docs/fr/slug-2",
+      );
       expect(win.location.pathname).toBe("/docs/fr/slug-2");
       expect(win.__NEXT_DATA__.page).toBe("/404");
     } finally {
@@ -12552,7 +12568,11 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).toHaveBeenCalledWith("/en", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/");
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/",
+      );
       expect(win.location.href).toBe("http://localhost/");
       expect(win.__VINEXT_LOCALE__).toBe("en");
     } finally {
@@ -12610,7 +12630,11 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).toHaveBeenCalledWith("/id", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/id");
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/id",
+      );
       expect(win.location.href).toBe("http://localhost/id");
       expect(win.__VINEXT_LOCALE__).toBe("id");
     } finally {

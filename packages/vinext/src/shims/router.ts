@@ -1408,6 +1408,7 @@ function updateHistory(
   if (mode === "push") window.history.pushState(state, "", fullUrl);
   else window.history.replaceState(state, "", fullUrl);
   _lastPathnameAndSearch = window.location.pathname + window.location.search;
+  _routerDidNavigate = true;
 }
 
 /**
@@ -1664,6 +1665,15 @@ let _lastPathnameAndSearch =
 // (the `isFirstPopStateEvent` flag around the `onPopState` handler, ~L935).
 let _isFirstPopStateEvent = true;
 
+// Tracks whether the router has performed any push/replace in this document.
+// The Safari-replay filter (see below) only fires before any user-initiated
+// navigation — once the user has navigated, a back/forward popstate is by
+// definition a real one and must not be filtered out, even if the carried
+// state happens to compare equal to the live URL on the relevant fields
+// (e.g. a hash-only push followed by goBack carries state.as without a hash,
+// matching `_lastPathnameAndSearch` which is also tracked without a hash).
+let _routerDidNavigate = false;
+
 function isNextRouterState(state: unknown): state is {
   url?: string;
   as?: string;
@@ -1718,7 +1728,12 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
   //   if (isFirstPopStateEvent && this.locale === state.options.locale
   //       && state.as === this.asPath) return
   // .nextjs-ref/packages/next/src/shared/lib/router/router.ts (around L935).
-  if (wasFirst && isNextRouterState(state)) {
+  // Only run the filter before any router-initiated push/replace. Once the
+  // user has navigated, a popstate is by definition a real back/forward and
+  // must not be silently dropped (e.g. a hash-only push then goBack carries
+  // state.as without the hash, which would otherwise match
+  // `_lastPathnameAndSearch` and be incorrectly filtered).
+  if (wasFirst && !_routerDidNavigate && isNextRouterState(state)) {
     const currentLocale = window.__VINEXT_LOCALE__;
     if (
       state.options?.locale === currentLocale &&
