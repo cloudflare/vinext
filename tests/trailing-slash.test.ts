@@ -68,12 +68,19 @@ describe("App Router trailingSlash: true (#1332)", () => {
     expect(new URL(location!, baseUrl).pathname).toBe("/about/");
   });
 
-  it("serves /about/ with 200 (no redirect)", async () => {
-    const res = await fetch(`${baseUrl}/about/`, { redirect: "manual" });
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("About");
-  });
+  it(
+    "serves /about/ with 200 (no redirect)",
+    async () => {
+      const res = await fetch(`${baseUrl}/about/`, { redirect: "manual" });
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("About");
+    },
+    // First hit triggers a dev-mode compile of the /about route; on CI this
+    // routinely exceeds the 5s default. Mirrors the headroom used elsewhere
+    // (see tests/app-router.test.ts).
+    30000,
+  );
 
   it("home page <Link> renders href with a trailing slash", async () => {
     // app-basic's homepage has <Link href="/about">. Under trailingSlash: true
@@ -106,12 +113,16 @@ describe("App Router trailingSlash: false (#1332)", () => {
     expect(new URL(res.headers.get("location")!, baseUrl).pathname).toBe("/about");
   });
 
-  it("serves /about with 200", async () => {
-    const res = await fetch(`${baseUrl}/about`, { redirect: "manual" });
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("About");
-  });
+  it(
+    "serves /about with 200",
+    async () => {
+      const res = await fetch(`${baseUrl}/about`, { redirect: "manual" });
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("About");
+    },
+    30000,
+  );
 
   it("home page <Link> renders href without a trailing slash", async () => {
     const res = await fetch(`${baseUrl}/`);
