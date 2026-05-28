@@ -49,7 +49,7 @@ type OpenTelemetryApi = {
   };
 };
 
-export function getOpenTelemetryTraceData(): ClientTraceDataEntry[] {
+function getOpenTelemetryTraceData(): ClientTraceDataEntry[] {
   let api: OpenTelemetryApi | undefined;
   try {
     // Use require() at runtime so `@opentelemetry/api` is an optional peer.
