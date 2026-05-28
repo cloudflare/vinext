@@ -28,16 +28,27 @@
  * overrides that *only* read `ctx` will see `undefined` fields — that is a
  * separate gap tracked alongside the shim TODO.
  *
- * Returns `null` when:
- *   - The Document has no `getInitialProps` (unusual — the shim defines one),
- *   - The user did not override the base shim (so the call would be a no-op),
- *   - The override threw (logged and swallowed; matches Next.js's tolerant
- *     behaviour around document props).
+ * Returns `null` when the user did not override the base shim (the static
+ * `getInitialProps` reference still points at the shim's stub) so callers
+ * skip the spread and render the bare Document element on the fast path.
  *
- * Callers should treat `null` as "render the bare Document element" so the
- * fast-path stays an extra zero allocations.
+ * Errors from a user `getInitialProps` propagate to the caller. Next.js's
+ * `loadGetInitialProps` does not catch — a throw becomes a 500 — and vinext
+ * matches that contract so user bugs surface as the loud failures Next.js
+ * apps already debug against.
  */
 import type { ComponentType } from "react";
+// Static import so the identity comparison below is established once at
+// module evaluation. A previous version used `await import(...)` per request
+// and was flagged by reviewers as unnecessary work — and worse, it left a
+// per-request `await` on the fast path where the user had no override.
+import BaseDocument from "vinext/shims/document";
+
+const BASE_GET_INITIAL_PROPS = (
+  BaseDocument as unknown as {
+    getInitialProps?: unknown;
+  }
+).getInitialProps;
 
 export async function loadUserDocumentInitialProps(
   DocumentComponent: ComponentType,
@@ -51,28 +62,15 @@ export async function loadUserDocumentInitialProps(
   ).getInitialProps;
   if (typeof getInitialProps !== "function") return null;
 
-  // Detect "user didn't override the base shim" so we don't allocate on the
-  // hot path for every render. If the shim resolution fails (production
-  // bundling can rewrite paths) we still invoke whatever's present —
-  // the base shim itself is a cheap `Promise.resolve({ html: "" })`.
-  let baseGetInitialProps: unknown = null;
-  try {
-    const docMod = (await import("vinext/shims/document")) as {
-      default?: { getInitialProps?: unknown };
-    };
-    baseGetInitialProps = docMod.default?.getInitialProps ?? null;
-  } catch {
-    // shim resolution failed — fall through.
-  }
-  if (baseGetInitialProps && getInitialProps === baseGetInitialProps) return null;
+  // Identity check: if the user did not override `static getInitialProps`,
+  // the inherited reference is the shim's stub. Skip the call so the
+  // fast path keeps the same number of awaits as before this helper landed.
+  if (getInitialProps === BASE_GET_INITIAL_PROPS) return null;
 
-  try {
-    const result = await getInitialProps({});
-    return result && typeof result === "object" ? (result as Record<string, unknown>) : null;
-  } catch (err) {
-    // Surface but don't fail the render: Next.js logs and continues without
-    // doc props when the user's getInitialProps throws.
-    console.error("[vinext] Document.getInitialProps threw:", err);
-    return null;
-  }
+  // Pass ctx as `{}`. Most upstream overrides only use ctx to delegate
+  // back to `Document.getInitialProps`, which the shim ignores. Errors
+  // propagate — matching Next.js's `loadGetInitialProps`, which has no
+  // catch and surfaces user bugs as 500s.
+  const result = await getInitialProps({});
+  return result && typeof result === "object" ? (result as Record<string, unknown>) : null;
 }

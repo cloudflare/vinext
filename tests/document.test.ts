@@ -178,7 +178,7 @@ describe("loadUserDocumentInitialProps", () => {
     expect(props).toBeNull();
   });
 
-  it("swallows errors from the user getInitialProps so renders never crash", async () => {
+  it("lets errors from the user getInitialProps propagate, matching Next.js render.tsx", async () => {
     const { loadUserDocumentInitialProps } =
       await import("../packages/vinext/src/server/pages-document-initial-props.js");
     class BadDocument extends Document {
@@ -186,7 +186,12 @@ describe("loadUserDocumentInitialProps", () => {
         throw new Error("boom");
       }
     }
-    const props = await loadUserDocumentInitialProps(BadDocument as React.ComponentType);
-    expect(props).toBeNull();
+    // Next.js's `loadGetInitialProps` does NOT catch — a throw surfaces as a
+    // 500 to the caller. vinext matches that contract so user bugs in
+    // `_document.tsx`'s getInitialProps are visible instead of silently
+    // erasing docProps from every render.
+    await expect(loadUserDocumentInitialProps(BadDocument as React.ComponentType)).rejects.toThrow(
+      "boom",
+    );
   });
 });
