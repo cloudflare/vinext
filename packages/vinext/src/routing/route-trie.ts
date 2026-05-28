@@ -1,4 +1,4 @@
-import { decodeMatchedParams } from "./utils";
+import { buildParams, decodeMatchedParams } from "./utils";
 
 /**
  * Trie (prefix tree) for O(depth) route matching.
@@ -140,34 +140,31 @@ export function trieMatch<R>(
   root: TrieNode<R>,
   urlParts: string[],
 ): { route: R; params: Record<string, string | string[]> } | null {
-  const result = match(root, urlParts, 0);
+  const result = match(root, urlParts, 0, []);
   if (result) {
     decodeMatchedParams(result.params);
   }
   return result;
 }
 
-function createParams(): Record<string, string | string[]> {
-  return Object.create(null);
-}
-
 function match<R>(
   node: TrieNode<R>,
   urlParts: string[],
   index: number,
+  entries: Array<[string, string | string[]]>,
 ): { route: R; params: Record<string, string | string[]> } | null {
   // All URL segments consumed
   if (index === urlParts.length) {
     // Exact match at this node
     if (node.route !== null) {
-      return { route: node.route, params: createParams() };
+      return { route: node.route, params: buildParams(entries) };
     }
 
-    // Optional catch-all with 0 segments
+    // Optional catch-all with 0 segments — param is not materialized
     if (node.optionalCatchAllChild !== null) {
       return {
         route: node.optionalCatchAllChild.route,
-        params: createParams(),
+        params: buildParams(entries),
       };
     }
 
@@ -179,7 +176,7 @@ function match<R>(
   // 1. Try static child (highest priority)
   const staticChild = node.staticChildren.get(segment);
   if (staticChild) {
-    const result = match(staticChild, urlParts, index + 1);
+    const result = match(staticChild, urlParts, index + 1, entries);
     if (result !== null) {
       return result;
     }
@@ -187,26 +184,27 @@ function match<R>(
 
   // 2. Try dynamic child (single segment)
   if (node.dynamicChild !== null) {
-    const result = match(node.dynamicChild.node, urlParts, index + 1);
+    entries.push([node.dynamicChild.paramName, segment]);
+    const result = match(node.dynamicChild.node, urlParts, index + 1, entries);
     if (result !== null) {
-      result.params[node.dynamicChild.paramName] = segment;
       return result;
     }
+    entries.pop();
   }
 
   // 3. Try catch-all (1+ remaining segments)
   if (node.catchAllChild !== null) {
     const remaining = urlParts.slice(index);
-    const params = createParams();
+    const params = buildParams(entries);
     params[node.catchAllChild.paramName] = remaining;
     return { route: node.catchAllChild.route, params };
   }
 
-  // 4. Try optional catch-all (0+ remaining segments)
+  // 4. Try optional catch-all (0+ remaining segments).
+  // At this point index < urlParts.length, so remaining always has ≥1 segment.
   if (node.optionalCatchAllChild !== null) {
-    const remaining = urlParts.slice(index);
-    const params = createParams();
-    params[node.optionalCatchAllChild.paramName] = remaining;
+    const params = buildParams(entries);
+    params[node.optionalCatchAllChild.paramName] = urlParts.slice(index);
     return { route: node.optionalCatchAllChild.route, params };
   }
 

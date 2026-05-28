@@ -63,6 +63,7 @@ export type AppRouteDebugLogger = (event: string, detail: string) => void;
 type RunAppRouteHandlerOptions = {
   basePath?: string;
   consumeDynamicUsage: AppRouteDynamicUsageFn;
+  draftModeSecret?: string;
   dynamicConfig?: string;
   handlerFn: AppRouteHandlerFunction;
   i18n?: NextI18nConfig | null;
@@ -110,6 +111,7 @@ function configureAppRouteStaticGenerationContext(options: RunAppRouteHandlerOpt
   if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") {
     setHeadersContext(
       createStaticGenerationHeadersContext({
+        draftModeSecret: options.draftModeSecret,
         dynamicConfig: options.dynamicConfig,
         routeKind: "route",
         routePattern: options.routePattern,

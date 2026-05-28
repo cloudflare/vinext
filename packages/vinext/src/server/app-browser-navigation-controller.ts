@@ -5,6 +5,11 @@ import {
   commitClientNavigationState,
 } from "vinext/shims/navigation";
 import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
+import {
+  claimAppRouterScrollIntentForCommit,
+  consumeAppRouterScrollIntent,
+  type AppRouterScrollIntent,
+} from "vinext/shims/app-router-scroll-state";
 import type { RouteManifest } from "../routing/app-route-graph.js";
 import {
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
@@ -88,6 +93,7 @@ type BrowserNavigationController = {
     params: Record<string, string | string[]>;
     pendingRouterState: PendingBrowserRouterState | null;
     previousNextUrl: string | null;
+    scrollIntent?: AppRouterScrollIntent | null;
     targetHistoryIndex?: number | null;
     targetHref: string;
     navId: number;
@@ -501,6 +507,7 @@ export function createAppBrowserNavigationController(
     params: Record<string, string | string[]>;
     pendingRouterState: PendingBrowserRouterState | null;
     previousNextUrl: string | null;
+    scrollIntent?: AppRouterScrollIntent | null;
     targetHistoryIndex?: number | null;
     targetHref: string;
     navId: number;
@@ -539,12 +546,14 @@ export function createAppBrowserNavigationController(
         settlePendingBrowserRouterState(options.pendingRouterState);
         pendingNavigationCommits.delete(renderId);
         resolveCommitted?.();
+        consumeAppRouterScrollIntent(options.scrollIntent ?? null);
         return "no-commit";
       }
 
       if (approval.decision.disposition === "hard-navigate") {
         settlePendingBrowserRouterState(options.pendingRouterState);
         pendingNavigationCommits.delete(renderId);
+        consumeAppRouterScrollIntent(options.scrollIntent ?? null);
         return performHardNavigation(options.targetHref) ? "hard-navigate" : "no-commit";
       }
 
@@ -564,6 +573,7 @@ export function createAppBrowserNavigationController(
           targetHistoryIndex: options.targetHistoryIndex,
         }),
       );
+      claimAppRouterScrollIntentForCommit(options.scrollIntent, renderId);
       activateNavigationSnapshot();
       snapshotActivated = true;
       dispatchApprovedVisibleCommit(approvedCommit, options.pendingRouterState);

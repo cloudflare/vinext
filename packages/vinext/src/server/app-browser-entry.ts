@@ -21,6 +21,7 @@ import {
   getClientNavigationRenderContext,
   getPrefetchCache,
   invalidatePrefetchCache,
+  navigateClientSide,
   pushHistoryStateWithoutNotify,
   replaceClientParamsWithoutNotify,
   replaceHistoryStateWithoutNotify,
@@ -41,6 +42,11 @@ import {
   type NavigationRuntimeRscBootstrap,
 } from "../client/navigation-runtime.js";
 import { scrollToHashTargetOnNextFrame } from "vinext/shims/hash-scroll";
+import { AppRouterScrollCommitProvider } from "vinext/shims/app-router-scroll";
+import {
+  consumeAppRouterScrollIntent,
+  type AppRouterScrollIntent,
+} from "vinext/shims/app-router-scroll-state";
 import { installWindowNext } from "../client/window-next.js";
 import {
   chunksToReadableStream,
@@ -60,6 +66,7 @@ import {
   createServerActionInitiationSnapshot,
   isServerActionResult,
   parseServerActionRevalidationHeader,
+  resolveServerActionRedirectLocation,
   shouldClearClientNavigationCachesForServerActionResult,
   type ServerActionRevalidationKind,
   type AppBrowserServerActionResult,
@@ -570,6 +577,7 @@ async function renderNavigationPayload(
   actionType: "navigate" | "replace" | "traverse" = "navigate",
   operationLane: OperationLane = "navigation",
   traversalIntent: HistoryTraversalIntent | null = null,
+  scrollIntent: AppRouterScrollIntent | null | undefined = null,
 ): Promise<NavigationPayloadOutcome> {
   try {
     return await browserNavigationController.renderNavigationPayload({
@@ -586,6 +594,7 @@ async function renderNavigationPayload(
       params,
       pendingRouterState,
       previousNextUrl,
+      scrollIntent,
       targetHistoryIndex: traversalIntent === null ? undefined : traversalIntent.targetHistoryIndex,
       targetHref,
       navId,
@@ -923,15 +932,21 @@ function BrowserRoot({
       )
     : innerTree;
 
+  const scrollScopedTree = createElement(
+    AppRouterScrollCommitProvider,
+    { commitId: treeState.renderId },
+    committedTree,
+  );
+
   const ClientNavigationRenderContext = getClientNavigationRenderContext();
   if (!ClientNavigationRenderContext) {
-    return committedTree;
+    return scrollScopedTree;
   }
 
   return createElement(
     ClientNavigationRenderContext.Provider,
     { value: treeState.navigationSnapshot },
-    committedTree,
+    scrollScopedTree,
   );
 }
 
@@ -1180,28 +1195,26 @@ function registerServerActionCallback(): void {
         return undefined;
       }
 
-      // Check for external URLs that need a hard redirect.
+      const redirectType = fetchResponse.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "push";
+      const historyUpdateMode = redirectType === "push" ? "push" : "replace";
+      const hardNavigationMode = historyUpdateMode === "push" ? "assign" : "replace";
+      let redirectLocation: ReturnType<typeof resolveServerActionRedirectLocation>;
       try {
-        const redirectUrl = new URL(actionRedirect, window.location.origin);
-        if (redirectUrl.origin !== window.location.origin) {
-          browserNavigationController.performHardNavigation(actionRedirect);
-          return undefined;
-        }
+        redirectLocation = resolveServerActionRedirectLocation({
+          currentHref: actionInitiation.href,
+          location: actionRedirect,
+          origin: window.location.origin,
+        });
       } catch {
-        // Fall through to hard redirect below if URL parsing fails.
+        clearClientNavigationCaches();
+        browserNavigationController.performHardNavigation(actionRedirect, hardNavigationMode);
+        return undefined;
       }
 
-      // Use hard redirect for all action redirects because vinext's server
-      // currently returns an empty body for redirect responses. RSC navigation
-      // requires a valid RSC payload. This is a known parity gap with Next.js,
-      // which pre-renders the redirect target's RSC payload.
       clearClientNavigationCaches();
-      const redirectType = fetchResponse.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "replace";
-      if (redirectType === "push") {
-        browserNavigationController.performHardNavigation(actionRedirect, "assign");
-      } else {
-        browserNavigationController.performHardNavigation(actionRedirect, "replace");
-      }
+      startTransition(() => {
+        void navigateClientSide(redirectLocation.href, historyUpdateMode, true, true);
+      });
       return undefined;
     }
 
@@ -1331,6 +1344,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     previousNextUrlOverride?: string | null,
     programmaticTransition = false,
     traversalIntent?: HistoryTraversalIntent,
+    scrollIntent?: AppRouterScrollIntent | null,
   ): Promise<void> {
     let pendingRouterState: PendingBrowserRouterState | null = null;
     // Hoist navId above try so the catch and finally blocks can reference it.
@@ -1353,6 +1367,10 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             historyState: window.history.state,
           }))
         : null;
+    const performHardNavigationForScrollIntent = (targetHref: string): boolean => {
+      consumeAppRouterScrollIntent(scrollIntent ?? null);
+      return browserNavigationController.performHardNavigation(targetHref);
+    };
 
     try {
       const shouldUsePendingRouterState = programmaticTransition;
@@ -1411,9 +1429,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             responseUrl: cachedRoute.response.url,
           });
           if (compatibilityDecision.kind === "hard-navigate") {
-            browserNavigationController.performHardNavigation(
-              compatibilityDecision.hardNavigationTarget,
-            );
+            performHardNavigationForScrollIntent(compatibilityDecision.hardNavigationTarget);
             return;
           }
           // Check stale-navigation before and after createFromFetch. The pre-check
@@ -1452,6 +1468,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             toActionType(navigationKind),
             toOperationLane(navigationKind),
             activeTraversalIntent,
+            scrollIntent,
           );
           return;
         }
@@ -1517,6 +1534,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
                 toActionType(navigationKind),
                 toOperationLane(navigationKind),
                 activeTraversalIntent,
+                scrollIntent,
               ).catch((error) => {
                 if (browserNavigationController.isCurrentNavigation(navId)) {
                   console.error("[vinext] Optimistic RSC navigation error:", error);
@@ -1558,7 +1576,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         const isRscResponse = navContentType.startsWith("text/x-component");
         if (!navResponse.ok || !isRscResponse || !navResponse.body) {
           const responseUrl = navResponseUrl ?? navResponse.url;
-          browserNavigationController.performHardNavigation(
+          performHardNavigationForScrollIntent(
             resolveHardNavigationTargetFromRscResponse(
               responseUrl,
               currentHref,
@@ -1576,9 +1594,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           responseUrl: navResponseUrl ?? navResponse.url,
         });
         if (compatibilityDecision.kind === "hard-navigate") {
-          browserNavigationController.performHardNavigation(
-            compatibilityDecision.hardNavigationTarget,
-          );
+          performHardNavigationForScrollIntent(compatibilityDecision.hardNavigationTarget);
           return;
         }
 
@@ -1597,7 +1613,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
               "[vinext] Too many RSC redirects — aborting navigation to prevent infinite loop.",
             );
           }
-          browserNavigationController.performHardNavigation(redirectDecision.href);
+          performHardNavigationForScrollIntent(redirectDecision.href);
           return;
         }
 
@@ -1632,14 +1648,14 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           void navResponse.body?.cancel().catch(() => {});
           const resolvedTarget = new URL(flightRedirectTarget, window.location.origin);
           if (resolvedTarget.origin !== window.location.origin) {
-            browserNavigationController.performHardNavigation(resolvedTarget.href);
+            performHardNavigationForScrollIntent(resolvedTarget.href);
             return;
           }
           if (redirectCount >= MAX_RSC_REDIRECT_DEPTH) {
             console.error(
               "[vinext] Too many RSC redirects — aborting navigation to prevent infinite loop.",
             );
-            browserNavigationController.performHardNavigation(resolvedTarget.href);
+            performHardNavigationForScrollIntent(resolvedTarget.href);
             return;
           }
           currentHref = `${resolvedTarget.pathname}${resolvedTarget.search}${resolvedTarget.hash}`;
@@ -1700,6 +1716,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           toActionType(navigationKind),
           toOperationLane(navigationKind),
           activeTraversalIntent,
+          scrollIntent,
         );
         if (renderOutcome !== "committed") return;
         // Don't cache the response if this navigation was superseded during
@@ -1715,16 +1732,19 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           void cacheBufferPromise.catch(() => {});
           return;
         }
-        const cacheBuffer = await cacheBufferPromise;
-        storeVisitedResponseSnapshot(
-          rscUrl,
-          resolveVisitedResponseInterceptionContext(
-            requestInterceptionContext,
-            metadata.interceptionContext,
-          ),
-          createCachedRscResponseSnapshot(navResponse, cacheBuffer, navResponseUrl),
-          navParams,
-        );
+        void cacheBufferPromise
+          .then((cacheBuffer) => {
+            storeVisitedResponseSnapshot(
+              rscUrl,
+              resolveVisitedResponseInterceptionContext(
+                requestInterceptionContext,
+                metadata.interceptionContext,
+              ),
+              createCachedRscResponseSnapshot(navResponse, cacheBuffer, navResponseUrl),
+              navParams,
+            );
+          })
+          .catch(() => {});
         return;
       }
     } catch (error) {
@@ -1738,7 +1758,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
       if (!isPageUnloading) {
         console.error("[vinext] RSC navigation error:", error);
       }
-      browserNavigationController.performHardNavigation(currentHref);
+      performHardNavigationForScrollIntent(currentHref);
     } finally {
       // Single settlement site: covers normal return, early returns on stale-id
       // checks, and error paths. The finally runs even when the catch returns.

@@ -65,11 +65,19 @@ function getClientAutoNonce(): string | undefined {
   if (typeof document === "undefined") return undefined;
 
   const existingNonceElement = document.querySelector("[nonce]");
-  if (!(existingNonceElement instanceof HTMLElement)) {
-    return undefined;
+  if (!existingNonceElement) return undefined;
+
+  // `HTMLElement` is not defined in some SSR/edge runtimes that polyfill
+  // `document` but stop short of the full DOM surface. Guarding the
+  // constructor before `instanceof` keeps SSR from crashing in those hosts;
+  // when the constructor *is* present we still prefer the typed `.nonce`
+  // property because browsers strip the `nonce` attribute from serialised
+  // HTML for CSP reasons.
+  if (typeof HTMLElement !== "undefined" && existingNonceElement instanceof HTMLElement) {
+    return existingNonceElement.nonce || existingNonceElement.getAttribute("nonce") || undefined;
   }
 
-  return existingNonceElement.nonce || existingNonceElement.getAttribute("nonce") || undefined;
+  return existingNonceElement.getAttribute("nonce") || undefined;
 }
 
 function resolveScriptNonce(explicitNonce: unknown, contextualNonce?: string): string | undefined {
@@ -77,8 +85,12 @@ function resolveScriptNonce(explicitNonce: unknown, contextualNonce?: string): s
     return explicitNonce;
   }
 
-  if (typeof window === "undefined") {
+  if (typeof contextualNonce === "string" && contextualNonce.length > 0) {
     return contextualNonce;
+  }
+
+  if (typeof window === "undefined") {
+    return undefined;
   }
 
   return getClientAutoNonce();
@@ -138,11 +150,31 @@ function extractBeforeInteractiveInlineContent(
 }
 
 /**
+ * Map of React DOM prop names to their HTML attribute equivalents. Mirrors
+ * Next.js's `set-attributes-from-props.ts`:
+ *   .nextjs-ref/packages/next/src/client/set-attributes-from-props.ts
+ * HTML parses attribute names case-insensitively, so without this translation
+ * `className="foo"` round-trips as `classname="foo"` and CSS selectors on
+ * `.foo` never match. Same hazard for `htmlFor`/`for`, `httpEquiv`/`http-equiv`,
+ * `acceptCharset`/`accept-charset`.
+ */
+const REACT_TO_HTML_ATTR: Record<string, string> = {
+  acceptCharset: "accept-charset",
+  className: "class",
+  htmlFor: "for",
+  httpEquiv: "http-equiv",
+};
+
+/**
  * Convert the residual `<Script>` props into a plain string-attributes record
  * for emission inside a hoisted `<script>` tag. Drops React-only props
  * (event handlers, children, etc.) and reserved keys already handled by the
  * pre-head-injection emitter (id, nonce). Skips `undefined`/`null` so they
  * round-trip as "attribute absent" rather than `attr="undefined"`.
+ *
+ * React DOM prop names (className, htmlFor, etc.) are translated to their
+ * HTML attribute names so the output parses correctly — see comment on
+ * `REACT_TO_HTML_ATTR`.
  */
 function collectBeforeInteractiveAttributes(
   rest: Record<string, unknown>,
@@ -162,12 +194,13 @@ function collectBeforeInteractiveAttributes(
   for (const [key, value] of Object.entries(rest)) {
     if (RESERVED.has(key)) continue;
     if (value === undefined || value === null || value === false) continue;
+    const attrName = REACT_TO_HTML_ATTR[key] ?? key;
     if (typeof value === "boolean") {
-      out[key] = true;
+      out[attrName] = true;
       continue;
     }
     if (typeof value === "string" || typeof value === "number") {
-      out[key] = String(value);
+      out[attrName] = String(value);
       continue;
     }
     // Skip anything else (functions, objects) — they cannot serialise into an

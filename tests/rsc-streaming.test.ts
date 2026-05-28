@@ -451,7 +451,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
 
     const shellPos = output.indexOf("<main>shell</main>");
     const redirectMetaPos = output.indexOf(
-      '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/redirect/result" />',
+      '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/redirect/result"/>',
     );
     const boundaryPos = output.indexOf("<template>resolved boundary</template>");
 

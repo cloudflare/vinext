@@ -5,6 +5,7 @@ import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
   parseServerActionRevalidationHeader,
+  resolveServerActionRedirectLocation,
   shouldClearClientNavigationCachesForServerActionResult,
   shouldScheduleRefreshForDiscardedServerAction,
 } from "../packages/vinext/src/server/app-browser-action-result.js";
@@ -795,6 +796,65 @@ describe("app browser entry navigation scheduling", () => {
     expect(snapshot.routerState).toBe(routerState);
   });
 
+  it("resolves server action dot-relative redirects against the initiating route", () => {
+    expect(
+      resolveServerActionRedirectLocation({
+        currentHref: "https://example.com/subdir?tab=1#section",
+        location: "./subpage",
+        origin: "https://example.com",
+      }),
+    ).toEqual({
+      href: "https://example.com/subdir/subpage",
+      internal: true,
+    });
+
+    expect(
+      resolveServerActionRedirectLocation({
+        currentHref: "https://example.com/subdir?tab=1#section",
+        location: "../subpage",
+        origin: "https://example.com",
+      }),
+    ).toEqual({
+      href: "https://example.com/subpage",
+      internal: true,
+    });
+  });
+
+  it("classifies absolute server action redirects after URL resolution", () => {
+    expect(
+      resolveServerActionRedirectLocation({
+        currentHref: "https://example.com/subdir",
+        location: "/subpage",
+        origin: "https://example.com",
+      }),
+    ).toEqual({
+      href: "https://example.com/subpage",
+      internal: true,
+    });
+
+    expect(
+      resolveServerActionRedirectLocation({
+        currentHref: "https://example.com/subdir",
+        location: "https://other.example/subpage",
+        origin: "https://example.com",
+      }),
+    ).toEqual({
+      href: "https://other.example/subpage",
+      internal: false,
+    });
+
+    expect(
+      resolveServerActionRedirectLocation({
+        currentHref: "https://preview.example/subdir",
+        location: "/subpage",
+        origin: "https://fallback.example",
+      }),
+    ).toEqual({
+      href: "https://preview.example/subpage",
+      internal: true,
+    });
+  });
+
   it("keeps client navigation caches for no-root server action results", () => {
     expect(
       shouldClearClientNavigationCachesForServerActionResult({
@@ -1007,11 +1067,11 @@ describe("app browser entry state helpers", () => {
       currentState: createState(),
       nextElements: Promise.resolve(
         createResolvedElements(
-          "route:/photos/42\0/feed",
+          "route:/feed",
           "/",
           "/feed",
           {
-            "page:/photos/42": React.createElement("main", null, "photo"),
+            "page:/feed": React.createElement("main", null, "feed"),
           },
           [AppElementsWire.encodeLayoutId("/")],
           [],
@@ -1025,7 +1085,7 @@ describe("app browser entry state helpers", () => {
       type: "navigate",
     });
 
-    expect(pending.routeId).toBe("route:/photos/42\0/feed");
+    expect(pending.routeId).toBe("route:/feed");
     expect(pending.interception).toEqual(createInterceptionProof("/feed", "/photos/42"));
     expect(pending.interceptionContext).toBe("/feed");
     expect(pending.previousNextUrl).toBe("/feed");
@@ -1042,7 +1102,7 @@ describe("app browser entry state helpers", () => {
     const interceptedState = createState({
       interceptionContext: "/feed",
       previousNextUrl: "/feed",
-      routeId: "route:/photos/42\0/feed",
+      routeId: "route:/feed",
     });
 
     const pending = await createPendingNavigationCommit({
@@ -1522,11 +1582,11 @@ describe("app browser entry state helpers", () => {
       currentState,
       nextElements: Promise.resolve(
         createResolvedElements(
-          AppElementsWire.encodeRouteId("/photos/café", "/caf%C3%A9"),
+          AppElementsWire.encodeRouteId("/café", null),
           "/",
           "/caf%C3%A9",
           {
-            "page:/photos/café": React.createElement("main", null, "photo"),
+            "page:/café": React.createElement("main", null, "source"),
           },
           [AppElementsWire.encodeLayoutId("/"), AppElementsWire.encodeLayoutId("/café")],
           [
@@ -1596,7 +1656,7 @@ describe("app browser entry state helpers", () => {
       navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/photos/42", {}),
       previousNextUrl: "/feed",
       rootLayoutTreePath: "/",
-      routeId: AppElementsWire.encodeRouteId("/photos/42", "/feed"),
+      routeId: AppElementsWire.encodeRouteId("/feed", null),
     });
 
     const pending = await createPendingNavigationCommit({
@@ -1604,11 +1664,11 @@ describe("app browser entry state helpers", () => {
       currentState,
       nextElements: Promise.resolve(
         createResolvedElements(
-          AppElementsWire.encodeRouteId("/feed", "/feed"),
+          AppElementsWire.encodeRouteId("/feed", null),
           "/",
           "/feed",
           {
-            [AppElementsWire.encodePageId("/feed", "/feed")]: React.createElement(
+            [AppElementsWire.encodePageId("/feed", null)]: React.createElement(
               "main",
               null,
               "feed",
@@ -1652,21 +1712,21 @@ describe("app browser entry state helpers", () => {
     const contextOnlyState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
     expect(contextOnlyState.interception).toBeNull();
     expect(contextOnlyState.previousNextUrl).toBeNull();
-    expect(contextOnlyState.routeId).toBe(AppElementsWire.encodeRouteId("/feed", "/feed"));
+    expect(contextOnlyState.routeId).toBe(AppElementsWire.encodeRouteId("/feed", null));
 
     const interceptedPending = await createPendingNavigationCommit({
       payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
       currentState: contextOnlyState,
       nextElements: Promise.resolve(
         createResolvedElements(
-          AppElementsWire.encodeRouteId("/photos/42", "/feed"),
+          AppElementsWire.encodeRouteId("/feed", null),
           "/",
           "/feed",
           {
-            [AppElementsWire.encodeRouteId("/photos/42", "/feed")]: React.createElement(
+            [AppElementsWire.encodePageId("/feed", null)]: React.createElement(
               "main",
               null,
-              "photo",
+              "feed",
             ),
             [AppElementsWire.encodeSlotId("modal", "/feed")]: React.createElement(
               "div",
@@ -2045,7 +2105,7 @@ describe("app browser entry state helpers", () => {
       navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/photos/42", {}),
       previousNextUrl: "/feed",
       rootLayoutTreePath: "/",
-      routeId: "route:/photos/42\0/feed",
+      routeId: "route:/feed",
       slotBindings: [
         {
           ownerLayoutId: AppElementsWire.encodeLayoutId("/feed"),
@@ -2458,7 +2518,7 @@ describe("app browser navigation controller", () => {
       interceptionContext: "/feed",
       previousNextUrl: "/feed",
       rootLayoutTreePath: "/",
-      routeId: "route:/photos/42\0/feed",
+      routeId: "route:/feed",
       navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/photos/42", {}),
     });
     const syncHistoryStatePreviousNextUrl = vi.fn();

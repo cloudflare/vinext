@@ -44,6 +44,7 @@ describe("app route handler dispatch", () => {
       clearRequestContext() {
         clearCount += 1;
       },
+      draftModeSecret: "test-draft-secret",
       i18n: null,
       isDevelopment: false,
       isProduction: false,
@@ -96,6 +97,7 @@ describe("app route handler dispatch", () => {
       clearRequestContext() {
         clearCount += 1;
       },
+      draftModeSecret: "test-draft-secret",
       i18n: null,
       isDevelopment: false,
       isProduction: false,
@@ -132,6 +134,7 @@ describe("app route handler dispatch", () => {
       clearRequestContext() {
         clearCount += 1;
       },
+      draftModeSecret: "test-draft-secret",
       i18n: null,
       isDevelopment: false,
       isProduction: false,
@@ -174,6 +177,7 @@ describe("app route handler dispatch", () => {
       clearRequestContext() {
         didClearRequestContext = true;
       },
+      draftModeSecret: "test-draft-secret",
       i18n: null,
       isDevelopment: false,
       isProduction: true,
@@ -235,6 +239,7 @@ describe("app route handler dispatch", () => {
     await dispatchAppRouteHandler({
       cleanPathname: "/api/static",
       clearRequestContext() {},
+      draftModeSecret: "test-draft-secret",
       i18n: null,
       isDevelopment: false,
       isProduction: true,
@@ -270,6 +275,7 @@ describe("app route handler dispatch", () => {
     const response = await dispatchAppRouteHandler({
       cleanPathname: "/api/stale",
       clearRequestContext() {},
+      draftModeSecret: "test-draft-secret",
       i18n: null,
       isDevelopment: false,
       isProduction: true,

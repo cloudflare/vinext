@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { appendSearchParamsToUrl, mergeRewriteQuery } from "../packages/vinext/src/utils/query.js";
+import {
+  appendSearchParamsToUrl,
+  mergeRewriteQuery,
+  parseQueryString,
+} from "../packages/vinext/src/utils/query.js";
 
 describe("mergeRewriteQuery", () => {
   it("preserves original query params when the rewrite target has none", () => {
@@ -111,5 +115,41 @@ describe("appendSearchParamsToUrl", () => {
   it("supports query-only relative URLs", () => {
     const url = appendSearchParamsToUrl("?lang=en", [["q", "vinext"]]);
     expect(url).toBe("?lang=en&q=vinext");
+  });
+});
+
+describe("parseQueryString", () => {
+  it("returns an empty object when there is no query string", () => {
+    expect(parseQueryString("/about")).toEqual({});
+  });
+
+  it("parses simple key=value pairs", () => {
+    expect(parseQueryString("/about?foo=bar")).toEqual({ foo: "bar" });
+  });
+
+  it("promotes duplicate keys to arrays", () => {
+    expect(parseQueryString("/search?tag=a&tag=b")).toEqual({ tag: ["a", "b"] });
+  });
+
+  // Regression for #1471: Pages Router `<Link>` strips query string from href.
+  // When a page is requested as `/linker?href=/about?hello=world`, the value of
+  // the `href` query param is `/about?hello=world` (RFC 3986 only treats the
+  // first `?` as a path/query separator). Splitting the URL on every `?` would
+  // drop the embedded query from the value and cause `<Link href={...}>` to
+  // render without the trailing query string.
+  it("preserves embedded query strings in values when the URL has multiple ?", () => {
+    expect(parseQueryString("/linker?href=/about?hello=world")).toEqual({
+      href: "/about?hello=world",
+    });
+  });
+
+  it("preserves embedded query strings whose value has a trailing-slash path", () => {
+    expect(parseQueryString("/linker?href=/about/?hello=world")).toEqual({
+      href: "/about/?hello=world",
+    });
+  });
+
+  it("stops at the URL hash fragment", () => {
+    expect(parseQueryString("/about?foo=bar#section")).toEqual({ foo: "bar" });
   });
 });

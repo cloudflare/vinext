@@ -95,6 +95,7 @@ type ResolveAppPageHeadOptions<TModule extends AppPageHeadModule = AppPageHeadMo
 };
 
 type ResolveAppPageHeadResult = {
+  hasDynamicMetadata: boolean;
   hasSearchParams: boolean;
   metadata: Metadata | null;
   pageSearchParams: AppPageSearchParams;
@@ -107,6 +108,7 @@ type AppPageSearchParamsCollection = {
 };
 
 type ResolvedParallelRouteHead = {
+  hasDynamicMetadata: boolean;
   metadataResults: (Metadata | null)[];
   metadataSources: AppPageHeadSource[];
   viewportResults: (Viewport | null)[];
@@ -136,6 +138,10 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
 
 function isPresent<T>(value: T | null | undefined): value is T {
   return value !== null && value !== undefined;
+}
+
+function hasGenerateMetadata(module: AppPageHeadModule | null | undefined): boolean {
+  return typeof module?.generateMetadata === "function";
 }
 
 export function collectAppPageSearchParams(
@@ -275,6 +281,8 @@ async function resolveParallelRouteHead<TModule extends AppPageHeadModule>(
   const layoutModules = [...(parallelRoute.layoutModules ?? []), parallelRoute.layoutModule].filter(
     isPresent,
   );
+  const hasDynamicMetadata =
+    layoutModules.some(hasGenerateMetadata) || hasGenerateMetadata(parallelRoute.pageModule);
   const layoutViewportPromises = layoutModules.map((layoutModule) =>
     resolveModuleViewport(layoutModule, params),
   );
@@ -324,7 +332,7 @@ async function resolveParallelRouteHead<TModule extends AppPageHeadModule>(
     viewportResults.push(pageViewport);
   }
 
-  return { metadataResults, metadataSources, viewportResults };
+  return { hasDynamicMetadata, metadataResults, metadataSources, viewportResults };
 }
 
 export async function resolveAppPageHead<TModule extends AppPageHeadModule>(
@@ -340,6 +348,9 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
   const layoutTreePositions = options.layoutTreePositions ?? [];
   const layoutInputs = createLayoutInputs(options.layoutModules, layoutTreePositions);
   const layoutSourcePositions = layoutInputs.map((input) => input.treePosition);
+  const primaryHasDynamicMetadata =
+    layoutInputs.some((input) => hasGenerateMetadata(input.module)) ||
+    hasGenerateMetadata(options.pageModule);
   const { hasSearchParams, pageSearchParams } = collectAppPageSearchParams(options.searchParams);
   const layoutMetadataPromise = resolveLayoutMetadata(layoutInputs, options.params, routeSegments);
   const layoutViewportPromise = resolveLayoutViewport(layoutInputs, options.params, routeSegments);
@@ -388,6 +399,8 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
   const parallelMetadataResults = parallelRouteHeads.flatMap((head) => head.metadataResults);
   const parallelViewportResults = parallelRouteHeads.flatMap((head) => head.viewportResults);
   const parallelMetadataSources = parallelRouteHeads.flatMap((head) => head.metadataSources);
+  const hasDynamicMetadata =
+    primaryHasDynamicMetadata || parallelRouteHeads.some((head) => head.hasDynamicMetadata);
 
   // Active parallel slot metadata is suppressed from contributing the primary
   // <title> when the matched page already provides one. This preserves Next.js
@@ -452,6 +465,7 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
   }
 
   return {
+    hasDynamicMetadata,
     hasSearchParams,
     metadata,
     pageSearchParams,

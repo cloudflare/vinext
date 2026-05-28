@@ -6,6 +6,7 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { buildCachedRevalidateCacheControl } from "./cache-control.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
+import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { buildAppPageCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
@@ -28,6 +29,12 @@ type AppPageCacheSetter = (
   expireSeconds?: number,
 ) => Promise<void>;
 type AppPageBackgroundRegenerator = (key: string, renderFn: () => Promise<void>) => void;
+type AppPageRscCacheKeyBuilder = (
+  pathname: string,
+  mountedSlotsHeader?: string | null,
+  renderMode?: AppRscRenderMode,
+  interceptionContext?: string | null,
+) => string;
 type AppPageRequestCacheLife = {
   revalidate?: number;
   expire?: number;
@@ -68,6 +75,7 @@ type BuildAppPageCachedResponseOptions = {
   cacheControl?: CacheControlMetadata;
   cacheState: "HIT" | "STALE";
   expireSeconds?: number;
+  isEdgeRuntime?: boolean;
   isRscRequest: boolean;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
@@ -78,16 +86,14 @@ type BuildAppPageCachedResponseOptions = {
 type ReadAppPageCacheResponseOptions = {
   cleanPathname: string;
   clearRequestContext: () => void;
+  isEdgeRuntime?: boolean;
   isRscRequest: boolean;
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
   isrHtmlKey: (pathname: string) => string;
-  isrRscKey: (
-    pathname: string,
-    mountedSlotsHeader?: string | null,
-    renderMode?: AppRscRenderMode,
-  ) => string;
+  isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
+  interceptionContext?: string | null;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   mountedSlotsHeader?: string | null;
@@ -111,12 +117,9 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   getRequestCacheLife?: () => AppPageRequestCacheLife | null;
   isrDebug?: AppPageDebugLogger;
   isrHtmlKey: (pathname: string) => string;
-  isrRscKey: (
-    pathname: string,
-    mountedSlotsHeader?: string | null,
-    renderMode?: AppRscRenderMode,
-  ) => string;
+  isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
+  interceptionContext?: string | null;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
@@ -133,12 +136,9 @@ type ScheduleAppPageRscCacheWriteOptions = {
   getPageTags: () => string[];
   getRequestCacheLife?: () => AppPageRequestCacheLife | null;
   isrDebug?: AppPageDebugLogger;
-  isrRscKey: (
-    pathname: string,
-    mountedSlotsHeader?: string | null,
-    renderMode?: AppRscRenderMode,
-  ) => string;
+  isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
+  interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
   renderMode?: AppRscRenderMode;
   preserveClientResponseHeaders?: boolean;
@@ -196,6 +196,7 @@ function buildAppPageCachedHeaders(options: {
   cacheControl: string;
   cacheState: BuildAppPageCachedResponseOptions["cacheState"];
   contentType: string;
+  isEdgeRuntime?: boolean;
   middlewareHeaders?: Headers | null;
   mountedSlotsHeader?: string | null;
 }): Headers {
@@ -205,6 +206,7 @@ function buildAppPageCachedHeaders(options: {
     Vary: VINEXT_RSC_VARY_HEADER,
   });
   setCacheStateHeaders(headers, options.cacheState);
+  applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 
   if (options.mountedSlotsHeader) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
@@ -270,6 +272,7 @@ export function buildAppPageCachedResponse(
       cacheControl,
       cacheState: options.cacheState,
       contentType: VINEXT_RSC_CONTENT_TYPE,
+      isEdgeRuntime: options.isEdgeRuntime,
       middlewareHeaders: options.middlewareHeaders,
       mountedSlotsHeader: options.mountedSlotsHeader,
     });
@@ -289,6 +292,7 @@ export function buildAppPageCachedResponse(
     cacheControl,
     cacheState: options.cacheState,
     contentType: "text/html; charset=utf-8",
+    isEdgeRuntime: options.isEdgeRuntime,
     middlewareHeaders: options.middlewareHeaders,
   });
 
@@ -302,7 +306,12 @@ export async function readAppPageCacheResponse(
   options: ReadAppPageCacheResponseOptions,
 ): Promise<Response | null> {
   const isrKey = options.isRscRequest
-    ? options.isrRscKey(options.cleanPathname, options.mountedSlotsHeader, options.renderMode)
+    ? options.isrRscKey(
+        options.cleanPathname,
+        options.mountedSlotsHeader,
+        options.renderMode,
+        options.interceptionContext,
+      )
     : options.isrHtmlKey(options.cleanPathname);
   const artifact = options.isRscRequest ? "rsc" : "html";
 
@@ -326,6 +335,7 @@ export async function readAppPageCacheResponse(
         cacheState: "HIT",
         cacheControl: cached?.value.cacheControl,
         expireSeconds: options.expireSeconds,
+        isEdgeRuntime: options.isEdgeRuntime,
         isRscRequest: options.isRscRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
@@ -359,7 +369,12 @@ export async function readAppPageCacheResponse(
 
     if (cached?.isStale && cachedValue) {
       const regenerationKey = options.isRscRequest
-        ? options.isrRscKey(options.cleanPathname, options.mountedSlotsHeader, options.renderMode)
+        ? options.isrRscKey(
+            options.cleanPathname,
+            options.mountedSlotsHeader,
+            options.renderMode,
+            options.interceptionContext,
+          )
         : options.isrHtmlKey(options.cleanPathname);
 
       // Preserve the legacy behavior from the inline generator: stale entries
@@ -376,6 +391,7 @@ export async function readAppPageCacheResponse(
               options.cleanPathname,
               options.mountedSlotsHeader,
               options.renderMode,
+              options.interceptionContext,
             ),
             buildAppPageCacheValue(
               "",
@@ -418,6 +434,7 @@ export async function readAppPageCacheResponse(
         cacheState: "STALE",
         cacheControl: cached.value.cacheControl,
         expireSeconds: options.expireSeconds,
+        isEdgeRuntime: options.isEdgeRuntime,
         isRscRequest: options.isRscRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
@@ -481,7 +498,12 @@ export function finalizeAppPageHtmlCacheResponse(
 
   const [streamForClient, streamForCache] = response.body.tee();
   const htmlKey = options.isrHtmlKey(options.cleanPathname);
-  const rscKey = options.isrRscKey(options.cleanPathname, null);
+  const rscKey = options.isrRscKey(
+    options.cleanPathname,
+    null,
+    undefined,
+    options.interceptionContext,
+  );
   const clientHeaders = new Headers(response.headers);
   if (options.preserveClientResponseHeaders !== true) {
     // HTML Server Components can access request APIs while the stream is being
@@ -608,6 +630,7 @@ export function scheduleAppPageRscCacheWrite(
     options.cleanPathname,
     options.mountedSlotsHeader,
     options.renderMode,
+    options.interceptionContext,
   );
   const cachePromise = (async () => {
     try {

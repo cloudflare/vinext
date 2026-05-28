@@ -6,6 +6,7 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { buildRevalidateCacheControl } from "./cache-control.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
+import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { reportRequestError } from "./instrumentation.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 
@@ -42,6 +43,12 @@ type RenderPagesPageResponseOptions = {
   getFontLinks: () => string[];
   getFontStyles: () => string[];
   getSSRHeadHTML?: (() => string) | undefined;
+  /**
+   * Allow-list of OpenTelemetry propagation keys (from
+   * `experimental.clientTraceMetadata`) to emit as `<meta>` tags in the SSR
+   * head. Undefined or empty disables emission.
+   */
+  clientTraceMetadata?: readonly string[] | undefined;
   gsspRes: PagesGsspResponse | null;
   isrCacheKey: (router: string, pathname: string) => string;
   expireSeconds?: number;
@@ -70,6 +77,8 @@ type RenderPagesPageResponseOptions = {
   routeUrl: string;
   safeJsonStringify: (value: unknown) => string;
   scriptNonce?: string;
+  statusCode?: number;
+  vinext?: VinextNextData["__vinext"];
 };
 
 function buildPagesFontHeadHtml(
@@ -239,6 +248,7 @@ function schedulePagesIsrCacheWrite(options: {
   routePattern: string;
   shellPrefix: string;
   shellSuffix: string;
+  status: number;
   stream: ReadableStream<Uint8Array>;
   setCache: RenderPagesPageResponseOptions["isrSet"];
 }): void {
@@ -251,7 +261,7 @@ function schedulePagesIsrCacheWrite(options: {
           html: options.shellPrefix + bodyHtml + options.shellSuffix,
           pageData: options.pageData,
           headers: undefined,
-          status: undefined,
+          status: options.status,
         },
         options.revalidateSeconds,
         undefined,
@@ -265,9 +275,13 @@ function schedulePagesIsrCacheWrite(options: {
   getRequestExecutionContext()?.waitUntil(cacheWritePromise);
 }
 
-function applyGsspHeaders(headers: Headers, gsspRes: PagesGsspResponse | null): number {
+function applyGsspHeaders(
+  headers: Headers,
+  gsspRes: PagesGsspResponse | null,
+  statusCode?: number,
+): number {
   if (!gsspRes) {
-    return 200;
+    return statusCode ?? 200;
   }
 
   const gsspHeaders = gsspRes.getHeaders();
@@ -289,7 +303,7 @@ function applyGsspHeaders(headers: Headers, gsspRes: PagesGsspResponse | null): 
     }
   }
   headers.set("Content-Type", "text/html");
-  return gsspRes.statusCode;
+  return statusCode ?? gsspRes.statusCode;
 }
 
 export async function renderPagesPageResponse(
@@ -318,6 +332,7 @@ export async function renderPagesPageResponse(
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
     scriptNonce: options.scriptNonce,
+    vinext: options.vinext,
   });
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
   // Render the page FIRST so that <Head> and other SSR state collectors
@@ -327,11 +342,18 @@ export async function renderPagesPageResponse(
   // Mirrors Next.js fix: vercel/next.js@9853944
   const bodyStream = await options.renderToReadableStream(pageElement);
 
+  const headFromShim = options.getSSRHeadHTML?.() ?? "";
+  // Trace meta tags from the active OpenTelemetry context. When the
+  // allow-list is unset (the common case) or OTel is not installed,
+  // `getClientTraceMetadataHTML` returns "" and we forward the head HTML
+  // verbatim — keeping the no-op path zero-overhead.
+  const traceMetaHTML = getClientTraceMetadataHTML(options.clientTraceMetadata);
+  const ssrHeadHTML = traceMetaHTML ? `${headFromShim}\n  ${traceMetaHTML}` : headFromShim;
   const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
     assetTags: options.assetTags,
     DocumentComponent: options.DocumentComponent,
     renderDocumentToString: options.renderDocumentToString,
-    ssrHeadHTML: options.getSSRHeadHTML?.() ?? "",
+    ssrHeadHTML,
   });
 
   options.clearSsrContext();
@@ -339,6 +361,8 @@ export async function renderPagesPageResponse(
   const markerIndex = shellHtml.indexOf(bodyMarker);
   const shellPrefix = shellHtml.slice(0, markerIndex);
   const shellSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
+  const responseHeaders = new Headers({ "Content-Type": "text/html" });
+  const finalStatus = applyGsspHeaders(responseHeaders, options.gsspRes, options.statusCode);
 
   let responseBodyStream = bodyStream;
   if (
@@ -363,6 +387,7 @@ export async function renderPagesPageResponse(
       setCache: options.isrSet,
       shellPrefix,
       shellSuffix,
+      status: finalStatus,
       stream: cacheBodyStream,
     });
   }
@@ -373,8 +398,14 @@ export async function renderPagesPageResponse(
     shellSuffix,
   );
 
-  const responseHeaders = new Headers({ "Content-Type": "text/html" });
-  const finalStatus = applyGsspHeaders(responseHeaders, options.gsspRes);
+  // Capture user-set Cache-Control (from getServerSideProps's res.setHeader)
+  // so a downstream user override survives the gssp default below, and only
+  // the default, never ISR/nonce Cache-Control which the runtime owns. Matches
+  // Next.js's pages-handler.ts: `if (!res.getHeader('Cache-Control'))`.
+  // responseHeaders/finalStatus are declared above so finalStatus can also feed
+  // the ISR cache write; applyGsspHeaders is the only Cache-Control writer before
+  // this point, so the captured value matches main's original capture site.
+  const userSetCacheControl = responseHeaders.has("Cache-Control");
 
   if (options.scriptNonce) {
     responseHeaders.set("Cache-Control", "no-store, must-revalidate");
@@ -384,6 +415,11 @@ export async function renderPagesPageResponse(
       buildRevalidateCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
     );
     setCacheStateHeaders(responseHeaders, "MISS");
+  } else if (options.gsspRes && !userSetCacheControl) {
+    // Default for getServerSideProps responses, matching Next.js
+    // pages-handler.ts (revalidate: 0 → getCacheControlHeader). Without this,
+    // CDNs and browsers could cache per-request gssp responses.
+    responseHeaders.set("Cache-Control", "private, no-cache, no-store, max-age=0, must-revalidate");
   }
   if (options.fontLinkHeader) {
     responseHeaders.set("Link", options.fontLinkHeader);

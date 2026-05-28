@@ -17,7 +17,6 @@ import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
-import { mergeRewriteQuery } from "../utils/query.js";
 
 export type MiddlewareModule = Record<string, unknown>;
 
@@ -338,13 +337,18 @@ export async function executeMiddleware(
       const rewriteParsed = new URL(rewriteUrl, options.request.url);
       const requestOrigin = new URL(options.request.url).origin;
       if (rewriteParsed.origin === requestOrigin) {
-        // Preserve the original request's query params on internal rewrites.
-        // Next.js merges via `Object.assign(parsedUrl.query, rewrittenParsedUrl.query)`
-        // — original query first, rewrite-target overrides on key conflicts.
-        rewritePath = mergeRewriteQuery(
-          options.request.url,
-          rewriteParsed.pathname + rewriteParsed.search,
-        );
+        // Middleware constructs the rewrite-target URL itself (e.g. by
+        // modifying `request.nextUrl` or by passing a fresh path). Whatever
+        // search params that URL carries IS the final query — vinext must not
+        // silently re-merge the original request's query, or middleware that
+        // deletes keys (e.g. `searchParams.delete('foo')`) would see them
+        // resurrected on the rewrite target. Mirrors Next.js' middleware
+        // adapter: the `x-middleware-rewrite` URL is parsed directly with no
+        // original-side merging.
+        // See test/e2e/middleware-rewrites/test/index.test.ts
+        //   ("should clear query parameters")
+        // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+        rewritePath = rewriteParsed.pathname + rewriteParsed.search;
       } else {
         // External rewrites are proxied as-is; don't smuggle local query params
         // into the upstream URL.

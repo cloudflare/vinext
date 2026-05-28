@@ -55,9 +55,18 @@ export function mergeRouteParamsIntoQuery(
 
 /**
  * Parse a URL's query string into a Record, with multi-value keys promoted to arrays.
+ *
+ * Per RFC 3986 only the first `?` separates path from query; any further `?`
+ * characters are part of the query string itself (e.g. `/linker?href=/about?hello=world`
+ * has the query `href=/about?hello=world`). Using `indexOf("?")` instead of
+ * `split("?")[1]` preserves the rest of the query so values like `<Link href>`
+ * targets keep their own query strings intact.
  */
 export function parseQueryString(url: string): Record<string, string | string[]> {
-  const qs = url.split("?")[1];
+  const queryIndex = url.indexOf("?");
+  if (queryIndex === -1) return {};
+  const hashIndex = url.indexOf("#", queryIndex + 1);
+  const qs = hashIndex === -1 ? url.slice(queryIndex + 1) : url.slice(queryIndex + 1, hashIndex);
   if (!qs) return {};
   const params = new URLSearchParams(qs);
   const query: Record<string, string | string[]> = {};

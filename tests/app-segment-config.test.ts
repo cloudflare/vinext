@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isEdgeRuntime,
   resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig,
 } from "../packages/vinext/src/server/app-segment-config.js";
@@ -214,5 +215,32 @@ describe("resolveAppPageSegmentConfig", () => {
         page: {},
       }),
     ).toBeNull();
+  });
+
+  it("captures the runtime export and lets child segments override parents", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ runtime: "nodejs" }],
+        page: { runtime: "edge" },
+      }).runtime,
+    ).toBe("edge");
+
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ runtime: "edge" }],
+        page: {},
+      }).runtime,
+    ).toBe("edge");
+
+    expect(resolveAppPageSegmentConfig({ page: {} }).runtime).toBeUndefined();
+  });
+});
+
+describe("isEdgeRuntime", () => {
+  it("matches Next.js' edge-runtime values", () => {
+    expect(isEdgeRuntime("edge")).toBe(true);
+    expect(isEdgeRuntime("experimental-edge")).toBe(true);
+    expect(isEdgeRuntime("nodejs")).toBe(false);
+    expect(isEdgeRuntime(undefined)).toBe(false);
   });
 });

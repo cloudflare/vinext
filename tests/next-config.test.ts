@@ -781,6 +781,21 @@ describe("resolveNextConfig serverActionsBodySizeLimit", () => {
     });
     expect(resolved.serverActionsBodySizeLimit).toBe(5242880);
   });
+
+  // Regression for #1519: `experimental.disableOptimizedLoading` defaults to
+  // `false` and is read into the resolved config. The default drives the
+  // `defer`-in-head behaviour for Pages Router scripts in production.
+  it("defaults disableOptimizedLoading to false", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.disableOptimizedLoading).toBe(false);
+  });
+
+  it("reads experimental.disableOptimizedLoading from next.config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { disableOptimizedLoading: true },
+    });
+    expect(resolved.disableOptimizedLoading).toBe(true);
+  });
 });
 
 describe("resolveNextConfig hashSalt", () => {
@@ -829,6 +844,210 @@ describe("resolveNextConfig hashSalt", () => {
     process.env.NEXT_HASH_SALT = "onlyenv";
     const resolved = await resolveNextConfig({ env: {} });
     expect(resolved.hashSalt).toBe("onlyenv");
+  });
+});
+
+describe("resolveNextConfig instrumentationClientInject", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(path.join(tmpDir, "package.json"), `{ "type": "module" }\n`);
+  });
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("loads instrumentationClientInject from next.config.mjs", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { instrumentationClientInject: ["./inject-a.js", "./inject-b.js"] };\n`,
+    );
+    const raw = await loadNextConfig(tmpDir);
+    const resolved = await resolveNextConfig(raw, tmpDir);
+    expect(resolved.instrumentationClientInject).toEqual(["./inject-a.js", "./inject-b.js"]);
+  });
+});
+
+describe("resolveNextConfig clientTraceMetadata", () => {
+  it("defaults to undefined when no config is provided", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.clientTraceMetadata).toBeUndefined();
+  });
+
+  it("defaults to undefined when experimental is not set", async () => {
+    const resolved = await resolveNextConfig({ env: {} });
+    expect(resolved.clientTraceMetadata).toBeUndefined();
+  });
+
+  it("defaults to undefined when experimental.clientTraceMetadata is omitted", async () => {
+    const resolved = await resolveNextConfig({ experimental: {} });
+    expect(resolved.clientTraceMetadata).toBeUndefined();
+  });
+
+  it("resolves a string array from experimental.clientTraceMetadata", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: {
+        clientTraceMetadata: ["my-test-key-1", "my-test-key-2", "my-parent-span-id"],
+      },
+    });
+    expect(resolved.clientTraceMetadata).toEqual([
+      "my-test-key-1",
+      "my-test-key-2",
+      "my-parent-span-id",
+    ]);
+  });
+
+  it("filters out non-string entries", async () => {
+    const resolved = await resolveNextConfig({
+      // oxlint-disable-next-line typescript/no-explicit-any
+      experimental: { clientTraceMetadata: ["valid-key", 42, null, "another-key"] as any },
+    });
+    expect(resolved.clientTraceMetadata).toEqual(["valid-key", "another-key"]);
+  });
+
+  it("returns undefined for a non-array value", async () => {
+    const resolved = await resolveNextConfig({
+      // oxlint-disable-next-line typescript/no-explicit-any
+      experimental: { clientTraceMetadata: "not-an-array" as any },
+    });
+    expect(resolved.clientTraceMetadata).toBeUndefined();
+  });
+
+  it("resolves to an empty array when experimental.clientTraceMetadata is an empty array", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { clientTraceMetadata: [] },
+    });
+    expect(resolved.clientTraceMetadata).toEqual([]);
+  });
+});
+
+describe("resolveNextConfig removeConsole", () => {
+  it("resolves `compiler: { removeConsole: true }` to `true`", async () => {
+    const resolved = await resolveNextConfig({ compiler: { removeConsole: true } });
+    expect(resolved.removeConsole).toBe(true);
+  });
+
+  it("resolves `compiler: { removeConsole: { exclude: ['error'] } }` to the same shape", async () => {
+    const resolved = await resolveNextConfig({
+      compiler: { removeConsole: { exclude: ["error"] } },
+    });
+    expect(resolved.removeConsole).toEqual({ exclude: ["error"] });
+  });
+
+  it("resolves `compiler: { removeConsole: {} }` to `{ exclude: [] }`", async () => {
+    const resolved = await resolveNextConfig({ compiler: { removeConsole: {} } });
+    expect(resolved.removeConsole).toEqual({ exclude: [] });
+  });
+
+  it("resolves missing `compiler` to `false`", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.removeConsole).toBe(false);
+  });
+
+  it("resolves `compiler: {}` (no removeConsole key) to `false`", async () => {
+    const resolved = await resolveNextConfig({ compiler: {} });
+    expect(resolved.removeConsole).toBe(false);
+  });
+
+  it("resolves `compiler: { removeConsole: false }` to `false`", async () => {
+    const resolved = await resolveNextConfig({ compiler: { removeConsole: false } });
+    expect(resolved.removeConsole).toBe(false);
+  });
+
+  it("coerces non-string entries in `exclude` away (sanitization)", async () => {
+    const resolved = await resolveNextConfig({
+      // oxlint-disable-next-line typescript/no-explicit-any
+      compiler: { removeConsole: { exclude: ["error", 42, null, "warn"] as any } },
+    });
+    expect(resolved.removeConsole).toEqual({ exclude: ["error", "warn"] });
+  });
+});
+
+// Ported from Next.js: test/e2e/define/define.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/define/define.test.ts
+describe("resolveNextConfig compiler.define / defineServer", () => {
+  it("defaults to empty maps when `compiler` is unset", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.compilerDefine).toEqual({});
+    expect(resolved.compilerDefineServer).toEqual({});
+  });
+
+  it("JSON-stringifies string, number, and boolean values for `define`", async () => {
+    const resolved = await resolveNextConfig({
+      compiler: {
+        define: {
+          MY_MAGIC_VARIABLE: "foobar",
+          "process.env.MY_MAGIC_EXPR": "barbaz",
+          MY_NUMBER_VARIABLE: 42,
+          MY_BOOLEAN_VARIABLE: true,
+        },
+      },
+    });
+    expect(resolved.compilerDefine).toEqual({
+      MY_MAGIC_VARIABLE: '"foobar"',
+      "process.env.MY_MAGIC_EXPR": '"barbaz"',
+      MY_NUMBER_VARIABLE: "42",
+      MY_BOOLEAN_VARIABLE: "true",
+    });
+    expect(resolved.compilerDefineServer).toEqual({});
+  });
+
+  it("JSON-stringifies values for `defineServer` and keeps them separate from `define`", async () => {
+    const resolved = await resolveNextConfig({
+      compiler: {
+        define: { CLIENT_SAFE: "shared" },
+        defineServer: {
+          MY_SERVER_VARIABLE: "server",
+          "process.env.MY_MAGIC_SERVER_EXPR": "serverbarbaz",
+        },
+      },
+    });
+    expect(resolved.compilerDefine).toEqual({ CLIENT_SAFE: '"shared"' });
+    expect(resolved.compilerDefineServer).toEqual({
+      MY_SERVER_VARIABLE: '"server"',
+      "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
+    });
+  });
+
+  it("ignores entries whose values are not string/number/boolean", async () => {
+    const resolved = await resolveNextConfig({
+      compiler: {
+        // oxlint-disable-next-line typescript/no-explicit-any
+        define: { OK: "yes", BAD_OBJ: { nope: 1 } as any, BAD_NULL: null as any },
+        // oxlint-disable-next-line typescript/no-explicit-any
+        defineServer: { OK_SRV: 1, BAD_ARR: [1, 2] as any },
+      },
+    });
+    expect(resolved.compilerDefine).toEqual({ OK: '"yes"' });
+    expect(resolved.compilerDefineServer).toEqual({ OK_SRV: "1" });
+  });
+});
+
+describe("resolveNextConfig htmlLimitedBots", () => {
+  it("serializes RegExp config values to their source", async () => {
+    const resolved = await resolveNextConfig({ htmlLimitedBots: /Minibot/i });
+
+    expect(resolved.htmlLimitedBots).toBe("Minibot");
+  });
+
+  it("accepts valid serialized regex source strings", async () => {
+    const resolved = await resolveNextConfig({ htmlLimitedBots: "Minibot|Weebot" });
+
+    expect(resolved.htmlLimitedBots).toBe("Minibot|Weebot");
+  });
+
+  it("treats empty string config as unset", async () => {
+    const resolved = await resolveNextConfig({ htmlLimitedBots: "" });
+
+    expect(resolved.htmlLimitedBots).toBeUndefined();
+  });
+
+  it("throws a config error for invalid serialized regex sources", async () => {
+    await expect(resolveNextConfig({ htmlLimitedBots: "[" })).rejects.toThrow(
+      'Invalid next.config option "htmlLimitedBots"',
+    );
   });
 });
 
@@ -917,6 +1136,7 @@ describe("detectNextIntlConfig", () => {
       optimizePackageImports: [],
       inlineCss: false,
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      htmlLimitedBots: undefined,
       serverExternalPackages: [],
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
@@ -926,6 +1146,12 @@ describe("detectNextIntlConfig", () => {
       buildId: "test-build-id",
       deploymentId: undefined,
       sassOptions: null,
+      removeConsole: false,
+      disableOptimizedLoading: false,
+      compilerDefine: {},
+      compilerDefineServer: {},
+      instrumentationClientInject: [],
+      clientTraceMetadata: undefined,
       ...overrides,
     };
   }

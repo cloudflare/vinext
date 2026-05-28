@@ -257,7 +257,7 @@ describe("Form useActionState", () => {
 
 describe("Form client GET interception", () => {
   it("strips existing query params from the action URL and warns in development", async () => {
-    const { navigate, scrollTo } = installClientGlobals({ supportsSubmitter: true });
+    const { navigate } = installClientGlobals({ supportsSubmitter: true });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { onSubmit } = renderClientForm({ action: "/search?lang=en" });
     const event = createSubmitEvent({
@@ -278,8 +278,9 @@ describe("Form client GET interception", () => {
       "push",
       undefined,
       false,
+      undefined,
+      expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
     );
-    expect(scrollTo).toHaveBeenCalledWith(0, 0);
   });
 
   it("honors submitter formAction, formMethod, and submitter name/value", async () => {
@@ -311,6 +312,8 @@ describe("Form client GET interception", () => {
       "push",
       undefined,
       false,
+      undefined,
+      expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
     );
   });
 
@@ -341,6 +344,8 @@ describe("Form client GET interception", () => {
       "push",
       undefined,
       false,
+      undefined,
+      expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
     );
   });
 
@@ -385,6 +390,8 @@ describe("Form client GET interception", () => {
       "push",
       undefined,
       false,
+      undefined,
+      expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
     );
   });
 
@@ -445,6 +452,8 @@ describe("Form client GET interception", () => {
       "replace",
       undefined,
       false,
+      undefined,
+      expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
     );
   });
 });

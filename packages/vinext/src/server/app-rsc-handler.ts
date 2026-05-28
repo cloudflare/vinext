@@ -19,6 +19,7 @@ import {
   RSC_ACTION_HEADER,
   RSC_HEADER,
   VINEXT_MW_CTX_HEADER,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
 } from "./headers.js";
 import { ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
@@ -45,6 +46,7 @@ import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
+import { isImageOptimizationPath } from "./image-optimization.js";
 import { handleMetadataRouteRequest } from "./metadata-route-response.js";
 import type { MiddlewareModule } from "./middleware-runtime.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
@@ -58,6 +60,11 @@ import {
   resolvePublicFileRoute,
   validateImageUrl,
 } from "./request-pipeline.js";
+import {
+  prerenderRouteParamsPayloadMatchesRoute,
+  readTrustedPrerenderRouteParams,
+  serializePrerenderRouteParamsHeader,
+} from "./prerender-route-params.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -96,6 +103,7 @@ type DispatchMatchedPageOptions<TRoute> = {
   middlewareContext: AppRscMiddlewareContext;
   mountedSlotsHeader: string | null;
   params: AppPageParams;
+  staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
   request: Request;
   route: TRoute;
@@ -183,6 +191,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     beforeFiles: NextRewrite[];
     fallback: NextRewrite[];
   };
+  draftModeSecret: string;
   dispatchMatchedPage: (options: DispatchMatchedPageOptions<TRoute>) => Promise<Response>;
   dispatchMatchedRouteHandler: (
     options: DispatchMatchedRouteHandlerOptions<TRoute>,
@@ -444,7 +453,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (beforeFilesRewrite instanceof Response) return beforeFilesRewrite;
   if (beforeFilesRewrite) cleanPathname = beforeFilesRewrite;
 
-  if (cleanPathname === "/_vinext/image") {
+  if (isImageOptimizationPath(cleanPathname)) {
     const imageUrlResult = validateImageUrl(url.searchParams.get("url"), request.url);
     if (imageUrlResult instanceof Response) return imageUrlResult;
     return Response.redirect(new URL(imageUrlResult, url.origin).href, 302);
@@ -478,6 +487,25 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     searchParams: url.searchParams,
     params: {},
   });
+
+  // Eagerly seed `setRootParams` from the current cleanPathname before any
+  // action dispatch so that user code which reads `unstable_rootParams()`
+  // inside route handlers, `"use cache"` functions, and the page rerender
+  // that follows a successful server action observes the matched layout's
+  // root params. Without this seeding the rootParams remain null until the
+  // post-action match block below runs, which is too late for action
+  // execution and route-handler dispatch (both happen earlier).
+  //
+  // The route is matched against the pre-rewrite cleanPathname here. If the
+  // afterFiles / fallback rewrites further down land on a different route,
+  // the second `setRootParams` call below replaces this value before the
+  // page renders, so there is no stale-value risk for ordinary page renders.
+  // For action requests we intentionally do not re-run rewrites — actions
+  // are always processed against the cleanPathname they were posted to.
+  const preActionMatch = options.matchRoute(cleanPathname);
+  if (preActionMatch) {
+    setRootParams(pickRootParams(preActionMatch.params, preActionMatch.route.rootParamNames));
+  }
 
   const actionId =
     request.headers.get(RSC_ACTION_HEADER) ?? request.headers.get(NEXT_ACTION_HEADER);
@@ -513,7 +541,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   });
   if (serverActionResponse) return serverActionResponse;
 
-  let match = options.matchRoute(cleanPathname);
+  let match = preActionMatch;
   if (!match || match.route.isDynamic) {
     const afterFilesRewrite = await applyRewrite(
       {
@@ -551,6 +579,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   if (!match) {
+    // Dev-only favicon short-circuit: browsers auto-request /favicon.ico on
+    // every page load. Don't compile/render the not-found page for it.
+    // Check `canonicalPathname` (the original browser-requested URL) so a
+    // middleware rewrite that lands on `/favicon.ico` still falls through to
+    // the normal not-found render.
+    // Matches Next.js: packages/next/src/server/lib/router-server.ts —
+    // condition `parsedUrl.pathname === '/favicon.ico'`.
+    if (process.env.NODE_ENV !== "production" && canonicalPathname === "/favicon.ico") {
+      options.clearRequestContext();
+      return new Response("", { status: 404 });
+    }
+
     const pagesFallbackResponse = await options.renderPagesFallback?.({
       isRscRequest,
       middlewareContext,
@@ -578,12 +618,21 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const { route, params } = match;
+  const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
+  const prerenderRouteParams = prerenderRouteParamsPayloadMatchesRoute(
+    prerenderRouteParamsPayload,
+    route.pattern,
+    params,
+  )
+    ? prerenderRouteParamsPayload.params
+    : null;
+  const renderParams = prerenderRouteParams ?? params;
   options.setNavigationContext({
     pathname: canonicalPathname,
     searchParams: url.searchParams,
-    params,
+    params: renderParams,
   });
-  const rootParams = pickRootParams(params, route.rootParamNames);
+  const rootParams = pickRootParams(renderParams, route.rootParamNames);
   setRootParams(rootParams);
 
   if (route.routeHandler) {
@@ -597,7 +646,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // bookkeeping above (navigation context, root params) keeps the matched
       // object (always `{}` for non-dynamic) so `useParams()` etc. still see
       // an object shape; only the user-facing handler context surfaces null.
-      params: route.isDynamic ? params : null,
+      params: route.isDynamic ? renderParams : null,
       request,
       route,
       searchParams: url.searchParams,
@@ -615,7 +664,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     isRscRequest,
     middlewareContext,
     mountedSlotsHeader,
-    params,
+    params: renderParams,
+    staticParamsValidationParams: prerenderRouteParams === null ? undefined : params,
     rootParams,
     request,
     route,
@@ -648,16 +698,33 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     // protocol needs to know whether the inbound request was a `_next/data`
     // fetch to emit `x-nextjs-redirect` instead of an HTTP redirect.
     const isDataRequest = rawRequest.headers.get("x-nextjs-data") === "1";
+    // Read the trusted prerender route params before filtering strips the
+    // route-params header (it IS in VINEXT_INTERNAL_HEADERS), then re-attach the
+    // validated value below so the second read in handleAppRscRequest still sees
+    // it. The secret was already verified upstream at prod-server's
+    // nodeToWebRequest boundary; the surviving secret header (NOT in either
+    // internal-header list) lets readTrustedPrerenderRouteParams's
+    // VINEXT_PRERENDER gate pass on the reconstructed request. If the secret
+    // header is ever added to VINEXT_INTERNAL_HEADERS, that second read breaks.
+    const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(rawRequest);
     const filteredHeaders = filterInternalHeaders(rawRequest.headers);
     if (mwCtx !== null) {
       filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
+    }
+    const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
+      prerenderRouteParamsPayload,
+    );
+    if (prerenderRouteParamsHeader !== null) {
+      filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
     }
     const request = cloneRequestWithHeaders(rawRequest, filteredHeaders);
 
     const executionContext = isExecutionContextLike(ctx)
       ? ctx
       : (getRequestExecutionContext() ?? null);
-    const headersContext = headersContextFromRequest(request);
+    const headersContext = headersContextFromRequest(request, {
+      draftModeSecret: options.draftModeSecret,
+    });
     const requestContext = createRequestContext({
       headersContext,
       executionContext,

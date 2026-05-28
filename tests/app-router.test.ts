@@ -771,10 +771,9 @@ describe("App Router integration", () => {
     expect(rscPayload).toContain("__interceptionContext");
     expect(rscPayload).toContain("/feed");
     const nul = String.fromCharCode(0);
-    expect(
-      rscPayload.includes("route:/photos/42\\u0000/feed") ||
-        rscPayload.includes(`route:/photos/42${nul}/feed`),
-    ).toBe(true);
+    expect(rscPayload).toContain("route:/feed");
+    expect(rscPayload.includes("route:/photos/42\\u0000/feed")).toBe(false);
+    expect(rscPayload.includes(`route:/photos/42${nul}/feed`)).toBe(false);
   });
 
   // --- Intercepting routes with dynamic source route ---
@@ -2440,6 +2439,23 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(404);
   });
 
+  // Ported from Next.js: test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
+  //
+  // Document request (no `Rsc` header) to a page that calls `redirect()` must
+  // respond with HTTP 307 + Location. The RSC variant (`.rsc` URL or Rsc:1
+  // header) returns 200 with a flight payload — that path is covered by the
+  // sibling `.rsc` redirect tests above and by issue #1347.
+  //
+  // See: https://github.com/cloudflare/vinext/issues/1530
+  it("redirect() from Server Component returns 307 on document load (production)", async () => {
+    const res = await fetch(`${baseUrl}/redirect-test`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    const location = res.headers.get("location");
+    expect(location).toBeTruthy();
+    expect(location).toContain("/about");
+  });
+
   it("serves static assets with cache headers", async () => {
     // Find an actual hashed asset from the build (on disk under
     // `_next/static/`, matching `resolveAssetsDir("")`).
@@ -3271,6 +3287,7 @@ describe("App Router Static export", () => {
 
     const result = await staticExportApp({
       routes,
+      appDir,
       rscBundlePath,
       outDir: exportDir,
       config,
@@ -3288,6 +3305,9 @@ describe("App Router Static export", () => {
     expect(result.files).toContain("about.html");
     const aboutHtml = fs.readFileSync(path.join(exportDir, "about.html"), "utf-8");
     expect(aboutHtml).toContain("About");
+
+    // Explicit appDir enables static metadata asset export for App Router apps.
+    expect(result.files).toContain("metadata-dynamic-static/-/apple-icon.png");
   });
 
   it("pre-renders dynamic routes from generateStaticParams", async () => {
@@ -4524,6 +4544,24 @@ describe("App Router middleware with NextRequest", () => {
     const html = await res.text();
     // The /search-query page renders searchParams from props
     expect(html).toContain("from-rewrite");
+  });
+
+  // Regression for cloudflare/vinext#1342: when middleware preserves the
+  // original request's query — by mutating `request.nextUrl` (which already
+  // carries the original search) rather than constructing a fresh path-only
+  // URL — those params must survive into the rewrite target. The destination
+  // URL is the source of truth; vinext does not auto-merge any extra original
+  // query on top.
+  // Mirrors the Next.js middleware idiom in test/e2e/middleware-rewrites/app/middleware.js
+  // (`url.pathname = "/x"; NextResponse.rewrite(url)`).
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/app/middleware.js
+  it("middleware rewrite preserves original request query params into the rewrite target", async () => {
+    const res = await fetch(
+      `${baseUrl}/middleware-rewrite-keep-original-query?searchParams=from-original`,
+    );
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("from-original");
   });
 
   it("does not leak x-middleware-next or x-middleware-rewrite headers to the client", async () => {

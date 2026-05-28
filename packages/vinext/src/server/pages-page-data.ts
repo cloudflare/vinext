@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
 import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache";
@@ -10,6 +11,8 @@ import {
   type PagesGsspResponse,
   type PagesI18nRenderContext,
 } from "./pages-page-response.js";
+import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
+import { isSerializableProps } from "./pages-serializable-props.js";
 
 type PagesRedirectResult = {
   destination: string;
@@ -80,6 +83,18 @@ export type PagesPageModule = {
     locale?: string;
     locales?: string[];
     defaultLocale?: string;
+    /**
+     * Indicates why `getStaticProps` was invoked.
+     *
+     * - `"build"`: initial build-time prerender (before runtime traffic).
+     * - `"on-demand"`: triggered by `res.revalidate()` from an API route.
+     * - `"stale"`: stale-while-revalidate background regeneration.
+     *
+     * Mirrors Next.js `render.tsx`'s `revalidateReason` on the
+     * `GetStaticPropsContext` type — see
+     * `.nextjs-ref/packages/next/src/types.ts`.
+     */
+    revalidateReason?: "build" | "on-demand" | "stale";
   }) => Promise<PagesPagePropsResult> | PagesPagePropsResult;
 };
 
@@ -93,6 +108,7 @@ type RenderPagesIsrHtmlOptions = {
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
   routePattern: string;
   safeJsonStringify: (value: unknown) => string;
+  vinext?: VinextNextData["__vinext"];
 };
 
 export type ResolvePagesPageDataOptions = {
@@ -121,6 +137,30 @@ export type ResolvePagesPageDataOptions = {
     expireSeconds?: number,
   ) => Promise<void>;
   expireSeconds?: number;
+  /**
+   * When true, this dispatch corresponds to a build-time prerender (the
+   * `vinext` build phase fetches each statically generated page through the
+   * production server). Maps to `revalidateReason: "build"` when
+   * `getStaticProps` is invoked. Mirrors Next.js's
+   * `renderOpts.isBuildTimePrerendering` flag — see
+   * `.nextjs-ref/packages/next/src/server/render.tsx`.
+   */
+  isBuildTimePrerendering?: boolean;
+  /**
+   * When true, this dispatch was triggered by an on-demand revalidation
+   * request (e.g. `res.revalidate()` in a Pages Router API route, or an
+   * equivalent webhook). Maps to `revalidateReason: "on-demand"` when
+   * `getStaticProps` is invoked. Mirrors Next.js's
+   * `renderOpts.isOnDemandRevalidate` flag — see
+   * `.nextjs-ref/packages/next/src/server/render.tsx`.
+   *
+   * Forward-looking plumbing: no caller currently sets this — `res.revalidate()`
+   * is not yet implemented in vinext. The `"on-demand"` branch in the
+   * `revalidateReason` resolver is intentionally unreachable today; keeping the
+   * typed contract here means wiring it up will be a one-line change once the
+   * trigger lands.
+   */
+  isOnDemandRevalidate?: boolean;
   pageModule: PagesPageModule;
   params: Record<string, unknown>;
   query: Record<string, unknown>;
@@ -131,12 +171,14 @@ export type ResolvePagesPageDataOptions = {
   safeJsonStringify: (value: unknown) => string;
   sanitizeDestination: (destination: string) => string;
   scriptNonce?: string;
+  statusCode?: number;
   triggerBackgroundRegeneration: (
     key: string,
     renderFn: () => Promise<void>,
     errorContext?: { routerKind: "Pages Router"; routePath: string; routeType: "render" },
   ) => void;
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
+  vinext?: VinextNextData["__vinext"];
 };
 
 type ResolvePagesPageDataRenderResult = {
@@ -163,10 +205,7 @@ type ResolvePagesPageDataResult =
   | ResolvePagesPageDataResponseResult;
 
 function buildPagesNotFoundResponse(): Response {
-  return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>", {
-    status: 404,
-    headers: { "Content-Type": "text/html" },
-  });
+  return buildDefaultPagesNotFoundResponse();
 }
 
 function buildPagesDataNotFoundResponse(): Response {
@@ -226,6 +265,7 @@ function buildPagesCacheResponse(
   revalidateSeconds?: number,
   expireSeconds?: number,
   cacheControl?: CacheControlMetadata,
+  status?: number,
 ): Response {
   // Legacy cache entries written before cacheControl metadata existed can still
   // hit this path without a persisted revalidate value; keep the historic
@@ -248,7 +288,7 @@ function buildPagesCacheResponse(
   }
 
   return new Response(html, {
-    status: 200,
+    status: status ?? 200,
     headers,
   });
 }
@@ -297,6 +337,7 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
     params: options.params,
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
+    vinext: options.vinext,
   });
 
   return rewritePagesCachedHtml(options.cachedHtml, freshBody, nextDataScript);
@@ -388,7 +429,11 @@ export async function resolvePagesPageData(
     }
 
     if (result?.props) {
-      pageProps = result.props;
+      // Next.js explicitly supports a Promise value for `props`. Await it
+      // before serialising; otherwise pageProps would be a Promise and the
+      // rendered page would receive empty props. See
+      // packages/next/src/server/render.tsx (deferredContent).
+      pageProps = (await Promise.resolve(result.props)) as Record<string, unknown>;
     }
 
     if (result?.redirect) {
@@ -408,6 +453,18 @@ export async function resolvePagesPageData(
           ? buildPagesDataNotFoundResponse()
           : buildPagesNotFoundResponse(),
       };
+    }
+
+    // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getServerSideProps", data.props)`
+    // check, gated on `!metadata.isRedirect && !metadata.isNotFound` (both
+    // short-circuit above). Throws a friendly `SerializableError` so the
+    // caller's existing try/catch surfaces a clear 500 instead of rendering
+    // an empty page. See
+    // .nextjs-ref/packages/next/src/server/render.tsx (~line 1200) and
+    // .nextjs-ref/packages/next/src/lib/is-serializable-props.ts. Tracked in
+    // vinext#1478.
+    if (result?.props !== undefined) {
+      isSerializableProps(options.routePattern, "getServerSideProps", pageProps);
     }
 
     gsspRes = res;
@@ -437,6 +494,7 @@ export async function resolvePagesPageData(
           undefined,
           options.expireSeconds,
           cached.value.cacheControl,
+          cachedValue.status,
         ),
       };
     }
@@ -457,6 +515,11 @@ export async function resolvePagesPageData(
               locale: options.i18n.locale,
               locales: options.i18n.locales,
               defaultLocale: options.i18n.defaultLocale,
+              // Background regeneration for an entry that is already in the
+              // cache is always a stale-while-revalidate refresh — mirrors
+              // Next.js `render.tsx` (`isBuildTimeSSG ? "build" : "stale"`,
+              // and we're not at build time here).
+              revalidateReason: "stale",
             });
 
             if (
@@ -475,11 +538,12 @@ export async function resolvePagesPageData(
                 renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
                 routePattern: options.routePattern,
                 safeJsonStringify: options.safeJsonStringify,
+                vinext: options.vinext,
               });
 
               await options.isrSet(
                 cacheKey,
-                buildPagesCacheValue(freshHtml, freshResult.props),
+                buildPagesCacheValue(freshHtml, freshResult.props, options.statusCode),
                 freshResult.revalidate,
                 undefined,
                 options.expireSeconds,
@@ -503,6 +567,7 @@ export async function resolvePagesPageData(
           undefined,
           options.expireSeconds,
           cached.value.cacheControl,
+          cachedValue.status,
         ),
       };
     }
@@ -512,6 +577,17 @@ export async function resolvePagesPageData(
       locale: options.i18n.locale,
       locales: options.i18n.locales,
       defaultLocale: options.i18n.defaultLocale,
+      // Maps Next.js's resolution in `render.tsx`:
+      //   isOnDemandRevalidate ? "on-demand"
+      //     : isBuildTimeSSG    ? "build"
+      //                         : "stale"
+      // We pick "stale" as the default at runtime so existing-but-missing
+      // (cache evicted) entries surface as a regeneration rather than a build.
+      revalidateReason: options.isOnDemandRevalidate
+        ? "on-demand"
+        : options.isBuildTimePrerendering
+          ? "build"
+          : "stale",
     });
 
     if (result?.props) {
@@ -535,6 +611,18 @@ export async function resolvePagesPageData(
           ? buildPagesDataNotFoundResponse()
           : buildPagesNotFoundResponse(),
       };
+    }
+
+    // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getStaticProps", data.props)`
+    // check, gated on `!metadata.isNotFound` (notFound + redirect both
+    // short-circuit above). Throws a friendly `SerializableError` so the
+    // caller's existing try/catch surfaces a clear 500 instead of rendering
+    // an empty page. See
+    // .nextjs-ref/packages/next/src/server/render.tsx (~line 982) and
+    // .nextjs-ref/packages/next/src/lib/is-serializable-props.ts. Tracked in
+    // vinext#1478.
+    if (result?.props !== undefined) {
+      isSerializableProps(options.routePattern, "getStaticProps", pageProps);
     }
 
     if (typeof result?.revalidate === "number" && result.revalidate > 0) {

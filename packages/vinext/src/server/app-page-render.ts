@@ -71,6 +71,12 @@ type AppPageRequestCacheLife = {
 
 type RenderAppPageLifecycleOptions = {
   basePath?: string;
+  /**
+   * Allow-list of OpenTelemetry propagation keys to emit as `<meta>` tags in
+   * the SSR head. From `experimental.clientTraceMetadata` in `next.config`.
+   * Undefined or empty disables emission.
+   */
+  clientTraceMetadata?: readonly string[];
   cleanPathname: string;
   clearRequestContext: () => void;
   consumeDynamicUsage: () => boolean;
@@ -90,6 +96,7 @@ type RenderAppPageLifecycleOptions = {
   hasLoadingBoundary: boolean;
   isDynamicError: boolean;
   isDraftMode: boolean;
+  isEdgeRuntime?: boolean;
   isForceDynamic: boolean;
   isForceStatic: boolean;
   isProgressiveActionRender?: boolean;
@@ -102,8 +109,10 @@ type RenderAppPageLifecycleOptions = {
     pathname: string,
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
+    interceptionContext?: string | null,
   ) => string;
   isrSet: AppPageCacheSetter;
+  interceptionContext?: string | null;
   layoutCount: number;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   middlewareContext: AppPageMiddlewareContext;
@@ -415,6 +424,7 @@ export async function renderAppPageLifecycle(
       revalidateSeconds,
     });
     const rscResponse = buildAppPageRscResponse(rscForResponse, {
+      isEdgeRuntime: options.isEdgeRuntime,
       middlewareContext: options.middlewareContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       params: options.params,
@@ -472,6 +482,7 @@ export async function renderAppPageLifecycle(
       isrDebug: options.isrDebug,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
+      interceptionContext: options.interceptionContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       renderMode: options.renderMode,
       preserveClientResponseHeaders: rscResponsePolicy.cacheState !== "MISS",
@@ -507,6 +518,7 @@ export async function renderAppPageLifecycle(
         fontData,
         navigationContext: options.getNavigationContext(),
         basePath: options.basePath,
+        clientTraceMetadata: options.clientTraceMetadata,
         rootParams: options.rootParams,
         formState: options.formState ?? null,
         rscStream: rscForResponse,
@@ -625,6 +637,7 @@ export async function renderAppPageLifecycle(
     const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
       draftCookie,
       fontLinkHeader,
+      isEdgeRuntime: options.isEdgeRuntime,
       middlewareContext: options.middlewareContext,
       policy: htmlResponsePolicy,
       timing: htmlResponseTiming,
@@ -676,6 +689,7 @@ export async function renderAppPageLifecycle(
       isrHtmlKey: options.isrHtmlKey,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
+      interceptionContext: options.interceptionContext,
       preserveClientResponseHeaders: !htmlResponsePolicy.shouldWriteToCache,
       expireSeconds,
       revalidateSeconds,
@@ -688,6 +702,7 @@ export async function renderAppPageLifecycle(
   return buildAppPageHtmlResponse(safeHtmlStream, {
     draftCookie,
     fontLinkHeader,
+    isEdgeRuntime: options.isEdgeRuntime,
     middlewareContext: options.middlewareContext,
     policy: htmlResponsePolicy,
     timing: htmlResponseTiming,

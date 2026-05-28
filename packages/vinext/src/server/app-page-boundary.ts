@@ -1,4 +1,5 @@
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
+import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import {
   VINEXT_RSC_CONTENT_TYPE,
@@ -87,6 +88,7 @@ type RenderAppPageBoundaryResponseOptions<TElement> = {
   createHtmlResponse: (rscStream: ReadableStream<Uint8Array>, status: number) => Promise<Response>;
   createRscOnErrorHandler: () => AppPageBoundaryOnError;
   element: TElement;
+  isEdgeRuntime?: boolean;
   isRscRequest: boolean;
   middlewareHeaders?: Headers | null;
   renderToReadableStream: (
@@ -242,6 +244,7 @@ export async function renderAppPageBoundaryResponse<TElement>(
       "Content-Type": VINEXT_RSC_CONTENT_TYPE,
       Vary: VINEXT_RSC_VARY_HEADER,
     });
+    applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
     mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
     applyRscCompatibilityIdHeader(headers);
 

@@ -45,6 +45,7 @@ import {
 import { resolveAppPageMethodResponse } from "./app-page-method.js";
 import {
   buildAppPageElement,
+  resolveAppPageInterceptionRerenderTarget,
   resolveAppPageIntercept,
   validateAppPageDynamicParams,
   type ValidateAppPageDynamicParamsOptions,
@@ -146,6 +147,12 @@ type AppPageDispatchRoute = {
 type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   /** Configured basePath (e.g. "/blog"). Used to prefix redirect Locations. */
   basePath?: string;
+  /**
+   * Allow-list of OpenTelemetry propagation keys (from
+   * `experimental.clientTraceMetadata`) to surface as `<meta>` tags in the
+   * SSR head. Undefined or empty disables emission entirely.
+   */
+  clientTraceMetadata?: readonly string[];
   buildPageElement: (
     route: TRoute,
     params: AppPageParams,
@@ -156,6 +163,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   clearRequestContext: () => void;
   createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
   debugClassification?: (layoutId: string, reason: ClassificationReason) => void;
+  draftModeSecret: string;
   dynamicConfig?: string;
   dynamicParamsConfig?: boolean;
   fetchCache?: FetchCacheMode | null;
@@ -174,6 +182,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   hasPageModule: boolean;
   handlerStart: number;
   interceptionContext: string | null;
+  isEdgeRuntime?: boolean;
   isProgressiveActionRender?: boolean;
   isProduction: boolean;
   isRscRequest: boolean;
@@ -184,12 +193,14 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     pathname: string,
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
+    interceptionContext?: string | null,
   ) => string;
   isrSet: AppPageCacheSetter;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   middlewareContext: AppPageMiddlewareContext;
   mountedSlotsHeader?: string | null;
   params: AppPageParams;
+  staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
   probeLayoutAt: (layoutIndex: number) => unknown;
   probePage: () => unknown;
@@ -264,6 +275,7 @@ async function runAppPageRevalidationContext<
   options: {
     cleanPathname: string;
     currentFetchCacheMode?: FetchCacheMode | null;
+    draftModeSecret: string;
     dynamicConfig?: string;
     params: AppPageParams;
     routePattern: string;
@@ -273,6 +285,7 @@ async function runAppPageRevalidationContext<
   renderFn: () => Promise<TResult>,
 ): Promise<TResult> {
   const headersContext = createStaticGenerationHeadersContext({
+    draftModeSecret: options.draftModeSecret,
     dynamicConfig: options.dynamicConfig,
     routeKind: "page",
     routePattern: options.routePattern,
@@ -338,7 +351,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
-  const isDraftMode = isDraftModeRequest(options.request);
+  const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
   setCurrentFetchCacheMode(options.fetchCache ?? null);
@@ -364,6 +377,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   if ((isForceStatic || isDynamicError) && !isDraftMode) {
     setHeadersContext(
       createStaticGenerationHeadersContext({
+        draftModeSecret: options.draftModeSecret,
         dynamicConfig,
         routeKind: "page",
         routePattern: route.pattern,
@@ -390,12 +404,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     const cachedPageResponse = await readAppPageCacheResponse({
       cleanPathname: options.cleanPathname,
       clearRequestContext: options.clearRequestContext,
+      isEdgeRuntime: options.isEdgeRuntime,
       isRscRequest: options.isRscRequest,
       isrDebug: options.isrDebug,
       isrGet: options.isrGet,
       isrHtmlKey: options.isrHtmlKey,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
+      interceptionContext: options.interceptionContext,
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       mountedSlotsHeader: options.mountedSlotsHeader,
@@ -404,27 +420,47 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // cacheLife-only routes discover their actual revalidate during the
       // fresh render; this seed only gets them into the cache read path.
       revalidateSeconds: currentRevalidateSeconds ?? 0,
-      renderFreshPageForCache: async () =>
-        runAppPageRevalidationContext(
+      renderFreshPageForCache: async () => {
+        const revalidationTarget = resolveAppPageInterceptionRerenderTarget({
+          cleanPathname: options.cleanPathname,
+          currentParams: options.params,
+          currentRoute: route,
+          findIntercept: options.findIntercept,
+          getRouteParamNames(sourceRoute) {
+            return sourceRoute.params;
+          },
+          getSourceRoute(sourceRouteIndex) {
+            return options.getSourceRoute(sourceRouteIndex);
+          },
+          isRscRequest: options.isRscRequest,
+          toInterceptOpts(intercept) {
+            return toInterceptOptions(options.interceptionContext, intercept);
+          },
+        });
+
+        return runAppPageRevalidationContext(
           {
             cleanPathname: options.cleanPathname,
-            currentFetchCacheMode: options.fetchCache ?? null,
+            currentFetchCacheMode:
+              options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
+              (revalidationTarget.route === route ? (options.fetchCache ?? null) : null),
+            draftModeSecret: options.draftModeSecret,
             dynamicConfig,
-            params: options.params,
-            routePattern: route.pattern,
-            routeSegments: route.routeSegments,
+            params: revalidationTarget.navigationParams,
+            routePattern: revalidationTarget.route.pattern,
+            routeSegments: revalidationTarget.route.routeSegments,
             setNavigationContext: options.setNavigationContext,
           },
           async () => {
             const revalidatedElement = await options.buildPageElement(
-              route,
-              options.params,
-              undefined,
+              revalidationTarget.route,
+              revalidationTarget.params,
+              revalidationTarget.interceptOpts,
               new URLSearchParams(),
             );
             const revalidatedOnError = options.createRscOnErrorHandler(
               options.cleanPathname,
-              route.pattern,
+              revalidationTarget.route.pattern,
             );
             // No inner runWithFetchDedupe here: this renderFn is already
             // wrapped in runWithFetchDedupe by runAppPageRevalidationContext.
@@ -446,6 +482,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               },
               {
                 basePath: options.basePath,
+                clientTraceMetadata: options.clientTraceMetadata,
                 rootParams: options.rootParams,
                 ...(revalidatedRscCapture.sideStream
                   ? {
@@ -462,7 +499,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             const tags = buildAppPageTags(
               options.cleanPathname,
               getCollectedFetchTags(),
-              route.routeSegments,
+              revalidationTarget.route.routeSegments,
             );
             // Consume once: HTML and RSC artifacts are produced by the same
             // regeneration render and should carry the same observation set.
@@ -482,9 +519,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                   element: revalidatedElement,
                   renderEpoch: null,
                   rootBoundaryId: null,
-                  routePattern: route.pattern,
+                  routePattern: revalidationTarget.route.pattern,
                 }),
-                params: options.params,
+                params: revalidationTarget.navigationParams,
                 state: observationState,
               }),
               rscData,
@@ -499,9 +536,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                   mountedSlotsHeader: options.mountedSlotsHeader,
                   renderEpoch: null,
                   rootBoundaryId: null,
-                  routePattern: route.pattern,
+                  routePattern: revalidationTarget.route.pattern,
                 }),
-                params: options.params,
+                params: revalidationTarget.navigationParams,
                 state: observationState,
               }),
               tags,
@@ -511,7 +548,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                   : undefined,
             };
           },
-        ),
+        );
+      },
       scheduleBackgroundRegeneration(key, renderFn) {
         options.scheduleBackgroundRegeneration(key, renderFn, {
           routerKind: "App Router",
@@ -530,7 +568,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     enforceStaticParamsOnly: options.dynamicParamsConfig === false,
     generateStaticParams: options.generateStaticParams,
     isDynamicRoute: route.isDynamic,
-    params: options.params,
+    params: options.staticParamsValidationParams ?? options.params,
   });
   if (dynamicParamsResponse) {
     return dynamicParamsResponse;
@@ -620,6 +658,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   return renderAppPageLifecycle({
     basePath: options.basePath,
+    clientTraceMetadata: options.clientTraceMetadata,
     cleanPathname: options.cleanPathname,
     clearRequestContext: options.clearRequestContext,
     consumeDynamicUsage,
@@ -660,6 +699,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isDraftMode,
     isForceDynamic,
     isForceStatic,
+    isEdgeRuntime: options.isEdgeRuntime === true,
     isPrerender: process.env.VINEXT_PRERENDER === "1",
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,
@@ -667,6 +707,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isrHtmlKey: options.isrHtmlKey,
     isrRscKey: options.isrRscKey,
     isrSet: options.isrSet,
+    interceptionContext: options.interceptionContext,
     expireSeconds: options.expireSeconds,
     layoutCount: route.layouts.length,
     loadSsrHandler: options.loadSsrHandler,
@@ -774,6 +815,7 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
       buildRscRedirectFlightStream(options, rscOptions.digest),
     clearRequestContext: options.clearRequestContext,
     getAndClearPendingCookies,
+    isEdgeRuntime: options.isEdgeRuntime,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {
@@ -812,6 +854,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
       buildRscRedirectFlightStream(options, rscOptions.digest),
     clearRequestContext: options.clearRequestContext,
     getAndClearPendingCookies,
+    isEdgeRuntime: options.isEdgeRuntime,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {

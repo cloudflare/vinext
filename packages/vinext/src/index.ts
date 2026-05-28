@@ -10,9 +10,10 @@ import { generateServerEntry as _generateServerEntry } from "./entries/pages-ser
 import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
 import { appRouteGraph, appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
 import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
-import { createValidFileMatcher } from "./routing/file-matcher.js";
+import { buildViteResolveExtensions, createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
+import { isImageOptimizationPath } from "./server/image-optimization.js";
 import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
@@ -58,6 +59,7 @@ import {
   INTERNAL_HEADERS,
   isOpenRedirectShaped,
   normalizeTrailingSlash,
+  VINEXT_INTERNAL_HEADERS,
 } from "./server/request-pipeline.js";
 import {
   findInstrumentationClientFile,
@@ -94,6 +96,10 @@ import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js"
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
+import {
+  generateInstrumentationClientInjectModule,
+  INSTRUMENTATION_CLIENT_EMPTY_MODULE,
+} from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
@@ -131,6 +137,7 @@ import {
   type BundleBackfillChunk,
 } from "./build/ssr-manifest.js";
 import { stripServerExports } from "./plugins/strip-server-exports.js";
+import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -439,6 +446,9 @@ const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
 const RESOLVED_APP_BROWSER_ENTRY = "\0" + VIRTUAL_APP_BROWSER_ENTRY;
 const VIRTUAL_ROOT_PARAMS = "virtual:vinext-root-params";
 const RESOLVED_ROOT_PARAMS = "\0" + VIRTUAL_ROOT_PARAMS;
+/** Virtual module for composed instrumentation-client bootstrap. */
+const VIRTUAL_INSTRUMENTATION_CLIENT = "private-next-instrumentation-client";
+const RESOLVED_INSTRUMENTATION_CLIENT = `\0${VIRTUAL_INSTRUMENTATION_CLIENT}.mjs`;
 /** Image file extensions handled by the vinext:image-imports plugin.
  *  Shared between the Rolldown hook filter and the transform handler regex. */
 const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
@@ -655,10 +665,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let middlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
   let instrumentationClientPath: string | null = null;
+  let clientInjectModule: string | null = null;
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
   let rscCompatibilityId: string | undefined;
+  const draftModeSecret = randomUUID();
 
   // Build-time layout classification manifest, captured in the RSC virtual
   // module's load hook and consumed in generateBundle to patch the generated
@@ -1073,6 +1085,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         instrumentationPath = findInstrumentationFile(root, fileMatcher);
         instrumentationClientPath = findInstrumentationClientFile(root, fileMatcher);
         middlewarePath = findMiddlewareFile(root, fileMatcher);
+        const instrumentationClientInjects = nextConfig.instrumentationClientInject.map((spec) =>
+          spec.startsWith("./") || spec.startsWith("../") ? path.resolve(root, spec) : spec,
+        );
+        clientInjectModule = instrumentationClientInjects.length
+          ? generateInstrumentationClientInjectModule(
+              instrumentationClientInjects,
+              instrumentationClientPath,
+              INSTRUMENTATION_CLIENT_EMPTY_MODULE,
+            )
+          : null;
         if (env?.command === "build") {
           await writeRouteTypes();
         }
@@ -1129,10 +1151,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP"] = JSON.stringify(
           String(nextConfig.images?.dangerouslyAllowLocalIP ?? false),
         );
-        // Draft mode secret — generated once at build time so the
-        // __prerender_bypass cookie is consistent across all server
-        // instances (e.g. multiple Cloudflare Workers isolates).
-        defines["process.env.__VINEXT_DRAFT_SECRET"] = JSON.stringify(crypto.randomUUID());
         // Build ID — resolved from next.config generateBuildId() or random UUID.
         // Exposed so server entries and the next/server shim can inject it.
         // Also used to namespace ISR cache keys so old cached entries from a
@@ -1161,6 +1179,42 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // App Shells — always false; plumbing-only flag, not yet implemented.
         // See: https://github.com/vercel/next.js/pull/93997
         defines["process.env.__NEXT_APP_SHELLS"] = JSON.stringify(false);
+
+        // User-defined compile-time constants from `compiler.define` in
+        // next.config. Applied to BOTH client and server bundles via Vite's
+        // top-level `define`. Values are already JSON-stringified by
+        // resolveNextConfig (matching Webpack DefinePlugin semantics).
+        // Server-only `compiler.defineServer` entries are layered in below
+        // via `configEnvironment` so they never leak into the client bundle.
+        //
+        // Parity with Next.js: collide against any internal define (e.g.
+        // `process.env.NODE_ENV`, `process.env.__NEXT_*`, `__VINEXT_*`) and
+        // throw, instead of silently overwriting. Mirrors the check in
+        // packages/next/src/build/define-env.ts.
+        // See: https://nextjs.org/docs/app/api-reference/config/next-config-js/compiler#define
+        for (const [key, value] of Object.entries(nextConfig.compilerDefine)) {
+          if (key in defines) {
+            throw new Error(
+              `The \`compiler.define\` option is configured to replace the \`${key}\` variable. ` +
+                `This variable is either part of a built-in or is already configured.`,
+            );
+          }
+          defines[key] = value;
+        }
+        // `compiler.defineServer` is applied per-environment below, but we
+        // still validate collisions here against (a) vinext's internal
+        // defines and (b) the user's own `compiler.define` map — Next.js
+        // rejects both cases. Doing the check eagerly keeps the failure
+        // mode predictable: misconfigured projects fail at config resolution
+        // instead of producing subtly wrong output.
+        for (const key of Object.keys(nextConfig.compilerDefineServer)) {
+          if (key in defines) {
+            throw new Error(
+              `The \`compiler.defineServer\` option is configured to replace the \`${key}\` variable. ` +
+                `This variable is either part of a built-in or is already configured.`,
+            );
+          }
+        }
 
         // Build the shim alias map. Exact `.js` variants are included for the
         // public Next entrypoints that are file-backed in `next/package.json`.
@@ -1266,8 +1320,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               "instrumentation-client",
             ),
             "vinext/html": path.resolve(__dirname, "server", "html"),
-            "private-next-instrumentation-client":
-              instrumentationClientPath ?? path.resolve(__dirname, "client", "empty-module"),
+            ...(clientInjectModule === null
+              ? {
+                  "private-next-instrumentation-client":
+                    instrumentationClientPath ?? INSTRUMENTATION_CLIENT_EMPTY_MODULE,
+                }
+              : {}),
           }).flatMap(([k, v]) =>
             k.startsWith("next/")
               ? [
@@ -1563,6 +1621,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...nextConfig.aliases,
               ...nextShimMap,
             },
+            // Mirror Next.js `pageExtensions` into Vite's `resolve.extensions`
+            // so extensionless imports of files with custom extensions
+            // (`.mdx`, `.platform.tsx`, `.web.tsx`, etc.) resolve. Without
+            // this the build crashes with "Custom deploy script failed:
+            // undefined (1)" when the user configures pageExtensions beyond
+            // Vite's default set. See cloudflare/vinext#1502.
+            extensions: buildViteResolveExtensions(nextConfig.pageExtensions),
             // Dedupe React packages to prevent dual-instance errors.
             // When vinext is linked (npm link / bun link) or any dependency
             // brings its own React copy, multiple React instances can load,
@@ -2206,6 +2271,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
               allowedDevOrigins: nextConfig?.allowedDevOrigins,
               bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
+              htmlLimitedBots: nextConfig?.htmlLimitedBots,
+              clientTraceMetadata: nextConfig?.clientTraceMetadata,
               assetPrefix: nextConfig?.assetPrefix,
               expireTime: nextConfig?.expireTime,
               inlineCss: nextConfig?.inlineCss,
@@ -2213,6 +2280,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               hasPagesDir,
               publicFiles: scanPublicFileRoutes(root),
               globalNotFoundPath,
+              draftModeSecret,
             },
             instrumentationPath,
           );
@@ -2323,6 +2391,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
     createInstrumentationClientTransformPlugin(() => instrumentationClientPath),
+    {
+      name: "vinext:instrumentation-client-inject",
+      enforce: "pre",
+
+      resolveId(id) {
+        if (id !== VIRTUAL_INSTRUMENTATION_CLIENT) return null;
+        return clientInjectModule !== null ? RESOLVED_INSTRUMENTATION_CLIENT : null;
+      },
+
+      load(id) {
+        if (id !== RESOLVED_INSTRUMENTATION_CLIENT) return null;
+        return clientInjectModule;
+      },
+    },
     // Dedup client references from RSC proxy modules — see src/plugins/client-reference-dedup.ts
     ...(options.experimental?.clientReferenceDedup ? [clientReferenceDedupPlugin()] : []),
     // Proxy plugin for @mdx-js/rollup. The real MDX plugin is created lazily
@@ -2799,7 +2881,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
               // ── Image optimization passthrough (dev mode) ─────────────
               // In dev, redirect to the original asset URL so Vite serves it.
-              if (url.split("?")[0] === "/_vinext/image") {
+              if (isImageOptimizationPath(url.split("?")[0]!)) {
                 const imgParams = new URLSearchParams(url.split("?")[1] ?? "");
                 const rawImgUrl = imgParams.get("url");
                 // Normalize backslashes: browsers and the URL constructor treat
@@ -2978,6 +3060,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // (which reads req.headers directly) must see clean headers.
               const nodeRequestHeaders = filterInternalHeaders(rawHeaders);
               for (const header of INTERNAL_HEADERS) {
+                delete req.headers[header];
+              }
+              for (const header of VINEXT_INTERNAL_HEADERS) {
                 delete req.headers[header];
               }
 
@@ -3319,6 +3404,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 fileMatcher,
                 nextConfig?.basePath ?? "",
                 nextConfig?.trailingSlash ?? false,
+                middlewarePath !== null,
+                nextConfig?.clientTraceMetadata,
               );
               const mwStatus = req.__vinextMiddlewareStatus;
 
@@ -3405,6 +3492,63 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (!result) return null;
           return { code: result, map: null };
         },
+      },
+    },
+    // Strip console.* calls from the client bundle when compiler.removeConsole
+    // is enabled in next.config. Inspired by Next.js's SWC remove_console transform.
+    // NOTE: Next.js applies this to both client and server (set in
+    // getBaseSWCOptions, which feeds both isServer:true and isServer:false
+    // configs); vinext scopes it to client-only so server-side console logging
+    // remains available for debugging. Tracked as a known parity gap.
+    // Production-only — Next.js documents removeConsole as a production-build
+    // feature, and stripping logs in dev would silently hide debugging output.
+    {
+      name: "vinext:remove-console",
+      apply: "build",
+      transform: {
+        // Only match source files, not node_modules or virtual modules
+        filter: { id: /\.(tsx?|jsx?|mjs)$/ },
+        handler(code, id) {
+          const ssr = this.environment?.name !== "client";
+          if (ssr) return null;
+          if (!nextConfig.removeConsole) return null;
+          // Skip node_modules to avoid transform overhead on application
+          // dependencies. Next.js applies removeConsole to node_modules too
+          // (the SWC option in getBaseSWCOptions runs on every file the SWC
+          // loader processes); this is a minor divergence in exchange for
+          // faster builds.
+          if (id.includes("/node_modules/")) return null;
+
+          const result = removeConsoleCalls(code, nextConfig.removeConsole);
+          if (!result) return null;
+          return { code: result, map: null };
+        },
+      },
+    },
+    // Inject `compiler.defineServer` substitutions into server environments
+    // only. The universal `compiler.define` map is already merged into the
+    // top-level Vite `define` config above, so it applies to both client
+    // and server bundles. `defineServer` MUST NOT leak into the browser
+    // bundle (it can contain secrets), so we layer it in via the
+    // per-environment `define` hook, which Vite merges over the top-level
+    // value for that environment only.
+    //
+    // Mirrors Next.js: packages/next/src/build/define-env.ts — the
+    // `defineServer` entries are only added to the `nodejs` / `edge`
+    // serialized define environments, never to `client`.
+    //
+    // Returning `null`/`undefined` means "no change"; the explicit empty
+    // check keeps the hook a no-op when the user never configured it.
+    {
+      name: "vinext:compiler-define-server",
+      configEnvironment(name) {
+        if (Object.keys(nextConfig.compilerDefineServer).length === 0) return null;
+        // The client environment is never given the server-only defines.
+        // All other environments (rsc, ssr, custom worker envs, etc.) are
+        // server-side per Vite's `consumer: "server"` default and receive
+        // the substitutions.
+        if (name === "client") return null;
+        return { define: { ...nextConfig.compilerDefineServer } };
       },
     },
     // Local image import transform:

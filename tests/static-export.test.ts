@@ -19,6 +19,34 @@ const APP_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/app-basic");
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+function decodeHtmlText(text: string): string {
+  return text
+    .replaceAll("<!-- -->", "")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+}
+
+function textContentByTestId(html: string, testId: string): string {
+  const attrIndex = html.indexOf(`data-testid="${testId}"`);
+  if (attrIndex === -1) {
+    throw new Error(`Missing data-testid="${testId}"`);
+  }
+
+  const contentStart = html.indexOf(">", attrIndex);
+  if (contentStart === -1) {
+    throw new Error(`Missing opening tag end for data-testid="${testId}"`);
+  }
+
+  const contentEnd = html.indexOf("</", contentStart);
+  if (contentEnd === -1) {
+    throw new Error(`Missing closing tag for data-testid="${testId}"`);
+  }
+
+  return decodeHtmlText(html.slice(contentStart + 1, contentEnd));
+}
+
 /** Simple static file server for testing. */
 function createStaticServer(rootDir: string): Promise<{ server: Server; baseUrl: string }> {
   const MIME_TYPES: Record<string, string> = {
@@ -35,12 +63,16 @@ function createStaticServer(rootDir: string): Promise<{ server: Server; baseUrl:
       const url = req.url ?? "/";
       let pathname = url.split("?")[0];
 
-      // Directory index
-      if (pathname.endsWith("/")) pathname += "index.html";
-      // Try .html extension for extensionless paths
       let filePath = path.join(rootDir, pathname);
-      if (!fs.existsSync(filePath) && !path.extname(filePath)) {
-        filePath += ".html";
+      if (pathname.endsWith("/")) {
+        filePath = path.join(rootDir, pathname, "index.html");
+      } else if (!path.extname(pathname)) {
+        const htmlPath = `${filePath}.html`;
+        if (fs.existsSync(htmlPath)) {
+          filePath = htmlPath;
+        } else if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
+          filePath = path.join(filePath, "index.html");
+        }
       }
 
       if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
@@ -182,9 +214,15 @@ describe("Static export — Pages Router (served via HTTP)", () => {
 describe("Static export — App Router (served via HTTP)", () => {
   let staticServer: Server;
   let baseUrl: string;
+  let appExportResult: { files: string[]; errors: Array<{ route: string; error: string }> };
   const exportDir = path.resolve(APP_FIXTURE, "out-e2e");
 
   beforeAll(async () => {
+    fs.rmSync(path.join(exportDir, "metadata-dynamic-static"), {
+      recursive: true,
+      force: true,
+    });
+
     // 1. Build the fixture and run static export
     const rscBundlePath = await buildAppFixture(APP_FIXTURE);
 
@@ -196,12 +234,16 @@ describe("Static export — App Router (served via HTTP)", () => {
     const routes = await appRouter(appDir);
     const config = await resolveNextConfig({ output: "export" });
 
-    await staticExportApp({
+    appExportResult = await staticExportApp({
       rscBundlePath,
       routes,
+      appDir,
       outDir: exportDir,
       config,
     });
+    expect(
+      appExportResult.errors.some((error) => error.route.startsWith("/metadata-dynamic-static")),
+    ).toBe(false);
 
     // 2. Start a static file server on the exported directory
     const srv = await createStaticServer(exportDir);
@@ -234,6 +276,30 @@ describe("Static export — App Router (served via HTTP)", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("hello-world");
+  });
+
+  it("serves static metadata files under dynamic segments from placeholder paths", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-static-file/metadata-static-file-dynamic-route.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-static-file/metadata-static-file-dynamic-route.test.ts
+    const outputPath = path.join(exportDir, "metadata-dynamic-static", "-", "apple-icon.png");
+    expect(fs.existsSync(outputPath)).toBe(true);
+    expect(appExportResult.files).toContain("metadata-dynamic-static/-/apple-icon.png");
+
+    const res = await fetch(`${baseUrl}/metadata-dynamic-static/-/apple-icon.png`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    expect((await res.arrayBuffer()).byteLength).toBeGreaterThan(0);
+  });
+
+  it("serves pre-rendered encoded dynamic route params from generateStaticParams", async () => {
+    // Ported from Next.js: test/e2e/app-dir/prerender-encoding/prerender-encoding.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/prerender-encoding/prerender-encoding.test.ts
+    const res = await fetch(`${baseUrl}/prerender-encoding/sticks%20%26%20stones`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(textContentByTestId(html, "prerender-encoding-id")).toBe(
+      "params.id is sticks%20%26%20stones",
+    );
   });
 
   it("serves 404.html for missing pages", async () => {

@@ -83,6 +83,7 @@ describe("pages page data", () => {
       safeJsonStringify(value: unknown) {
         return JSON.stringify(value);
       },
+      vinext: { hasMiddleware: true },
     });
 
     expect(html).toContain("<div>fresh-body</div>");
@@ -90,6 +91,7 @@ describe("pages page data", () => {
     expect(html).toContain('<script src="/tail.js"></script>');
     expect(html).toContain('"page":"/posts/[slug]"');
     expect(html).toContain('"slug":"post"');
+    expect(html).toContain('"__vinext":{"hasMiddleware":true}');
   });
 
   it("returns an HTML 404 when getStaticPaths excludes a dynamic path", async () => {
@@ -115,7 +117,7 @@ describe("pages page data", () => {
       throw new Error("expected response result");
     }
     expect(result.response.status).toBe(404);
-    await expect(result.response.text()).resolves.toContain("404 - Page not found");
+    await expect(result.response.text()).resolves.toContain("This page could not be found.");
   });
 
   it("short-circuits getServerSideProps responses after res.end()", async () => {
@@ -162,7 +164,7 @@ describe("pages page data", () => {
   it("serves stale ISR entries immediately and regenerates them through typed helpers", async () => {
     let regenPromise: Promise<void> | null = null;
     const applyRequestContexts = vi.fn();
-    const isrSet = vi.fn(async () => {});
+    const isrSet = vi.fn<ResolvePagesPageDataOptions["isrSet"]>(async () => {});
     const runInFreshUnifiedContext = vi.fn(
       async <T>(callback: () => Promise<T>): Promise<T> => callback(),
     ) as ResolvePagesPageDataOptions["runInFreshUnifiedContext"];
@@ -198,6 +200,7 @@ describe("pages page data", () => {
         },
         runInFreshUnifiedContext,
         triggerBackgroundRegeneration,
+        vinext: { hasMiddleware: true },
       }),
     );
 
@@ -235,6 +238,82 @@ describe("pages page data", () => {
       undefined,
       300,
     );
+    expect(isrSet).toHaveBeenCalledWith(
+      "pages:/posts/post",
+      expect.objectContaining({
+        kind: "PAGES",
+        html: expect.stringContaining('"__vinext":{"hasMiddleware":true}'),
+        pageData: { title: "fresh" },
+      }),
+      15,
+      undefined,
+      300,
+    );
+  });
+
+  it("preserves vinext module metadata during stale ISR regeneration", async () => {
+    let regenPromise: Promise<void> | null = null;
+    const isrSet = vi.fn<ResolvePagesPageDataOptions["isrSet"]>(async () => {});
+    const triggerBackgroundRegeneration = vi.fn((_key: string, renderFn: () => Promise<void>) => {
+      regenPromise = renderFn();
+    });
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: true,
+          value: {
+            lastModified: 1,
+            cacheState: "stale",
+            value: {
+              kind: "PAGES",
+              html: '<!DOCTYPE html><html><body><div id="__next"><main>stale 404</main></div><script>window.__NEXT_DATA__ = {"page":"/404","query":{},"props":{"pageProps":{"marker":"stale"}}}</script></body></html>',
+              pageData: { marker: "stale" },
+              headers: undefined,
+              status: 404,
+            },
+          },
+        }),
+        isrSet,
+        pageModule: {
+          async getStaticProps() {
+            return {
+              props: { marker: "fresh" },
+              revalidate: 60,
+            };
+          },
+        },
+        renderIsrPassToStringAsync: vi.fn(async () => "<main>fresh 404</main>"),
+        routePattern: "/404",
+        routeUrl: "/missing",
+        statusCode: 404,
+        triggerBackgroundRegeneration,
+        vinext: {
+          pageModuleUrl: "/assets/pages/404.js",
+          appModuleUrl: "/assets/pages/_app.js",
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") {
+      throw new Error("expected response result");
+    }
+    expect(result.response.status).toBe(404);
+
+    if (!regenPromise) {
+      throw new Error("expected stale ISR regeneration to start");
+    }
+    const pendingRegen: Promise<void> = regenPromise;
+    await pendingRegen;
+
+    expect(isrSet).toHaveBeenCalledOnce();
+    const regeneratedCacheValue = isrSet.mock.calls[0]?.[1];
+    expect(regeneratedCacheValue?.html).toContain("<main>fresh 404</main>");
+    expect(regeneratedCacheValue?.html).toContain('"__vinext"');
+    expect(regeneratedCacheValue?.html).toContain('"pageModuleUrl":"/assets/pages/404.js"');
+    expect(regeneratedCacheValue?.html).toContain('"appModuleUrl":"/assets/pages/_app.js"');
+    expect(regeneratedCacheValue?.status).toBe(404);
   });
 
   it("uses stored cache-control metadata for Pages Router cached HIT responses", async () => {
@@ -344,6 +423,171 @@ describe("pages page data", () => {
     );
 
     expect(received).toEqual({ id: "123" });
+  });
+
+  // `getStaticProps` receives `context.revalidateReason` describing why the
+  // function was called. Mirrors Next.js's render.tsx — see
+  // `.nextjs-ref/test/e2e/revalidate-reason/revalidate-reason.test.ts` for
+  // the authoritative tri-state assertions.
+  it("passes revalidateReason: 'build' to getStaticProps during build-time prerendering", async () => {
+    let received: unknown = "untouched";
+    await resolvePagesPageData(
+      createOptions({
+        isBuildTimePrerendering: true,
+        pageModule: {
+          async getStaticProps(context) {
+            received = context.revalidateReason;
+            return { props: {} };
+          },
+        },
+      }),
+    );
+
+    expect(received).toBe("build");
+  });
+
+  it("passes revalidateReason: 'on-demand' to getStaticProps when on-demand revalidation is signalled", async () => {
+    let received: unknown = "untouched";
+    await resolvePagesPageData(
+      createOptions({
+        isOnDemandRevalidate: true,
+        pageModule: {
+          async getStaticProps(context) {
+            received = context.revalidateReason;
+            return { props: {} };
+          },
+        },
+      }),
+    );
+
+    expect(received).toBe("on-demand");
+  });
+
+  it("passes revalidateReason: 'stale' to getStaticProps for runtime cache-miss requests", async () => {
+    let received: unknown = "untouched";
+    await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticProps(context) {
+            received = context.revalidateReason;
+            return { props: {} };
+          },
+        },
+      }),
+    );
+
+    expect(received).toBe("stale");
+  });
+
+  it("passes revalidateReason: 'stale' to getStaticProps during stale-while-revalidate regeneration", async () => {
+    let received: unknown = "untouched";
+    let regenPromise: Promise<void> | null = null;
+    const runInFreshUnifiedContext = vi.fn(
+      async <T>(callback: () => Promise<T>): Promise<T> => callback(),
+    ) as ResolvePagesPageDataOptions["runInFreshUnifiedContext"];
+    const triggerBackgroundRegeneration = vi.fn((_key: string, renderFn: () => Promise<void>) => {
+      regenPromise = renderFn();
+    });
+
+    await resolvePagesPageData(
+      createOptions({
+        // Even when the dispatch itself is a build-time prerender, the SWR
+        // refresh path is still a stale regeneration — matches Next.js.
+        isBuildTimePrerendering: true,
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: true,
+          value: {
+            lastModified: 1,
+            cacheState: "stale",
+            value: {
+              kind: "PAGES",
+              html: '<!DOCTYPE html><html><body><div id="__next"><div>stale</div></div><script>window.__NEXT_DATA__ = {}</script></body></html>',
+              pageData: {},
+              headers: undefined,
+              status: undefined,
+            },
+          },
+        }),
+        pageModule: {
+          async getStaticProps(context) {
+            received = context.revalidateReason;
+            return { props: {}, revalidate: 5 };
+          },
+        },
+        runInFreshUnifiedContext,
+        triggerBackgroundRegeneration,
+      }),
+    );
+
+    expect(triggerBackgroundRegeneration).toHaveBeenCalledOnce();
+    if (!regenPromise) {
+      throw new Error("expected stale regeneration to start");
+    }
+    const pendingRegen: Promise<void> = regenPromise;
+    await pendingRegen;
+
+    expect(received).toBe("stale");
+  });
+
+  // Mirrors Next.js's `isSerializableProps` check from render.tsx (~line 982).
+  // Without this validation vinext silently rendered an empty page for
+  // non-JSON values like `new Date()`. Tracked in vinext#1478.
+  // See .nextjs-ref/packages/next/src/lib/is-serializable-props.ts and the
+  // `non-json`/`non-json-blocking` cases in .nextjs-ref/test/e2e/prerender.test.ts.
+  it("throws a Next.js-style error when getStaticProps returns non-serializable props", async () => {
+    await expect(
+      resolvePagesPageData(
+        createOptions({
+          pageModule: {
+            async getStaticProps() {
+              return { props: { date: new Date(0) } };
+            },
+          },
+          routePattern: "/non-json",
+          routeUrl: "/non-json",
+        }),
+      ),
+    ).rejects.toThrow(
+      /Error serializing `\.date` returned from `getStaticProps` in "\/non-json"\.\s*Reason: `object` \("\[object Date\]"\) cannot be serialized as JSON/,
+    );
+  });
+
+  it("throws a Next.js-style error when getServerSideProps returns non-serializable props", async () => {
+    await expect(
+      resolvePagesPageData(
+        createOptions({
+          pageModule: {
+            async getServerSideProps() {
+              return { props: { fn: () => "nope" } };
+            },
+          },
+          routePattern: "/gssp-bad",
+          routeUrl: "/gssp-bad",
+        }),
+      ),
+    ).rejects.toThrow(
+      /Error serializing `\.fn` returned from `getServerSideProps` in "\/gssp-bad"\.\s*Reason: `function` cannot be serialized as JSON/,
+    );
+  });
+
+  // Redirect and notFound short-circuits must continue to work even if the
+  // page also returns `props` — mirrors Next.js, which only validates when
+  // !metadata.isRedirect && !metadata.isNotFound.
+  it("does not throw on getStaticProps redirect even when props would be invalid", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticProps() {
+            return { redirect: { destination: "/elsewhere", permanent: false } };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response");
+    expect(result.response.status).toBe(307);
+    expect(result.response.headers.get("location")).toBe("/elsewhere");
   });
 
   // Matches Next.js behavior: for non-dynamic routes, `params` in

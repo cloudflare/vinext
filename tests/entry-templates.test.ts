@@ -455,11 +455,19 @@ describe("App Router generated manifest construction", () => {
     ]);
   });
 
-  it("imports the global-not-found module and exposes its var when provided", () => {
+  it("emits a dynamic-import specifier for the global-not-found module when provided", () => {
     // Mirrors how vinext scans `app/global-not-found.tsx` in
     // packages/vinext/src/index.ts and threads it into the manifest so the
     // generated RSC entry can hand it to createAppFallbackRenderer.
+    //
+    // The module is intentionally NOT registered as a static `import * as` —
+    // statically importing it co-locates global-not-found's CSS with the root
+    // layout's CSS in a single chunk, and the CSS minifier (lightningcss) then
+    // drops overlapping declarations as dead code, breaking the cascade for
+    // route-miss 404s. Emitting a JSON-encoded specifier lets the entry
+    // generator wrap the path in a dynamic `import()` for chunk isolation.
     // See https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
+    // See Next.js test: test/e2e/app-dir/initial-css-order/initial-css-order.test.ts
     const manifest = buildAppRscManifestCode({
       routes: minimalAppRoutes,
       metadataRoutes: [],
@@ -467,12 +475,13 @@ describe("App Router generated manifest construction", () => {
       globalNotFoundPath: "/tmp/test/app/global-not-found.tsx",
     });
 
-    const imports = manifest.imports.join("\n");
-    expect(imports).toContain('from "/tmp/test/app/global-not-found.tsx"');
-    expect(manifest.globalNotFoundVar).toBeTruthy();
+    // Must NOT appear in the static imports — that would defeat the chunk
+    // isolation. The entry generator embeds it via `() => import(<specifier>)`.
+    expect(manifest.imports.join("\n")).not.toContain("global-not-found");
+    expect(manifest.globalNotFoundImportSpecifier).toBe('"/tmp/test/app/global-not-found.tsx"');
   });
 
-  it("does not import a global-not-found module when the path is absent", () => {
+  it("does not emit a global-not-found specifier when the path is absent", () => {
     const manifest = buildAppRscManifestCode({
       routes: minimalAppRoutes,
       metadataRoutes: [],
@@ -481,7 +490,7 @@ describe("App Router generated manifest construction", () => {
     });
 
     expect(manifest.imports.join("\n")).not.toContain("global-not-found");
-    expect(manifest.globalNotFoundVar).toBeNull();
+    expect(manifest.globalNotFoundImportSpecifier).toBeNull();
   });
 
   it("serializes graph-minted ids without leaking the filesystem root", async () => {
@@ -715,24 +724,32 @@ describe("App Router entry templates", () => {
 
   it("generateRscEntry threads globalNotFoundPath from config into the fallback renderer", () => {
     // The generated entry's createAppFallbackRenderer call must receive a
-    // globalNotFoundModule binding so route-miss 404s can render
-    // app/global-not-found.tsx standalone.
+    // loader so route-miss 404s can render app/global-not-found.tsx standalone.
+    //
+    // The loader is a dynamic `import()` (not a static `import * as`) so the
+    // bundler emits global-not-found.tsx in its own JS+CSS chunk. Without that
+    // isolation, the CSS minifier (lightningcss) drops overlapping declarations
+    // between the root layout's CSS and global-not-found's CSS, breaking the
+    // cascade for route-miss 404s.
     // See packages/vinext/src/entries/app-rsc-entry.ts and
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
+    // See Next.js test: test/e2e/app-dir/initial-css-order/initial-css-order.test.ts
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
       globalNotFoundPath: "/tmp/test/app/global-not-found.tsx",
     });
 
-    expect(code).toContain('from "/tmp/test/app/global-not-found.tsx"');
-    // The renderer is wired with the module binding (not just `null`).
-    expect(code).toContain("globalNotFoundModule,");
-    expect(code).not.toContain("const globalNotFoundModule = null;");
+    // Loader uses dynamic `import()` — NOT a static `import * as`.
+    expect(code).toContain('() => import("/tmp/test/app/global-not-found.tsx")');
+    expect(code).not.toContain('from "/tmp/test/app/global-not-found.tsx"');
+    // The renderer is wired with the loader binding (not just `null`).
+    expect(code).toContain("loadGlobalNotFoundModule: __loadGlobalNotFoundModule");
+    expect(code).not.toContain("const __loadGlobalNotFoundModule = null;");
   });
 
-  it("generateRscEntry emits a null globalNotFoundModule when no path is provided", () => {
+  it("generateRscEntry emits a null global-not-found loader when no path is provided", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
-    expect(code).toContain("const globalNotFoundModule = null;");
+    expect(code).toContain("const __loadGlobalNotFoundModule = null;");
     expect(code).not.toContain("global-not-found.tsx");
   });
 
