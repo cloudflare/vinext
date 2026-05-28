@@ -428,6 +428,79 @@ describe("app server action execution helpers", () => {
     expect(clearContext).toHaveBeenCalledTimes(1);
   });
 
+  // Mirrors Next.js' MutableRequestCookiesAdapter behaviour: multiple
+  // `cookies().set()` calls on the same name collapse to a single Set-Cookie
+  // header with the most recent value, while sets for different names each
+  // produce their own Set-Cookie line. See issue #1481 and
+  // packages/next/src/server/web/spec-extension/adapters/request-cookies.ts.
+  it("deduplicates pending Set-Cookie headers by name (last value wins) on action redirects", async () => {
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+
+    const response = requireProgressiveActionResponse(
+      await handleProgressiveServerActionRequest(
+        createOptions({
+          async decodeAction() {
+            return () => {
+              throw { digest: "NEXT_REDIRECT;replace;%2Fresult;307" };
+            };
+          },
+          getAndClearPendingCookies() {
+            // Three sets: foo (twice), bar (once). Next.js semantics collapse
+            // the two foo entries to the final "foo=2" value and emit one
+            // Set-Cookie per distinct name.
+            return ["foo=1; Path=/", "foo=2; Path=/; HttpOnly", "bar=3; Path=/"];
+          },
+          readFormDataWithLimit() {
+            return Promise.resolve(formData);
+          },
+        }),
+      ),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.getSetCookie()).toEqual(["foo=2; Path=/; HttpOnly", "bar=3; Path=/"]);
+  });
+
+  // Same dedup contract for the RSC fetch-action path (used by progressive
+  // enhancement and client-invoked actions).
+  it("deduplicates pending Set-Cookie headers by name on fetch action responses", async () => {
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        getAndClearPendingCookies() {
+          return ["session=old; Path=/", "session=new; Path=/; HttpOnly", "lang=en; Path=/"];
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.getSetCookie()).toEqual([
+      "session=new; Path=/; HttpOnly",
+      "lang=en; Path=/",
+    ]);
+  });
+
+  it("deduplicates pending Set-Cookie headers by name on fetch action redirects", async () => {
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        loadServerAction() {
+          return Promise.resolve(() => {
+            throw { digest: "NEXT_REDIRECT;push;%2Fresult;307" };
+          });
+        },
+        getAndClearPendingCookies() {
+          return ["session=old; Path=/", "session=new; Path=/; HttpOnly", "lang=en; Path=/"];
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.getSetCookie()).toEqual([
+      "session=new; Path=/; HttpOnly",
+      "lang=en; Path=/",
+    ]);
+  });
+
   it("returns decoded form state after successful non-redirect actions without consuming the original body", async () => {
     const formData = new FormData();
     formData.set("$ACTION_ID_test", "");

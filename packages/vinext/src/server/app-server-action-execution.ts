@@ -243,6 +243,57 @@ function isRequestBodyTooLarge(error: unknown): boolean {
   return error instanceof Error && error.message === "Request body too large";
 }
 
+/**
+ * Parse the cookie name out of a serialised Set-Cookie line.
+ *
+ * Bounded by the first `;` so the attribute portion (e.g. `Path=/`) is never
+ * mistaken for part of the name when the value happens to contain another
+ * `=`. Returns null when the line is not parseable (defensive — we keep
+ * unparseable entries verbatim so we don't drop user-supplied cookies).
+ */
+function getSetCookieName(cookie: string): string | null {
+  const equalsIndex = cookie.indexOf("=");
+  if (equalsIndex <= 0) {
+    return null;
+  }
+  const semicolonIndex = cookie.indexOf(";");
+  const end = semicolonIndex === -1 ? equalsIndex : Math.min(equalsIndex, semicolonIndex);
+  return cookie.slice(0, end);
+}
+
+/**
+ * Collapse repeated `cookies().set(name, ...)` / `cookies().delete(name)`
+ * calls down to the last value per name, matching Next.js'
+ * `MutableRequestCookiesAdapter` semantics. Next.js stores response cookies in
+ * a `ResponseCookies` Map keyed by name — multiple sets for the same cookie
+ * collapse to the final value, and emit a single Set-Cookie header.
+ *
+ * Insertion order is preserved by first occurrence (Map iteration order),
+ * which mirrors how `ResponseCookies` iterates its underlying Map. See
+ * packages/next/src/server/web/spec-extension/adapters/request-cookies.ts.
+ * Issue: https://github.com/cloudflare/vinext/issues/1481
+ */
+function dedupePendingCookies(cookies: readonly string[]): string[] {
+  if (cookies.length <= 1) {
+    return cookies.slice();
+  }
+  const byName = new Map<string, string>();
+  const unkeyed: string[] = [];
+  for (const cookie of cookies) {
+    const name = getSetCookieName(cookie);
+    if (name === null) {
+      unkeyed.push(cookie);
+      continue;
+    }
+    // Map.set on an existing key replaces the value but preserves the
+    // insertion position of the original key — exactly the behaviour we need
+    // for `cookies().set("foo", "1"); cookies().set("bar", "2"); cookies().set("foo", "3")`
+    // to come out as [foo=3, bar=2].
+    byName.set(name, cookie);
+  }
+  return [...unkeyed, ...byName.values()];
+}
+
 function isAppServerActionFunction(action: unknown): action is AppServerActionFunction {
   return typeof action === "function";
 }
@@ -521,7 +572,7 @@ export async function handleProgressiveServerActionRequest(
       return { kind: "form-state", formState: formState ?? null };
     }
 
-    const actionPendingCookies = options.getAndClearPendingCookies();
+    const actionPendingCookies = dedupePendingCookies(options.getAndClearPendingCookies());
     const actionDraftCookie = options.getDraftModeCookieHeader();
     const actionRevalidationKind = resolveActionRevalidationKind(
       actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
@@ -690,7 +741,7 @@ export async function handleServerActionRscRequest<
     }
 
     if (actionRedirect) {
-      const actionPendingCookies = options.getAndClearPendingCookies();
+      const actionPendingCookies = dedupePendingCookies(options.getAndClearPendingCookies());
       const actionDraftCookie = options.getDraftModeCookieHeader();
       const actionRevalidationKind = resolveActionRevalidationKind(
         actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
@@ -721,7 +772,7 @@ export async function handleServerActionRscRequest<
       return new Response("", { status: 200, headers: redirectHeaders });
     }
 
-    const actionPendingCookies = options.getAndClearPendingCookies();
+    const actionPendingCookies = dedupePendingCookies(options.getAndClearPendingCookies());
     const actionDraftCookie = options.getDraftModeCookieHeader();
     const actionRevalidationKind = resolveActionRevalidationKind(
       actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
