@@ -10,7 +10,7 @@ import { generateServerEntry as _generateServerEntry } from "./entries/pages-ser
 import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
 import { appRouteGraph, appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
 import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
-import { createValidFileMatcher } from "./routing/file-matcher.js";
+import { buildViteResolveExtensions, createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
 import { isImageOptimizationPath } from "./server/image-optimization.js";
@@ -1584,6 +1584,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...nextConfig.aliases,
               ...nextShimMap,
             },
+            // Mirror Next.js `pageExtensions` into Vite's `resolve.extensions`
+            // so extensionless imports of files with custom extensions
+            // (`.mdx`, `.platform.tsx`, `.web.tsx`, etc.) resolve. Without
+            // this the build crashes with "Custom deploy script failed:
+            // undefined (1)" when the user configures pageExtensions beyond
+            // Vite's default set. See cloudflare/vinext#1502.
+            extensions: buildViteResolveExtensions(nextConfig.pageExtensions),
             // Dedupe React packages to prevent dual-instance errors.
             // When vinext is linked (npm link / bun link) or any dependency
             // brings its own React copy, multiple React instances can load,

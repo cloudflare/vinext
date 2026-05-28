@@ -91,6 +91,41 @@ export function findFileWithExtensions(basePath: string, matcher: ValidFileMatch
 }
 
 /**
+ * Vite's default `resolve.extensions` covers `.tsx/.ts/.jsx/.js/.json` (and
+ * `.mjs/.mts`). When the user configures `pageExtensions` with values Vite
+ * does not know about — e.g. `["platform.tsx", "tsx", "mdx"]` from the
+ * Next.js `resolve-extensions` fixture — extensionless imports of those
+ * files fail to resolve, and the build crashes with "Custom deploy script
+ * failed: undefined (1)".
+ *
+ * Build the merged extension list that Vite should use:
+ *
+ *  1. User-configured pageExtensions go first (each prefixed with `.`) so
+ *     the user's priority wins. e.g. `.platform.tsx` resolves before `.tsx`.
+ *  2. Vite's defaults follow, with duplicates removed.
+ *
+ * The user's pageExtensions retain their relative order, which is what
+ * Next.js / Turbopack do via the `resolveExtensions` config option.
+ *
+ * See: cloudflare/vinext#1502
+ */
+export function buildViteResolveExtensions(
+  pageExtensions?: readonly string[] | null,
+  viteDefaults: readonly string[] = [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json"],
+): string[] {
+  const normalized = normalizePageExtensions(pageExtensions);
+  const dotted = normalized.map((ext) => `.${ext}`);
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const ext of [...dotted, ...viteDefaults]) {
+    if (seen.has(ext)) continue;
+    seen.add(ext);
+    result.push(ext);
+  }
+  return result;
+}
+
+/**
  * Use function-form exclude for Node < 22.14 compatibility.
  */
 export async function* scanWithExtensions(
