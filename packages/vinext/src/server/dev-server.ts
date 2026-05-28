@@ -108,6 +108,12 @@ async function streamPageToResponse(
     extraHeaders?: Record<string, string | string[]>;
     /** Called after renderToReadableStream resolves (shell ready) to collect head HTML */
     getHeadHTML: () => string;
+    /**
+     * Optional: hand a list of `<head>` ReactNodes (returned by user
+     * `_document.getInitialProps()`) to the head shim so they're merged
+     * into `getSSRHeadHTML()`'s output. Called before `getHeadHTML()`.
+     */
+    setDocumentInitialHead?: (head: React.ReactNode[]) => void;
   },
 ): Promise<void> {
   const {
@@ -119,6 +125,7 @@ async function streamPageToResponse(
     statusCode = 200,
     extraHeaders,
     getHeadHTML,
+    setDocumentInitialHead,
   } = options;
 
   // Start the React body stream FIRST — the promise resolves when the
@@ -126,7 +133,30 @@ async function streamPageToResponse(
   // This triggers the render which populates <Head> tags.
   const bodyStream = await renderToReadableStream(element);
 
-  // Now that the shell has rendered, collect head HTML
+  // If the user defined `_document.getInitialProps()`, call it now so any
+  // additional head tags it returns are folded into the same dedupe pipeline
+  // as user `next/head` tags. Matches Next.js's `_document` contract.
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const DocAny = DocumentComponent as any;
+  if (DocAny && typeof DocAny.getInitialProps === "function" && setDocumentInitialHead) {
+    try {
+      const initialProps = await DocAny.getInitialProps({
+        // Minimal context — vinext does not currently plumb the full
+        // DocumentContext (req/res/renderPage/defaultGetInitialProps) for
+        // SSR. User code that depends on those fields receives `undefined`,
+        // matching the documented shim limitation in `shims/document.tsx`.
+        defaultGetInitialProps: async () => ({ html: "", head: [], styles: undefined }),
+        renderPage: () => ({ html: "" }),
+      });
+      const initialHead = Array.isArray(initialProps?.head) ? initialProps.head : [];
+      setDocumentInitialHead(initialHead);
+    } catch (err) {
+      console.error("[vinext] _document.getInitialProps() threw:", err);
+    }
+  }
+
+  // Now that the shell has rendered (and any _document.getInitialProps
+  // has injected its tags), collect head HTML.
   const headHTML = getHeadHTML();
 
   // Build the document shell with a placeholder for the body
@@ -151,11 +181,12 @@ async function streamPageToResponse(
     }
     shellTemplate = docHtml;
   } else {
+    // charset + viewport are emitted via getSSRHeadHTML() (next/head's
+    // defaultHead seeds them with data-next-head=""), matching Next.js's
+    // canonical ordering. Don't duplicate them here.
     shellTemplate = `<!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
   ${fontHeadHTML}${headHTML}
 </head>
 <body>
@@ -1195,6 +1226,10 @@ hydrate();
             const traceHTML = getClientTraceMetadataHTML(clientTraceMetadata);
             return traceHTML ? `${headHTML}\n  ${traceHTML}` : headHTML;
           },
+          setDocumentInitialHead:
+            typeof headShim.setDocumentInitialHead === "function"
+              ? headShim.setDocumentInitialHead
+              : undefined,
         });
         _renderEnd = now();
 

@@ -17008,7 +17008,11 @@ describe("next/head SSR security", () => {
       React.createElement("iframe" as any, { src: "https://evil.com" }),
     ]);
 
-    expect(html).toBe("");
+    // After issue #1569, the default head (charset + viewport) is always
+    // emitted, so the output is never an empty string. The disallowed tag
+    // must still not appear.
+    expect(html).not.toContain("<iframe");
+    expect(html).not.toContain("evil.com");
     expect(consoleWarn).toHaveBeenCalledWith(
       expect.stringContaining("ignoring disallowed tag <iframe>"),
     );
@@ -17025,7 +17029,10 @@ describe("next/head SSR security", () => {
       React.createElement("form" as any, { action: "https://evil.com" }),
     ]);
 
-    expect(html).toBe("");
+    expect(html).not.toContain("<object");
+    expect(html).not.toContain("<embed");
+    expect(html).not.toContain("<form");
+    expect(html).not.toContain("evil.com");
     consoleWarn.mockRestore();
   });
 

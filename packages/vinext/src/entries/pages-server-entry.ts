@@ -224,7 +224,7 @@ export async function runMiddleware(request) {
 import ${JSON.stringify(_serverGlobalsPath)};
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
-import { resetSSRHead, getSSRHeadHTML } from "next/head";
+import { resetSSRHead, getSSRHeadHTML, setDocumentInitialHead } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext, wrapWithRouterContext } from "next/router";
 import { _runWithCacheState } from "next/cache";
@@ -946,6 +946,8 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
           return renderToReadableStream(element);
         },
         resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
+        setDocumentInitialHead:
+          typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,
         routePattern,
         routeUrl,
         safeJsonStringify,

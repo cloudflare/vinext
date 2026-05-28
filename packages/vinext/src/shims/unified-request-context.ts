@@ -108,6 +108,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     requestCache: new WeakMap(),
     ssrContext: null,
     ssrHeadChildren: [],
+    documentInitialHead: [],
     rootParams: null,
     ...opts,
   };

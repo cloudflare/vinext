@@ -50,6 +50,7 @@ type RenderPagesPageResponseOptions = {
    * head. Undefined or empty disables emission.
    */
   clientTraceMetadata?: readonly string[] | undefined;
+  setDocumentInitialHead?: ((head: ReactNode[]) => void) | undefined;
   gsspRes: PagesGsspResponse | null;
   isrCacheKey: (router: string, pathname: string) => string;
   expireSeconds?: number;
@@ -183,10 +184,11 @@ async function buildPagesShellHtml(
     return html;
   }
 
+  // charset + viewport are emitted via getSSRHeadHTML() (next/head's
+  // defaultHead seeds them with data-next-head=""), matching Next.js's
+  // canonical ordering. Don't duplicate them here.
   return (
     "<!DOCTYPE html>\n<html>\n<head>\n" +
-    '  <meta charset="utf-8" />\n' +
-    '  <meta name="viewport" content="width=device-width, initial-scale=1" />\n' +
     `  ${fontHeadHTML}${options.ssrHeadHTML}\n` +
     `  ${options.assetTags}\n` +
     "</head>\n<body>\n" +
@@ -347,6 +349,28 @@ export async function renderPagesPageResponse(
   // Mirrors Next.js fix: vercel/next.js@9853944
   const bodyStream = await options.renderToReadableStream(pageElement);
 
+  // If the user defined `_document.getInitialProps()`, run it now so any
+  // head tags it returns can join the dedupe pipeline before getSSRHeadHTML
+  // serialises the final <head>. Mirrors Next.js's `_document` contract.
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+  const DocCtor = options.DocumentComponent as any;
+  if (DocCtor && typeof DocCtor.getInitialProps === "function" && options.setDocumentInitialHead) {
+    try {
+      const docInitialProps = await DocCtor.getInitialProps({
+        // Minimal DocumentContext shim — vinext does not yet plumb the full
+        // context (req/res/renderPage/defaultGetInitialProps). User code that
+        // relies on those fields receives no-op stand-ins; matches the
+        // documented limitation in `shims/document.tsx`.
+        defaultGetInitialProps: async () => ({ html: "", head: [], styles: undefined }),
+        renderPage: () => ({ html: "" }),
+      });
+      const initialHead = Array.isArray(docInitialProps?.head) ? docInitialProps.head : [];
+      options.setDocumentInitialHead(initialHead);
+    } catch (err) {
+      console.error("[vinext] _document.getInitialProps() threw:", err);
+    }
+  }
+
   const headFromShim = options.getSSRHeadHTML?.() ?? "";
   // Trace meta tags from the active OpenTelemetry context. When the
   // allow-list is unset (the common case) or OTel is not installed,
@@ -354,6 +378,7 @@ export async function renderPagesPageResponse(
   // verbatim — keeping the no-op path zero-overhead.
   const traceMetaHTML = getClientTraceMetadataHTML(options.clientTraceMetadata);
   const ssrHeadHTML = traceMetaHTML ? `${headFromShim}\n  ${traceMetaHTML}` : headFromShim;
+
   const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
     assetTags: options.assetTags,
     DocumentComponent: options.DocumentComponent,
