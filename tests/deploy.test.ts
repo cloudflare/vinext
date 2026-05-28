@@ -908,6 +908,13 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain('typeof renderPage === "function"');
   });
 
+  it("does not defer error page rendering for data requests", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain(
+      'const shouldDeferErrorPageOnMiss =\n          !isDataRequest && typeof matchPageRoute === "function" && !renderPageMatch;',
+    );
+  });
+
   it("builds reqCtx before middleware runs", () => {
     const content = generatePagesRouterWorkerEntry();
     const reqCtxPos = content.indexOf("requestContextFromRequest(request)");

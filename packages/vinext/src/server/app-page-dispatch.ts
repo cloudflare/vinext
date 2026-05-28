@@ -192,6 +192,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   middlewareContext: AppPageMiddlewareContext;
   mountedSlotsHeader?: string | null;
   params: AppPageParams;
+  staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
   probeLayoutAt: (layoutIndex: number) => unknown;
   probePage: () => unknown;
@@ -537,7 +538,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     enforceStaticParamsOnly: options.dynamicParamsConfig === false,
     generateStaticParams: options.generateStaticParams,
     isDynamicRoute: route.isDynamic,
-    params: options.params,
+    params: options.staticParamsValidationParams ?? options.params,
   });
   if (dynamicParamsResponse) {
     return dynamicParamsResponse;

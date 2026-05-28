@@ -158,6 +158,44 @@ describe("App Router optimistic routing", () => {
     ).toBe("route:/blog/featured");
   });
 
+  it("preserves dynamic route param key order", () => {
+    const twoSegment = manifest([
+      route({
+        id: "route:/:category/:id",
+        isDynamic: true,
+        paramNames: ["category", "id"],
+        pattern: "/:category/:id",
+        patternParts: [":category", ":id"],
+      }),
+    ]);
+
+    const twoMatch = matchOptimisticRouteManifestRoute({
+      basePath: "",
+      href: "/electronics/123",
+      routeManifest: twoSegment,
+    });
+    expect(twoMatch).not.toBeNull();
+    expect(Object.keys(twoMatch!.params)).toEqual(["category", "id"]);
+
+    const threeSegment = manifest([
+      route({
+        id: "route:/:a/:b/:c",
+        isDynamic: true,
+        paramNames: ["a", "b", "c"],
+        pattern: "/:a/:b/:c",
+        patternParts: [":a", ":b", ":c"],
+      }),
+    ]);
+
+    const threeMatch = matchOptimisticRouteManifestRoute({
+      basePath: "",
+      href: "/x/y/z",
+      routeManifest: threeSegment,
+    });
+    expect(threeMatch).not.toBeNull();
+    expect(Object.keys(threeMatch!.params)).toEqual(["a", "b", "c"]);
+  });
+
   it("does not fall through from a known static subtree to a catch-all sibling", () => {
     expect(
       matchOptimisticRouteManifestRoute({

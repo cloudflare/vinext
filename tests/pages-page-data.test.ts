@@ -164,7 +164,7 @@ describe("pages page data", () => {
   it("serves stale ISR entries immediately and regenerates them through typed helpers", async () => {
     let regenPromise: Promise<void> | null = null;
     const applyRequestContexts = vi.fn();
-    const isrSet = vi.fn(async () => {});
+    const isrSet = vi.fn<ResolvePagesPageDataOptions["isrSet"]>(async () => {});
     const runInFreshUnifiedContext = vi.fn(
       async <T>(callback: () => Promise<T>): Promise<T> => callback(),
     ) as ResolvePagesPageDataOptions["runInFreshUnifiedContext"];
@@ -249,6 +249,71 @@ describe("pages page data", () => {
       undefined,
       300,
     );
+  });
+
+  it("preserves vinext module metadata during stale ISR regeneration", async () => {
+    let regenPromise: Promise<void> | null = null;
+    const isrSet = vi.fn<ResolvePagesPageDataOptions["isrSet"]>(async () => {});
+    const triggerBackgroundRegeneration = vi.fn((_key: string, renderFn: () => Promise<void>) => {
+      regenPromise = renderFn();
+    });
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: true,
+          value: {
+            lastModified: 1,
+            cacheState: "stale",
+            value: {
+              kind: "PAGES",
+              html: '<!DOCTYPE html><html><body><div id="__next"><main>stale 404</main></div><script>window.__NEXT_DATA__ = {"page":"/404","query":{},"props":{"pageProps":{"marker":"stale"}}}</script></body></html>',
+              pageData: { marker: "stale" },
+              headers: undefined,
+              status: 404,
+            },
+          },
+        }),
+        isrSet,
+        pageModule: {
+          async getStaticProps() {
+            return {
+              props: { marker: "fresh" },
+              revalidate: 60,
+            };
+          },
+        },
+        renderIsrPassToStringAsync: vi.fn(async () => "<main>fresh 404</main>"),
+        routePattern: "/404",
+        routeUrl: "/missing",
+        statusCode: 404,
+        triggerBackgroundRegeneration,
+        vinext: {
+          pageModuleUrl: "/assets/pages/404.js",
+          appModuleUrl: "/assets/pages/_app.js",
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") {
+      throw new Error("expected response result");
+    }
+    expect(result.response.status).toBe(404);
+
+    if (!regenPromise) {
+      throw new Error("expected stale ISR regeneration to start");
+    }
+    const pendingRegen: Promise<void> = regenPromise;
+    await pendingRegen;
+
+    expect(isrSet).toHaveBeenCalledOnce();
+    const regeneratedCacheValue = isrSet.mock.calls[0]?.[1];
+    expect(regeneratedCacheValue?.html).toContain("<main>fresh 404</main>");
+    expect(regeneratedCacheValue?.html).toContain('"__vinext"');
+    expect(regeneratedCacheValue?.html).toContain('"pageModuleUrl":"/assets/pages/404.js"');
+    expect(regeneratedCacheValue?.html).toContain('"appModuleUrl":"/assets/pages/_app.js"');
+    expect(regeneratedCacheValue?.status).toBe(404);
   });
 
   it("uses stored cache-control metadata for Pages Router cached HIT responses", async () => {

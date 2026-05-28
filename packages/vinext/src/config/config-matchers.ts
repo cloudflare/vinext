@@ -15,6 +15,7 @@ import type {
 import {
   MIDDLEWARE_HEADER_PREFIX,
   VINEXT_MW_CTX_HEADER,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "../server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
@@ -1219,6 +1220,7 @@ export async function proxyExternalRequest(
   // external rewrite destinations. It authorizes hidden production endpoints
   // used only by vinext's own prerender pipeline.
   headers.delete(VINEXT_PRERENDER_SECRET_HEADER);
+  headers.delete(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER);
   // Internal App Router dev middleware context must never leave the dev server.
   headers.delete(VINEXT_MW_CTX_HEADER);
 

@@ -248,23 +248,18 @@ describe("normalizeRscRequest — interception context sanitization", () => {
     expect(result.interceptionContextHeader).toBeNull();
   });
 
-  it("preserves legitimate interception context value", () => {
+  it("preserves a legitimate same-origin pathname interception context", () => {
     const result = normalized(
-      normalizeRscRequest(req("/page", { "X-Vinext-Interception-Context": "(.)/slot/page" }), ""),
+      normalizeRscRequest(req("/page", { "X-Vinext-Interception-Context": "/feed" }), ""),
     );
-    expect(result.interceptionContextHeader).toBe("(.)/slot/page");
+    expect(result.interceptionContextHeader).toBe("/feed");
   });
 
-  it("preserves interception context value with nested separators", () => {
+  it("preserves a nested-pathname interception context", () => {
     const result = normalized(
-      normalizeRscRequest(
-        req("/page", {
-          "X-Vinext-Interception-Context": "(..)/(.)slot/nested",
-        }),
-        "",
-      ),
+      normalizeRscRequest(req("/page", { "X-Vinext-Interception-Context": "/feed/photos/42" }), ""),
     );
-    expect(result.interceptionContextHeader).toBe("(..)/(.)slot/nested");
+    expect(result.interceptionContextHeader).toBe("/feed/photos/42");
   });
 
   it("strips null bytes from interception context header to prevent header injection", () => {
@@ -274,7 +269,7 @@ describe("normalizeRscRequest — interception context sanitization", () => {
       headers: {
         get(name: string) {
           if (name.toLowerCase() === "x-vinext-interception-context") {
-            return "foo\0bar";
+            return "/fe\0ed";
           }
           return null;
         },
@@ -282,7 +277,42 @@ describe("normalizeRscRequest — interception context sanitization", () => {
     } as unknown as Request;
 
     const result = normalized(normalizeRscRequest(request, ""));
-    expect(result.interceptionContextHeader).toBe("foobar");
+    expect(result.interceptionContextHeader).toBe("/feed");
+  });
+
+  it("rejects non-pathname interception context values", () => {
+    // Attacker-supplied values that don't start with `/` are not legitimate
+    // browser-emitted pathnames; treat them as absent so they cannot influence
+    // cache keys. See F-PROD-1.
+    const result = normalized(
+      normalizeRscRequest(req("/page", { "X-Vinext-Interception-Context": "evil" }), ""),
+    );
+    expect(result.interceptionContextHeader).toBeNull();
+  });
+
+  it("rejects an oversized interception context value", () => {
+    const huge = "/" + "a".repeat(2048);
+    const result = normalized(
+      normalizeRscRequest(req("/page", { "X-Vinext-Interception-Context": huge }), ""),
+    );
+    expect(result.interceptionContextHeader).toBeNull();
+  });
+
+  it("bounds cache-key cardinality across many attacker-supplied values", () => {
+    // The fix's purpose: even if an attacker fans out 1000 distinct header
+    // values, the cache-key derived from the normalized value is bounded.
+    const distinct = new Set<string>();
+    for (let i = 0; i < 1000; i++) {
+      const result = normalizeRscRequest(
+        // 2KiB payload — exceeds the 1KiB cap.
+        req("/page", { "X-Vinext-Interception-Context": "/" + "x".repeat(2048) + String(i) }),
+        "",
+      );
+      if (result instanceof Response) continue;
+      distinct.add(result.interceptionContextHeader ?? "null");
+    }
+    // All 1000 attacker values collapse to a single normalized result.
+    expect(distinct.size).toBe(1);
   });
 });
 
@@ -293,16 +323,19 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
     // If not sorted, a client sending slots in navigation order (b a) and another
     // sending (a b) would get different cache keys, causing unnecessary cache misses.
     const result = normalized(
-      normalizeRscRequest(req("/page", { "x-vinext-mounted-slots": "slot:b slot:a" }), ""),
+      normalizeRscRequest(req("/page", { "x-vinext-mounted-slots": "slot:b:/ slot:a:/" }), ""),
     );
-    expect(result.mountedSlotsHeader).toBe("slot:a slot:b");
+    expect(result.mountedSlotsHeader).toBe("slot:a:/ slot:b:/");
   });
 
   it("deduplicates slot ids", () => {
     const result = normalized(
-      normalizeRscRequest(req("/page", { "x-vinext-mounted-slots": "slot:a slot:b slot:a" }), ""),
+      normalizeRscRequest(
+        req("/page", { "x-vinext-mounted-slots": "slot:a:/ slot:b:/ slot:a:/" }),
+        "",
+      ),
     );
-    expect(result.mountedSlotsHeader).toBe("slot:a slot:b");
+    expect(result.mountedSlotsHeader).toBe("slot:a:/ slot:b:/");
   });
 
   it("returns null for absent mounted-slots header", () => {
@@ -315,6 +348,57 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
       normalizeRscRequest(req("/page", { "x-vinext-mounted-slots": "   \t  " }), ""),
     );
     expect(result.mountedSlotsHeader).toBeNull();
+  });
+
+  it("drops tokens that do not match the legitimate slot:<name>:<treePath> wire format", () => {
+    // Attacker-supplied tokens without the wire shape (no tree path, missing
+    // `slot:` prefix, etc.) must not influence the cache key. See F-PROD-1.
+    const result = normalized(
+      normalizeRscRequest(
+        req("/page", { "x-vinext-mounted-slots": "slot:a slot:b modal slot:c:/ junk" }),
+        "",
+      ),
+    );
+    expect(result.mountedSlotsHeader).toBe("slot:c:/");
+  });
+
+  it("returns null when every token is malformed", () => {
+    const result = normalized(
+      normalizeRscRequest(req("/page", { "x-vinext-mounted-slots": "modal drawer overlay" }), ""),
+    );
+    expect(result.mountedSlotsHeader).toBeNull();
+  });
+
+  it("bounds the number of mounted-slot tokens that reach the cache key", () => {
+    // Cap at 16 tokens. An attacker who supplies 100 legitimately-shaped tokens
+    // would otherwise be able to fan out unique cache keys.
+    const attackerTokens = Array.from({ length: 100 }, (_, i) => `slot:s${i}:/`).join(" ");
+    const result = normalized(
+      normalizeRscRequest(req("/page", { "x-vinext-mounted-slots": attackerTokens }), ""),
+    );
+    const tokens = result.mountedSlotsHeader?.split(" ") ?? [];
+    expect(tokens.length).toBeLessThanOrEqual(16);
+  });
+
+  it("rejects an oversized mounted-slots header value", () => {
+    // Cap raw header length to bound cache-key cardinality. An attacker that
+    // supplies a multi-megabyte payload must not blow up KV writes.
+    const huge = "slot:a:/" + "x".repeat(8192);
+    const result = normalized(
+      normalizeRscRequest(req("/page", { "x-vinext-mounted-slots": huge }), ""),
+    );
+    expect(result.mountedSlotsHeader).toBeNull();
+  });
+
+  it("drops a single oversized token but keeps short legitimate tokens", () => {
+    const longToken = `slot:overlong:${"/a".repeat(200)}`;
+    const result = normalized(
+      normalizeRscRequest(
+        req("/page", { "x-vinext-mounted-slots": `slot:a:/ ${longToken} slot:b:/` }),
+        "",
+      ),
+    );
+    expect(result.mountedSlotsHeader).toBe("slot:a:/ slot:b:/");
   });
 
   it("normalizes the semantic render mode marker", () => {
@@ -454,12 +538,23 @@ describe("normalizeMountedSlotsHeader", () => {
   });
 
   it("deduplicates and sorts whitespace-separated slot ids", () => {
-    expect(normalizeMountedSlotsHeader(" sidebar  modal sidebar\tcart ")).toBe(
-      "cart modal sidebar",
-    );
+    expect(
+      normalizeMountedSlotsHeader(" slot:sidebar:/  slot:modal:/ slot:sidebar:/\tslot:cart:/ "),
+    ).toBe("slot:cart:/ slot:modal:/ slot:sidebar:/");
   });
 
   it("handles single slot id", () => {
-    expect(normalizeMountedSlotsHeader("modal")).toBe("modal");
+    expect(normalizeMountedSlotsHeader("slot:modal:/")).toBe("slot:modal:/");
+  });
+
+  it("rejects tokens that do not match the slot:<name>:<treePath> wire format", () => {
+    // SECURITY-AUDIT-2026-05 F-PROD-1: external requests must not be able to
+    // inject arbitrary strings into the cache key. Anything that does not
+    // match the legitimate wire format is dropped.
+    expect(normalizeMountedSlotsHeader("modal")).toBeNull();
+    expect(normalizeMountedSlotsHeader("attacker:value")).toBeNull();
+    expect(normalizeMountedSlotsHeader("slot:nopath")).toBeNull();
+    expect(normalizeMountedSlotsHeader("slot::/")).toBeNull();
+    expect(normalizeMountedSlotsHeader("slot:name:notabspath")).toBeNull();
   });
 });

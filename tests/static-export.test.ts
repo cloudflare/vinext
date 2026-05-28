@@ -19,6 +19,34 @@ const APP_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/app-basic");
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+function decodeHtmlText(text: string): string {
+  return text
+    .replaceAll("<!-- -->", "")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+}
+
+function textContentByTestId(html: string, testId: string): string {
+  const attrIndex = html.indexOf(`data-testid="${testId}"`);
+  if (attrIndex === -1) {
+    throw new Error(`Missing data-testid="${testId}"`);
+  }
+
+  const contentStart = html.indexOf(">", attrIndex);
+  if (contentStart === -1) {
+    throw new Error(`Missing opening tag end for data-testid="${testId}"`);
+  }
+
+  const contentEnd = html.indexOf("</", contentStart);
+  if (contentEnd === -1) {
+    throw new Error(`Missing closing tag for data-testid="${testId}"`);
+  }
+
+  return decodeHtmlText(html.slice(contentStart + 1, contentEnd));
+}
+
 /** Simple static file server for testing. */
 function createStaticServer(rootDir: string): Promise<{ server: Server; baseUrl: string }> {
   const MIME_TYPES: Record<string, string> = {
@@ -261,6 +289,17 @@ describe("Static export — App Router (served via HTTP)", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/png");
     expect((await res.arrayBuffer()).byteLength).toBeGreaterThan(0);
+  });
+
+  it("serves pre-rendered encoded dynamic route params from generateStaticParams", async () => {
+    // Ported from Next.js: test/e2e/app-dir/prerender-encoding/prerender-encoding.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/prerender-encoding/prerender-encoding.test.ts
+    const res = await fetch(`${baseUrl}/prerender-encoding/sticks%20%26%20stones`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(textContentByTestId(html, "prerender-encoding-id")).toBe(
+      "params.id is sticks%20%26%20stones",
+    );
   });
 
   it("serves 404.html for missing pages", async () => {
