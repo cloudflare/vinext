@@ -4,8 +4,8 @@
  * Next.js test/e2e/trailing-slashes/* and test/e2e/app-dir/trailingslash/*:
  *
  *   - With `trailingSlash: true`, a request to `/foo` returns 308 → `/foo/`
- *   - With `trailingSlash: false` (default), a request to `/foo/` returns 308 → `/foo`
- *   - App Router pages and route handlers obey the redirect
+ *   - With `trailingSlash: false`, a request to `/foo/` returns 308 → `/foo`
+ *   - App Router pages obey the redirect
  *   - <Link href="/foo"> renders as href="/foo/" when trailingSlash is true
  *
  * Refs cloudflare/vinext#1332
@@ -14,25 +14,27 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
-import { createServer } from "vite-plus";
-import vinext from "../packages/vinext/src/index.js";
-import { APP_FIXTURE_DIR } from "./helpers.js";
-
-type Server = Awaited<ReturnType<typeof createServer>>;
+import type { ViteDevServer } from "vite-plus";
+import { APP_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
 
 /**
- * Copy the app-basic fixture and overwrite next.config.ts to set
- * `trailingSlash`. Keeps fixture-local symlinks (fake-context-lib, …)
- * intact via `fs.cpSync({ recursive: true })`.
+ * Copy the app-basic fixture and overwrite next.config.ts to set only
+ * `trailingSlash`. We use `fs.cpSync({ recursive: true })` (not
+ * `createIsolatedFixture`) for two reasons:
+ *  1. app-basic's node_modules contains symlinks to fixture-local packages
+ *     (`fake-context-lib`, etc.). `createIsolatedFixture` replaces
+ *     node_modules with a workspace symlink and would break those.
+ *  2. Each isolated copy gets its own `.vite` dep-optimizer cache, so
+ *     concurrent test runs cannot race on a shared optimization output.
+ * See `tests/favicon-short-circuit.test.ts` for the same rationale.
  */
 function copyAppFixtureWithTrailingSlash(prefix: string, trailingSlash: boolean): string {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   fs.cpSync(APP_FIXTURE_DIR, tmpDir, { recursive: true });
-  // Wipe Vite's dep-optimizer cache so dev starts clean
   fs.rmSync(path.join(tmpDir, "node_modules", ".vite"), { recursive: true, force: true });
-  // Overwrite next.config.ts with a minimal one that sets trailingSlash.
-  // The app-basic next.config.ts has a lot of redirects/rewrites — we want a
-  // clean slate so behavior under test is exactly the trailingSlash policy.
+  // Replace the default app-basic next.config.ts. It carries a long list of
+  // redirects/rewrites/headers used by other suites; we want a clean slate so
+  // behaviour under test is exactly the trailingSlash policy.
   fs.writeFileSync(
     path.join(tmpDir, "next.config.ts"),
     `import type { NextConfig } from "vinext";
@@ -43,29 +45,14 @@ export default nextConfig;
   return tmpDir;
 }
 
-async function startServer(tmpDir: string): Promise<{ server: Server; baseUrl: string }> {
-  const server = await createServer({
-    root: tmpDir,
-    configFile: false,
-    plugins: [vinext({ appDir: tmpDir })],
-    server: { port: 0 },
-    logLevel: "silent",
-    optimizeDeps: { holdUntilCrawlEnd: true },
-  });
-  await server.listen();
-  const addr = server.httpServer?.address();
-  const baseUrl = addr && typeof addr === "object" ? `http://localhost:${addr.port}` : "";
-  return { server, baseUrl };
-}
-
 describe("App Router trailingSlash: true (#1332)", () => {
   let tmpDir: string;
-  let server: Server;
+  let server: ViteDevServer;
   let baseUrl: string;
 
   beforeAll(async () => {
     tmpDir = copyAppFixtureWithTrailingSlash("vinext-ts-true-", true);
-    ({ server, baseUrl } = await startServer(tmpDir));
+    ({ server, baseUrl } = await startFixtureServer(tmpDir));
   }, 60000);
 
   afterAll(async () => {
@@ -88,26 +75,24 @@ describe("App Router trailingSlash: true (#1332)", () => {
     expect(html).toContain("About");
   });
 
-  it("home page <Link> hrefs reflect trailingSlash: true", async () => {
+  it("home page <Link> renders href with a trailing slash", async () => {
     // app-basic's homepage has <Link href="/about">. Under trailingSlash: true
     // the rendered href should be normalised to "/about/".
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    // Look for the specific link that points at /about — must include the
-    // trailing slash now.
     expect(html).toMatch(/href="\/about\/"/);
   });
 });
 
-describe("App Router trailingSlash: false / default (#1332)", () => {
+describe("App Router trailingSlash: false (#1332)", () => {
   let tmpDir: string;
-  let server: Server;
+  let server: ViteDevServer;
   let baseUrl: string;
 
   beforeAll(async () => {
     tmpDir = copyAppFixtureWithTrailingSlash("vinext-ts-false-", false);
-    ({ server, baseUrl } = await startServer(tmpDir));
+    ({ server, baseUrl } = await startFixtureServer(tmpDir));
   }, 60000);
 
   afterAll(async () => {
@@ -128,7 +113,7 @@ describe("App Router trailingSlash: false / default (#1332)", () => {
     expect(html).toContain("About");
   });
 
-  it("home page <Link> hrefs lack a trailing slash", async () => {
+  it("home page <Link> renders href without a trailing slash", async () => {
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
     const html = await res.text();
