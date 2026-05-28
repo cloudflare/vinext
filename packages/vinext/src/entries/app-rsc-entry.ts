@@ -197,7 +197,7 @@ export function generateRscEntry(
     rootUnauthorizedVar,
     rootLayoutVars,
     globalErrorVar,
-    globalNotFoundVar,
+    globalNotFoundImportSpecifier,
   } = manifestCode;
   const loadPrerenderPagesRoutesCode = hasPagesDir
     ? `
@@ -395,12 +395,21 @@ const rootNotFoundModule = ${rootNotFoundVar ? rootNotFoundVar : "null"};
 const rootForbiddenModule = ${rootForbiddenVar ? rootForbiddenVar : "null"};
 const rootUnauthorizedModule = ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"};
 const rootLayouts = [${rootLayoutVars.join(", ")}];
-// Root-level app/global-not-found module. When present, route-miss 404s render
+// Root-level app/global-not-found loader. When present, route-miss 404s render
 // this module standalone (it provides its own html/body) instead of wrapping
 // the not-found.tsx boundary inside the root layout. Page-triggered notFound()
 // calls still use the regular not-found.tsx boundary inside the layouts.
+//
+// The module is loaded via dynamic \`import()\` (not a static \`import * as\`)
+// so the bundler emits it in its own JS+CSS chunk. Without that isolation,
+// global-not-found's CSS gets concatenated with the root layout's CSS into a
+// single file, where the CSS minifier (lightningcss) drops overlapping
+// declarations as dead code — breaking the cascade for route-miss 404s.
 // See https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
-const globalNotFoundModule = ${globalNotFoundVar ? globalNotFoundVar : "null"};
+// See Next.js test: test/e2e/app-dir/initial-css-order/initial-css-order.test.ts
+const __loadGlobalNotFoundModule = ${
+    globalNotFoundImportSpecifier ? `() => import(${globalNotFoundImportSpecifier})` : "null"
+  };
 
 const createRscOnErrorHandler = (request, pathname, routePath) =>
   createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
@@ -414,7 +423,7 @@ const __fallbackRenderer = __createAppFallbackRenderer({
     rootUnauthorizedModule,
   },
   globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
-  globalNotFoundModule,
+  loadGlobalNotFoundModule: __loadGlobalNotFoundModule,
   metadataRoutes,
   ssrLoader() {
     return import.meta.viteRsc.loadModule("ssr", "index");

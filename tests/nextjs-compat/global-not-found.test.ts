@@ -25,6 +25,25 @@ import { startFixtureServer, fetchHtml } from "../helpers.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "../fixtures/global-not-found-basic");
 
+/**
+ * Extract the href of every `<link rel="stylesheet">` tag in the SSR markup,
+ * preserving document order. CSS cascade is order-sensitive — for the
+ * initial-css-order regression we need to assert which stylesheet is emitted
+ * (and which is NOT) for route-miss 404s.
+ */
+function extractCssLinks(html: string): string[] {
+  const hrefs: string[] = [];
+  // The link tag emitted by React Float / @vitejs/plugin-rsc uses
+  // `rel="stylesheet"`. We only care about visible stylesheets, so skip
+  // preload/preconnect/etc.
+  const linkRe = /<link\b[^>]*\brel="stylesheet"[^>]*>/gi;
+  for (const m of html.matchAll(linkRe)) {
+    const hrefMatch = /\bhref="([^"]+)"/i.exec(m[0]);
+    if (hrefMatch) hrefs.push(hrefMatch[1]);
+  }
+  return hrefs;
+}
+
 describe("Next.js compat: global-not-found (basic)", () => {
   let server: ViteDevServer;
   let baseUrl: string;
@@ -70,6 +89,40 @@ describe("Next.js compat: global-not-found (basic)", () => {
     const bodyTags = (html.match(/<body/gi) ?? []).length;
     expect(htmlTags, `expected 1 <html> tag, got ${htmlTags}`).toBe(1);
     expect(bodyTags, `expected 1 <body> tag, got ${bodyTags}`).toBe(1);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/initial-css-order/initial-css-order.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/initial-css-order/initial-css-order.test.ts
+  //
+  // global-not-found.tsx replaces the root layout for route-miss 404s, so the
+  // response must serve ONLY global-not-found's CSS — not the layout's. If
+  // both stylesheets render on the 404 page the CSS cascade ends with the
+  // layout's rules (e.g., layout's green.css overrides global-not-found's
+  // red.css) and the document paints the wrong colours.
+  //
+  // The vinext fixture mirrors Next.js: layout.tsx imports red.css then
+  // green.css (so green wins on matched routes), and global-not-found.tsx
+  // imports red.css (so red wins on route-miss 404s).
+  // See: https://github.com/cloudflare/vinext/issues/1549
+  it("only emits global-not-found's CSS link on route-miss 404 (not the layout's)", async () => {
+    const homeResp = await fetchHtml(baseUrl, "/");
+    expect(homeResp.res.status).toBe(200);
+    // Matched routes load the layout's CSS chain. Matching upstream Next.js,
+    // both red.css and green.css are linked in import order so green wins.
+    const homeLinks = extractCssLinks(homeResp.html);
+    expect(homeLinks).toEqual([
+      expect.stringMatching(/red\.css/),
+      expect.stringMatching(/green\.css/),
+    ]);
+
+    const nfResp = await fetchHtml(baseUrl, "/does-not-exist");
+    expect(nfResp.res.status).toBe(404);
+    // The 404 response must NOT carry the root layout's CSS — the layout was
+    // skipped (skipLayoutWrapping) so its CSS imports must not appear in the
+    // SSR markup. Only global-not-found's red.css should be linked.
+    const nfLinks = extractCssLinks(nfResp.html);
+    expect(nfLinks).toEqual([expect.stringMatching(/red\.css/)]);
+    expect(nfLinks.some((href) => /green\.css/.test(href))).toBe(false);
   });
 
   // Ported from Next.js: test/e2e/app-dir/global-not-found/basic/global-not-found-basic.test.ts

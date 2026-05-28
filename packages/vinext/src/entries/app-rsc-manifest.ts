@@ -14,7 +14,27 @@ type AppRscManifestCode = {
   rootUnauthorizedVar: string | null;
   rootLayoutVars: string[];
   globalErrorVar: string | null;
-  globalNotFoundVar: string | null;
+  /**
+   * Path expression for the `app/global-not-found.{tsx,ts,js,jsx}` module
+   * suitable for embedding in a generated `import()` call (already JSON-encoded
+   * with platform path separators normalized). `null` when the user did not
+   * define `global-not-found.tsx`.
+   *
+   * We intentionally do NOT register this module as a static `import * as`
+   * in the manifest. Statically importing it puts global-not-found.tsx in
+   * the same JS chunk as the root layout, which causes the CSS bundler to
+   * concatenate their stylesheets into a single CSS file. The CSS minifier
+   * (lightningcss) then drops overlapping declarations as dead code, so any
+   * rule in global-not-found's CSS that the layout's CSS also defines gets
+   * silently removed — breaking the cascade on route-miss 404s where only
+   * global-not-found is supposed to render.
+   *
+   * By emitting a dynamic `import()` instead, the bundler gives
+   * global-not-found.tsx its own chunk with its own CSS asset.
+   *
+   * @see Next.js test: test/e2e/app-dir/initial-css-order/initial-css-order.test.ts
+   */
+  globalNotFoundImportSpecifier: string | null;
 };
 
 type BuildAppRscManifestCodeOptions = {
@@ -319,8 +339,11 @@ export function buildAppRscManifestCode(
   const globalErrorVar = options.globalErrorPath
     ? imports.getImportVar(options.globalErrorPath)
     : null;
-  const globalNotFoundVar = options.globalNotFoundPath
-    ? imports.getImportVar(options.globalNotFoundPath)
+  // Intentionally NOT registered as a static `import * as` — see the docstring
+  // on `AppRscManifestCode.globalNotFoundImportSpecifier` for the chunk/CSS
+  // isolation rationale. We emit a dynamic `import()` from the entry instead.
+  const globalNotFoundImportSpecifier = options.globalNotFoundPath
+    ? JSON.stringify(normalizePathSeparators(options.globalNotFoundPath))
     : null;
 
   const dynamicMetadataRoutes = metadataRoutes.filter((r) => r.isDynamic);
@@ -345,6 +368,6 @@ export function buildAppRscManifestCode(
     rootUnauthorizedVar,
     rootLayoutVars,
     globalErrorVar,
-    globalNotFoundVar,
+    globalNotFoundImportSpecifier,
   };
 }
