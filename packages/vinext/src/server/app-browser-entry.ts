@@ -659,7 +659,7 @@ function resolveActionRedirectTarget(
     const status = statusHeader ? parseInt(statusHeader, 10) : 307;
     return {
       href: redirectUrl.href,
-      type: response.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "replace",
+      type: response.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "push",
       status,
     };
   } catch {

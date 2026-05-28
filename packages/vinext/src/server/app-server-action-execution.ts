@@ -334,9 +334,9 @@ function applySetCookieMutationsToRequestCookieHeader(
     if (isExpiredSetCookie(setCookie)) {
       cookies.delete(entry.name);
     } else {
-      // Cookie header values are raw, not URL-encoded. The value from
-      // readSetCookieNameValue has already been decoded from the Set-Cookie
-      // header's URL-encoded form, so store it as-is.
+      // Cookie header values are raw (not URL-encoded), and
+      // readSetCookieNameValue extracts the value verbatim from the
+      // Set-Cookie header, so store it as-is.
       cookies.set(entry.name, entry.value);
     }
   }
