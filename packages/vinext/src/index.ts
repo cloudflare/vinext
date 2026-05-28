@@ -1179,6 +1179,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // See: https://github.com/vercel/next.js/pull/93997
         defines["process.env.__NEXT_APP_SHELLS"] = JSON.stringify(false);
 
+        // User-defined compile-time constants from `compiler.define` in
+        // next.config. Applied to BOTH client and server bundles via Vite's
+        // top-level `define`. Values are already JSON-stringified by
+        // resolveNextConfig (matching Webpack DefinePlugin semantics).
+        // Server-only `compiler.defineServer` entries are layered in below
+        // via `configEnvironment` so they never leak into the client bundle.
+        // See: https://nextjs.org/docs/app/api-reference/config/next-config-js/compiler#define
+        for (const [key, value] of Object.entries(nextConfig.compilerDefine)) {
+          defines[key] = value;
+        }
+
         // Build the shim alias map. Exact `.js` variants are included for the
         // public Next entrypoints that are file-backed in `next/package.json`.
         // Some libraries (for example `nuqs`) import `next/navigation.js`
@@ -3476,6 +3487,32 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (!result) return null;
           return { code: result, map: null };
         },
+      },
+    },
+    // Inject `compiler.defineServer` substitutions into server environments
+    // only. The universal `compiler.define` map is already merged into the
+    // top-level Vite `define` config above, so it applies to both client
+    // and server bundles. `defineServer` MUST NOT leak into the browser
+    // bundle (it can contain secrets), so we layer it in via the
+    // per-environment `define` hook, which Vite merges over the top-level
+    // value for that environment only.
+    //
+    // Mirrors Next.js: packages/next/src/build/define-env.ts — the
+    // `defineServer` entries are only added to the `nodejs` / `edge`
+    // serialized define environments, never to `client`.
+    //
+    // Returning `null`/`undefined` means "no change"; the explicit empty
+    // check keeps the hook a no-op when the user never configured it.
+    {
+      name: "vinext:compiler-define-server",
+      configEnvironment(name) {
+        if (Object.keys(nextConfig.compilerDefineServer).length === 0) return null;
+        // The client environment is never given the server-only defines.
+        // All other environments (rsc, ssr, custom worker envs, etc.) are
+        // server-side per Vite's `consumer: "server"` default and receive
+        // the substitutions.
+        if (name === "client") return null;
+        return { define: { ...nextConfig.compilerDefineServer } };
       },
     },
     // Local image import transform:

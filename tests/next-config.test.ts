@@ -912,6 +912,66 @@ describe("resolveNextConfig removeConsole", () => {
   });
 });
 
+// Ported from Next.js: test/e2e/define/define.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/define/define.test.ts
+describe("resolveNextConfig compiler.define / defineServer", () => {
+  it("defaults to empty maps when `compiler` is unset", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.compilerDefine).toEqual({});
+    expect(resolved.compilerDefineServer).toEqual({});
+  });
+
+  it("JSON-stringifies string, number, and boolean values for `define`", async () => {
+    const resolved = await resolveNextConfig({
+      compiler: {
+        define: {
+          MY_MAGIC_VARIABLE: "foobar",
+          "process.env.MY_MAGIC_EXPR": "barbaz",
+          MY_NUMBER_VARIABLE: 42,
+          MY_BOOLEAN_VARIABLE: true,
+        },
+      },
+    });
+    expect(resolved.compilerDefine).toEqual({
+      MY_MAGIC_VARIABLE: '"foobar"',
+      "process.env.MY_MAGIC_EXPR": '"barbaz"',
+      MY_NUMBER_VARIABLE: "42",
+      MY_BOOLEAN_VARIABLE: "true",
+    });
+    expect(resolved.compilerDefineServer).toEqual({});
+  });
+
+  it("JSON-stringifies values for `defineServer` and keeps them separate from `define`", async () => {
+    const resolved = await resolveNextConfig({
+      compiler: {
+        define: { CLIENT_SAFE: "shared" },
+        defineServer: {
+          MY_SERVER_VARIABLE: "server",
+          "process.env.MY_MAGIC_SERVER_EXPR": "serverbarbaz",
+        },
+      },
+    });
+    expect(resolved.compilerDefine).toEqual({ CLIENT_SAFE: '"shared"' });
+    expect(resolved.compilerDefineServer).toEqual({
+      MY_SERVER_VARIABLE: '"server"',
+      "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
+    });
+  });
+
+  it("ignores entries whose values are not string/number/boolean", async () => {
+    const resolved = await resolveNextConfig({
+      compiler: {
+        // oxlint-disable-next-line typescript/no-explicit-any
+        define: { OK: "yes", BAD_OBJ: { nope: 1 } as any, BAD_NULL: null as any },
+        // oxlint-disable-next-line typescript/no-explicit-any
+        defineServer: { OK_SRV: 1, BAD_ARR: [1, 2] as any },
+      },
+    });
+    expect(resolved.compilerDefine).toEqual({ OK: '"yes"' });
+    expect(resolved.compilerDefineServer).toEqual({ OK_SRV: "1" });
+  });
+});
+
 describe("resolveNextConfig htmlLimitedBots", () => {
   it("serializes RegExp config values to their source", async () => {
     const resolved = await resolveNextConfig({ htmlLimitedBots: /Minibot/i });
@@ -1034,6 +1094,8 @@ describe("detectNextIntlConfig", () => {
       sassOptions: null,
       removeConsole: false,
       disableOptimizedLoading: false,
+      compilerDefine: {},
+      compilerDefineServer: {},
       instrumentationClientInject: [],
       ...overrides,
     };

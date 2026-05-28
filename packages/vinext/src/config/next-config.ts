@@ -254,6 +254,17 @@ export type NextConfig = {
   compiler?: {
     /** Remove `console.*` calls from the client bundle. */
     removeConsole?: boolean | { exclude?: string[] };
+    /**
+     * Inline compile-time constants in both client and server bundles.
+     * Mirrors Next.js `compiler.define`.
+     * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/compiler#define
+     */
+    define?: Record<string, string | number | boolean>;
+    /**
+     * Inline compile-time constants in server bundles only (not client).
+     * Mirrors Next.js `compiler.defineServer`.
+     */
+    defineServer?: Record<string, string | number | boolean>;
   };
   /**
    * Path to a custom cache handler module (e.g., KV, Redis, DynamoDB).
@@ -393,6 +404,26 @@ export type ResolvedNextConfig = {
    * `test/e2e/optimized-loading` test fixture.
    */
   disableOptimizedLoading: boolean;
+  /**
+   * Build-time constant replacement map applied to BOTH client and server
+   * bundles. Sourced from `compiler.define` in next.config. Values are
+   * pre-serialized via `JSON.stringify` so they can be fed straight into
+   * Vite's `define` config (which expects strings of source code).
+   *
+   * Mirrors Next.js — strings, numbers, and booleans are accepted; other
+   * value shapes are dropped.
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/compiler#define
+   */
+  compilerDefine: Record<string, string>;
+  /**
+   * Build-time constant replacement map applied to SERVER bundles only
+   * (RSC + SSR + middleware). Sourced from `compiler.defineServer` in
+   * next.config. Same serialization rules as `compilerDefine`. Client
+   * bundles intentionally never see these substitutions, so referencing
+   * a `defineServer` identifier from the browser stays as the raw
+   * identifier (typically resolving to `undefined`).
+   */
+  compilerDefineServer: Record<string, string>;
 };
 
 // Mirrors Next.js's accepted set in packages/next/src/shared/lib/constants.ts
@@ -987,6 +1018,26 @@ function readStringArray(value: unknown): string[] {
 }
 
 /**
+ * Serialize a `compiler.define` / `compiler.defineServer` map into the
+ * Vite-friendly `Record<string, string>` shape where each value is already
+ * a JSON-encoded literal of source code. Entries whose values are not a
+ * string/number/boolean are silently dropped, matching how Next.js types
+ * the API (other shapes are not part of the contract).
+ *
+ * Mirrors Next.js: packages/next/src/build/define-env.ts (serializeDefineEnv).
+ */
+function serializeCompilerDefine(value: unknown): Record<string, string> {
+  if (!isUnknownRecord(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw === "string" || typeof raw === "number" || typeof raw === "boolean") {
+      out[key] = JSON.stringify(raw);
+    }
+  }
+  return out;
+}
+
+/**
  * Resolve a NextConfig into a fully-resolved ResolvedNextConfig.
  * Awaits async functions for redirects/rewrites/headers.
  */
@@ -1028,6 +1079,8 @@ export async function resolveNextConfig(
       sassOptions: null,
       removeConsole: false,
       disableOptimizedLoading: false,
+      compilerDefine: {},
+      compilerDefineServer: {},
       instrumentationClientInject: [],
     };
     detectNextIntlConfig(root, resolved);
@@ -1254,6 +1307,8 @@ export async function resolveNextConfig(
     // Next.js stores this under `experimental.disableOptimizedLoading`.
     // Default `false` matches Next.js: page scripts get `defer` in <head>.
     disableOptimizedLoading: experimental?.disableOptimizedLoading === true,
+    compilerDefine: serializeCompilerDefine(config.compiler?.define),
+    compilerDefineServer: serializeCompilerDefine(config.compiler?.defineServer),
   };
 
   // Auto-detect next-intl (lowest priority — explicit aliases from
