@@ -17321,7 +17321,67 @@ describe("cache scope guards for dynamic APIs", () => {
     setHeadersContext(null);
   });
 
-  it('draftMode() throws inside "use cache" scope', async () => {
+  // Ported from Next.js: packages/next/src/server/request/draft-mode.ts
+  // (`getDraftModeProviderForCacheScope` + `trackDynamicDraftMode`).
+  // Reading `draftMode()` / `.isEnabled` is allowed inside cache scopes;
+  // only the mutating `enable()` / `disable()` methods throw. Issue #1489.
+  it('draftMode().isEnabled reads inside "use cache" scope', async () => {
+    const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { draftMode, setHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+
+    setHeadersContext({
+      headers: new Headers({ cookie: "__prerender_bypass=test-secret" }),
+      cookies: new Map([["__prerender_bypass", "test-secret"]]),
+      draftModeSecret: "test-secret",
+    });
+
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        const dm = await draftMode();
+        expect(dm.isEnabled).toBe(true);
+      },
+    );
+
+    setHeadersContext(null);
+  });
+
+  it("draftMode().isEnabled reads inside unstable_cache() scope", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { draftMode, setHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+    setHeadersContext({
+      headers: new Headers({ cookie: "__prerender_bypass=test-secret" }),
+      cookies: new Map([["__prerender_bypass", "test-secret"]]),
+      draftModeSecret: "test-secret",
+    });
+
+    let observed: boolean | undefined;
+    const cached = unstable_cache(async () => {
+      const dm = await draftMode();
+      observed = dm.isEnabled;
+      return observed;
+    }, ["test-draftmode-in-cache"]);
+
+    await expect(cached()).resolves.toBe(true);
+    expect(observed).toBe(true);
+
+    setHeadersContext(null);
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it('draftMode().enable() throws inside "use cache" scope', async () => {
     const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
     const { draftMode, setHeadersContext } =
       await import("../packages/vinext/src/shims/headers.js");
@@ -17338,14 +17398,16 @@ describe("cache scope guards for dynamic APIs", () => {
         dynamicNestedCacheError: undefined,
       },
       async () => {
-        await expect(draftMode()).rejects.toThrow(/cannot be called inside "use cache"/);
+        const dm = await draftMode();
+        expect(() => dm.enable()).toThrow(/cannot be called inside "use cache"/);
+        expect(() => dm.disable()).toThrow(/cannot be called inside "use cache"/);
       },
     );
 
     setHeadersContext(null);
   });
 
-  it("draftMode() throws inside unstable_cache() scope", async () => {
+  it("draftMode().enable() throws inside unstable_cache() scope", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
     const { draftMode, setHeadersContext } =
@@ -17355,8 +17417,9 @@ describe("cache scope guards for dynamic APIs", () => {
     setHeadersContext({ headers: new Headers(), cookies: new Map() });
 
     const cached = unstable_cache(async () => {
-      await draftMode();
-    }, ["test-draftmode-in-cache"]);
+      const dm = await draftMode();
+      dm.enable();
+    }, ["test-draftmode-enable-in-cache"]);
 
     await expect(cached()).rejects.toThrow(/unstable_cache/);
 

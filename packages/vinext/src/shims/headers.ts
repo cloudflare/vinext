@@ -907,10 +907,16 @@ function requireActiveDraftModeContext(
  * - `isEnabled`: true if the bypass cookie is present in the request
  * - `enable()`: sets the bypass cookie (for Route Handlers)
  * - `disable()`: clears the bypass cookie
+ *
+ * Unlike `headers()` / `cookies()`, calling `draftMode()` itself is allowed
+ * inside `"use cache"` and `unstable_cache()` scopes — reads of `isEnabled`
+ * are non-dynamic and supported in cached functions. Only the mutating
+ * `enable()` / `disable()` methods throw when invoked inside a cache scope.
+ * Ported from Next.js: packages/next/src/server/request/draft-mode.ts
+ * (`getDraftModeProviderForCacheScope` + `trackDynamicDraftMode`).
  */
 export async function draftMode(): Promise<DraftModeResult> {
   markRenderRequestApiUsage("draftMode");
-  throwIfInsideCacheScope("draftMode()");
 
   const state = _getState();
   const context = state.headersContext;
@@ -932,12 +938,16 @@ export async function draftMode(): Promise<DraftModeResult> {
       return context.cookies.get(DRAFT_MODE_COOKIE) === secret;
     },
     enable(): void {
+      // Mutating draft mode inside a cache scope would freeze a Set-Cookie
+      // side-effect into the cached entry, so Next.js throws here. Match that.
+      throwIfInsideCacheScope("draftMode().enable()");
       const activeContext = requireActiveDraftModeContext(state, context, "draftMode().enable()");
       markDynamicUsage();
       activeContext.cookies.set(DRAFT_MODE_COOKIE, secret);
       state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=${secret}; ${draftModeCookieAttributes()}`;
     },
     disable(): void {
+      throwIfInsideCacheScope("draftMode().disable()");
       const activeContext = requireActiveDraftModeContext(state, context, "draftMode().disable()");
       markDynamicUsage();
       activeContext.cookies.delete(DRAFT_MODE_COOKIE);
