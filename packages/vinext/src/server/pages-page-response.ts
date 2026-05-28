@@ -32,11 +32,30 @@ type PagesStreamedHtmlResponse = {
   __vinextStreamedHtmlResponse?: boolean;
 } & Response;
 
+type EnhancePageElementOptions = {
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+  enhanceApp?: (App: ComponentType<{ children?: ReactNode }>) => any;
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+  enhanceComponent?: (Comp: ComponentType<unknown>) => any;
+};
+
 type RenderPagesPageResponseOptions = {
   assetTags: string;
   buildId: string | null;
   clearSsrContext: () => void;
   createPageElement: (pageProps: Record<string, unknown>) => ReactNode;
+  /**
+   * Build the page React tree with optional App/Component enhancers applied,
+   * supporting the Pages Router `_document.getInitialProps` contract:
+   *
+   *   ctx.renderPage({ enhanceApp, enhanceComponent })
+   *
+   * Used by CSS-in-JS libraries (styled-components, emotion) to wrap the
+   * App/Component tree so styles can be collected during SSR. When omitted,
+   * `renderPage` falls back to rendering the plain `createPageElement` tree
+   * (enhancers are ignored).
+   */
+  enhancePageElement?: ((opts: EnhancePageElementOptions) => ReactNode) | undefined;
   DocumentComponent: ComponentType | null;
   flushPreloads?: (() => Promise<void> | void) | undefined;
   fontLinkHeader: string;
@@ -311,6 +330,101 @@ function applyGsspHeaders(
   return statusCode ?? gsspRes.statusCode;
 }
 
+/**
+ * Run a user `_document.getInitialProps()` with a `ctx.renderPage()` that
+ * applies optional `enhanceApp` / `enhanceComponent` wrappers around the
+ * page React tree, mirroring Next.js's Pages Router contract.
+ *
+ * @see .nextjs-ref/packages/next/src/server/render.tsx (search `renderPage`)
+ *
+ * Returns the body HTML (rendered into a single string so the user's
+ * `_document.getInitialProps` resolves before we build the document shell)
+ * and any extra `head`/`styles` nodes the document wants merged into the
+ * head. When the user does not define `getInitialProps`, or no
+ * `enhancePageElement` callback is wired up, returns `null` so the streaming
+ * fallback path runs unchanged.
+ */
+async function runDocumentGetInitialProps(options: RenderPagesPageResponseOptions): Promise<{
+  bodyHtml: string;
+  headFromDocument: ReactNode[];
+  stylesFromDocument: ReactNode;
+} | null> {
+  const DocCtor = options.DocumentComponent as
+    | (ComponentType & {
+        getInitialProps?: (ctx: unknown) => Promise<{
+          html: string;
+          head?: ReactNode[];
+          styles?: ReactNode;
+        }>;
+      })
+    | null;
+  if (!DocCtor || typeof DocCtor.getInitialProps !== "function") return null;
+  if (!options.enhancePageElement) return null;
+
+  let renderPageCalled = false;
+  const renderPage = async (
+    renderPageOptions: EnhancePageElementOptions = {},
+  ): Promise<{ html: string; head?: ReactNode[] }> => {
+    renderPageCalled = true;
+    const enhancedElement = options.enhancePageElement!(renderPageOptions);
+    const wrapped = withScriptNonce(
+      React.createElement(React.Fragment, null, enhancedElement),
+      options.scriptNonce,
+    );
+    const stream = await options.renderToReadableStream(wrapped);
+    const html = await readStreamAsText(stream);
+    return { html, head: [] };
+  };
+
+  let docInitialProps: { html: string; head?: ReactNode[]; styles?: ReactNode };
+  try {
+    docInitialProps = await DocCtor.getInitialProps({
+      // Minimal `DocumentContext` shim — vinext does not yet thread the full
+      // context (req/res/AppTree/locale). Subclasses that just forward to
+      // `ctx.renderPage` (the styled-components / emotion pattern) work
+      // without those fields.
+      renderPage,
+      pathname: options.routePattern,
+      query: options.params,
+      asPath: options.routeUrl,
+      defaultGetInitialProps: async (ctx: { renderPage?: typeof renderPage }) => {
+        // Mirrors Next.js's `ctx.defaultGetInitialProps`: wrap App in an
+        // identity enhancer so renderPage is still invoked even when a user
+        // doesn't pass any enhancers themselves.
+        const inner = ctx.renderPage ?? renderPage;
+        const result = await inner({
+          // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+          enhanceApp: (App) => (props: any) => React.createElement(App, props),
+        });
+        return { html: result.html, head: result.head ?? [], styles: undefined };
+      },
+    });
+  } catch (err) {
+    console.error("[vinext] _document.getInitialProps() threw:", err);
+    return null;
+  }
+
+  // If the user implemented getInitialProps but never invoked renderPage
+  // (uncommon — but possible if they only return head/styles), still fall
+  // back to the streaming render so the body content is produced normally.
+  if (!renderPageCalled) {
+    return null;
+  }
+
+  if (!docInitialProps || typeof docInitialProps.html !== "string") {
+    console.error(
+      `[vinext] "${DocCtor.displayName ?? DocCtor.name ?? "Document"}.getInitialProps()" did not return an object with a string "html" prop`,
+    );
+    return null;
+  }
+
+  return {
+    bodyHtml: docInitialProps.html,
+    headFromDocument: Array.isArray(docInitialProps.head) ? docInitialProps.head : [],
+    stylesFromDocument: docInitialProps.styles,
+  };
+}
+
 export async function renderPagesPageResponse(
   options: RenderPagesPageResponseOptions,
 ): Promise<Response> {
@@ -340,12 +454,32 @@ export async function renderPagesPageResponse(
     vinext: options.vinext,
   });
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
-  // Render the page FIRST so that <Head> and other SSR state collectors
-  // (e.g. styled-jsx, useServerInsertedHTML) are populated before we read
-  // them. This fixes a race condition where head styles were silently dropped
-  // because they were collected before the page had finished rendering.
-  // Mirrors Next.js fix: vercel/next.js@9853944
-  const bodyStream = await options.renderToReadableStream(pageElement);
+
+  // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
+  // via `ctx.renderPage({ enhanceApp, enhanceComponent })` (e.g. for
+  // styled-components / emotion style collection). When that contract is in
+  // use the body must be a single complete string before `_document` renders
+  // — Next.js does this in `loadDocumentInitialProps` and we mirror it here.
+  // The streaming path stays as the default for the common case where the
+  // user does not define `getInitialProps`.
+  const documentInitialProps = await runDocumentGetInitialProps(options);
+
+  let bodyStream: ReadableStream<Uint8Array>;
+  if (documentInitialProps) {
+    bodyStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(documentInitialProps.bodyHtml));
+        controller.close();
+      },
+    });
+  } else {
+    // Render the page FIRST so that <Head> and other SSR state collectors
+    // (e.g. styled-jsx, useServerInsertedHTML) are populated before we read
+    // them. This fixes a race condition where head styles were silently dropped
+    // because they were collected before the page had finished rendering.
+    // Mirrors Next.js fix: vercel/next.js@9853944
+    bodyStream = await options.renderToReadableStream(pageElement);
+  }
 
   const headFromShim = options.getSSRHeadHTML?.() ?? "";
   // Trace meta tags from the active OpenTelemetry context. When the
@@ -353,7 +487,24 @@ export async function renderPagesPageResponse(
   // `getClientTraceMetadataHTML` returns "" and we forward the head HTML
   // verbatim — keeping the no-op path zero-overhead.
   const traceMetaHTML = getClientTraceMetadataHTML(options.clientTraceMetadata);
-  const ssrHeadHTML = traceMetaHTML ? `${headFromShim}\n  ${traceMetaHTML}` : headFromShim;
+  // Render `styles` returned by `_document.getInitialProps()` (e.g. the
+  // collected styled-components / emotion <style> tags) to a string and
+  // append to the SSR head. Matches Next.js's render.tsx where `styles`
+  // flows into the final document head. Failures are swallowed so a buggy
+  // styles element doesn't crash the entire page render.
+  let documentStylesHTML = "";
+  if (documentInitialProps?.stylesFromDocument != null) {
+    try {
+      documentStylesHTML = await options.renderDocumentToString(
+        React.createElement(React.Fragment, null, documentInitialProps.stylesFromDocument),
+      );
+    } catch (err) {
+      console.error("[vinext] Failed to render _document.getInitialProps() styles:", err);
+    }
+  }
+  let ssrHeadHTML = headFromShim;
+  if (traceMetaHTML) ssrHeadHTML += `\n  ${traceMetaHTML}`;
+  if (documentStylesHTML) ssrHeadHTML += `\n  ${documentStylesHTML}`;
   const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
     assetTags: options.assetTags,
     DocumentComponent: options.DocumentComponent,

@@ -108,6 +108,24 @@ async function streamPageToResponse(
     extraHeaders?: Record<string, string | string[]>;
     /** Called after renderToReadableStream resolves (shell ready) to collect head HTML */
     getHeadHTML: () => string;
+    /**
+     * Build the React tree with optional App/Component enhancers applied.
+     * Used by the Pages Router `_document.getInitialProps` contract:
+     *
+     *   ctx.renderPage({ enhanceApp, enhanceComponent })
+     *
+     * When provided alongside a `DocumentComponent.getInitialProps`, the
+     * body is rendered to a string inside `renderPage` (mirroring Next.js's
+     * `loadDocumentInitialProps`) so CSS-in-JS libraries can collect styles.
+     */
+    enhancePageElement?:
+      | ((opts: {
+          // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+          enhanceApp?: (App: React.ComponentType<{ children?: React.ReactNode }>) => any;
+          // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+          enhanceComponent?: (Comp: React.ComponentType<unknown>) => any;
+        }) => React.ReactElement)
+      | undefined;
   },
 ): Promise<void> {
   const {
@@ -119,15 +137,103 @@ async function streamPageToResponse(
     statusCode = 200,
     extraHeaders,
     getHeadHTML,
+    enhancePageElement,
   } = options;
 
-  // Start the React body stream FIRST — the promise resolves when the
-  // shell is ready (synchronous content outside Suspense boundaries).
-  // This triggers the render which populates <Head> tags.
-  const bodyStream = await renderToReadableStream(element);
+  // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
+  // via `ctx.renderPage({ enhanceApp, enhanceComponent })` (e.g. styled-
+  // components / emotion style collection). When that contract is in use the
+  // body must be a single complete string before `_document` renders. The
+  // streaming path stays as the default for the common case.
+  //
+  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+  const DocCtor = DocumentComponent as any;
+  let documentBodyHtml: string | null = null;
+  let documentStylesHTML = "";
+  if (
+    DocCtor &&
+    typeof DocCtor.getInitialProps === "function" &&
+    typeof enhancePageElement === "function"
+  ) {
+    try {
+      const renderPage = async (
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+        renderPageOpts: any = {},
+      ): Promise<{ html: string; head: React.ReactNode[] }> => {
+        const enhanced = enhancePageElement(renderPageOpts);
+        const stream = await renderToReadableStream(enhanced);
+        const reader = stream.getReader();
+        const decoder = new TextDecoder();
+        let html = "";
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            html += decoder.decode(value, { stream: true });
+          }
+          html += decoder.decode();
+        } finally {
+          reader.releaseLock();
+        }
+        return { html, head: [] };
+      };
+      let renderPageCalled = false;
+      const wrappedRenderPage = async (
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+        opts: any = {},
+      ) => {
+        renderPageCalled = true;
+        return renderPage(opts);
+      };
+      const docInitialProps = await DocCtor.getInitialProps({
+        renderPage: wrappedRenderPage,
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+        defaultGetInitialProps: async (ctx: any) => {
+          const inner = ctx?.renderPage ?? wrappedRenderPage;
+          // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+          const result = await inner({
+            // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+            enhanceApp: (App: any) => (props: any) => React.createElement(App, props),
+          });
+          return { html: result.html, head: result.head ?? [], styles: undefined };
+        },
+      });
+      if (renderPageCalled && docInitialProps && typeof docInitialProps.html === "string") {
+        documentBodyHtml = docInitialProps.html;
+        if (docInitialProps.styles != null) {
+          try {
+            documentStylesHTML = await renderToStringAsync(
+              React.createElement(React.Fragment, null, docInitialProps.styles),
+            );
+          } catch (err) {
+            console.error("[vinext] Failed to render _document.getInitialProps() styles:", err);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[vinext] _document.getInitialProps() threw:", err);
+    }
+  }
+
+  let bodyStream: ReadableStream<Uint8Array>;
+  if (documentBodyHtml !== null) {
+    const synthesised = documentBodyHtml;
+    bodyStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(synthesised));
+        controller.close();
+      },
+    });
+  } else {
+    // Start the React body stream FIRST — the promise resolves when the
+    // shell is ready (synchronous content outside Suspense boundaries).
+    // This triggers the render which populates <Head> tags.
+    bodyStream = await renderToReadableStream(element);
+  }
 
   // Now that the shell has rendered, collect head HTML
-  const headHTML = getHeadHTML();
+  let headHTML = getHeadHTML();
+  if (documentStylesHTML) headHTML += `\n  ${documentStylesHTML}`;
 
   // Build the document shell with a placeholder for the body
   let shellTemplate: string;
@@ -1182,6 +1288,35 @@ hydrate();
           DocumentComponent,
           statusCode,
           extraHeaders,
+          // Used by `_document.getInitialProps` -> `ctx.renderPage` to wrap
+          // App/Component with user enhancers (e.g. styled-components,
+          // emotion). The streaming path otherwise renders `element` as-is.
+          // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+          enhancePageElement: (renderPageOpts: any) => {
+            // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+            let FinalApp: any = AppComponent;
+            // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+            let FinalComp: any = PageComponent;
+            if (renderPageOpts && typeof renderPageOpts.enhanceApp === "function" && FinalApp) {
+              FinalApp = renderPageOpts.enhanceApp(FinalApp);
+            }
+            if (renderPageOpts && typeof renderPageOpts.enhanceComponent === "function") {
+              FinalComp = renderPageOpts.enhanceComponent(FinalComp);
+            }
+            let enhancedElement: React.ReactElement;
+            if (FinalApp) {
+              enhancedElement = createElement(FinalApp, {
+                Component: FinalComp,
+                pageProps,
+              });
+            } else {
+              enhancedElement = createElement(FinalComp, pageProps);
+            }
+            if (wrapWithRouterContext) {
+              enhancedElement = wrapWithRouterContext(enhancedElement);
+            }
+            return withScriptNonce(enhancedElement, scriptNonce);
+          },
           // Collect head HTML AFTER the shell renders (inside streamPageToResponse,
           // after renderToReadableStream resolves). Head tags from Suspense
           // children arrive late — this matches Next.js behavior.

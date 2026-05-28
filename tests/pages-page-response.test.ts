@@ -419,4 +419,91 @@ describe("pages page response", () => {
     expect(common.renderIsrPassToStringAsync).not.toHaveBeenCalled();
     expect(common.isrSet).not.toHaveBeenCalled();
   });
+
+  // Regression test for #1468: custom `_document.getInitialProps` that wraps
+  // `ctx.renderPage({ enhanceApp, enhanceComponent })` (e.g. for
+  // styled-components, emotion) must run the enhancers around the page tree.
+  //
+  // Mirrors the contract in Next.js render.tsx (search `renderPage`) and the
+  // styled-components integration test in
+  // .nextjs-ref/test/development/basic/styled-components/pages/_document.js
+  it("invokes _document.getInitialProps with a renderPage that runs enhanceApp/enhanceComponent", async () => {
+    const common = createCommonOptions();
+    const calls: string[] = [];
+
+    // Custom Document.getInitialProps that wraps renderPage with enhancers,
+    // styled-components style.
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      renderPage: (opts?: {
+        enhanceApp?: (App: React.ComponentType<{ children?: React.ReactNode }>) => unknown;
+        enhanceComponent?: (Comp: React.ComponentType<unknown>) => unknown;
+      }) => Promise<{ html: string; head?: React.ReactNode[] }> | { html: string };
+    }) => {
+      calls.push("getInitialProps");
+      const result = await ctx.renderPage({
+        enhanceApp: (App) => {
+          calls.push("enhanceApp");
+          return (props: { children?: React.ReactNode }) =>
+            React.createElement(
+              "div",
+              { "data-enhanced-app": "true" },
+              React.createElement(App, props),
+            );
+        },
+        enhanceComponent: (Comp) => {
+          calls.push("enhanceComponent");
+          return Comp;
+        },
+      });
+      return { html: result.html, head: [] };
+    };
+
+    // The enhancePageElement option exposes App/Component separation to the
+    // SSR pipeline so the renderPage closure can rewrap them.
+    function App({ children }: { children?: React.ReactNode }) {
+      return React.createElement("section", { "data-app": "true" }, children);
+    }
+    function Page() {
+      return React.createElement("p", null, "page");
+    }
+    const enhancePageElement = vi.fn(
+      (opts: {
+        enhanceApp?: (App: React.ComponentType<{ children?: React.ReactNode }>) => unknown;
+        enhanceComponent?: (Comp: React.ComponentType<unknown>) => unknown;
+      }) => {
+        const FinalApp = opts.enhanceApp
+          ? (opts.enhanceApp(App) as React.ComponentType<{ children?: React.ReactNode }>)
+          : App;
+        const FinalComp = opts.enhanceComponent
+          ? (opts.enhanceComponent(Page) as React.ComponentType<unknown>)
+          : Page;
+        return React.createElement(FinalApp, null, React.createElement(FinalComp, null));
+      },
+    );
+
+    // Use the real React renderer so the enhanced element actually
+    // renders into the body — the default mock returns a fixed string.
+    const reactDomServer = await import("react-dom/server.edge");
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: MyDocument as unknown as React.ComponentType,
+      enhancePageElement,
+      renderToReadableStream: async (element: React.ReactNode) =>
+        await reactDomServer.renderToReadableStream(element as React.ReactElement),
+    });
+
+    const html = await response.text();
+    // Both enhancers ran during renderPage.
+    expect(calls).toContain("getInitialProps");
+    expect(calls).toContain("enhanceApp");
+    expect(calls).toContain("enhanceComponent");
+    // The enhanced tree appears in the body (renderPage returned its html).
+    expect(html).toContain('data-enhanced-app="true"');
+    expect(html).toContain('data-app="true"');
+    expect(html).toContain("<p>page</p>");
+    expect(enhancePageElement).toHaveBeenCalledTimes(1);
+  });
 });

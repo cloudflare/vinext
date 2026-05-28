@@ -902,6 +902,26 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
           }
           return wrapWithRouterContext(currentElement);
         },
+        // Used by \`_document.getInitialProps\` -> \`ctx.renderPage\` to wrap
+        // App/Component with user-provided enhancers (e.g. styled-components,
+        // emotion). Falls back to identity when no enhancers are passed.
+        enhancePageElement(renderPageOpts) {
+          var FinalApp = AppComponent;
+          var FinalComp = PageComponent;
+          if (renderPageOpts && typeof renderPageOpts.enhanceApp === "function" && FinalApp) {
+            FinalApp = renderPageOpts.enhanceApp(FinalApp);
+          }
+          if (renderPageOpts && typeof renderPageOpts.enhanceComponent === "function") {
+            FinalComp = renderPageOpts.enhanceComponent(FinalComp);
+          }
+          var enhancedElement;
+          if (FinalApp) {
+            enhancedElement = React.createElement(FinalApp, { Component: FinalComp, pageProps: pageProps });
+          } else {
+            enhancedElement = React.createElement(FinalComp, pageProps);
+          }
+          return wrapWithRouterContext(enhancedElement);
+        },
         DocumentComponent,
         flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
         fontLinkHeader: _fontLinkHeader,
