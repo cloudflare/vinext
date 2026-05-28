@@ -44,6 +44,7 @@ import {
   resolveAppPageRouteStateKey,
   resolveAppPageSegmentStateKey,
 } from "./app-page-segment-state.js";
+import type { AppPageRenderIdentity } from "./app-page-render-identity.js";
 
 export { resolveAppPageChildSegments } from "./app-page-segment-state.js";
 
@@ -171,6 +172,7 @@ type BuildAppPageElementsOptions<
   interceptionContext?: string | null;
   isRscRequest?: boolean;
   mountedSlotIds?: ReadonlySet<string> | null;
+  renderIdentity?: AppPageRenderIdentity;
   renderMode?: AppRscRenderMode;
   routePath: string;
 };
@@ -390,12 +392,17 @@ export function buildAppPageElements<
   TModule extends AppPageModule,
   TErrorModule extends AppPageErrorModule,
 >(options: BuildAppPageElementsOptions<TModule, TErrorModule>): AppElements {
-  const interceptionContext = options.interceptionContext ?? null;
+  const renderIdentity = options.renderIdentity;
+  const interceptionContext =
+    renderIdentity?.interceptionContext ?? options.interceptionContext ?? null;
   const renderMode = options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION;
   const routeSegments = options.route.routeSegments ?? [];
   const routeResetKey = resolveAppPageRouteStateKey(routeSegments, options.matchedParams);
-  const routeId = AppElementsWire.encodeRouteId(options.routePath, interceptionContext);
-  const pageId = AppElementsWire.encodePageId(options.routePath, interceptionContext);
+  const routeId =
+    renderIdentity?.routeId ??
+    AppElementsWire.encodeRouteId(options.routePath, interceptionContext);
+  const pageId =
+    renderIdentity?.pageId ?? AppElementsWire.encodePageId(options.routePath, interceptionContext);
   const layoutEntries = createAppPageLayoutEntries(options.route);
   const templateEntries = createAppPageTemplateEntries(options.route);
   const errorEntries = createAppPageErrorEntries(options.route);
@@ -454,7 +461,7 @@ export function buildAppPageElements<
     ReactNode | string | null | AppElementsInterception | readonly AppElementsSlotBinding[]
   > = {
     ...AppElementsWire.createMetadataEntries({
-      interception: options.interception ?? null,
+      interception: renderIdentity?.interception ?? options.interception ?? null,
       interceptionContext,
       layoutIds: options.route.ids?.layouts ?? layoutEntries.map((entry) => entry.id),
       rootLayoutTreePath,
