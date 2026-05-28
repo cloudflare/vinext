@@ -651,9 +651,7 @@ describe("Head client reconciliation", () => {
       if (selector !== "meta[charset]") {
         throw new Error(`FakeHead.querySelector only supports meta[charset]`);
       }
-      return (
-        this.children.find((c) => c.tagName === "META" && c.hasAttribute("charset")) ?? null
-      );
+      return this.children.find((c) => c.tagName === "META" && c.hasAttribute("charset")) ?? null;
     }
   }
 
@@ -819,9 +817,7 @@ describe("Head client reconciliation", () => {
     const doc = createFakeDocument();
     // Pre-existing managed link/script to ensure prepend (not append) is
     // exercised — appendChild would land it after them.
-    _reconcileClientHead(doc, [
-      React.createElement("link", { rel: "stylesheet", href: "/a.css" }),
-    ]);
+    _reconcileClientHead(doc, [React.createElement("link", { rel: "stylesheet", href: "/a.css" })]);
     expect(doc.head.children).toHaveLength(1);
 
     _reconcileClientHead(doc, [
@@ -882,8 +878,7 @@ describe("isEqualHeadNode", () => {
 
   // Capture the original HTMLElement once (before our beforeEach ever runs)
   // so afterAll restores the env even after multiple installs.
-  const originalHTMLElement = (globalThis as { HTMLElement?: typeof HTMLElement })
-    .HTMLElement;
+  const originalHTMLElement = (globalThis as { HTMLElement?: typeof HTMLElement }).HTMLElement;
 
   beforeEach(() => {
     // Vitest globals snapshot has HTMLElement undefined under the node env.
@@ -941,9 +936,7 @@ describe("isEqualHeadNode", () => {
     // short-circuits to false.
     oldTag.isEqualNode = (): boolean => true;
 
-    expect(isEqualHeadNode(oldTag as unknown as Element, newTag as unknown as Element)).toBe(
-      false,
-    );
+    expect(isEqualHeadNode(oldTag as unknown as Element, newTag as unknown as Element)).toBe(false);
   });
 
   it("falls through to plain isEqualNode when neither tag carries a nonce", () => {
