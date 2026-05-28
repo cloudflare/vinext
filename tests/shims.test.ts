@@ -10986,6 +10986,75 @@ describe("app router scroll intent state", () => {
     expect(consumed?.commitId).toBe(2);
     expect(getPendingAppRouterScrollIntent()).toBeNull();
   });
+
+  it("consuming an unclaimed intent without commitId matches navigateClientSide fallback contract", async () => {
+    const {
+      beginAppRouterScrollIntent,
+      clearAppRouterScrollIntent,
+      consumeAppRouterScrollIntent,
+      getPendingAppRouterScrollIntent,
+    } = await import("../packages/vinext/src/shims/app-router-scroll-state.js");
+
+    // no-commit path: intent was created but never claimed by a render commit.
+    // consumeAppRouterScrollIntent(intent) without a commitId must consume it
+    // so the navigateClientSide fallback (which calls consume without commitId)
+    // finds null and does not apply a scroll for an abandoned navigation.
+    clearAppRouterScrollIntent();
+
+    const intent = beginAppRouterScrollIntent(null);
+    expect(getPendingAppRouterScrollIntent()?.id).toBe(intent.id);
+
+    const consumed = consumeAppRouterScrollIntent(intent);
+    expect(consumed?.id).toBe(intent.id);
+    expect(getPendingAppRouterScrollIntent()).toBeNull();
+  });
+
+  it("consuming an intent with a stale intent reference is a no-op", async () => {
+    const {
+      beginAppRouterScrollIntent,
+      clearAppRouterScrollIntent,
+      consumeAppRouterScrollIntent,
+      getPendingAppRouterScrollIntent,
+    } = await import("../packages/vinext/src/shims/app-router-scroll-state.js");
+
+    // When a newer navigation replaces the pending intent, attempting to consume
+    // the stale reference must be a no-op — this is the safety check that prevents
+    // the fallback from consuming a different navigation's intent.
+    clearAppRouterScrollIntent();
+
+    const firstIntent = beginAppRouterScrollIntent(null);
+    const secondIntent = beginAppRouterScrollIntent(null);
+
+    expect(consumeAppRouterScrollIntent(firstIntent)).toBeNull();
+    expect(getPendingAppRouterScrollIntent()?.id).toBe(secondIntent.id);
+    expect(consumeAppRouterScrollIntent(secondIntent)).not.toBeNull();
+    expect(getPendingAppRouterScrollIntent()).toBeNull();
+  });
+
+  it("consuming a claimed intent without commitId is always allowed for cleanup paths", async () => {
+    const {
+      beginAppRouterScrollIntent,
+      claimAppRouterScrollIntentForCommit,
+      clearAppRouterScrollIntent,
+      consumeAppRouterScrollIntent,
+      getPendingAppRouterScrollIntent,
+    } = await import("../packages/vinext/src/shims/app-router-scroll-state.js");
+
+    // The fallback in navigateClientSide calls consume without a commitId.
+    // An intent claimed by a newer commit must still be consumable without a
+    // commitId check so that explicit cleanup paths (no-commit, hard-navigate)
+    // can clear it. The commitId gate only applies when a commitId is passed.
+    clearAppRouterScrollIntent();
+
+    const intent = beginAppRouterScrollIntent(null);
+    claimAppRouterScrollIntentForCommit(intent, 42);
+    expect(getPendingAppRouterScrollIntent()?.commitId).toBe(42);
+
+    // Consume without commitId — always allowed (no-commit / hard-navigate cleanup).
+    const consumed = consumeAppRouterScrollIntent(intent);
+    expect(consumed?.id).toBe(intent.id);
+    expect(getPendingAppRouterScrollIntent()).toBeNull();
+  });
 });
 
 describe("next/compat/router shim", () => {

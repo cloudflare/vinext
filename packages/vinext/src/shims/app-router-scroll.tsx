@@ -104,10 +104,11 @@ function scrollToElement(target: HTMLElement, hash: string | null): void {
   }
 }
 
-// Must stay a class component: findDOMNode() needs a mounted class instance to
-// locate the first DOM node rendered by the children without introducing a
-// wrapper element. Converting this to a function component would break the
-// wrapperless targeting that mirrors Next's default scroll handler.
+// The inner component must stay a class: findDOMNode() needs a mounted
+// class instance to locate the first DOM node rendered by the children
+// without introducing a wrapper element. The outer AppRouterScrollTarget
+// function component reads context and delegates here; only the inner
+// class retains wrapperless targeting.
 export class AppRouterScrollTargetInner extends React.Component<{
   children: React.ReactNode;
   commitId: number | null;

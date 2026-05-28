@@ -280,8 +280,7 @@ test.describe("Next.js compat: App Router autoscroll", () => {
     await expectScroll(page, { x: 1000, y: 0 });
     await expectActiveElementTestId(page, "race-target");
 
-    await page.waitForTimeout(700);
-    await expect(page).toHaveURL(`${ROUTE_BASE}/race/c`);
+    await expect.poll(() => page.url(), { timeout: 1500 }).toBe(`${ROUTE_BASE}/race/c`);
     await expect(page.locator('[data-testid="race-target"]')).toHaveText("Race target c");
     await expectScroll(page, { x: 1000, y: 0 });
     await expectActiveElementTestId(page, "race-target");

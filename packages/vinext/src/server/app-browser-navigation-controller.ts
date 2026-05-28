@@ -546,6 +546,7 @@ export function createAppBrowserNavigationController(
         settlePendingBrowserRouterState(options.pendingRouterState);
         pendingNavigationCommits.delete(renderId);
         resolveCommitted?.();
+        consumeAppRouterScrollIntent(options.scrollIntent ?? null);
         return "no-commit";
       }
 
