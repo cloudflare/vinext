@@ -436,6 +436,18 @@ function _buildClientPagesNavigationContext(
   return ctx;
 }
 
+// Server-side cache for snapshot stability. React's `useSyncExternalStore`
+// expects `getServerSnapshot` to return a stable reference within a single
+// render so it can use Object.is to decide whether to bail out. The SSR ctx is
+// per-request (ALS-isolated), so a WeakMap keyed on the ctx is concurrent-safe
+// and lets us reuse the same shape across every hook call in a single render.
+//
+// Without this, React logs:
+//   "The result of getServerSnapshot should be cached to avoid an infinite loop"
+// and may re-render until the snapshots stabilize, which is wasteful at best
+// and a hydration-mismatch hazard at worst.
+const _ssrPagesNavCtxCache = new WeakMap<SSRContext, PagesNavigationContextShape>();
+
 /**
  * Cross-router compat shim source for `next/navigation` hooks.
  *
@@ -456,12 +468,16 @@ export function getPagesNavigationContext(): PagesNavigationContextShape | null 
   if (typeof window === "undefined") {
     const ssrCtx = _getSSRContext();
     if (!ssrCtx) return null;
+    // Reuse the cached shape for this request so React's useSyncExternalStore
+    // sees Object.is-equal snapshots across hook calls in the same render.
+    // The WeakMap is keyed on the request-scoped ALS ctx, so this remains
+    // safe under concurrent SSR (each request has its own ctx).
+    const cached = _ssrPagesNavCtxCache.get(ssrCtx);
+    if (cached) return cached;
     // ssrCtx.pathname is the route pattern (e.g. "/blog/[slug]").
     // ssrCtx.asPath is the resolved URL with query string. For useSearchParams
     // we want only the URL search string; for useParams we want only the
-    // dynamic route params. Build a fresh object each call — server scope is
-    // request-isolated via ALS but module state must not be cached across
-    // concurrent requests.
+    // dynamic route params.
     let searchParams: URLSearchParams;
     let resolvedPath: string;
     try {
@@ -473,7 +489,9 @@ export function getPagesNavigationContext(): PagesNavigationContextShape | null 
       resolvedPath = ssrCtx.pathname;
     }
     const params = extractRouteParamsFromPath(ssrCtx.pathname, resolvedPath) ?? {};
-    return { pathname: resolvedPath, searchParams, params };
+    const ctx: PagesNavigationContextShape = { pathname: resolvedPath, searchParams, params };
+    _ssrPagesNavCtxCache.set(ssrCtx, ctx);
+    return ctx;
   }
 
   // Client: derive from window.location + __NEXT_DATA__. __NEXT_DATA__.page

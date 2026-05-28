@@ -11061,6 +11061,39 @@ describe("next/compat/router shim", () => {
     expect((captured as any).query.slug).toEqual(["a", "b"]);
   });
 
+  // Regression for issue #1466: React's `useSyncExternalStore` calls
+  // `getServerSnapshot` multiple times during SSR/hydration and expects a
+  // stable reference (Object.is) — otherwise it logs:
+  //   "The result of getServerSnapshot should be cached to avoid an infinite loop"
+  // and may re-render until it stabilizes. `useParams`/`useSearchParams`/
+  // `usePathname` from `next/navigation` derive their server snapshot from
+  // `getPagesNavigationContext()`, so its SSR-side return value must be
+  // reference-stable within a single request.
+  it("getPagesNavigationContext returns the same reference for repeated SSR calls in one request", async () => {
+    const { getPagesNavigationContext, setSSRContext } =
+      await import("../packages/vinext/src/shims/router.js");
+
+    setSSRContext({
+      pathname: "/pages-dir/[dynamic]",
+      query: { dynamic: "foobar" },
+      asPath: "/pages-dir/foobar",
+    });
+    try {
+      const first = getPagesNavigationContext();
+      const second = getPagesNavigationContext();
+      expect(first).not.toBeNull();
+      expect(first).toBe(second);
+      expect(first!.params).toEqual({ dynamic: "foobar" });
+      // params and searchParams must also be reference-stable across calls so
+      // hook-level snapshots (`pagesCtx.params`, `pagesCtx.searchParams`) are
+      // Object.is-equal between renders.
+      expect(first!.params).toBe(second!.params);
+      expect(first!.searchParams).toBe(second!.searchParams);
+    } finally {
+      setSSRContext(null);
+    }
+  });
+
   it("preserves route param arrays, repeated search params, and hash in client router state", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
