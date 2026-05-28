@@ -1403,6 +1403,74 @@ describe("Link legacyBehavior", () => {
     expect(html).toContain("About");
   });
 
+  it("does not call the onClick prop passed to <Link> (warns in dev)", () => {
+    // Next.js parity: in legacyBehavior, <Link>'s own onClick prop is ignored
+    // (the child's onClick is the canonical handler) and a dev console.warn
+    // is emitted. Asserting the warning here also implicitly confirms we are
+    // not silently dropping the user's intent.
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      ReactDOMServer.renderToString(
+        React.createElement(
+          Link,
+          { href: "/about", legacyBehavior: true, onClick: () => {} } as any,
+          React.createElement("a", { id: "custom-button" }, "About"),
+        ),
+      );
+      const messages = consoleSpy.mock.calls.map((args) => String(args[0]));
+      expect(
+        messages.some(
+          (m) =>
+            m.includes(`"onClick" was passed to <Link>`) && m.includes(`"legacyBehavior" was set`),
+        ),
+      ).toBe(true);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("treats `href={undefined}` on the child <a> as the child owning its href", () => {
+    // Next.js uses `!('href' in child.props)` rather than `child.props.href !== undefined`.
+    // If the child explicitly passed `href={undefined}`, we must NOT forward
+    // Link's href onto it — the developer indicated they want to control it.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: "/about", legacyBehavior: true } as any,
+        React.createElement("a", { href: undefined, id: "custom-button" }, "About"),
+      ),
+    );
+
+    const anchorOpens = (html.match(/<a\b/g) ?? []).length;
+    expect(anchorOpens).toBe(1);
+    // The forwarded href should NOT be set, because the child's props
+    // include the key `href` (even if its value is undefined).
+    expect(html).not.toContain('href="/about"');
+  });
+
+  it("clones the child (does not wrap) when the href is a blocked dangerous scheme", () => {
+    // Even when Link blocks the href (javascript:, data:, vbscript:), the
+    // legacyBehavior contract still applies: we must clone the child rather
+    // than wrap it. Otherwise developers would see a hidden second anchor.
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const html = ReactDOMServer.renderToString(
+        React.createElement(
+          Link,
+          { href: "javascript:alert(1)", legacyBehavior: true } as any,
+          React.createElement("a", { id: "custom-button" }, "Blocked"),
+        ),
+      );
+      const anchorOpens = (html.match(/<a\b/g) ?? []).length;
+      expect(anchorOpens).toBe(1);
+      expect(html).toContain('id="custom-button"');
+      // The dangerous href is NOT propagated to the child.
+      expect(html).not.toContain("javascript:");
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
   it("preserves the child's onClick handler (parity-shape check via cloneElement props)", () => {
     // We can't dispatch a real DOM click in this Node-only test environment.
     // Instead, verify that React.cloneElement preserves the child's onClick

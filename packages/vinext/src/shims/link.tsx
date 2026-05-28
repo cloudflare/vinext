@@ -773,8 +773,16 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     [onTouchStart, prefetchOnIntent],
   );
 
-  const handleClick = async (e: MouseEvent<HTMLAnchorElement>) => {
-    if (onClick) onClick(e);
+  const handleClick = async (
+    e: MouseEvent<HTMLAnchorElement>,
+    options: { skipLinkOnClick?: boolean } = {},
+  ) => {
+    // In legacyBehavior, the onClick prop on <Link> itself is ignored — the
+    // child's onClick is the one that runs (and Next.js even warns when
+    // `onClick` is passed to <Link> alongside `legacyBehavior`). Skip the
+    // preamble that calls Link's own onClick when invoked from that path.
+    // See: .nextjs-ref/packages/next/src/client/link.tsx (legacyBehavior branch).
+    if (!options.skipLinkOnClick && onClick) onClick(e);
     if (e.defaultPrevented) return;
 
     // Native download links must keep the browser's default behavior.
@@ -904,10 +912,42 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // via React's event-handler runtime when `router.push` throws.
     // Ported from Next.js: test/e2e/app-dir/javascript-urls/javascript-urls.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/javascript-urls/javascript-urls.test.ts
-    const handleDangerousClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    const handleDangerousClick = (event: MouseEvent<HTMLAnchorElement>): void => {
       if (onClick) onClick(event);
       reportBlockedDangerousNavigation();
     };
+    // In legacyBehavior, clone the child instead of wrapping it in our own
+    // <a>. Otherwise the dangerous-href branch would still produce nested
+    // anchors. We do not forward the dangerous href to the child — Next.js's
+    // safety guarantee is that the navigation never happens; the child can
+    // keep its own (sanitized) href if it wants.
+    if (legacyBehavior) {
+      const child = React.Children.only(children) as React.ReactElement<{
+        onClick?: (event: MouseEvent<HTMLAnchorElement>) => void;
+        ref?: React.Ref<HTMLAnchorElement>;
+      }>;
+      const childOnClick = child.props.onClick;
+      const childRef = child.props.ref;
+      const setDangerousRefs = (node: HTMLAnchorElement | null): void => {
+        internalRef.current = node;
+        if (typeof childRef === "function") {
+          childRef(node);
+        } else if (childRef) {
+          (childRef as React.MutableRefObject<HTMLAnchorElement | null>).current = node;
+        }
+      };
+      return (
+        <LinkStatusContext.Provider value={linkStatusValue}>
+          {React.cloneElement(child, {
+            ref: setDangerousRefs,
+            onClick: (event: MouseEvent<HTMLAnchorElement>) => {
+              if (childOnClick) childOnClick(event);
+              reportBlockedDangerousNavigation();
+            },
+          })}
+        </LinkStatusContext.Provider>
+      );
+    }
     return (
       <LinkStatusContext.Provider value={linkStatusValue}>
         <a
@@ -933,12 +973,27 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   if (legacyBehavior) {
     const child = React.Children.only(children) as React.ReactElement<{
       href?: string;
+      ref?: React.Ref<HTMLAnchorElement>;
       onClick?: (event: MouseEvent<HTMLAnchorElement>) => void;
       onMouseEnter?: (event: MouseEvent<HTMLAnchorElement>) => void;
       onTouchStart?: (event: TouchEvent<HTMLAnchorElement>) => void;
     }>;
+    if (process.env.NODE_ENV !== "production") {
+      if (onClick) {
+        console.warn(
+          `"onClick" was passed to <Link> with \`href\` of \`${resolveHref(href)}\` but "legacyBehavior" was set. The legacy behavior requires onClick be set on the child of next/link`,
+        );
+      }
+      if (onMouseEnter) {
+        console.warn(
+          `"onMouseEnter" was passed to <Link> with \`href\` of \`${resolveHref(href)}\` but "legacyBehavior" was set. The legacy behavior requires onMouseEnter be set on the child of next/link`,
+        );
+      }
+    }
     const childPropsExisting = child.props;
-    const childHasOwnHref = child.type === "a" ? childPropsExisting.href !== undefined : false;
+    // Use `'href' in props` (matches Next.js) so `href={undefined}` on the
+    // child is treated as "the child owns its href" — we won't overwrite it.
+    const childHasOwnHref = child.type === "a" ? "href" in childPropsExisting : false;
     // Match Next.js: forward href when `passHref` is set OR the child is a
     // plain <a> that does not already have an href. Otherwise, leave the
     // child's href alone.
@@ -946,12 +1001,28 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     const childOnClick = childPropsExisting.onClick;
     const childOnMouseEnter = childPropsExisting.onMouseEnter;
     const childOnTouchStart = childPropsExisting.onTouchStart;
+    // Mirror Next.js: in legacy mode, the ref source is the child's own
+    // ref (e.g. `<a ref={myRef}>`), not Link's `forwardedRef`. In React 19
+    // `ref` is a regular prop on the element. Merge with our intersection
+    // observer ref via `setRefs` so prefetching still works.
+    const childRef = childPropsExisting.ref;
+    const setLegacyRefs = (node: HTMLAnchorElement | null): void => {
+      internalRef.current = node;
+      if (typeof childRef === "function") {
+        childRef(node);
+      } else if (childRef) {
+        (childRef as React.MutableRefObject<HTMLAnchorElement | null>).current = node;
+      }
+    };
     const clonedProps: Record<string, unknown> = {
-      ref: setRefs,
+      ref: setLegacyRefs,
       onClick: (event: MouseEvent<HTMLAnchorElement>) => {
+        // Next.js parity: only the child's onClick runs in legacy mode. The
+        // onClick prop on <Link> is intentionally ignored (and a dev warning
+        // surfaces it above).
         if (childOnClick) childOnClick(event);
         if (event.defaultPrevented) return;
-        void handleClick(event);
+        void handleClick(event, { skipLinkOnClick: true });
       },
       onMouseEnter: (event: MouseEvent<HTMLAnchorElement>) => {
         if (childOnMouseEnter) childOnMouseEnter(event);
