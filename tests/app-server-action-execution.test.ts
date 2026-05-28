@@ -849,6 +849,43 @@ describe("app server action execution helpers", () => {
     expect(decodeReply).not.toHaveBeenCalled();
   });
 
+  // Regression coverage for #1340: realistic action ids include `#<exportName>`,
+  // but @vitejs/plugin-rsc's reference-validation virtual module only knows the
+  // module path portion. The dev-mode "invalid server reference '<id>'" error
+  // therefore contains the module path WITHOUT the `#<exportName>` suffix,
+  // while the caller's actionId still has it. The 404 detection has to match
+  // either form so an unknown server action does not surface as an unrelated
+  // 500.
+  it("returns action-not-found when the Vite error elides the #exportName suffix", async () => {
+    const renderToReadableStream = vi.fn();
+    const reportRequestError = vi.fn();
+    const clearRequestContext = vi.fn();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        actionId: "/app/actions/actions.ts#staleAction",
+        clearRequestContext,
+        loadServerAction() {
+          // Vite's reference-validation virtual module reports only the module
+          // path — the `#staleAction` suffix is dropped because the validator
+          // sees the require call, not the action id.
+          return Promise.reject(
+            new Error("[vite-rsc] invalid server reference '/app/actions/actions.ts'"),
+          );
+        },
+        renderToReadableStream,
+        reportRequestError,
+      }),
+    );
+
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await response?.text()).toBe("Server action not found.");
+    expect(renderToReadableStream).not.toHaveBeenCalled();
+    expect(reportRequestError).not.toHaveBeenCalled();
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
+  });
+
   // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
   it("returns the Next.js action-not-found response for stale fetch action ids", async () => {
@@ -1077,6 +1114,46 @@ describe("app server action execution helpers", () => {
         returnValue: { ok: false, data: fallbackError },
       });
     }
+  });
+
+  // Regression coverage for #1340: when a server action throws `notFound()` AND
+  // the action also revalidates (so the page rerendering path runs instead of
+  // the skip-rerender shortcut), the response must still carry the 404 status
+  // and the rejected actionResult — not 200 with the original page.
+  //
+  // Mirrors Next.js: when isHTTPAccessFallbackError(err) is true, the
+  // action-handler sets res.statusCode = getAccessFallbackHTTPStatus(err)
+  // before generating the Flight payload.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/action-handler.ts
+  it("preserves the 404 status when notFound() is thrown by a revalidating fetch action", async () => {
+    let renderedModel: TestActionModel | null = null;
+    const fallbackError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        // Pending cookie forces the revalidating page-rerender branch instead
+        // of the no-revalidate shortcut that already had coverage above.
+        getAndClearPendingCookies() {
+          return ["action=1; Path=/"];
+        },
+        loadServerAction() {
+          return Promise.resolve(() => {
+            throw fallbackError;
+          });
+        },
+        renderToReadableStream(model) {
+          renderedModel = model;
+          return new Response("notfound-flight").body;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(404);
+    expect(await response?.text()).toBe("notfound-flight");
+    expect(renderedModel).toMatchObject({
+      returnValue: { ok: false, data: fallbackError },
+    });
+    expect(response?.headers.get("x-action-revalidated")).toBe("1");
   });
 
   it("emits the `x-edge-runtime: 1` marker on rerendered RSC action responses for edge-runtime routes", async () => {
