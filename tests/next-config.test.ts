@@ -1609,6 +1609,33 @@ describe("resolveNextConfig swcEnvOptions warning", () => {
   });
 });
 
+describe("resolveNextConfig cachedNavigations warning", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("emits a warning when experimental.cachedNavigations is set without cacheComponents", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await resolveNextConfig({
+      experimental: { cachedNavigations: true },
+    });
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("experimental.cachedNavigations"));
+    warnSpy.mockRestore();
+  });
+
+  it("does not warn when experimental.cachedNavigations is set with cacheComponents", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await resolveNextConfig({
+      cacheComponents: true,
+      experimental: { cachedNavigations: true },
+    });
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("experimental.cachedNavigations"),
+    );
+    warnSpy.mockRestore();
+  });
+});
+
 describe("resolveNextConfig rootParams deprecation warning", () => {
   afterEach(() => {
     vi.restoreAllMocks();

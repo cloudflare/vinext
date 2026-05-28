@@ -1258,6 +1258,15 @@ export async function resolveNextConfig(
     );
   }
 
+  // Warn when experimental.cachedNavigations is set without cacheComponents.
+  // Next.js throws in this case; vinext warns because the feature is a no-op without it.
+  if (experimental?.cachedNavigations === true && !config.cacheComponents) {
+    console.warn(
+      "[vinext] `experimental.cachedNavigations` requires `cacheComponents: true` to have any effect. " +
+        "Set `cacheComponents: true` in your next.config, or remove `experimental.cachedNavigations`.",
+    );
+  }
+
   // Warn about unsupported webpack usage. We preserve alias injection and
   // extract MDX settings, but all other webpack customization is still ignored.
   if (config.webpack !== undefined) {
