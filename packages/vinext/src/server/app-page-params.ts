@@ -25,6 +25,28 @@ function isEmptyOptionalCatchAll(segment: string, paramValue: string | string[])
   return segment.startsWith("[[...") && Array.isArray(paramValue) && paramValue.length === 0;
 }
 
+export function resolveAppPageSegmentParamScopeKeys(
+  routeSegments: readonly string[] | null | undefined,
+  treePosition: number,
+): readonly string[] {
+  const paramNames: string[] = [];
+  const seen = new Set<string>();
+  const segments = routeSegments ?? [];
+  const end = Math.min(Math.max(treePosition, 0), segments.length);
+
+  for (let index = 0; index < end; index++) {
+    const paramName = getAppPageSegmentParamName(segments[index]);
+    if (!paramName || seen.has(paramName)) {
+      continue;
+    }
+
+    seen.add(paramName);
+    paramNames.push(paramName);
+  }
+
+  return paramNames;
+}
+
 export function resolveAppPageSegmentParams(
   routeSegments: readonly string[] | null | undefined,
   treePosition: number,

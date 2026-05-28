@@ -474,6 +474,7 @@ const originalFetch: typeof globalThis.fetch = (_gFetch[_ORIG_FETCH_KEY] ??=
 // multi-environment module instances.
 // ---------------------------------------------------------------------------
 export type FetchCacheState = {
+  cacheableFetchUrls: Set<string>;
   currentRequestTags: string[];
   currentFetchSoftTags: string[];
   currentFetchCacheMode: FetchCacheMode | null;
@@ -508,6 +509,7 @@ if (globalThis.FinalizationRegistry) {
 }
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
+  cacheableFetchUrls: new Set<string>(),
   currentRequestTags: [],
   currentFetchSoftTags: [],
   currentFetchCacheMode: null,
@@ -528,6 +530,7 @@ function _getState(): FetchCacheState {
  * in single-threaded contexts where ALS.run() isn't used.
  */
 function _resetFallbackState(isFetchDedupeActive: boolean): void {
+  _fallbackState.cacheableFetchUrls = new Set<string>();
   _fallbackState.currentRequestTags = [];
   _fallbackState.currentFetchSoftTags = [];
   _fallbackState.currentFetchCacheMode = null;
@@ -542,6 +545,14 @@ function getFetchObservationUrl(input: string | URL | Request): string {
 
 function recordDynamicFetchObservation(input: string | URL | Request): void {
   _getState().dynamicFetchUrls.add(getFetchObservationUrl(input));
+}
+
+function recordCacheableFetchObservation(input: string | URL | Request): void {
+  _getState().cacheableFetchUrls.add(getFetchObservationUrl(input));
+}
+
+export function peekCacheableFetchObservations(): string[] {
+  return [..._getState().cacheableFetchUrls].sort();
 }
 
 export function peekDynamicFetchObservations(): string[] {
@@ -913,6 +924,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       }
       throw err;
     }
+    recordCacheableFetchObservation(input);
     const handler = getCacheHandler();
 
     // Collect tags for this render pass
@@ -1145,6 +1157,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
   _ensurePatchInstalled();
   if (isInsideUnifiedScope()) {
     return await runWithUnifiedStateMutation((uCtx) => {
+      uCtx.cacheableFetchUrls = new Set<string>();
       uCtx.currentRequestTags = [];
       uCtx.currentFetchSoftTags = [];
       uCtx.dynamicFetchUrls = new Set<string>();
@@ -1154,6 +1167,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
   }
   return _als.run(
     {
+      cacheableFetchUrls: new Set<string>(),
       currentRequestTags: [],
       currentFetchSoftTags: [],
       currentFetchCacheMode: null,

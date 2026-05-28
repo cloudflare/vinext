@@ -74,6 +74,9 @@ export default {
         // #726-CACHE-01/04 defines the disabled proof boundary before runtime
         // observation recording or cache reuse is wired in later slices.
         "src/server/cache-proof.ts",
+        // #726-SKIP layout-safety observation foundation. Consumed by the
+        // planner, dispatch wiring, and render in later slices.
+        "src/server/app-layout-param-observation.ts",
       ],
       project: ["src/**/*.{ts,tsx}"],
     },
