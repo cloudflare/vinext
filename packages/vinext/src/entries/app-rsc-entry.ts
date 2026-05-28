@@ -112,6 +112,12 @@ type AppRouterConfig = {
   /** Serialized next.config htmlLimitedBots regexp source. */
   htmlLimitedBots?: string;
   /**
+   * Allow-list of keys (from `experimental.clientTraceMetadata`) to surface
+   * from the active OpenTelemetry context as `<meta>` tags in the SSR head.
+   * Undefined or empty disables emission entirely.
+   */
+  clientTraceMetadata?: string[] | undefined;
+  /**
    * Resolved `assetPrefix` from next.config. Empty string when unset.
    * Embedded in the generated entry so the App Router prod-server reads
    * it from the imported module instead of a sidecar JSON file —
@@ -174,6 +180,7 @@ export function generateRscEntry(
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;
   const htmlLimitedBots = config?.htmlLimitedBots;
+  const clientTraceMetadata = config?.clientTraceMetadata ?? null;
   const assetPrefix = config?.assetPrefix ?? "";
   const expireTime = config?.expireTime ?? DEFAULT_EXPIRE_TIME;
   const i18nConfig = config?.i18n ?? null;
@@ -484,6 +491,7 @@ const __publicFiles = new Set(${JSON.stringify(publicFiles)});
 const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
 const __expireTime = ${JSON.stringify(expireTime)};
 const __htmlLimitedBots = ${JSON.stringify(htmlLimitedBots)};
+const __clientTraceMetadata = ${JSON.stringify(clientTraceMetadata)};
 // Re-exported for the App Router prod-server to consume at startup —
 // mirrors the embedded \`__basePath\` pattern (and Pages Router's
 // \`vinextConfig\` export). Empty string when unset.
@@ -567,6 +575,7 @@ export default __createAppRscHandler({
     const _asyncRouteParams = makeThenableParams(params);
     return __dispatchAppPage({
       basePath: __basePath,
+      clientTraceMetadata: __clientTraceMetadata,
       buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams) {
         return buildPageElements(targetRoute, targetParams, cleanPathname, {
           opts: targetOpts,

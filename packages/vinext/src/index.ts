@@ -2271,6 +2271,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               allowedDevOrigins: nextConfig?.allowedDevOrigins,
               bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
               htmlLimitedBots: nextConfig?.htmlLimitedBots,
+              clientTraceMetadata: nextConfig?.clientTraceMetadata,
               assetPrefix: nextConfig?.assetPrefix,
               expireTime: nextConfig?.expireTime,
               i18n: nextConfig?.i18n,
@@ -3402,6 +3403,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 nextConfig?.basePath ?? "",
                 nextConfig?.trailingSlash ?? false,
                 middlewarePath !== null,
+                nextConfig?.clientTraceMetadata,
               );
               const mwStatus = req.__vinextMiddlewareStatus;
 

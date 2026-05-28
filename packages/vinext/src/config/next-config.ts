@@ -424,6 +424,14 @@ export type ResolvedNextConfig = {
    * identifier (typically resolving to `undefined`).
    */
   compilerDefineServer: Record<string, string>;
+  /**
+   * Allow-list of keys, sourced from `experimental.clientTraceMetadata`,
+   * to forward from the active OpenTelemetry context into the SSR HTML head
+   * as `<meta>` tags. `undefined` (or empty) disables injection.
+   *
+   * Mirrors Next.js: packages/next/src/server/lib/trace/utils.ts (getTracedMetadata).
+   */
+  clientTraceMetadata: string[] | undefined;
 };
 
 // Mirrors Next.js's accepted set in packages/next/src/shared/lib/constants.ts
@@ -1082,6 +1090,7 @@ export async function resolveNextConfig(
       compilerDefine: {},
       compilerDefineServer: {},
       instrumentationClientInject: [],
+      clientTraceMetadata: undefined,
     };
     detectNextIntlConfig(root, resolved);
     return resolved;
@@ -1309,6 +1318,11 @@ export async function resolveNextConfig(
     disableOptimizedLoading: experimental?.disableOptimizedLoading === true,
     compilerDefine: serializeCompilerDefine(config.compiler?.define),
     compilerDefineServer: serializeCompilerDefine(config.compiler?.defineServer),
+    clientTraceMetadata: Array.isArray(experimental?.clientTraceMetadata)
+      ? (experimental.clientTraceMetadata as unknown[]).filter(
+          (value): value is string => typeof value === "string",
+        )
+      : undefined,
   };
 
   // Auto-detect next-intl (lowest priority — explicit aliases from

@@ -28,6 +28,7 @@ import { runWithHeadState } from "vinext/shims/head-state";
 import { runWithServerInsertedHTMLState } from "vinext/shims/navigation-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
+import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import path from "node:path";
@@ -256,6 +257,12 @@ export function createSSRHandler(
   basePath = "",
   trailingSlash = false,
   hasMiddleware = false,
+  /**
+   * Allow-list of OpenTelemetry propagation keys to emit as `<meta>` tags
+   * in the SSR head. Sourced from `experimental.clientTraceMetadata` in
+   * `next.config`. When undefined or empty, no meta tags are emitted.
+   */
+  clientTraceMetadata?: readonly string[],
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -1174,8 +1181,16 @@ hydrate();
           // Collect head HTML AFTER the shell renders (inside streamPageToResponse,
           // after renderToReadableStream resolves). Head tags from Suspense
           // children arrive late — this matches Next.js behavior.
-          getHeadHTML: () =>
-            typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "",
+          //
+          // Trace metadata is appended after Head shim output so it always
+          // lands in the final document head. When clientTraceMetadata is
+          // unset (the common case) this is a no-op.
+          getHeadHTML: () => {
+            const headHTML =
+              typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "";
+            const traceHTML = getClientTraceMetadataHTML(clientTraceMetadata);
+            return traceHTML ? `${headHTML}\n  ${traceHTML}` : headHTML;
+          },
         });
         _renderEnd = now();
 

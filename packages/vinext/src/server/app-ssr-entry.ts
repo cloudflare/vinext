@@ -38,6 +38,7 @@ import {
 } from "./app-ssr-stream.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
+import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
 import { ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
@@ -244,6 +245,12 @@ export async function handleSsr(
     capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
     formState?: ReactFormState | null;
     basePath?: string;
+    /**
+     * Allow-list of OpenTelemetry propagation keys (from
+     * `experimental.clientTraceMetadata`) to render as `<meta>` tags in the
+     * SSR head. Undefined or null disables emission entirely.
+     */
+    clientTraceMetadata?: readonly string[] | null;
     rootParams?: RootParams;
     /** When true, wait for the full React tree (including Suspense boundaries)
      *  to resolve before returning the HTML stream. Used for static prerender
@@ -408,6 +415,17 @@ export async function handleSsr(
         }
 
         const fontHTML = renderFontHtml(fontData, options?.scriptNonce);
+        // Trace meta tags only need to land in the document head once.
+        // Read the active OTel context lazily so the value reflects the
+        // span that was active when the SSR shell rendered. When
+        // clientTraceMetadata is unset (the common case) this is empty.
+        let traceMetaHTML: string | null = null;
+        const getTraceMetaHTML = (): string => {
+          if (traceMetaHTML === null) {
+            traceMetaHTML = getClientTraceMetadataHTML(options?.clientTraceMetadata ?? undefined);
+          }
+          return traceMetaHTML;
+        };
         let didInjectHeadHTML = false;
         const getInsertedHTML = (): string => {
           const insertedHTML = renderInsertedHtml(renderServerInsertedHTML());
@@ -419,7 +437,7 @@ export async function handleSsr(
             navContext,
             bootstrapModuleUrl,
             options?.formState ?? null,
-            insertedHTML + errorMetaHTML,
+            insertedHTML + errorMetaHTML + getTraceMetaHTML(),
             fontHTML,
             options?.scriptNonce,
           );

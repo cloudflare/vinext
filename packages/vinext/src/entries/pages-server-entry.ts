@@ -126,6 +126,7 @@ export async function generateServerEntry(
     // (the default), page scripts are emitted with `defer` in <head>. See
     // `.nextjs-ref/packages/next/src/pages/_document.tsx` getScripts().
     disableOptimizedLoading: nextConfig?.disableOptimizedLoading === true,
+    clientTraceMetadata: nextConfig?.clientTraceMetadata ?? null,
     images: {
       deviceSizes: nextConfig?.images?.deviceSizes,
       imageSizes: nextConfig?.images?.imageSizes,
@@ -911,6 +912,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
           }
         },
         getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
+        clientTraceMetadata: vinextConfig.clientTraceMetadata ?? undefined,
         gsspRes,
         isrCacheKey,
         expireSeconds: vinextConfig.expireTime,
