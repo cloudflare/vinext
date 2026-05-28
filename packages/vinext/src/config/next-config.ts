@@ -1392,6 +1392,14 @@ async function probeWebpackConfig(
     const finalConfig = result ?? mockConfig;
     // oxlint-disable-next-line typescript/no-explicit-any
     const rules: any[] = finalConfig.module?.rules ?? mockModuleRules;
+    // Invoke loader callbacks for any side effects on `process.env`.
+    // Next.js webpack loaders sometimes mutate `process.env.X = ...` at
+    // compile time (see issue #1500), and vinext otherwise never sees the
+    // value because we don't run the webpack loader pipeline. Calling each
+    // loader once with a dummy source lets build-time env mutations land in
+    // the shared Node process so they become visible to defines and
+    // server-side code during the same build.
+    invokeLoaderSideEffects(rules, root);
     return {
       aliases: normalizeAliasEntries(finalConfig.resolve?.alias, root),
       mdx: extractMdxOptionsFromRules(rules),
@@ -1399,6 +1407,111 @@ async function probeWebpackConfig(
   } catch {
     return { aliases: {}, mdx: null };
   }
+}
+
+/**
+ * Walk webpack module rules and invoke each referenced loader once with a
+ * dummy source string. Loaders that mutate `process.env` at compile time (a
+ * pattern supported by Next.js' webpack pipeline — see issue #1500) get a
+ * chance to land their mutations before vinext computes its defines.
+ * Failures are swallowed: a loader throwing on dummy input must not break
+ * the build, since vinext doesn't actually use the loader's transform output.
+ */
+// oxlint-disable-next-line typescript/no-explicit-any
+function invokeLoaderSideEffects(rules: any[], root: string): void {
+  const require = createRequire(path.join(root, "package.json"));
+  const seen = new Set<unknown>();
+
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const invokeLoaderEntry = (entry: any, ruleOptions?: unknown): void => {
+    if (!entry) return;
+    let loaderPath: string | undefined;
+    let loaderFn: unknown;
+    let options: unknown = ruleOptions;
+    if (typeof entry === "string") {
+      loaderPath = entry;
+    } else if (typeof entry === "function") {
+      loaderFn = entry;
+    } else if (typeof entry === "object") {
+      // oxlint-disable-next-line typescript/no-explicit-any
+      const e = entry as any;
+      if (typeof e.loader === "string") loaderPath = e.loader;
+      else if (typeof e.loader === "function") loaderFn = e.loader;
+      if (e.options !== undefined) options = e.options;
+    }
+    if (loaderPath !== undefined) {
+      if (seen.has(loaderPath)) return;
+      seen.add(loaderPath);
+      // Skip well-known framework loaders. These don't typically mutate
+      // process.env and may pull in heavy dependencies or fail to resolve
+      // outside webpack's loader runtime.
+      if (
+        loaderPath.includes("next-babel-loader") ||
+        loaderPath.includes("mdx") ||
+        loaderPath.startsWith("next/dist/build/webpack")
+      ) {
+        return;
+      }
+      try {
+        loaderFn = require(loaderPath);
+        if (
+          loaderFn &&
+          typeof loaderFn === "object" &&
+          // oxlint-disable-next-line typescript/no-explicit-any
+          typeof (loaderFn as any).default === "function"
+        ) {
+          // oxlint-disable-next-line typescript/no-explicit-any
+          loaderFn = (loaderFn as any).default;
+        }
+      } catch {
+        return;
+      }
+    }
+    if (typeof loaderFn !== "function") return;
+    if (seen.has(loaderFn)) return;
+    seen.add(loaderFn);
+    try {
+      // Mimic the webpack loader runtime: `this` carries getOptions(),
+      // query, callback(), async(), etc. We stub the minimum a typical
+      // loader might touch. We don't care about the return value — only
+      // side effects on process.env.
+      const loaderThis = {
+        async: () => () => {},
+        callback: () => {},
+        emitError: () => {},
+        emitWarning: () => {},
+        cacheable: () => {},
+        getOptions: () => options ?? {},
+        query: options ?? {},
+        resourcePath: "",
+        resource: "",
+        rootContext: root,
+        context: root,
+        mode: "production",
+      };
+      // oxlint-disable-next-line typescript/no-unsafe-function-type
+      (loaderFn as Function).call(loaderThis, "");
+    } catch {
+      // Ignore — the loader may have thrown on the dummy source.
+      // process.env mutations made before the throw still apply.
+    }
+  };
+
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const visit = (rule: any): void => {
+    if (!rule || typeof rule !== "object") return;
+    if (Array.isArray(rule)) {
+      for (const child of rule) visit(child);
+      return;
+    }
+    if (Array.isArray(rule.oneOf)) for (const child of rule.oneOf) visit(child);
+    if (Array.isArray(rule.rules)) for (const child of rule.rules) visit(child);
+    const uses = Array.isArray(rule.use) ? rule.use : rule.use ? [rule.use] : [];
+    for (const use of uses) invokeLoaderEntry(use);
+    if (rule.loader !== undefined) invokeLoaderEntry(rule.loader, rule.options);
+  };
+
+  for (const rule of rules) visit(rule);
 }
 
 /**
