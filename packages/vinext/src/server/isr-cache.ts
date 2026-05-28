@@ -85,25 +85,37 @@ export async function isrSet(
 export async function isrSetPrerenderedAppPage(
   key: string,
   data: CachedAppPageValue,
-  metadata: { expireSeconds?: number; revalidateSeconds?: number },
+  metadata: {
+    expireSeconds?: number;
+    revalidateSeconds?: number;
+    /**
+     * Implicit/path tags to attach to the seeded entry. Required so that
+     * `revalidatePath()` (and `revalidateTag()`) can invalidate prerender-seeded
+     * cache entries — without tags the entry is unreachable by tag-based
+     * invalidation and remains stale until natural `revalidateAt` expiry.
+     * See cloudflare/vinext#1486.
+     */
+    tags?: string[];
+  },
 ): Promise<void> {
   const handler = getCacheHandler();
   const revalidateSeconds = metadata.revalidateSeconds;
+  const tags = metadata.tags;
   if (process.env.NEXT_PRIVATE_DEBUG_CACHE) {
     console.debug("[vinext] ISR: seed", key);
   }
-  await handler.set(
-    key,
-    data,
-    revalidateSeconds === undefined
-      ? {}
-      : metadata.expireSeconds === undefined
-        ? { cacheControl: { revalidate: revalidateSeconds }, revalidate: revalidateSeconds }
-        : {
-            cacheControl: { revalidate: revalidateSeconds, expire: metadata.expireSeconds },
-            revalidate: revalidateSeconds,
-          },
-  );
+  const ctx: Record<string, unknown> = {};
+  if (revalidateSeconds !== undefined) {
+    ctx.revalidate = revalidateSeconds;
+    ctx.cacheControl =
+      metadata.expireSeconds === undefined
+        ? { revalidate: revalidateSeconds }
+        : { revalidate: revalidateSeconds, expire: metadata.expireSeconds };
+  }
+  if (tags && tags.length > 0) {
+    ctx.tags = tags;
+  }
+  await handler.set(key, data, ctx);
 
   if (revalidateSeconds !== undefined) {
     setRevalidateDuration(key, revalidateSeconds);

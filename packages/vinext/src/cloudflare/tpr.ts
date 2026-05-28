@@ -25,6 +25,7 @@ import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { VINEXT_REVALIDATE_HEADER } from "../server/headers.js";
 import { isrCacheKey } from "../server/isr-cache.js";
+import { buildAppPageCacheTags } from "../server/app-page-cache.js";
 import { ENTRY_PREFIX } from "./kv-cache-handler.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -697,6 +698,11 @@ export function buildTprKVPairs(
     // but TPR uses a 24h fallback so pre-warmed entries don't accumulate forever.
     const kvTtl = revalidateSeconds > 0 ? MAX_KV_TTL_SECONDS : 24 * 3600;
 
+    // Path-derived implicit tags so revalidatePath()/revalidateTag() can
+    // invalidate TPR-seeded entries. Without this the seeded entry has no
+    // tags and tag-based invalidation can never reach it (#1486).
+    const tags = buildAppPageCacheTags(routePath, []);
+
     const entry = {
       value: {
         kind: "APP_PAGE" as const,
@@ -704,7 +710,7 @@ export function buildTprKVPairs(
         headers: result.headers,
         status: result.status,
       },
-      tags: [] as string[],
+      tags,
       lastModified: now,
       revalidateAt,
     };

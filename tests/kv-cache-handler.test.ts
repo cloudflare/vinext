@@ -10,6 +10,13 @@
 
 import { describe, it, expect, beforeEach, vi } from "vite-plus/test";
 import { KVCacheHandler } from "../packages/vinext/src/cloudflare/kv-cache-handler.js";
+import {
+  revalidatePath,
+  revalidateTag,
+  setCacheHandler,
+  MemoryCacheHandler,
+} from "../packages/vinext/src/shims/cache.js";
+import { buildAppPageCacheTags } from "../packages/vinext/src/server/app-page-cache.js";
 
 // ---------------------------------------------------------------------------
 // Mock KV namespace
@@ -1270,4 +1277,174 @@ describe("KVCacheHandler", () => {
       expect(await handler.get("/big-tags")).toBeNull();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // revalidatePath() — end-to-end via the active handler
+  //
+  // Regression coverage for issue #1486: ensure a server-action style
+  // `revalidatePath()` call invalidates the cached HTML/RSC entry stored in
+  // KV under the full set of tags produced by buildAppPageCacheTags.
+  // -------------------------------------------------------------------------
+  describe("revalidatePath via active handler (#1486)", () => {
+    beforeEach(() => {
+      // Wire KVCacheHandler in as the active handler so the public
+      // `revalidatePath` API exercised by user code routes through KV.
+      setCacheHandler(handler);
+    });
+
+    /** Helper: seed an APP_PAGE entry using the same tag set the dispatcher uses. */
+    async function seedAppPage(pathname: string, html: string): Promise<void> {
+      const tags = buildAppPageCacheTags(pathname, []);
+      await handler.set(
+        pathname,
+        {
+          kind: "APP_PAGE",
+          html,
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { revalidate: 60, tags },
+      );
+    }
+
+    it("invalidates the cached page after revalidatePath('/foo')", async () => {
+      await seedAppPage("/foo", "<html>foo</html>");
+
+      // Sanity: entry is present before invalidation.
+      handler.resetRequestCache();
+      const beforeHit = await handler.get("/foo");
+      expect(beforeHit).not.toBeNull();
+      expect((beforeHit!.value as any).html).toBe("<html>foo</html>");
+
+      // Public revalidatePath API call (no type → bare _N_T_/foo tag).
+      await revalidatePath("/foo");
+
+      // The cached entry must now be a hard miss.
+      handler.resetRequestCache();
+      expect(await handler.get("/foo")).toBeNull();
+    });
+
+    it("invalidates a deep nested page after revalidatePath('/blog/hello')", async () => {
+      await seedAppPage("/blog/hello", "<html>hello</html>");
+      await seedAppPage("/blog/world", "<html>world</html>");
+
+      await revalidatePath("/blog/hello");
+
+      handler.resetRequestCache();
+      expect(await handler.get("/blog/hello")).toBeNull();
+      // Sibling entry must remain — bare path tag is exact.
+      expect(await handler.get("/blog/world")).not.toBeNull();
+    });
+
+    it("invalidates the root page after revalidatePath('/')", async () => {
+      await seedAppPage("/", "<html>home</html>");
+
+      await revalidatePath("/");
+
+      handler.resetRequestCache();
+      expect(await handler.get("/")).toBeNull();
+    });
+
+    it("type='layout' invalidates the page (carries the layout tag)", async () => {
+      await seedAppPage("/dashboard/settings", "<html>settings</html>");
+
+      // /dashboard/layout tag is included in the page's cache tags by
+      // buildAppPageCacheTags. revalidatePath('/dashboard', 'layout') should
+      // therefore invalidate this nested entry.
+      await revalidatePath("/dashboard", "layout");
+
+      handler.resetRequestCache();
+      expect(await handler.get("/dashboard/settings")).toBeNull();
+    });
+
+    it("type='page' invalidates only the exact route's /page tag", async () => {
+      await seedAppPage("/about", "<html>about</html>");
+      await seedAppPage("/about/team", "<html>team</html>");
+
+      await revalidatePath("/about", "page");
+
+      handler.resetRequestCache();
+      expect(await handler.get("/about")).toBeNull();
+      // /about/team has tag _N_T_/about/team/page, not _N_T_/about/page.
+      expect(await handler.get("/about/team")).not.toBeNull();
+    });
+
+    // -------------------------------------------------------------------------
+    // Regression: prerender-seeded entries must carry path tags so
+    // revalidatePath() can invalidate them. Pre-#1486 fix, `isrSetPrerenderedAppPage`
+    // (and TPR uploads) wrote entries with `tags: []`, so revalidatePath would
+    // mark `__tag:_N_T_/foo` but the cached entry had no matching tag — leaving
+    // the stale entry served forever (until natural revalidateAt expiry).
+    // -------------------------------------------------------------------------
+    it("invalidates a prerender-seeded entry via revalidatePath when tags are passed", async () => {
+      const { isrSetPrerenderedAppPage } =
+        await import("../packages/vinext/src/server/isr-cache.js");
+
+      // Simulate the build-time prerender seed for a page at /seeded.
+      // The seeder must attach the path's implicit tags so that a later
+      // revalidatePath('/seeded') call can invalidate this entry. See #1486.
+      const tags = buildAppPageCacheTags("/seeded", []);
+
+      await isrSetPrerenderedAppPage(
+        "/seeded",
+        {
+          kind: "APP_PAGE",
+          html: "<html>seeded</html>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { revalidateSeconds: 60, tags },
+      );
+
+      handler.resetRequestCache();
+      const beforeHit = await handler.get("/seeded");
+      expect(beforeHit).not.toBeNull();
+
+      await revalidatePath("/seeded");
+
+      handler.resetRequestCache();
+      expect(await handler.get("/seeded")).toBeNull();
+    });
+
+    it("prerender-seeded entry without tags is NOT invalidated (legacy behavior — regression guard)", async () => {
+      const { isrSetPrerenderedAppPage } =
+        await import("../packages/vinext/src/server/isr-cache.js");
+
+      // Pre-#1486 callers passed no tags. Document the legacy behavior so
+      // future refactors notice the contract: the seeder controls whether
+      // tag-based invalidation works.
+      await isrSetPrerenderedAppPage(
+        "/legacy-seeded",
+        {
+          kind: "APP_PAGE",
+          html: "<html>legacy</html>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { revalidateSeconds: 60 },
+      );
+
+      await revalidatePath("/legacy-seeded");
+
+      handler.resetRequestCache();
+      // Entry remains because it has no tags to match against the
+      // revalidatePath tag marker.
+      expect(await handler.get("/legacy-seeded")).not.toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Reset to a clean MemoryCacheHandler between top-level test files.
+  // -------------------------------------------------------------------------
 });
+
+// Ensure the active handler is restored after this file runs, so other test
+// files relying on the default MemoryCacheHandler are not affected.
+setCacheHandler(new MemoryCacheHandler());
+void revalidateTag;
