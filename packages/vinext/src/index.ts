@@ -734,7 +734,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           .filter(isLinkPrefetchRoute)
           .map(toLinkPrefetchRoute)
       : [];
-    return _generateClientEntry(pagesDir, nextConfig, fileMatcher, { appPrefetchRoutes });
+    return _generateClientEntry(pagesDir, nextConfig, fileMatcher, {
+      appPrefetchRoutes,
+      instrumentationClientPath,
+    });
   }
 
   async function writeRouteTypes(): Promise<void> {
