@@ -104,7 +104,13 @@ describe("createAppRscHandler", () => {
       configHeaders: [],
       dispatchMatchedPage,
       async handleProgressiveActionRequest() {
-        return { kind: "form-state", formState: null };
+        return {
+          kind: "form-state",
+          formState: null,
+          pendingCookies: [],
+          draftCookie: null,
+          revalidationKind: 0,
+        };
       },
     });
 
@@ -123,6 +129,89 @@ describe("createAppRscHandler", () => {
         isProgressiveActionRender: true,
       }),
     );
+  });
+
+  // Regression for issue #1483 — `cookies().set(...)` / `cookies().delete(...)`
+  // and `draftMode().enable()` invoked inside a no-JS server action must flow
+  // through to the page rerender response. Before the fix, those Set-Cookie
+  // headers (plus the x-action-revalidated marker) were dropped on the floor
+  // because the handler returned the dispatcher's response untouched.
+  it("propagates cookies, draft cookie, and revalidation marker from a progressive action to the page response (#1483)", async () => {
+    const dispatchMatchedPage = vi.fn(
+      async () =>
+        new Response("page", {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      async handleProgressiveActionRequest() {
+        return {
+          kind: "form-state",
+          formState: null,
+          pendingCookies: ["session=abc; Path=/", "theme=dark; Path=/"],
+          draftCookie: "__prerender_bypass=secret; Path=/",
+          revalidationKind: 1,
+        };
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about", {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=vinext" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie()).toEqual([
+      "session=abc; Path=/",
+      "theme=dark; Path=/",
+      "__prerender_bypass=secret; Path=/",
+    ]);
+    expect(response.headers.get("x-action-revalidated")).toBe("1");
+  });
+
+  // When an action did not mutate cookies and did not request a revalidation,
+  // the page response should NOT carry an x-action-revalidated marker — that
+  // header tells the client router cache to invalidate, and emitting it
+  // spuriously would force unnecessary refetches.
+  it("does not add x-action-revalidated when a progressive action made no mutations (#1483)", async () => {
+    const dispatchMatchedPage = vi.fn(
+      async () =>
+        new Response("page", {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      async handleProgressiveActionRequest() {
+        return {
+          kind: "form-state",
+          formState: null,
+          pendingCookies: [],
+          draftCookie: null,
+          revalidationKind: 0,
+        };
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about", {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=vinext" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.getSetCookie()).toEqual([]);
+    expect(response.headers.has("x-action-revalidated")).toBe(false);
   });
 
   it("uses encoded prerender route params for rendering while retaining decoded params for static validation", async () => {

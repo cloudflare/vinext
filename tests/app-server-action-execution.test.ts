@@ -428,6 +428,74 @@ describe("app server action execution helpers", () => {
     expect(clearContext).toHaveBeenCalledTimes(1);
   });
 
+  // Regression for issue #1483 — no-JS form POST actions that set cookies but
+  // do not redirect must still surface those Set-Cookie headers (and the
+  // revalidation marker) on the rerender response. Before the fix, the
+  // pending cookies and draft-mode cookie set during action execution were
+  // silently dropped because the non-redirect path returned only the
+  // form-state and never read them out of the request scope.
+  it("captures pending cookies, draft cookie, and revalidation kind from non-redirect actions (#1483)", async () => {
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+    const phaseCalls: string[] = [];
+
+    const result = await handleProgressiveServerActionRequest(
+      createOptions({
+        async decodeAction() {
+          return () => undefined;
+        },
+        getAndClearPendingCookies: vi.fn(() => ["session=abc; Path=/", "theme=dark; Path=/"]),
+        getDraftModeCookieHeader: vi.fn(() => "__prerender_bypass=secret; Path=/"),
+        readFormDataWithLimit() {
+          return Promise.resolve(formData);
+        },
+        setHeadersAccessPhase(phase) {
+          phaseCalls.push(phase);
+          return "render";
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: "form-state",
+      formState: null,
+      // Non-zero revalidation kind because cookies were mutated.
+      revalidationKind: 1,
+      pendingCookies: ["session=abc; Path=/", "theme=dark; Path=/"],
+      draftCookie: "__prerender_bypass=secret; Path=/",
+    });
+    // Headers access phase must still be flipped back after the action runs
+    // so the subsequent page rerender sees the regular render phase.
+    expect(phaseCalls).toEqual(["action", "render"]);
+  });
+
+  // Issue #1483 — when an action reads cookies but does not mutate them and
+  // doesn't redirect, the result should report a zero revalidation kind so the
+  // client router cache is not unnecessarily invalidated.
+  it("reports a zero revalidation kind when a non-redirect action does not mutate cookies (#1483)", async () => {
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+
+    const result = await handleProgressiveServerActionRequest(
+      createOptions({
+        async decodeAction() {
+          return () => undefined;
+        },
+        readFormDataWithLimit() {
+          return Promise.resolve(formData);
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: "form-state",
+      formState: null,
+      pendingCookies: [],
+      draftCookie: null,
+      revalidationKind: 0,
+    });
+  });
+
   it("returns decoded form state after successful non-redirect actions without consuming the original body", async () => {
     const formData = new FormData();
     formData.set("$ACTION_ID_test", "");
@@ -458,7 +526,13 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(result).toEqual({ kind: "form-state", formState });
+    expect(result).toEqual({
+      kind: "form-state",
+      formState,
+      pendingCookies: [],
+      draftCookie: null,
+      revalidationKind: 0,
+    });
     expect(actionRan).toBe(true);
     expect((await request.formData()).get("field")).toBe("value");
   });
@@ -487,6 +561,9 @@ describe("app server action execution helpers", () => {
         formState: null,
         actionError: { digest },
         actionFailed: true,
+        pendingCookies: [],
+        draftCookie: null,
+        revalidationKind: 0,
       });
       expect(reportedErrors).toEqual([]);
       expect(clearContext).not.toHaveBeenCalled(); // Let app-rsc-handler clear it after render
@@ -495,6 +572,8 @@ describe("app server action execution helpers", () => {
 
   it("passes action execution failures as actionError to be rendered by error boundaries", async () => {
     const reportedErrors: Error[] = [];
+    // Failure-path renders still need to flush action-set cookies onto the
+    // error page response (issue #1483), so the handler captures them here.
     const clearedCookies = vi.fn(() => ["session=1; Path=/"]);
     const clearContext = vi.fn();
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -521,9 +600,12 @@ describe("app server action execution helpers", () => {
       formState: null,
       actionError: error,
       actionFailed: true,
+      pendingCookies: ["session=1; Path=/"],
+      draftCookie: null,
+      revalidationKind: 1,
     });
     expect(reportedErrors.map((e) => e.message)).toEqual(["boom"]);
-    expect(clearedCookies).not.toHaveBeenCalled(); // Only cleared if response is rendered here
+    expect(clearedCookies).toHaveBeenCalledTimes(1);
     expect(clearContext).not.toHaveBeenCalled(); // Handled by app-rsc-handler
 
     errorSpy.mockRestore();
@@ -548,6 +630,9 @@ describe("app server action execution helpers", () => {
         formState: null,
         actionError: 0,
         actionFailed: true,
+        pendingCookies: [],
+        draftCookie: null,
+        revalidationKind: 0,
       });
     } finally {
       errorSpy.mockRestore();
