@@ -1165,6 +1165,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_DEPLOYMENT_ID"] = JSON.stringify(
           nextConfig.deploymentId ?? "",
         );
+        // Public `process.env.NEXT_DEPLOYMENT_ID` — Next.js statically inlines
+        // this into client (and web worker) bundles via its DefinePlugin so
+        // that user code like `new Worker(new URL('./w.ts', import.meta.url))`
+        // can read `process.env.NEXT_DEPLOYMENT_ID` from inside the worker.
+        // Workers can't easily share a globalThis with the main thread, so
+        // inlining at compile time is the only reliable channel.
+        //
+        // We keep parity by exposing the same identifier in vinext: when a
+        // deploymentId is configured we inline the string, otherwise inline
+        // `false` to mirror Next.js' behavior when the value is absent.
+        // See: packages/next/src/build/define-env.ts (`isClient` branch).
+        defines["process.env.NEXT_DEPLOYMENT_ID"] = nextConfig.deploymentId
+          ? JSON.stringify(nextConfig.deploymentId)
+          : "false";
         // Next.js version compat — mirrors Next.js' `process.env.__NEXT_VERSION`,
         // which is substituted by their webpack DefinePlugin at build time
         // (see `packages/next/src/client/next.ts` line 5 and
