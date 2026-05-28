@@ -117,3 +117,82 @@ test.describe("Link advanced props (Pages Router)", () => {
     expect(reportedUrl).toBe("/link-test?page=2");
   });
 });
+
+// Ported from Next.js: test/e2e/link-on-navigate-prop/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/link-on-navigate-prop/index.test.ts
+//
+// Mirrors the upstream OnNavigate scenarios for Pages Router: onClick always
+// fires, onNavigate fires only for client-side internal navigation, calling
+// `event.preventDefault()` cancels navigation, and modifier-key / target=_blank
+// / download / external links skip onNavigate while still firing onClick.
+test.describe("Link onNavigate prop (Pages Router, OnNavigate fixture)", () => {
+  const PAGE = "/on-navigate-fixture";
+
+  test("toggle-lock button hydrates and updates isLocked", async ({ page }) => {
+    await page.goto(`${BASE}${PAGE}`);
+    await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
+
+    await expect(page.locator("#is-locked")).toHaveText("isLocked: false");
+    await page.click("#toggle-lock");
+    await expect(page.locator("#is-locked")).toHaveText("isLocked: true");
+  });
+
+  test("fires onClick and onNavigate for an internal click", async ({ page }) => {
+    await page.goto(`${BASE}${PAGE}`);
+    await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
+
+    await expect(page.locator("#is-clicked")).toHaveText("isClicked: false");
+    await expect(page.locator("#is-navigated")).toHaveText("isNavigated: false");
+
+    await page.click("#link-to-subpage");
+
+    await expect(page.locator("#subpage-heading")).toHaveText("Subpage");
+  });
+
+  test("cancels navigation when onNavigate calls preventDefault", async ({ page }) => {
+    await page.goto(`${BASE}${PAGE}`);
+    await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
+
+    await page.click("#toggle-lock");
+    await expect(page.locator("#is-locked")).toHaveText("isLocked: true");
+
+    await page.click("#link-to-subpage");
+    // Still on the same page (onNavigate.preventDefault cancelled navigation)
+    await expect(page.locator("#is-clicked")).toHaveText("isClicked: true");
+    await expect(page.locator("#is-navigated")).toHaveText("isNavigated: false");
+    expect(page.url()).toBe(`${BASE}${PAGE}`);
+  });
+
+  test("download links fire onClick but not onNavigate", async ({ page }) => {
+    await page.goto(`${BASE}${PAGE}`);
+    await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
+
+    // Block the actual download so the test doesn't hang waiting for a file.
+    await page.evaluate(() => {
+      document.getElementById("download-link")?.addEventListener("click", (e) => {
+        e.preventDefault();
+      });
+    });
+
+    await page.click("#download-link");
+    await expect(page.locator("#is-clicked")).toHaveText("isClicked: true");
+    await expect(page.locator("#is-navigated")).toHaveText("isNavigated: false");
+  });
+
+  test('target="_blank" links fire onClick but not onNavigate', async ({ page }) => {
+    await page.goto(`${BASE}${PAGE}`);
+    await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
+
+    // The browser would normally open a new tab; intercept so the test
+    // process stays on the original page and we can read its state.
+    await page.evaluate(() => {
+      document
+        .getElementById("external-link-with-target")
+        ?.addEventListener("click", (e) => e.preventDefault());
+    });
+
+    await page.click("#external-link-with-target");
+    await expect(page.locator("#is-clicked")).toHaveText("isClicked: true");
+    await expect(page.locator("#is-navigated")).toHaveText("isNavigated: false");
+  });
+});
