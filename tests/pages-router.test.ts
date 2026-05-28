@@ -3868,6 +3868,24 @@ describe("Production server middleware (Pages Router)", () => {
     expect(nextData.props.pageProps.query).toMatchObject({ id: "first", hello: "world" });
   });
 
+  // Regression for cloudflare/vinext#1342 (production): middleware that
+  // explicitly deletes search params from `request.nextUrl` and rewrites to
+  // it must observe only the keys it kept. Dev coverage of the same shared
+  // code path exists in the integration describe above; this proves the
+  // prod-server path agrees.
+  // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
+  // ("should clear query parameters")
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+  it("middleware rewrite respects searchParams.delete on the rewrite-target URL in production", async () => {
+    const res = await fetch(`${prodUrl}/mw-clear-query-params?a=1&b=2&foo=bar&allowed=kept`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const nextDataMatch = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
+    expect(nextDataMatch).toBeTruthy();
+    const nextData = JSON.parse(nextDataMatch![1]!);
+    expect(nextData.props.pageProps.query).toEqual({ allowed: "kept" });
+  });
+
   // /_next/data fetch for a middleware-rewritten page must also surface the
   // original request query params in the JSON props envelope. Client-side
   // navigations go through this code path, so a regression here would silently
