@@ -33,6 +33,7 @@ import {
   getPagesRouterComponentsMap,
   markAppRouteDetectedOnPrefetch,
 } from "./internal/app-route-detection.js";
+import { dedupedPagesDataFetch } from "./internal/pages-data-fetch-dedup.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import { isUnknownRecord } from "../utils/record.js";
 import {
@@ -766,17 +767,23 @@ async function resolveMiddlewareDataRedirect(
   const dataUrl = getMiddlewarePagesDataFetchUrl(browserUrl);
   if (!dataUrl) return null;
 
+  // We deliberately do NOT thread `signal` into the shared fetch — see the
+  // dedup helper for why. Stale callers bail out via `assertStillCurrent()`
+  // after the await; we still surface a pre-await abort via this check so
+  // callers see the documented AbortError on supersession.
+  if (signal.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+
   try {
-    const res = await fetch(dataUrl, {
+    const res = await dedupedPagesDataFetch(dataUrl, {
       headers: {
         Accept: "application/json",
         "x-nextjs-data": "1",
       },
-      signal,
     });
     return res.headers.get("x-nextjs-redirect");
-  } catch (err: unknown) {
-    if (err instanceof DOMException && err.name === "AbortError") throw err;
+  } catch {
     return null;
   }
 }
@@ -809,11 +816,24 @@ async function navigateClientData(
   }
 
   // Fetch the page-data JSON.
+  //
+  // We dedupe by URL: concurrent `Router.push` calls (or back-to-back link
+  // clicks) for the same destination share a single underlying request.
+  // The shared fetch deliberately ignores `controller.signal` — each caller
+  // still bails out of their navigation via `assertStillCurrent()` after the
+  // await, but the shared network request itself runs to completion so other
+  // racing callers still benefit. This matches Next.js's `inflightCache`
+  // semantics in `fetchNextData()`.
+  //
+  // Pre-await abort still throws so callers see the documented cancellation
+  // surface when supersession happened before the fetch was even attempted.
+  if (controller.signal.aborted) {
+    throw new NavigationCancelledError(url);
+  }
   let res: Response;
   try {
-    res = await fetch(target.dataHref, {
+    res = await dedupedPagesDataFetch(target.dataHref, {
       headers: { Accept: "application/json", "x-nextjs-data": "1" },
-      signal: controller.signal,
     });
   } catch (err: unknown) {
     if (err instanceof DOMException && err.name === "AbortError") {
