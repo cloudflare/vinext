@@ -3270,9 +3270,10 @@ describe("next/cache shim", () => {
     expect(typeof mod.updateTag).toBe("function");
   });
 
-  it("updateTag invalidates cached entries", async () => {
+  it("updateTag invalidates cached entries when called inside a Server Action", async () => {
     const { unstable_cache, updateTag, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
 
     setCacheHandler(new MemoryCacheHandler());
 
@@ -3289,14 +3290,48 @@ describe("next/cache shim", () => {
     const r1 = await cached();
     expect(r1).toBe("result-1");
 
-    // updateTag expires the cache
-    await updateTag("user-1");
+    // updateTag expires the cache (must be called from inside a Server Action)
+    const previousPhase = setHeadersAccessPhase("action");
+    try {
+      await updateTag("user-1");
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+    }
 
     const r2 = await cached();
     expect(r2).toBe("result-2");
     expect(callCount).toBe(2);
 
     setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("updateTag throws when called outside a Server Action (e.g. route handler)", async () => {
+    const { updateTag } = await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
+
+    // Simulate a route handler phase
+    const previousPhase = setHeadersAccessPhase("route-handler");
+    try {
+      await expect(updateTag("some-tag")).rejects.toThrow(
+        /updateTag can only be called from within a Server Action/,
+      );
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+    }
+  });
+
+  it("updateTag throws when called during render", async () => {
+    const { updateTag } = await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
+
+    const previousPhase = setHeadersAccessPhase("render");
+    try {
+      await expect(updateTag("some-tag")).rejects.toThrow(
+        /updateTag can only be called from within a Server Action/,
+      );
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+    }
   });
 
   it("exports refresh function (Next.js 16)", async () => {
