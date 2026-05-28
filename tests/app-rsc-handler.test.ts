@@ -813,4 +813,162 @@ describe("createAppRscHandler", () => {
     expect(await response.text()).toBe("This page could not be found");
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
+
+  // Issue #1452 — root params must be visible to actions/route handlers/use cache,
+  // not only to the page render. The handler used to call setRootParams only
+  // after the post-action route match, leaving rootParams null during action
+  // dispatch and route-handler dispatch. See app-rsc-handler.ts pre-action
+  // seeding block.
+  describe("root params propagation (issue #1452)", () => {
+    it("populates root params before route-handler dispatch", async () => {
+      const route = createPageRoute({
+        isDynamic: true,
+        page: null,
+        pattern: "/:lang/:locale/api",
+        rootParamNames: ["lang", "locale"],
+        routeHandler: { GET: () => new Response("route") },
+        routeSegments: ["[lang]", "[locale]", "api"],
+      });
+      let observedRootParams: Record<string, string | string[] | undefined> | null = null;
+      const dispatchMatchedRouteHandler = vi.fn(async () => {
+        // Read from the unified request context active at dispatch time.
+        const { getRootParam } = await import("../packages/vinext/src/shims/root-params.js");
+        observedRootParams = {
+          lang: await getRootParam("lang"),
+          locale: await getRootParam("locale"),
+        };
+        return new Response("route", { status: 200 });
+      });
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedRouteHandler,
+        matchRoute: (pathname: string) =>
+          pathname === "/en/us/api"
+            ? {
+                params: { lang: "en", locale: "us" },
+                route,
+              }
+            : null,
+      });
+
+      const response = await handler(new Request("https://example.test/docs/en/us/api"), null);
+      expect(response.status).toBe(200);
+      expect(observedRootParams).toEqual({ lang: "en", locale: "us" });
+    });
+
+    it("populates root params before server-action dispatch", async () => {
+      const route = createPageRoute({
+        isDynamic: true,
+        pattern: "/:lang/:locale/server-action",
+        rootParamNames: ["lang", "locale"],
+        routeSegments: ["[lang]", "[locale]", "server-action"],
+      });
+      let observedRootParams: Record<string, string | string[] | undefined> | null = null;
+      const handleServerActionRequest = vi.fn(async () => {
+        const { getRootParam } = await import("../packages/vinext/src/shims/root-params.js");
+        observedRootParams = {
+          lang: await getRootParam("lang"),
+          locale: await getRootParam("locale"),
+        };
+        return new Response("action", { status: 200 });
+      });
+      const handler = createHandler({
+        configHeaders: [],
+        handleServerActionRequest,
+        matchRoute: (pathname: string) =>
+          pathname === "/en/us/server-action"
+            ? {
+                params: { lang: "en", locale: "us" },
+                route,
+              }
+            : null,
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/en/us/server-action", {
+          method: "POST",
+          headers: { "next-action": "abc123" },
+        }),
+        null,
+      );
+      expect(response.status).toBe(200);
+      expect(observedRootParams).toEqual({ lang: "en", locale: "us" });
+    });
+
+    it("populates root params before progressive (form) action dispatch", async () => {
+      const route = createPageRoute({
+        isDynamic: true,
+        pattern: "/:lang/:locale/server-action",
+        rootParamNames: ["lang", "locale"],
+        routeSegments: ["[lang]", "[locale]", "server-action"],
+      });
+      let observedRootParams: Record<string, string | string[] | undefined> | null = null;
+      const handleProgressiveActionRequest = vi.fn(async () => {
+        const { getRootParam } = await import("../packages/vinext/src/shims/root-params.js");
+        observedRootParams = {
+          lang: await getRootParam("lang"),
+          locale: await getRootParam("locale"),
+        };
+        return new Response("progressive-action", { status: 200 });
+      });
+      const handler = createHandler({
+        configHeaders: [],
+        handleProgressiveActionRequest,
+        matchRoute: (pathname: string) =>
+          pathname === "/en/us/server-action"
+            ? {
+                params: { lang: "en", locale: "us" },
+                route,
+              }
+            : null,
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/en/us/server-action", {
+          method: "POST",
+          headers: { "content-type": "multipart/form-data; boundary=vinext" },
+        }),
+        null,
+      );
+      expect(response.status).toBe(200);
+      expect(observedRootParams).toEqual({ lang: "en", locale: "us" });
+    });
+
+    it("only picks root params declared on the matched route", async () => {
+      // The route has a dynamic [slug] segment but only [lang] is a root param.
+      // setRootParams must surface only `lang`, not `slug`.
+      const route = createPageRoute({
+        isDynamic: true,
+        page: null,
+        pattern: "/:lang/blog/:slug",
+        rootParamNames: ["lang"],
+        routeHandler: { GET: () => new Response("route") },
+        routeSegments: ["[lang]", "blog", "[slug]"],
+      });
+      let observedLang: string | string[] | undefined = "<unset>";
+      let observedSlug: string | string[] | undefined = "<unset>";
+      const dispatchMatchedRouteHandler = vi.fn(async () => {
+        const { getRootParam } = await import("../packages/vinext/src/shims/root-params.js");
+        observedLang = await getRootParam("lang");
+        observedSlug = await getRootParam("slug");
+        return new Response("route", { status: 200 });
+      });
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedRouteHandler,
+        matchRoute: (pathname: string) =>
+          pathname === "/en/blog/hello"
+            ? {
+                params: { lang: "en", slug: "hello" },
+                route,
+              }
+            : null,
+      });
+
+      const response = await handler(new Request("https://example.test/docs/en/blog/hello"), null);
+      expect(response.status).toBe(200);
+      expect(observedLang).toBe("en");
+      expect(observedSlug).toBeUndefined();
+    });
+  });
 });

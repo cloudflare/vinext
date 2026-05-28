@@ -488,6 +488,25 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     params: {},
   });
 
+  // Eagerly seed `setRootParams` from the current cleanPathname before any
+  // action dispatch so that user code which reads `unstable_rootParams()`
+  // inside route handlers, `"use cache"` functions, and the page rerender
+  // that follows a successful server action observes the matched layout's
+  // root params. Without this seeding the rootParams remain null until the
+  // post-action match block below runs, which is too late for action
+  // execution and route-handler dispatch (both happen earlier).
+  //
+  // The route is matched against the pre-rewrite cleanPathname here. If the
+  // afterFiles / fallback rewrites further down land on a different route,
+  // the second `setRootParams` call below replaces this value before the
+  // page renders, so there is no stale-value risk for ordinary page renders.
+  // For action requests we intentionally do not re-run rewrites — actions
+  // are always processed against the cleanPathname they were posted to.
+  const preActionMatch = options.matchRoute(cleanPathname);
+  if (preActionMatch) {
+    setRootParams(pickRootParams(preActionMatch.params, preActionMatch.route.rootParamNames));
+  }
+
   const actionId =
     request.headers.get(RSC_ACTION_HEADER) ?? request.headers.get(NEXT_ACTION_HEADER);
   const contentType = request.headers.get("content-type") || "";
@@ -522,7 +541,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   });
   if (serverActionResponse) return serverActionResponse;
 
-  let match = options.matchRoute(cleanPathname);
+  let match = preActionMatch;
   if (!match || match.route.isDynamic) {
     const afterFilesRewrite = await applyRewrite(
       {
