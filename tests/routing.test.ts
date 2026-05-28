@@ -382,9 +382,7 @@ describe("apiRouter - route discovery", () => {
       const matchedDocs = matchRoute("/api-docs/first", pages);
       expect(matchedDocs).not.toBeNull();
       expect(matchedDocs!.route.pattern).toBe("/api-docs/:slug+");
-      expect(matchedDocs!.route.filePath).toBe(
-        path.join(pagesDir, "api-docs", "[...slug].tsx"),
-      );
+      expect(matchedDocs!.route.filePath).toBe(path.join(pagesDir, "api-docs", "[...slug].tsx"));
 
       const matchedInfo = matchRoute("/api-info", pages);
       expect(matchedInfo).not.toBeNull();
