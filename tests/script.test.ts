@@ -14,6 +14,10 @@ import Script, {
   type ScriptProps,
 } from "../packages/vinext/src/shims/script.js";
 import { ScriptNonceProvider } from "../packages/vinext/src/shims/script-nonce-context.js";
+import {
+  BeforeInteractiveContext,
+  type BeforeInteractiveInlineScript,
+} from "../packages/vinext/src/shims/before-interactive-context.js";
 
 const originalDocument = globalThis.document;
 const originalWindow = globalThis.window;
@@ -195,6 +199,71 @@ describe("Script SSR rendering", () => {
     );
     expect(html).toContain("<script");
     expect(html).toContain('src="/secure.js"');
+  });
+
+  // Regression for cloudflare/vinext#1518.
+  //
+  // Ported from Next.js: test/e2e/app-dir/script-before-interactive/script-before-interactive.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/script-before-interactive/script-before-interactive.test.ts
+  //
+  // React DOM prop names (className, htmlFor, httpEquiv, acceptCharset) must be
+  // translated to their HTML attribute equivalents (class, for, http-equiv,
+  // accept-charset) when an inline `<Script strategy="beforeInteractive">` is
+  // hoisted into <head> via BeforeInteractiveContext. Without the translation
+  // they round-trip as `classname="..."` etc., which the browser parses as an
+  // unrelated attribute — so the script lacks the requested CSS class and any
+  // selector on `.example-class` fails to match.
+  it("translates React DOM prop names to HTML attributes on hoisted beforeInteractive scripts", () => {
+    const captured: BeforeInteractiveInlineScript[] = [];
+    ReactDOMServer.renderToString(
+      React.createElement(
+        BeforeInteractiveContext.Provider,
+        { value: (script: BeforeInteractiveInlineScript) => captured.push(script) },
+        React.createElement(Script, {
+          id: "example-script",
+          strategy: "beforeInteractive",
+          className: "example-class",
+          htmlFor: "target-id",
+          httpEquiv: "x-foo",
+          acceptCharset: "utf-8",
+          dangerouslySetInnerHTML: {
+            __html: "window.beforeInteractiveExecuted = true;",
+          },
+        } as ScriptProps),
+      ),
+    );
+
+    expect(captured).toHaveLength(1);
+    const attrs = captured[0]?.attributes ?? {};
+    // HTML attribute names — not the React camelCase prop names.
+    expect(attrs).toMatchObject({
+      class: "example-class",
+      for: "target-id",
+      "http-equiv": "x-foo",
+      "accept-charset": "utf-8",
+    });
+    // The React camelCase forms must NOT round-trip as attribute keys. HTML
+    // parses attribute names case-insensitively, so `className="x"` would be
+    // read as `classname="x"` — see the Next.js test for this exact assertion.
+    expect(attrs).not.toHaveProperty("className");
+    expect(attrs).not.toHaveProperty("htmlFor");
+    expect(attrs).not.toHaveProperty("httpEquiv");
+    expect(attrs).not.toHaveProperty("acceptCharset");
+  });
+
+  // Even outside the App Router head-hoisting path (no provider in context),
+  // React still owns the rendering of the <script> tag and must emit
+  // `class="..."` not `classname="..."`.
+  it("emits class= (not className=) for beforeInteractive scripts with src and className", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        src: "/before.js",
+        strategy: "beforeInteractive",
+        className: "example-class",
+      } as ScriptProps),
+    );
+    expect(html).toContain('class="example-class"');
+    expect(html).not.toContain('classname="example-class"');
   });
 
   it("uses the request nonce for beforeInteractive scripts when none is passed explicitly", () => {
