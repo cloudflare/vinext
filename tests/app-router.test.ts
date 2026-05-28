@@ -1127,6 +1127,40 @@ describe("App Router integration", () => {
     expect(html).not.toContain("404 - Page Not Found");
   });
 
+  it("forbidden() escalates from a deep page to the nearest parent boundary (#1547)", async () => {
+    // Ported from Next.js: test/e2e/app-dir/forbidden/basic/forbidden-basic.test.ts
+    // ("should escalate forbidden to parent layout if no forbidden boundary present in current layer")
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/forbidden/basic/forbidden-basic.test.ts
+    //
+    // The intermediate /escalate-forbidden-boundary layout has no forbidden.tsx,
+    // so forbidden() thrown from /escalate-forbidden-boundary/sub/403 must
+    // escalate past that layout to the root forbidden boundary, replacing the
+    // intermediate layout's UI ("Dynamic with Layout") with the root boundary
+    // rather than rendering it alongside.
+    const res = await fetch(`${baseUrl}/nextjs-compat/escalate-forbidden-boundary/sub/403`);
+    expect(res.status).toBe(403);
+    const html = await res.text();
+    expect(html).toContain("403 - Forbidden");
+    expect(html).not.toContain("escalate-forbidden [id]");
+    // The intermediate layout's UI must NOT render: forbidden() should bubble
+    // past the layout-with-no-boundary to the nearest ancestor that has one.
+    expect(html).not.toContain("Dynamic with Layout");
+    expect(html).not.toContain("escalate-forbidden-layout");
+  });
+
+  it("unauthorized() escalates from a deep page to the nearest parent boundary (#1547)", async () => {
+    // Ported from Next.js: test/e2e/app-dir/unauthorized/basic/unauthorized-basic.test.ts
+    // ("should escalate unauthorized to parent layout if no unauthorized boundary present in current layer")
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/unauthorized/basic/unauthorized-basic.test.ts
+    const res = await fetch(`${baseUrl}/nextjs-compat/escalate-unauthorized-boundary/sub/401`);
+    expect(res.status).toBe(401);
+    const html = await res.text();
+    expect(html).toContain("401 - Unauthorized");
+    expect(html).not.toContain("escalate-unauthorized [id]");
+    expect(html).not.toContain("Dynamic with Layout");
+    expect(html).not.toContain("escalate-unauthorized-layout");
+  });
+
   // ── Client hook usage without "use client" (#834) ──
   // When a Server Component imports a client-only hook from next/navigation
   // without the "use client" directive, vinext should surface a clear error
