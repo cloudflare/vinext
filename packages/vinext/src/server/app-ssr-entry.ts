@@ -467,6 +467,7 @@ export async function handleSsr(
               inlineCssManifest,
               inlineCssFontStyles,
               inlineCssFontStyleFallbackHTML,
+              options?.scriptNonce,
             ),
           ),
           cleanup,

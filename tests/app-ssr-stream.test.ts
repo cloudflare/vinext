@@ -191,6 +191,7 @@ async function runTransform(
     inlineCss?: Record<string, string>;
     inlineCssPrependCss?: string;
     inlineCssPrependFallbackHTML?: string;
+    inlineCssScriptNonce?: string;
   } = {},
 ): Promise<string> {
   const transform = createTickBufferedTransform(
@@ -200,6 +201,7 @@ async function runTransform(
     options.inlineCss,
     options.inlineCssPrependCss,
     options.inlineCssPrependFallbackHTML,
+    options.inlineCssScriptNonce,
   );
   const source = createTextStream(chunks);
   const piped = source.pipeThrough(transform);
@@ -638,5 +640,55 @@ describe("createTickBufferedTransform inline CSS", () => {
 
     expect(out).toContain("<style data-vinext-fonts>");
     expect(out).toContain("@font-face");
+  });
+
+  it("forwards the SSR script nonce onto inline style tags when the link has none", async () => {
+    // Without this, sites running `Content-Security-Policy: style-src 'nonce-…'`
+    // see the inlined `<style>` blocked at parse and render unstyled. React Fizz
+    // typically doesn't emit a nonce on the `<link>` it rewrites, so the SSR
+    // nonce is the only source for the inline style.
+    const out = await runTransform(
+      [
+        '<html><head><link rel="stylesheet" href="/_next/static/app.css" data-precedence="next"/></head></html>',
+      ],
+      {
+        inlineCss: { "/_next/static/app.css": "p { color: yellow; }" },
+        inlineCssScriptNonce: "abc123",
+      },
+    );
+
+    expect(out).toContain('<style data-vinext-inline-css nonce="abc123"');
+    expect(out).toContain("p { color: yellow; }");
+  });
+
+  it("prefers the link's own nonce over the SSR script nonce when both are present", async () => {
+    // If Fizz ever does emit a nonce on the source `<link>`, that nonce was
+    // chosen for this resource specifically and should win.
+    const out = await runTransform(
+      [
+        '<html><head><link rel="stylesheet" nonce="link-nonce" href="/_next/static/app.css" data-precedence="next"/></head></html>',
+      ],
+      {
+        inlineCss: { "/_next/static/app.css": "p { color: yellow; }" },
+        inlineCssScriptNonce: "ssr-nonce",
+      },
+    );
+
+    expect(out).toContain('nonce="link-nonce"');
+    expect(out).not.toContain('nonce="ssr-nonce"');
+  });
+
+  it("omits the nonce attribute when neither the link nor the SSR provides one", async () => {
+    const out = await runTransform(
+      [
+        '<html><head><link rel="stylesheet" href="/_next/static/app.css" data-precedence="next"/></head></html>',
+      ],
+      {
+        inlineCss: { "/_next/static/app.css": "p { color: yellow; }" },
+      },
+    );
+
+    expect(out).toContain("<style data-vinext-inline-css");
+    expect(out).not.toContain("nonce=");
   });
 });

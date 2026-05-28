@@ -195,14 +195,26 @@ function getInlineCss(manifest: InlineCssManifest, href: string): string | null 
   return null;
 }
 
+// Module-level regex; consumers reset `lastIndex` before each scan. Same
+// shared-state constraint as the other `g`-flag regexes above.
+const TRAILING_LINK_OPEN_RE = /<link/gi;
+
 function splitTrailingIncompleteLinkTag(html: string): { complete: string; trailing: string } {
-  const linkStart = html.toLowerCase().lastIndexOf("<link");
-  if (linkStart === -1) return { complete: html, trailing: "" };
-  const close = html.indexOf(">", linkStart);
+  // Scan forward to find the last `<link` opening without allocating a
+  // lowercased copy of `html` — this runs on every flush of the streaming
+  // hot path, and `html` can be tens of KB.
+  TRAILING_LINK_OPEN_RE.lastIndex = 0;
+  let lastIndex = -1;
+  let match: RegExpExecArray | null;
+  while ((match = TRAILING_LINK_OPEN_RE.exec(html)) !== null) {
+    lastIndex = match.index;
+  }
+  if (lastIndex === -1) return { complete: html, trailing: "" };
+  const close = html.indexOf(">", lastIndex);
   if (close !== -1) return { complete: html, trailing: "" };
   return {
-    complete: html.slice(0, linkStart),
-    trailing: html.slice(linkStart),
+    complete: html.slice(0, lastIndex),
+    trailing: html.slice(lastIndex),
   };
 }
 
@@ -301,6 +313,7 @@ function rewriteInlineCssStylesheetLinks(
   html: string,
   inlineCssManifest: InlineCssManifest | undefined,
   prependCss: string,
+  ssrScriptNonce: string | undefined,
 ): InlineCssRewriteResult {
   if (!inlineCssManifest || Object.keys(inlineCssManifest).length === 0) {
     return { html, consumedPrependCss: false };
@@ -318,8 +331,13 @@ function rewriteInlineCssStylesheetLinks(
     const css = getInlineCss(inlineCssManifest, href);
     if (css === null) return tag;
 
-    const nonce = getHtmlAttribute(tag, "nonce");
-    const nonceAttr = nonce ? ` nonce="${escapeHtmlAttr(nonce)}"` : "";
+    // Prefer the link's own nonce if Fizz emitted one; otherwise fall back to
+    // the SSR-time script/style nonce so sites with CSP `style-src 'nonce-…'`
+    // policies don't block the inlined `<style>` block. The `<link>` tag this
+    // replaces wasn't subject to inline-style CSP, but the new `<style>` is.
+    const linkNonce = getHtmlAttribute(tag, "nonce");
+    const effectiveNonce = linkNonce ?? ssrScriptNonce;
+    const nonceAttr = effectiveNonce ? ` nonce="${escapeHtmlAttr(effectiveNonce)}"` : "";
     const shouldPrependCss = !consumedPrependCss && prependCss.length > 0 && canPrependCss(css);
     const cssPrefix = shouldPrependCss ? `${prependCss}\n` : "";
     consumedPrependCss ||= cssPrefix.length > 0;
@@ -377,6 +395,7 @@ export function createTickBufferedTransform(
   inlineCssManifest?: InlineCssManifest,
   inlineCssPrependCss = "",
   inlineCssPrependFallbackHTML = "",
+  inlineCssScriptNonce?: string,
 ): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -460,7 +479,12 @@ export function createTickBufferedTransform(
 
     const preparedHtml = fixPreloadAs(split.complete);
     const inlineCssResult = hasInlineCssManifest
-      ? rewriteInlineCssStylesheetLinks(preparedHtml, inlineCssManifest, inlineCssPrependCss)
+      ? rewriteInlineCssStylesheetLinks(
+          preparedHtml,
+          inlineCssManifest,
+          inlineCssPrependCss,
+          inlineCssScriptNonce,
+        )
       : { html: preparedHtml, consumedPrependCss: false };
     if (inlineCssResult.consumedPrependCss) {
       inlineCssPrependCss = "";
