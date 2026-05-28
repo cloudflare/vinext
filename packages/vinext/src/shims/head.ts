@@ -341,6 +341,11 @@ export function _applyHeadPropsToElement(
  * See: https://bugs.chromium.org/p/chromium/issues/detail?id=1211471#c12
  */
 export function isEqualHeadNode(oldTag: Element, newTag: Element): boolean {
+  // In production this only runs on the client (the reconciler is invoked
+  // from `syncClientHead`, gated by `typeof window !== "undefined"`). The
+  // `typeof HTMLElement` guard exists for the Node test environment, where
+  // unit tests drive `_reconcileClientHead` directly with DOM doubles and
+  // `HTMLElement` may be undefined.
   if (
     typeof HTMLElement !== "undefined" &&
     oldTag instanceof HTMLElement &&
@@ -370,8 +375,10 @@ export type HeadDocumentLike = {
   createElement(tag: string): Element;
 };
 type HeadEl = {
+  querySelector(selector: string): Element | null;
   querySelectorAll(selector: string): ArrayLike<Element>;
   appendChild(el: Element): unknown;
+  prepend(el: Element): unknown;
 };
 
 /**
@@ -426,6 +433,28 @@ export function _reconcileClientHead(
     bucket.add(el);
   }
 
+  // Adopt template-injected `<meta charset>` into the managed meta bucket so a
+  // `<Head><meta charSet="..." /></Head>` replaces it instead of duplicating.
+  // Mirrors the special case in Next.js's `updateElements`. We only adopt when
+  // `<Head>` itself declares a charset meta — Next.js adopts unconditionally,
+  // which removes a template `<meta charset>` even when `<Head>` never touches
+  // charset; that drop is arguably a Next.js bug and breaks templates that
+  // rely on the meta-charset tag staying put.
+  const desiredHasCharsetMeta = desiredByType
+    .get("meta")
+    ?.some((c) => (c.props as Record<string, unknown>).charSet !== undefined);
+  if (desiredHasCharsetMeta) {
+    const templateCharset = headEl.querySelector("meta[charset]");
+    if (templateCharset) {
+      let metaBucket = existingByType.get("meta");
+      if (!metaBucket) {
+        metaBucket = new Set();
+        existingByType.set("meta", metaBucket);
+      }
+      metaBucket.add(templateCharset);
+    }
+  }
+
   const tagTypes = new Set<string>([...desiredByType.keys(), ...existingByType.keys()]);
   for (const tagType of tagTypes) {
     const desiredForType = desiredByType.get(tagType) ?? [];
@@ -452,7 +481,19 @@ export function _reconcileClientHead(
       oldTag.parentNode?.removeChild(oldTag);
     }
     for (const newTag of toAppend) {
-      headEl.appendChild(newTag);
+      // `<meta charset>` must remain first in `<head>` for the HTML parser to
+      // honour it, so prepend rather than append. Matches Next.js's behaviour.
+      // React surfaces the prop as `charSet`; real DOM stores it as `charset`.
+      // Real browsers treat `getAttribute` as case-insensitive, but we accept
+      // both spellings so test doubles don't need to normalize.
+      if (
+        tagType === "meta" &&
+        (newTag.getAttribute("charset") !== null || newTag.getAttribute("charSet") !== null)
+      ) {
+        headEl.prepend(newTag);
+      } else {
+        headEl.appendChild(newTag);
+      }
     }
   }
 }

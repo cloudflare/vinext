@@ -5,7 +5,7 @@
  * plus comprehensive coverage for vinext's Head SSR collection, HTML
  * generation, allowed tags, and escaping.
  */
-import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Head, {
@@ -15,6 +15,7 @@ import Head, {
   reduceHeadChildren,
   _applyHeadPropsToElement,
   _reconcileClientHead,
+  isEqualHeadNode,
   type HeadDocumentLike,
 } from "../packages/vinext/src/shims/head.js";
 
@@ -626,6 +627,12 @@ describe("Head client reconciliation", () => {
       return el;
     }
 
+    prepend(el: FakeElement): FakeElement {
+      el.parentNode = this;
+      this.children.unshift(el);
+      return el;
+    }
+
     removeChild(el: FakeElement): FakeElement {
       const idx = this.children.indexOf(el);
       if (idx !== -1) this.children.splice(idx, 1);
@@ -638,6 +645,15 @@ describe("Head client reconciliation", () => {
         throw new Error(`FakeHead.querySelectorAll only supports [data-next-head]`);
       }
       return this.children.filter((c) => c.hasAttribute("data-next-head"));
+    }
+
+    querySelector(selector: string): FakeElement | null {
+      if (selector !== "meta[charset]") {
+        throw new Error(`FakeHead.querySelector only supports meta[charset]`);
+      }
+      return (
+        this.children.find((c) => c.tagName === "META" && c.hasAttribute("charset")) ?? null
+      );
     }
   }
 
@@ -778,5 +794,211 @@ describe("Head client reconciliation", () => {
     _reconcileClientHead(doc, [makeScript({ src: "/src-1.js", nonce: "abc123" })]);
     expect(doc.head.children).toHaveLength(1);
     expect(doc.head.children[0]!.getAttribute("src")).toBe("/src-1.js");
+  });
+
+  it("dedupes template-injected meta[charset] when <Head> declares its own", () => {
+    // Next.js-parity behaviour: a template `<meta charset>` (no
+    // `data-next-head`) is adopted into the meta bucket when `<Head>`
+    // declares its own charSet, so we replace rather than duplicate.
+    const doc = createFakeDocument();
+    const templateCharset = new FakeElement("meta");
+    templateCharset.setAttribute("charset", "utf-8");
+    doc.head.appendChild(templateCharset);
+
+    _reconcileClientHead(doc, [React.createElement("meta", { charSet: "utf-8" })]);
+
+    // Only one charset meta survives, and it is first in head (prepended).
+    const charsets = doc.head.children.filter((c) => c.tagName === "META");
+    expect(charsets).toHaveLength(1);
+    expect(doc.head.children[0]!.getAttribute("data-next-head")).toBe("");
+  });
+
+  it("prepends a managed meta[charset] so it stays first in <head>", () => {
+    // The HTML parser only honours `<meta charset>` if it appears in the
+    // first 1024 bytes of `<head>`. New charset metas must be prepended.
+    const doc = createFakeDocument();
+    // Pre-existing managed link/script to ensure prepend (not append) is
+    // exercised — appendChild would land it after them.
+    _reconcileClientHead(doc, [
+      React.createElement("link", { rel: "stylesheet", href: "/a.css" }),
+    ]);
+    expect(doc.head.children).toHaveLength(1);
+
+    _reconcileClientHead(doc, [
+      React.createElement("link", { rel: "stylesheet", href: "/a.css" }),
+      React.createElement("meta", { charSet: "utf-8" }),
+    ]);
+
+    expect(doc.head.children).toHaveLength(2);
+    expect(doc.head.children[0]!.tagName).toBe("META");
+    expect(doc.head.children[1]!.tagName).toBe("LINK");
+  });
+});
+
+// ─── isEqualHeadNode (nonce stripping) ──────────────────────────────────
+//
+// Direct unit coverage for the nonce-compensation branch of `isEqualHeadNode`.
+// The reconciler tests above use a structural-equality FakeElement that
+// never enters the `instanceof HTMLElement` branch, so we drive the helper
+// here with focused doubles that simulate Chrome/Firefox stripping the
+// `nonce` HTML attribute once an element is in the document (the `.nonce`
+// JS property is preserved).
+//
+// Vitest's default `node` environment doesn't provide `HTMLElement`, so we
+// install a minimal global stub. The helper's only requirements on the
+// `HTMLElement` constructor are that `instanceof` succeeds and the standard
+// `getAttribute` / `setAttribute` / `cloneNode` / `isEqualNode` / `.nonce`
+// surface is reachable.
+
+describe("isEqualHeadNode", () => {
+  type Attr = { name: string; value: string };
+  class StubHTMLElement {
+    public attrs: Attr[] = [];
+    public stripNonceAttribute = false;
+    public nonce: string | undefined;
+    public equalsTarget: StubHTMLElement | null = null;
+
+    getAttribute(name: string): string | null {
+      if (name === "nonce" && this.stripNonceAttribute) return "";
+      return this.attrs.find((a) => a.name === name)?.value ?? null;
+    }
+
+    setAttribute(name: string, value: string): void {
+      const existing = this.attrs.find((a) => a.name === name);
+      if (existing) existing.value = value;
+      else this.attrs.push({ name, value });
+    }
+
+    cloneNode(_deep?: boolean): StubHTMLElement {
+      const clone = new StubHTMLElement();
+      clone.attrs = this.attrs.map((a) => ({ ...a }));
+      return clone;
+    }
+
+    isEqualNode(other: StubHTMLElement | null): boolean {
+      return other === this.equalsTarget;
+    }
+  }
+
+  // Capture the original HTMLElement once (before our beforeEach ever runs)
+  // so afterAll restores the env even after multiple installs.
+  const originalHTMLElement = (globalThis as { HTMLElement?: typeof HTMLElement })
+    .HTMLElement;
+
+  beforeEach(() => {
+    // Vitest globals snapshot has HTMLElement undefined under the node env.
+    // Install our stub before each test so `instanceof HTMLElement` matches.
+    (globalThis as { HTMLElement?: unknown }).HTMLElement = StubHTMLElement;
+  });
+
+  it("treats two nonced elements as equal when the browser stripped oldTag's nonce attribute", () => {
+    // Scenario:
+    //  - oldTag is in the document: its `nonce` HTML attribute was stripped
+    //    (Chrome/Firefox behaviour under CSP), but `.nonce` still holds the
+    //    real value.
+    //  - newTag is freshly created and still has the `nonce` attribute.
+    // Expected: `isEqualHeadNode` enters the nonce-stripping branch, clones
+    // newTag with nonce="" and `.nonce` preserved, then compares.
+    const oldTag = new StubHTMLElement();
+    oldTag.setAttribute("src", "/app.js");
+    oldTag.setAttribute("nonce", "abc123");
+    oldTag.stripNonceAttribute = true;
+    oldTag.nonce = "abc123";
+
+    const newTag = new StubHTMLElement();
+    newTag.setAttribute("src", "/app.js");
+    newTag.setAttribute("nonce", "abc123");
+
+    // The branch calls oldTag.isEqualNode(cloneTag). Capture the clone so we
+    // can assert its shape (nonce attribute stripped, .nonce preserved).
+    let capturedClone: StubHTMLElement | null = null;
+    oldTag.isEqualNode = function (other: StubHTMLElement | null): boolean {
+      capturedClone = other;
+      return true;
+    };
+
+    expect(isEqualHeadNode(oldTag as unknown as Element, newTag as unknown as Element)).toBe(true);
+    expect(capturedClone).not.toBe(newTag);
+    // The clone's nonce attribute must be the stripped sentinel.
+    expect(capturedClone!.getAttribute("nonce")).toBe("");
+    // ...but the typed .nonce property must be preserved so the live element
+    // can still satisfy CSP after replacement.
+    expect(capturedClone!.nonce).toBe("abc123");
+  });
+
+  it("requires .nonce on oldTag to match the new tag's attribute nonce", () => {
+    // If a stale element claims to be CSP-compliant via attribute-stripping
+    // but its `.nonce` property doesn't match, the comparison must fail.
+    const oldTag = new StubHTMLElement();
+    oldTag.setAttribute("nonce", "abc123");
+    oldTag.stripNonceAttribute = true;
+    oldTag.nonce = "different-nonce";
+
+    const newTag = new StubHTMLElement();
+    newTag.setAttribute("nonce", "abc123");
+
+    // Even if structural isEqualNode would say true, the .nonce mismatch
+    // short-circuits to false.
+    oldTag.isEqualNode = (): boolean => true;
+
+    expect(isEqualHeadNode(oldTag as unknown as Element, newTag as unknown as Element)).toBe(
+      false,
+    );
+  });
+
+  it("falls through to plain isEqualNode when neither tag carries a nonce", () => {
+    // The optimization only matters when a nonce is present. Without one,
+    // the helper must defer entirely to the native isEqualNode result.
+    const oldTag = new StubHTMLElement();
+    const newTag = new StubHTMLElement();
+    oldTag.equalsTarget = newTag;
+
+    expect(isEqualHeadNode(oldTag as unknown as Element, newTag as unknown as Element)).toBe(true);
+
+    // Inequality propagates too: a different target makes isEqualNode return false.
+    const otherTag = new StubHTMLElement();
+    expect(isEqualHeadNode(oldTag as unknown as Element, otherTag as unknown as Element)).toBe(
+      false,
+    );
+  });
+
+  it("falls through to plain isEqualNode when oldTag's nonce attribute is still present", () => {
+    // If oldTag still has its `nonce` attribute (CSP isn't stripping it),
+    // the nonce-stripping branch must NOT be taken — we fall straight
+    // through to plain `isEqualNode`.
+    const oldTag = new StubHTMLElement();
+    oldTag.setAttribute("nonce", "abc123");
+    // stripNonceAttribute stays false: getAttribute returns the real value.
+
+    const newTag = new StubHTMLElement();
+    newTag.setAttribute("nonce", "abc123");
+
+    let usedFallback = false;
+    oldTag.isEqualNode = function (other: StubHTMLElement | null): boolean {
+      usedFallback = other === newTag;
+      return usedFallback;
+    };
+
+    expect(isEqualHeadNode(oldTag as unknown as Element, newTag as unknown as Element)).toBe(true);
+    expect(usedFallback).toBe(true);
+  });
+
+  it("falls through to plain isEqualNode when neither side is an HTMLElement", () => {
+    // Important: the FakeElement used by the reconciler tests above is NOT
+    // an HTMLElement, so isEqualHeadNode must skip the strip branch entirely
+    // and defer to whatever `oldTag.isEqualNode` returns.
+    const oldTag = { isEqualNode: (other: unknown): boolean => other === newTag };
+    const newTag = {};
+    expect(isEqualHeadNode(oldTag as unknown as Element, newTag as unknown as Element)).toBe(true);
+  });
+
+  // Restore HTMLElement after this describe so other tests aren't polluted.
+  // Using `afterEach` would restore between tests; we want restore after all.
+  afterAll(() => {
+    if (originalHTMLElement === undefined) {
+      delete (globalThis as { HTMLElement?: unknown }).HTMLElement;
+    } else {
+      (globalThis as { HTMLElement?: unknown }).HTMLElement = originalHTMLElement;
+    }
   });
 });
