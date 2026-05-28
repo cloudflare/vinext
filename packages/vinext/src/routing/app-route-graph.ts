@@ -824,6 +824,16 @@ export async function buildAppRouteGraph(
   // (slot pages are not standalone routes — they're rendered as props of their parent layout)
   // and _private folders (Next.js convention for colocated non-route files).
   //
+  // The `@children` directory is special: Next.js treats `@children` as
+  // transparent — `app/@children/page.tsx` provides the layout's children
+  // prop for `/` and registers a real page route at `/`. This mirrors the
+  // Next.js types plugin (which skips `@children` when enumerating slots)
+  // and `normalizeAppPath` (which strips any `@` segment including
+  // `@children` from the URL). See:
+  //   - packages/next/src/build/webpack/plugins/next-types-plugin/index.ts
+  //   - packages/next/src/shared/lib/router/utils/app-paths.ts
+  //   - packages/next/src/build/normalize-catchall-routes.ts
+  //
   // Interception marker directories (e.g. `(.)photo`, `(..)showcase`,
   // `(..)(..)hoge`, `(...)photos`) are also excluded from the global page
   // scan because the marker is not a real URL segment — Next.js treats these
@@ -836,7 +846,9 @@ export async function buildAppRouteGraph(
   const routes: AppRouteGraphRoute[] = [];
 
   const excludeDir = (name: string) =>
-    name.startsWith("@") || name.startsWith("_") || isInterceptionMarkerDir(name);
+    (name.startsWith("@") && name !== "@children") ||
+    name.startsWith("_") ||
+    isInterceptionMarkerDir(name);
 
   // Process page files in a single pass
   // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14)
@@ -911,9 +923,13 @@ export async function buildAppRouteGraph(
 
 function hasParallelSlotDirectory(dir: string): boolean {
   try {
-    return fs
-      .readdirSync(dir, { withFileTypes: true })
-      .some((entry) => entry.isDirectory() && entry.name.startsWith("@"));
+    return fs.readdirSync(dir, { withFileTypes: true }).some(
+      (entry) =>
+        entry.isDirectory() &&
+        entry.name.startsWith("@") &&
+        // `@children` is not a parallel slot — see discoverParallelSlots.
+        entry.name !== "@children",
+    );
   } catch {
     return false;
   }
@@ -1230,7 +1246,21 @@ function fileToAppRoute(
   matcher: ValidFileMatcher,
 ): AppRouteGraphRoute | null {
   // Remove the filename (page.tsx or route.ts)
-  const dir = path.dirname(file);
+  let dir = path.dirname(file);
+
+  // `@children` is transparent in routing: `app/foo/@children/page.tsx`
+  // provides the children prop for `/foo` and registers a real page route
+  // at `/foo`. Strip a trailing `@children` segment so the route is
+  // anchored at its parent directory — that way slot discovery treats
+  // sibling `@slot` directories as owned (not inherited) and the route's
+  // layouts/boundaries are sourced from the parent. Mirrors Next.js'
+  // `normalizeAppPath` which drops any `@` segment (including `@children`)
+  // from the URL. See packages/next/src/shared/lib/router/utils/app-paths.ts.
+  if (type === "page" && dir !== "." && path.basename(dir) === "@children") {
+    const parent = path.dirname(dir);
+    dir = parent === "" || parent === "." ? "." : parent;
+  }
+
   return directoryToAppRoute(
     dir,
     appDir,
@@ -1862,6 +1892,12 @@ function discoverParallelSlots(
 
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith("@")) continue;
+    // `@children` is not a parallel slot — Next.js maps it to the layout's
+    // `children` prop, i.e., it provides the route's page rather than an
+    // independent slot. Skip it here so it never appears in parallelSlots.
+    // See packages/next/src/build/webpack/plugins/next-types-plugin/index.ts
+    // and packages/next/src/build/normalize-catchall-routes.ts.
+    if (entry.name === "@children") continue;
 
     const slotName = entry.name.slice(1); // "@team" -> "team"
     const slotDir = path.join(dir, entry.name);
