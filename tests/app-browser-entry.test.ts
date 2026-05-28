@@ -815,7 +815,11 @@ describe("app browser entry navigation scheduling", () => {
     const fallback = normalizeServerActionThrownValue(new Error("sanitized"), 404);
 
     expect(fallback).toBeInstanceOf(Error);
-    expect((fallback as Error & { digest?: string }).digest).toBe("NEXT_HTTP_ERROR_FALLBACK;404");
+    if (fallback instanceof Error && "digest" in fallback) {
+      expect(fallback.digest).toBe("NEXT_HTTP_ERROR_FALLBACK;404");
+    } else {
+      throw new Error("Expected fallback to have a digest property");
+    }
   });
 
   it("uses text/plain action response bodies as boundary errors", async () => {

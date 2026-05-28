@@ -105,15 +105,13 @@ export function resolveServerActionRedirectLocation(options: {
   };
 }
 
-type DigestError = Error & { digest: string };
-
-function createServerActionHttpFallbackError(status: number): Error | null {
+function createServerActionHttpFallbackError(status: number): (Error & { digest: string }) | null {
   if (status < 400 || status > 599) return null;
 
-  const error = new Error(status === 404 ? "NEXT_NOT_FOUND" : `NEXT_HTTP_ERROR_FALLBACK;${status}`);
-  (error as DigestError).digest =
+  const digest =
     status === 404 ? "NEXT_HTTP_ERROR_FALLBACK;404" : `NEXT_HTTP_ERROR_FALLBACK;${status}`;
-  return error;
+  const error = new Error(status === 404 ? "NEXT_NOT_FOUND" : `NEXT_HTTP_ERROR_FALLBACK;${status}`);
+  return Object.assign(error, { digest });
 }
 
 export function normalizeServerActionThrownValue(data: unknown, responseStatus: number): unknown {
