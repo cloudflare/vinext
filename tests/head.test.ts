@@ -14,6 +14,8 @@ import Head, {
   escapeAttr,
   reduceHeadChildren,
   _applyHeadPropsToElement,
+  _reconcileClientHead,
+  type HeadDocumentLike,
 } from "../packages/vinext/src/shims/head.js";
 
 // ─── SSR rendering (mirrors Next.js test/unit/next-head-rendering.test.ts) ──
@@ -554,5 +556,227 @@ describe("escapeAttr", () => {
 
   it("escapes all special chars together", () => {
     expect(escapeAttr('&"<>')).toBe("&amp;&quot;&lt;&gt;");
+  });
+});
+
+// ─── Head client reconciliation (dedupe on re-render) ───────────────────
+//
+// Regression coverage for issue #1473: the Pages Router head manager must
+// dedupe by attribute identity so `<script>` and `<link>` tags inside
+// `<Head>` are preserved across re-renders (instead of being removed and
+// re-appended, which re-executes scripts / re-fetches resources). Mirrors
+// `.nextjs-ref/packages/next/src/client/head-manager.ts:updateElements`
+// and the e2e test at `.nextjs-ref/test/e2e/nonce-head-manager/index.test.ts`.
+
+describe("Head client reconciliation", () => {
+  type FakeAttrEntry = { name: string; value: string };
+
+  let nextFakeElementId = 0;
+  class FakeElement {
+    public readonly tagName: string;
+    public readonly attributes: FakeAttrEntry[] = [];
+    public innerHTML = "";
+    public textContent = "";
+    public parentNode: FakeHead | null = null;
+    // Surfaced so we can detect re-execution: if the test observes the same
+    // FakeElement instance pre- and post-render, the underlying DOM node was
+    // preserved (no script re-execution). A different instance would mean the
+    // reconciler removed-then-recreated, which is the bug we are guarding
+    // against.
+    public readonly id: number;
+
+    constructor(tag: string) {
+      this.tagName = tag.toUpperCase();
+      this.id = ++nextFakeElementId;
+    }
+
+    setAttribute(name: string, value: string): void {
+      const existing = this.attributes.find((a) => a.name === name);
+      if (existing) existing.value = value;
+      else this.attributes.push({ name, value });
+    }
+
+    getAttribute(name: string): string | null {
+      return this.attributes.find((a) => a.name === name)?.value ?? null;
+    }
+
+    hasAttribute(name: string): boolean {
+      return this.attributes.some((a) => a.name === name);
+    }
+
+    isEqualNode(other: FakeElement): boolean {
+      if (this.tagName !== other.tagName) return false;
+      // Compare attribute sets order-independently so reconciliation matches
+      // the spec-level definition (HTML attributes are unordered).
+      if (this.attributes.length !== other.attributes.length) return false;
+      const otherMap = new Map(other.attributes.map((a) => [a.name, a.value]));
+      for (const { name, value } of this.attributes) {
+        if (otherMap.get(name) !== value) return false;
+      }
+      return this.innerHTML === other.innerHTML && this.textContent === other.textContent;
+    }
+  }
+
+  class FakeHead {
+    public readonly children: FakeElement[] = [];
+
+    appendChild(el: FakeElement): FakeElement {
+      el.parentNode = this;
+      this.children.push(el);
+      return el;
+    }
+
+    removeChild(el: FakeElement): FakeElement {
+      const idx = this.children.indexOf(el);
+      if (idx !== -1) this.children.splice(idx, 1);
+      el.parentNode = null;
+      return el;
+    }
+
+    querySelectorAll(selector: string): FakeElement[] {
+      if (selector !== "[data-next-head]") {
+        throw new Error(`FakeHead.querySelectorAll only supports [data-next-head]`);
+      }
+      return this.children.filter((c) => c.hasAttribute("data-next-head"));
+    }
+  }
+
+  type FakeDoc = HeadDocumentLike & { readonly head: FakeHead };
+
+  function createFakeDocument(): FakeDoc {
+    const head = new FakeHead();
+    // The internal reconciler is typed against a real DOM Element/Document
+    // shape; cast through `unknown` because FakeElement is intentionally a
+    // narrower duck-type (just enough for the reconciler's calls).
+    const doc = {
+      head,
+      createElement(tag: string): Element {
+        return new FakeElement(tag) as unknown as Element;
+      },
+    };
+    return doc as unknown as FakeDoc;
+  }
+
+  function makeScript(props: Record<string, unknown>): React.ReactElement {
+    return React.createElement("script", props);
+  }
+
+  it("preserves identical script tags across re-renders (no re-execution)", () => {
+    // The canonical issue #1473 scenario: a <script src="..."> inside <Head>
+    // must NOT be removed-and-re-appended when the host component re-renders.
+    // The reconciler returns the exact same DOM node instance for matching
+    // tags, which the browser then leaves in place — preserving the loaded
+    // state of the script.
+    const doc = createFakeDocument();
+
+    _reconcileClientHead(doc, [makeScript({ src: "/src-1.js" })]);
+    expect(doc.head.children).toHaveLength(1);
+    const firstNode = doc.head.children[0]!;
+    expect(firstNode.getAttribute("src")).toBe("/src-1.js");
+
+    // Re-render with the exact same projection — equivalent to a parent
+    // component re-rendering without changing any head content.
+    _reconcileClientHead(doc, [makeScript({ src: "/src-1.js" })]);
+    expect(doc.head.children).toHaveLength(1);
+    // Same node instance survives — no DOM churn, so the browser won't
+    // re-execute the script.
+    expect(doc.head.children[0]).toBe(firstNode);
+  });
+
+  it("appends a new tag when the script src actually changes", () => {
+    const doc = createFakeDocument();
+
+    _reconcileClientHead(doc, [makeScript({ src: "/src-1.js" })]);
+    const firstNode = doc.head.children[0]!;
+
+    _reconcileClientHead(doc, [makeScript({ src: "/src-2.js" })]);
+    expect(doc.head.children).toHaveLength(1);
+    expect(doc.head.children[0]!.getAttribute("src")).toBe("/src-2.js");
+    // The previous /src-1.js node was removed (different src) — the new
+    // /src-2.js is a distinct node.
+    expect(doc.head.children[0]).not.toBe(firstNode);
+  });
+
+  it("preserves the script node even when a CSP nonce is present", () => {
+    // Mirrors the `/csp` variant of the upstream nonce-head-manager test.
+    // Browsers strip the `nonce` attribute from serialised HTML once the
+    // element is in the document, so `isEqualNode` would naively report
+    // unequal — the reconciler must compensate.
+    const doc = createFakeDocument();
+
+    _reconcileClientHead(doc, [makeScript({ src: "/src-1.js", nonce: "abc123" })]);
+    const firstNode = doc.head.children[0]!;
+    expect(firstNode.getAttribute("nonce")).toBe("abc123");
+
+    // Simulate the browser stripping `nonce` from the live attribute (it
+    // remains on the element's `.nonce` property in real DOM). We only have
+    // attributes in this double, so for the equality test the "stripped"
+    // form just means the attribute string match still works because both
+    // sides carry the same nonce attribute.
+    _reconcileClientHead(doc, [makeScript({ src: "/src-1.js", nonce: "abc123" })]);
+    expect(doc.head.children).toHaveLength(1);
+    expect(doc.head.children[0]).toBe(firstNode);
+  });
+
+  it("removes managed tags that are no longer desired", () => {
+    const doc = createFakeDocument();
+
+    _reconcileClientHead(doc, [
+      makeScript({ src: "/keep.js" }),
+      React.createElement("link", { rel: "stylesheet", href: "/drop.css" }),
+    ]);
+    expect(doc.head.children).toHaveLength(2);
+
+    _reconcileClientHead(doc, [makeScript({ src: "/keep.js" })]);
+    expect(doc.head.children).toHaveLength(1);
+    expect(doc.head.children[0]!.tagName).toBe("SCRIPT");
+    expect(doc.head.children[0]!.getAttribute("src")).toBe("/keep.js");
+  });
+
+  it("leaves unmanaged head children alone", () => {
+    // Tags without `data-next-head` (e.g. a `<meta charset>` written into the
+    // HTML template) must never be touched by the reconciler. This guards
+    // against accidentally widening the selector.
+    const doc = createFakeDocument();
+    const unmanaged = new FakeElement("meta");
+    unmanaged.setAttribute("charset", "utf-8");
+    doc.head.appendChild(unmanaged);
+
+    _reconcileClientHead(doc, [
+      React.createElement("meta", { name: "description", content: "hello" }),
+    ]);
+
+    // Original unmanaged tag is still present, plus the newly managed one.
+    expect(doc.head.children).toContain(unmanaged);
+    expect(doc.head.children).toHaveLength(2);
+  });
+
+  it("matches Next.js nonce-head-manager sequence: render, re-render, change, change back", () => {
+    // End-to-end shape of the upstream e2e test (without a real browser):
+    //   1. Render with src-1.js
+    //   2. Re-render with identical content (force-rerender click)
+    //   3. Change to src-2.js
+    //   4. Change back to src-1.js
+    //
+    // Expectation: step 2 preserves the node (no churn). Steps 3 and 4 each
+    // produce a fresh node (different src). The reconciler must never leave
+    // duplicate tags behind.
+    const doc = createFakeDocument();
+
+    _reconcileClientHead(doc, [makeScript({ src: "/src-1.js", nonce: "abc123" })]);
+    const node1 = doc.head.children[0]!;
+
+    _reconcileClientHead(doc, [makeScript({ src: "/src-1.js", nonce: "abc123" })]);
+    expect(doc.head.children).toHaveLength(1);
+    expect(doc.head.children[0]).toBe(node1);
+
+    _reconcileClientHead(doc, [makeScript({ src: "/src-2.js", nonce: "abc123" })]);
+    expect(doc.head.children).toHaveLength(1);
+    expect(doc.head.children[0]).not.toBe(node1);
+    expect(doc.head.children[0]!.getAttribute("src")).toBe("/src-2.js");
+
+    _reconcileClientHead(doc, [makeScript({ src: "/src-1.js", nonce: "abc123" })]);
+    expect(doc.head.children).toHaveLength(1);
+    expect(doc.head.children[0]!.getAttribute("src")).toBe("/src-1.js");
   });
 });

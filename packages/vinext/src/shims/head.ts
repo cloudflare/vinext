@@ -324,19 +324,150 @@ export function _applyHeadPropsToElement(
   }
 }
 
-function syncClientHead(): void {
-  document.querySelectorAll("[data-next-head]").forEach((el) => el.remove());
-
-  for (const child of reduceHeadChildren([..._clientHeadChildren.values()])) {
-    if (typeof child.type !== "string") continue;
-
-    const domEl = document.createElement(child.type);
-    const props = child.props as Record<string, unknown>;
-    _applyHeadPropsToElement(domEl, props);
-
-    domEl.setAttribute("data-next-head", "");
-    document.head.appendChild(domEl);
+/**
+ * When a `nonce` is present on an element, browsers such as Chrome and Firefox
+ * strip it out of the actual HTML attributes for security reasons *when the
+ * element is added to the document*. Thus, two equivalent elements that have
+ * nonces will compare as unequal with `Element.isEqualNode()` once one has
+ * been added to the document. Although the `element.nonce` property will be
+ * the same for both elements, the one that was added to the document will
+ * return an empty string for its nonce HTML attribute value.
+ *
+ * This helper therefore strips the nonce value from `newTag` (preserving the
+ * typed `.nonce` property) before comparing it to `oldTag`. Mirrors Next.js's
+ * head-manager isEqualNode:
+ * .nextjs-ref/packages/next/src/client/head-manager.ts
+ *
+ * See: https://bugs.chromium.org/p/chromium/issues/detail?id=1211471#c12
+ */
+export function isEqualHeadNode(oldTag: Element, newTag: Element): boolean {
+  if (
+    typeof HTMLElement !== "undefined" &&
+    oldTag instanceof HTMLElement &&
+    newTag instanceof HTMLElement
+  ) {
+    const nonce = newTag.getAttribute("nonce");
+    // Only strip the nonce if `oldTag` has had it stripped. An element's nonce
+    // attribute is only stripped by the browser when a CSP nonce policy is
+    // active; otherwise the attribute remains and the values compare normally.
+    if (nonce && !oldTag.getAttribute("nonce")) {
+      const cloneTag = newTag.cloneNode(true) as HTMLElement;
+      cloneTag.setAttribute("nonce", "");
+      cloneTag.nonce = nonce;
+      return nonce === oldTag.nonce && oldTag.isEqualNode(cloneTag);
+    }
   }
+  return oldTag.isEqualNode(newTag);
+}
+
+/**
+ * Minimal `Document` surface required by the head reconciler. Exported (as a
+ * type) so tests can build a focused DOM double without dragging in a full
+ * `Document` polyfill.
+ */
+export type HeadDocumentLike = {
+  head: HeadEl | null;
+  createElement(tag: string): Element;
+};
+type HeadEl = {
+  querySelectorAll(selector: string): ArrayLike<Element>;
+  appendChild(el: Element): unknown;
+};
+
+/**
+ * Reconcile `desired` head elements against existing `[data-next-head]` tags
+ * inside `doc.head`. Mirrors Next.js's head-manager
+ * (`.nextjs-ref/packages/next/src/client/head-manager.ts`): instead of
+ * purging every managed element and recreating it (which would re-execute
+ * `<script>` tags and re-fetch `<link>` resources on every render), we diff
+ * desired against existing per tag type and only touch the DOM for the diff.
+ *
+ * Extracted from `syncClientHead` so tests can drive it with a DOM double
+ * without setting global `document`.
+ *
+ * @internal exported for tests only.
+ */
+export function _reconcileClientHead(
+  doc: HeadDocumentLike,
+  desired: readonly React.ReactElement[],
+): void {
+  const headEl = doc.head;
+  if (!headEl) return;
+
+  // Bucket desired elements by tag type so we diff each bucket independently.
+  // Matches Next.js's per-type reconciliation; `data-next-head` is scoped per
+  // tag, and a desired `<meta>` should never accidentally match an existing
+  // `<link>` even if their attribute shapes overlap.
+  const desiredByType = new Map<string, React.ReactElement[]>();
+  for (const child of desired) {
+    if (typeof child.type !== "string") continue;
+    let list = desiredByType.get(child.type);
+    if (!list) {
+      list = [];
+      desiredByType.set(child.type, list);
+    }
+    list.push(child);
+  }
+
+  // Snapshot existing managed elements once. We will mutate the per-type sets
+  // as we match new tags to old ones; anything left over is genuinely stale
+  // and must be removed.
+  const existingByType = new Map<string, Set<Element>>();
+  const managed = headEl.querySelectorAll("[data-next-head]");
+  for (let i = 0; i < managed.length; i++) {
+    const el = managed[i];
+    if (!el) continue;
+    const tag = el.tagName.toLowerCase();
+    let bucket = existingByType.get(tag);
+    if (!bucket) {
+      bucket = new Set();
+      existingByType.set(tag, bucket);
+    }
+    bucket.add(el);
+  }
+
+  const tagTypes = new Set<string>([...desiredByType.keys(), ...existingByType.keys()]);
+  for (const tagType of tagTypes) {
+    const desiredForType = desiredByType.get(tagType) ?? [];
+    const oldTags = existingByType.get(tagType) ?? new Set<Element>();
+    const toAppend: Element[] = [];
+
+    for (const component of desiredForType) {
+      const newTag = doc.createElement(tagType);
+      _applyHeadPropsToElement(newTag, component.props as Record<string, unknown>);
+      newTag.setAttribute("data-next-head", "");
+
+      let matched = false;
+      for (const oldTag of oldTags) {
+        if (isEqualHeadNode(oldTag, newTag)) {
+          oldTags.delete(oldTag);
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) toAppend.push(newTag);
+    }
+
+    for (const oldTag of oldTags) {
+      oldTag.parentNode?.removeChild(oldTag);
+    }
+    for (const newTag of toAppend) {
+      headEl.appendChild(newTag);
+    }
+  }
+}
+
+/**
+ * Synchronise the client `<head>` with the reduced projection of all mounted
+ * `<Head>` instances. Thin wrapper around `_reconcileClientHead` that pulls
+ * the desired set from the live `_clientHeadChildren` map and dispatches to
+ * the global `document`.
+ */
+function syncClientHead(): void {
+  _reconcileClientHead(
+    document as unknown as HeadDocumentLike,
+    reduceHeadChildren([..._clientHeadChildren.values()]),
+  );
 }
 
 // --- Component ---
