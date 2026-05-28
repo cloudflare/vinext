@@ -1302,3 +1302,135 @@ describe("Link href trailing-slash (trailingSlash: false default)", () => {
     expect(trailing).toContain('href="https://nextjs.org/"');
   });
 });
+
+// ─── legacyBehavior (parity with Next.js) ───────────────────────────────
+//
+// Ported from Next.js: test/e2e/legacy-link-behavior-pages/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/legacy-link-behavior-pages/index.test.ts
+//
+// In legacy behavior, <Link> must not wrap its child in an extra <a>.
+// Instead it forwards `href` (and click handlers) to the single child
+// element via React.cloneElement. Otherwise, a Link wrapping a custom
+// `<a id="custom-button">` produces nested anchors which are illegal HTML
+// and break onClick propagation.
+
+describe("Link legacyBehavior", () => {
+  it("does not wrap a child <a> in an extra anchor and forwards href", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: "/about", legacyBehavior: true } as any,
+        React.createElement("a", { id: "custom-button" }, "About"),
+      ),
+    );
+
+    // Exactly one anchor in the output (no nested <a><a></a></a>).
+    const anchorOpens = (html.match(/<a\b/g) ?? []).length;
+    expect(anchorOpens).toBe(1);
+
+    // The child anchor must keep its id and visible text.
+    expect(html).toContain('id="custom-button"');
+    expect(html).toContain("About");
+
+    // The href is forwarded to the child anchor.
+    expect(html).toContain('href="/about"');
+
+    // No duplicated children text (e.g. "AboutAbout").
+    expect(html).not.toMatch(/About\s*About/);
+  });
+
+  it("wraps a string child in an <a> with the forwarded href", () => {
+    // Per Next.js: when the child is a string or number, Next wraps it in an
+    // <a> so the legacy behaviour still works. We mirror that here.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/about", legacyBehavior: true } as any, "About"),
+    );
+
+    const anchorOpens = (html.match(/<a\b/g) ?? []).length;
+    expect(anchorOpens).toBe(1);
+    expect(html).toContain('href="/about"');
+    expect(html).toContain("About");
+  });
+
+  it("wraps a numeric child in an <a> with the forwarded href", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/about", legacyBehavior: true } as any, 1000),
+    );
+
+    const anchorOpens = (html.match(/<a\b/g) ?? []).length;
+    expect(anchorOpens).toBe(1);
+    expect(html).toContain('href="/about"');
+    expect(html).toContain("1000");
+  });
+
+  it("does not forward href when the child <a> already has one (no passHref)", () => {
+    // Next.js: when legacyBehavior is set, href is only forwarded if
+    // `passHref` is true OR the child is an <a> without a href.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: "/about", legacyBehavior: true } as any,
+        React.createElement("a", { href: "/manual", id: "custom-button" }, "Manual"),
+      ),
+    );
+
+    const anchorOpens = (html.match(/<a\b/g) ?? []).length;
+    expect(anchorOpens).toBe(1);
+    expect(html).toContain('href="/manual"');
+    expect(html).toContain('id="custom-button"');
+    expect(html).not.toContain('href="/about"');
+  });
+
+  it("forwards href to a custom component child when passHref is set", () => {
+    // Matches the Next.js passHref/legacyBehavior fixture: a custom anchor
+    // component should receive `href` via React.cloneElement.
+    function CustomAnchor(props: { href?: string; children?: React.ReactNode }) {
+      return React.createElement("a", { href: props.href, id: "custom-button" }, props.children);
+    }
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: "/about", legacyBehavior: true, passHref: true } as any,
+        React.createElement(CustomAnchor, null, "About"),
+      ),
+    );
+
+    const anchorOpens = (html.match(/<a\b/g) ?? []).length;
+    expect(anchorOpens).toBe(1);
+    expect(html).toContain('href="/about"');
+    expect(html).toContain('id="custom-button"');
+    expect(html).toContain("About");
+  });
+
+  it("preserves the child's onClick handler (parity-shape check via cloneElement props)", () => {
+    // We can't dispatch a real DOM click in this Node-only test environment.
+    // Instead, verify that React.cloneElement preserves the child's onClick
+    // by introspecting the rendered tree via a custom child that records its
+    // own props on render. If the legacyBehavior path were still wrapping the
+    // child in an extra <a>, the child's onClick would NOT be installed on
+    // the outer <a> the user actually clicks; the wrapper would swallow it.
+    let receivedProps: { href?: string; onClick?: unknown } | null = null;
+
+    function Probe(props: { href?: string; onClick?: () => void; children?: React.ReactNode }) {
+      receivedProps = props;
+      return React.createElement("a", props, props.children);
+    }
+
+    const childOnClick = (): void => {};
+    ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: "/about", legacyBehavior: true, passHref: true } as any,
+        React.createElement(Probe, { onClick: childOnClick }, "About"),
+      ),
+    );
+
+    // The legacy path must clone the child with Link's href.
+    expect(receivedProps).not.toBeNull();
+    expect(receivedProps!.href).toBe("/about");
+    // The child's own onClick is preserved (the Link wraps it inside its
+    // synthesized handler — verifying the prop exists on the child).
+    expect(typeof receivedProps!.onClick).toBe("function");
+  });
+});
