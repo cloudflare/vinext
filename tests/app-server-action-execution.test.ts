@@ -1718,7 +1718,7 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(response?.status).toBe(200);
+    expect(response?.status).toBe(303);
     expect(response?.headers.get("x-edge-runtime")).toBe("1");
   });
 

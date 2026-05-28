@@ -159,7 +159,7 @@ export function resolveAppPageSegmentConfig(
       segment.revalidate,
     );
 
-    if (typeof segment.runtime === "string") {
+    if (typeof segment.runtime === "string" && isRouteSegmentRuntime(segment.runtime)) {
       config.runtime = segment.runtime;
     }
   }

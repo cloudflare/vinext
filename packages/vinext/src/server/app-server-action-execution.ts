@@ -315,7 +315,7 @@ function readSetCookieNameValue(setCookie: string): { name: string; value: strin
 function isExpiredSetCookie(setCookie: string): boolean {
   return (
     /(?:^|;\s*)max-age=0(?:;|$)/i.test(setCookie) ||
-    /(?:^|;\s*)expires=Thu, 01 Jan 1970/i.test(setCookie)
+    /(?:^|;\s*)expires=Thu,\s*0?1\s+Jan\s+1970/i.test(setCookie)
   );
 }
 
@@ -340,7 +340,10 @@ function applySetCookieMutationsToRequestCookieHeader(
     if (isExpiredSetCookie(setCookie)) {
       cookies.delete(entry.name);
     } else {
-      cookies.set(entry.name, encodeURIComponent(entry.value));
+      // Cookie header values are raw, not URL-encoded. The value from
+      // readSetCookieNameValue has already been decoded from the Set-Cookie
+      // header's URL-encoded form, so store it as-is.
+      cookies.set(entry.name, entry.value);
     }
   }
 
@@ -697,6 +700,10 @@ export async function handleProgressiveServerActionRequest(
     return null;
   }
 
+  // Progressive form submissions (multipart form data without an actionId)
+  // don't carry a forwarded-action header. They route to the visible page
+  // directly and can't be redirected cross-runtime, so no forwarded guard is
+  // needed here.
   const csrfResponse = validateCsrfOrigin(options.request, options.allowedOrigins);
   if (csrfResponse) {
     return csrfResponse;
@@ -1075,6 +1082,10 @@ export async function handleServerActionRscRequest<
       actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
     );
 
+    // When an action returned a non-200 HTTP fallback status (e.g. 404 from
+    // notFound()), skip the early page render so the error boundary displays
+    // the fallback payload embedded in returnValue. Only skip when the action
+    // status is 200 and no revalidation side-effects occurred.
     const shouldSkipPageRendering =
       actionWasForwarded ||
       (actionStatus === 200 && actionRevalidationKind === ACTION_DID_NOT_REVALIDATE);

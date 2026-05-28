@@ -75,7 +75,10 @@ function rootRouteBoundaryPath(
   if (route.pattern === "/") return fallbackPath ?? null;
 
   const rootPosition = route.layoutTreePositions[0];
-  const rootLayoutIndex = route.layoutTreePositions.indexOf(rootPosition);
+  // layoutTreePositions[0] is always the root layout. Use findIndex over every
+  // position so the boundary index aligns with entries skipped by the root
+  // layout path filter (non-root layout tree entries can interleave).
+  const rootLayoutIndex = route.layoutTreePositions.findIndex((p) => p === rootPosition);
   return boundaryPaths?.[rootLayoutIndex] ?? fallbackPath ?? null;
 }
 

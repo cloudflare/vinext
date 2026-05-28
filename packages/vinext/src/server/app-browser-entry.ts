@@ -21,7 +21,6 @@ import {
   getClientNavigationRenderContext,
   getPrefetchCache,
   invalidatePrefetchCache,
-  navigateClientSide,
   pushHistoryStateWithoutNotify,
   replaceClientParamsWithoutNotify,
   replaceHistoryStateWithoutNotify,
@@ -668,6 +667,10 @@ function createServerActionRedirectError(target: { href: string; type: string })
 }
 
 function createPendingServerActionRedirectPromise(): Promise<never> {
+  // Ported from Next.js: a never-resolving promise that suspends the React
+  // render while the redirect navigation payload processes on-screen. Once
+  // the navigation commits the new URL, React tears down this suspended
+  // boundary and the component re-renders at the new route.
   return new Promise<never>(() => {});
 }
 
@@ -1343,6 +1346,10 @@ function registerServerActionCallback(): void {
         ).catch(() => {
           browserNavigationController.performHardNavigation(actionRedirectTarget.href);
         });
+        // Ported from Next.js: programmatic actions (args.length === 0) throw a
+        // redirect error to abort the action call, while form actions (args.length !== 0)
+        // suspend via a pending promise so the UI stays at the form route. The
+        // distinction mirrors React's action dispatch semantics.
         if (args.length !== 0) {
           throw createServerActionRedirectError(actionRedirectTarget);
         }
