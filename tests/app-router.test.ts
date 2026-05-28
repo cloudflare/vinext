@@ -289,6 +289,20 @@ describe("App Router integration", () => {
     expect(html).toContain("</body></html>");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+  // (regression for #1532)
+  it("ends the streamed body with </body></html> and not after trailing scripts", async () => {
+    const res = await fetch(`${baseUrl}/about`);
+    const html = await res.text();
+
+    const suffix = "</body></html>";
+    expect(html.endsWith(suffix)).toBe(true);
+    // The suffix must not appear anywhere else in the document — trailing
+    // flight chunks and preinit scripts must land before the closing tags.
+    expect(html.slice(0, -suffix.length)).not.toContain(suffix);
+  });
+
   it("SSR renders 'use client' components with initial state", async () => {
     const res = await fetch(`${baseUrl}/interactive`);
     expect(res.status).toBe(200);
