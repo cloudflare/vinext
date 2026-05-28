@@ -1185,9 +1185,34 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // resolveNextConfig (matching Webpack DefinePlugin semantics).
         // Server-only `compiler.defineServer` entries are layered in below
         // via `configEnvironment` so they never leak into the client bundle.
+        //
+        // Parity with Next.js: collide against any internal define (e.g.
+        // `process.env.NODE_ENV`, `process.env.__NEXT_*`, `__VINEXT_*`) and
+        // throw, instead of silently overwriting. Mirrors the check in
+        // packages/next/src/build/define-env.ts.
         // See: https://nextjs.org/docs/app/api-reference/config/next-config-js/compiler#define
         for (const [key, value] of Object.entries(nextConfig.compilerDefine)) {
+          if (key in defines) {
+            throw new Error(
+              `The \`compiler.define\` option is configured to replace the \`${key}\` variable. ` +
+                `This variable is either part of a built-in or is already configured.`,
+            );
+          }
           defines[key] = value;
+        }
+        // `compiler.defineServer` is applied per-environment below, but we
+        // still validate collisions here against (a) vinext's internal
+        // defines and (b) the user's own `compiler.define` map — Next.js
+        // rejects both cases. Doing the check eagerly keeps the failure
+        // mode predictable: misconfigured projects fail at config resolution
+        // instead of producing subtly wrong output.
+        for (const key of Object.keys(nextConfig.compilerDefineServer)) {
+          if (key in defines) {
+            throw new Error(
+              `The \`compiler.defineServer\` option is configured to replace the \`${key}\` variable. ` +
+                `This variable is either part of a built-in or is already configured.`,
+            );
+          }
         }
 
         // Build the shim alias map. Exact `.js` variants are included for the

@@ -160,6 +160,64 @@ describe("compiler.define forwarding to Vite", () => {
     }
   }, 15000);
 
+  // Mirrors Next.js: packages/next/src/build/define-env.ts (collision check)
+  it("throws when `compiler.define` collides with a vinext built-in", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext() as VinextPlugin[];
+    const mainPlugin = plugins.find(
+      (p) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await setupTmpProject(
+      `export default {
+        compiler: {
+          define: { "process.env.NODE_ENV": "evil" },
+        },
+      };`,
+    );
+
+    try {
+      await expect(
+        mainPlugin!.config!(
+          { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
+          { command: "build" },
+        ),
+      ).rejects.toThrow(/compiler\.define.*process\.env\.NODE_ENV/);
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("throws when `compiler.defineServer` collides with `compiler.define` or a built-in", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext() as VinextPlugin[];
+    const mainPlugin = plugins.find(
+      (p) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await setupTmpProject(
+      `export default {
+        compiler: {
+          define: { SHARED: "client" },
+          defineServer: { SHARED: "server" },
+        },
+      };`,
+    );
+
+    try {
+      await expect(
+        mainPlugin!.config!(
+          { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
+          { command: "build" },
+        ),
+      ).rejects.toThrow(/compiler\.defineServer.*SHARED/);
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
   it("no-ops the configEnvironment hook when `defineServer` is not configured", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext() as VinextPlugin[];
