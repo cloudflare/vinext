@@ -16,6 +16,7 @@ import {
 } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
+import type { VinextLinkPrefetchRoute } from "../client/vinext-next-data.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 import { normalizePathSeparators } from "./runtime-entry-module.js";
 
@@ -23,11 +24,13 @@ export async function generateClientEntry(
   pagesDir: string,
   nextConfig: ResolvedNextConfig,
   fileMatcher: ReturnType<typeof createValidFileMatcher>,
+  options: { appPrefetchRoutes?: readonly VinextLinkPrefetchRoute[] } = {},
 ): Promise<string> {
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
 
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
   const hasApp = appFilePath !== null;
+  const appPrefetchRoutes = options.appPrefetchRoutes ?? [];
 
   // Build a map of route pattern -> dynamic import.
   // Keys must use Next.js bracket format (e.g. "/user/[id]") to match
@@ -90,6 +93,21 @@ const appLoader = undefined;
 window.__VINEXT_PAGE_LOADERS__ = pageLoaders;
 window.__VINEXT_PAGE_PATTERNS__ = Object.keys(pageLoaders);
 window.__VINEXT_APP_LOADER__ = appLoader;
+// Expose the App Router prefetch manifest so Pages Router \`<Link>\`s and
+// \`Router.prefetch\` can detect when a prefetch target is actually an App
+// Router route, and mark it on \`Router.components[urlPathname]\` with
+// \`{ __appRouter: true }\`. Mirrors Next.js's \`_bfl\`-driven marker write at
+// .nextjs-ref/packages/next/src/shared/lib/router/router.ts:2525, which the
+// Next.js deploy test
+//   test/e2e/app-dir/app/index.test.ts → "should successfully detect app
+//   route during prefetch"
+// asserts via \`window.next.router.components[<path>]\`. Issue #1526.
+//
+// In a hybrid Pages + App Router build, this entry runs when the user lands
+// on a Pages Router page. The App Router browser entry sets the same global
+// when the user lands on an App Router page (see app-browser-entry.ts) — the
+// two writes do not race because only one entry executes per page load.
+window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(appPrefetchRoutes)};
 
 async function hydrate() {
   const nextData = window.__NEXT_DATA__;

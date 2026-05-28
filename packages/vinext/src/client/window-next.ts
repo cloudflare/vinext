@@ -85,6 +85,13 @@ export type PagesRouterPublicInstance = {
     off: (event: string, handler: (...args: unknown[]) => void) => void;
     emit: (event: string, ...args: unknown[]) => void;
   };
+  /**
+   * Mirrors Next.js's `Router.components`. Read by external tooling (and the
+   * Next.js deploy test suite) to detect routes that have been seen via
+   * prefetch — App Router targets land here as `{ __appRouter: true }`.
+   * See: `packages/next/src/shared/lib/router/router.ts:2525`.
+   */
+  components: Record<string, unknown>;
 };
 
 // Declare the `next` property on Window here, alongside the type, so this

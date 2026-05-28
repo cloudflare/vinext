@@ -20,7 +20,11 @@ import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
-import { generateBrowserEntry } from "./entries/app-browser-entry.js";
+import {
+  generateBrowserEntry,
+  isLinkPrefetchRoute,
+  toLinkPrefetchRoute,
+} from "./entries/app-browser-entry.js";
 import {
   collectRouteClassificationManifest,
   type RouteClassificationManifest,
@@ -719,7 +723,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
    * __NEXT_DATA__ to determine which page to hydrate.
    */
   async function generateClientEntry(): Promise<string> {
-    return _generateClientEntry(pagesDir, nextConfig, fileMatcher);
+    // In a hybrid Pages + App Router build, expose the App Router prefetch
+    // manifest to the Pages Router client entry so `<Link>`s and
+    // `Router.prefetch` can mark App Router targets on `Router.components`
+    // with `{ __appRouter: true }`. See `pages-client-entry.ts` and issue
+    // #1526 for the Next.js parity rationale.
+    const appPrefetchRoutes = hasAppDir
+      ? (await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher))
+          .filter(isLinkPrefetchRoute)
+          .map(toLinkPrefetchRoute)
+      : [];
+    return _generateClientEntry(pagesDir, nextConfig, fileMatcher, { appPrefetchRoutes });
   }
 
   async function writeRouteTypes(): Promise<void> {

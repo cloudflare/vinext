@@ -29,6 +29,10 @@ import {
   type PagesDataTarget,
 } from "./internal/pages-data-target.js";
 import { buildPagesDataHref } from "./internal/pages-data-url.js";
+import {
+  getPagesRouterComponentsMap,
+  markAppRouteDetectedOnPrefetch,
+} from "./internal/app-route-detection.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import { isUnknownRecord } from "../utils/record.js";
 import {
@@ -1475,6 +1479,13 @@ async function prefetchUrl(url: string): Promise<void> {
     return;
   }
 
+  // The target is not a Pages Router route — mark it on `components` if the
+  // App Router prefetch manifest recognises it. Mirrors Next.js's `_bfl`
+  // marker write at `packages/next/src/shared/lib/router/router.ts:2525`;
+  // the Next.js deploy test reads `window.next.router.components[<path>]` to
+  // assert prefetch detection. See issue #1526.
+  markAppRouteDetectedOnPrefetch(url, __basePath);
+
   // Legacy fallback for routes without a registered loader (e.g. dev).
   // Hints the browser to preload the HTML document so the next click feels
   // faster, even though we can't resolve the chunk ahead of time.
@@ -1711,7 +1722,29 @@ export function withRouter<P extends WithRouterProps>(
 // error rather than a `ReferenceError: window is not defined`. The throws are
 // synchronous (not via the returned Promise) so render-time callers see the
 // error inline — matching Next.js behaviour and avoiding unhandled rejections.
+/**
+ * Pages Router `components` map exposed on the singleton.
+ *
+ * In Next.js, `Router.components` doubles as (a) the cached `PrivateRouteInfo`
+ * keyed by route pattern after a real page render, and (b) a marker store
+ * (`{ __appRouter: true }`) for App Router routes detected via prefetch (see
+ * `packages/next/src/shared/lib/router/router.ts:2525`). The Next.js deploy
+ * test suite asserts the latter through `window.next.router.components`.
+ *
+ * vinext only writes the marker variant — the cached-page-info side is handled
+ * by Vite's module graph + our own loader manifest — but the property must be
+ * present and mutable so the deploy assertion can find it. The map lives
+ * behind a `Symbol.for` global so the Link shim's Pages-mode prefetch branch
+ * writes to the same instance even when Vite resolves the router shim and
+ * the link shim through different module IDs.
+ *
+ * Issue: https://github.com/cloudflare/vinext/issues/1526
+ */
+const _components = getPagesRouterComponentsMap();
+
 const RouterMethods = {
+  /** See `_components` comment above for the dual role this map plays. */
+  components: _components,
   push: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
     if (typeof window === "undefined") throwNoRouterInstance();
     // Synchronously guard dangerous URI schemes (javascript:, data:, vbscript:)
