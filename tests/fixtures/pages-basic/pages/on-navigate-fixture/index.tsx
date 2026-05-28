@@ -31,7 +31,10 @@ export default function OnNavigateFixture() {
           id="toggle-lock"
           type="button"
           onClick={() => {
-            setIsLocked((v) => !v);
+            // Matches upstream `setIsLocked(!isLocked)` for parity. The
+            // functional form would be safer in general, but the goal here
+            // is a 1:1 port of `.nextjs-ref/.../shared/OnNavigate.tsx`.
+            setIsLocked(!isLocked);
           }}
         >
           {isLocked ? "Unlock" : "Lock"}
@@ -80,6 +83,29 @@ export default function OnNavigateFixture() {
             target="_blank"
           >
             External Link with Target
+          </Link>
+        </div>
+
+        <div>
+          <Link
+            href="https://example.org"
+            id="external-link"
+            onClick={() => alert("onClick")}
+            onNavigate={() => alert("onNavigate")}
+          >
+            External Link
+          </Link>
+        </div>
+
+        <div>
+          <Link
+            href="https://example.org"
+            id="external-link-with-replace"
+            onClick={() => alert("onClick")}
+            onNavigate={() => alert("onNavigate")}
+            replace
+          >
+            External Link with replace
           </Link>
         </div>
 
