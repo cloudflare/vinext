@@ -5,12 +5,22 @@ import {
 } from "./artifact-compatibility.js";
 import type { StaticLayoutArtifactReuseDecision } from "./cache-proof.js";
 import {
+  CLIENT_REUSE_MANIFEST_SKIP_VERIFICATION_ENTRY_BUDGET,
   createClientReusePayloadHash,
   type ClientReuseManifestEntry,
   type ClientReuseManifestEntryRejection,
+  type ClientReuseManifestParseResult,
+  type ClientReuseManifestRejection,
   type ClientReuseManifestSkipDisposition,
   type ClientReuseManifestTraceFields,
 } from "./client-reuse-manifest.js";
+import { ARTIFACT_COMPATIBILITY_PROOF_FIELDS } from "./static-layout-client-reuse-proof.js";
+
+export {
+  createStaticLayoutClientReuseArtifactCompatibility,
+  createStaticLayoutClientReusePayloadHash,
+  createStaticLayoutClientReuseRouteId,
+} from "./static-layout-client-reuse-proof.js";
 
 export type SkipCacheInvalidationProof =
   | Readonly<{ kind: "invalidated"; invalidationEpoch: string | null }>
@@ -48,21 +58,46 @@ type CrossCheckClientReuseManifestEntryWithCacheInput = Readonly<{
 }> &
   ArtifactCompatibilityEvaluationOptions;
 
-const ARTIFACT_COMPATIBILITY_PROOF_FIELDS: readonly (keyof ArtifactCompatibilityEnvelope)[] = [
-  "schemaVersion",
-  "graphVersion",
-  "deploymentVersion",
-  "appElementsSchemaVersion",
-  "rscPayloadSchemaVersion",
-  "rootBoundaryId",
-  "renderEpoch",
-];
+type ClientReuseSkipTransportPlan =
+  | Readonly<{
+      entryRejections: readonly ClientReuseManifestEntryRejection[];
+      kind: "renderAndSend";
+      manifestRejection?: ClientReuseManifestRejection;
+      skipDisposition: ClientReuseManifestSkipDisposition;
+      skippedEntryIds: readonly string[];
+    }>
+  | Readonly<{
+      entryRejections: readonly ClientReuseManifestEntryRejection[];
+      kind: "skip";
+      skipDisposition: ClientReuseManifestSkipDisposition;
+      skippedEntryIds: readonly string[];
+    }>;
+
+type CreateClientReuseSkipTransportPlanInput = Readonly<{
+  manifest: ClientReuseManifestParseResult;
+  maxEntriesToVerify?: number;
+  verifyEntry: (entry: ClientReuseManifestEntry) => SkipCacheCrossCheckResult;
+}>;
+
+export const STATIC_LAYOUT_SKIP_VERIFICATION_ENTRY_BUDGET =
+  CLIENT_REUSE_MANIFEST_SKIP_VERIFICATION_ENTRY_BUDGET;
 
 function createDisabledSkipDisposition(): ClientReuseManifestSkipDisposition {
   return {
     code: "SKIP_MODEL_DISABLED",
     enabled: false,
     mode: "renderAndSend",
+  };
+}
+
+function createStaticLayoutSkipDisposition(
+  skippedEntryIds: readonly string[],
+): ClientReuseManifestSkipDisposition {
+  return {
+    code: "SKIP_STATIC_LAYOUT_VERIFIED",
+    enabled: true,
+    mode: "skipStaticLayout",
+    skippedEntryIds: [...skippedEntryIds],
   };
 }
 
@@ -95,8 +130,41 @@ function collectArtifactCompatibilityProofMismatches(
   return mismatchedFields;
 }
 
+function isExactArtifactCompatibility(
+  artifactCompatibility: ArtifactCompatibilityEnvelope,
+  entryCompatibility: ArtifactCompatibilityEnvelope,
+): boolean {
+  return (
+    collectArtifactCompatibilityProofMismatches(artifactCompatibility, entryCompatibility)
+      .length === 0
+  );
+}
+
 function assertNever(value: never): never {
   throw new Error(`Unhandled skip/cache proof state: ${String(value)}`);
+}
+
+function createRenderAndSendPlan(options: {
+  entryRejections?: readonly ClientReuseManifestEntryRejection[];
+  manifestRejection?: ClientReuseManifestRejection;
+}): ClientReuseSkipTransportPlan {
+  return {
+    kind: "renderAndSend",
+    entryRejections: options.entryRejections ?? [],
+    ...(options.manifestRejection ? { manifestRejection: options.manifestRejection } : {}),
+    skipDisposition: createDisabledSkipDisposition(),
+    skippedEntryIds: [],
+  };
+}
+
+function createEntryCountExceededRejection(
+  entryCount: number,
+  maxEntryCount: number,
+): ClientReuseManifestRejection {
+  return {
+    code: "SKIP_ENTRY_COUNT_EXCEEDED",
+    fields: { entryCount, maxEntryCount },
+  };
 }
 
 function crossCheckInvalidationProof(
@@ -195,6 +263,12 @@ export function crossCheckClientReuseManifestEntryWithCache(
 
   const invalidationRejection = crossCheckInvalidationProof(entry, input.artifact.invalidation);
   if (invalidationRejection) return invalidationRejection;
+  const skipDisposition = isExactArtifactCompatibility(
+    input.artifact.compatibility,
+    entry.artifactCompatibility,
+  )
+    ? createStaticLayoutSkipDisposition([entry.id])
+    : createDisabledSkipDisposition();
 
   return {
     kind: "verified",
@@ -205,6 +279,60 @@ export function crossCheckClientReuseManifestEntryWithCache(
       reuseClass: proof.reuseClass,
       variantCacheKeyHash: createClientReusePayloadHash(proof.variant.cacheKey),
     },
-    skipDisposition: createDisabledSkipDisposition(),
+    skipDisposition,
+  };
+}
+
+export function createClientReuseSkipTransportPlan(
+  input: CreateClientReuseSkipTransportPlanInput,
+): ClientReuseSkipTransportPlan {
+  const { manifest } = input;
+  if (manifest.kind === "absent") {
+    return createRenderAndSendPlan({});
+  }
+  if (manifest.kind === "rejected") {
+    return createRenderAndSendPlan({ manifestRejection: manifest.rejection });
+  }
+
+  const maxEntriesToVerify = input.maxEntriesToVerify;
+  if (
+    maxEntriesToVerify !== undefined &&
+    (!Number.isSafeInteger(maxEntriesToVerify) || maxEntriesToVerify < 0)
+  ) {
+    throw new RangeError("maxEntriesToVerify must be a non-negative safe integer");
+  }
+
+  if (maxEntriesToVerify !== undefined && manifest.manifest.entries.length > maxEntriesToVerify) {
+    return createRenderAndSendPlan({
+      entryRejections: manifest.entryRejections,
+      manifestRejection: createEntryCountExceededRejection(
+        manifest.manifest.entries.length,
+        maxEntriesToVerify,
+      ),
+    });
+  }
+
+  const skippedEntryIds: string[] = [];
+  const entryRejections: ClientReuseManifestEntryRejection[] = [...manifest.entryRejections];
+  for (const entry of manifest.manifest.entries) {
+    const verification = input.verifyEntry(entry);
+    if (verification.kind === "rejected") {
+      entryRejections.push(verification.rejection);
+      continue;
+    }
+    if (verification.skipDisposition.enabled) {
+      skippedEntryIds.push(entry.id);
+    }
+  }
+
+  if (skippedEntryIds.length === 0) {
+    return createRenderAndSendPlan({ entryRejections });
+  }
+
+  return {
+    kind: "skip",
+    entryRejections,
+    skipDisposition: createStaticLayoutSkipDisposition(skippedEntryIds),
+    skippedEntryIds,
   };
 }
