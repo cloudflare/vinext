@@ -529,6 +529,67 @@ describe("pages page data", () => {
     expect(received).toBe("stale");
   });
 
+  // Mirrors Next.js's `isSerializableProps` check from render.tsx (~line 982).
+  // Without this validation vinext silently rendered an empty page for
+  // non-JSON values like `new Date()`. Tracked in vinext#1478.
+  // See .nextjs-ref/packages/next/src/lib/is-serializable-props.ts and the
+  // `non-json`/`non-json-blocking` cases in .nextjs-ref/test/e2e/prerender.test.ts.
+  it("throws a Next.js-style error when getStaticProps returns non-serializable props", async () => {
+    await expect(
+      resolvePagesPageData(
+        createOptions({
+          pageModule: {
+            async getStaticProps() {
+              return { props: { date: new Date(0) } };
+            },
+          },
+          routePattern: "/non-json",
+          routeUrl: "/non-json",
+        }),
+      ),
+    ).rejects.toThrow(
+      /Error serializing `\.date` returned from `getStaticProps` in "\/non-json"\.\s*Reason: `object` \("\[object Date\]"\) cannot be serialized as JSON/,
+    );
+  });
+
+  it("throws a Next.js-style error when getServerSideProps returns non-serializable props", async () => {
+    await expect(
+      resolvePagesPageData(
+        createOptions({
+          pageModule: {
+            async getServerSideProps() {
+              return { props: { fn: () => "nope" } };
+            },
+          },
+          routePattern: "/gssp-bad",
+          routeUrl: "/gssp-bad",
+        }),
+      ),
+    ).rejects.toThrow(
+      /Error serializing `\.fn` returned from `getServerSideProps` in "\/gssp-bad"\.\s*Reason: `function` cannot be serialized as JSON/,
+    );
+  });
+
+  // Redirect and notFound short-circuits must continue to work even if the
+  // page also returns `props` — mirrors Next.js, which only validates when
+  // !metadata.isRedirect && !metadata.isNotFound.
+  it("does not throw on getStaticProps redirect even when props would be invalid", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticProps() {
+            return { redirect: { destination: "/elsewhere", permanent: false } };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response");
+    expect(result.response.status).toBe(307);
+    expect(result.response.headers.get("location")).toBe("/elsewhere");
+  });
+
   // Matches Next.js behavior: for non-dynamic routes, `params` in
   // getStaticProps context is null (not `{}`).
   it("passes params: null to getStaticProps on non-dynamic routes", async () => {

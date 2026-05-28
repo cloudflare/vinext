@@ -47,6 +47,7 @@ import {
 } from "./pages-i18n.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
+import { isSerializableProps } from "./pages-serializable-props.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -602,6 +603,20 @@ export function createSSRHandler(
             );
             return;
           }
+          // Validate that gSSP returned JSON-serializable props. Mirrors
+          // Next.js render.tsx (`isSerializableProps(pathname, "getServerSideProps", data.props)`,
+          // gated on `!metadata.isRedirect && !metadata.isNotFound` — both
+          // short-circuit above). Without this, returning `{ props: { date: new Date() } }`
+          // renders an empty page instead of a clear error. The throw is caught
+          // by the outer try/catch which renders the 500 page. Tracked in
+          // vinext#1478.
+          if (result && "props" in result) {
+            isSerializableProps(
+              patternToNextFormat(route.pattern),
+              "getServerSideProps",
+              pageProps,
+            );
+          }
           // Preserve any status code set by gSSP (e.g. res.statusCode = 201).
           // This takes precedence over the default 200 but not over middleware status.
           if (!statusCode && res.statusCode !== 200) {
@@ -898,6 +913,16 @@ export function createSSRHandler(
               routerShim.wrapWithRouterContext,
             );
             return;
+          }
+          // Validate that gSP returned JSON-serializable props. Mirrors
+          // Next.js render.tsx (`isSerializableProps(pathname, "getStaticProps", data.props)`,
+          // gated on `!metadata.isNotFound` — notFound and redirect both
+          // short-circuit above). Without this, returning `{ props: { date: new Date() } }`
+          // renders an empty page instead of a clear error. The throw is caught
+          // by the outer try/catch which renders the 500 page. Tracked in
+          // vinext#1478.
+          if (result && "props" in result) {
+            isSerializableProps(patternToNextFormat(route.pattern), "getStaticProps", pageProps);
           }
 
           // Extract revalidate period for ISR caching after render
