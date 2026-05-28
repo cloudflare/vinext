@@ -640,6 +640,95 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.body.length).toBe(0);
   });
 
+  // ── URL-encoded characters in path ─────────────────────────────
+  //
+  // Regression test for https://github.com/cloudflare/vinext/issues/1472
+  //
+  // Browser requests for CSS files emitted with non-URL-safe characters in
+  // their filename (e.g. spaces, `@`, `#`) arrive percent-encoded. The
+  // static-asset server must decode the path before looking it up against
+  // the on-disk filename, otherwise the asset 404s and the page renders
+  // without its stylesheet.
+  //
+  // Matches Next.js test/e2e/app-dir/resource-url-encoding.
+
+  it("serves a CSS file requested via a percent-encoded URL", async () => {
+    const cssContent = "body { background: rgb(0, 0, 255); }\n";
+    // File on disk has literal characters (spaces, @) in its name; the
+    // emitted stylesheet URL percent-encodes them.
+    await writeFile(clientDir, "_next/static/css/my@style with spaces.css", cssContent);
+
+    const cache = await StaticFileCache.create(clientDir);
+    const req = mockReq();
+    const { res, captured } = mockRes();
+
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/_next/static/css/my%40style%20with%20spaces.css",
+      true,
+      cache,
+    );
+
+    await captured.ended;
+    expect(served).toBe(true);
+    expect(captured.status).toBe(200);
+    expect(captured.headers["Content-Type"]).toBe("text/css");
+    expect(captured.body.toString()).toBe(cssContent);
+  });
+
+  it("slow path serves a CSS file requested via a percent-encoded URL", async () => {
+    const cssContent = "body { background: rgb(0, 0, 255); }\n";
+    await writeFile(clientDir, "_next/static/css/my@style with spaces.css", cssContent);
+
+    const req = mockReq();
+    const { res, captured } = mockRes();
+
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/_next/static/css/my%40style%20with%20spaces.css",
+      false,
+    );
+
+    await captured.ended;
+    expect(served).toBe(true);
+    expect(captured.status).toBe(200);
+    expect(captured.headers["Content-Type"]).toBe("text/css");
+    expect(captured.body.toString()).toBe(cssContent);
+  });
+
+  it("serves a CSS file whose URL was decoded upstream (literal chars in pathname)", async () => {
+    // Simulates the Pages/App Router flow: the request pipeline runs
+    // normalizePathnameForRouteMatchStrict before tryServeStatic, which
+    // decodes each segment. By the time tryServeStatic is called, the
+    // pathname may contain literal special chars (no percent signs) — the
+    // cache still has to match against the literal on-disk filename.
+    const cssContent = "body { background: rgb(0, 0, 255); }\n";
+    await writeFile(clientDir, "_next/static/css/my@style with spaces.css", cssContent);
+
+    const cache = await StaticFileCache.create(clientDir);
+    const req = mockReq();
+    const { res, captured } = mockRes();
+
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/_next/static/css/my@style with spaces.css",
+      true,
+      cache,
+    );
+
+    await captured.ended;
+    expect(served).toBe(true);
+    expect(captured.status).toBe(200);
+    expect(captured.headers["Content-Type"]).toBe("text/css");
+    expect(captured.body.toString()).toBe(cssContent);
+  });
+
   // ── Malformed pathname handling ─────────────────────────────────
 
   it("returns false for malformed percent-encoded pathname", async () => {
