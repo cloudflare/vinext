@@ -413,6 +413,53 @@ describe("appRouter - route discovery", () => {
     expect(blogRoute!.params).toEqual(["slug"]);
   });
 
+  it("includes dynamic routes with revalidate=0 in the route table", async () => {
+    await withTempDir("vinext-app-dynamic-revalidate-zero-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "blog", "[slug]"), { recursive: true });
+      await writeFile(
+        path.join(appDir, "blog", "[slug]", "page.tsx"),
+        `export const revalidate = 0;\nexport default function Page() { return null; }\n`,
+      );
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const patterns = routes.map((r) => r.pattern);
+
+      // PPR requires dynamic routes to remain in the manifest regardless of revalidate value.
+      // See: https://github.com/cloudflare/vinext/issues/1426
+      expect(patterns).toContain("/blog/:slug");
+
+      const route = routes.find((r) => r.pattern === "/blog/:slug");
+      expect(route).toBeDefined();
+      expect(route!.isDynamic).toBe(true);
+      expect(route!.params).toEqual(["slug"]);
+    });
+  });
+
+  it("includes static routes with revalidate=0 in the route table", async () => {
+    await withTempDir("vinext-app-static-revalidate-zero-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "about"), { recursive: true });
+      await writeFile(
+        path.join(appDir, "about", "page.tsx"),
+        `export const revalidate = 0;\nexport default function Page() { return null; }\n`,
+      );
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const patterns = routes.map((r) => r.pattern);
+
+      expect(patterns).toContain("/about");
+
+      const route = routes.find((r) => r.pattern === "/about");
+      expect(route).toBeDefined();
+      expect(route!.isDynamic).toBe(false);
+    });
+  });
+
   it("discovers dynamic params captured by a nested root layout", async () => {
     await withTempDir("vinext-app-root-params-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");
