@@ -357,8 +357,10 @@ describe("Pages Router integration", () => {
     expect(html).toContain("This is the about page.");
   });
 
-  // Ported from Next.js: test/e2e/app-dir/action-in-pages-router/action-in-pages-router.test.ts
-  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/action-in-pages-router/action-in-pages-router.test.ts
+  // Tests that React 19 SSR preserves literal string action attributes.
+  // Note: This is NOT testing server action invocation (unlike the upstream
+  // Next.js test action-in-pages-router.test.ts which tests "use server" functions).
+  // Regression test for issue #1476.
   it("preserves literal action:foo in form action attribute", async () => {
     const res = await fetch(`${baseUrl}/action-string-test`);
     expect(res.status).toBe(200);
