@@ -22,16 +22,29 @@ type RootPaths = {
   root: string;
   canonicalRoot: string;
   normalizedRoot: string;
+  excludedRelativePrefixes: string[];
 };
+
+const TRANSFORMABLE_SCRIPT_EXTENSIONS = new Set([
+  ".cjs",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".mts",
+  ".ts",
+  ".tsx",
+]);
 
 export function createImportMetaUrlPlugin(options: { getRoot: () => string | undefined }): Plugin {
   let rootPaths: RootPaths | undefined;
+  let outputDirs: string[] = [];
 
   function getRootPaths(): RootPaths | undefined {
     const root = options.getRoot();
     if (!root) return rootPaths;
     if (!rootPaths || rootPaths.root !== root) {
-      rootPaths = createRootPaths(root);
+      rootPaths = createRootPaths(root, { outputDirs });
     }
     return rootPaths;
   }
@@ -40,10 +53,12 @@ export function createImportMetaUrlPlugin(options: { getRoot: () => string | und
     name: "vinext:import-meta-url",
     enforce: "post",
     configResolved(config) {
-      rootPaths = createRootPaths(options.getRoot() ?? config.root);
+      const root = options.getRoot() ?? config.root;
+      outputDirs = [config.build.outDir];
+      rootPaths = createRootPaths(root, { outputDirs });
     },
     transform(code, id) {
-      if (!code.includes("import.meta.url")) return null;
+      if (!mayContainImportMetaUrl(code)) return null;
       const paths = getRootPaths();
       if (!paths) return null;
       const cleanId = cleanModuleId(id);
@@ -68,7 +83,7 @@ export function rewriteImportMetaUrl(
   root: string,
   environment: ImportMetaUrlEnvironment,
 ): RewriteResult | null {
-  if (!code.includes("import.meta.url")) return null;
+  if (!mayContainImportMetaUrl(code)) return null;
   return rewriteCanonicalImportMetaUrl(
     code,
     canonicalizePath(id),
@@ -109,12 +124,14 @@ function cleanModuleId(id: string): string {
   return id.split("?", 1)[0];
 }
 
-function createRootPaths(root: string): RootPaths {
+function createRootPaths(root: string, options: { outputDirs?: string[] } = {}): RootPaths {
   const canonicalRoot = canonicalizePath(root);
+  const normalizedRoot = normalizePath(canonicalRoot);
   return {
     root,
     canonicalRoot,
-    normalizedRoot: normalizePath(canonicalRoot),
+    normalizedRoot,
+    excludedRelativePrefixes: excludedRelativePrefixes(canonicalRoot, normalizedRoot, options),
   };
 }
 
@@ -124,23 +141,49 @@ function createRootPaths(root: string): RootPaths {
 function transformableModuleCanonicalId(id: string, rootPaths: RootPaths): string | null {
   if (!id || id.startsWith("\0")) return null;
   if (!path.isAbsolute(id)) return null;
-  if (id.includes("/node_modules/") || id.includes("\\node_modules\\")) return null;
-  if (!/\.[cm]?[jt]sx?$/.test(id)) return null;
+  const normalizedInputId = normalizePath(id);
+  if (normalizedInputId.includes("/node_modules/")) return null;
+  if (!TRANSFORMABLE_SCRIPT_EXTENSIONS.has(path.extname(normalizedInputId))) return null;
 
   const canonicalId = canonicalizePath(id);
   const normalizedId = normalizePath(canonicalId);
   if (!isPathWithin(normalizedId, rootPaths.normalizedRoot)) return null;
 
   const relativePath = normalizePath(path.relative(rootPaths.canonicalRoot, canonicalId));
-  const firstSegment = relativePath.split("/")[0];
-  if (
-    firstSegment === ".next" ||
-    firstSegment === ".vinext-local-package" ||
-    firstSegment === "dist"
-  ) {
-    return null;
-  }
+  if (isExcludedRelativePath(relativePath, rootPaths.excludedRelativePrefixes)) return null;
   return canonicalId;
+}
+
+function mayContainImportMetaUrl(code: string): boolean {
+  return code.includes("import.meta.url") || code.includes("import.meta?.url");
+}
+
+function excludedRelativePrefixes(
+  canonicalRoot: string,
+  normalizedRoot: string,
+  options: { outputDirs?: string[] },
+): string[] {
+  const prefixes = new Set([".next", ".vinext", ".vinext-local-package", "dist", "out"]);
+
+  for (const outputDir of options.outputDirs ?? []) {
+    const absoluteOutputDir = path.isAbsolute(outputDir)
+      ? outputDir
+      : path.resolve(canonicalRoot, outputDir);
+    const canonicalOutputDir = canonicalizePath(absoluteOutputDir);
+    const normalizedOutputDir = normalizePath(canonicalOutputDir);
+    if (!isPathWithin(normalizedOutputDir, normalizedRoot)) continue;
+
+    const relativePath = normalizePath(path.relative(canonicalRoot, canonicalOutputDir));
+    if (relativePath && relativePath !== ".") prefixes.add(relativePath);
+  }
+
+  return [...prefixes];
+}
+
+function isExcludedRelativePath(relativePath: string, prefixes: string[]): boolean {
+  return prefixes.some(
+    (prefix) => relativePath === prefix || relativePath.startsWith(`${prefix}/`),
+  );
 }
 
 function isPathWithin(candidate: string, root: string): boolean {
@@ -204,7 +247,7 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
 }
 
 function isNodeLike(value: unknown): value is NodeLike {
-  return !!value && typeof value === "object";
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function isIdentifierNamed(value: unknown, name: string): boolean {

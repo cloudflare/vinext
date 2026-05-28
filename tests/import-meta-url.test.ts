@@ -61,4 +61,15 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result?.code).toContain(`new URL("./font.ttf", import.meta.url)`);
     expect(result?.code).toContain(`const url = "file:///ROOT/pages/index.tsx"`);
   });
+
+  it("rewrites optional chained import.meta.url reads", () => {
+    const result = rewriteImportMetaUrl(
+      `export const url = import.meta?.url;\n`,
+      pagePath,
+      linkedRoot,
+      "client",
+    );
+
+    expect(result?.code).toContain(`"file:///ROOT/pages/index.tsx"`);
+  });
 });
