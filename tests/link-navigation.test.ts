@@ -839,6 +839,156 @@ describe("Link onNavigate prop", () => {
   });
 });
 
+// ───────────────────────────────────────────────────────────────────────────
+// Pages Router onClick / preventDefault semantics
+//
+// Regression coverage for issue #1470: in new-link-behavior mode (the only
+// supported behavior in Next.js 13+), the `onClick` prop passed to <Link>
+// must fire on click, and `event.preventDefault()` inside that handler must
+// cancel the resulting client-side navigation.
+//
+// Mirrors Next.js: test/e2e/new-link-behavior/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/new-link-behavior/index.test.ts
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("Pages Router Link onClick semantics", () => {
+  async function renderPagesRouterLinkAndClick(args: {
+    href: string;
+    props?: Record<string, unknown>;
+  }) {
+    vi.resetModules();
+
+    let capturedAnchorProps: CapturedAnchorProps | undefined;
+    const captureAnchor = (type: unknown, props: unknown) => {
+      if (type === "a" && props !== null && typeof props === "object") {
+        capturedAnchorProps = props;
+      }
+    };
+
+    mockReactAnchorCaptureForLinkOnly_DO_NOT_REUSE({ captureAnchor });
+
+    // Stub Pages Router navigation at our own boundary instead of mocking
+    // `next/router` itself — keeps the mock surface to vinext-owned modules
+    // and avoids the dynamic-import-into-unknown-module timing pitfall.
+    const pagesRouterCalls: { href: string; replace: boolean }[] = [];
+    vi.doMock("../packages/vinext/src/client/pages-router-link-navigation.js", () => ({
+      navigatePagesRouterLink: async (
+        _router: unknown,
+        opts: { href: string; replace: boolean },
+      ) => {
+        pagesRouterCalls.push({ href: opts.href, replace: opts.replace });
+      },
+    }));
+    // The handler still tries `await import("next/router")` before calling
+    // navigatePagesRouterLink. Stub it so the import resolves cleanly (the
+    // returned Router is never used because we mocked navigatePagesRouterLink).
+    vi.doMock("next/router", () => ({ default: { push() {}, replace() {} } }));
+
+    const pushState = vi.fn();
+    const replaceState = vi.fn();
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal("window", {
+      // No vinext.navigationRuntime — that selects the Pages Router branch
+      // inside Link's click handler.
+      addEventListener: vi.fn(),
+      dispatchEvent,
+      history: { pushState, replaceState },
+      location: {
+        href: "https://example.com/current",
+        origin: "https://example.com",
+      },
+      scrollTo: vi.fn(),
+      __NEXT_DATA__: { props: {} },
+    });
+
+    const { default: IsolatedLink } = await import("../packages/vinext/src/shims/link.js");
+    const React = await vi.importActual<typeof import("react")>("react");
+
+    ReactDOMServer.renderToString(
+      React.createElement(
+        IsolatedLink,
+        { href: args.href, prefetch: false, ...args.props },
+        "target",
+      ),
+    );
+
+    const onClickHandler = capturedAnchorProps?.onClick;
+    if (typeof onClickHandler !== "function") {
+      throw new Error("Expected rendered Link anchor to expose an onClick handler");
+    }
+
+    const clickEvent = {
+      button: 0,
+      currentTarget: { hasAttribute: () => false, target: "" },
+      defaultPrevented: false,
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+    };
+
+    await onClickHandler(clickEvent);
+    // The anchor's onClick handler is sync (`void handleClick(event)`) — it
+    // kicks off the async handleClick without awaiting it. Drain the
+    // microtask queue so the dynamic import + router push finish before we
+    // observe side effects.
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+
+    return { clickEvent, pushState, replaceState, dispatchEvent, pagesRouterCalls };
+  }
+
+  it("fires the onClick prop on Link click", async () => {
+    let onClickCalls = 0;
+    let receivedEvent: { defaultPrevented?: boolean } | undefined;
+    const onClick = (event: { preventDefault(): void; defaultPrevented?: boolean }) => {
+      onClickCalls += 1;
+      receivedEvent = event;
+    };
+
+    const result = await renderPagesRouterLinkAndClick({
+      href: "/",
+      props: { onClick },
+    });
+
+    expect(onClickCalls).toBe(1);
+    // The onClick handler must have actually been invoked with the click
+    // event — Next.js parity: passing onClick to <Link> in the new-link
+    // behavior must run the user's handler on click.
+    expect(receivedEvent).toBe(result.clickEvent);
+    // The click's default is prevented so the browser does not perform a
+    // full-page navigation — Link takes over via the router.
+    expect(result.clickEvent.defaultPrevented).toBe(true);
+    // ...and the Pages Router navigation is actually scheduled.
+    expect(result.pagesRouterCalls).toEqual([{ href: "/", replace: false }]);
+  });
+
+  it("cancels client-side navigation when onClick calls preventDefault", async () => {
+    let observedAfterPreventDefault: boolean | undefined;
+    let observedHandlerCalls = 0;
+    const onClick = (event: { preventDefault(): void; defaultPrevented?: boolean }) => {
+      observedHandlerCalls += 1;
+      event.preventDefault();
+      observedAfterPreventDefault = event.defaultPrevented;
+    };
+
+    const result = await renderPagesRouterLinkAndClick({
+      href: "/about",
+      props: { onClick },
+    });
+
+    expect(observedHandlerCalls).toBe(1);
+    // Sanity: the user's onClick actually toggled defaultPrevented on the event.
+    expect(observedAfterPreventDefault).toBe(true);
+    expect(result.clickEvent.defaultPrevented).toBe(true);
+    // The user called preventDefault inside onClick: Link MUST honor it and
+    // skip its own navigation. No router push, no history mutation, no
+    // popstate dispatch.
+    expect(result.pagesRouterCalls).toEqual([]);
+    expect(result.pushState).not.toHaveBeenCalled();
+    expect(result.replaceState).not.toHaveBeenCalled();
+    expect(result.dispatchEvent).not.toHaveBeenCalled();
+  });
+});
+
 async function renderIsolatedLink(options: {
   appNavigation?: boolean;
   href: string;
