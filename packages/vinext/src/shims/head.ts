@@ -401,10 +401,17 @@ export function _applyHeadPropsToElement(
       domEl.setAttribute("class", String(value));
     } else if (typeof value === "boolean" && value) {
       if (!isSafeAttrName(key)) continue;
-      domEl.setAttribute(key, "");
+      // Map JSX attribute names (charSet, httpEquiv, ...) to the HTML form
+      // (charset, http-equiv, ...) so the client-side mutation matches the
+      // SSR output. `setAttribute` is case-insensitive for HTML elements, so
+      // `charSet` would land as `charset` by coincidence, but `httpEquiv`
+      // would lowercase to `httpequiv` rather than `http-equiv` and produce
+      // a hydration mismatch. The shared mapping in jsxAttrToHtml keeps both
+      // paths in lockstep.
+      domEl.setAttribute(jsxAttrToHtml(key), "");
     } else if (typeof value === "string") {
       if (!isSafeAttrName(key)) continue;
-      domEl.setAttribute(key, value);
+      domEl.setAttribute(jsxAttrToHtml(key), value);
     }
   }
 }

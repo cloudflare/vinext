@@ -10,6 +10,7 @@ import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { reportRequestError } from "./instrumentation.js";
 import { loadUserDocumentInitialProps } from "./pages-document-initial-props.js";
 import { readStreamAsText } from "../utils/text-stream.js";
+import { callDocumentGetInitialProps } from "./document-initial-head.js";
 
 type PagesFontPreload = {
   href: string;
@@ -352,24 +353,9 @@ export async function renderPagesPageResponse(
   // If the user defined `_document.getInitialProps()`, run it now so any
   // head tags it returns can join the dedupe pipeline before getSSRHeadHTML
   // serialises the final <head>. Mirrors Next.js's `_document` contract.
-  // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-  const DocCtor = options.DocumentComponent as any;
-  if (DocCtor && typeof DocCtor.getInitialProps === "function" && options.setDocumentInitialHead) {
-    try {
-      const docInitialProps = await DocCtor.getInitialProps({
-        // Minimal DocumentContext shim — vinext does not yet plumb the full
-        // context (req/res/renderPage/defaultGetInitialProps). User code that
-        // relies on those fields receives no-op stand-ins; matches the
-        // documented limitation in `shims/document.tsx`.
-        defaultGetInitialProps: async () => ({ html: "", head: [], styles: undefined }),
-        renderPage: () => ({ html: "" }),
-      });
-      const initialHead = Array.isArray(docInitialProps?.head) ? docInitialProps.head : [];
-      options.setDocumentInitialHead(initialHead);
-    } catch (err) {
-      console.error("[vinext] _document.getInitialProps() threw:", err);
-    }
-  }
+  // The shared helper also skips the call when the resolved method is the
+  // unmodified default from the shim — see comment in dev-server.ts.
+  await callDocumentGetInitialProps(options.DocumentComponent, options.setDocumentInitialHead);
 
   const headFromShim = options.getSSRHeadHTML?.() ?? "";
   // Trace meta tags from the active OpenTelemetry context. When the

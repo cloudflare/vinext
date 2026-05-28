@@ -50,6 +50,7 @@ import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import { loadUserDocumentInitialProps } from "./pages-document-initial-props.js";
+import { callDocumentGetInitialProps } from "./document-initial-head.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -135,25 +136,13 @@ async function streamPageToResponse(
 
   // If the user defined `_document.getInitialProps()`, call it now so any
   // additional head tags it returns are folded into the same dedupe pipeline
-  // as user `next/head` tags. Matches Next.js's `_document` contract.
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const DocAny = DocumentComponent as any;
-  if (DocAny && typeof DocAny.getInitialProps === "function" && setDocumentInitialHead) {
-    try {
-      const initialProps = await DocAny.getInitialProps({
-        // Minimal context — vinext does not currently plumb the full
-        // DocumentContext (req/res/renderPage/defaultGetInitialProps) for
-        // SSR. User code that depends on those fields receives `undefined`,
-        // matching the documented shim limitation in `shims/document.tsx`.
-        defaultGetInitialProps: async () => ({ html: "", head: [], styles: undefined }),
-        renderPage: () => ({ html: "" }),
-      });
-      const initialHead = Array.isArray(initialProps?.head) ? initialProps.head : [];
-      setDocumentInitialHead(initialHead);
-    } catch (err) {
-      console.error("[vinext] _document.getInitialProps() threw:", err);
-    }
-  }
+  // as user `next/head` tags. Matches Next.js's `_document` contract. The
+  // helper skips the call entirely when the resolved `getInitialProps` is the
+  // unmodified default from vinext's `next/document` shim — extending Document
+  // without overriding the method inherits the base implementation, and the
+  // default returns no head tags, so dispatching it on every render is wasted
+  // work.
+  await callDocumentGetInitialProps(DocumentComponent, setDocumentInitialHead);
 
   // Now that the shell has rendered (and any _document.getInitialProps
   // has injected its tags), collect head HTML.

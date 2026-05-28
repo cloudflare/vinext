@@ -538,6 +538,29 @@ describe("Head client sync", () => {
     expect(element.textContent).toBe("abc");
     expect(element.innerHTML).toBe("");
   });
+
+  it("maps JSX attribute names to HTML form when applying to DOM", () => {
+    // The SSR path emits `<meta http-equiv="..." />` (hyphenated). The client
+    // path must use the same mapping or hydration will mismatch. setAttribute
+    // is case-insensitive for HTML elements, so `charSet` would lowercase to
+    // `charset` by coincidence — but `httpEquiv` would become `httpequiv`
+    // (no hyphen), not `http-equiv`.
+    const element = createElementDouble();
+    _applyHeadPropsToElement(element, {
+      httpEquiv: "X-UA-Compatible",
+      content: "IE=edge",
+    });
+    expect(element.attributes.get("http-equiv")).toBe("X-UA-Compatible");
+    expect(element.attributes.get("httpEquiv")).toBeUndefined();
+    expect(element.attributes.get("content")).toBe("IE=edge");
+  });
+
+  it("maps JSX charSet attribute to HTML charset when applying to DOM", () => {
+    const element = createElementDouble();
+    _applyHeadPropsToElement(element, { charSet: "utf-8" });
+    expect(element.attributes.get("charset")).toBe("utf-8");
+    expect(element.attributes.get("charSet")).toBeUndefined();
+  });
 });
 
 // ─── escapeAttr utility ─────────────────────────────────────────────────
