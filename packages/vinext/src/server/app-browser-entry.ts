@@ -1346,7 +1346,7 @@ function registerServerActionCallback(): void {
         const decoded = AppElementsWire.decode(result.root);
         const hashIdx = actionRedirectTarget.href.indexOf("#");
         const hash = hashIdx !== -1 ? actionRedirectTarget.href.slice(hashIdx) : "";
-        beginAppRouterScrollIntent(hash || null);
+        const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
         if (actionRedirectTarget.type === "push") {
           saveScrollPosition();
         }
@@ -1365,6 +1365,8 @@ function registerServerActionCallback(): void {
           FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
           actionRedirectTarget.type === "push" ? "navigate" : "replace",
           "server-action",
+          null,
+          actionScrollIntent,
         ).catch(() => {
           browserNavigationController.performHardNavigation(actionRedirectTarget.href);
         });
