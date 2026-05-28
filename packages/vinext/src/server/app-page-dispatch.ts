@@ -147,6 +147,12 @@ type AppPageDispatchRoute = {
 type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   /** Configured basePath (e.g. "/blog"). Used to prefix redirect Locations. */
   basePath?: string;
+  /**
+   * Allow-list of OpenTelemetry propagation keys (from
+   * `experimental.clientTraceMetadata`) to surface as `<meta>` tags in the
+   * SSR head. Undefined or empty disables emission entirely.
+   */
+  clientTraceMetadata?: readonly string[];
   buildPageElement: (
     route: TRoute,
     params: AppPageParams,
@@ -476,6 +482,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               },
               {
                 basePath: options.basePath,
+                clientTraceMetadata: options.clientTraceMetadata,
                 rootParams: options.rootParams,
                 ...(revalidatedRscCapture.sideStream
                   ? {
@@ -651,6 +658,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   return renderAppPageLifecycle({
     basePath: options.basePath,
+    clientTraceMetadata: options.clientTraceMetadata,
     cleanPathname: options.cleanPathname,
     clearRequestContext: options.clearRequestContext,
     consumeDynamicUsage,

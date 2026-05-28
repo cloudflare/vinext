@@ -549,6 +549,18 @@ describe("Pages Router integration", () => {
     expect(html).toContain("app-wrapper");
   });
 
+  // Regression for #1458: when getServerSideProps throws, dev (and prod) must
+  // render the user's custom pages/500.tsx with status 500 rather than the
+  // plain "Internal Server Error" text. Mirrors Next.js test/e2e/getserversideprops
+  // "should handle throw ENOENT correctly".
+  it("getServerSideProps throwing renders custom 500 page (dev)", async () => {
+    const res = await fetch(`${baseUrl}/gssp-throw`);
+    expect(res.status).toBe(500);
+    const html = await res.text();
+    expect(html).toContain("custom pages/500");
+    expect(html).not.toBe("Internal Server Error");
+  });
+
   it("renders dynamic routes with params", async () => {
     const res = await fetch(`${baseUrl}/posts/42`);
     expect(res.status).toBe(200);
@@ -3367,6 +3379,17 @@ export default function CounterPage() {
       const asyncModHtml = await asyncModRes.text();
       expect(asyncModHtml).toContain('<div id="app-value">hello</div>');
       expect(asyncModHtml).toContain('<div id="page-value">42</div>');
+
+      // Regression for #1458: when getServerSideProps throws, the production
+      // server must render the user's custom pages/500.tsx with status 500
+      // instead of returning a plain "Internal Server Error" text response.
+      // Mirrors Next.js test/e2e/getserversideprops "should handle throw
+      // ENOENT correctly" (.nextjs-ref/test/e2e/getserversideprops/test/index.test.ts:377).
+      const gsspThrowRes = await fetch(`${prodUrl}/gssp-throw`);
+      expect(gsspThrowRes.status).toBe(500);
+      const gsspThrowHtml = await gsspThrowRes.text();
+      expect(gsspThrowHtml).toContain("custom pages/500");
+      expect(gsspThrowHtml).not.toBe("Internal Server Error");
     } finally {
       httpServer.close();
     }

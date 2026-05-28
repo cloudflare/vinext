@@ -142,6 +142,7 @@ import {
   VINEXT_PARAMS_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
 } from "./headers.js";
+import { removeStylesheetLinksCoveredByInlineCss } from "./app-inline-css-client.js";
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 
@@ -869,6 +870,7 @@ function BrowserRoot({
 
   useLayoutEffect(() => {
     setMountedSlotsHeader(getMountedSlotIdsHeader(stateRef.current.elements));
+    removeStylesheetLinksCoveredByInlineCss();
     getNavigationRuntime()?.functions.pingVisibleLinks?.();
   }, [treeState.elements]);
 

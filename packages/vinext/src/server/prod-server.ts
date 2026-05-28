@@ -69,6 +69,7 @@ import { computeLazyChunks } from "../utils/lazy-chunks.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
+import { collectInlineCssManifest } from "../build/inline-css.js";
 import { readPrerenderSecret } from "../build/server-manifest.js";
 import {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
@@ -1079,6 +1080,10 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // continue to work with the historical asset layout.
   const appRouterAssetPrefix: string =
     typeof rscModule.__assetPrefix === "string" ? rscModule.__assetPrefix : "";
+  const appRouterInlineCss = rscModule.__inlineCss === true;
+  globalThis.__VINEXT_INLINE_CSS__ = appRouterInlineCss
+    ? collectInlineCssManifest(clientDir, appRouterAssetPrefix)
+    : undefined;
   // Path portion of the assetPrefix to match incoming asset requests against
   // (empty when the prefix is an absolute URL with no path component, or when
   // no prefix is configured). The URL prefix the prod-server needs to strip

@@ -14,6 +14,7 @@ import {
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
+import { getSetCookieName } from "./cookie-utils.js";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -142,19 +143,6 @@ export function applyRouteHandlerRevalidateHeader(
 
 export function markRouteHandlerCacheMiss(response: Response): void {
   setCacheStateHeaders(response.headers, "MISS");
-}
-
-function getSetCookieName(cookie: string): string | null {
-  const equalsIndex = cookie.indexOf("=");
-  if (equalsIndex <= 0) {
-    return null;
-  }
-  // The attribute portion (after the first ';') must not be considered part
-  // of the name. Bounding by the first ';' covers headers such as
-  // `name=value; Path=/`.
-  const semicolonIndex = cookie.indexOf(";");
-  const end = semicolonIndex === -1 ? equalsIndex : Math.min(equalsIndex, semicolonIndex);
-  return cookie.slice(0, end);
 }
 
 /**

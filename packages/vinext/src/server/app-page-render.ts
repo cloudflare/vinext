@@ -71,6 +71,12 @@ type AppPageRequestCacheLife = {
 
 type RenderAppPageLifecycleOptions = {
   basePath?: string;
+  /**
+   * Allow-list of OpenTelemetry propagation keys to emit as `<meta>` tags in
+   * the SSR head. From `experimental.clientTraceMetadata` in `next.config`.
+   * Undefined or empty disables emission.
+   */
+  clientTraceMetadata?: readonly string[];
   cleanPathname: string;
   clearRequestContext: () => void;
   consumeDynamicUsage: () => boolean;
@@ -512,6 +518,7 @@ export async function renderAppPageLifecycle(
         fontData,
         navigationContext: options.getNavigationContext(),
         basePath: options.basePath,
+        clientTraceMetadata: options.clientTraceMetadata,
         rootParams: options.rootParams,
         formState: options.formState ?? null,
         rscStream: rscForResponse,

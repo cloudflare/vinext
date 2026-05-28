@@ -227,6 +227,14 @@ declare global {
   var __VINEXT_SSR_MANIFEST__: Record<string, string[]> | undefined;
 
   /**
+   * Maps emitted CSS asset hrefs to file contents when next.config enables
+   * `experimental.inlineCss`. Injected into edge bundles at build time and
+   * populated by the Node.js production server at startup.
+   */
+  // oxlint-disable-next-line no-var
+  var __VINEXT_INLINE_CSS__: Record<string, string> | undefined;
+
+  /**
    * Array of chunk filenames that are only reachable via dynamic `import()`.
    * These chunks must NOT receive `<link rel="modulepreload">` tags because
    * they are fetched on demand (e.g. behind `React.lazy` / `next/dynamic`).

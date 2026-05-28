@@ -17,7 +17,10 @@ import {
   normalizeMountedSlotsHeader,
   type NormalizedRscRequest,
 } from "../packages/vinext/src/server/app-rsc-request-normalization.js";
-import { VINEXT_RSC_RENDER_MODE_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import {
+  VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
+  VINEXT_RSC_RENDER_MODE_HEADER,
+} from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
@@ -28,7 +31,10 @@ import {
   createClientReusePayloadHash,
 } from "../packages/vinext/src/server/client-reuse-manifest.js";
 import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
-import { VINEXT_CLIENT_REUSE_MANIFEST_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  RSC_HEADER,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 
 function req(path: string, headers: Record<string, string> = {}): Request {
   return new Request(`http://localhost${path}`, { headers });
@@ -209,7 +215,33 @@ describe("normalizeRscRequest — RSC detection and cleanPathname", () => {
     expect(result.isRscRequest).toBe(false);
   });
 
-  it("cleanPathname equals pathname when RSC headers appear on an HTML URL", () => {
+  it("does not select RSC rendering by RSC header alone on an HTML URL", () => {
+    const result = normalized(normalizeRscRequest(req("/about", { [RSC_HEADER]: "1" }), ""));
+    expect(result.isRscRequest).toBe(false);
+    expect(result.cleanPathname).toBe("/about");
+  });
+
+  it("does not select RSC rendering by _rsc query alone on an HTML URL", () => {
+    const result = normalized(
+      normalizeRscRequest(req(`/about?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}`), ""),
+    );
+    expect(result.isRscRequest).toBe(false);
+    expect(result.cleanPathname).toBe("/about");
+  });
+
+  it("detects Next-style RSC requests by RSC header plus _rsc query on an HTML URL", () => {
+    const result = normalized(
+      normalizeRscRequest(
+        req(`/about?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}`, { [RSC_HEADER]: "1" }),
+        "",
+      ),
+    );
+    expect(result.isRscRequest).toBe(true);
+    expect(result.pathname).toBe("/about");
+    expect(result.cleanPathname).toBe("/about");
+  });
+
+  it("cleanPathname equals pathname when inert RSC headers appear on an HTML URL", () => {
     const result = normalized(
       normalizeRscRequest(req("/about", { accept: "text/x-component" }), ""),
     );
@@ -433,6 +465,21 @@ describe("normalizeRscRequest — mounted slots normalization", () => {
     expect(normal.renderMode).toBe(APP_RSC_RENDER_MODE_NAVIGATION);
     expect(html.renderMode).toBe(APP_RSC_RENDER_MODE_NAVIGATION);
   });
+
+  it("normalizes render mode for Next-style RSC header plus _rsc query requests", () => {
+    const result = normalized(
+      normalizeRscRequest(
+        req(`/page?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}`, {
+          [RSC_HEADER]: "1",
+          [VINEXT_RSC_RENDER_MODE_HEADER]: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
+        }),
+        "",
+      ),
+    );
+
+    expect(result.isRscRequest).toBe(true);
+    expect(result.renderMode).toBe(APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI);
+  });
 });
 
 // ── Client reuse manifest normalization ─────────────────────────────────────
@@ -461,11 +508,21 @@ describe("normalizeRscRequest — ClientReuseManifest boundary", () => {
     const rsc = normalized(
       normalizeRscRequest(req("/page.rsc", { [VINEXT_CLIENT_REUSE_MANIFEST_HEADER]: header }), ""),
     );
+    const nextStyleRsc = normalized(
+      normalizeRscRequest(
+        req(`/page?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}`, {
+          [RSC_HEADER]: "1",
+          [VINEXT_CLIENT_REUSE_MANIFEST_HEADER]: header,
+        }),
+        "",
+      ),
+    );
     const html = normalized(
       normalizeRscRequest(req("/page", { [VINEXT_CLIENT_REUSE_MANIFEST_HEADER]: header }), ""),
     );
 
     expect(rsc.clientReuseManifest.kind).toBe("parsed");
+    expect(nextStyleRsc.clientReuseManifest.kind).toBe("parsed");
     expect(html.clientReuseManifest).toEqual({ kind: "absent" });
   });
 

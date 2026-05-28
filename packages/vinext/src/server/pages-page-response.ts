@@ -6,6 +6,7 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { buildRevalidateCacheControl } from "./cache-control.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
+import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { reportRequestError } from "./instrumentation.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 
@@ -42,6 +43,12 @@ type RenderPagesPageResponseOptions = {
   getFontLinks: () => string[];
   getFontStyles: () => string[];
   getSSRHeadHTML?: (() => string) | undefined;
+  /**
+   * Allow-list of OpenTelemetry propagation keys (from
+   * `experimental.clientTraceMetadata`) to emit as `<meta>` tags in the SSR
+   * head. Undefined or empty disables emission.
+   */
+  clientTraceMetadata?: readonly string[] | undefined;
   gsspRes: PagesGsspResponse | null;
   isrCacheKey: (router: string, pathname: string) => string;
   expireSeconds?: number;
@@ -335,11 +342,18 @@ export async function renderPagesPageResponse(
   // Mirrors Next.js fix: vercel/next.js@9853944
   const bodyStream = await options.renderToReadableStream(pageElement);
 
+  const headFromShim = options.getSSRHeadHTML?.() ?? "";
+  // Trace meta tags from the active OpenTelemetry context. When the
+  // allow-list is unset (the common case) or OTel is not installed,
+  // `getClientTraceMetadataHTML` returns "" and we forward the head HTML
+  // verbatim — keeping the no-op path zero-overhead.
+  const traceMetaHTML = getClientTraceMetadataHTML(options.clientTraceMetadata);
+  const ssrHeadHTML = traceMetaHTML ? `${headFromShim}\n  ${traceMetaHTML}` : headFromShim;
   const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
     assetTags: options.assetTags,
     DocumentComponent: options.DocumentComponent,
     renderDocumentToString: options.renderDocumentToString,
-    ssrHeadHTML: options.getSSRHeadHTML?.() ?? "",
+    ssrHeadHTML,
   });
 
   options.clearSsrContext();
