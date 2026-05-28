@@ -2370,6 +2370,52 @@ describe("App Router Production server (startProdServer)", () => {
     expect(nestedRes.headers.get("e2e-headers")).toBe("middleware");
   });
 
+  // Regression test for issue 1487 — App Router page-segment `revalidate`
+  // should produce a stable cached response. Two requests inside the
+  // revalidate window must return identical HTML bytes (same Date.now()
+  // embedded), not re-render on every request. /revalidate-test exports
+  // `revalidate = 60` and renders Date.now() into the HTML.
+  it("export const revalidate: second request inside the cache window is a HIT with identical HTML", async () => {
+    const res1 = await fetch(`${baseUrl}/revalidate-test`);
+    expect(res1.status).toBe(200);
+    const html1 = await res1.text();
+    const ts1 = html1.match(/data-testid="timestamp">(?:<!--[^>]*-->)*\s*(\d+)\s*</)?.[1];
+    expect(ts1).toBeTruthy();
+
+    const res2 = await fetch(`${baseUrl}/revalidate-test`);
+    expect(res2.status).toBe(200);
+    const html2 = await res2.text();
+    const ts2 = html2.match(/data-testid="timestamp">(?:<!--[^>]*-->)*\s*(\d+)\s*</)?.[1];
+
+    // The HIT response must return the same timestamp baked into the HTML on
+    // the MISS render. If vinext re-renders on every request, ts2 will be a
+    // fresher Date.now() than ts1.
+    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(ts2).toBe(ts1);
+  });
+
+  // Regression test for issue 1487 — App Router page-segment `revalidate = Infinity`
+  // (and `revalidate = false`) should produce a stable cached response. Two
+  // requests must return identical HTML bytes; the first MISS render writes
+  // to the cache and the second is a HIT. This was historically broken
+  // because `resolveAppPageCacheWritePolicy` rejected non-finite revalidate
+  // intervals, so indefinite-cache pages re-rendered on every request.
+  it("export const revalidate = Infinity: second request is a HIT with identical HTML", async () => {
+    const res1 = await fetch(`${baseUrl}/revalidate-infinity-test`);
+    expect(res1.status).toBe(200);
+    const html1 = await res1.text();
+    const ts1 = html1.match(/data-testid="timestamp">(?:<!--[^>]*-->)*\s*(\d+)\s*</)?.[1];
+    expect(ts1).toBeTruthy();
+
+    const res2 = await fetch(`${baseUrl}/revalidate-infinity-test`);
+    expect(res2.status).toBe(200);
+    const html2 = await res2.text();
+    const ts2 = html2.match(/data-testid="timestamp">(?:<!--[^>]*-->)*\s*(\d+)\s*</)?.[1];
+
+    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(ts2).toBe(ts1);
+  });
+
   it("applies middleware request header overrides before App->Pages fallback rendering in production", async () => {
     const res = await fetch(`${baseUrl}/pages-header-override-delete`, {
       headers: {
