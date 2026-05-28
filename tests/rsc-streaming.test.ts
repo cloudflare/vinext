@@ -284,8 +284,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     // document-close suffix. See #1532 — `</body></html>` is now suffix-moved
     // to the very end of the stream so the document terminates with a
     // well-formed close (mirrors Next.js's `createMoveSuffixStream`).
-    const bodyContentEnd =
-      output.indexOf("<div>Boundary 2</div>") + "<div>Boundary 2</div>".length;
+    const bodyContentEnd = output.indexOf("<div>Boundary 2</div>") + "<div>Boundary 2</div>".length;
     const donePos = output.indexOf(RSC_RUNTIME_DONE);
     const lastHtmlPos = output.indexOf("</html>");
     expect(donePos).toBeGreaterThan(bodyContentEnd);
