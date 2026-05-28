@@ -3643,8 +3643,34 @@ describe("Production server middleware (Pages Router)", () => {
 
     const html = await res.text();
     expect(html).toContain('<script nonce="pages-prod">window.__NEXT_DATA__ = ');
-    expect(html).toMatch(/<script type="module" nonce="pages-prod" src="\/[^"]+"/);
+    expect(html).toMatch(/<script type="module" defer nonce="pages-prod" src="\/[^"]+"/);
     expect(html).toMatch(/<link rel="modulepreload" nonce="pages-prod" href="\/[^"]+"/);
+  });
+
+  // Ported from Next.js: test/e2e/optimized-loading/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/optimized-loading/test/index.test.ts
+  //
+  // Regression for #1519: optimized loading is enabled by default in Next.js
+  // (`experimental.disableOptimizedLoading: false`). Page scripts must be
+  // emitted with `defer` in <head>, not as plain scripts at the end of <body>
+  // (and never as `async`). The Next.js E2E asserts both `script[async]
+  // .length === 0` and `head script[defer].length > 0`.
+  it("emits page scripts with defer in <head> by default (optimized loading)", async () => {
+    const res = await fetch(`${prodUrl}/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    // No async script tags (matches `script[async].length === 0` upstream).
+    expect(html).not.toMatch(/<script[^>]*\sasync(\s|>|=)/);
+
+    // Locate the head so we can search just that slice for defer scripts.
+    const headEnd = html.indexOf("</head>");
+    expect(headEnd).toBeGreaterThan(-1);
+    const head = html.slice(0, headEnd);
+
+    // Matches `head script[defer].length > 0` upstream.
+    const deferInHead = head.match(/<script[^>]*\sdefer(\s|>|=)[^>]*>/g) ?? [];
+    expect(deferInHead.length).toBeGreaterThan(0);
   });
 
   it("does not serve cached production Pages ISR HTML to CSP nonce requests", async () => {

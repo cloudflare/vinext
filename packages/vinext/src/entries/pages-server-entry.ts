@@ -121,6 +121,10 @@ export async function generateServerEntry(
     headers: nextConfig?.headers ?? [],
     expireTime: nextConfig?.expireTime,
     i18n: nextConfig?.i18n ?? null,
+    // Mirrors Next.js `experimental.disableOptimizedLoading` — when false
+    // (the default), page scripts are emitted with `defer` in <head>. See
+    // `.nextjs-ref/packages/next/src/pages/_document.tsx` getScripts().
+    disableOptimizedLoading: nextConfig?.disableOptimizedLoading === true,
     images: {
       deviceSizes: nextConfig?.images?.deviceSizes,
       imageSizes: nextConfig?.images?.imageSizes,
@@ -454,6 +458,13 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
   const tags = [];
   const seen = new Set();
   const nonceAttr = __createNonceAttribute(scriptNonce);
+  // Mirrors Next.js \`_document\` behaviour: when \`experimental.disableOptimizedLoading\`
+  // is false (the default), page scripts are emitted with \`defer\` in <head>. See
+  // .nextjs-ref/packages/next/src/pages/_document.tsx getScripts() — \`defer={!disableOptimizedLoading}\`.
+  // vinext always emits \`type="module"\` (which already defers implicitly), but
+  // upstream tests (e.g. test/e2e/optimized-loading) assert the literal \`defer\`
+  // attribute, and adding it preserves parity without changing browser behaviour.
+  const deferAttr = vinextConfig.disableOptimizedLoading ? "" : " defer";
 
   // Load the set of lazy chunk filenames (only reachable via dynamic imports).
   // These should NOT get <link rel="modulepreload"> or <script type="module">
@@ -467,7 +478,7 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
     const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
     seen.add(entry);
     tags.push('<link rel="modulepreload"' + nonceAttr + ' href="/' + entry + '" />');
-    tags.push('<script type="module"' + nonceAttr + ' src="/' + entry + '" crossorigin></script>');
+    tags.push('<script type="module"' + deferAttr + nonceAttr + ' src="/' + entry + '" crossorigin></script>');
   }
   if (m) {
     // Always inject shared chunks (framework, vinext runtime, entry) and
@@ -537,7 +548,7 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
         // (React.lazy, next/dynamic) and should only be fetched on demand.
         if (lazySet && lazySet.has(tf)) continue;
         tags.push('<link rel="modulepreload"' + nonceAttr + ' href="/' + tf + '" />');
-        tags.push('<script type="module"' + nonceAttr + ' src="/' + tf + '" crossorigin></script>');
+        tags.push('<script type="module"' + deferAttr + nonceAttr + ' src="/' + tf + '" crossorigin></script>');
       }
     }
   }

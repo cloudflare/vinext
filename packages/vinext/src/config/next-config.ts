@@ -382,6 +382,17 @@ export type ResolvedNextConfig = {
    * except the specified method names (case-insensitive).
    */
   removeConsole: boolean | { exclude: string[] };
+  /**
+   * Mirrors Next.js `experimental.disableOptimizedLoading`. When `false`
+   * (the default), Pages Router page scripts are emitted with `defer` in
+   * `<head>` so the browser can prefetch them in parallel with HTML parsing.
+   * When `true`, scripts are emitted without `defer` (legacy behaviour).
+   *
+   * See `.nextjs-ref/packages/next/src/pages/_document.tsx` (`getScripts` →
+   * `defer={!disableOptimizedLoading}`) and the upstream
+   * `test/e2e/optimized-loading` test fixture.
+   */
+  disableOptimizedLoading: boolean;
 };
 
 // Mirrors Next.js's accepted set in packages/next/src/shared/lib/constants.ts
@@ -1016,6 +1027,7 @@ export async function resolveNextConfig(
       deploymentId,
       sassOptions: null,
       removeConsole: false,
+      disableOptimizedLoading: false,
       instrumentationClientInject: [],
     };
     detectNextIntlConfig(root, resolved);
@@ -1239,6 +1251,9 @@ export async function resolveNextConfig(
         : isUnknownRecord(config.compiler?.removeConsole)
           ? { exclude: readStringArray(config.compiler!.removeConsole.exclude) }
           : false,
+    // Next.js stores this under `experimental.disableOptimizedLoading`.
+    // Default `false` matches Next.js: page scripts get `defer` in <head>.
+    disableOptimizedLoading: experimental?.disableOptimizedLoading === true,
   };
 
   // Auto-detect next-intl (lowest priority — explicit aliases from

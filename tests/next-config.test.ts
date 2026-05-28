@@ -781,6 +781,21 @@ describe("resolveNextConfig serverActionsBodySizeLimit", () => {
     });
     expect(resolved.serverActionsBodySizeLimit).toBe(5242880);
   });
+
+  // Regression for #1519: `experimental.disableOptimizedLoading` defaults to
+  // `false` and is read into the resolved config. The default drives the
+  // `defer`-in-head behaviour for Pages Router scripts in production.
+  it("defaults disableOptimizedLoading to false", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.disableOptimizedLoading).toBe(false);
+  });
+
+  it("reads experimental.disableOptimizedLoading from next.config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { disableOptimizedLoading: true },
+    });
+    expect(resolved.disableOptimizedLoading).toBe(true);
+  });
 });
 
 describe("resolveNextConfig hashSalt", () => {
@@ -1018,6 +1033,7 @@ describe("detectNextIntlConfig", () => {
       deploymentId: undefined,
       sassOptions: null,
       removeConsole: false,
+      disableOptimizedLoading: false,
       instrumentationClientInject: [],
       ...overrides,
     };
