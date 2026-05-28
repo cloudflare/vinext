@@ -23,6 +23,7 @@ const _pagesPageResponsePath = resolveEntryPath(
   import.meta.url,
 );
 const _pagesPageDataPath = resolveEntryPath("../server/pages-page-data.js", import.meta.url);
+const _pagesPageMethodPath = resolveEntryPath("../server/pages-page-method.js", import.meta.url);
 const _pagesDataRoutePath = resolveEntryPath("../server/pages-data-route.js", import.meta.url);
 const _pagesDefault404Path = resolveEntryPath("../server/pages-default-404.js", import.meta.url);
 const _pagesNodeCompatPath = resolveEntryPath("../server/pages-node-compat.js", import.meta.url);
@@ -248,6 +249,7 @@ import {
 } from ${JSON.stringify(_isrCachePath)};
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from ${JSON.stringify(_cspPath)};
 import { resolvePagesPageData as __resolvePagesPageData } from ${JSON.stringify(_pagesPageDataPath)};
+import { resolvePagesPageMethodResponse as __resolvePagesPageMethodResponse } from ${JSON.stringify(_pagesPageMethodPath)};
 import { buildNextDataJsonResponse as __buildNextDataJsonResponse, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse, isNextDataPathname as __isNextDataPathname, parseNextDataPathname as __parseNextDataPathname } from ${JSON.stringify(_pagesDataRoutePath)};
 import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
 import { renderPagesPageResponse as __renderPagesPageResponse } from ${JSON.stringify(_pagesPageResponsePath)};
@@ -664,6 +666,29 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       if (!PageComponent) {
         return new Response("Page has no default export", { status: 500 });
       }
+
+      // Refs #1463: reject non-GET/HEAD methods on static (no
+      // getServerSideProps) Pages routes with 405 + Allow: GET, HEAD.
+      // Skip for error/status pages (/_error, /404, /500), data requests
+      // (those go through the JSON envelope path and have their own shape),
+      // and renders that are already an error-page miss-render override.
+      // Mirrors Next.js's base-server.ts L2277 carve-outs.
+      if (
+        !isDataReq &&
+        routePattern !== "/_error" &&
+        routePattern !== "/404" &&
+        routePattern !== "/500" &&
+        renderStatusCodeOverride === undefined
+      ) {
+        const methodResponse = __resolvePagesPageMethodResponse({
+          hasGetServerSideProps: typeof pageModule.getServerSideProps === "function",
+          method: request.method,
+        });
+        if (methodResponse) {
+          return methodResponse;
+        }
+      }
+
       const pageModuleUrl = resolveClientModuleUrl(manifest, route.filePath);
       const appModuleUrl = resolveClientModuleUrl(manifest, _appAssetPath);
       const scriptNonce = __getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);

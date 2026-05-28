@@ -46,6 +46,7 @@ import {
   resolvePagesI18nRequest,
 } from "./pages-i18n.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
+import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -412,6 +413,36 @@ export function createSSRHandler(
           res.statusCode = 500;
           res.end("Page has no default export");
           return;
+        }
+
+        // Refs #1463: reject non-GET/HEAD methods on static (no
+        // getServerSideProps) Pages routes with 405 + Allow: GET, HEAD.
+        // Skip for error/status pages (/_error, /404, /500), data requests
+        // (those go through the JSON envelope path), and renders that are
+        // already a status-override (e.g. middleware-set 404). Mirrors
+        // Next.js's base-server.ts L2277 carve-outs.
+        {
+          const routePattern = patternToNextFormat(route.pattern);
+          if (
+            !isDataReq &&
+            routePattern !== "/_error" &&
+            routePattern !== "/404" &&
+            routePattern !== "/500" &&
+            statusCode === undefined
+          ) {
+            const methodResponse = resolvePagesPageMethodResponse({
+              hasGetServerSideProps: typeof pageModule.getServerSideProps === "function",
+              method: req.method ?? "GET",
+            });
+            if (methodResponse) {
+              res.statusCode = methodResponse.status;
+              const allow = methodResponse.headers.get("allow");
+              if (allow) res.setHeader("Allow", allow);
+              res.setHeader("Content-Type", "text/plain;charset=UTF-8");
+              res.end(await methodResponse.text());
+              return;
+            }
+          }
         }
 
         // Collect page props via data fetching methods

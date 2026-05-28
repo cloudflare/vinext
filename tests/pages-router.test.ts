@@ -357,6 +357,43 @@ describe("Pages Router integration", () => {
     expect(html).toContain("This is the about page.");
   });
 
+  // Refs #1463: Pages Router should reject non-GET/HEAD methods to static
+  // (no `getServerSideProps`) pages with a 405 + `Allow: GET, HEAD`.
+  // Ported from Next.js: test/e2e/prerender.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/prerender.test.ts
+  // ('should respond with 405 for POST to static page').
+  it("returns 405 with Allow: GET, HEAD on POST to a static Pages page", async () => {
+    const res = await fetch(`${baseUrl}/about`, { method: "POST" });
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("GET, HEAD");
+    expect(await res.text()).toContain("Method Not Allowed");
+  });
+
+  // Refs #1463: GSP (getStaticProps) pages are also "static" from the
+  // routing perspective; POST should produce 405. Mirrors the Next.js
+  // condition `(typeof components.Component === 'string' || isSSG)` in
+  // `.nextjs-ref/packages/next/src/server/base-server.ts` around L2287.
+  it("returns 405 with Allow: GET, HEAD on POST to a GSP page", async () => {
+    const res = await fetch(`${baseUrl}/isr-test`, { method: "POST" });
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("GET, HEAD");
+  });
+
+  // GET/HEAD must continue to work — guards against an over-broad fix.
+  it("HEAD on a static Pages page still returns 200", async () => {
+    const res = await fetch(`${baseUrl}/about`, { method: "HEAD" });
+    expect(res.status).toBe(200);
+  });
+
+  // SSR pages (those with getServerSideProps) must NOT be blocked: the
+  // page may legitimately read req.method inside getServerSideProps.
+  // Next.js gates 405 on `(typeof components.Component === 'string' || isSSG)`
+  // — gSSP routes are neither.
+  it("does not return 405 on POST to a getServerSideProps page", async () => {
+    const res = await fetch(`${baseUrl}/ssr`, { method: "POST" });
+    expect(res.status).not.toBe(405);
+  });
+
   // Tests that React 19 SSR preserves literal string action attributes.
   // Note: This is NOT testing server action invocation (unlike the upstream
   // Next.js test action-in-pages-router.test.ts which tests "use server" functions).
@@ -3486,6 +3523,18 @@ describe("Production server middleware (Pages Router)", () => {
     const res = await fetch(`${prodUrl}/old-page`, { redirect: "manual" });
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("/about");
+  });
+
+  // Refs #1463: prod-server parity for the dev-server 405 check. POST to a
+  // static Pages Router page must return 405 + Allow: GET, HEAD.
+  // Ported from Next.js: test/e2e/prerender.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/prerender.test.ts
+  // ('should respond with 405 for POST to static page').
+  it("returns 405 with Allow: GET, HEAD on POST to a static Pages page (prod)", async () => {
+    const res = await fetch(`${prodUrl}/about`, { method: "POST" });
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("GET, HEAD");
+    expect(await res.text()).toContain("Method Not Allowed");
   });
 
   // Regression for #1331: after a middleware rewrite, the rewrite target
