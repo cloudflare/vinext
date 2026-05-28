@@ -76,7 +76,7 @@ type RenderAppPageLifecycleOptions = {
    * the SSR head. From `experimental.clientTraceMetadata` in `next.config`.
    * Undefined or empty disables emission.
    */
-  clientTraceMetadata?: readonly string[] | null;
+  clientTraceMetadata?: readonly string[];
   cleanPathname: string;
   clearRequestContext: () => void;
   consumeDynamicUsage: () => boolean;

@@ -248,9 +248,9 @@ export async function handleSsr(
     /**
      * Allow-list of OpenTelemetry propagation keys (from
      * `experimental.clientTraceMetadata`) to render as `<meta>` tags in the
-     * SSR head. Undefined or null disables emission entirely.
+     * SSR head. Undefined or empty disables emission entirely.
      */
-    clientTraceMetadata?: readonly string[] | null;
+    clientTraceMetadata?: readonly string[];
     rootParams?: RootParams;
     /** When true, wait for the full React tree (including Suspense boundaries)
      *  to resolve before returning the HTML stream. Used for static prerender
@@ -422,7 +422,7 @@ export async function handleSsr(
         let traceMetaHTML: string | null = null;
         const getTraceMetaHTML = (): string => {
           if (traceMetaHTML === null) {
-            traceMetaHTML = getClientTraceMetadataHTML(options?.clientTraceMetadata ?? undefined);
+            traceMetaHTML = getClientTraceMetadataHTML(options?.clientTraceMetadata);
           }
           return traceMetaHTML;
         };

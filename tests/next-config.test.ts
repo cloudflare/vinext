@@ -870,6 +870,59 @@ describe("resolveNextConfig instrumentationClientInject", () => {
   });
 });
 
+describe("resolveNextConfig clientTraceMetadata", () => {
+  it("defaults to undefined when no config is provided", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.clientTraceMetadata).toBeUndefined();
+  });
+
+  it("defaults to undefined when experimental is not set", async () => {
+    const resolved = await resolveNextConfig({ env: {} });
+    expect(resolved.clientTraceMetadata).toBeUndefined();
+  });
+
+  it("defaults to undefined when experimental.clientTraceMetadata is omitted", async () => {
+    const resolved = await resolveNextConfig({ experimental: {} });
+    expect(resolved.clientTraceMetadata).toBeUndefined();
+  });
+
+  it("resolves a string array from experimental.clientTraceMetadata", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: {
+        clientTraceMetadata: ["my-test-key-1", "my-test-key-2", "my-parent-span-id"],
+      },
+    });
+    expect(resolved.clientTraceMetadata).toEqual([
+      "my-test-key-1",
+      "my-test-key-2",
+      "my-parent-span-id",
+    ]);
+  });
+
+  it("filters out non-string entries", async () => {
+    const resolved = await resolveNextConfig({
+      // oxlint-disable-next-line typescript/no-explicit-any
+      experimental: { clientTraceMetadata: ["valid-key", 42, null, "another-key"] as any },
+    });
+    expect(resolved.clientTraceMetadata).toEqual(["valid-key", "another-key"]);
+  });
+
+  it("returns undefined for a non-array value", async () => {
+    const resolved = await resolveNextConfig({
+      // oxlint-disable-next-line typescript/no-explicit-any
+      experimental: { clientTraceMetadata: "not-an-array" as any },
+    });
+    expect(resolved.clientTraceMetadata).toBeUndefined();
+  });
+
+  it("resolves to an empty array when experimental.clientTraceMetadata is an empty array", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { clientTraceMetadata: [] },
+    });
+    expect(resolved.clientTraceMetadata).toEqual([]);
+  });
+});
+
 describe("resolveNextConfig removeConsole", () => {
   it("resolves `compiler: { removeConsole: true }` to `true`", async () => {
     const resolved = await resolveNextConfig({ compiler: { removeConsole: true } });

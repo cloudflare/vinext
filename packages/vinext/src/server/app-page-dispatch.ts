@@ -150,9 +150,9 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   /**
    * Allow-list of OpenTelemetry propagation keys (from
    * `experimental.clientTraceMetadata`) to surface as `<meta>` tags in the
-   * SSR head. Undefined or null disables emission entirely.
+   * SSR head. Undefined or empty disables emission entirely.
    */
-  clientTraceMetadata?: readonly string[] | null;
+  clientTraceMetadata?: readonly string[];
   buildPageElement: (
     route: TRoute,
     params: AppPageParams,

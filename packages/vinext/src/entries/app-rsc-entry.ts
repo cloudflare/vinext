@@ -180,7 +180,7 @@ export function generateRscEntry(
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;
   const htmlLimitedBots = config?.htmlLimitedBots;
-  const clientTraceMetadata = config?.clientTraceMetadata ?? null;
+  const clientTraceMetadata = config?.clientTraceMetadata;
   const assetPrefix = config?.assetPrefix ?? "";
   const expireTime = config?.expireTime ?? DEFAULT_EXPIRE_TIME;
   const i18nConfig = config?.i18n ?? null;

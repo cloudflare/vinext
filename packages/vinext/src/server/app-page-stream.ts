@@ -30,7 +30,7 @@ export type AppPageSsrHandler = {
        * Allow-list of OpenTelemetry propagation keys to emit as `<meta>` tags
        * in the SSR head. Sourced from `experimental.clientTraceMetadata`.
        */
-      clientTraceMetadata?: readonly string[] | null;
+      clientTraceMetadata?: readonly string[];
       rootParams?: RootParams;
       sideStream?: ReadableStream<Uint8Array>;
       capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
@@ -50,9 +50,9 @@ type RenderAppPageHtmlStreamOptions = {
   /**
    * Allow-list of OpenTelemetry propagation keys (from
    * `experimental.clientTraceMetadata`) to surface as `<meta>` tags in
-   * the SSR head. Undefined or null disables emission.
+   * the SSR head. Undefined or empty disables emission.
    */
-  clientTraceMetadata?: readonly string[] | null;
+  clientTraceMetadata?: readonly string[];
   rootParams?: RootParams;
   ssrHandler: AppPageSsrHandler;
   /** Pre-split side stream for fused embed+capture (#981). When set,
