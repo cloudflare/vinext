@@ -3601,6 +3601,50 @@ describe("metadata routes integration (App Router)", () => {
     );
   });
 
+  it("emits exactly one favicon link plus icons metadata shortcut/apple/other in root segment", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-icons/metadata-icons.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-icons/metadata-icons.test.ts
+    const res = await fetch(`${baseUrl}/metadata-icons-mix`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    // Exactly one favicon.ico link (no duplicates from icon merging or file-based metadata).
+    const faviconMatches = html.match(/<link[^>]+href="[^"]*\/favicon\.ico(?:\?[^"]*)?"[^>]*>/g);
+    expect(faviconMatches?.length ?? 0).toBe(1);
+
+    // metadata.icons.shortcut emits rel="shortcut icon".
+    expect(html).toMatch(/<link[^>]+rel="shortcut icon"[^>]+href="\/shortcut-icon\.png"[^>]*>/);
+
+    // metadata.icons.apple emits rel="apple-touch-icon".
+    expect(html).toMatch(/<link[^>]+rel="apple-touch-icon"[^>]+href="\/apple-icon\.png"[^>]*>/);
+
+    // metadata.icons.other emits a custom rel link.
+    expect(html).toMatch(
+      /<link[^>]+rel="apple-touch-icon-precomposed"[^>]+href="\/apple-touch-icon-precomposed\.png"[^>]*>/,
+    );
+  });
+
+  it("emits exactly one favicon link plus nested icons metadata shortcut/apple/other on nested page", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-icons/metadata-icons.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-icons/metadata-icons.test.ts
+    const res = await fetch(`${baseUrl}/metadata-icons-mix/nested`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    const faviconMatches = html.match(/<link[^>]+href="[^"]*\/favicon\.ico(?:\?[^"]*)?"[^>]*>/g);
+    expect(faviconMatches?.length ?? 0).toBe(1);
+
+    expect(html).toMatch(
+      /<link[^>]+rel="shortcut icon"[^>]+href="\/shortcut-icon-nested\.png"[^>]*>/,
+    );
+    expect(html).toMatch(
+      /<link[^>]+rel="apple-touch-icon"[^>]+href="\/apple-icon-nested\.png"[^>]*>/,
+    );
+    expect(html).toMatch(
+      /<link[^>]+rel="apple-touch-icon-precomposed-nested"[^>]+href="\/apple-touch-icon-precomposed-nested\.png"[^>]*>/,
+    );
+  });
+
   it("injects dynamic metadata image routes into the head", async () => {
     // Ported from Next.js: test/e2e/app-dir/metadata/metadata.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts
