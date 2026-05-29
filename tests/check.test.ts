@@ -378,6 +378,48 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "experimental.prefetchInlining")?.status).toBe("partial");
   });
 
+  it("detects experimental.varyParams as partial", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        experimental: {
+          varyParams: true,
+        },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.varyParams")?.status).toBe("partial");
+  });
+
+  it("detects experimental.optimisticRouting as partial", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        experimental: {
+          optimisticRouting: true,
+        },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.optimisticRouting")?.status).toBe("partial");
+  });
+
+  it("detects experimental.cachedNavigations as partial", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        experimental: {
+          cachedNavigations: true,
+        },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.cachedNavigations")?.status).toBe("partial");
+  });
+
   it("detects experimental.swcEnvOptions as unsupported", () => {
     writeFile(
       "next.config.mjs",
@@ -433,6 +475,9 @@ describe("analyzeConfig", () => {
     ["experimental.prefetchInlining", "experimental", "prefetchInlining: true"],
     ["experimental.swcEnvOptions", "experimental", 'swcEnvOptions: { mode: "usage" }'],
     ["experimental.appShells", "experimental", "appShells: true"],
+    ["experimental.varyParams", "experimental", "varyParams: true"],
+    ["experimental.optimisticRouting", "experimental", "optimisticRouting: true"],
+    ["experimental.cachedNavigations", "experimental", "cachedNavigations: true"],
     ["i18n.domains", "i18n", "domains: []"],
   ])("detects %s via generic dot-notation handling", (name, parent, body) => {
     writeFile("next.config.mjs", `export default { ${parent}: { ${body} } };`);

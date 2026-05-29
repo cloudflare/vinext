@@ -74,6 +74,10 @@ export default {
         // #726-CACHE-01/04 defines the disabled proof boundary before runtime
         // observation recording or cache reuse is wired in later slices.
         "src/server/cache-proof.ts",
+        // #726-SKIP static layout reuse proof model. Consumed by render in a
+        // later slice; standalone planner + helpers here.
+        "src/server/skip-cache-proof.ts",
+        "src/server/static-layout-client-reuse-proof.ts",
       ],
       project: ["src/**/*.{ts,tsx}"],
     },
