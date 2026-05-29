@@ -44,12 +44,12 @@ describe("CloudflareCdnCacheAdapter", () => {
   });
 
   it("carries SWR on CDN-Cache-Control (public + max-age) and revalidates the browser", () => {
-    expect(adapter.buildResponseHeaders({ cacheControl: "s-maxage=60, stale-while-revalidate" })).toEqual(
-      {
-        "Cache-Control": "public, max-age=0, must-revalidate",
-        "CDN-Cache-Control": "public, max-age=60, stale-while-revalidate",
-      },
-    );
+    expect(
+      adapter.buildResponseHeaders({ cacheControl: "s-maxage=60, stale-while-revalidate" }),
+    ).toEqual({
+      "Cache-Control": "public, max-age=0, must-revalidate",
+      "CDN-Cache-Control": "public, max-age=60, stale-while-revalidate",
+    });
   });
 
   it("uses max-age (not s-maxage) and public on the edge directive, even pending-dynamic", () => {
@@ -81,7 +81,9 @@ describe("CloudflareCdnCacheAdapter", () => {
   });
 
   it("returns only no-store (no CDN-Cache-Control) when there is no cacheable policy", () => {
-    expect(adapter.buildResponseHeaders({ cacheControl: "" })).toEqual({ "Cache-Control": "no-store" });
+    expect(adapter.buildResponseHeaders({ cacheControl: "" })).toEqual({
+      "Cache-Control": "no-store",
+    });
   });
 
   it("revalidate purges the Workers Cache by tag via ctx.cache.purge", async () => {

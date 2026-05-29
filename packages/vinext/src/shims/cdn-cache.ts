@@ -124,10 +124,7 @@ const PENDING_DYNAMIC_CACHE_CONTROL = "no-store, must-revalidate";
 export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
   readonly ownsBackgroundRevalidation = true;
 
-  async readPage(
-    key: string,
-    ctx?: Record<string, unknown>,
-  ): Promise<CacheHandlerValue | null> {
+  async readPage(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     return getDataCacheHandler().get(key, ctx);
   }
 
@@ -149,10 +146,7 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
     return { "Cache-Control": input.cacheControl };
   }
 
-  async revalidate(
-    _tags: string | string[],
-    _durations?: { expire?: number },
-  ): Promise<void> {
+  async revalidate(_tags: string | string[], _durations?: { expire?: number }): Promise<void> {
     // Purge-only hook. The default store is the data cache, which already
     // invalidated the matching tags, so there is nothing extra to do here.
   }

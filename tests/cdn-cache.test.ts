@@ -154,7 +154,13 @@ describe("edge CDN adapter integration", () => {
 
   it("isrSet does not write to the data cache when the edge adapter no-ops storage", async () => {
     const set = vi.fn(async () => {});
-    setDataCacheHandler({ async get() { return null; }, set, async revalidateTag() {} });
+    setDataCacheHandler({
+      async get() {
+        return null;
+      },
+      set,
+      async revalidateTag() {},
+    });
     const edge = new EdgeCdnAdapter();
     setCdnCacheAdapter(edge);
 
@@ -184,9 +190,13 @@ describe("edge CDN adapter integration", () => {
 
 describe("revalidation propagates to both data cache and CDN adapter", () => {
   function spyAdapters() {
-    const dataRevalidate = vi.fn(async (_tags: string | string[], _durations?: { expire?: number }) => {});
+    const dataRevalidate = vi.fn(
+      async (_tags: string | string[], _durations?: { expire?: number }) => {},
+    );
     setDataCacheHandler({
-      async get() { return null; },
+      async get() {
+        return null;
+      },
       async set() {},
       revalidateTag: dataRevalidate,
     });
