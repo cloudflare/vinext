@@ -583,6 +583,21 @@ describe("Pages Router integration", () => {
     expect(body.pageProps?.__N_REDIRECT_STATUS).toBe(307);
   });
 
+  // The data envelope must carry an EXTERNAL redirect destination verbatim so
+  // the client router hard-navigates to the right place (the client must not
+  // fall back to the originating page URL — that would loop). See
+  // handleDataRedirect() in shims/router.ts.
+  it("preserves an external destination in __N_REDIRECT on _next/data requests", async () => {
+    const res = await fetch(`${baseUrl}/_next/data/test-build-id/gssp-redirect-external.json`, {
+      headers: { Accept: "application/json", "x-nextjs-data": "1" },
+      redirect: "manual",
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pageProps?: Record<string, unknown> };
+    expect(body.pageProps?.__N_REDIRECT).toBe("https://example.com/landing");
+  });
+
   // Regression for #1458: when getServerSideProps throws, dev (and prod) must
   // render the user's custom pages/500.tsx with status 500 rather than the
   // plain "Internal Server Error" text. Mirrors Next.js test/e2e/getserversideprops

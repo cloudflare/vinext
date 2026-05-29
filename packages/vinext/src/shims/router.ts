@@ -806,14 +806,13 @@ async function resolveMiddlewareDataRedirect(
 function handleDataRedirect(
   destination: string,
   redirectBasePath: unknown,
-  fallbackUrl: string,
   mode: "push" | "replace" = "push",
 ): void {
   const isInternal = destination.startsWith("/") && redirectBasePath !== false;
   if (!isInternal) {
-    // External or basePath-less redirect — hard navigate, mirroring Next.js's
-    // handleHardNavigation fallback.
-    scheduleHardNavigationAndThrow(fallbackUrl, "Navigation redirected externally");
+    // External or basePath-less redirect — hard navigate to the redirect
+    // destination, mirroring Next.js's `handleHardNavigation({ url: destination })`.
+    scheduleHardNavigationAndThrow(destination, "Navigation redirected externally");
   }
 
   // Re-dispatch as a fresh navigation. `locale: false` matches Next.js, which
@@ -908,7 +907,7 @@ async function navigateClientData(
   // packages/next/src/shared/lib/router/router.ts (`this.change(method, ...)`).
   const redirectDestination = pageProps.__N_REDIRECT;
   if (typeof redirectDestination === "string") {
-    handleDataRedirect(redirectDestination, pageProps.__N_REDIRECT_BASE_PATH, url, options.mode);
+    handleDataRedirect(redirectDestination, pageProps.__N_REDIRECT_BASE_PATH, options.mode);
     throw new NavigationCancelledError(url);
   }
 
