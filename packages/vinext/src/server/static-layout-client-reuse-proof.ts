@@ -28,7 +28,10 @@ function createCanonicalProofPairs(
   input: StaticLayoutClientReuseProofInput,
 ): readonly (readonly [string, string | number | null])[] {
   return ARTIFACT_COMPATIBILITY_PROOF_FIELDS.map(
-    (field) => [field, input.artifactCompatibility[field]] as const,
+    (field): readonly [string, string | number | null] => [
+      field,
+      input.artifactCompatibility[field],
+    ],
   );
 }
 
