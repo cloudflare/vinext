@@ -114,11 +114,6 @@ export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker
     ensureObservation(layoutId).probeComplete = true;
   };
 
-  const stringifyCacheLifeSnapshot = (): string | null => {
-    const cacheLife = _peekRequestScopedCacheLife();
-    return cacheLife === null ? null : JSON.stringify(cacheLife);
-  };
-
   const runWithIsolatedProbeDependencies = (probe: () => unknown): unknown => {
     if (!isInsideUnifiedScope()) {
       return probe();
@@ -126,6 +121,7 @@ export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker
     return runWithUnifiedStateMutation((ctx) => {
       ctx.cacheableFetchUrls = new Set();
       ctx.currentRequestTags = [];
+      ctx.currentFetchSoftTags = [];
       ctx.dynamicFetchUrls = new Set();
       ctx.dynamicUsageDetected = false;
       ctx.renderRequestApiUsage = new Set();
@@ -136,7 +132,7 @@ export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker
 
   const recordProbeDependencies = (layoutId: string) => {
     const observation = ensureObservation(layoutId);
-    if (stringifyCacheLifeSnapshot() !== null) {
+    if (_peekRequestScopedCacheLife() !== null) {
       observation.cacheLifeObserved = true;
     }
     for (const tag of getCollectedFetchTags()) {
@@ -228,6 +224,11 @@ export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker
             return resolved;
           },
           (error: unknown) => {
+            // Record whatever dependencies we observed before the failure
+            // so the layout's dependency snapshot is as complete as possible.
+            // Deliberately do NOT call markProbeComplete here: a failed probe
+            // leaves completeness as "unknown", which makes the planner fall
+            // back to render-and-send — the safe default for any probe error.
             recordProbeDependencies(layoutId);
             throw error;
           },
