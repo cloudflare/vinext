@@ -655,6 +655,13 @@ function scheduleHardNavigationAndThrow(url: string, message: string): never {
 
 type NavigateClientOptions = {
   allowNotFoundResponse?: boolean;
+  /**
+   * The history mode of the originating navigation. Used when a gSSP/gSP data
+   * response carries a `__N_REDIRECT` marker so the re-entrant navigation to
+   * the redirect destination preserves push-vs-replace semantics, matching
+   * Next.js's `this.change(method, ...)` re-dispatch.
+   */
+  mode?: "push" | "replace";
 };
 
 /** Wire format of `/_next/data/<id>/<page>.json` response bodies. */
@@ -782,6 +789,39 @@ async function resolveMiddlewareDataRedirect(
 }
 
 /**
+ * React to a gSSP/gSP `__N_REDIRECT` marker returned on a client data
+ * navigation.
+ *
+ * Internal destinations (absolute paths, unless the redirect opted out of
+ * basePath via `__N_REDIRECT_BASE_PATH === false`) are followed with a fresh
+ * client-side navigation that preserves the originating push/replace mode. The
+ * fresh navigation increments the navigation id, so the navigation that
+ * produced this redirect is superseded and never commits the intermediate
+ * page. External (or non-absolute) destinations fall back to a hard navigation.
+ *
+ * Ported from Next.js: packages/next/src/shared/lib/router/router.ts
+ * (`pageProps.__N_REDIRECT` handling — internal `this.change` vs
+ * `handleHardNavigation`).
+ */
+function handleDataRedirect(
+  destination: string,
+  redirectBasePath: unknown,
+  fallbackUrl: string,
+  mode: "push" | "replace" = "push",
+): void {
+  const isInternal = destination.startsWith("/") && redirectBasePath !== false;
+  if (!isInternal) {
+    // External or basePath-less redirect — hard navigate, mirroring Next.js's
+    // handleHardNavigation fallback.
+    scheduleHardNavigationAndThrow(fallbackUrl, "Navigation redirected externally");
+  }
+
+  // Re-dispatch as a fresh navigation. `locale: false` matches Next.js, which
+  // does not re-apply the locale prefix to a redirect destination.
+  void performNavigation(destination, undefined, { locale: false }, mode);
+}
+
+/**
  * Perform client-side navigation via the `/_next/data/<id>/<page>.json`
  * endpoint. Used when `__VINEXT_PAGE_LOADERS__` has a matching code-split
  * loader for the target pattern (the prod hot path). Falls back to the
@@ -800,6 +840,7 @@ async function navigateClientData(
   controller: AbortController,
   navId: number,
   assertStillCurrent: () => void,
+  options: NavigateClientOptions = {},
 ): Promise<void> {
   const root = window.__VINEXT_ROOT__;
   if (!root) {
@@ -856,6 +897,20 @@ async function navigateClientData(
 
   const pageProps: Record<string, unknown> =
     body.pageProps && typeof body.pageProps === "object" ? body.pageProps : {};
+
+  // gSSP/gSP redirect marker. When getServerSideProps/getStaticProps returns
+  // `{ redirect }`, the data endpoint replies 200 with `__N_REDIRECT` /
+  // `__N_REDIRECT_STATUS` inside pageProps (rather than an HTTP redirect, which
+  // fetch would transparently follow to non-JSON HTML). Re-enter a fresh
+  // navigation to the destination — this increments the navigation id, which
+  // supersedes (cancels) the current navigation so the intermediate page is
+  // never committed. Mirrors Next.js's `pageProps.__N_REDIRECT` handling in
+  // packages/next/src/shared/lib/router/router.ts (`this.change(method, ...)`).
+  const redirectDestination = pageProps.__N_REDIRECT;
+  if (typeof redirectDestination === "string") {
+    handleDataRedirect(redirectDestination, pageProps.__N_REDIRECT_BASE_PATH, url, options.mode);
+    throw new NavigationCancelledError(url);
+  }
 
   // Load the page module via the registered code-split loader. Vite has
   // already split each page into its own chunk; the loader is just the
@@ -1200,7 +1255,14 @@ async function navigateClient(
       }
 
       if (dataTarget) {
-        await navigateClientData(browserUrl, dataTarget, controller, navId, assertStillCurrent);
+        await navigateClientData(
+          browserUrl,
+          dataTarget,
+          controller,
+          navId,
+          assertStillCurrent,
+          options,
+        );
       } else {
         await navigateClientHtml(
           browserUrl,
@@ -1413,8 +1475,8 @@ async function performNavigation(
   const errorRouteHtmlFetchUrl = resolvePagesErrorHtmlFetchUrl(url, navigationLocale);
   const htmlFetchUrl = errorRouteHtmlFetchUrl ?? getPagesHtmlFetchUrl(full, navigationLocale);
   const navigateOptions: NavigateClientOptions = errorRouteHtmlFetchUrl
-    ? { allowNotFoundResponse: true }
-    : {};
+    ? { allowNotFoundResponse: true, mode }
+    : { mode };
   const shallow = options?.shallow ?? false;
   const doScroll = options?.scroll !== false;
 

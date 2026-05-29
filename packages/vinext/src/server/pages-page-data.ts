@@ -12,6 +12,7 @@ import {
   type PagesI18nRenderContext,
 } from "./pages-page-response.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
+import { buildNextDataJsonResponse } from "./pages-data-route.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 
 type PagesRedirectResult = {
@@ -220,6 +221,52 @@ function buildPagesDataNotFoundResponse(): Response {
 
 function resolvePagesRedirectStatus(redirect: PagesRedirectResult): number {
   return redirect.statusCode != null ? redirect.statusCode : redirect.permanent ? 308 : 307;
+}
+
+/**
+ * Build the response for a `getServerSideProps` / `getStaticProps`
+ * `{ redirect }` result.
+ *
+ * For an HTML page request we emit a real HTTP redirect (`Location` header) so
+ * a hard navigation lands on the destination.
+ *
+ * For a `/_next/data/<buildId>/<page>.json` request (a client-side navigation)
+ * we must NOT emit an HTTP redirect: the client's `fetch()` would transparently
+ * follow it to the destination's HTML, which is not a valid data envelope and
+ * would force a hard reload (and console error noise). Instead we mirror
+ * Next.js and return a 200 JSON envelope carrying `__N_REDIRECT` /
+ * `__N_REDIRECT_STATUS` inside `pageProps`. The client router detects these
+ * markers and performs a fresh client navigation to the destination, which
+ * supersedes (cancels) the in-flight navigation.
+ *
+ * Ported from Next.js: `packages/next/src/server/render.tsx` — the
+ * `__N_REDIRECT` / `__N_REDIRECT_STATUS` props assignment for gSSP/gSP
+ * redirects (search `__N_REDIRECT`), consumed in
+ * `packages/next/src/shared/lib/router/router.ts` (`pageProps.__N_REDIRECT`).
+ */
+function buildPagesRedirectResponse(
+  redirect: PagesRedirectResult,
+  options: Pick<
+    ResolvePagesPageDataOptions,
+    "isDataReq" | "sanitizeDestination" | "safeJsonStringify"
+  >,
+): Response {
+  const destination = options.sanitizeDestination(redirect.destination);
+
+  if (options.isDataReq) {
+    return buildNextDataJsonResponse(
+      {
+        __N_REDIRECT: destination,
+        __N_REDIRECT_STATUS: resolvePagesRedirectStatus(redirect),
+      },
+      options.safeJsonStringify,
+    );
+  }
+
+  return new Response(null, {
+    status: resolvePagesRedirectStatus(redirect),
+    headers: { Location: destination },
+  });
 }
 
 /**
@@ -439,10 +486,7 @@ export async function resolvePagesPageData(
     if (result?.redirect) {
       return {
         kind: "response",
-        response: new Response(null, {
-          status: resolvePagesRedirectStatus(result.redirect),
-          headers: { Location: options.sanitizeDestination(result.redirect.destination) },
-        }),
+        response: buildPagesRedirectResponse(result.redirect, options),
       };
     }
 
@@ -597,10 +641,7 @@ export async function resolvePagesPageData(
     if (result?.redirect) {
       return {
         kind: "response",
-        response: new Response(null, {
-          status: resolvePagesRedirectStatus(result.redirect),
-          headers: { Location: options.sanitizeDestination(result.redirect.destination) },
-        }),
+        response: buildPagesRedirectResponse(result.redirect, options),
       };
     }
 
