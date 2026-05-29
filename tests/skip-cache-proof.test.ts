@@ -22,6 +22,7 @@ import {
 import {
   crossCheckClientReuseManifestEntryWithCache,
   createClientReuseSkipTransportPlan,
+  createStaticLayoutClientReuseArtifactCompatibility,
   type SkipCacheInvalidationProof,
 } from "../packages/vinext/src/server/skip-cache-proof.js";
 
@@ -172,6 +173,67 @@ describe("skip/cache proof cross-checks", () => {
     });
   });
 
+  it("enables static-layout skip transport for sibling routes under a shared layout", () => {
+    // Simulate the layout /dashboard rendered during a visit to /dashboard/settings
+    // being reused when navigating to sibling route /dashboard/profile.
+    const dashboardLayoutId = "layout:/dashboard";
+    const settingsRouteId = "route:/dashboard/settings";
+    const profileRouteId = "route:/dashboard/profile";
+    const variantCacheKey = "cp1:dashboard";
+
+    // Both the server's current artifact and the client's manifest entry
+    // are built with createStaticLayoutClientReuseArtifactCompatibility.
+    // routeId is excluded from renderEpoch, so sibling routes produce the
+    // same layout-scoped artifact identity.
+    const serverArtifact = createStaticLayoutClientReuseArtifactCompatibility({
+      artifactCompatibility: createCompatibility(),
+      layoutId: dashboardLayoutId,
+      rootBoundaryId: "layout:/",
+      routeId: profileRouteId,
+      variantCacheKey,
+    });
+    const clientArtifact = createStaticLayoutClientReuseArtifactCompatibility({
+      artifactCompatibility: createCompatibility(),
+      layoutId: dashboardLayoutId,
+      rootBoundaryId: "layout:/",
+      routeId: settingsRouteId,
+      variantCacheKey,
+    });
+
+    const payloadHash = createClientReusePayloadHash("dashboard-layout-payload");
+    const decision = createReuseDecision({
+      candidateArtifactCompatibility: serverArtifact,
+      currentArtifactCompatibility: serverArtifact,
+    });
+    expectReuseDecision(decision);
+
+    const result = crossCheckClientReuseManifestEntryWithCache({
+      artifact: {
+        compatibility: serverArtifact,
+        invalidation: { kind: "valid" },
+        payloadHash,
+      },
+      cacheDecision: decision,
+      entry: createManifestEntry({
+        artifactCompatibility: clientArtifact,
+        payloadHash,
+        variantCacheKey: decision.proof.variant.cacheKey,
+      }),
+    });
+
+    expect(result).toMatchObject({
+      code: "SKIP_CACHE_CROSS_CHECK_PASSED",
+      entryId: "layout:/dashboard",
+      kind: "verified",
+      skipDisposition: {
+        code: "SKIP_STATIC_LAYOUT_VERIFIED",
+        enabled: true,
+        mode: "skipStaticLayout",
+        skippedEntryIds: ["layout:/dashboard"],
+      },
+    });
+  });
+
   it("builds a skip transport plan from verified entries while preserving rejection traces", () => {
     const fixture = createVerifiedFixture();
     const manifest = parseClientReuseManifestHeader(
@@ -258,6 +320,52 @@ describe("skip/cache proof cross-checks", () => {
     expect(plan).toMatchObject({
       kind: "skip",
       skippedEntryIds: ["layout:/dashboard"],
+    });
+  });
+
+  it("rejects verified results whose entry id does not match the manifest entry", () => {
+    const fixture = createVerifiedFixture();
+    const manifest = parseClientReuseManifestHeader(
+      JSON.stringify(
+        createClientReuseManifest({
+          entries: [fixture.entry],
+          visibleCommitVersion: 1,
+        }),
+      ),
+    );
+
+    const plan = createClientReuseSkipTransportPlan({
+      manifest,
+      verifyEntry(entry) {
+        const verified = crossCheckClientReuseManifestEntryWithCache({
+          artifact: fixture.artifact,
+          cacheDecision: fixture.decision,
+          entry,
+        });
+        if (verified.kind !== "verified") {
+          throw new Error("Expected fixture entry to verify");
+        }
+        // Buggy verifier: returns a verified result for a different entry.
+        return {
+          ...verified,
+          entryId: "layout:/billing",
+        };
+      },
+    });
+
+    expect(plan).toMatchObject({
+      kind: "renderAndSend",
+      skippedEntryIds: [],
+      entryRejections: [
+        {
+          code: "SKIP_CACHE_ENTRY_ID_MISMATCH",
+          entryId: "layout:/dashboard",
+          fields: {
+            verifierEntryId: "layout:/billing",
+            manifestEntryId: "layout:/dashboard",
+          },
+        },
+      ],
     });
   });
 

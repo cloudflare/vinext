@@ -59,6 +59,12 @@ export function createStaticLayoutClientReusePayloadHash(
 // during this wave. Static-layout skip needs layout-scoped compatibility so
 // sibling-route navigation can reuse a retained static layout without treating
 // the source route id as part of the retained artifact identity.
+//
+// renderEpoch is scoped to layout identity (layoutId, rootBoundaryId) and the
+// rendering variant (variantCacheKey).  The leaf routeId is intentionally
+// excluded — sibling routes under the same layout must produce the same
+// renderEpoch, otherwise exact-equality skip gating would silently disable
+// skip transport for the primary use case (navigating between sibling pages).
 export function createStaticLayoutClientReuseArtifactCompatibility(
   input: StaticLayoutClientReuseProofInput,
 ): ArtifactCompatibilityEnvelope {
@@ -74,7 +80,6 @@ export function createStaticLayoutClientReuseArtifactCompatibility(
       JSON.stringify({
         layoutId: input.layoutId,
         rootBoundaryId: input.rootBoundaryId,
-        routeId: input.routeId,
         variantCacheKey: input.variantCacheKey,
       }),
     )}`,

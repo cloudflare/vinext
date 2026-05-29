@@ -333,6 +333,22 @@ export function createClientReuseSkipTransportPlan(
       entryRejections.push(verification.rejection);
       continue;
     }
+
+    // The planner must not trust a verifier that returns a verified result
+    // for a different entry than the one it was given.  This is an internal
+    // invariant, not a hostile-client defence.
+    if (verification.kind === "verified" && verification.entryId !== entry.id) {
+      entryRejections.push({
+        code: "SKIP_CACHE_ENTRY_ID_MISMATCH",
+        entryId: entry.id,
+        fields: {
+          verifierEntryId: verification.entryId,
+          manifestEntryId: entry.id,
+        },
+      });
+      continue;
+    }
+
     if (verification.skipDisposition.enabled) {
       skippedEntryIds.push(entry.id);
     } else {
