@@ -8,11 +8,11 @@
  * Usage in worker/index.ts:
  *
  *   import { KVCacheHandler } from "vinext/cloudflare";
- *   import { setCacheHandler } from "vinext/shims/cache";
+ *   import { setDataCacheHandler } from "vinext/shims/cache";
  *
  *   export default {
  *     async fetch(request: Request, env: Env, ctx: ExecutionContext) {
- *       setCacheHandler(new KVCacheHandler(env.VINEXT_CACHE));
+ *       setDataCacheHandler(new KVCacheHandler(env.VINEXT_CACHE));
  *       // ctx is propagated automatically via runWithExecutionContext in
  *       // the vinext handler — no need to pass it to KVCacheHandler.
  *       // ... rest of worker handler

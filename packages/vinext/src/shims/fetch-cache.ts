@@ -19,7 +19,7 @@
  *   await runWithFetchCache(async () => { ... render ... });
  */
 
-import { getCacheHandler, type CachedFetchValue } from "./cache.js";
+import { getDataCacheHandler, type CachedFetchValue } from "./cache.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import { getRequestExecutionContext } from "./request-context.js";
@@ -913,7 +913,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       }
       throw err;
     }
-    const handler = getCacheHandler();
+    const handler = getDataCacheHandler();
 
     // Collect tags for this render pass
     const reqTags = _getState().currentRequestTags;

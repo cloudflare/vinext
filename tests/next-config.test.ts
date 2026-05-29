@@ -1180,6 +1180,7 @@ describe("detectNextIntlConfig", () => {
       htmlLimitedBots: undefined,
       serverExternalPackages: [],
       cacheHandler: undefined,
+      cdnCacheHandler: undefined,
       cacheMaxMemorySize: undefined,
       hashSalt: "",
       enablePrerenderSourceMaps: true,

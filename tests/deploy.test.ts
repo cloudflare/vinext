@@ -490,10 +490,10 @@ describe("generateAppRouterWorkerEntry", () => {
   it("includes KV wiring when hasISR is true", () => {
     const content = generateAppRouterWorkerEntry(true);
     expect(content).toContain('import { KVCacheHandler } from "vinext/cloudflare"');
-    expect(content).toContain('import { setCacheHandler } from "vinext/shims/cache"');
+    expect(content).toContain('import { setDataCacheHandler } from "vinext/shims/cache"');
     expect(content).toContain("VINEXT_CACHE: KVNamespace");
     expect(content).toContain("new KVCacheHandler(env.VINEXT_CACHE)");
-    expect(content).toContain("setCacheHandler(");
+    expect(content).toContain("setDataCacheHandler(");
   });
 });
 

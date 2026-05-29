@@ -14,12 +14,12 @@
  */
 
 import {
-  getCacheHandler,
   type CacheHandlerValue,
   type IncrementalCacheValue,
   type CachedPagesValue,
   type CachedAppPageValue,
 } from "vinext/shims/cache";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { fnv1a64 } from "../utils/hash.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { reportRequestError, type OnRequestErrorContext } from "./instrumentation.js";
@@ -46,8 +46,9 @@ export type ISRCacheEntry = {
  * or null for cache misses.
  */
 export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
-  const handler = getCacheHandler();
-  const result = await handler.get(key);
+  // Page-level reads go through the CDN cache adapter. The default adapter
+  // reads the data cache; an edge adapter may return null so the CDN serves.
+  const result = await getCdnCacheAdapter().readPage(key);
   if (!result || !result.value) return null;
   // Built-in handlers hard-delete expired entries and return null, but custom
   // CacheHandler implementations may surface expiry explicitly.
@@ -69,8 +70,7 @@ export async function isrSet(
   tags?: string[],
   expireSeconds?: number,
 ): Promise<void> {
-  const handler = getCacheHandler();
-  await handler.set(key, data, {
+  await getCdnCacheAdapter().writePage(key, data, {
     cacheControl:
       expireSeconds === undefined
         ? { revalidate: revalidateSeconds }
@@ -87,12 +87,11 @@ export async function isrSetPrerenderedAppPage(
   data: CachedAppPageValue,
   metadata: { expireSeconds?: number; revalidateSeconds?: number },
 ): Promise<void> {
-  const handler = getCacheHandler();
   const revalidateSeconds = metadata.revalidateSeconds;
   if (process.env.NEXT_PRIVATE_DEBUG_CACHE) {
     console.debug("[vinext] ISR: seed", key);
   }
-  await handler.set(
+  await getCdnCacheAdapter().writePage(
     key,
     data,
     revalidateSeconds === undefined
@@ -146,6 +145,9 @@ export function triggerBackgroundRegeneration(
     routeType: OnRequestErrorContext["routeType"];
   },
 ): void {
+  // Edge-managed CDN adapters revalidate by re-requesting the origin, so the
+  // origin must not also run in-process regeneration.
+  if (!getCdnCacheAdapter().ownsBackgroundRevalidation) return;
   if (pendingRegenerations.has(key)) return;
 
   const promise = renderFn()

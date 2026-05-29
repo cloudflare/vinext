@@ -29,7 +29,7 @@
  */
 
 import {
-  getCacheHandler,
+  getDataCacheHandler,
   cacheLifeProfiles,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
@@ -491,7 +491,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     }
 
     // Shared cache ("use cache" / "use cache: remote")
-    const handler = getCacheHandler();
+    const handler = getDataCacheHandler();
 
     // Check cache — deserialize via RSC stream when available, JSON otherwise
     const existing = await handler.get(cacheKey, { kind: "FETCH" });
