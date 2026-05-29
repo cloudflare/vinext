@@ -64,12 +64,14 @@ type ClientReuseSkipTransportPlan =
       kind: "renderAndSend";
       manifestRejection?: ClientReuseManifestRejection;
       skipDisposition: ClientReuseManifestSkipDisposition;
+      skipIneligibleEntryIds: readonly string[];
       skippedEntryIds: readonly string[];
     }>
   | Readonly<{
       entryRejections: readonly ClientReuseManifestEntryRejection[];
       kind: "skip";
       skipDisposition: ClientReuseManifestSkipDisposition;
+      skipIneligibleEntryIds: readonly string[];
       skippedEntryIds: readonly string[];
     }>;
 
@@ -147,23 +149,25 @@ function assertNever(value: never): never {
 function createRenderAndSendPlan(options: {
   entryRejections?: readonly ClientReuseManifestEntryRejection[];
   manifestRejection?: ClientReuseManifestRejection;
+  skipIneligibleEntryIds?: readonly string[];
 }): ClientReuseSkipTransportPlan {
   return {
     kind: "renderAndSend",
     entryRejections: options.entryRejections ?? [],
     ...(options.manifestRejection ? { manifestRejection: options.manifestRejection } : {}),
     skipDisposition: createDisabledSkipDisposition(),
+    skipIneligibleEntryIds: options.skipIneligibleEntryIds ?? [],
     skippedEntryIds: [],
   };
 }
 
-function createEntryCountExceededRejection(
-  entryCount: number,
-  maxEntryCount: number,
+function createVerificationBudgetExceededRejection(
+  totalWireEntries: number,
+  maxEntriesToVerify: number,
 ): ClientReuseManifestRejection {
   return {
-    code: "SKIP_ENTRY_COUNT_EXCEEDED",
-    fields: { entryCount, maxEntryCount },
+    code: "SKIP_VERIFICATION_BUDGET_EXCEEDED",
+    fields: { totalWireEntries, maxEntriesToVerify },
   };
 }
 
@@ -313,11 +317,15 @@ export function createClientReuseSkipTransportPlan(
   if (totalWireEntries > maxEntriesToVerify) {
     return createRenderAndSendPlan({
       entryRejections: manifest.entryRejections,
-      manifestRejection: createEntryCountExceededRejection(totalWireEntries, maxEntriesToVerify),
+      manifestRejection: createVerificationBudgetExceededRejection(
+        totalWireEntries,
+        maxEntriesToVerify,
+      ),
     });
   }
 
   const skippedEntryIds: string[] = [];
+  const skipIneligibleEntryIds: string[] = [];
   const entryRejections: ClientReuseManifestEntryRejection[] = [...manifest.entryRejections];
   for (const entry of manifest.manifest.entries) {
     const verification = input.verifyEntry(entry);
@@ -327,17 +335,20 @@ export function createClientReuseSkipTransportPlan(
     }
     if (verification.skipDisposition.enabled) {
       skippedEntryIds.push(entry.id);
+    } else {
+      skipIneligibleEntryIds.push(entry.id);
     }
   }
 
   if (skippedEntryIds.length === 0) {
-    return createRenderAndSendPlan({ entryRejections });
+    return createRenderAndSendPlan({ entryRejections, skipIneligibleEntryIds });
   }
 
   return {
     kind: "skip",
     entryRejections,
     skipDisposition: createStaticLayoutSkipDisposition(skippedEntryIds),
+    skipIneligibleEntryIds,
     skippedEntryIds,
   };
 }

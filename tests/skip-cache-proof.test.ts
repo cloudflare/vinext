@@ -291,6 +291,7 @@ describe("skip/cache proof cross-checks", () => {
         enabled: false,
         mode: "renderAndSend",
       },
+      skipIneligibleEntryIds: [],
       skippedEntryIds: [],
     });
   });
@@ -328,10 +329,10 @@ describe("skip/cache proof cross-checks", () => {
     expect(plan).toMatchObject({
       kind: "renderAndSend",
       manifestRejection: {
-        code: "SKIP_ENTRY_COUNT_EXCEEDED",
+        code: "SKIP_VERIFICATION_BUDGET_EXCEEDED",
         fields: {
-          entryCount: 2,
-          maxEntryCount: 1,
+          totalWireEntries: 2,
+          maxEntriesToVerify: 1,
         },
       },
       skippedEntryIds: [],
@@ -381,6 +382,7 @@ describe("skip/cache proof cross-checks", () => {
         enabled: false,
         mode: "renderAndSend",
       },
+      skipIneligibleEntryIds: [],
       skippedEntryIds: [],
     });
   });
@@ -602,6 +604,51 @@ describe("skip/cache proof cross-checks", () => {
         enabled: false,
         mode: "renderAndSend",
       },
+    });
+  });
+
+  it("builds a renderAndSend plan for compatibility-bridged entries that pass cross-check but fail exact equality", () => {
+    const rollbackCompatibility = createCompatibility({
+      deploymentVersion: "deploy-rollback",
+    });
+    const fixture = createVerifiedFixture({ artifactCompatibility: rollbackCompatibility });
+    const manifest = parseClientReuseManifestHeader(
+      JSON.stringify(
+        createClientReuseManifest({
+          entries: [
+            {
+              ...fixture.entry,
+              artifactCompatibility: createCompatibility({
+                deploymentVersion: "deploy-canary",
+              }),
+            },
+          ],
+          visibleCommitVersion: 1,
+        }),
+      ),
+    );
+    let verifierCalled = false;
+
+    const plan = createClientReuseSkipTransportPlan({
+      manifest,
+      verifyEntry(entry) {
+        verifierCalled = true;
+        return crossCheckClientReuseManifestEntryWithCache({
+          artifact: fixture.artifact,
+          cacheDecision: fixture.decision,
+          compatibilityMap: {
+            deploymentVersions: [["deploy-stable", "deploy-canary", "deploy-rollback"]],
+          },
+          entry,
+        });
+      },
+    });
+
+    expect(verifierCalled).toBe(true);
+    expect(plan).toMatchObject({
+      kind: "renderAndSend",
+      skipIneligibleEntryIds: ["layout:/dashboard"],
+      skippedEntryIds: [],
     });
   });
 
