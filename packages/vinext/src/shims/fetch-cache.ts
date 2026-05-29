@@ -904,7 +904,24 @@ function createPatchedFetch(): typeof globalThis.fetch {
       }
     }
 
+    // Record cacheable-fetch observation synchronously, before the first await,
+    // so that probe-based skip-eligibility checks (e.g. runLayoutProbe) can
+    // snapshot the dependency even when callers start a fetch but do not await
+    // its result before yielding to the probe harness.
+    // If key generation later fails and the fetch falls back to dynamic,
+    // recording both cacheable and dynamic is conservative — a false "unsafe"
+    // result costs performance, not correctness.
+    recordCacheableFetchObservation(input);
+    const reqTags = _getState().currentRequestTags;
     const tags = encodeCacheTags(nextOpts?.tags ?? []);
+    if (tags.length > 0) {
+      for (const tag of tags) {
+        if (!reqTags.includes(tag)) {
+          reqTags.push(tag);
+        }
+      }
+    }
+
     const softTags = _getState().currentFetchSoftTags;
     let fetchInit = stripNextFromInit(init, cacheDirective);
     let cacheKey: string;
@@ -924,18 +941,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       }
       throw err;
     }
-    recordCacheableFetchObservation(input);
     const handler = getCacheHandler();
-
-    // Collect tags for this render pass
-    const reqTags = _getState().currentRequestTags;
-    if (tags.length > 0) {
-      for (const tag of tags) {
-        if (!reqTags.includes(tag)) {
-          reqTags.push(tag);
-        }
-      }
-    }
 
     // Try cache first
     try {
