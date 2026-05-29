@@ -14,7 +14,7 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
-import { normalizePathSeparators } from "../entries/runtime-entry-module.js";
+import { normalizePathSeparators } from "../utils/path.js";
 
 /** Content-type lookup for static assets. Shared with prod-server.ts. */
 export const CONTENT_TYPES: Record<string, string> = {
