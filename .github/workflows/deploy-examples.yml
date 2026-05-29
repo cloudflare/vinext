@@ -52,6 +52,10 @@ jobs:
             project: hackernews
             working_directory: examples/hackernews
             wrangler_config: dist/server/wrangler.json
+          - name: workers-cache-cloudflare
+            project: workers-cache-cloudflare
+            working_directory: examples/workers-cache-cloudflare
+            wrangler_config: dist/server/wrangler.json
           - name: web
             project: vinext-web
             working_directory: apps/web
@@ -138,6 +142,7 @@ jobs:
               { name: 'nextra-docs-template', project: 'nextra-docs-template' },
               { name: 'benchmarks', project: 'benchmarks' },
               { name: 'hackernews', project: 'hackernews', original: 'https://next-react-server-components.vercel.app' },
+              { name: 'workers-cache-cloudflare', project: 'workers-cache-cloudflare' },
               { name: 'web', project: 'vinext-web' },
             ];
 
