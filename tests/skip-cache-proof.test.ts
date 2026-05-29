@@ -360,6 +360,31 @@ describe("skip/cache proof cross-checks", () => {
     ).toThrow("maxEntriesToVerify must be a non-negative safe integer");
   });
 
+  it("falls back without verifier work for absent manifests", () => {
+    const manifest = parseClientReuseManifestHeader(null);
+    let verifierCalled = false;
+
+    const plan = createClientReuseSkipTransportPlan({
+      manifest,
+      verifyEntry() {
+        verifierCalled = true;
+        throw new Error("absent manifests must not enter skip verification");
+      },
+    });
+
+    expect(verifierCalled).toBe(false);
+    expect(plan).toEqual({
+      kind: "renderAndSend",
+      entryRejections: [],
+      skipDisposition: {
+        code: "SKIP_MODEL_DISABLED",
+        enabled: false,
+        mode: "renderAndSend",
+      },
+      skippedEntryIds: [],
+    });
+  });
+
   it("falls back without verifier work when malicious entries all reject at parse time", () => {
     const manifest = parseClientReuseManifestHeader(
       JSON.stringify(

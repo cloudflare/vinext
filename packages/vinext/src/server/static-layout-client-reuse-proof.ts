@@ -24,17 +24,26 @@ export function createStaticLayoutClientReuseRouteId(layoutId: string): string {
   return `static-layout:${createClientReusePayloadHash(layoutId)}`;
 }
 
+function createCanonicalProofPairs(
+  input: StaticLayoutClientReuseProofInput,
+): readonly (readonly [string, string | number | null])[] {
+  return ARTIFACT_COMPATIBILITY_PROOF_FIELDS.map(
+    (field) => [field, input.artifactCompatibility[field]] as const,
+  );
+}
+
 export function createStaticLayoutClientReusePayloadHash(
   input: StaticLayoutClientReuseProofInput,
 ): string {
-  const artifactCompatibility: Record<string, string | number | null> = {};
-  for (const field of ARTIFACT_COMPATIBILITY_PROOF_FIELDS) {
-    artifactCompatibility[field] = input.artifactCompatibility[field];
-  }
-
+  // Field order in ARTIFACT_COMPATIBILITY_PROOF_FIELDS is load-bearing for
+  // hash determinism.  JSON.stringify key order follows insertion order in V8
+  // (and in practice across all supported runtimes), so the serialized payload
+  // is stable as long as this module's field list is not reordered.  If the
+  // field list must change, bump the hash algorithm or namespace to avoid
+  // silent cross-deployment hash drift.
   return createClientReusePayloadHash(
     JSON.stringify({
-      artifactCompatibility,
+      artifactCompatibility: Object.fromEntries(createCanonicalProofPairs(input)),
       layoutId: input.layoutId,
       rootBoundaryId: input.rootBoundaryId,
       routeId: input.routeId,

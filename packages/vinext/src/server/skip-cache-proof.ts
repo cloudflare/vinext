@@ -263,6 +263,15 @@ export function crossCheckClientReuseManifestEntryWithCache(
 
   const invalidationRejection = crossCheckInvalidationProof(entry, input.artifact.invalidation);
   if (invalidationRejection) return invalidationRejection;
+
+  // Skip transport requires exact artifact field equality — not just
+  // compatibility-map-based equivalence.  evaluateArtifactCompatibility (above)
+  // returns "compatible" when a declared set bridges differing fields (canary →
+  // rollback), but the skip planner must not elide a fresh render when the two
+  // payloads were built from observably different artifact environments.
+  // isExactArtifactCompatibility performs a distinct field-level walk that
+  // ignores the compatibility map, guaranteeing only bit-identical artifact
+  // envelopes are eligible for transport skip.
   const skipDisposition = isExactArtifactCompatibility(
     input.artifact.compatibility,
     entry.artifactCompatibility,
@@ -294,21 +303,17 @@ export function createClientReuseSkipTransportPlan(
     return createRenderAndSendPlan({ manifestRejection: manifest.rejection });
   }
 
-  const maxEntriesToVerify = input.maxEntriesToVerify;
-  if (
-    maxEntriesToVerify !== undefined &&
-    (!Number.isSafeInteger(maxEntriesToVerify) || maxEntriesToVerify < 0)
-  ) {
+  const maxEntriesToVerify =
+    input.maxEntriesToVerify ?? STATIC_LAYOUT_SKIP_VERIFICATION_ENTRY_BUDGET;
+  if (!Number.isSafeInteger(maxEntriesToVerify) || maxEntriesToVerify < 0) {
     throw new RangeError("maxEntriesToVerify must be a non-negative safe integer");
   }
 
-  if (maxEntriesToVerify !== undefined && manifest.manifest.entries.length > maxEntriesToVerify) {
+  const totalWireEntries = manifest.manifest.entries.length + manifest.entryRejections.length;
+  if (totalWireEntries > maxEntriesToVerify) {
     return createRenderAndSendPlan({
       entryRejections: manifest.entryRejections,
-      manifestRejection: createEntryCountExceededRejection(
-        manifest.manifest.entries.length,
-        maxEntriesToVerify,
-      ),
+      manifestRejection: createEntryCountExceededRejection(totalWireEntries, maxEntriesToVerify),
     });
   }
 
