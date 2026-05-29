@@ -126,6 +126,11 @@ async function streamPageToResponse(
     enhancePageElement?: ((opts: RenderPageEnhancers) => React.ReactElement) | undefined;
     /** Per-request CSP nonce forwarded to the shared renderPage helper. */
     scriptNonce?: string | undefined;
+    /**
+     * Minimal `DocumentContext` fields (`pathname`/`query`/`asPath`) forwarded
+     * to `getInitialProps`. Mirrors the prod pipeline for parity.
+     */
+    documentContext?: Record<string, unknown> | undefined;
   },
 ): Promise<void> {
   const {
@@ -139,6 +144,7 @@ async function streamPageToResponse(
     getHeadHTML,
     enhancePageElement,
     scriptNonce,
+    documentContext,
   } = options;
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
@@ -154,6 +160,7 @@ async function streamPageToResponse(
     renderToReadableStream,
     renderStylesToString: renderToStringAsync,
     scriptNonce,
+    context: documentContext,
   });
 
   let bodyStream: ReadableStream<Uint8Array>;
@@ -1240,6 +1247,12 @@ hydrate();
           // Forward the per-request nonce so the shared renderPage helper can
           // apply `withScriptNonce` once (it owns that responsibility).
           scriptNonce,
+          // Minimal DocumentContext for `getInitialProps`, matching prod parity.
+          documentContext: {
+            pathname: patternToNextFormat(route.pattern),
+            query,
+            asPath: url,
+          },
           // Used by `_document.getInitialProps` -> `ctx.renderPage` to wrap
           // App/Component with user enhancers (e.g. styled-components,
           // emotion). The streaming path otherwise renders `element` as-is.

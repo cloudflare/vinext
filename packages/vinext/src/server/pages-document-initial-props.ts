@@ -169,6 +169,11 @@ export async function runDocumentRenderPage(
       })
     | null;
   if (!DocCtor || typeof DocCtor.getInitialProps !== "function") return { status: "skipped" };
+  // Identity check (mirrors `loadUserDocumentInitialProps`): if the user did
+  // not override `static getInitialProps`, the inherited reference is the
+  // shim's stub. Skip the renderPage work so the fast path stays cheap and the
+  // caller falls through to the bare Document render.
+  if (DocCtor.getInitialProps === BASE_GET_INITIAL_PROPS) return { status: "skipped" };
   if (!input.enhancePageElement) return { status: "skipped" };
   const enhancePageElement = input.enhancePageElement;
 

@@ -625,4 +625,52 @@ describe("pages page response", () => {
     expect(html).not.toContain("enhanced");
     expect(enhancePageElement).not.toHaveBeenCalled();
   });
+
+  // Edge case: `renderPage` is called but the underlying stream render throws.
+  // The error propagates out of `getInitialProps`, is caught by the shared
+  // helper, and the pipeline falls back to the normal streaming render.
+  it("falls back to streaming render when renderPage's stream render throws", async () => {
+    const common = createCommonOptions();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+      renderPage: (opts?: any) => Promise<{ html: string }>;
+    }) => {
+      // Calling renderPage triggers renderToReadableStream, which throws below.
+      const result = await ctx.renderPage();
+      return { html: result.html };
+    };
+
+    const enhancePageElement = vi.fn(() => React.createElement("p", null, "enhanced"));
+
+    let renderCall = 0;
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: MyDocument as unknown as React.ComponentType,
+      enhancePageElement,
+      renderToReadableStream: vi.fn(async () => {
+        renderCall += 1;
+        // First call is renderPage's render (throw); a later fallback call must
+        // succeed so the page still renders.
+        if (renderCall === 1) throw new Error("stream render failed");
+        return createStream(["<div>live-body</div>"]);
+      }),
+    });
+
+    const html = await response.text();
+    // renderPage was reached (enhancePageElement ran) but the throw bubbled up
+    // and the pipeline fell back to the normal streaming render.
+    expect(enhancePageElement).toHaveBeenCalledTimes(1);
+    expect(html).toContain("live-body");
+    expect(html).not.toContain("enhanced");
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[vinext] _document.getInitialProps() threw:",
+      expect.any(Error),
+    );
+    errorSpy.mockRestore();
+  });
 });
