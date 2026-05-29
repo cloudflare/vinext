@@ -409,6 +409,86 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().size).toBe(rest);
   });
 
+  // Regression for issue #1490: experimental.staleTimes.static should be
+  // honored as the prefetch cache freshness window. The plugin injects
+  // `process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME` (in seconds) at
+  // build time; navigation.ts reads it when computing PREFETCH_CACHE_TTL.
+  describe("staleTimes (#1490)", () => {
+    const ORIGINAL_TTL_ENV = process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
+
+    afterEach(() => {
+      if (ORIGINAL_TTL_ENV === undefined) {
+        delete process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
+      } else {
+        process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = ORIGINAL_TTL_ENV;
+      }
+    });
+
+    it("uses 30s when __NEXT_CLIENT_ROUTER_STATIC_STALETIME is unset", async () => {
+      delete process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
+      vi.resetModules();
+      const nav = await import("../packages/vinext/src/shims/navigation.js");
+      expect(nav.PREFETCH_CACHE_TTL).toBe(30_000);
+    });
+
+    it("converts seconds from __NEXT_CLIENT_ROUTER_STATIC_STALETIME into ms", async () => {
+      process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = "180";
+      vi.resetModules();
+      const nav = await import("../packages/vinext/src/shims/navigation.js");
+      expect(nav.PREFETCH_CACHE_TTL).toBe(180_000);
+    });
+
+    it("treats a freshly prefetched entry as reusable up to the configured TTL", async () => {
+      process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = "180";
+      vi.resetModules();
+      const nav = await import("../packages/vinext/src/shims/navigation.js");
+
+      const cache = nav.getPrefetchCache();
+      const prefetched = nav.getPrefetchedUrls();
+      const rscUrl = "/dashboard.rsc";
+      const now = 1_000_000;
+      const snapshot = {
+        buffer: new TextEncoder().encode("flight").buffer,
+        contentType: "text/x-component",
+        mountedSlotsHeader: null,
+        paramsHeader: null,
+        url: rscUrl,
+      };
+
+      cache.set(rscUrl, { outcome: "cache-seeded", snapshot, timestamp: now });
+      prefetched.add(rscUrl);
+
+      // 150 seconds later — within the configured 180s window, must reuse
+      vi.spyOn(Date, "now").mockReturnValue(now + 150_000);
+      expect(nav.consumePrefetchResponse(rscUrl, null, null)).toEqual(snapshot);
+    });
+
+    it("treats a stale entry as expired once the configured TTL elapses", async () => {
+      process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME = "180";
+      vi.resetModules();
+      const nav = await import("../packages/vinext/src/shims/navigation.js");
+
+      const cache = nav.getPrefetchCache();
+      const prefetched = nav.getPrefetchedUrls();
+      const rscUrl = "/dashboard.rsc";
+      const now = 1_000_000;
+      const snapshot = {
+        buffer: new TextEncoder().encode("flight").buffer,
+        contentType: "text/x-component",
+        mountedSlotsHeader: null,
+        paramsHeader: null,
+        url: rscUrl,
+      };
+
+      cache.set(rscUrl, { outcome: "cache-seeded", snapshot, timestamp: now });
+      prefetched.add(rscUrl);
+
+      // 200 seconds later — past the 180s window, must NOT reuse
+      vi.spyOn(Date, "now").mockReturnValue(now + 200_000);
+      expect(nav.consumePrefetchResponse(rscUrl, null, null)).toBeNull();
+    });
+  });
+
   it("does not sweep when cache is below capacity", () => {
     // Use fixed arbitrary values to avoid any dependency on the real wall clock
     const now = 1_000_000;

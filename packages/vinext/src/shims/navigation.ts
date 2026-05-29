@@ -339,8 +339,29 @@ export const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 /** Maximum number of entries in the RSC prefetch cache. */
 export const MAX_PREFETCH_CACHE_SIZE = 50;
 
-/** TTL for prefetch cache entries in ms (matches Next.js static prefetch TTL). */
-export const PREFETCH_CACHE_TTL = 30_000;
+/**
+ * TTL for prefetch cache entries in ms.
+ *
+ * Mirrors Next.js' `STATIC_STALETIME_MS` derivation. The plugin injects
+ * `process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME` from
+ * `experimental.staleTimes.static` (in seconds) at build time; we convert
+ * to ms here.
+ *
+ * Falls back to vinext's historical default of 30s when the env var is
+ * absent (e.g. unit tests that import this module without going through
+ * the plugin's `define` pipeline). When the plugin is active and the user
+ * has not set `experimental.staleTimes`, Next.js' 300s default applies
+ * (see `resolveStaleTimes` in `config/next-config.ts`).
+ */
+function resolvePrefetchCacheTtl(): number {
+  const raw = process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
+  if (raw === undefined || raw === "") return 30_000;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds < 0) return 30_000;
+  return seconds * 1000;
+}
+
+export const PREFETCH_CACHE_TTL = resolvePrefetchCacheTtl();
 
 /** A buffered RSC response stored as an ArrayBuffer for replay. */
 export type CachedRscResponse = {

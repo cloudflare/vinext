@@ -15,6 +15,7 @@ import {
 } from "../config/config-matchers.js";
 import { headersContextFromRequest } from "vinext/shims/headers";
 import {
+  ACTION_REVALIDATED_HEADER,
   NEXT_ACTION_HEADER,
   RSC_ACTION_HEADER,
   RSC_HEADER,
@@ -135,17 +136,30 @@ type HandleProgressiveActionRequestOptions = {
   request: Request;
 };
 
+/**
+ * Side-effect headers captured during a progressive (no-JS) server action's
+ * non-redirect execution. Forwarded onto the page render response so that
+ * `cookies().set(...)` and revalidation kinds reach the browser. See
+ * `app-server-action-execution.ts` and issue #1483 for the full rationale.
+ */
+type ProgressiveActionSideEffects = {
+  pendingCookies: string[];
+  draftCookie: string | null | undefined;
+  /** Numeric revalidation kind: `0` (none), `1` (static+dynamic), etc. */
+  revalidationKind: number;
+};
+
 type ProgressiveActionFormStateResult =
-  | {
+  | ({
       formState: ReactFormState | null;
       kind: "form-state";
-    }
-  | {
+    } & ProgressiveActionSideEffects)
+  | ({
       actionError: unknown;
       actionFailed: true;
       formState: null;
       kind: "form-state";
-    };
+    } & ProgressiveActionSideEffects);
 
 type HandleServerActionRequestOptions = {
   actionId: string | null;
@@ -653,7 +667,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     });
   }
 
-  return options.dispatchMatchedPage({
+  const pageResponse = await options.dispatchMatchedPage({
     cleanPathname,
     formState,
     actionError,
@@ -673,6 +687,66 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     searchParams: url.searchParams,
     renderMode,
   });
+
+  // No-JS progressive form actions write cookies via cookies().set() / draftMode()
+  // *during action execution*, before the page rerender begins. Those writes only
+  // exist on the request-scoped headers state; the page-render path never flushes
+  // them. We attach them here so the rendered Response carries the action's
+  // Set-Cookie headers and revalidation marker, mirroring Next.js'
+  // res.setHeader('set-cookie', ...) flush in action-handler.ts / app-render.tsx.
+  // Issue: https://github.com/cloudflare/vinext/issues/1483
+  if (isProgressiveActionRender) {
+    return applyProgressiveActionSideEffects(pageResponse, progressiveActionResult);
+  }
+  return pageResponse;
+}
+
+/**
+ * Append `Set-Cookie` headers and the `x-action-revalidated` marker captured
+ * during progressive (no-JS) server action execution to the page render
+ * response. See issue #1483.
+ *
+ * Falls back to rebuilding the response when the headers object is immutable
+ * (e.g. `Response.redirect()`), so cookies set by the action ride out on a
+ * redirect issued during the rerender too.
+ */
+function applyProgressiveActionSideEffects(
+  response: Response,
+  sideEffects: ProgressiveActionFormStateResult,
+): Response {
+  const hasPendingCookies = sideEffects.pendingCookies.length > 0;
+  const hasDraftCookie = Boolean(sideEffects.draftCookie);
+  const hasRevalidationKind = sideEffects.revalidationKind !== 0;
+  if (!hasPendingCookies && !hasDraftCookie && !hasRevalidationKind) {
+    return response;
+  }
+
+  const applyTo = (headers: Headers): void => {
+    for (const cookie of sideEffects.pendingCookies) {
+      headers.append("Set-Cookie", cookie);
+    }
+    if (sideEffects.draftCookie) {
+      headers.append("Set-Cookie", sideEffects.draftCookie);
+    }
+    if (hasRevalidationKind) {
+      headers.set(ACTION_REVALIDATED_HEADER, JSON.stringify(sideEffects.revalidationKind));
+    }
+  };
+
+  try {
+    applyTo(response.headers);
+    return response;
+  } catch {
+    // Headers were immutable (Response.redirect()/Response.error()) — rebuild
+    // with a fresh mutable Headers seeded from the original response.
+    const headers = new Headers(response.headers);
+    applyTo(headers);
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
 }
 
 export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(

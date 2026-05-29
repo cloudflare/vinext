@@ -20,7 +20,11 @@ import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
-import { generateBrowserEntry } from "./entries/app-browser-entry.js";
+import {
+  generateBrowserEntry,
+  isLinkPrefetchRoute,
+  toLinkPrefetchRoute,
+} from "./entries/app-browser-entry.js";
 import {
   collectRouteClassificationManifest,
   type RouteClassificationManifest,
@@ -68,6 +72,7 @@ import {
 } from "./server/instrumentation.js";
 import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { precompressAssets } from "./build/precompress.js";
+import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import {
   isExternalUrl,
@@ -719,7 +724,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
    * __NEXT_DATA__ to determine which page to hydrate.
    */
   async function generateClientEntry(): Promise<string> {
-    return _generateClientEntry(pagesDir, nextConfig, fileMatcher);
+    // In a hybrid Pages + App Router build, expose the App Router prefetch
+    // manifest to the Pages Router client entry so `<Link>`s and
+    // `Router.prefetch` can mark App Router targets on `Router.components`
+    // with `{ __appRouter: true }`. See `pages-client-entry.ts` and issue
+    // #1526 for the Next.js parity rationale.
+    const appPrefetchRoutes = hasAppDir
+      ? (await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher))
+          .filter(isLinkPrefetchRoute)
+          .map(toLinkPrefetchRoute)
+      : [];
+    return _generateClientEntry(pagesDir, nextConfig, fileMatcher, { appPrefetchRoutes });
   }
 
   async function writeRouteTypes(): Promise<void> {
@@ -1115,6 +1130,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
         // Expose basePath to client-side code
         defines["process.env.__NEXT_ROUTER_BASEPATH"] = JSON.stringify(nextConfig.basePath);
+        // Expose experimental.staleTimes.static to client-side code so the
+        // App Router prefetch cache can honor the configured freshness window.
+        // Value is in seconds; matches Next.js' `define-env.ts` plumbing.
+        //
+        // Note: Next.js also defines `__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME`
+        // to control partial/hover-prefetch TTL, but vinext currently uses
+        // a single PREFETCH_CACHE_TTL for all prefetches without
+        // distinguishing prefetch kind. Wire that up alongside the consumer
+        // when prefetch-kind differentiation lands.
+        defines["process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME"] = JSON.stringify(
+          String(nextConfig.staleTimes.static),
+        );
         // Expose trailingSlash to client-side code so <Link> can render hrefs
         // in the canonical form and avoid an unnecessary 308 redirect bounce.
         defines["process.env.__VINEXT_TRAILING_SLASH"] = JSON.stringify(
@@ -1165,6 +1192,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_DEPLOYMENT_ID"] = JSON.stringify(
           nextConfig.deploymentId ?? "",
         );
+        // Public `process.env.NEXT_DEPLOYMENT_ID` — Next.js statically inlines
+        // this into client (and web worker) bundles via its DefinePlugin so
+        // that user code like `new Worker(new URL('./w.ts', import.meta.url))`
+        // can read `process.env.NEXT_DEPLOYMENT_ID` from inside the worker.
+        // Workers can't easily share a globalThis with the main thread, so
+        // inlining at compile time is the only reliable channel.
+        //
+        // We keep parity by exposing the same identifier in vinext: when a
+        // deploymentId is configured we inline the string, otherwise inline
+        // `false` to mirror Next.js' behavior when the value is absent.
+        // See: packages/next/src/build/define-env.ts (`isClient` branch).
+        defines["process.env.NEXT_DEPLOYMENT_ID"] = nextConfig.deploymentId
+          ? JSON.stringify(nextConfig.deploymentId)
+          : "false";
         // Next.js version compat — mirrors Next.js' `process.env.__NEXT_VERSION`,
         // which is substituted by their webpack DefinePlugin at build time
         // (see `packages/next/src/client/next.ts` line 5 and
@@ -2274,6 +2315,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               clientTraceMetadata: nextConfig?.clientTraceMetadata,
               assetPrefix: nextConfig?.assetPrefix,
               expireTime: nextConfig?.expireTime,
+              inlineCss: nextConfig?.inlineCss,
               i18n: nextConfig?.i18n,
               hasPagesDir,
               publicFiles: scanPublicFileRoutes(root),
@@ -4171,6 +4213,33 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       };
     })(),
+    {
+      name: "vinext:inline-css-manifest",
+      apply: "build",
+      enforce: "post",
+      closeBundle: {
+        sequential: true,
+        order: "post",
+        handler() {
+          if (this.environment?.name !== "client") return;
+          if (!hasAppDir || nextConfig?.inlineCss !== true) return;
+
+          const envConfig = this.environment?.config;
+          if (!envConfig) return;
+
+          const buildRoot = envConfig.root ?? process.cwd();
+          const clientDir = path.resolve(buildRoot, "dist", "client");
+          const manifest = collectInlineCssManifest(clientDir, nextConfig.assetPrefix);
+          const rscOutDir = path.resolve(
+            buildRoot,
+            options.rscOutDir ?? path.join("dist", "server"),
+          );
+          for (const entryFile of ["index.js", "index.mjs"]) {
+            if (injectInlineCssManifestGlobal(path.join(rscOutDir, entryFile), manifest)) break;
+          }
+        },
+      },
+    },
     // Cloudflare Workers production build integration:
     // After all environments are built, compute lazy chunks from the client
     // build manifest and inject globals into the worker entry.

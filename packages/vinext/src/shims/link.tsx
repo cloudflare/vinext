@@ -69,6 +69,7 @@ import {
   prefetchPagesData,
   resolvePagesDataNavigationTarget,
 } from "./internal/pages-data-target.js";
+import { markAppRouteDetectedOnPrefetch } from "./internal/app-route-detection.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
 
 type NavigateEvent = {
@@ -400,6 +401,14 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         if (dataTarget) {
           prefetchPagesData(dataTarget);
         } else {
+          // The target is not a Pages Router route — mark it on the Pages
+          // Router `components` map if it matches an App Router route in the
+          // shared prefetch manifest. Mirrors Next.js's `_bfl` marker write at
+          // `packages/next/src/shared/lib/router/router.ts:2525`; the Next.js
+          // deploy test reads `window.next.router.components[<path>]` to
+          // assert prefetch detection. See issue #1526.
+          markAppRouteDetectedOnPrefetch(fullHref, __basePath);
+
           // Legacy fallback: hint the browser to preload the HTML document.
           // Used in dev (no loader map populated) and for routes not in the
           // client loader map.

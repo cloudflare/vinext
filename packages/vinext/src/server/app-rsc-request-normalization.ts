@@ -3,6 +3,7 @@ import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { guardProtocolRelativeUrl } from "./request-pipeline.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
+  RSC_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
@@ -14,7 +15,7 @@ import {
 } from "./client-reuse-manifest.js";
 import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
-import { stripRscSuffix } from "./app-rsc-cache-busting.js";
+import { stripRscSuffix, VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM } from "./app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   parseAppRscRenderMode,
@@ -60,7 +61,8 @@ export type NormalizedRscRequest = {
  *   4. Collapse double-slashes, resolve `.` and `..` segments (normalizePath)
  *   5. basePath check + strip — 404 when pathname lacks the basePath prefix.
  *      `/__vinext/` bypasses this for internal prerender endpoints.
- *   6. RSC detection: `.rsc` suffix only. RSC headers do not select payload
+ *   6. RSC detection: `.rsc` suffix, or Next-style `RSC: 1` plus the internal
+ *      `_rsc` cache-busting query. The header alone does not select payload
  *      rendering at the canonical HTML URL, so caches that ignore Vary cannot
  *      store Flight responses under HTML URLs.
  *   7. cleanPathname — pathname with `.rsc` suffix stripped
@@ -109,7 +111,10 @@ export function normalizeRscRequest(
   }
 
   // Steps 6-7: RSC detection and cleanPathname.
-  const isRscRequest = pathname.endsWith(".rsc");
+  const isRscRequest =
+    pathname.endsWith(".rsc") ||
+    (request.headers.get(RSC_HEADER) === "1" &&
+      url.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM));
   const cleanPathname = stripRscSuffix(pathname);
 
   // Step 8: Validate and sanitize X-Vinext-Interception-Context.

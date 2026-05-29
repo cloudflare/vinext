@@ -292,6 +292,61 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  // Regression for https://github.com/cloudflare/vinext/issues/1535
+  // Ported from Next.js: test/e2e/app-dir/parallel-routes-catchall-children-slot/
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-catchall-children-slot/parallel-routes-catchall-children-slot.test.ts
+  describe("@children slot priority (issue #1535)", () => {
+    it("uses @children/page.tsx as the page for '/' over a sibling [...catchAll]", async () => {
+      // app/@children/page.tsx provides the layout's `children` prop at '/'.
+      // app/[...catchAll]/page.tsx is a catch-all that should NOT win for '/'.
+      // Next.js parity: see normalize-catchall-routes.ts (@children is not
+      // a "matchable slot" so the catchall does not displace it).
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "@children/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "[...catchAll]/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const patterns = graph.routes.map((r) => r.pattern).sort();
+
+        // The root URL must resolve as a real page, sourced from @children/page.tsx.
+        expect(patterns).toContain("/");
+        const root = findRoute(graph.routes, "/");
+        expect(root.pagePath).toBe(path.join(appDir, "@children/page.tsx"));
+
+        // The catch-all must still cover deeper paths.
+        expect(patterns).toContain("/:catchAll+");
+
+        // The @slot slot is attached to '/', not consumed as a top-level route.
+        const slotNames = root.parallelSlots.map((s) => s.name).sort();
+        expect(slotNames).toContain("slot");
+      });
+    });
+
+    it("resolves '/nested' to @children/page when only the @children slot exists (no default)", async () => {
+      // The nested directory has a layout and a @children slot with a page,
+      // but no default.tsx for the children slot. The route '/nested' must
+      // still materialize and the page must come from @children/page.tsx.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "@slot/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "[...catchAll]/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "nested/layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "nested/@children/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const patterns = graph.routes.map((r) => r.pattern).sort();
+
+        expect(patterns).toContain("/nested");
+        const nested = findRoute(graph.routes, "/nested");
+        expect(nested.pagePath).toBe(path.join(appDir, "nested/@children/page.tsx"));
+      });
+    });
+  });
+
   it("keeps route groups transparent in materialized URL patterns", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);

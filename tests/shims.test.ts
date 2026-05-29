@@ -1261,6 +1261,11 @@ describe("next/error shim — unstable_catchError", () => {
       fallback: Fallback,
       forwardedProps: {},
     });
+    // Manually instantiating the class skips React's context machinery,
+    // so `this.context` is undefined. Seed it to `null` (matching the
+    // App Router default) so the Pages Router branch in `unstable_retry`
+    // doesn't fire.
+    (instance as unknown as { context: null }).context = null;
     instance.state = { error: { thrownValue: new Error("boom") } };
 
     // typeof window === "undefined" in this Node test environment, so
@@ -1324,6 +1329,11 @@ describe("next/error shim — unstable_catchError", () => {
         fallback: Fallback,
         forwardedProps: {},
       });
+      // Manually instantiating the class skips React's context machinery,
+      // so `this.context` is undefined. Seed it to `null` (matching the
+      // App Router default) so the Pages Router branch in `unstable_retry`
+      // doesn't fire — this test exercises the App Router branch.
+      (instance as unknown as { context: null }).context = null;
 
       // Seed an error so reset has something to clear, and replace setState
       // with a spy so we can confirm the boundary self-resets.
@@ -1351,6 +1361,53 @@ describe("next/error shim — unstable_catchError", () => {
       }
       vi.resetModules();
     }
+  });
+
+  // Regression for cloudflare/vinext#1448.
+  // Ported from Next.js test:
+  //   .nextjs-ref/test/e2e/app-dir/catch-error/catch-error.test.ts
+  //   "should throw when unstable_retry is called on Pages Router"
+  // Mirrors the App Router-only branch in Next.js's catch-error source:
+  //   .nextjs-ref/packages/next/src/client/components/catch-error.tsx
+  // The boundary detects Pages Router via `RouterContext` (set as the inner
+  // class component's `contextType`). When a non-null Pages Router instance
+  // is in context, `unstable_retry()` must throw the verbatim Next.js
+  // message instead of calling App Router's `refresh()`.
+  it("unstable_retry under Pages Router throws Next.js parity error message", async () => {
+    const React = (await import("react")).default;
+    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
+
+    function Fallback() {
+      return null;
+    }
+    const Boundary = unstable_catchError(Fallback);
+    const wrapperResult = (Boundary as unknown as (p: Record<string, never>) => { type: unknown })(
+      {},
+    );
+    const InnerCatchError = wrapperResult.type as unknown as new (props: object) => {
+      state: { error: { thrownValue: unknown } | null };
+      unstable_retry: () => void;
+    };
+    const instance = new InnerCatchError({
+      fallback: Fallback,
+      forwardedProps: {},
+    });
+    instance.state = { error: { thrownValue: new Error("boom") } };
+
+    // Seed `this.context` with a truthy value so the Pages Router branch
+    // fires. In production React fills this from RouterContext when the
+    // boundary is rendered under `RouterContext.Provider` (every Pages
+    // Router page). Casting via unknown keeps the seed type-safe under
+    // the class's declared `context` type.
+    (instance as unknown as { context: object }).context = {
+      route: "/some-page",
+    };
+
+    void React; // keep React import for parity with sibling tests
+
+    expect(() => instance.unstable_retry()).toThrow(
+      "`unstable_retry()` can only be used in the App Router. Use `reset()` in the Pages Router.",
+    );
   });
 });
 
@@ -1580,6 +1637,64 @@ describe("window.next debug global", () => {
       expect(result).toBe(true);
     } finally {
       (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  // Issue #1522 — shallow `Router.push(url, as, { shallow: true })` must
+  // update history to `as` (the visible URL) without fetching the server,
+  // even when `as` matches a server-side redirect rule (e.g. `/redirect-1`
+  // configured in `next.config.js#redirects`). This mirrors the Next.js
+  // bloom-filter "client router filter" bypass for shallow updates.
+  //
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // "should not apply client router filter on shallow"
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+  it("Router.push with shallow=true updates URL to `as` and skips fetch for redirect-matching paths", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const pushState = vi.fn();
+    const fetchSpy = vi.fn(async () => {
+      throw new Error("shallow Router.push must not fetch the page HTML");
+    });
+    const win: any = {
+      location: {
+        pathname: "/",
+        search: "",
+        hash: "",
+        href: "http://localhost/",
+        origin: "http://localhost",
+        hostname: "localhost",
+        assign: vi.fn(),
+        replace: vi.fn(),
+        reload: vi.fn(),
+      },
+      history: { state: null, pushState, replaceState() {} },
+      addEventListener() {},
+      dispatchEvent() {},
+      scrollTo() {},
+      __NEXT_DATA__: { page: "/", query: {}, isFallback: false },
+    };
+    (globalThis as any).window = win;
+    globalThis.fetch = fetchSpy as any;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+
+      // Mirror the failing Next.js call exactly:
+      //   window.next.router.push('/', '/redirect-1', { shallow: true })
+      const result = await routerModule.default.push("/", "/redirect-1", { shallow: true });
+
+      expect(result).toBe(true);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      // The visible URL is `as` (/redirect-1), even though the underlying
+      // route is `url` (/). The server's redirect rule for /redirect-1
+      // must not fire on a shallow update.
+      expect(pushState).toHaveBeenCalledWith({}, "", "/redirect-1");
+    } finally {
+      (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
       vi.resetModules();
     }
   });
@@ -17321,7 +17436,67 @@ describe("cache scope guards for dynamic APIs", () => {
     setHeadersContext(null);
   });
 
-  it('draftMode() throws inside "use cache" scope', async () => {
+  // Ported from Next.js: packages/next/src/server/request/draft-mode.ts
+  // (`getDraftModeProviderForCacheScope` + `trackDynamicDraftMode`).
+  // Reading `draftMode()` / `.isEnabled` is allowed inside cache scopes;
+  // only the mutating `enable()` / `disable()` methods throw. Issue #1489.
+  it('draftMode().isEnabled reads inside "use cache" scope', async () => {
+    const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { draftMode, setHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+
+    setHeadersContext({
+      headers: new Headers({ cookie: "__prerender_bypass=test-secret" }),
+      cookies: new Map([["__prerender_bypass", "test-secret"]]),
+      draftModeSecret: "test-secret",
+    });
+
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        const dm = await draftMode();
+        expect(dm.isEnabled).toBe(true);
+      },
+    );
+
+    setHeadersContext(null);
+  });
+
+  it("draftMode().isEnabled reads inside unstable_cache() scope", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { draftMode, setHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+    setHeadersContext({
+      headers: new Headers({ cookie: "__prerender_bypass=test-secret" }),
+      cookies: new Map([["__prerender_bypass", "test-secret"]]),
+      draftModeSecret: "test-secret",
+    });
+
+    let observed: boolean | undefined;
+    const cached = unstable_cache(async () => {
+      const dm = await draftMode();
+      observed = dm.isEnabled;
+      return observed;
+    }, ["test-draftmode-in-cache"]);
+
+    await expect(cached()).resolves.toBe(true);
+    expect(observed).toBe(true);
+
+    setHeadersContext(null);
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it('draftMode().enable() throws inside "use cache" scope', async () => {
     const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
     const { draftMode, setHeadersContext } =
       await import("../packages/vinext/src/shims/headers.js");
@@ -17338,14 +17513,16 @@ describe("cache scope guards for dynamic APIs", () => {
         dynamicNestedCacheError: undefined,
       },
       async () => {
-        await expect(draftMode()).rejects.toThrow(/cannot be called inside "use cache"/);
+        const dm = await draftMode();
+        expect(() => dm.enable()).toThrow(/cannot be called inside "use cache"/);
+        expect(() => dm.disable()).toThrow(/cannot be called inside "use cache"/);
       },
     );
 
     setHeadersContext(null);
   });
 
-  it("draftMode() throws inside unstable_cache() scope", async () => {
+  it("draftMode().enable() throws inside unstable_cache() scope", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
     const { draftMode, setHeadersContext } =
@@ -17355,8 +17532,9 @@ describe("cache scope guards for dynamic APIs", () => {
     setHeadersContext({ headers: new Headers(), cookies: new Map() });
 
     const cached = unstable_cache(async () => {
-      await draftMode();
-    }, ["test-draftmode-in-cache"]);
+      const dm = await draftMode();
+      dm.enable();
+    }, ["test-draftmode-enable-in-cache"]);
 
     await expect(cached()).rejects.toThrow(/unstable_cache/);
 

@@ -51,6 +51,16 @@ export type ScriptProps = {
   nonce?: string;
   /** Integrity hash */
   integrity?: string;
+  /**
+   * Associated stylesheets to load alongside the script. Emitted as
+   * `<link rel="stylesheet" href="...">` on SSR (via `ReactDOM.preinit`)
+   * and inserted into `<head>` on the client load path.
+   *
+   * Mirrors Next.js App Router behaviour at
+   * `.nextjs-ref/packages/next/src/client/script.tsx` (`insertStylesheets`
+   * and the `appDir` block).
+   */
+  stylesheets?: string[];
   /** Additional attributes */
   [key: string]: unknown;
 };
@@ -94,6 +104,56 @@ function resolveScriptNonce(explicitNonce: unknown, contextualNonce?: string): s
   }
 
   return getClientAutoNonce();
+}
+
+/**
+ * Insert `<link rel="stylesheet">` tags into `document.head` for each entry
+ * in `stylesheets`. Used by the imperative client-side load path
+ * (`handleClientScriptLoad`) when `ReactDOM.preinit` is not available
+ * (e.g. pre-Float React or hosts that strip it). Mirrors Next.js's
+ * `insertStylesheets` Pages-Router fallback at
+ * `.nextjs-ref/packages/next/src/client/script.tsx:48-59`.
+ *
+ * The `ReactDOM.preinit` path is preferred where available — it dedupes
+ * across mounts and respects React Float's hoisting order. This DOM
+ * fallback is best-effort: no dedupe, no ordering guarantee.
+ */
+function insertClientStylesheets(stylesheets: string[] | undefined): void {
+  if (!stylesheets || stylesheets.length === 0) return;
+  if (typeof document === "undefined") return;
+
+  // Prefer ReactDOM.preinit when available — it dedupes via React Float
+  // and matches Next.js's app-router behaviour.
+  if (typeof ReactDOM.preinit === "function") {
+    for (const href of stylesheets) {
+      ReactDOM.preinit(href, { as: "style" });
+    }
+    return;
+  }
+
+  const head = document.head;
+  if (!head) return;
+  for (const href of stylesheets) {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.type = "text/css";
+    link.href = href;
+    head.appendChild(link);
+  }
+}
+
+/**
+ * Emit `<link rel="stylesheet">` tags during SSR for each entry in
+ * `stylesheets` via `ReactDOM.preinit`. React Float hoists these into
+ * `<head>` in the streamed HTML. Mirrors the App-Router branch of
+ * Next.js's Script component at `.nextjs-ref/packages/next/src/client/script.tsx:309-313`.
+ */
+function preinitStylesheetsForSSR(stylesheets: string[] | undefined): void {
+  if (!stylesheets || stylesheets.length === 0) return;
+  if (typeof ReactDOM.preinit !== "function") return;
+  for (const href of stylesheets) {
+    ReactDOM.preinit(href, { as: "style" });
+  }
 }
 
 function buildBeforeInteractiveScriptProps(options: {
@@ -189,6 +249,7 @@ function collectBeforeInteractiveAttributes(
     "onLoad",
     "onReady",
     "onError",
+    "stylesheets",
   ]);
   const out: Record<string, string | boolean> = {};
   for (const [key, value] of Object.entries(rest)) {
@@ -269,9 +330,16 @@ function loadClientScript(
     strategy = "afterInteractive",
     children,
     dangerouslySetInnerHTML,
+    stylesheets,
     ...rest
   } = props;
   if (typeof window === "undefined") return;
+
+  // Insert associated stylesheets into <head> regardless of whether the
+  // script was already loaded — the script's onReady handlers may already
+  // assume the stylesheet is present. `insertClientStylesheets` dedupes
+  // via ReactDOM.preinit where available.
+  insertClientStylesheets(stylesheets);
 
   const key = id ?? src ?? "";
   if (key && loadedScripts.has(key)) {
@@ -373,6 +441,7 @@ function Script(props: ScriptProps): React.ReactElement | null {
     onError,
     children,
     dangerouslySetInnerHTML,
+    stylesheets,
     ...rest
   } = props;
 
@@ -392,11 +461,21 @@ function Script(props: ScriptProps): React.ReactElement | null {
     hasMounted.current = true;
 
     if (strategy === "beforeInteractive") {
+      // The script itself is loaded by Next.js's bootstrap before hydration,
+      // but the associated stylesheets still need to land in <head> on the
+      // client. ReactDOM.preinit (called inside insertClientStylesheets)
+      // dedupes against any SSR-emitted <link rel="stylesheet">, so this is
+      // safe even when the server already hoisted them via React Float.
+      insertClientStylesheets(stylesheets);
       return;
     }
 
     // Already loaded — just fire onReady
     if (key && loadedScripts.has(key)) {
+      // Stylesheets must still be inserted on subsequent mounts of the same
+      // script. loadClientScript handles this for the fresh-load path; the
+      // already-loaded shortcut needs it explicitly.
+      insertClientStylesheets(stylesheets);
       onReady?.();
       return;
     }
@@ -417,6 +496,7 @@ function Script(props: ScriptProps): React.ReactElement | null {
           onError,
           children,
           dangerouslySetInnerHTML,
+          stylesheets,
           ...rest,
         },
         { resolvedNonce, fireReadyWhenAlreadyLoaded: true },
@@ -453,6 +533,7 @@ function Script(props: ScriptProps): React.ReactElement | null {
     onError,
     children,
     dangerouslySetInnerHTML,
+    stylesheets,
     key,
     resolvedNonce,
     rest,
@@ -460,6 +541,12 @@ function Script(props: ScriptProps): React.ReactElement | null {
 
   // SSR path: only "beforeInteractive" renders a <script> tag server-side
   if (typeof window === "undefined") {
+    // Emit associated stylesheets as <link rel="stylesheet"> via React Float.
+    // ReactDOM.preinit dedupes across mounts and hoists the link into <head>
+    // regardless of strategy — matches Next.js's app-router branch at
+    // `.nextjs-ref/packages/next/src/client/script.tsx:309-313`.
+    preinitStylesheetsForSSR(stylesheets);
+
     // React Float preload — emits <link rel="preload" as="script" /> in <head>
     // so the script is fetched while HTML streams. Mirrors Next.js's App Router
     // behavior at .nextjs-ref/packages/next/src/client/script.tsx:298-376:

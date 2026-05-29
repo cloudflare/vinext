@@ -148,11 +148,16 @@ function renderBeforeInteractiveInlineScripts(
   return html;
 }
 
-function renderFontHtml(fontData?: FontData, nonce?: string): string {
+function renderFontHtml(
+  fontData?: FontData,
+  nonce?: string,
+  options: { includeStyles?: boolean } = {},
+): string {
   if (!fontData) return "";
 
   let fontHTML = "";
   const nonceAttr = createNonceAttribute(nonce);
+  const includeStyles = options.includeStyles ?? true;
 
   for (const url of fontData.links ?? []) {
     fontHTML += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(url)}" />\n`;
@@ -162,11 +167,15 @@ function renderFontHtml(fontData?: FontData, nonce?: string): string {
     fontHTML += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
   }
 
-  if (fontData.styles && fontData.styles.length > 0) {
+  if (includeStyles && fontData.styles && fontData.styles.length > 0) {
     fontHTML += `<style data-vinext-fonts${nonceAttr}>${fontData.styles.join("\n")}</style>\n`;
   }
 
   return fontHTML;
+}
+
+function hasInlineCssManifest(manifest: Record<string, string> | undefined): boolean {
+  return manifest !== undefined && Object.keys(manifest).length > 0;
 }
 
 /**
@@ -414,7 +423,20 @@ export async function handleSsr(
           await htmlStream.allReady;
         }
 
-        const fontHTML = renderFontHtml(fontData, options?.scriptNonce);
+        // Populated before any SSR request runs: at prod-server startup
+        // (prod-server.ts) or via build-time bundle injection (index.ts). Left
+        // undefined in dev, which naturally disables inline CSS there.
+        const inlineCssManifest = globalThis.__VINEXT_INLINE_CSS__;
+        const fontStyles = fontData?.styles ?? [];
+        const mergeFontStylesIntoInlineCss =
+          fontStyles.length > 0 && hasInlineCssManifest(inlineCssManifest);
+        const inlineCssFontStyles = mergeFontStylesIntoInlineCss ? fontStyles.join("\n") : "";
+        const inlineCssFontStyleFallbackHTML = mergeFontStylesIntoInlineCss
+          ? renderFontHtml({ styles: fontStyles }, options?.scriptNonce)
+          : "";
+        const fontHTML = renderFontHtml(fontData, options?.scriptNonce, {
+          includeStyles: !mergeFontStylesIntoInlineCss,
+        });
         // Trace meta tags only need to land in the document head once.
         // Read the active OTel context lazily so the value reflects the
         // span that was active when the SSR shell rendered. When
@@ -456,7 +478,15 @@ export async function handleSsr(
 
         return deferUntilStreamConsumed(
           htmlStream.pipeThrough(
-            createTickBufferedTransform(rscEmbed, getInsertedHTML, getBeforeInteractiveHeadHTML),
+            createTickBufferedTransform(
+              rscEmbed,
+              getInsertedHTML,
+              getBeforeInteractiveHeadHTML,
+              inlineCssManifest,
+              inlineCssFontStyles,
+              inlineCssFontStyleFallbackHTML,
+              options?.scriptNonce,
+            ),
           ),
           cleanup,
         );

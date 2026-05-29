@@ -275,11 +275,16 @@ type AppleIconDescriptor = {
 type IconInput = string | URL | IconDescriptor;
 type AppleIconInput = string | URL | AppleIconDescriptor;
 
+type OtherIconDescriptor = { rel: string; url: string | URL; sizes?: string; type?: string };
+
 type IconsMap = {
   icon?: IconInput | IconInput[];
   shortcut?: string | URL | Array<string | URL>;
   apple?: AppleIconInput | AppleIconInput[];
-  other?: Array<{ rel: string; url: string | URL; sizes?: string; type?: string }>;
+  // Next.js accepts a single descriptor or an array (see resolveIcons in
+  // .nextjs-ref/packages/next/src/lib/metadata/resolvers/resolve-icons.ts —
+  // values pass through resolveAsArrayOrUndefined before iteration).
+  other?: OtherIconDescriptor | OtherIconDescriptor[];
 };
 
 type IconsMetadata = IconInput | IconInput[] | IconsMap;
@@ -1115,15 +1120,20 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
         );
       }
     }
-    // Other custom icon relations
+    // Other custom icon relations. Next.js accepts a single descriptor or an
+    // array; normalize before iterating.
     if (isIconsMap(metadata.icons) && metadata.icons.other) {
-      for (const o of metadata.icons.other) {
+      const others = Array.isArray(metadata.icons.other)
+        ? metadata.icons.other
+        : [metadata.icons.other];
+      for (const o of others) {
         elements.push(
           <link
             key={key++}
             rel={o.rel}
             href={stringifyUrl(o.url)}
             {...(o.sizes ? { sizes: o.sizes } : {})}
+            {...(o.type ? { type: o.type } : {})}
           />,
         );
       }

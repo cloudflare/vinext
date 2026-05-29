@@ -9,7 +9,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
-import { resolveEntryPath, normalizePathSeparators } from "./runtime-entry-module.js";
+import { resolveEntryPath } from "./runtime-entry-module.js";
+import { normalizePathSeparators } from "../utils/path.js";
 import type {
   NextHeader,
   NextI18nConfig,
@@ -128,6 +129,8 @@ type AppRouterConfig = {
   assetPrefix?: string;
   /** Route-level expire fallback in seconds for ISR entries with numeric revalidate. */
   expireTime?: number;
+  /** Inline app CSS into production HTML (from experimental.inlineCss). */
+  inlineCss?: boolean;
   /** Internationalization routing config for middleware matcher locale handling. */
   i18n?: NextI18nConfig | null;
   /**
@@ -183,6 +186,7 @@ export function generateRscEntry(
   const clientTraceMetadata = config?.clientTraceMetadata;
   const assetPrefix = config?.assetPrefix ?? "";
   const expireTime = config?.expireTime ?? DEFAULT_EXPIRE_TIME;
+  const inlineCss = config?.inlineCss === true;
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
@@ -496,6 +500,7 @@ const __clientTraceMetadata = ${JSON.stringify(clientTraceMetadata)};
 // mirrors the embedded \`__basePath\` pattern (and Pages Router's
 // \`vinextConfig\` export). Empty string when unset.
 export const __assetPrefix = ${JSON.stringify(assetPrefix)};
+export const __inlineCss = ${JSON.stringify(inlineCss)};
 
 export function seedMemoryCacheFromPrerender(serverDir) {
   return __seedMemoryCacheFromPrerender(serverDir, {

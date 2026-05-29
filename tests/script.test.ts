@@ -536,3 +536,127 @@ describe("Script nonce resolution", () => {
     expect(html).not.toContain("nonce=");
   });
 });
+
+// ─── stylesheets prop ───────────────────────────────────────────────────
+//
+// Regression coverage for https://github.com/cloudflare/vinext/issues/1517:
+// `<Script>` accepts a `stylesheets` prop that maps to associated CSS
+// resources for the script. Next.js calls `ReactDOM.preinit(href, { as: 'style' })`
+// during SSR (App Router) which React Float hoists into `<head>` as
+// `<link rel="stylesheet" ...>`. The vinext shim was dropping the prop
+// entirely — the prop wasn't even on the destructured rest, so React would
+// have emitted it as a `stylesheets=` attribute on `<script>` (or warned).
+
+describe("Script stylesheets prop", () => {
+  it('emits <link rel="stylesheet"> for each entry on SSR', () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        src: "/test3.js",
+        strategy: "afterInteractive",
+        stylesheets: ["/style3.css"],
+      } as ScriptProps),
+    );
+
+    // React Float hoists ReactDOM.preinit(.., { as: 'style' }) into
+    // <link rel="stylesheet"> in the rendered output.
+    expect(html).toContain('<link rel="stylesheet"');
+    expect(html).toContain('href="/style3.css"');
+  });
+
+  it('emits a <link rel="stylesheet"> for every stylesheet in the list', () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        src: "/test1.js",
+        strategy: "beforeInteractive",
+        stylesheets: ["/style1a.css", "/style1b.css"],
+      } as ScriptProps),
+    );
+
+    expect(html).toContain('href="/style1a.css"');
+    expect(html).toContain('href="/style1b.css"');
+    const linkCount = (html.match(/<link rel="stylesheet"/g) ?? []).length;
+    expect(linkCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it("does not leak the stylesheets prop as an attribute on the rendered <script>", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        src: "/before.js",
+        strategy: "beforeInteractive",
+        stylesheets: ["/before.css"],
+      } as ScriptProps),
+    );
+
+    expect(html).not.toContain("stylesheets=");
+  });
+
+  it("emits no stylesheet links when stylesheets is omitted", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        src: "/plain.js",
+        strategy: "beforeInteractive",
+      } as ScriptProps),
+    );
+
+    expect(html).not.toContain('rel="stylesheet"');
+  });
+
+  it("ignores an empty stylesheets list", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        src: "/plain.js",
+        strategy: "beforeInteractive",
+        stylesheets: [],
+      } as ScriptProps),
+    );
+
+    expect(html).not.toContain('rel="stylesheet"');
+  });
+
+  it("does not throw when handleClientScriptLoad is invoked with a stylesheets prop", () => {
+    // handleClientScriptLoad runs on the client and feeds into ReactDOM.preinit
+    // (when available). The shim must accept the prop without crashing or
+    // setting it as a `stylesheets="..."` attribute on the created <script>.
+    const createdScript = {
+      attrs: {} as Record<string, string>,
+      setAttribute(name: string, value: string) {
+        this.attrs[name] = value;
+      },
+      getAttribute(name: string): string | null {
+        return this.attrs[name] ?? null;
+      },
+      addEventListener() {},
+    };
+
+    const appendedScripts: Array<typeof createdScript> = [];
+    class MockHTMLElement {}
+    setGlobalValue("HTMLElement", MockHTMLElement);
+    setGlobalValue("window", {});
+    setGlobalValue("document", {
+      querySelector: () => null,
+      createElement(tagName: string) {
+        expect(tagName).toBe("script");
+        return createdScript;
+      },
+      head: {
+        appendChild() {},
+      },
+      body: {
+        appendChild(el: unknown) {
+          appendedScripts.push(el as typeof createdScript);
+        },
+      },
+    });
+
+    expect(() =>
+      handleClientScriptLoad({
+        src: "/imperative.js",
+        stylesheets: ["/imperative.css"],
+      } as ScriptProps),
+    ).not.toThrow();
+
+    expect(appendedScripts).toHaveLength(1);
+    // The stylesheets prop must never leak onto the <script> attribute list.
+    expect(appendedScripts[0]!.attrs).not.toHaveProperty("stylesheets");
+  });
+});

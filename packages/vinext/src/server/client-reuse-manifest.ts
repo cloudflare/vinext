@@ -28,6 +28,11 @@ export const DEFAULT_CLIENT_REUSE_MANIFEST_LIMITS = {
   maxVariantCacheKeyLength: 256,
 } satisfies ClientReuseManifestLimits;
 
+// Producer cap for normal browser manifests. The parser accepts a larger
+// hostile-input envelope, but browser-produced manifests should stay within
+// the server skip planner's verification budget.
+export const CLIENT_REUSE_MANIFEST_SKIP_VERIFICATION_ENTRY_BUDGET = 8;
+
 export type ClientReuseManifestEntryKind = "layout" | "page" | "route" | "slot" | "template";
 type ClientReuseManifestEntryPrivacy = "private" | "public";
 
@@ -90,8 +95,23 @@ export type ClientReuseManifestRejectionCode =
   | "SKIP_CACHE_PROOF_REJECTED"
   | "SKIP_CACHE_REUSE_CLASS_UNSUPPORTED"
   | "SKIP_CACHE_VARIANT_MISMATCH"
+  // Forward declarations — emitted by the render-observation tracker in a
+  // later slice.  The planner never produces them, but the rejection code
+  // union must carry them so the tracker's entry rejection is assignable to
+  // ClientReuseManifestRejectionCode without a cast.
+  | "SKIP_LAYOUT_CACHE_LIFE_OBSERVED"
+  | "SKIP_LAYOUT_CACHE_TAGS_OBSERVED"
+  | "SKIP_LAYOUT_CACHEABLE_FETCHES_OBSERVED"
+  | "SKIP_LAYOUT_DYNAMIC_FETCHES_OBSERVED"
+  | "SKIP_LAYOUT_PARAMS_OBSERVED"
+  | "SKIP_LAYOUT_PARAMS_OBSERVATION_INCOMPLETE"
+  | "SKIP_LAYOUT_PARAMS_PRESENT"
+  | "SKIP_LAYOUT_REVALIDATE_PRESENT"
+  | "SKIP_LAYOUT_REQUEST_API_OBSERVED"
+  | "SKIP_LAYOUT_UNSTABLE_CACHE_OBSERVED"
   | "SKIP_ARTIFACT_COMPATIBILITY_INVALID"
   | "SKIP_ENTRY_COUNT_EXCEEDED"
+  | "SKIP_VERIFICATION_BUDGET_EXCEEDED"
   | "SKIP_ENTRY_HASH_INVALID"
   | "SKIP_ENTRY_ID_INVALID"
   | "SKIP_ENTRY_ID_TOO_LONG"
@@ -108,8 +128,6 @@ export type ClientReuseManifestRejectionCode =
   | "SKIP_VARIANT_CACHE_KEY_TOO_LONG"
   | "SKIP_VISIBLE_COMMIT_VERSION_INVALID"
   | "SKIP_VISIBLE_COMMIT_VERSION_MISMATCH";
-
-export type ClientReuseManifestDispositionCode = "SKIP_MODEL_DISABLED";
 
 export type ClientReuseManifestTraceFieldValue =
   | string
@@ -132,11 +150,18 @@ export type ClientReuseManifestEntryRejection = ClientReuseManifestRejection &
     entryId: string | null;
   }>;
 
-export type ClientReuseManifestSkipDisposition = Readonly<{
-  code: ClientReuseManifestDispositionCode;
-  enabled: false;
-  mode: "renderAndSend";
-}>;
+export type ClientReuseManifestSkipDisposition =
+  | Readonly<{
+      code: "SKIP_MODEL_DISABLED";
+      enabled: false;
+      mode: "renderAndSend";
+    }>
+  | Readonly<{
+      code: "SKIP_STATIC_LAYOUT_VERIFIED";
+      enabled: true;
+      mode: "skipStaticLayout";
+      skippedEntryIds: readonly string[];
+    }>;
 
 export type ClientReuseManifestParseResult =
   | Readonly<{ kind: "absent" }>
@@ -204,7 +229,7 @@ function createCanonicalWireEntries(
   return Array.from(entriesById.values()).sort(compareManifestEntries);
 }
 
-// The manifest byte budget is enforced once at the untrusted header boundary.
+// Manifest byte budgets are enforced over UTF-8 encoded header values.
 function countUtf8Bytes(input: string): number {
   return textEncoder.encode(input).length;
 }

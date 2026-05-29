@@ -49,6 +49,7 @@ import {
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
+import { loadUserDocumentInitialProps } from "./pages-document-initial-props.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -132,7 +133,10 @@ async function streamPageToResponse(
   let shellTemplate: string;
 
   if (DocumentComponent) {
-    const docElement = React.createElement(DocumentComponent);
+    const docProps = await loadUserDocumentInitialProps(DocumentComponent);
+    const docElement = docProps
+      ? React.createElement(DocumentComponent, docProps)
+      : React.createElement(DocumentComponent);
     let docHtml = await renderToStringAsync(docElement);
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
@@ -1360,7 +1364,10 @@ async function renderErrorPage(
       }
 
       if (DocumentComponent) {
-        const docElement = createElement(DocumentComponent);
+        const docProps = await loadUserDocumentInitialProps(DocumentComponent);
+        const docElement = docProps
+          ? createElement(DocumentComponent, docProps)
+          : createElement(DocumentComponent);
         let docHtml = await renderToStringAsync(docElement);
         docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
         docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", "");

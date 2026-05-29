@@ -77,6 +77,10 @@ export default {
         // #726-SKIP layout-safety observation foundation. Consumed by the
         // planner, dispatch wiring, and render in later slices.
         "src/server/app-layout-param-observation.ts",
+        // #726-SKIP static layout reuse proof model. Consumed by render in a
+        // later slice; standalone planner + helpers here.
+        "src/server/skip-cache-proof.ts",
+        "src/server/static-layout-client-reuse-proof.ts",
       ],
       project: ["src/**/*.{ts,tsx}"],
     },

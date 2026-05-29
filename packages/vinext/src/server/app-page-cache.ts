@@ -239,7 +239,7 @@ function resolveAppPageCacheWritePolicy(options: {
     expireSeconds = requestCacheLife.expire;
   }
 
-  if (revalidateSeconds === null || revalidateSeconds <= 0 || !Number.isFinite(revalidateSeconds)) {
+  if (revalidateSeconds === null || Number.isNaN(revalidateSeconds) || revalidateSeconds <= 0) {
     return null;
   }
 

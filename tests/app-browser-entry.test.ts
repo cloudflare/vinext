@@ -22,6 +22,10 @@ import {
   resolveRscCompatibilityNavigationDecision,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
+  isInlineCssStylesheetLinkElement,
+  removeStylesheetLinksCoveredByInlineCss,
+} from "../packages/vinext/src/server/app-inline-css-client.js";
+import {
   devOnCaughtError,
   devOnUncaughtError,
 } from "../packages/vinext/src/server/dev-error-overlay.js";
@@ -539,9 +543,138 @@ function createDeferred(): { resolve: () => void; promise: Promise<void> } {
   return { promise, resolve };
 }
 
+type TestDomElement = {
+  attributes: Record<string, string>;
+  removed: boolean;
+  getAttribute(name: string): string | null;
+  hasAttribute(name: string): boolean;
+  remove(): void;
+};
+
+function createTestDomElement(attributes: Record<string, string>): TestDomElement {
+  return {
+    attributes,
+    removed: false,
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this.attributes, name)
+        ? (this.attributes[name] ?? "")
+        : null;
+    },
+    hasAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this.attributes, name);
+    },
+    remove() {
+      this.removed = true;
+    },
+  };
+}
+
+function installInlineCssCleanupDocument(options: {
+  links: TestDomElement[];
+  styles: TestDomElement[];
+}): void {
+  const { links, styles } = options;
+  const head = {
+    querySelectorAll<T extends Element>(selector: string): T[] {
+      if (selector === "style[data-vinext-inline-css][data-href]") {
+        const matchingStyles = styles.filter(
+          (style) =>
+            style.hasAttribute("data-vinext-inline-css") && style.hasAttribute("data-href"),
+        );
+        return matchingStyles as unknown as T[];
+      }
+
+      if (selector === 'link[rel="stylesheet"][href][data-precedence]') {
+        const matchingLinks = links.filter(
+          (link) =>
+            link.getAttribute("rel") === "stylesheet" &&
+            link.hasAttribute("href") &&
+            link.hasAttribute("data-precedence"),
+        );
+        return matchingLinks as unknown as T[];
+      }
+
+      if (selector === "link[rel][href]") {
+        const matchingLinks = links.filter(
+          (link) => link.hasAttribute("rel") && link.hasAttribute("href"),
+        );
+        return matchingLinks as unknown as T[];
+      }
+
+      throw new Error(`Unexpected selector: ${selector}`);
+    },
+  };
+
+  vi.stubGlobal("document", { head });
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("app browser entry inline CSS cleanup", () => {
+  it("classifies stylesheet links with tokenized rel values and legacy precedence", () => {
+    expect(
+      isInlineCssStylesheetLinkElement(
+        createTestDomElement({
+          "data-precedence": "next",
+          href: "/_next/static/app.css",
+          rel: "preload stylesheet",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isInlineCssStylesheetLinkElement(
+        createTestDomElement({
+          href: "/_next/static/legacy.css",
+          precedence: "next",
+          rel: "stylesheet",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isInlineCssStylesheetLinkElement(
+        createTestDomElement({
+          href: "/_next/static/preload.css",
+          rel: "preload",
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("prunes navigated stylesheet links covered by inline CSS", () => {
+    const tokenizedRelLink = createTestDomElement({
+      "data-precedence": "next",
+      href: "/_next/static/app.css",
+      rel: "preload stylesheet",
+    });
+    const legacyPrecedenceLink = createTestDomElement({
+      href: "/_next/static/legacy.css",
+      precedence: "next",
+      rel: "stylesheet",
+    });
+    const uncoveredLink = createTestDomElement({
+      "data-precedence": "next",
+      href: "/_next/static/uncovered.css",
+      rel: "stylesheet",
+    });
+    installInlineCssCleanupDocument({
+      links: [tokenizedRelLink, legacyPrecedenceLink, uncoveredLink],
+      styles: [
+        createTestDomElement({
+          "data-href": "/_next/static/app.css /_next/static/legacy.css",
+          "data-vinext-inline-css": "",
+        }),
+      ],
+    });
+
+    removeStylesheetLinksCoveredByInlineCss();
+
+    expect(tokenizedRelLink.removed).toBe(true);
+    expect(legacyPrecedenceLink.removed).toBe(true);
+    expect(uncoveredLink.removed).toBe(false);
+  });
 });
 
 describe("app browser entry navigation scheduling", () => {
