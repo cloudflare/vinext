@@ -309,7 +309,7 @@ function readSetCookieNameValue(setCookie: string): { name: string; value: strin
 function isExpiredSetCookie(setCookie: string): boolean {
   return (
     /(?:^|;\s*)max-age=0(?:;|$)/i.test(setCookie) ||
-    /(?:^|;\s*)expires=Thu,\s*0?1\s+Jan\s+1970/i.test(setCookie)
+    /(?:^|;\s*)expires=Thu,\s*0?1[\s-]+Jan[\s-]+1970/i.test(setCookie)
   );
 }
 
@@ -1095,8 +1095,10 @@ export async function handleServerActionRscRequest<
 
     // When an action returned a non-200 HTTP fallback status (e.g. 404 from
     // notFound()), skip the early page render so the error boundary displays
-    // the fallback payload embedded in returnValue. Only skip when the action
-    // status is 200 and no revalidation side-effects occurred.
+    // the fallback payload embedded in returnValue. Forwarded actions always
+    // skip rerendering regardless of status (the forwarded worker doesn't own
+    // the page's layout tree). Otherwise only skip when the action status is
+    // 200 and no revalidation side-effects occurred.
     const shouldSkipPageRendering =
       actionWasForwarded ||
       (actionStatus === 200 && actionRevalidationKind === ACTION_DID_NOT_REVALIDATE);

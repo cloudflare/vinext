@@ -505,7 +505,7 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(response?.status).toBe(200);
+    expect(response?.status).toBe(303);
     expect(response?.headers.getSetCookie()).toEqual([
       "session=new; Path=/; HttpOnly",
       "lang=en; Path=/",
