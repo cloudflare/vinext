@@ -7,6 +7,7 @@ type ProbeState = {
   cfCacheStatus: string | null;
   age: string | null;
   cacheControl: string | null;
+  cdnCacheControl: string | null;
   cacheTag: string | null;
   cfRay: string | null;
   fetchedAt: string;
@@ -147,6 +148,7 @@ export function CacheStatusProbe({ path }: { path: string }) {
         cfCacheStatus: res.headers.get("cf-cache-status"),
         age: res.headers.get("age"),
         cacheControl: res.headers.get("cache-control"),
+        cdnCacheControl: res.headers.get("cdn-cache-control"),
         cacheTag: res.headers.get("cache-tag"),
         cfRay: res.headers.get("cf-ray"),
         fetchedAt: new Date().toLocaleTimeString(),
@@ -217,6 +219,8 @@ export function CacheStatusProbe({ path }: { path: string }) {
         <dd>{state?.age ?? "—"}</dd>
         <dt>Cache-Control</dt>
         <dd>{state?.cacheControl ?? "—"}</dd>
+        <dt>CDN-Cache-Control</dt>
+        <dd>{state?.cdnCacheControl ?? "—"}</dd>
         <dt>Cache-Tag</dt>
         <dd>{state?.cacheTag ?? "—"}</dd>
         <dt>cf-ray</dt>
