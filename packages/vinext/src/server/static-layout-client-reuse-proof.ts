@@ -42,6 +42,11 @@ export function createStaticLayoutClientReusePayloadHash(
   // determinism.  The artifact compatibility section is serialized as a sorted
   // array of [field, value] pairs — no object key-order dependency — so the
   // hash is invariant across runtimes and immune to field-list reorderings.
+  //
+  // routeId is intentionally excluded.  This is a layout-scoped hash —
+  // sibling routes under the same layout must produce identical payload
+  // hashes, otherwise the cross-check rejects on payload hash mismatch
+  // before reaching the exact-equality gate.
   // If the field list must change, bump the hash algorithm or namespace to
   // avoid silent cross-deployment hash drift.
   return createClientReusePayloadHash(
@@ -49,7 +54,6 @@ export function createStaticLayoutClientReusePayloadHash(
       artifactCompatibilityPairs: createCanonicalProofPairs(input),
       layoutId: input.layoutId,
       rootBoundaryId: input.rootBoundaryId,
-      routeId: input.routeId,
       variantCacheKey: input.variantCacheKey,
     }),
   );

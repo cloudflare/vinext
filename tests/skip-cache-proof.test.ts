@@ -23,6 +23,7 @@ import {
   crossCheckClientReuseManifestEntryWithCache,
   createClientReuseSkipTransportPlan,
   createStaticLayoutClientReuseArtifactCompatibility,
+  createStaticLayoutClientReusePayloadHash,
   type SkipCacheInvalidationProof,
 } from "../packages/vinext/src/server/skip-cache-proof.js";
 
@@ -173,37 +174,102 @@ describe("skip/cache proof cross-checks", () => {
     });
   });
 
-  it("enables static-layout skip transport for sibling routes under a shared layout", () => {
-    // Simulate the layout /dashboard rendered during a visit to /dashboard/settings
-    // being reused when navigating to sibling route /dashboard/profile.
+  it("enables static-layout skip for sibling routes using the real proof helpers", () => {
+    // Layout /dashboard rendered during a visit to /dashboard/settings is
+    // reused when navigating to sibling route /dashboard/profile.  The test
+    // exercises the three exported static-layout proof helpers —
+    // createStaticLayoutClientReusePayloadHash,
+    // createStaticLayoutClientReuseArtifactCompatibility, and the variant
+    // cache key from buildCacheVariantWithRouteBudget — to prove sibling
+    // routes produce identical proof identity when routeId is excluded.
+    const baseCompatibility = createCompatibility();
     const dashboardLayoutId = "layout:/dashboard";
+    const rootBoundaryId = "layout:/";
     const settingsRouteId = "route:/dashboard/settings";
     const profileRouteId = "route:/dashboard/profile";
-    const variantCacheKey = "cp1:dashboard";
 
-    // Both the server's current artifact and the client's manifest entry
-    // are built with createStaticLayoutClientReuseArtifactCompatibility.
-    // routeId is excluded from renderEpoch, so sibling routes produce the
-    // same layout-scoped artifact identity.
-    const serverArtifact = createStaticLayoutClientReuseArtifactCompatibility({
-      artifactCompatibility: createCompatibility(),
+    const candidateOutput: LayoutOutputScope = {
+      kind: "layout",
       layoutId: dashboardLayoutId,
-      rootBoundaryId: "layout:/",
+      rootBoundaryId,
+      routeId: settingsRouteId,
+    };
+    const currentOutput: LayoutOutputScope = {
+      kind: "layout",
+      layoutId: dashboardLayoutId,
+      rootBoundaryId,
+      routeId: profileRouteId,
+    };
+
+    // Build real variant cache keys for both the cache proof (candidate)
+    // and the client manifest entry.  Both originate from the same candidate
+    // render, so the variant cache key is identical.
+    const candidateVariant = buildCacheVariantWithRouteBudget({
+      budget: DEFAULT_CACHE_VARIANT_BUDGET,
+      dimensions: [],
+      output: candidateOutput,
+      routeBudget: { routeId: candidateOutput.routeId, variantCacheKeys: [] },
+    });
+    if (candidateVariant.kind !== "variant") throw new Error("Expected variant");
+    const variantCacheKey = candidateVariant.variant.cacheKey;
+
+    // Build artifact compatibilities with the exported helper.
+    // routeId is excluded from renderEpoch, so sibling routes produce
+    // layout-scoped identity.
+    const serverArtifact = createStaticLayoutClientReuseArtifactCompatibility({
+      artifactCompatibility: baseCompatibility,
+      layoutId: dashboardLayoutId,
+      rootBoundaryId,
       routeId: profileRouteId,
       variantCacheKey,
     });
     const clientArtifact = createStaticLayoutClientReuseArtifactCompatibility({
-      artifactCompatibility: createCompatibility(),
+      artifactCompatibility: baseCompatibility,
       layoutId: dashboardLayoutId,
-      rootBoundaryId: "layout:/",
+      rootBoundaryId,
       routeId: settingsRouteId,
       variantCacheKey,
     });
 
-    const payloadHash = createClientReusePayloadHash("dashboard-layout-payload");
-    const decision = createReuseDecision({
-      candidateArtifactCompatibility: serverArtifact,
+    // Build payload hashes with the exported helper.  routeId is excluded
+    // from the hash, so sibling routes produce identical payload hashes.
+    const serverPayloadHash = createStaticLayoutClientReusePayloadHash({
+      artifactCompatibility: serverArtifact,
+      layoutId: dashboardLayoutId,
+      rootBoundaryId,
+      routeId: profileRouteId,
+      variantCacheKey,
+    });
+    const clientPayloadHash = createStaticLayoutClientReusePayloadHash({
+      artifactCompatibility: clientArtifact,
+      layoutId: dashboardLayoutId,
+      rootBoundaryId,
+      routeId: settingsRouteId,
+      variantCacheKey,
+    });
+    expect(serverPayloadHash).toBe(clientPayloadHash);
+
+    // Build the cache decision with sibling-route topology: the candidate
+    // (cached) output is the settings route; the current output is the
+    // profile route.  The proof authorizes static-layout reuse across routes.
+    const decision = createStaticLayoutArtifactReuseDecision({
       currentArtifactCompatibility: serverArtifact,
+      candidateArtifactCompatibility: serverArtifact,
+      candidateObservation: buildRenderObservation({
+        boundaryOutcome: { kind: "success" },
+        cacheability: "public",
+        cacheTags: ["dashboard"],
+        completeness: "complete",
+        dynamicFetches: [],
+        output: candidateOutput,
+        pathTags: ["/dashboard"],
+        requestApis: buildRenderRequestApiObservations({
+          completeness: "complete",
+          observed: [],
+        }),
+      }),
+      candidateVariant,
+      currentOutput,
     });
     expectReuseDecision(decision);
 
@@ -211,25 +277,25 @@ describe("skip/cache proof cross-checks", () => {
       artifact: {
         compatibility: serverArtifact,
         invalidation: { kind: "valid" },
-        payloadHash,
+        payloadHash: serverPayloadHash,
       },
       cacheDecision: decision,
       entry: createManifestEntry({
         artifactCompatibility: clientArtifact,
-        payloadHash,
-        variantCacheKey: decision.proof.variant.cacheKey,
+        payloadHash: clientPayloadHash,
+        variantCacheKey,
       }),
     });
 
     expect(result).toMatchObject({
       code: "SKIP_CACHE_CROSS_CHECK_PASSED",
-      entryId: "layout:/dashboard",
+      entryId: dashboardLayoutId,
       kind: "verified",
       skipDisposition: {
         code: "SKIP_STATIC_LAYOUT_VERIFIED",
         enabled: true,
         mode: "skipStaticLayout",
-        skippedEntryIds: ["layout:/dashboard"],
+        skippedEntryIds: [dashboardLayoutId],
       },
     });
   });
