@@ -1,5 +1,6 @@
 import type { RouteManifest, RouteManifestInterception } from "../routing/app-route-graph.js";
 import { isUnknownRecord } from "../utils/record.js";
+import type { AppRouterScrollIntent } from "vinext/shims/app-router-scroll-state";
 
 export type NavigationRuntimeSnapshot = {
   pathname: string;
@@ -33,6 +34,7 @@ export type NavigationRuntimeNavigate = (
   previousNextUrlOverride?: string | null,
   programmaticTransition?: boolean,
   traversalIntent?: NavigationRuntimeTraversalIntent,
+  scrollIntent?: AppRouterScrollIntent | null,
 ) => Promise<void>;
 
 export type NavigationRuntimeFunctions = {

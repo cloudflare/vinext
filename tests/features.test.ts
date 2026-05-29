@@ -2663,6 +2663,47 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('rel="shortcut icon"');
   });
 
+  // Regression for #1492: Next.js accepts icons.other as a single descriptor
+  // or an array; vinext previously iterated it directly and crashed when
+  // given a non-array. Matches resolveAsArrayOrUndefined in
+  // .nextjs-ref/packages/next/src/lib/metadata/resolvers/resolve-icons.ts.
+  it("renders icons.other as a single descriptor (not just an array)", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          icons: {
+            other: {
+              rel: "apple-touch-icon-precomposed",
+              url: "/apple-touch-icon-precomposed.png",
+            },
+          },
+        },
+      }),
+    );
+    expect(html).toContain('rel="apple-touch-icon-precomposed"');
+    expect(html).toContain('href="/apple-touch-icon-precomposed.png"');
+  });
+
+  it("renders icons.other as an array of descriptors", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          icons: {
+            other: [
+              { rel: "mask-icon", url: "/mask.svg", type: "image/svg+xml" },
+              { rel: "apple-touch-icon-precomposed", url: "/apple.png" },
+            ],
+          },
+        },
+      }),
+    );
+    expect(html).toContain('rel="mask-icon"');
+    expect(html).toContain('href="/mask.svg"');
+    expect(html).toContain('type="image/svg+xml"');
+    expect(html).toContain('rel="apple-touch-icon-precomposed"');
+    expect(html).toContain('href="/apple.png"');
+  });
+
   it("serializes rich metadata for the streaming body outlet", () => {
     const html = renderMetadataToHtml(
       {

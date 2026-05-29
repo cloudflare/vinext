@@ -71,7 +71,9 @@ function createRenderer(overrides?: {
         return { pathname: "/posts/missing" };
       },
       globalErrorModule: null,
-      globalNotFoundModule: overrides?.globalNotFoundModule ?? null,
+      loadGlobalNotFoundModule: overrides?.globalNotFoundModule
+        ? async () => overrides.globalNotFoundModule ?? null
+        : null,
       makeThenableParams<T>(params: T) {
         return params;
       },
@@ -447,7 +449,7 @@ describe("app fallback renderer default global error UI", () => {
       },
       getNavigationContext: () => ({ pathname: "/server-error" }),
       globalErrorModule: userGlobalErrorModule,
-      globalNotFoundModule: null,
+      loadGlobalNotFoundModule: null,
       makeThenableParams: (p) => p,
       metadataRoutes: [],
       resolveChildSegments: () => [],

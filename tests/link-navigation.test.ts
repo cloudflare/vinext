@@ -443,7 +443,20 @@ describe("Link App Router navigation scheduling", () => {
 
     expect(clickEvent.defaultPrevented).toBe(true);
     expect(startTransition).toHaveBeenCalledTimes(1);
-    expect(navigate).toHaveBeenCalledWith("/target", 0, "navigate", "push", undefined, true);
+    expect(navigate).toHaveBeenCalledWith(
+      "/target",
+      0,
+      "navigate",
+      "push",
+      undefined,
+      true,
+      undefined,
+      expect.objectContaining({
+        commitId: null,
+        hash: null,
+        id: expect.any(Number),
+      }),
+    );
     expect(transitionStates).toEqual([true]);
   });
 
@@ -1554,53 +1567,90 @@ describe("Link prefetch scheduling", () => {
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/javascript-urls/javascript-urls.test.ts
   // The Next.js test asserts a console.error log appears whose message
   // includes "has blocked a javascript: URL as a security precaution.".
-  it("emits a console.error matching Next.js when a dangerous Link is clicked", async () => {
-    const userOnClick = vi.fn();
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const result = await renderIsolatedLink({
-      href: "javascript:alert(1)",
-      nodeEnv: "development",
-      props: {
-        onClick: userOnClick,
-      },
-      requireRef: false,
-    });
+  //
+  // Coverage matrix (see issue #1576): the same Next.js E2E suite asserts the
+  // console.error for four Link-flavoured scenarios — App Router `href`,
+  // App Router `as`, Pages Router `href`, Pages Router `as`. The Link shim
+  // serves both routers, so each variant is exercised by toggling
+  // `appNavigation` and swapping `href` <-> `as`.
+  const dangerousLinkScenarios: Array<{
+    name: string;
+    appNavigation: boolean;
+    linkProps: { href: string; as?: string };
+  }> = [
+    {
+      name: "App Router Link with dangerous href",
+      appNavigation: true,
+      linkProps: { href: "javascript:alert(1)" },
+    },
+    {
+      name: "App Router Link with dangerous `as`",
+      appNavigation: true,
+      linkProps: { href: "/safe", as: "javascript:alert(1)" },
+    },
+    {
+      name: "Pages Router Link with dangerous href",
+      appNavigation: false,
+      linkProps: { href: "javascript:alert(1)" },
+    },
+    {
+      name: "Pages Router Link with dangerous `as`",
+      appNavigation: false,
+      linkProps: { href: "/safe", as: "javascript:alert(1)" },
+    },
+  ];
 
-    try {
-      const onClick = result.capturedAnchorProps.onClick;
-      expect(onClick).toBeTypeOf("function");
-      const clickEvent = {
-        button: 0,
-        currentTarget: { hasAttribute: () => false, target: "" },
-        defaultPrevented: false,
-        preventDefault() {
-          this.defaultPrevented = true;
+  for (const scenario of dangerousLinkScenarios) {
+    it(`emits a console.error matching Next.js when a ${scenario.name} is clicked`, async () => {
+      const userOnClick = vi.fn();
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const result = await renderIsolatedLink({
+        appNavigation: scenario.appNavigation,
+        href: scenario.linkProps.href,
+        nodeEnv: "development",
+        props: {
+          ...(scenario.linkProps.as !== undefined ? { as: scenario.linkProps.as } : {}),
+          onClick: userOnClick,
         },
-      } satisfies CapturedClickEvent;
+        requireRef: false,
+      });
 
-      await onClick?.(clickEvent);
+      try {
+        const onClick = result.capturedAnchorProps.onClick;
+        expect(onClick).toBeTypeOf("function");
+        const clickEvent = {
+          button: 0,
+          currentTarget: { hasAttribute: () => false, target: "" },
+          defaultPrevented: false,
+          preventDefault() {
+            this.defaultPrevented = true;
+          },
+        } satisfies CapturedClickEvent;
 
-      // User onClick still fires so callers can run analytics/preventDefault.
-      expect(userOnClick).toHaveBeenCalledWith(clickEvent);
-      // Navigation never happens.
-      expect(result.navigate).not.toHaveBeenCalled();
-      expect(result.fetch).not.toHaveBeenCalled();
-      // Next.js parity: a console.error is emitted that includes the block
-      // message — the E2E suite asserts on `.includes(...)` against this text.
-      expect(
-        consoleError.mock.calls.some((call) =>
-          call.some(
-            (arg) =>
-              typeof arg === "string" &&
-              arg.includes("has blocked a javascript: URL as a security precaution."),
+        await onClick?.(clickEvent);
+
+        // User onClick still fires so callers can run analytics/preventDefault.
+        expect(userOnClick).toHaveBeenCalledWith(clickEvent);
+        // Navigation never happens (App Router) / fetch never fires.
+        expect(result.navigate).not.toHaveBeenCalled();
+        expect(result.fetch).not.toHaveBeenCalled();
+        // Next.js parity: a console.error is emitted that includes the block
+        // message — the E2E suite asserts on `.includes(...)` against this text.
+        expect(
+          consoleError.mock.calls.some((call) =>
+            call.some(
+              (arg) =>
+                typeof arg === "string" &&
+                arg.includes("has blocked a javascript: URL as a security precaution."),
+            ),
           ),
-        ),
-      ).toBe(true);
-    } finally {
-      consoleError.mockRestore();
-      consoleWarn.mockRestore();
-      result.restoreNodeEnv();
-    }
-  });
+        ).toBe(true);
+      } finally {
+        consoleError.mockRestore();
+        consoleWarn.mockRestore();
+        result.restoreNodeEnv();
+      }
+    });
+  }
 });

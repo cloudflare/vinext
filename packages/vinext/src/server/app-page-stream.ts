@@ -26,6 +26,11 @@ export type AppPageSsrHandler = {
       formState?: ReactFormState | null;
       scriptNonce?: string;
       basePath?: string;
+      /**
+       * Allow-list of OpenTelemetry propagation keys to emit as `<meta>` tags
+       * in the SSR head. Sourced from `experimental.clientTraceMetadata`.
+       */
+      clientTraceMetadata?: readonly string[];
       rootParams?: RootParams;
       sideStream?: ReadableStream<Uint8Array>;
       capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
@@ -42,6 +47,12 @@ type RenderAppPageHtmlStreamOptions = {
   rscStream: ReadableStream<Uint8Array>;
   scriptNonce?: string;
   basePath?: string;
+  /**
+   * Allow-list of OpenTelemetry propagation keys (from
+   * `experimental.clientTraceMetadata`) to surface as `<meta>` tags in
+   * the SSR head. Undefined or empty disables emission.
+   */
+  clientTraceMetadata?: readonly string[];
   rootParams?: RootParams;
   ssrHandler: AppPageSsrHandler;
   /** Pre-split side stream for fused embed+capture (#981). When set,
@@ -106,6 +117,7 @@ export async function renderAppPageHtmlStream(
     formState: options.formState ?? null,
     scriptNonce: options.scriptNonce,
     basePath: options.basePath,
+    clientTraceMetadata: options.clientTraceMetadata,
     rootParams: options.rootParams,
     sideStream: options.sideStream,
     capturedRscDataRef: options.capturedRscDataRef,

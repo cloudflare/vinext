@@ -1261,6 +1261,11 @@ describe("next/error shim — unstable_catchError", () => {
       fallback: Fallback,
       forwardedProps: {},
     });
+    // Manually instantiating the class skips React's context machinery,
+    // so `this.context` is undefined. Seed it to `null` (matching the
+    // App Router default) so the Pages Router branch in `unstable_retry`
+    // doesn't fire.
+    (instance as unknown as { context: null }).context = null;
     instance.state = { error: { thrownValue: new Error("boom") } };
 
     // typeof window === "undefined" in this Node test environment, so
@@ -1324,6 +1329,11 @@ describe("next/error shim — unstable_catchError", () => {
         fallback: Fallback,
         forwardedProps: {},
       });
+      // Manually instantiating the class skips React's context machinery,
+      // so `this.context` is undefined. Seed it to `null` (matching the
+      // App Router default) so the Pages Router branch in `unstable_retry`
+      // doesn't fire — this test exercises the App Router branch.
+      (instance as unknown as { context: null }).context = null;
 
       // Seed an error so reset has something to clear, and replace setState
       // with a spy so we can confirm the boundary self-resets.
@@ -1351,6 +1361,53 @@ describe("next/error shim — unstable_catchError", () => {
       }
       vi.resetModules();
     }
+  });
+
+  // Regression for cloudflare/vinext#1448.
+  // Ported from Next.js test:
+  //   .nextjs-ref/test/e2e/app-dir/catch-error/catch-error.test.ts
+  //   "should throw when unstable_retry is called on Pages Router"
+  // Mirrors the App Router-only branch in Next.js's catch-error source:
+  //   .nextjs-ref/packages/next/src/client/components/catch-error.tsx
+  // The boundary detects Pages Router via `RouterContext` (set as the inner
+  // class component's `contextType`). When a non-null Pages Router instance
+  // is in context, `unstable_retry()` must throw the verbatim Next.js
+  // message instead of calling App Router's `refresh()`.
+  it("unstable_retry under Pages Router throws Next.js parity error message", async () => {
+    const React = (await import("react")).default;
+    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
+
+    function Fallback() {
+      return null;
+    }
+    const Boundary = unstable_catchError(Fallback);
+    const wrapperResult = (Boundary as unknown as (p: Record<string, never>) => { type: unknown })(
+      {},
+    );
+    const InnerCatchError = wrapperResult.type as unknown as new (props: object) => {
+      state: { error: { thrownValue: unknown } | null };
+      unstable_retry: () => void;
+    };
+    const instance = new InnerCatchError({
+      fallback: Fallback,
+      forwardedProps: {},
+    });
+    instance.state = { error: { thrownValue: new Error("boom") } };
+
+    // Seed `this.context` with a truthy value so the Pages Router branch
+    // fires. In production React fills this from RouterContext when the
+    // boundary is rendered under `RouterContext.Provider` (every Pages
+    // Router page). Casting via unknown keeps the seed type-safe under
+    // the class's declared `context` type.
+    (instance as unknown as { context: object }).context = {
+      route: "/some-page",
+    };
+
+    void React; // keep React import for parity with sibling tests
+
+    expect(() => instance.unstable_retry()).toThrow(
+      "`unstable_retry()` can only be used in the App Router. Use `reset()` in the Pages Router.",
+    );
   });
 });
 
@@ -1580,6 +1637,64 @@ describe("window.next debug global", () => {
       expect(result).toBe(true);
     } finally {
       (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  // Issue #1522 — shallow `Router.push(url, as, { shallow: true })` must
+  // update history to `as` (the visible URL) without fetching the server,
+  // even when `as` matches a server-side redirect rule (e.g. `/redirect-1`
+  // configured in `next.config.js#redirects`). This mirrors the Next.js
+  // bloom-filter "client router filter" bypass for shallow updates.
+  //
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // "should not apply client router filter on shallow"
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+  it("Router.push with shallow=true updates URL to `as` and skips fetch for redirect-matching paths", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const pushState = vi.fn();
+    const fetchSpy = vi.fn(async () => {
+      throw new Error("shallow Router.push must not fetch the page HTML");
+    });
+    const win: any = {
+      location: {
+        pathname: "/",
+        search: "",
+        hash: "",
+        href: "http://localhost/",
+        origin: "http://localhost",
+        hostname: "localhost",
+        assign: vi.fn(),
+        replace: vi.fn(),
+        reload: vi.fn(),
+      },
+      history: { state: null, pushState, replaceState() {} },
+      addEventListener() {},
+      dispatchEvent() {},
+      scrollTo() {},
+      __NEXT_DATA__: { page: "/", query: {}, isFallback: false },
+    };
+    (globalThis as any).window = win;
+    globalThis.fetch = fetchSpy as any;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+
+      // Mirror the failing Next.js call exactly:
+      //   window.next.router.push('/', '/redirect-1', { shallow: true })
+      const result = await routerModule.default.push("/", "/redirect-1", { shallow: true });
+
+      expect(result).toBe(true);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      // The visible URL is `as` (/redirect-1), even though the underlying
+      // route is `url` (/). The server's redirect rule for /redirect-1
+      // must not fire on a shallow update.
+      expect(pushState).toHaveBeenCalledWith({}, "", "/redirect-1");
+    } finally {
+      (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
       vi.resetModules();
     }
   });
@@ -3270,9 +3385,10 @@ describe("next/cache shim", () => {
     expect(typeof mod.updateTag).toBe("function");
   });
 
-  it("updateTag invalidates cached entries", async () => {
+  it("updateTag invalidates cached entries when called inside a Server Action", async () => {
     const { unstable_cache, updateTag, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
 
     setCacheHandler(new MemoryCacheHandler());
 
@@ -3289,14 +3405,48 @@ describe("next/cache shim", () => {
     const r1 = await cached();
     expect(r1).toBe("result-1");
 
-    // updateTag expires the cache
-    await updateTag("user-1");
+    // updateTag expires the cache (must be called from inside a Server Action)
+    const previousPhase = setHeadersAccessPhase("action");
+    try {
+      await updateTag("user-1");
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+    }
 
     const r2 = await cached();
     expect(r2).toBe("result-2");
     expect(callCount).toBe(2);
 
     setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("updateTag throws when called outside a Server Action (e.g. route handler)", async () => {
+    const { updateTag } = await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
+
+    // Simulate a route handler phase
+    const previousPhase = setHeadersAccessPhase("route-handler");
+    try {
+      await expect(updateTag("some-tag")).rejects.toThrow(
+        /updateTag can only be called from within a Server Action/,
+      );
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+    }
+  });
+
+  it("updateTag throws when called during render", async () => {
+    const { updateTag } = await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
+
+    const previousPhase = setHeadersAccessPhase("render");
+    try {
+      await expect(updateTag("some-tag")).rejects.toThrow(
+        /updateTag can only be called from within a Server Action/,
+      );
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+    }
   });
 
   it("exports refresh function (Next.js 16)", async () => {
@@ -9318,6 +9468,7 @@ describe("proxyExternalRequest", () => {
         "x-middleware-rewrite": "/internal",
         "x-middleware-next": "1",
         "x-vinext-prerender-secret": "build-secret-123",
+        "x-vinext-prerender-route-params": "%7B%22id%22%3A%22forged%22%7D",
         "x-custom-header": "keep-me",
         "user-agent": "vinext-test",
       },
@@ -9342,6 +9493,7 @@ describe("proxyExternalRequest", () => {
       expect(capturedHeaders!.get("x-middleware-rewrite")).toBeNull();
       expect(capturedHeaders!.get("x-middleware-next")).toBeNull();
       expect(capturedHeaders!.get("x-vinext-prerender-secret")).toBeNull();
+      expect(capturedHeaders!.get("x-vinext-prerender-route-params")).toBeNull();
       // Non-sensitive headers must be preserved
       expect(capturedHeaders!.get("x-custom-header")).toBe("keep-me");
       expect(capturedHeaders!.get("user-agent")).toBe("vinext-test");
@@ -10952,6 +11104,109 @@ describe("next/amp shim", () => {
   });
 });
 
+describe("app router scroll intent state", () => {
+  it("only lets the claimed render commit consume its own scroll intent", async () => {
+    const {
+      beginAppRouterScrollIntent,
+      claimAppRouterScrollIntentForCommit,
+      clearAppRouterScrollIntent,
+      consumeAppRouterScrollIntent,
+      getPendingAppRouterScrollIntent,
+    } = await import("../packages/vinext/src/shims/app-router-scroll-state.js");
+
+    clearAppRouterScrollIntent();
+
+    const staleIntent = beginAppRouterScrollIntent(null);
+    const latestIntent = beginAppRouterScrollIntent(null);
+
+    claimAppRouterScrollIntentForCommit(staleIntent, 1);
+    expect(getPendingAppRouterScrollIntent()?.commitId).toBeNull();
+    expect(consumeAppRouterScrollIntent(undefined)).toBeNull();
+    expect(getPendingAppRouterScrollIntent()?.id).toBe(latestIntent.id);
+    expect(consumeAppRouterScrollIntent(null)).toBeNull();
+    expect(getPendingAppRouterScrollIntent()?.id).toBe(latestIntent.id);
+    expect(consumeAppRouterScrollIntent(latestIntent, 1)).toBeNull();
+    expect(getPendingAppRouterScrollIntent()?.id).toBe(latestIntent.id);
+
+    claimAppRouterScrollIntentForCommit(latestIntent, 2);
+    expect(consumeAppRouterScrollIntent(latestIntent, 1)).toBeNull();
+
+    const consumed = consumeAppRouterScrollIntent(latestIntent, 2);
+    expect(consumed?.id).toBe(latestIntent.id);
+    expect(consumed?.commitId).toBe(2);
+    expect(getPendingAppRouterScrollIntent()).toBeNull();
+  });
+
+  it("consuming an unclaimed intent without commitId matches navigateClientSide fallback contract", async () => {
+    const {
+      beginAppRouterScrollIntent,
+      clearAppRouterScrollIntent,
+      consumeAppRouterScrollIntent,
+      getPendingAppRouterScrollIntent,
+    } = await import("../packages/vinext/src/shims/app-router-scroll-state.js");
+
+    // no-commit path: intent was created but never claimed by a render commit.
+    // consumeAppRouterScrollIntent(intent) without a commitId must consume it
+    // so the navigateClientSide fallback (which calls consume without commitId)
+    // finds null and does not apply a scroll for an abandoned navigation.
+    clearAppRouterScrollIntent();
+
+    const intent = beginAppRouterScrollIntent(null);
+    expect(getPendingAppRouterScrollIntent()?.id).toBe(intent.id);
+
+    const consumed = consumeAppRouterScrollIntent(intent);
+    expect(consumed?.id).toBe(intent.id);
+    expect(getPendingAppRouterScrollIntent()).toBeNull();
+  });
+
+  it("consuming an intent with a stale intent reference is a no-op", async () => {
+    const {
+      beginAppRouterScrollIntent,
+      clearAppRouterScrollIntent,
+      consumeAppRouterScrollIntent,
+      getPendingAppRouterScrollIntent,
+    } = await import("../packages/vinext/src/shims/app-router-scroll-state.js");
+
+    // When a newer navigation replaces the pending intent, attempting to consume
+    // the stale reference must be a no-op — this is the safety check that prevents
+    // the fallback from consuming a different navigation's intent.
+    clearAppRouterScrollIntent();
+
+    const firstIntent = beginAppRouterScrollIntent(null);
+    const secondIntent = beginAppRouterScrollIntent(null);
+
+    expect(consumeAppRouterScrollIntent(firstIntent)).toBeNull();
+    expect(getPendingAppRouterScrollIntent()?.id).toBe(secondIntent.id);
+    expect(consumeAppRouterScrollIntent(secondIntent)).not.toBeNull();
+    expect(getPendingAppRouterScrollIntent()).toBeNull();
+  });
+
+  it("consuming a claimed intent without commitId is always allowed for cleanup paths", async () => {
+    const {
+      beginAppRouterScrollIntent,
+      claimAppRouterScrollIntentForCommit,
+      clearAppRouterScrollIntent,
+      consumeAppRouterScrollIntent,
+      getPendingAppRouterScrollIntent,
+    } = await import("../packages/vinext/src/shims/app-router-scroll-state.js");
+
+    // The fallback in navigateClientSide calls consume without a commitId.
+    // An intent claimed by a newer commit must still be consumable without a
+    // commitId check so that explicit cleanup paths (no-commit, hard-navigate)
+    // can clear it. The commitId gate only applies when a commitId is passed.
+    clearAppRouterScrollIntent();
+
+    const intent = beginAppRouterScrollIntent(null);
+    claimAppRouterScrollIntentForCommit(intent, 42);
+    expect(getPendingAppRouterScrollIntent()?.commitId).toBe(42);
+
+    // Consume without commitId — always allowed (no-commit / hard-navigate cleanup).
+    const consumed = consumeAppRouterScrollIntent(intent);
+    expect(consumed?.id).toBe(intent.id);
+    expect(getPendingAppRouterScrollIntent()).toBeNull();
+  });
+});
+
 describe("next/compat/router shim", () => {
   it("exports useRouter as a function", async () => {
     const mod = await import("../packages/vinext/src/shims/compat-router.js");
@@ -11057,6 +11312,39 @@ describe("next/compat/router shim", () => {
 
     expect(captured).not.toBeNull();
     expect((captured as any).query.slug).toEqual(["a", "b"]);
+  });
+
+  // Regression for issue #1466: React's `useSyncExternalStore` calls
+  // `getServerSnapshot` multiple times during SSR/hydration and expects a
+  // stable reference (Object.is) — otherwise it logs:
+  //   "The result of getServerSnapshot should be cached to avoid an infinite loop"
+  // and may re-render until it stabilizes. `useParams`/`useSearchParams`/
+  // `usePathname` from `next/navigation` derive their server snapshot from
+  // `getPagesNavigationContext()`, so its SSR-side return value must be
+  // reference-stable within a single request.
+  it("getPagesNavigationContext returns the same reference for repeated SSR calls in one request", async () => {
+    const { getPagesNavigationContext, setSSRContext } =
+      await import("../packages/vinext/src/shims/router.js");
+
+    setSSRContext({
+      pathname: "/pages-dir/[dynamic]",
+      query: { dynamic: "foobar" },
+      asPath: "/pages-dir/foobar",
+    });
+    try {
+      const first = getPagesNavigationContext();
+      const second = getPagesNavigationContext();
+      expect(first).not.toBeNull();
+      expect(first).toBe(second);
+      expect(first!.params).toEqual({ dynamic: "foobar" });
+      // params and searchParams must also be reference-stable across calls so
+      // hook-level snapshots (`pagesCtx.params`, `pagesCtx.searchParams`) are
+      // Object.is-equal between renders.
+      expect(first!.params).toBe(second!.params);
+      expect(first!.searchParams).toBe(second!.searchParams);
+    } finally {
+      setSSRContext(null);
+    }
   });
 
   it("preserves route param arrays, repeated search params, and hash in client router state", async () => {
@@ -11619,9 +11907,9 @@ describe("Pages Router concurrent navigation", () => {
       },
       __VINEXT_ROOT__: { render },
       __VINEXT_APP__: undefined,
-      __VINEXT_LOCALE__: undefined,
-      __VINEXT_LOCALES__: undefined,
-      __VINEXT_DEFAULT_LOCALE__: undefined,
+      __VINEXT_LOCALE__: undefined as string | undefined,
+      __VINEXT_LOCALES__: undefined as string[] | undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined as string | undefined,
     };
 
     // Make pushState update location to simulate real browser behavior
@@ -11796,6 +12084,223 @@ describe("Pages Router concurrent navigation", () => {
       target: "/catch-all/hello.world/",
       expectedBrowserUrl: "/catch-all/hello.world",
     });
+  });
+
+  // Ported from Next.js:
+  // test/e2e/basepath/error-pages.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/error-pages.test.ts
+  it("Pages Router fetches the error route while preserving the masked URL under basePath", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    win.location.pathname = "/docs/slug-1";
+    win.location.href = "http://localhost/docs/slug-1";
+    (globalThis as any).window = win;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+
+    const fetch = vi.fn(
+      async () =>
+        new Response(buildNavHtml("/404", pageModuleUrl), {
+          status: 404,
+        }),
+    );
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/404", "/slug-2");
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenCalledWith("/docs/404", expect.any(Object));
+      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/docs/slug-2");
+      expect(win.location.pathname).toBe("/docs/slug-2");
+      expect(win.__NEXT_DATA__.page).toBe("/404");
+    } finally {
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("Pages Router maps masked /_error client navigations to the 404 page under basePath", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    win.location.pathname = "/docs/slug-1";
+    win.location.href = "http://localhost/docs/slug-1";
+    (globalThis as any).window = win;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+
+    const fetch = vi.fn(
+      async () =>
+        new Response(buildNavHtml("/404", pageModuleUrl), {
+          status: 404,
+        }),
+    );
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/_error", "/slug-2");
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenCalledWith("/docs/404", expect.any(Object));
+      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/docs/slug-2");
+      expect(win.location.pathname).toBe("/docs/slug-2");
+      expect(win.__NEXT_DATA__.page).toBe("/404");
+    } finally {
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("Pages Router fetches /404 through a non-default locale while preserving the masked URL", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    win.location.pathname = "/docs/fr/slug-1";
+    win.location.href = "http://localhost/docs/fr/slug-1";
+    win.__VINEXT_LOCALE__ = "fr";
+    win.__VINEXT_LOCALES__ = ["en", "fr"];
+    win.__VINEXT_DEFAULT_LOCALE__ = "en";
+    (globalThis as any).window = win;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          buildNavHtml(
+            "/404",
+            pageModuleUrl,
+            {},
+            {
+              locale: "fr",
+              locales: ["en", "fr"],
+              defaultLocale: "en",
+            },
+          ),
+          { status: 404 },
+        ),
+    );
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/404", "/slug-2");
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenCalledWith("/docs/fr/404", expect.any(Object));
+      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/docs/fr/slug-2");
+      expect(win.location.pathname).toBe("/docs/fr/slug-2");
+      expect(win.__NEXT_DATA__.page).toBe("/404");
+    } finally {
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("Pages Router maps /_error through a non-default locale while preserving the masked URL", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    win.location.pathname = "/docs/fr/slug-1";
+    win.location.href = "http://localhost/docs/fr/slug-1";
+    win.__VINEXT_LOCALE__ = "fr";
+    win.__VINEXT_LOCALES__ = ["en", "fr"];
+    win.__VINEXT_DEFAULT_LOCALE__ = "en";
+    (globalThis as any).window = win;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          buildNavHtml(
+            "/404",
+            pageModuleUrl,
+            {},
+            {
+              locale: "fr",
+              locales: ["en", "fr"],
+              defaultLocale: "en",
+            },
+          ),
+          { status: 404 },
+        ),
+    );
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/_error", "/slug-2");
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenCalledWith("/docs/fr/404", expect.any(Object));
+      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/docs/fr/slug-2");
+      expect(win.location.pathname).toBe("/docs/fr/slug-2");
+      expect(win.__NEXT_DATA__.page).toBe("/404");
+    } finally {
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("last push() wins when two overlap — superseded navigation does not render", async () => {
@@ -16931,7 +17436,67 @@ describe("cache scope guards for dynamic APIs", () => {
     setHeadersContext(null);
   });
 
-  it('draftMode() throws inside "use cache" scope', async () => {
+  // Ported from Next.js: packages/next/src/server/request/draft-mode.ts
+  // (`getDraftModeProviderForCacheScope` + `trackDynamicDraftMode`).
+  // Reading `draftMode()` / `.isEnabled` is allowed inside cache scopes;
+  // only the mutating `enable()` / `disable()` methods throw. Issue #1489.
+  it('draftMode().isEnabled reads inside "use cache" scope', async () => {
+    const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { draftMode, setHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+
+    setHeadersContext({
+      headers: new Headers({ cookie: "__prerender_bypass=test-secret" }),
+      cookies: new Map([["__prerender_bypass", "test-secret"]]),
+      draftModeSecret: "test-secret",
+    });
+
+    await cacheContextStorage.run(
+      {
+        tags: [],
+        lifeConfigs: [],
+        variant: "default",
+        hasExplicitRevalidate: false,
+        hasExplicitExpire: false,
+        dynamicNestedCacheError: undefined,
+      },
+      async () => {
+        const dm = await draftMode();
+        expect(dm.isEnabled).toBe(true);
+      },
+    );
+
+    setHeadersContext(null);
+  });
+
+  it("draftMode().isEnabled reads inside unstable_cache() scope", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { draftMode, setHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+    setHeadersContext({
+      headers: new Headers({ cookie: "__prerender_bypass=test-secret" }),
+      cookies: new Map([["__prerender_bypass", "test-secret"]]),
+      draftModeSecret: "test-secret",
+    });
+
+    let observed: boolean | undefined;
+    const cached = unstable_cache(async () => {
+      const dm = await draftMode();
+      observed = dm.isEnabled;
+      return observed;
+    }, ["test-draftmode-in-cache"]);
+
+    await expect(cached()).resolves.toBe(true);
+    expect(observed).toBe(true);
+
+    setHeadersContext(null);
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it('draftMode().enable() throws inside "use cache" scope', async () => {
     const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
     const { draftMode, setHeadersContext } =
       await import("../packages/vinext/src/shims/headers.js");
@@ -16948,14 +17513,16 @@ describe("cache scope guards for dynamic APIs", () => {
         dynamicNestedCacheError: undefined,
       },
       async () => {
-        await expect(draftMode()).rejects.toThrow(/cannot be called inside "use cache"/);
+        const dm = await draftMode();
+        expect(() => dm.enable()).toThrow(/cannot be called inside "use cache"/);
+        expect(() => dm.disable()).toThrow(/cannot be called inside "use cache"/);
       },
     );
 
     setHeadersContext(null);
   });
 
-  it("draftMode() throws inside unstable_cache() scope", async () => {
+  it("draftMode().enable() throws inside unstable_cache() scope", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
     const { draftMode, setHeadersContext } =
@@ -16965,8 +17532,9 @@ describe("cache scope guards for dynamic APIs", () => {
     setHeadersContext({ headers: new Headers(), cookies: new Map() });
 
     const cached = unstable_cache(async () => {
-      await draftMode();
-    }, ["test-draftmode-in-cache"]);
+      const dm = await draftMode();
+      dm.enable();
+    }, ["test-draftmode-enable-in-cache"]);
 
     await expect(cached()).rejects.toThrow(/unstable_cache/);
 

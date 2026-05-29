@@ -1,6 +1,8 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
-import type { Metadata } from "../packages/vinext/src/shims/metadata.js";
+import { MetadataHead, type Metadata } from "../packages/vinext/src/shims/metadata.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 
 const ogHeadData = {
@@ -758,5 +760,90 @@ describe("applyFileBasedMetadata", () => {
     expect(result?.icons).toEqual({
       icon: [{ type: "image/png", url: "/docs/icon/small?hash" }],
     });
+  });
+
+  // Regression for cloudflare/vinext#1493 — covers the full pipeline (file-based
+  // metadata + MetadataHead) for the Next.js metadata-dynamic-routes test
+  // `should support generate multi images with generateImageMetadata`. With
+  // `metadataBase` configured on a parent layout, hrefs for dynamic icon and
+  // apple-icon image routes produced by `generateImageMetadata` must stay
+  // relative (matching Next.js behavior).
+  // Ported from .nextjs-ref/test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
+  it("keeps generateImageMetadata icon hrefs relative when metadataBase is configured (#1493)", async () => {
+    const layoutMetadata: Metadata = {
+      metadataBase: new URL("https://mydomain.com"),
+      title: "Next.js App",
+    };
+    const mergedMetadata: Metadata = {
+      metadataBase: layoutMetadata.metadataBase,
+      title: "index page",
+    };
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "icon",
+        isDynamic: true,
+        filePath: "/tmp/app/(group)/dynamic/[size]/icon.tsx",
+        routePrefix: "/dynamic/[size]",
+        routeSegments: ["(group)", "dynamic", "[size]"],
+        servedUrl: "/dynamic/[size]/icon-ahg52g",
+        contentType: "image/png",
+        module: {
+          generateImageMetadata: async () => [
+            { id: "small", contentType: "image/png", size: { width: 48, height: 48 } },
+            { id: "medium", contentType: "image/png", size: { width: 72, height: 72 } },
+          ],
+        },
+      },
+      {
+        type: "apple-icon",
+        isDynamic: true,
+        filePath: "/tmp/app/(group)/dynamic/[size]/apple-icon.tsx",
+        routePrefix: "/dynamic/[size]",
+        routeSegments: ["(group)", "dynamic", "[size]"],
+        servedUrl: "/dynamic/[size]/apple-icon-ahg52g",
+        contentType: "image/png",
+        module: {
+          generateImageMetadata: async () => [
+            { id: 0, contentType: "image/png", size: { width: 48, height: 48 } },
+            { id: 1, contentType: "image/png", size: { width: 64, height: 64 } },
+          ],
+        },
+      },
+    ];
+
+    const result = await applyFileBasedMetadata(
+      mergedMetadata,
+      "/dynamic/big",
+      { size: "big" },
+      routes,
+      {
+        routeSegments: ["(group)", "dynamic", "[size]"],
+        metadataSources: [
+          { routeSegments: [], metadata: layoutMetadata },
+          { routeSegments: ["(group)", "dynamic", "[size]"], metadata: { title: "index page" } },
+        ],
+      },
+    );
+
+    expect(result?.icons).toEqual({
+      icon: [
+        { url: "/dynamic/big/icon-ahg52g/small", sizes: "48x48", type: "image/png" },
+        { url: "/dynamic/big/icon-ahg52g/medium", sizes: "72x72", type: "image/png" },
+      ],
+      apple: [
+        { url: "/dynamic/big/apple-icon-ahg52g/0", sizes: "48x48", type: "image/png" },
+        { url: "/dynamic/big/apple-icon-ahg52g/1", sizes: "64x64", type: "image/png" },
+      ],
+    });
+
+    expect(result).not.toBeNull();
+    const html = renderToStaticMarkup(
+      createElement(MetadataHead, { metadata: result as Metadata }),
+    );
+    expect(html).toContain('href="/dynamic/big/icon-ahg52g/small"');
+    expect(html).toContain('href="/dynamic/big/icon-ahg52g/medium"');
+    expect(html).toContain('href="/dynamic/big/apple-icon-ahg52g/0"');
+    expect(html).toContain('href="/dynamic/big/apple-icon-ahg52g/1"');
+    expect(html).not.toContain("https://mydomain.com/dynamic/big");
   });
 });

@@ -32,7 +32,10 @@ import {
 } from "vinext/shims/fetch-cache";
 import { AppElementsWire, type AppOutgoingElements } from "./app-elements.js";
 import { readAppPageCacheResponse } from "./app-page-cache.js";
-import { resolveAppPageParentHttpAccessBoundaryModule } from "./app-page-boundary.js";
+import {
+  resolveAppPageParentHttpAccessBoundary,
+  resolveAppPageParentHttpAccessBoundaryModule,
+} from "./app-page-boundary.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import {
   buildAppPageSpecialErrorResponse,
@@ -45,6 +48,7 @@ import {
 import { resolveAppPageMethodResponse } from "./app-page-method.js";
 import {
   buildAppPageElement,
+  resolveAppPageInterceptionRerenderTarget,
   resolveAppPageIntercept,
   validateAppPageDynamicParams,
   type ValidateAppPageDynamicParamsOptions,
@@ -131,21 +135,40 @@ type AppPageDispatchRoute = {
   __buildTimeReasons?: LayoutClassificationOptions["buildTimeReasons"];
   error?: AppPageModule | null;
   errors?: readonly (AppPageModule | null | undefined)[];
+  forbidden?: AppPageModule | null;
   forbiddens?: readonly (AppPageModule | null | undefined)[];
   isDynamic: boolean;
   layouts: readonly AppPageModule[];
   layoutTreePositions?: readonly number[];
   loading?: AppPageModule | null;
+  notFound?: AppPageModule | null;
   notFounds?: readonly (AppPageModule | null | undefined)[];
   params: readonly string[];
   pattern: string;
   routeSegments: readonly string[];
+  unauthorized?: AppPageModule | null;
   unauthorizeds?: readonly (AppPageModule | null | undefined)[];
 };
+
+function resolveAppPageRouteBoundaryModule(
+  route: AppPageDispatchRoute,
+  statusCode: number,
+): AppPageModule | null {
+  if (statusCode === 403) return route.forbidden ?? null;
+  if (statusCode === 401) return route.unauthorized ?? null;
+  if (statusCode === 404) return route.notFound ?? null;
+  return null;
+}
 
 type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   /** Configured basePath (e.g. "/blog"). Used to prefix redirect Locations. */
   basePath?: string;
+  /**
+   * Allow-list of OpenTelemetry propagation keys (from
+   * `experimental.clientTraceMetadata`) to surface as `<meta>` tags in the
+   * SSR head. Undefined or empty disables emission entirely.
+   */
+  clientTraceMetadata?: readonly string[];
   buildPageElement: (
     route: TRoute,
     params: AppPageParams,
@@ -186,12 +209,14 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     pathname: string,
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
+    interceptionContext?: string | null,
   ) => string;
   isrSet: AppPageCacheSetter;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   middlewareContext: AppPageMiddlewareContext;
   mountedSlotsHeader?: string | null;
   params: AppPageParams;
+  staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
   probeLayoutAt: (layoutIndex: number) => unknown;
   probePage: () => unknown;
@@ -402,6 +427,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       isrHtmlKey: options.isrHtmlKey,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
+      interceptionContext: options.interceptionContext,
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       mountedSlotsHeader: options.mountedSlotsHeader,
@@ -410,28 +436,47 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // cacheLife-only routes discover their actual revalidate during the
       // fresh render; this seed only gets them into the cache read path.
       revalidateSeconds: currentRevalidateSeconds ?? 0,
-      renderFreshPageForCache: async () =>
-        runAppPageRevalidationContext(
+      renderFreshPageForCache: async () => {
+        const revalidationTarget = resolveAppPageInterceptionRerenderTarget({
+          cleanPathname: options.cleanPathname,
+          currentParams: options.params,
+          currentRoute: route,
+          findIntercept: options.findIntercept,
+          getRouteParamNames(sourceRoute) {
+            return sourceRoute.params;
+          },
+          getSourceRoute(sourceRouteIndex) {
+            return options.getSourceRoute(sourceRouteIndex);
+          },
+          isRscRequest: options.isRscRequest,
+          toInterceptOpts(intercept) {
+            return toInterceptOptions(options.interceptionContext, intercept);
+          },
+        });
+
+        return runAppPageRevalidationContext(
           {
             cleanPathname: options.cleanPathname,
-            currentFetchCacheMode: options.fetchCache ?? null,
+            currentFetchCacheMode:
+              options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
+              (revalidationTarget.route === route ? (options.fetchCache ?? null) : null),
             draftModeSecret: options.draftModeSecret,
             dynamicConfig,
-            params: options.params,
-            routePattern: route.pattern,
-            routeSegments: route.routeSegments,
+            params: revalidationTarget.navigationParams,
+            routePattern: revalidationTarget.route.pattern,
+            routeSegments: revalidationTarget.route.routeSegments,
             setNavigationContext: options.setNavigationContext,
           },
           async () => {
             const revalidatedElement = await options.buildPageElement(
-              route,
-              options.params,
-              undefined,
+              revalidationTarget.route,
+              revalidationTarget.params,
+              revalidationTarget.interceptOpts,
               new URLSearchParams(),
             );
             const revalidatedOnError = options.createRscOnErrorHandler(
               options.cleanPathname,
-              route.pattern,
+              revalidationTarget.route.pattern,
             );
             // No inner runWithFetchDedupe here: this renderFn is already
             // wrapped in runWithFetchDedupe by runAppPageRevalidationContext.
@@ -453,6 +498,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               },
               {
                 basePath: options.basePath,
+                clientTraceMetadata: options.clientTraceMetadata,
                 rootParams: options.rootParams,
                 ...(revalidatedRscCapture.sideStream
                   ? {
@@ -469,7 +515,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             const tags = buildAppPageTags(
               options.cleanPathname,
               getCollectedFetchTags(),
-              route.routeSegments,
+              revalidationTarget.route.routeSegments,
             );
             // Consume once: HTML and RSC artifacts are produced by the same
             // regeneration render and should carry the same observation set.
@@ -489,9 +535,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                   element: revalidatedElement,
                   renderEpoch: null,
                   rootBoundaryId: null,
-                  routePattern: route.pattern,
+                  routePattern: revalidationTarget.route.pattern,
                 }),
-                params: options.params,
+                params: revalidationTarget.navigationParams,
                 state: observationState,
               }),
               rscData,
@@ -506,9 +552,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                   mountedSlotsHeader: options.mountedSlotsHeader,
                   renderEpoch: null,
                   rootBoundaryId: null,
-                  routePattern: route.pattern,
+                  routePattern: revalidationTarget.route.pattern,
                 }),
-                params: options.params,
+                params: revalidationTarget.navigationParams,
                 state: observationState,
               }),
               tags,
@@ -518,7 +564,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                   : undefined,
             };
           },
-        ),
+        );
+      },
       scheduleBackgroundRegeneration(key, renderFn) {
         options.scheduleBackgroundRegeneration(key, renderFn, {
           routerKind: "App Router",
@@ -537,7 +584,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     enforceStaticParamsOnly: options.dynamicParamsConfig === false,
     generateStaticParams: options.generateStaticParams,
     isDynamicRoute: route.isDynamic,
-    params: options.params,
+    params: options.staticParamsValidationParams ?? options.params,
   });
   if (dynamicParamsResponse) {
     return dynamicParamsResponse;
@@ -627,6 +674,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   return renderAppPageLifecycle({
     basePath: options.basePath,
+    clientTraceMetadata: options.clientTraceMetadata,
     cleanPathname: options.cleanPathname,
     clearRequestContext: options.clearRequestContext,
     consumeDynamicUsage,
@@ -675,6 +723,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isrHtmlKey: options.isrHtmlKey,
     isrRscKey: options.isrRscKey,
     isrSet: options.isrSet,
+    interceptionContext: options.interceptionContext,
     expireSeconds: options.expireSeconds,
     layoutCount: route.layouts.length,
     loadSsrHandler: options.loadSsrHandler,
@@ -825,9 +874,52 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {
+      // `forbidden()` / `unauthorized()` / `notFound()` should be caught by the
+      // nearest ancestor boundary. When the page (the deepest segment) calls
+      // one of these and an intermediate layout has no matching boundary file,
+      // resolve to the closest ancestor layout's boundary and slice off any
+      // layouts beneath it so their UI does not render alongside the fallback.
+      // Mirrors Next.js's per-segment boundary nesting in
+      // `create-component-tree.tsx` (issue #1547).
+      //
+      // We only narrow layouts when the resolved boundary file lives at a
+      // layout's own directory. A `forbidden.tsx` sibling to the route's
+      // `page.tsx` (no layout there) wraps just the page subtree in Next.js,
+      // so all of the route's layouts must still render.
+      const routeBoundaryModule = resolveAppPageRouteBoundaryModule(options.route, statusCode);
+      const layoutCount = options.route.layouts.length;
+      const { module: parentBoundaryModule, layoutIndex: boundaryLayoutIndex } =
+        resolveAppPageParentHttpAccessBoundary({
+          layoutIndex: layoutCount,
+          rootForbiddenModule: options.rootForbiddenModule,
+          rootNotFoundModule: options.rootNotFoundModule,
+          rootUnauthorizedModule: options.rootUnauthorizedModule,
+          routeForbiddenModules: options.route.forbiddens,
+          routeNotFoundModules: options.route.notFounds,
+          routeUnauthorizedModules: options.route.unauthorizeds,
+          statusCode,
+        });
+      // If the route-level boundary (closest walking up from page-dir) differs
+      // from the per-layout resolution, a non-layout-aligned boundary sits
+      // below the deepest layout — keep all layouts and let the existing route
+      // boundary handling render it.
+      const useLayoutAlignedBoundary =
+        boundaryLayoutIndex !== null &&
+        (routeBoundaryModule === null || routeBoundaryModule === parentBoundaryModule);
+      const boundaryComponent = useLayoutAlignedBoundary
+        ? ((parentBoundaryModule as { default?: unknown } | null)?.default ?? undefined)
+        : undefined;
+      const layoutsForBoundary =
+        useLayoutAlignedBoundary && boundaryLayoutIndex !== null
+          ? options.route.layouts.slice(0, boundaryLayoutIndex + 1)
+          : undefined;
       return options.renderHttpAccessFallbackPage(
         statusCode,
-        { matchedParams: options.params },
+        {
+          boundaryComponent,
+          layouts: layoutsForBoundary,
+          matchedParams: options.params,
+        },
         null,
       );
     },

@@ -28,6 +28,7 @@ import { runWithHeadState } from "vinext/shims/head-state";
 import { runWithServerInsertedHTMLState } from "vinext/shims/navigation-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
+import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import path from "node:path";
@@ -46,6 +47,9 @@ import {
   resolvePagesI18nRequest,
 } from "./pages-i18n.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
+import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
+import { isSerializableProps } from "./pages-serializable-props.js";
+import { loadUserDocumentInitialProps } from "./pages-document-initial-props.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -129,7 +133,10 @@ async function streamPageToResponse(
   let shellTemplate: string;
 
   if (DocumentComponent) {
-    const docElement = React.createElement(DocumentComponent);
+    const docProps = await loadUserDocumentInitialProps(DocumentComponent);
+    const docElement = docProps
+      ? React.createElement(DocumentComponent, docProps)
+      : React.createElement(DocumentComponent);
     let docHtml = await renderToStringAsync(docElement);
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
@@ -254,6 +261,12 @@ export function createSSRHandler(
   basePath = "",
   trailingSlash = false,
   hasMiddleware = false,
+  /**
+   * Allow-list of OpenTelemetry propagation keys to emit as `<meta>` tags
+   * in the SSR head. Sourced from `experimental.clientTraceMetadata` in
+   * `next.config`. When undefined or empty, no meta tags are emitted.
+   */
+  clientTraceMetadata?: readonly string[],
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -414,6 +427,36 @@ export function createSSRHandler(
           return;
         }
 
+        // Refs #1463: reject non-GET/HEAD methods on static (no
+        // getServerSideProps) Pages routes with 405 + Allow: GET, HEAD.
+        // Skip for error/status pages (/_error, /404, /500), data requests
+        // (those go through the JSON envelope path), and renders that are
+        // already a status-override (e.g. middleware-set 404). Mirrors
+        // Next.js's base-server.ts L2277 carve-outs.
+        {
+          const routePattern = patternToNextFormat(route.pattern);
+          if (
+            !isDataReq &&
+            routePattern !== "/_error" &&
+            routePattern !== "/404" &&
+            routePattern !== "/500" &&
+            statusCode === undefined
+          ) {
+            const methodResponse = resolvePagesPageMethodResponse({
+              hasGetServerSideProps: typeof pageModule.getServerSideProps === "function",
+              method: req.method ?? "GET",
+            });
+            if (methodResponse) {
+              res.statusCode = methodResponse.status;
+              const allow = methodResponse.headers.get("allow");
+              if (allow) res.setHeader("Allow", allow);
+              res.setHeader("Content-Type", "text/plain;charset=UTF-8");
+              res.end(await methodResponse.text());
+              return;
+            }
+          }
+        }
+
         // Collect page props via data fetching methods
         let pageProps: Record<string, unknown> = {};
         let isrRevalidateSeconds: number | null = null;
@@ -570,6 +613,20 @@ export function createSSRHandler(
               routerShim.wrapWithRouterContext,
             );
             return;
+          }
+          // Validate that gSSP returned JSON-serializable props. Mirrors
+          // Next.js render.tsx (`isSerializableProps(pathname, "getServerSideProps", data.props)`,
+          // gated on `!metadata.isRedirect && !metadata.isNotFound` — both
+          // short-circuit above). Without this, returning `{ props: { date: new Date() } }`
+          // renders an empty page instead of a clear error. The throw is caught
+          // by the outer try/catch which renders the 500 page. Tracked in
+          // vinext#1478.
+          if (result && "props" in result) {
+            isSerializableProps(
+              patternToNextFormat(route.pattern),
+              "getServerSideProps",
+              pageProps,
+            );
           }
           // Preserve any status code set by gSSP (e.g. res.statusCode = 201).
           // This takes precedence over the default 200 but not over middleware status.
@@ -868,6 +925,16 @@ export function createSSRHandler(
             );
             return;
           }
+          // Validate that gSP returned JSON-serializable props. Mirrors
+          // Next.js render.tsx (`isSerializableProps(pathname, "getStaticProps", data.props)`,
+          // gated on `!metadata.isNotFound` — notFound and redirect both
+          // short-circuit above). Without this, returning `{ props: { date: new Date() } }`
+          // renders an empty page instead of a clear error. The throw is caught
+          // by the outer try/catch which renders the 500 page. Tracked in
+          // vinext#1478.
+          if (result && "props" in result) {
+            isSerializableProps(patternToNextFormat(route.pattern), "getStaticProps", pageProps);
+          }
 
           // Extract revalidate period for ISR caching after render
           if (typeof result?.revalidate === "number" && result.revalidate > 0) {
@@ -1118,8 +1185,16 @@ hydrate();
           // Collect head HTML AFTER the shell renders (inside streamPageToResponse,
           // after renderToReadableStream resolves). Head tags from Suspense
           // children arrive late — this matches Next.js behavior.
-          getHeadHTML: () =>
-            typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "",
+          //
+          // Trace metadata is appended after Head shim output so it always
+          // lands in the final document head. When clientTraceMetadata is
+          // unset (the common case) this is a no-op.
+          getHeadHTML: () => {
+            const headHTML =
+              typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "";
+            const traceHTML = getClientTraceMetadataHTML(clientTraceMetadata);
+            return traceHTML ? `${headHTML}\n  ${traceHTML}` : headHTML;
+          },
         });
         _renderEnd = now();
 
@@ -1289,7 +1364,10 @@ async function renderErrorPage(
       }
 
       if (DocumentComponent) {
-        const docElement = createElement(DocumentComponent);
+        const docProps = await loadUserDocumentInitialProps(DocumentComponent);
+        const docElement = docProps
+          ? createElement(DocumentComponent, docProps)
+          : createElement(DocumentComponent);
         let docHtml = await renderToStringAsync(docElement);
         docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
         docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", "");

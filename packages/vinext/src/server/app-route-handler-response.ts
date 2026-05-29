@@ -14,6 +14,7 @@ import {
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
+import { getSetCookieName } from "./cookie-utils.js";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -144,12 +145,50 @@ export function markRouteHandlerCacheMiss(response: Response): void {
   setCacheStateHeaders(response.headers, "MISS");
 }
 
-function getSetCookieName(cookie: string): string | null {
-  const equalsIndex = cookie.indexOf("=");
-  if (equalsIndex <= 0) {
-    return null;
+/**
+ * Returns true when the given Set-Cookie string already declares any of the
+ * attributes that follow the first `;` (case-insensitively). Used to detect
+ * whether a user-emitted Set-Cookie line already carries an explicit `Path=`,
+ * matching Next.js's `appendMutableCookies` which re-runs every cookie through
+ * `ResponseCookies.set` (and therefore picks up the `Path=/` default for any
+ * cookie that didn't supply one).
+ */
+function hasCookieAttribute(cookie: string, attributeName: string): boolean {
+  const target = attributeName.toLowerCase();
+  // Skip past the first '=' (the cookie value separator) so we don't match
+  // `attributeName=` inside the cookie value itself.
+  let i = cookie.indexOf(";");
+  while (i !== -1) {
+    // Trim leading whitespace after the ';'
+    let start = i + 1;
+    while (start < cookie.length && cookie[start] === " ") start++;
+    const next = cookie.indexOf(";", start);
+    const end = next === -1 ? cookie.length : next;
+    const eq = cookie.indexOf("=", start);
+    const attrEnd = eq === -1 || eq > end ? end : eq;
+    const attr = cookie.slice(start, attrEnd).trim().toLowerCase();
+    if (attr === target) {
+      return true;
+    }
+    i = next;
   }
-  return cookie.slice(0, equalsIndex);
+  return false;
+}
+
+/**
+ * Ensure each Set-Cookie line carries `Path=/` by default — Next.js's
+ * `appendMutableCookies` re-runs every returned cookie through
+ * `ResponseCookies.set`, which normalises a missing `path` to `/`. Without
+ * this, a raw `new Response(..., { headers: [['Set-Cookie', 'bar=bar2']] })`
+ * lands without `Path=/` and tests that assert on the full attribute set
+ * (e.g. Next.js's `app-action.test.ts` route-handler-overrides case, see
+ * issue #1484) break.
+ */
+function normalizeReturnedCookie(cookie: string): string {
+  if (hasCookieAttribute(cookie, "Path")) {
+    return cookie;
+  }
+  return `${cookie}; Path=/`;
 }
 
 function applyMutableCookieFallbacks(headers: Headers, pendingCookies: string[]): void {
@@ -188,7 +227,7 @@ function applyMutableCookieFallbacks(headers: Headers, pendingCookies: string[])
     headers.append("Set-Cookie", cookie);
   }
   for (const cookie of returnedCookies) {
-    headers.append("Set-Cookie", cookie);
+    headers.append("Set-Cookie", normalizeReturnedCookie(cookie));
   }
 }
 

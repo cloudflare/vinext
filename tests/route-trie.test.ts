@@ -87,6 +87,54 @@ describe("buildRouteTrie + trieMatch", () => {
     });
   });
 
+  describe("params key order", () => {
+    it("preserves key order for two dynamic segments", () => {
+      const routes = [r("/:category/:id")];
+      const trie = buildRouteTrie(routes);
+
+      const result = trieMatch(trie, ["electronics", "123"]);
+      expect(result).not.toBeNull();
+      expect(Object.keys(result!.params)).toEqual(["category", "id"]);
+    });
+
+    it("preserves key order for three dynamic segments", () => {
+      const routes = [r("/:a/:b/:c")];
+      const trie = buildRouteTrie(routes);
+
+      const result = trieMatch(trie, ["x", "y", "z"]);
+      expect(result).not.toBeNull();
+      expect(Object.keys(result!.params)).toEqual(["a", "b", "c"]);
+    });
+
+    it("preserves key order for mixed static+dynamic route", () => {
+      const routes = [r("/products/:category/:id")];
+      const trie = buildRouteTrie(routes);
+
+      const result = trieMatch(trie, ["products", "electronics", "123"]);
+      expect(result).not.toBeNull();
+      expect(Object.keys(result!.params)).toEqual(["category", "id"]);
+    });
+
+    it("preserves key order after backtracking to catch-all", () => {
+      const routes = [r("/blog/:id/comments"), r("/blog/:path+")];
+      const trie = buildRouteTrie(routes);
+
+      const result = trieMatch(trie, ["blog", "42", "photos"]);
+      expect(result).not.toBeNull();
+      expect(result!.route.pattern).toBe("/blog/:path+");
+      expect(Object.keys(result!.params)).toEqual(["path"]);
+    });
+
+    it("preserves key order for multiple dynamic segments with static intermediate", () => {
+      const routes = [r("/:a/b/:c")];
+      const trie = buildRouteTrie(routes);
+
+      const result = trieMatch(trie, ["x", "b", "z"]);
+      expect(result).not.toBeNull();
+      expect(Object.keys(result!.params)).toEqual(["a", "c"]);
+    });
+  });
+
   describe("catch-all routes", () => {
     it("matches catch-all with one segment", () => {
       const routes = [r("/docs/:path+")];

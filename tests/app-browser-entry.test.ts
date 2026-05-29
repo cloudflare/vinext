@@ -22,6 +22,10 @@ import {
   resolveRscCompatibilityNavigationDecision,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
+  isInlineCssStylesheetLinkElement,
+  removeStylesheetLinksCoveredByInlineCss,
+} from "../packages/vinext/src/server/app-inline-css-client.js";
+import {
   devOnCaughtError,
   devOnUncaughtError,
 } from "../packages/vinext/src/server/dev-error-overlay.js";
@@ -539,9 +543,138 @@ function createDeferred(): { resolve: () => void; promise: Promise<void> } {
   return { promise, resolve };
 }
 
+type TestDomElement = {
+  attributes: Record<string, string>;
+  removed: boolean;
+  getAttribute(name: string): string | null;
+  hasAttribute(name: string): boolean;
+  remove(): void;
+};
+
+function createTestDomElement(attributes: Record<string, string>): TestDomElement {
+  return {
+    attributes,
+    removed: false,
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this.attributes, name)
+        ? (this.attributes[name] ?? "")
+        : null;
+    },
+    hasAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this.attributes, name);
+    },
+    remove() {
+      this.removed = true;
+    },
+  };
+}
+
+function installInlineCssCleanupDocument(options: {
+  links: TestDomElement[];
+  styles: TestDomElement[];
+}): void {
+  const { links, styles } = options;
+  const head = {
+    querySelectorAll<T extends Element>(selector: string): T[] {
+      if (selector === "style[data-vinext-inline-css][data-href]") {
+        const matchingStyles = styles.filter(
+          (style) =>
+            style.hasAttribute("data-vinext-inline-css") && style.hasAttribute("data-href"),
+        );
+        return matchingStyles as unknown as T[];
+      }
+
+      if (selector === 'link[rel="stylesheet"][href][data-precedence]') {
+        const matchingLinks = links.filter(
+          (link) =>
+            link.getAttribute("rel") === "stylesheet" &&
+            link.hasAttribute("href") &&
+            link.hasAttribute("data-precedence"),
+        );
+        return matchingLinks as unknown as T[];
+      }
+
+      if (selector === "link[rel][href]") {
+        const matchingLinks = links.filter(
+          (link) => link.hasAttribute("rel") && link.hasAttribute("href"),
+        );
+        return matchingLinks as unknown as T[];
+      }
+
+      throw new Error(`Unexpected selector: ${selector}`);
+    },
+  };
+
+  vi.stubGlobal("document", { head });
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("app browser entry inline CSS cleanup", () => {
+  it("classifies stylesheet links with tokenized rel values and legacy precedence", () => {
+    expect(
+      isInlineCssStylesheetLinkElement(
+        createTestDomElement({
+          "data-precedence": "next",
+          href: "/_next/static/app.css",
+          rel: "preload stylesheet",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isInlineCssStylesheetLinkElement(
+        createTestDomElement({
+          href: "/_next/static/legacy.css",
+          precedence: "next",
+          rel: "stylesheet",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isInlineCssStylesheetLinkElement(
+        createTestDomElement({
+          href: "/_next/static/preload.css",
+          rel: "preload",
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("prunes navigated stylesheet links covered by inline CSS", () => {
+    const tokenizedRelLink = createTestDomElement({
+      "data-precedence": "next",
+      href: "/_next/static/app.css",
+      rel: "preload stylesheet",
+    });
+    const legacyPrecedenceLink = createTestDomElement({
+      href: "/_next/static/legacy.css",
+      precedence: "next",
+      rel: "stylesheet",
+    });
+    const uncoveredLink = createTestDomElement({
+      "data-precedence": "next",
+      href: "/_next/static/uncovered.css",
+      rel: "stylesheet",
+    });
+    installInlineCssCleanupDocument({
+      links: [tokenizedRelLink, legacyPrecedenceLink, uncoveredLink],
+      styles: [
+        createTestDomElement({
+          "data-href": "/_next/static/app.css /_next/static/legacy.css",
+          "data-vinext-inline-css": "",
+        }),
+      ],
+    });
+
+    removeStylesheetLinksCoveredByInlineCss();
+
+    expect(tokenizedRelLink.removed).toBe(true);
+    expect(legacyPrecedenceLink.removed).toBe(true);
+    expect(uncoveredLink.removed).toBe(false);
+  });
 });
 
 describe("app browser entry navigation scheduling", () => {
@@ -934,11 +1067,11 @@ describe("app browser entry state helpers", () => {
       currentState: createState(),
       nextElements: Promise.resolve(
         createResolvedElements(
-          "route:/photos/42\0/feed",
+          "route:/feed",
           "/",
           "/feed",
           {
-            "page:/photos/42": React.createElement("main", null, "photo"),
+            "page:/feed": React.createElement("main", null, "feed"),
           },
           [AppElementsWire.encodeLayoutId("/")],
           [],
@@ -952,7 +1085,7 @@ describe("app browser entry state helpers", () => {
       type: "navigate",
     });
 
-    expect(pending.routeId).toBe("route:/photos/42\0/feed");
+    expect(pending.routeId).toBe("route:/feed");
     expect(pending.interception).toEqual(createInterceptionProof("/feed", "/photos/42"));
     expect(pending.interceptionContext).toBe("/feed");
     expect(pending.previousNextUrl).toBe("/feed");
@@ -969,7 +1102,7 @@ describe("app browser entry state helpers", () => {
     const interceptedState = createState({
       interceptionContext: "/feed",
       previousNextUrl: "/feed",
-      routeId: "route:/photos/42\0/feed",
+      routeId: "route:/feed",
     });
 
     const pending = await createPendingNavigationCommit({
@@ -1449,11 +1582,11 @@ describe("app browser entry state helpers", () => {
       currentState,
       nextElements: Promise.resolve(
         createResolvedElements(
-          AppElementsWire.encodeRouteId("/photos/café", "/caf%C3%A9"),
+          AppElementsWire.encodeRouteId("/café", null),
           "/",
           "/caf%C3%A9",
           {
-            "page:/photos/café": React.createElement("main", null, "photo"),
+            "page:/café": React.createElement("main", null, "source"),
           },
           [AppElementsWire.encodeLayoutId("/"), AppElementsWire.encodeLayoutId("/café")],
           [
@@ -1523,7 +1656,7 @@ describe("app browser entry state helpers", () => {
       navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/photos/42", {}),
       previousNextUrl: "/feed",
       rootLayoutTreePath: "/",
-      routeId: AppElementsWire.encodeRouteId("/photos/42", "/feed"),
+      routeId: AppElementsWire.encodeRouteId("/feed", null),
     });
 
     const pending = await createPendingNavigationCommit({
@@ -1531,11 +1664,11 @@ describe("app browser entry state helpers", () => {
       currentState,
       nextElements: Promise.resolve(
         createResolvedElements(
-          AppElementsWire.encodeRouteId("/feed", "/feed"),
+          AppElementsWire.encodeRouteId("/feed", null),
           "/",
           "/feed",
           {
-            [AppElementsWire.encodePageId("/feed", "/feed")]: React.createElement(
+            [AppElementsWire.encodePageId("/feed", null)]: React.createElement(
               "main",
               null,
               "feed",
@@ -1579,21 +1712,21 @@ describe("app browser entry state helpers", () => {
     const contextOnlyState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
     expect(contextOnlyState.interception).toBeNull();
     expect(contextOnlyState.previousNextUrl).toBeNull();
-    expect(contextOnlyState.routeId).toBe(AppElementsWire.encodeRouteId("/feed", "/feed"));
+    expect(contextOnlyState.routeId).toBe(AppElementsWire.encodeRouteId("/feed", null));
 
     const interceptedPending = await createPendingNavigationCommit({
       payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
       currentState: contextOnlyState,
       nextElements: Promise.resolve(
         createResolvedElements(
-          AppElementsWire.encodeRouteId("/photos/42", "/feed"),
+          AppElementsWire.encodeRouteId("/feed", null),
           "/",
           "/feed",
           {
-            [AppElementsWire.encodeRouteId("/photos/42", "/feed")]: React.createElement(
+            [AppElementsWire.encodePageId("/feed", null)]: React.createElement(
               "main",
               null,
-              "photo",
+              "feed",
             ),
             [AppElementsWire.encodeSlotId("modal", "/feed")]: React.createElement(
               "div",
@@ -1972,7 +2105,7 @@ describe("app browser entry state helpers", () => {
       navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/photos/42", {}),
       previousNextUrl: "/feed",
       rootLayoutTreePath: "/",
-      routeId: "route:/photos/42\0/feed",
+      routeId: "route:/feed",
       slotBindings: [
         {
           ownerLayoutId: AppElementsWire.encodeLayoutId("/feed"),
@@ -2385,7 +2518,7 @@ describe("app browser navigation controller", () => {
       interceptionContext: "/feed",
       previousNextUrl: "/feed",
       rootLayoutTreePath: "/",
-      routeId: "route:/photos/42\0/feed",
+      routeId: "route:/feed",
       navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/photos/42", {}),
     });
     const syncHistoryStatePreviousNextUrl = vi.fn();

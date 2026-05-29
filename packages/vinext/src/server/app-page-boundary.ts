@@ -117,6 +117,28 @@ export function resolveAppPageHttpAccessBoundaryComponent<TModule, TComponent>(
 export function resolveAppPageParentHttpAccessBoundaryModule<TModule>(
   options: ResolveAppPageParentHttpAccessBoundaryModuleOptions<TModule>,
 ): TModule | null {
+  return resolveAppPageParentHttpAccessBoundary(options).module;
+}
+
+/**
+ * Like {@link resolveAppPageParentHttpAccessBoundaryModule}, but also returns
+ * the layout index that owns the resolved boundary so callers can slice the
+ * layouts array to skip rendering layouts below the boundary owner.
+ *
+ * `layoutIndex` is the per-layout index where the boundary lives, or `null` if
+ * the resolved boundary is the root module (which conceptually sits above all
+ * layouts when no layout-level boundary is present).
+ *
+ * Used by the page-error fast path to make `forbidden()` / `unauthorized()` /
+ * `notFound()` escalate past intermediate layouts that lack a boundary file,
+ * matching Next.js's `create-component-tree.tsx` behavior where the nearest
+ * ancestor boundary owns the fallback subtree.
+ *
+ * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+ */
+export function resolveAppPageParentHttpAccessBoundary<TModule>(
+  options: ResolveAppPageParentHttpAccessBoundaryModuleOptions<TModule>,
+): { module: TModule | null; layoutIndex: number | null } {
   let routeModules = options.routeNotFoundModules;
   let rootModule = options.rootNotFoundModule;
 
@@ -132,12 +154,12 @@ export function resolveAppPageParentHttpAccessBoundaryModule<TModule>(
     for (let index = options.layoutIndex - 1; index >= 0; index--) {
       const module = routeModules[index];
       if (module) {
-        return module;
+        return { module, layoutIndex: index };
       }
     }
   }
 
-  return rootModule ?? null;
+  return { module: rootModule ?? null, layoutIndex: null };
 }
 
 export function resolveAppPageErrorBoundary<TModule, TComponent>(

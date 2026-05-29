@@ -445,8 +445,21 @@ export function refresh(): void {
  * Server Actions-only API that expires a tag so the next request
  * fetches fresh data. Unlike `revalidateTag`, which uses stale-while-revalidate,
  * `updateTag` invalidates synchronously within the same request context.
+ *
+ * Throws if called outside a Server Action — e.g. from a Route Handler or
+ * during render — matching Next.js's enforcement. For Route Handlers, callers
+ * should use `revalidateTag` instead.
+ *
+ * @see https://nextjs.org/docs/app/api-reference/functions/updateTag
  */
 export async function updateTag(tag: string): Promise<void> {
+  if (getHeadersAccessPhase() !== "action") {
+    throw new Error(
+      "updateTag can only be called from within a Server Action. " +
+        "To invalidate cache tags in Route Handlers or other contexts, use revalidateTag instead. " +
+        "See more info here: https://nextjs.org/docs/app/api-reference/functions/updateTag",
+    );
+  }
   markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   // Expire the tag immediately (same as revalidateTag without SWR)
   await _getActiveHandler().revalidateTag(encodeCacheTag(tag));

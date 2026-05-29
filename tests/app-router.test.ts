@@ -771,10 +771,9 @@ describe("App Router integration", () => {
     expect(rscPayload).toContain("__interceptionContext");
     expect(rscPayload).toContain("/feed");
     const nul = String.fromCharCode(0);
-    expect(
-      rscPayload.includes("route:/photos/42\\u0000/feed") ||
-        rscPayload.includes(`route:/photos/42${nul}/feed`),
-    ).toBe(true);
+    expect(rscPayload).toContain("route:/feed");
+    expect(rscPayload.includes("route:/photos/42\\u0000/feed")).toBe(false);
+    expect(rscPayload.includes(`route:/photos/42${nul}/feed`)).toBe(false);
   });
 
   // --- Intercepting routes with dynamic source route ---
@@ -1125,6 +1124,40 @@ describe("App Router integration", () => {
     const html = await res.text();
     expect(html).toContain("401 - Unauthorized");
     expect(html).not.toContain("404 - Page Not Found");
+  });
+
+  it("forbidden() escalates from a deep page to the nearest parent boundary (#1547)", async () => {
+    // Ported from Next.js: test/e2e/app-dir/forbidden/basic/forbidden-basic.test.ts
+    // ("should escalate forbidden to parent layout if no forbidden boundary present in current layer")
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/forbidden/basic/forbidden-basic.test.ts
+    //
+    // The intermediate /escalate-forbidden-boundary layout has no forbidden.tsx,
+    // so forbidden() thrown from /escalate-forbidden-boundary/sub/403 must
+    // escalate past that layout to the root forbidden boundary, replacing the
+    // intermediate layout's UI ("Dynamic with Layout") with the root boundary
+    // rather than rendering it alongside.
+    const res = await fetch(`${baseUrl}/nextjs-compat/escalate-forbidden-boundary/sub/403`);
+    expect(res.status).toBe(403);
+    const html = await res.text();
+    expect(html).toContain("403 - Forbidden");
+    expect(html).not.toContain("escalate-forbidden [id]");
+    // The intermediate layout's UI must NOT render: forbidden() should bubble
+    // past the layout-with-no-boundary to the nearest ancestor that has one.
+    expect(html).not.toContain("Dynamic with Layout");
+    expect(html).not.toContain("escalate-forbidden-layout");
+  });
+
+  it("unauthorized() escalates from a deep page to the nearest parent boundary (#1547)", async () => {
+    // Ported from Next.js: test/e2e/app-dir/unauthorized/basic/unauthorized-basic.test.ts
+    // ("should escalate unauthorized to parent layout if no unauthorized boundary present in current layer")
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/unauthorized/basic/unauthorized-basic.test.ts
+    const res = await fetch(`${baseUrl}/nextjs-compat/escalate-unauthorized-boundary/sub/401`);
+    expect(res.status).toBe(401);
+    const html = await res.text();
+    expect(html).toContain("401 - Unauthorized");
+    expect(html).not.toContain("escalate-unauthorized [id]");
+    expect(html).not.toContain("Dynamic with Layout");
+    expect(html).not.toContain("escalate-unauthorized-layout");
   });
 
   // ── Client hook usage without "use client" (#834) ──
@@ -2371,6 +2404,52 @@ describe("App Router Production server (startProdServer)", () => {
     expect(nestedRes.headers.get("e2e-headers")).toBe("middleware");
   });
 
+  // Regression test for issue 1487 — App Router page-segment `revalidate`
+  // should produce a stable cached response. Two requests inside the
+  // revalidate window must return identical HTML bytes (same Date.now()
+  // embedded), not re-render on every request. /revalidate-test exports
+  // `revalidate = 60` and renders Date.now() into the HTML.
+  it("export const revalidate: second request inside the cache window is a HIT with identical HTML", async () => {
+    const res1 = await fetch(`${baseUrl}/revalidate-test`);
+    expect(res1.status).toBe(200);
+    const html1 = await res1.text();
+    const ts1 = html1.match(/data-testid="timestamp">(?:<!--[^>]*-->)*\s*(\d+)\s*</)?.[1];
+    expect(ts1).toBeTruthy();
+
+    const res2 = await fetch(`${baseUrl}/revalidate-test`);
+    expect(res2.status).toBe(200);
+    const html2 = await res2.text();
+    const ts2 = html2.match(/data-testid="timestamp">(?:<!--[^>]*-->)*\s*(\d+)\s*</)?.[1];
+
+    // The HIT response must return the same timestamp baked into the HTML on
+    // the MISS render. If vinext re-renders on every request, ts2 will be a
+    // fresher Date.now() than ts1.
+    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(ts2).toBe(ts1);
+  });
+
+  // Regression test for issue 1487 — App Router page-segment `revalidate = Infinity`
+  // (and `revalidate = false`) should produce a stable cached response. Two
+  // requests must return identical HTML bytes; the first MISS render writes
+  // to the cache and the second is a HIT. This was historically broken
+  // because `resolveAppPageCacheWritePolicy` rejected non-finite revalidate
+  // intervals, so indefinite-cache pages re-rendered on every request.
+  it("export const revalidate = Infinity: second request is a HIT with identical HTML", async () => {
+    const res1 = await fetch(`${baseUrl}/revalidate-infinity-test`);
+    expect(res1.status).toBe(200);
+    const html1 = await res1.text();
+    const ts1 = html1.match(/data-testid="timestamp">(?:<!--[^>]*-->)*\s*(\d+)\s*</)?.[1];
+    expect(ts1).toBeTruthy();
+
+    const res2 = await fetch(`${baseUrl}/revalidate-infinity-test`);
+    expect(res2.status).toBe(200);
+    const html2 = await res2.text();
+    const ts2 = html2.match(/data-testid="timestamp">(?:<!--[^>]*-->)*\s*(\d+)\s*</)?.[1];
+
+    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(ts2).toBe(ts1);
+  });
+
   it("applies middleware request header overrides before App->Pages fallback rendering in production", async () => {
     const res = await fetch(`${baseUrl}/pages-header-override-delete`, {
       headers: {
@@ -3602,6 +3681,50 @@ describe("metadata routes integration (App Router)", () => {
     );
   });
 
+  it("emits exactly one favicon link plus icons metadata shortcut/apple/other in root segment", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-icons/metadata-icons.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-icons/metadata-icons.test.ts
+    const res = await fetch(`${baseUrl}/metadata-icons-mix`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    // Exactly one favicon.ico link (no duplicates from icon merging or file-based metadata).
+    const faviconMatches = html.match(/<link[^>]+href="[^"]*\/favicon\.ico(?:\?[^"]*)?"[^>]*>/g);
+    expect(faviconMatches?.length ?? 0).toBe(1);
+
+    // metadata.icons.shortcut emits rel="shortcut icon".
+    expect(html).toMatch(/<link[^>]+rel="shortcut icon"[^>]+href="\/shortcut-icon\.png"[^>]*>/);
+
+    // metadata.icons.apple emits rel="apple-touch-icon".
+    expect(html).toMatch(/<link[^>]+rel="apple-touch-icon"[^>]+href="\/apple-icon\.png"[^>]*>/);
+
+    // metadata.icons.other emits a custom rel link.
+    expect(html).toMatch(
+      /<link[^>]+rel="apple-touch-icon-precomposed"[^>]+href="\/apple-touch-icon-precomposed\.png"[^>]*>/,
+    );
+  });
+
+  it("emits exactly one favicon link plus nested icons metadata shortcut/apple/other on nested page", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-icons/metadata-icons.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-icons/metadata-icons.test.ts
+    const res = await fetch(`${baseUrl}/metadata-icons-mix/nested`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    const faviconMatches = html.match(/<link[^>]+href="[^"]*\/favicon\.ico(?:\?[^"]*)?"[^>]*>/g);
+    expect(faviconMatches?.length ?? 0).toBe(1);
+
+    expect(html).toMatch(
+      /<link[^>]+rel="shortcut icon"[^>]+href="\/shortcut-icon-nested\.png"[^>]*>/,
+    );
+    expect(html).toMatch(
+      /<link[^>]+rel="apple-touch-icon"[^>]+href="\/apple-icon-nested\.png"[^>]*>/,
+    );
+    expect(html).toMatch(
+      /<link[^>]+rel="apple-touch-icon-precomposed-nested"[^>]+href="\/apple-touch-icon-precomposed-nested\.png"[^>]*>/,
+    );
+  });
+
   it("injects dynamic metadata image routes into the head", async () => {
     // Ported from Next.js: test/e2e/app-dir/metadata/metadata.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts
@@ -4545,6 +4668,24 @@ describe("App Router middleware with NextRequest", () => {
     const html = await res.text();
     // The /search-query page renders searchParams from props
     expect(html).toContain("from-rewrite");
+  });
+
+  // Regression for cloudflare/vinext#1342: when middleware preserves the
+  // original request's query — by mutating `request.nextUrl` (which already
+  // carries the original search) rather than constructing a fresh path-only
+  // URL — those params must survive into the rewrite target. The destination
+  // URL is the source of truth; vinext does not auto-merge any extra original
+  // query on top.
+  // Mirrors the Next.js middleware idiom in test/e2e/middleware-rewrites/app/middleware.js
+  // (`url.pathname = "/x"; NextResponse.rewrite(url)`).
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/app/middleware.js
+  it("middleware rewrite preserves original request query params into the rewrite target", async () => {
+    const res = await fetch(
+      `${baseUrl}/middleware-rewrite-keep-original-query?searchParams=from-original`,
+    );
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("from-original");
   });
 
   it("does not leak x-middleware-next or x-middleware-rewrite headers to the client", async () => {

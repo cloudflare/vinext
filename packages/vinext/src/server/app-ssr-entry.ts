@@ -38,6 +38,7 @@ import {
 } from "./app-ssr-stream.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
+import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
 import { ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
@@ -147,11 +148,16 @@ function renderBeforeInteractiveInlineScripts(
   return html;
 }
 
-function renderFontHtml(fontData?: FontData, nonce?: string): string {
+function renderFontHtml(
+  fontData?: FontData,
+  nonce?: string,
+  options: { includeStyles?: boolean } = {},
+): string {
   if (!fontData) return "";
 
   let fontHTML = "";
   const nonceAttr = createNonceAttribute(nonce);
+  const includeStyles = options.includeStyles ?? true;
 
   for (const url of fontData.links ?? []) {
     fontHTML += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(url)}" />\n`;
@@ -161,11 +167,15 @@ function renderFontHtml(fontData?: FontData, nonce?: string): string {
     fontHTML += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
   }
 
-  if (fontData.styles && fontData.styles.length > 0) {
+  if (includeStyles && fontData.styles && fontData.styles.length > 0) {
     fontHTML += `<style data-vinext-fonts${nonceAttr}>${fontData.styles.join("\n")}</style>\n`;
   }
 
   return fontHTML;
+}
+
+function hasInlineCssManifest(manifest: Record<string, string> | undefined): boolean {
+  return manifest !== undefined && Object.keys(manifest).length > 0;
 }
 
 /**
@@ -244,6 +254,12 @@ export async function handleSsr(
     capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
     formState?: ReactFormState | null;
     basePath?: string;
+    /**
+     * Allow-list of OpenTelemetry propagation keys (from
+     * `experimental.clientTraceMetadata`) to render as `<meta>` tags in the
+     * SSR head. Undefined or empty disables emission entirely.
+     */
+    clientTraceMetadata?: readonly string[];
     rootParams?: RootParams;
     /** When true, wait for the full React tree (including Suspense boundaries)
      *  to resolve before returning the HTML stream. Used for static prerender
@@ -407,7 +423,31 @@ export async function handleSsr(
           await htmlStream.allReady;
         }
 
-        const fontHTML = renderFontHtml(fontData, options?.scriptNonce);
+        // Populated before any SSR request runs: at prod-server startup
+        // (prod-server.ts) or via build-time bundle injection (index.ts). Left
+        // undefined in dev, which naturally disables inline CSS there.
+        const inlineCssManifest = globalThis.__VINEXT_INLINE_CSS__;
+        const fontStyles = fontData?.styles ?? [];
+        const mergeFontStylesIntoInlineCss =
+          fontStyles.length > 0 && hasInlineCssManifest(inlineCssManifest);
+        const inlineCssFontStyles = mergeFontStylesIntoInlineCss ? fontStyles.join("\n") : "";
+        const inlineCssFontStyleFallbackHTML = mergeFontStylesIntoInlineCss
+          ? renderFontHtml({ styles: fontStyles }, options?.scriptNonce)
+          : "";
+        const fontHTML = renderFontHtml(fontData, options?.scriptNonce, {
+          includeStyles: !mergeFontStylesIntoInlineCss,
+        });
+        // Trace meta tags only need to land in the document head once.
+        // Read the active OTel context lazily so the value reflects the
+        // span that was active when the SSR shell rendered. When
+        // clientTraceMetadata is unset (the common case) this is empty.
+        let traceMetaHTML: string | null = null;
+        const getTraceMetaHTML = (): string => {
+          if (traceMetaHTML === null) {
+            traceMetaHTML = getClientTraceMetadataHTML(options?.clientTraceMetadata);
+          }
+          return traceMetaHTML;
+        };
         let didInjectHeadHTML = false;
         const getInsertedHTML = (): string => {
           const insertedHTML = renderInsertedHtml(renderServerInsertedHTML());
@@ -419,7 +459,7 @@ export async function handleSsr(
             navContext,
             bootstrapModuleUrl,
             options?.formState ?? null,
-            insertedHTML + errorMetaHTML,
+            insertedHTML + errorMetaHTML + getTraceMetaHTML(),
             fontHTML,
             options?.scriptNonce,
           );
@@ -438,7 +478,15 @@ export async function handleSsr(
 
         return deferUntilStreamConsumed(
           htmlStream.pipeThrough(
-            createTickBufferedTransform(rscEmbed, getInsertedHTML, getBeforeInteractiveHeadHTML),
+            createTickBufferedTransform(
+              rscEmbed,
+              getInsertedHTML,
+              getBeforeInteractiveHeadHTML,
+              inlineCssManifest,
+              inlineCssFontStyles,
+              inlineCssFontStyleFallbackHTML,
+              options?.scriptNonce,
+            ),
           ),
           cleanup,
         );

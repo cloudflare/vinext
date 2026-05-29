@@ -1,9 +1,10 @@
 import { decode as decodeQueryString } from "node:querystring";
 import { parseCookies } from "../config/config-matchers.js";
 import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
+import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 
-const MAX_PAGES_API_BODY_SIZE = 1 * 1024 * 1024;
+const MAX_PAGES_API_BODY_SIZE = DEFAULT_PAGES_API_BODY_SIZE_LIMIT;
 
 /**
  * @deprecated Use PagesBodyParseError from pages-media-type.ts instead.
@@ -63,6 +64,16 @@ async function readPagesRequestBodyWithLimit(request: Request, maxBytes: number)
   });
 }
 
+/**
+ * Read and parse a Pages Router API request body for the Workers/prod path.
+ *
+ * `maxBytes` defaults to the 1 MB Next.js default but may be overridden by
+ * `export const config = { api: { bodyParser: { sizeLimit: '4mb' } } }` on
+ * the route module. Handlers that opt out entirely (`bodyParser: false`)
+ * MUST skip this function so the body stream stays intact for user code.
+ *
+ * @see https://nextjs.org/docs/pages/building-your-application/routing/api-routes#custom-config
+ */
 export async function parsePagesApiBody(
   request: Request,
   maxBytes = MAX_PAGES_API_BODY_SIZE,

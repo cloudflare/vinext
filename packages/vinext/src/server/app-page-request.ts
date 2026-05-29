@@ -76,7 +76,7 @@ type AppPageInterceptState<TRoute, TPage> =
   | { kind: "current-route"; intercept: AppPageInterceptMatch<TPage> }
   | { kind: "source-route"; intercept: AppPageInterceptMatch<TPage>; sourceRoute: TRoute };
 
-type ResolveAppPageActionRerenderTargetOptions<TRoute, TPage, TInterceptOpts> = {
+type ResolveAppPageInterceptionRerenderTargetOptions<TRoute, TPage, TInterceptOpts> = {
   cleanPathname: string;
   currentParams: AppPageParams;
   currentRoute: TRoute;
@@ -87,12 +87,18 @@ type ResolveAppPageActionRerenderTargetOptions<TRoute, TPage, TInterceptOpts> = 
   toInterceptOpts: (intercept: AppPageInterceptMatch<TPage>) => TInterceptOpts;
 };
 
-type ResolveAppPageActionRerenderTargetResult<TRoute, TInterceptOpts> = {
+type ResolveAppPageInterceptionRerenderTargetResult<TRoute, TInterceptOpts> = {
   interceptOpts: TInterceptOpts | undefined;
   navigationParams: AppPageParams;
   params: AppPageParams;
   route: TRoute;
 };
+
+type ResolveAppPageActionRerenderTargetOptions<TRoute, TPage, TInterceptOpts> =
+  ResolveAppPageInterceptionRerenderTargetOptions<TRoute, TPage, TInterceptOpts>;
+
+type ResolveAppPageActionRerenderTargetResult<TRoute, TInterceptOpts> =
+  ResolveAppPageInterceptionRerenderTargetResult<TRoute, TInterceptOpts>;
 
 type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
   buildPageElement: (
@@ -333,9 +339,9 @@ function resolveAppPageInterceptState<TRoute, TPage, TInterceptOpts>(
   return { kind: "source-route", intercept, sourceRoute };
 }
 
-export function resolveAppPageActionRerenderTarget<TRoute, TPage, TInterceptOpts>(
-  options: ResolveAppPageActionRerenderTargetOptions<TRoute, TPage, TInterceptOpts>,
-): ResolveAppPageActionRerenderTargetResult<TRoute, TInterceptOpts> {
+export function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TInterceptOpts>(
+  options: ResolveAppPageInterceptionRerenderTargetOptions<TRoute, TPage, TInterceptOpts>,
+): ResolveAppPageInterceptionRerenderTargetResult<TRoute, TInterceptOpts> {
   const interceptState = resolveAppPageInterceptState({
     cleanPathname: options.cleanPathname,
     currentRoute: options.currentRoute,
@@ -367,6 +373,12 @@ export function resolveAppPageActionRerenderTarget<TRoute, TPage, TInterceptOpts
     params: options.currentParams,
     route: options.currentRoute,
   };
+}
+
+export function resolveAppPageActionRerenderTarget<TRoute, TPage, TInterceptOpts>(
+  options: ResolveAppPageActionRerenderTargetOptions<TRoute, TPage, TInterceptOpts>,
+): ResolveAppPageActionRerenderTargetResult<TRoute, TInterceptOpts> {
+  return resolveAppPageInterceptionRerenderTarget(options);
 }
 
 export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TElement>(

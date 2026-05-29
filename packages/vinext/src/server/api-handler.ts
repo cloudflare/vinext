@@ -16,6 +16,11 @@ import { reportRequestError, importModule, type ModuleImporter } from "./instrum
 import { mergeRouteParamsIntoQuery, parseQueryString } from "../utils/query.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 import { isEdgeApiRuntime } from "./edge-api-runtime.js";
+import {
+  DEFAULT_PAGES_API_BODY_SIZE_LIMIT,
+  resolveBodyParserConfig,
+} from "./pages-body-parser-config.js";
+import { resolveRequestProtocol, resolveRequestHost } from "./proxy-trust.js";
 import { NextRequest } from "vinext/shims/server";
 
 /**
@@ -54,24 +59,33 @@ type EdgeApiRouteModule = {
 };
 
 /**
- * Maximum request body size (1 MB). Matches Next.js default bodyParser sizeLimit.
+ * Default request body size (1 MB). Matches Next.js default bodyParser sizeLimit.
  * @see https://nextjs.org/docs/pages/building-your-application/routing/api-routes#custom-config
  * Prevents denial-of-service via unbounded request body buffering.
  */
-const MAX_BODY_SIZE = 1 * 1024 * 1024;
+const MAX_BODY_SIZE = DEFAULT_PAGES_API_BODY_SIZE_LIMIT;
 
 /**
  * Parse the request body based on content-type.
  * Enforces a size limit to prevent memory exhaustion attacks.
+ *
+ * The `sizeLimit` argument honours `export const config = { api: { bodyParser:
+ * { sizeLimit: '4mb' } } }` on the route module. To opt out of parsing
+ * entirely (`bodyParser: false`), callers must skip this function so the
+ * underlying readable stream stays intact on `req` (critical for webhook
+ * HMAC signature verification).
  */
-async function parseBody(req: IncomingMessage): Promise<unknown> {
+async function parseBody(
+  req: IncomingMessage,
+  sizeLimit: number = MAX_BODY_SIZE,
+): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let totalSize = 0;
     let settled = false;
     req.on("data", (chunk: Buffer) => {
       totalSize += chunk.length;
-      if (totalSize > MAX_BODY_SIZE) {
+      if (totalSize > sizeLimit) {
         settled = true;
         req.destroy();
         reject(new PagesBodyParseError("Request body too large", 413));
@@ -166,10 +180,15 @@ function createEdgeApiRequest(req: IncomingMessage, url: string): Request {
     }
   }
 
-  const rawProto = headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
-  const forwardedProto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
-  const host = headers.get("host") ?? "localhost";
-  const requestUrl = new URL(url, `${forwardedProto}://${host}`);
+  // Honor `X-Forwarded-Proto` / `X-Forwarded-Host` only when running behind
+  // a trusted proxy (gated on `VINEXT_TRUST_PROXY` / `VINEXT_TRUSTED_HOSTS`).
+  // Without this gate a client could send `X-Forwarded-Proto: https` and
+  // trick edge API handlers that check `request.url.startsWith("https")`
+  // (e.g. to gate Secure-cookie issuance) into believing the request was
+  // TLS-terminated. See: Finding F-PROD-7 in SECURITY-AUDIT-2026-05.md.
+  const proto = resolveRequestProtocol(req);
+  const host = resolveRequestHost(req, "localhost");
+  const requestUrl = new URL(url, `${proto}://${host}`);
   const body = readEdgeRequestBody(req);
 
   const init: RequestInit & { duplex?: "half" } = {
@@ -352,8 +371,19 @@ export async function handleApiRoute(
     // params so a query string cannot change the dynamic route value.
     const query = mergeRouteParamsIntoQuery(parseQueryString(url), params);
 
-    // Parse body
-    const body = await parseBody(req);
+    // Honour `export const config = { api: { bodyParser: ... } }` on the
+    // route module. When the handler opts out (`bodyParser: false`) we must
+    // not consume the stream — leave `req` intact so user code (e.g. a
+    // Stripe/GitHub webhook) can read the raw bytes for HMAC verification.
+    const bodyParserConfig = resolveBodyParserConfig(
+      (apiModule as { config?: { api?: { bodyParser?: unknown } } }).config as
+        | { api?: { bodyParser?: boolean | { sizeLimit?: string | number } } }
+        | undefined,
+    );
+
+    const body = bodyParserConfig.enabled
+      ? await parseBody(req, bodyParserConfig.sizeLimit)
+      : undefined;
 
     // Enhance req/res with Next.js helpers
     const { apiReq, apiRes } = enhanceApiObjects(req, res, query, body);
