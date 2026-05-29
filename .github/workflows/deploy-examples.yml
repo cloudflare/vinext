@@ -3,8 +3,7 @@ name: Deploy Examples
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  pull_request: # run on PRs against any base branch, not just main
 
 concurrency:
   group: deploy-${{ github.event_name }}-${{ github.ref }}
