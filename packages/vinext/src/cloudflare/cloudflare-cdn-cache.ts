@@ -61,12 +61,29 @@ const NO_STORE = "no-store";
 const BROWSER_REVALIDATE = "public, max-age=0, must-revalidate";
 
 /**
+ * A concrete stale window (1 year) substituted for a value-less
+ * `stale-while-revalidate`. The framework emits a bare `stale-while-revalidate`
+ * (no `=seconds`) to mean an unbounded stale window — a Vercel CDN extension.
+ * Cloudflare follows RFC 5861, which requires `stale-while-revalidate=<seconds>`,
+ * and treats the value-less form as a zero-width window (no stale serving →
+ * hard expiry at `max-age`, so the next request is a MISS instead of UPDATING).
+ * Stamping a large finite value preserves the "serve stale ~indefinitely while
+ * revalidating" intent in a form the edge honors.
+ */
+const UNBOUNDED_SWR_SECONDS = 31_536_000; // 1 year
+
+/**
  * Convert the framework's shared-cache policy into a CDN-scoped one:
  * `s-maxage=…` → `max-age=…` (the edge honors `max-age` inside
- * `CDN-Cache-Control`) and ensure a leading `public`.
+ * `CDN-Cache-Control`), give a value-less `stale-while-revalidate` an explicit
+ * seconds value (Cloudflare ignores the bare directive), and ensure a leading
+ * `public`.
  */
 function toEdgeCacheControl(cacheControl: string): string {
-  const withMaxAge = cacheControl.replace(/\bs-maxage=/g, "max-age=");
+  const withMaxAge = cacheControl
+    .replace(/\bs-maxage=/g, "max-age=")
+    // Bare `stale-while-revalidate` (not followed by `=`) → explicit window.
+    .replace(/\bstale-while-revalidate\b(?!=)/g, `stale-while-revalidate=${UNBOUNDED_SWR_SECONDS}`);
   return /\bpublic\b/.test(withMaxAge) ? withMaxAge : `public, ${withMaxAge}`;
 }
 
