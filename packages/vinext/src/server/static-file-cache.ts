@@ -14,6 +14,7 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
+import { normalizePathSeparators } from "../entries/runtime-entry-module.js";
 
 /** Content-type lookup for static assets. Shared with prod-server.ts. */
 export const CONTENT_TYPES: Record<string, string> = {
@@ -330,7 +331,7 @@ async function* walkFilesWithStats(
     const stats = await Promise.all(batch.map((f) => fsp.stat(f)));
     for (let j = 0; j < batch.length; j++) {
       yield {
-        relativePath: path.relative(base, batch[j]).replaceAll(path.sep, "/"),
+        relativePath: normalizePathSeparators(path.relative(base, batch[j])),
         fullPath: batch[j],
         stat: { size: stats[j].size, mtimeMs: stats[j].mtimeMs },
       };
