@@ -43,23 +43,23 @@ describe("CloudflareCdnCacheAdapter", () => {
     await expect(adapter.writePage("k", null)).resolves.toBeUndefined();
   });
 
-  it("carries SWR on CDN-Cache-Control and forbids browser storage with no-store", () => {
+  it("carries SWR on CDN-Cache-Control (public + max-age) and revalidates the browser", () => {
     expect(adapter.buildResponseHeaders({ cacheControl: "s-maxage=60, stale-while-revalidate" })).toEqual(
       {
-        "Cache-Control": "no-store",
-        "CDN-Cache-Control": "s-maxage=60, stale-while-revalidate",
+        "Cache-Control": "public, max-age=0, must-revalidate",
+        "CDN-Cache-Control": "public, max-age=60, stale-while-revalidate",
       },
     );
   });
 
-  it("uses CDN-Cache-Control (not Cache-Control) even on the pending-dynamic streamed response", () => {
+  it("uses max-age (not s-maxage) and public on the edge directive, even pending-dynamic", () => {
     const headers = adapter.buildResponseHeaders({
-      cacheControl: "s-maxage=60, stale-while-revalidate",
+      cacheControl: "s-maxage=60, stale-while-revalidate=540",
       pendingDynamicCheck: true,
     });
-    // Edge caches via CDN-Cache-Control; the browser is told not to store.
-    expect(headers["CDN-Cache-Control"]).toBe("s-maxage=60, stale-while-revalidate");
-    expect(headers["Cache-Control"]).toBe("no-store");
+    // Edge caches + SWRs via CDN-Cache-Control; the browser always revalidates.
+    expect(headers["CDN-Cache-Control"]).toBe("public, max-age=60, stale-while-revalidate=540");
+    expect(headers["Cache-Control"]).toBe("public, max-age=0, must-revalidate");
   });
 
   it("adds a Cache-Tag header from the page tags", () => {
@@ -68,8 +68,8 @@ describe("CloudflareCdnCacheAdapter", () => {
       tags: ["/blog", "_N_T_/blog", "posts"],
     });
     expect(headers["Cache-Tag"]).toBe("/blog,_N_T_/blog,posts");
-    expect(headers["Cache-Control"]).toBe("no-store");
-    expect(headers["CDN-Cache-Control"]).toBe("s-maxage=60");
+    expect(headers["Cache-Control"]).toBe("public, max-age=0, must-revalidate");
+    expect(headers["CDN-Cache-Control"]).toBe("public, max-age=60");
   });
 
   it("skips tags containing the comma separator or that are too long", () => {

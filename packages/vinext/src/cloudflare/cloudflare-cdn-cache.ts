@@ -11,10 +11,15 @@
  *   traffic and revalidates in the background (the `UPDATING` cache status).
  * - `writePage` is a no-op: the platform caches the *response* based on its
  *   cache headers, so there is nothing to persist at the origin.
- * - `buildResponseHeaders` emits the SWR policy as `CDN-Cache-Control` (so the
- *   edge caches + revalidates) while stamping `Cache-Control: no-store` (so a
- *   browser/private cache never stores the response), plus a `Cache-Tag` header
- *   so entries can be purged by tag.
+ * - `buildResponseHeaders` emits the SWR policy as `CDN-Cache-Control`
+ *   (`public, max-age=…, stale-while-revalidate=…`) so the edge caches and
+ *   revalidates, while the browser-facing `Cache-Control` is
+ *   `public, max-age=0, must-revalidate` so a browser never serves a stored copy
+ *   without revalidating against the edge. A `Cache-Tag` header lets entries be
+ *   purged by tag. Note the edge directive uses `max-age` (not `s-maxage`):
+ *   the framework computes the policy with `s-maxage` for shared caches, but
+ *   `CDN-Cache-Control` is already CDN-scoped so `max-age` is the correct knob
+ *   for the edge to honor max-age + stale-while-revalidate.
  * - `revalidate` purges the edge via the request context's `cache.purge({ tags })`.
  *
  * Tag alignment: the tags emitted in `Cache-Tag` come from the page's render
@@ -44,8 +49,26 @@ function getWorkersCache(): WorkersCacheLike | null {
   return null;
 }
 
-/** Don't-cache value: prevents any browser/private cache from storing the response. */
+/** Non-cacheable responses: nobody (edge or browser) stores them. */
 const NO_STORE = "no-store";
+
+/**
+ * Browser-facing policy for cacheable responses. `public` allows shared caches
+ * to participate, but `max-age=0, must-revalidate` forces every reuse to
+ * revalidate (against the edge) rather than serving a stored copy — so the user
+ * always sees edge-fresh content while still permitting conditional 304s.
+ */
+const BROWSER_REVALIDATE = "public, max-age=0, must-revalidate";
+
+/**
+ * Convert the framework's shared-cache policy into a CDN-scoped one:
+ * `s-maxage=…` → `max-age=…` (the edge honors `max-age` inside
+ * `CDN-Cache-Control`) and ensure a leading `public`.
+ */
+function toEdgeCacheControl(cacheControl: string): string {
+  const withMaxAge = cacheControl.replace(/\bs-maxage=/g, "max-age=");
+  return /\bpublic\b/.test(withMaxAge) ? withMaxAge : `public, ${withMaxAge}`;
+}
 
 /**
  * Cloudflare's `Cache-Tag` header budget is 16 KB total with each tag capped at
@@ -102,12 +125,11 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       return { "Cache-Control": NO_STORE };
     }
 
-    // Browsers/private caches must never store the response (`Cache-Control:
-    // no-store`); the SWR policy is carried on `CDN-Cache-Control`, which the
-    // edge honors to cache + stale-while-revalidate while the browser does not.
+    // SWR policy on CDN-Cache-Control (edge caches + revalidates); the browser
+    // is told to revalidate every reuse so it never serves a stale stored copy.
     const headers: CdnResponseHeaders = {
-      "Cache-Control": NO_STORE,
-      "CDN-Cache-Control": input.cacheControl,
+      "Cache-Control": BROWSER_REVALIDATE,
+      "CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
     };
 
     if (input.tags && input.tags.length > 0) {

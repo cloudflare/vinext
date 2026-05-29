@@ -274,16 +274,6 @@ export type NextConfig = {
    */
   cacheHandler?: string;
   /**
-   * Path to a custom CDN cache adapter module — owns page-level ISR serving
-   * strategy (where page/route artifacts live, response cache headers, edge
-   * purge). Defaults to an origin-managed adapter that delegates storage to the
-   * data cache (`cacheHandler`). Accepts relative/absolute paths or file:// URLs.
-   *
-   * The active adapter is wired at runtime via `setCdnCacheAdapter()` (typically
-   * in the worker entry); this declarative path mirrors `cacheHandler`.
-   */
-  cdnCacheHandler?: string;
-  /**
    * Maximum memory size (bytes) for the default in-memory cache handler.
    * Set to 0 to disable in-memory caching entirely.
    */
@@ -375,11 +365,6 @@ export type ResolvedNextConfig = {
    * filesystem paths via fileURLToPath() during config resolution.
    */
   cacheHandler: string | undefined;
-  /**
-   * Path to a custom CDN cache adapter module. file:// URLs are resolved to
-   * filesystem paths via fileURLToPath() during config resolution.
-   */
-  cdnCacheHandler: string | undefined;
   /**
    * Maximum memory size (bytes) for the default in-memory cache handler.
    * Set to 0 to disable in-memory caching entirely.
@@ -1139,7 +1124,6 @@ export async function resolveNextConfig(
       htmlLimitedBots: undefined,
       serverExternalPackages: [],
       cacheHandler: undefined,
-      cdnCacheHandler: undefined,
       cacheMaxMemorySize: undefined,
       enablePrerenderSourceMaps: true,
       hashSalt: process.env.NEXT_HASH_SALT ?? "",
@@ -1316,12 +1300,6 @@ export async function resolveNextConfig(
       ? resolveCacheHandlerPathToFilesystem(config.cacheHandler)
       : undefined;
 
-  // Resolve cdnCacheHandler path the same way as cacheHandler.
-  const cdnCacheHandler: string | undefined =
-    typeof config.cdnCacheHandler === "string"
-      ? resolveCacheHandlerPathToFilesystem(config.cdnCacheHandler)
-      : undefined;
-
   // Resolve cacheMaxMemorySize
   const cacheMaxMemorySize: number | undefined =
     typeof config.cacheMaxMemorySize === "number" ? config.cacheMaxMemorySize : undefined;
@@ -1371,7 +1349,6 @@ export async function resolveNextConfig(
     htmlLimitedBots,
     serverExternalPackages,
     cacheHandler,
-    cdnCacheHandler,
     cacheMaxMemorySize,
     enablePrerenderSourceMaps: config.enablePrerenderSourceMaps ?? true,
     hashSalt,
