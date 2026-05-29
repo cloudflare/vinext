@@ -232,18 +232,6 @@ export type NextConfig = {
    */
   cacheComponents?: boolean;
   /**
-   * Enable App Shell prefetching (Next.js 16+).
-   * When true, the client prefetches a route's param-independent loading shell
-   * so navigations to that route can render instantly while param-specific content
-   * streams in. Requires `cacheComponents` and other co-flags.
-   *
-   * In vinext this is config-plumbing only — the full segment-cache scheduler,
-   * shell vary-path, and two-pass navigation lookup are not yet implemented.
-   * Setting this to `true` will define `process.env.__NEXT_APP_SHELLS` for
-   * client-side feature gating but will not enable actual App Shell behavior.
-   */
-  appShells?: boolean;
-  /**
    * Enables source maps while generating static pages.
    * Helps with errors during the prerender phase in `vinext build`.
    * Defaults to `true`. Set to `false` to disable.
@@ -1274,6 +1262,7 @@ export async function resolveNextConfig(
       missingCoFlags.push("experimental.cachedNavigations");
     }
     if (missingCoFlags.length > 0) {
+      // Next.js throws here; vinext warns because the feature is plumbing-only.
       console.warn(
         `[vinext] experimental.appShells is enabled but requires the following co-flags which are not yet supported or not enabled: ${missingCoFlags.join(", ")}. ` +
           "App Shell prefetching behavior is not implemented in vinext (see issue #1614). " +
@@ -1403,7 +1392,7 @@ export async function resolveNextConfig(
     cacheHandler,
     cacheMaxMemorySize,
     enablePrerenderSourceMaps: config.enablePrerenderSourceMaps ?? true,
-    appShells: experimental?.appShells === true,
+    appShells,
     hashSalt,
     buildId,
     deploymentId,
