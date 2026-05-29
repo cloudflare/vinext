@@ -4,6 +4,7 @@ import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
 import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache";
 import { buildCachedRevalidateCacheControl } from "./cache-control.js";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { buildCacheStateHeaders } from "./cache-headers.js";
 import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import {
@@ -273,14 +274,19 @@ function buildPagesCacheResponse(
   const effectiveRevalidateSeconds = cacheControl?.revalidate ?? revalidateSeconds ?? 60;
   const effectiveExpireSeconds =
     cacheControl === undefined ? undefined : (cacheControl.expire ?? expireSeconds);
+  // HIT/STALE served from the origin store: route the cache header through the
+  // CDN adapter (default: identical single Cache-Control). Edge adapters never
+  // reach this path because their readPage returns null.
   const headers: Record<string, string> = {
     "Content-Type": "text/html",
     ...buildCacheStateHeaders(cacheState),
-    "Cache-Control": buildCachedRevalidateCacheControl(
-      cacheState,
-      effectiveRevalidateSeconds,
-      effectiveExpireSeconds,
-    ),
+    ...getCdnCacheAdapter().buildResponseHeaders({
+      cacheControl: buildCachedRevalidateCacheControl(
+        cacheState,
+        effectiveRevalidateSeconds,
+        effectiveExpireSeconds,
+      ),
+    }),
   };
 
   if (fontLinkHeader) {

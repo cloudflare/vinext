@@ -86,6 +86,20 @@ describe("CloudflareCdnCacheAdapter", () => {
     });
   });
 
+  it("passes a non-cacheable policy through without promoting it to the edge", () => {
+    // revalidate=0 / gssp paths produce no-store / private — must never become
+    // a CDN-Cache-Control directive (which would cache an uncacheable response).
+    for (const cc of [
+      "no-store, must-revalidate",
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    ]) {
+      const headers = adapter.buildResponseHeaders({ cacheControl: cc, tags: ["x"] });
+      expect(headers).toEqual({ "Cache-Control": cc });
+      expect(headers["CDN-Cache-Control"]).toBeUndefined();
+      expect(headers["Cache-Tag"]).toBeUndefined();
+    }
+  });
+
   it("revalidate purges the Workers Cache by tag via ctx.cache.purge", async () => {
     const purge = vi.fn(async () => {});
     await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {

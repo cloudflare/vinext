@@ -4,8 +4,7 @@ import {
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
 } from "./app-rsc-cache-busting.js";
-import { buildCachedRevalidateCacheControl } from "./cache-control.js";
-import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
+import { applyCdnResponseHeaders, buildCachedRevalidateCacheControl } from "./cache-control.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -148,13 +147,6 @@ type ScheduleAppPageRscCacheWriteOptions = {
   waitUntil?: (promise: Promise<void>) => void;
 };
 
-/** Set every entry of a CDN adapter header map onto `headers` (overwriting). */
-function applyCdnHeaderMap(headers: Headers, map: Record<string, string>): void {
-  for (const [name, value] of Object.entries(map)) {
-    headers.set(name, value);
-  }
-}
-
 /**
  * Apply the CDN cache adapter's headers to a freshly-streamed response whose
  * dynamic-ness is not yet proven.
@@ -167,18 +159,7 @@ function applyCdnHeaderMap(headers: Headers, map: Record<string, string>): void 
  */
 function applyPendingDynamicCdnHeaders(headers: Headers, tags?: readonly string[]): void {
   const cacheable = headers.get("Cache-Control") ?? "";
-  const cdnHeaders = getCdnCacheAdapter().buildResponseHeaders({
-    cacheControl: cacheable,
-    pendingDynamicCheck: true,
-    tags,
-  });
-  // Clear cache headers so the adapter's map fully determines them — an edge
-  // adapter that conditionally omits CDN-Cache-Control/Cache-Tag must not leave
-  // a stale one behind.
-  headers.delete("Cache-Control");
-  headers.delete("CDN-Cache-Control");
-  headers.delete("Cache-Tag");
-  applyCdnHeaderMap(headers, cdnHeaders);
+  applyCdnResponseHeaders(headers, { cacheControl: cacheable, pendingDynamicCheck: true, tags });
   setCacheStateHeaders(headers, "MISS");
 }
 
@@ -239,10 +220,7 @@ function buildAppPageCachedHeaders(options: {
   });
   // Page artifacts served from the origin store get their cache headers from the
   // CDN adapter (default: a single Cache-Control identical to the prior behavior).
-  applyCdnHeaderMap(
-    headers,
-    getCdnCacheAdapter().buildResponseHeaders({ cacheControl: options.cacheControl }),
-  );
+  applyCdnResponseHeaders(headers, { cacheControl: options.cacheControl });
   setCacheStateHeaders(headers, options.cacheState);
   applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 

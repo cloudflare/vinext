@@ -1,3 +1,5 @@
+import { getCdnCacheAdapter, type CdnCacheableHeaderInput } from "vinext/shims/cdn-cache";
+
 export const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
 
 export const STATIC_CACHE_CONTROL = "s-maxage=31536000, stale-while-revalidate";
@@ -5,6 +7,23 @@ export const STATIC_CACHE_CONTROL = "s-maxage=31536000, stale-while-revalidate";
 const STALE_REVALIDATE_CACHE_CONTROL = "s-maxage=0, stale-while-revalidate";
 
 export const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
+
+/**
+ * Route a cacheable response's headers through the active CDN cache adapter and
+ * apply the result to `headers`. The default adapter yields a single
+ * `Cache-Control` identical to `input.cacheControl` (no behavior change); edge
+ * adapters may instead emit `CDN-Cache-Control` / `Cache-Tag`. Existing cache
+ * headers are cleared first so the adapter's map is authoritative.
+ */
+export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHeaderInput): void {
+  const map = getCdnCacheAdapter().buildResponseHeaders(input);
+  headers.delete("Cache-Control");
+  headers.delete("CDN-Cache-Control");
+  headers.delete("Cache-Tag");
+  for (const [name, value] of Object.entries(map)) {
+    headers.set(name, value);
+  }
+}
 
 /**
  * Matches Next.js's `getCacheControlHeader` stale window semantics while

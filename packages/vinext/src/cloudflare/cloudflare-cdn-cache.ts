@@ -125,6 +125,12 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       return { "Cache-Control": NO_STORE };
     }
 
+    // A non-cacheable policy (no-store / no-cache / private) must never be
+    // promoted to an edge cache — pass it through unchanged.
+    if (/\b(?:no-store|no-cache|private)\b/.test(input.cacheControl)) {
+      return { "Cache-Control": input.cacheControl };
+    }
+
     // SWR policy on CDN-Cache-Control (edge caches + revalidates); the browser
     // is told to revalidate every reuse so it never serves a stale stored copy.
     const headers: CdnResponseHeaders = {
