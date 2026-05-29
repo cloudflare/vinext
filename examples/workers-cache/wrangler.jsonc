@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "workers-cache-cloudflare",
+  "name": "workers-cache",
   // Workers Cache requires a recent compatibility date — bumping closer to
   // release should be done once miniflare ships a newer workerd. See
   // https://developers.cloudflare.com/workers/cache/

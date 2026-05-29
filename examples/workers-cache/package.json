@@ -1,5 +1,5 @@
 {
-  "name": "workers-cache-cloudflare",
+  "name": "workers-cache",
   "type": "module",
   "private": true,
   "scripts": {
