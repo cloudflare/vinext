@@ -246,6 +246,32 @@ describe("--prerender-concurrency", () => {
   });
 });
 
+// ─── --env flag (issue #1210) ─────────────────────────────────────────────
+
+describe("--env", () => {
+  it("parses a wrangler environment name", () => {
+    expect(parseArgs(["--env", "staging"])).toMatchObject({ env: "staging" });
+  });
+
+  it("parses --env=value form", () => {
+    expect(parseArgs(["--env=staging"])).toMatchObject({ env: "staging" });
+  });
+
+  it("throws when --env has no value (end of args)", () => {
+    expect(() => parseArgs(["--env"])).toThrow("--env requires a value, but none was provided.");
+  });
+
+  it("throws when --env value is another flag", () => {
+    expect(() => parseArgs(["--env", "--verbose"])).toThrow(
+      '--env requires a value, but got "--verbose" which looks like another flag.',
+    );
+  });
+
+  it("throws for empty --env= value", () => {
+    expect(() => parseArgs(["--env="])).toThrow("--env requires a value, but none was provided.");
+  });
+});
+
 // ─── Combined flags ─────────────────────────────────────────────────────────
 
 describe("combined flags", () => {

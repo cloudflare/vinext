@@ -22,7 +22,7 @@ import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { detectPackageManager, ensureViteConfigCompatibility } from "./utils/project.js";
-import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
+import { deploy as runDeploy, parseDeployArgs, withCloudflareEnv } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
@@ -502,9 +502,12 @@ async function buildApp() {
   // use createBuilder + buildApp(). vinext() defines the appropriate environments
   // in its config() hook for each case, so cloudflare() and the plain Node SSR
   // build both work correctly.
+  //
+  // `--env <name>` sets CLOUDFLARE_ENV so @cloudflare/vite-plugin emits the
+  // merged config for the requested wrangler environment (issue #1210).
   const config = buildViteConfig({}, logger);
   const builder = await vite.createBuilder(config);
-  await builder.buildApp();
+  await withCloudflareEnv(parsed.env, () => builder.buildApp());
 
   if (isApp) {
     // Hybrid app (both app/ and pages/ directories): also build the Pages Router
@@ -813,6 +816,9 @@ function printHelp(cmd?: string) {
   If next.config sets output: "standalone", also emits dist/standalone/server.js.
 
   Options:
+    --env <name>         Build using wrangler env.<name> (sets CLOUDFLARE_ENV
+                         so the generated wrangler.json reflects the merged
+                         env section). Required for multi-environment projects.
     --verbose            Show full Vite/Rollup build output (suppressed by default)
     --prerender-all      Pre-render discovered routes after building (future releases
                          will serve these files in vinext start)
