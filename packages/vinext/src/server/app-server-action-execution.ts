@@ -591,6 +591,9 @@ function isStaleChildSiblingRouteRedirect(
 ): boolean {
   const targetSegments = splitActionRedirectPathname(targetPathname);
   const currentSegments = splitActionRedirectPathname(currentPathname);
+  // Only deeper-to-shallower redirects can be stale in the Next.js worker
+  // model (same-depth siblings share the same page worker). The depth guard
+  // ensures we don't misclassify same-level redirects.
   if (targetSegments.length === 0 || currentSegments.length <= targetSegments.length) {
     return false;
   }
