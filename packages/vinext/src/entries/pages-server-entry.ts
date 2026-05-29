@@ -905,6 +905,10 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         // Used by \`_document.getInitialProps\` -> \`ctx.renderPage\` to wrap
         // App/Component with user-provided enhancers (e.g. styled-components,
         // emotion). Falls back to identity when no enhancers are passed.
+        // \`pageProps\` is captured from the closure (unlike \`createPageElement\`
+        // which takes it as a param) — \`enhancePageElement\` is only ever invoked
+        // for this one request with this one \`pageProps\`, so there is no value to
+        // thread through; the renderPage contract only varies the enhancers.
         enhancePageElement(renderPageOpts) {
           var FinalApp = AppComponent;
           var FinalComp = PageComponent;

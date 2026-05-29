@@ -136,7 +136,7 @@ type DocumentRenderPageInput = {
  *                  would call it a second time) — render the streaming body and
  *                  spread `docProps` (possibly empty) onto `<Document>`.
  */
-export type RunDocumentRenderPageResult =
+type RunDocumentRenderPageResult =
   | { status: "skipped" }
   | { status: "rendered"; bodyHtml: string; stylesHTML: string; docProps: Record<string, unknown> }
   | { status: "consumed"; docProps: Record<string, unknown> };
