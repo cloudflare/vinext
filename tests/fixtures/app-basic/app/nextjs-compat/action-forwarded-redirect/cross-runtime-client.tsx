@@ -11,7 +11,7 @@ export default function ActionForwardedCrossRuntimeClient() {
         id="run-cross-runtime-redirect"
         type="button"
         onClick={async () => {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
+          await new Promise((resolve) => setTimeout(resolve, 3000));
           await delayedCrossRuntimeRedirectAction();
         }}
       >
