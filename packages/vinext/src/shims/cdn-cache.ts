@@ -30,6 +30,11 @@ import {
   type CacheHandlerValue,
   type IncrementalCacheValue,
 } from "./cache.js";
+import { getRequestExecutionContext } from "./request-context.js";
+// The edge adapter lives with the Cloudflare integration; the resolver below
+// imports it to use as the built-in default when a request-context host cache
+// is present.
+import { CloudflareCdnCacheAdapter } from "../cloudflare/cloudflare-cdn-cache.js";
 
 /** A map of response header name -> value the adapter wants applied. */
 export type CdnResponseHeaders = Record<string, string>;
@@ -153,67 +158,52 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// Active adapter resolution. Stored on globalThis via Symbol.for so a
-// setCdnCacheAdapter() call in the worker entry is visible to the
-// RSC environment, mirroring the data cache handler resolution in cache.ts.
-// The detector registry is likewise global so a detector registered in one
-// Vite environment (RSC) is honored in another (SSR).
+// Active adapter resolution.
+//
+// Precedence:
+//   1. An adapter set explicitly via setCdnCacheAdapter() always wins. It is
+//      stored on globalThis (Symbol.for) so a call in the worker entry is
+//      visible across Vite environments (RSC + SSR), mirroring the data cache
+//      handler resolution in cache.ts.
+//   2. Otherwise, when the request context exposes a host cache surface (e.g.
+//      the Cloudflare Workers Cache at `ctx.cache`, enabled via
+//      `[cache] enabled = true` in wrangler.jsonc), page ISR is served through
+//      the edge-managed CloudflareCdnCacheAdapter.
+//   3. Otherwise, the origin-managed DefaultCdnCacheAdapter.
+//
+// Tiers 2/3 are recomputed each call (never cached on the global key) because
+// the request-context cache is only observable mid-request: an early call
+// (module init, background task) must not lock in the default and shadow the
+// edge adapter on a later in-request call. Both adapters are stateless, so the
+// per-isolate singletons are safe to reuse.
 // ---------------------------------------------------------------------------
 
-/** A runtime probe that returns an adapter when its platform is detected, else null. */
-export type CdnCacheAdapterDetector = () => CdnCacheAdapter | null;
-
 const _CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
-const _DETECTORS_KEY = Symbol.for("vinext.cdnCacheAdapterDetectors");
 const _gCdn = globalThis as unknown as Record<PropertyKey, unknown>;
 
-function _detectors(): CdnCacheAdapterDetector[] {
-  return (_gCdn[_DETECTORS_KEY] ??= []) as CdnCacheAdapterDetector[];
-}
-
 let _defaultAdapter: DefaultCdnCacheAdapter | null = null;
-
-/**
- * Register a runtime detector that auto-selects a CDN cache adapter when its
- * platform is available (e.g. an edge CDN integration registers one that
- * activates when a host cache exists in the request context).
- *
- * Detectors are consulted by {@link getCdnCacheAdapter} only when no adapter
- * has been set explicitly via {@link setCdnCacheAdapter}. The first detector to
- * return a non-null adapter wins and its result is cached for the isolate.
- */
-export function registerCdnCacheAdapterDetector(detector: CdnCacheAdapterDetector): void {
-  _detectors().push(detector);
-}
+let _edgeAdapter: CloudflareCdnCacheAdapter | null = null;
 
 /**
  * Set a custom CDN cache adapter. Call during server startup to delegate
- * page-level ISR to a CDN edge. An explicit adapter always wins over detectors.
+ * page-level ISR to a CDN edge. An explicit adapter always wins over the
+ * built-in request-context / default selection.
  */
 export function setCdnCacheAdapter(adapter: CdnCacheAdapter): void {
   _gCdn[_CDN_KEY] = adapter;
 }
 
 /**
- * Get the active CDN cache adapter.
- *
- * Resolution order: an explicitly-set adapter → the first matching registered
- * detector (cached once matched) → the origin-managed {@link DefaultCdnCacheAdapter}.
- *
- * The default is NOT cached under the global key, so a detector that only
- * matches once a request is in flight (e.g. needs `ctx.cache`) can still win on
- * a later call rather than being permanently shadowed by an early default.
+ * Get the active CDN cache adapter. See the precedence note above:
+ * explicit → edge adapter (when the request context exposes a host cache) →
+ * origin-managed {@link DefaultCdnCacheAdapter}.
  */
 export function getCdnCacheAdapter(): CdnCacheAdapter {
   const explicit = _gCdn[_CDN_KEY] as CdnCacheAdapter | undefined;
   if (explicit) return explicit;
 
-  for (const detect of _detectors()) {
-    const detected = detect();
-    if (detected) {
-      _gCdn[_CDN_KEY] = detected;
-      return detected;
-    }
+  if (getRequestExecutionContext()?.cache) {
+    return (_edgeAdapter ??= new CloudflareCdnCacheAdapter());
   }
 
   return (_defaultAdapter ??= new DefaultCdnCacheAdapter());

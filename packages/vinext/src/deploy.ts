@@ -461,8 +461,8 @@ import { setDataCacheHandler } from "vinext/shims/cache";
     //
     // Page-level ISR: by default it is stored here too (origin-managed). When the
     // Cloudflare Workers Cache is enabled (\`[cache] enabled = true\` in wrangler +
-    // \`ctx.cache\` present), importing "vinext/cloudflare" above auto-switches
-    // page ISR to the edge-managed CloudflareCdnCacheAdapter. Call
+    // \`ctx.cache\` present), vinext auto-switches page ISR to the edge-managed
+    // CDN cache adapter — no import or registration needed. Call
     // setCdnCacheAdapter(...) from "vinext/shims/cdn-cache" to override.
     setDataCacheHandler(new KVCacheHandler(env.VINEXT_CACHE));
 `
