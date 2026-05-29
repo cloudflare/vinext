@@ -80,9 +80,6 @@ type CreateClientReuseSkipTransportPlanInput = Readonly<{
   verifyEntry: (entry: ClientReuseManifestEntry) => SkipCacheCrossCheckResult;
 }>;
 
-export const STATIC_LAYOUT_SKIP_VERIFICATION_ENTRY_BUDGET =
-  CLIENT_REUSE_MANIFEST_SKIP_VERIFICATION_ENTRY_BUDGET;
-
 function createDisabledSkipDisposition(): ClientReuseManifestSkipDisposition {
   return {
     code: "SKIP_MODEL_DISABLED",
@@ -135,12 +132,10 @@ function isExactArtifactCompatibility(
   artifactCompatibility: ArtifactCompatibilityEnvelope,
   entryCompatibility: ArtifactCompatibilityEnvelope,
 ): boolean {
-  for (const field of ARTIFACT_COMPATIBILITY_PROOF_FIELDS) {
-    if (artifactCompatibility[field] !== entryCompatibility[field]) {
-      return false;
-    }
-  }
-  return true;
+  return (
+    collectArtifactCompatibilityProofMismatches(artifactCompatibility, entryCompatibility)
+      .length === 0
+  );
 }
 
 function assertNever(value: never): never {
@@ -309,7 +304,7 @@ export function createClientReuseSkipTransportPlan(
   }
 
   const maxWireEntriesToVerify =
-    input.maxWireEntriesToVerify ?? STATIC_LAYOUT_SKIP_VERIFICATION_ENTRY_BUDGET;
+    input.maxWireEntriesToVerify ?? CLIENT_REUSE_MANIFEST_SKIP_VERIFICATION_ENTRY_BUDGET;
   if (!Number.isSafeInteger(maxWireEntriesToVerify) || maxWireEntriesToVerify < 0) {
     throw new RangeError("maxWireEntriesToVerify must be a non-negative safe integer");
   }
@@ -338,7 +333,7 @@ export function createClientReuseSkipTransportPlan(
     // The planner must not trust a verifier that returns a verified result
     // for a different entry than the one it was given.  This is an internal
     // invariant, not a hostile-client defence.
-    if (verification.kind === "verified" && verification.entryId !== entry.id) {
+    if (verification.entryId !== entry.id) {
       entryRejections.push({
         code: "SKIP_CACHE_ENTRY_ID_MISMATCH",
         entryId: entry.id,

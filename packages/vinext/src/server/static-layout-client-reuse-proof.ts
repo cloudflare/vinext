@@ -31,9 +31,10 @@ export function createStaticLayoutClientReusePayloadHash(
   input: StaticLayoutClientReuseProofInput,
 ): string {
   // ARTIFACT_COMPATIBILITY_PROOF_FIELDS order is load-bearing for hash
-  // determinism.  The artifact compatibility section is serialized as a sorted
-  // array of [field, value] pairs — no object key-order dependency — so the
-  // hash is invariant across runtimes and immune to field-list reorderings.
+  // determinism.  The artifact compatibility section is serialized as an
+  // array of [field, value] pairs in declaration order — no object key-order
+  // dependency — so the hash is invariant across runtimes.  Reordering the
+  // field list silently changes every hash.
   //
   // routeId is intentionally excluded.  This is a layout-scoped hash —
   // sibling routes under the same layout must produce identical payload
