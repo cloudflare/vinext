@@ -147,6 +147,25 @@ function decodeMatchedParam(value: string): string {
 }
 
 /**
+ * Build a params object from ordered entries, preserving insertion order.
+ *
+ * Used by trie matchers to reconstruct the params Record after collecting
+ * entries in declaration order via DFS backtracking. Object.create(null)
+ * avoids prototype pollution.
+ *
+ * @param entries - Ordered [paramName, value] tuples from forward traversal
+ */
+export function buildParams(
+  entries: Array<[string, string | string[]]>,
+): Record<string, string | string[]> {
+  const params = Object.create(null);
+  for (const [key, value] of entries) {
+    params[key] = value;
+  }
+  return params;
+}
+
+/**
  * Decode captured route params with `decodeURIComponent`, mirroring Next.js
  * route-matcher.ts:25-27. Mutates the params object in place. Catch-all
  * arrays are decoded element-wise. Malformed escapes are preserved (the

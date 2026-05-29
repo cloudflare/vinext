@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import type { Route } from "../routing/pages-router.js";
 import type { VinextNextData } from "../client/vinext-next-data.js";
+import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
 import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache";
 import { buildCachedRevalidateCacheControl } from "./cache-control.js";
@@ -12,6 +12,7 @@ import {
   type PagesI18nRenderContext,
 } from "./pages-page-response.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
+import { isSerializableProps } from "./pages-serializable-props.js";
 
 type PagesRedirectResult = {
   destination: string;
@@ -170,13 +171,14 @@ export type ResolvePagesPageDataOptions = {
   safeJsonStringify: (value: unknown) => string;
   sanitizeDestination: (destination: string) => string;
   scriptNonce?: string;
-  vinext?: VinextNextData["__vinext"];
+  statusCode?: number;
   triggerBackgroundRegeneration: (
     key: string,
     renderFn: () => Promise<void>,
     errorContext?: { routerKind: "Pages Router"; routePath: string; routeType: "render" },
   ) => void;
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
+  vinext?: VinextNextData["__vinext"];
 };
 
 type ResolvePagesPageDataRenderResult = {
@@ -263,6 +265,7 @@ function buildPagesCacheResponse(
   revalidateSeconds?: number,
   expireSeconds?: number,
   cacheControl?: CacheControlMetadata,
+  status?: number,
 ): Response {
   // Legacy cache entries written before cacheControl metadata existed can still
   // hit this path without a persisted revalidate value; keep the historic
@@ -285,7 +288,7 @@ function buildPagesCacheResponse(
   }
 
   return new Response(html, {
-    status: 200,
+    status: status ?? 200,
     headers,
   });
 }
@@ -452,6 +455,18 @@ export async function resolvePagesPageData(
       };
     }
 
+    // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getServerSideProps", data.props)`
+    // check, gated on `!metadata.isRedirect && !metadata.isNotFound` (both
+    // short-circuit above). Throws a friendly `SerializableError` so the
+    // caller's existing try/catch surfaces a clear 500 instead of rendering
+    // an empty page. See
+    // .nextjs-ref/packages/next/src/server/render.tsx (~line 1200) and
+    // .nextjs-ref/packages/next/src/lib/is-serializable-props.ts. Tracked in
+    // vinext#1478.
+    if (result?.props !== undefined) {
+      isSerializableProps(options.routePattern, "getServerSideProps", pageProps);
+    }
+
     gsspRes = res;
   }
 
@@ -479,6 +494,7 @@ export async function resolvePagesPageData(
           undefined,
           options.expireSeconds,
           cached.value.cacheControl,
+          cachedValue.status,
         ),
       };
     }
@@ -527,7 +543,7 @@ export async function resolvePagesPageData(
 
               await options.isrSet(
                 cacheKey,
-                buildPagesCacheValue(freshHtml, freshResult.props),
+                buildPagesCacheValue(freshHtml, freshResult.props, options.statusCode),
                 freshResult.revalidate,
                 undefined,
                 options.expireSeconds,
@@ -551,6 +567,7 @@ export async function resolvePagesPageData(
           undefined,
           options.expireSeconds,
           cached.value.cacheControl,
+          cachedValue.status,
         ),
       };
     }
@@ -594,6 +611,18 @@ export async function resolvePagesPageData(
           ? buildPagesDataNotFoundResponse()
           : buildPagesNotFoundResponse(),
       };
+    }
+
+    // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getStaticProps", data.props)`
+    // check, gated on `!metadata.isNotFound` (notFound + redirect both
+    // short-circuit above). Throws a friendly `SerializableError` so the
+    // caller's existing try/catch surfaces a clear 500 instead of rendering
+    // an empty page. See
+    // .nextjs-ref/packages/next/src/server/render.tsx (~line 982) and
+    // .nextjs-ref/packages/next/src/lib/is-serializable-props.ts. Tracked in
+    // vinext#1478.
+    if (result?.props !== undefined) {
+      isSerializableProps(options.routePattern, "getStaticProps", pageProps);
     }
 
     if (typeof result?.revalidate === "number" && result.revalidate > 0) {

@@ -135,3 +135,63 @@ describe("Document base class", () => {
     expect(typeof result.html).toBe("string");
   });
 });
+
+// Regression coverage for issue #1361 follow-up: user `_document.tsx` files
+// that override `static async getInitialProps` (as the Next.js async-modules
+// fixture does) must have those props forwarded to the rendered Document.
+// `loadUserDocumentInitialProps` is the SSR-side helper that both the Pages
+// Router dev-server and the production response builder call.
+//
+// Ported from Next.js: test/e2e/async-modules/pages/_document.jsx
+// https://github.com/vercel/next.js/blob/canary/test/e2e/async-modules/pages/_document.jsx
+describe("loadUserDocumentInitialProps", () => {
+  it("invokes overridden Document.getInitialProps and returns the resolved props", async () => {
+    const { loadUserDocumentInitialProps } =
+      await import("../packages/vinext/src/server/pages-document-initial-props.js");
+    class MyDocument extends Document {
+      static async getInitialProps(_ctx: unknown) {
+        const base = await Document.getInitialProps(_ctx as never);
+        return { ...base, docValue: await Promise.resolve("doc value") };
+      }
+    }
+    const props = await loadUserDocumentInitialProps(MyDocument as React.ComponentType);
+    expect(props).not.toBeNull();
+    expect(props!.docValue).toBe("doc value");
+    // The base Document.getInitialProps contract is to return { html: "" } so
+    // `await Document.getInitialProps(ctx)` spreads `{ html: "" }` into the
+    // resulting props. This pins that contract — the dev-server / prod
+    // response builder render `<Document {...docProps} />` and consumers may
+    // read either field.
+    expect(typeof props!.html).toBe("string");
+  });
+
+  it("returns null when the user did not override the base getInitialProps", async () => {
+    const { loadUserDocumentInitialProps } =
+      await import("../packages/vinext/src/server/pages-document-initial-props.js");
+    class MyDocument extends Document {
+      // No getInitialProps override — inherits the base shim's stub.
+      render() {
+        return React.createElement("html");
+      }
+    }
+    const props = await loadUserDocumentInitialProps(MyDocument as React.ComponentType);
+    expect(props).toBeNull();
+  });
+
+  it("lets errors from the user getInitialProps propagate, matching Next.js render.tsx", async () => {
+    const { loadUserDocumentInitialProps } =
+      await import("../packages/vinext/src/server/pages-document-initial-props.js");
+    class BadDocument extends Document {
+      static async getInitialProps(_ctx: unknown): Promise<never> {
+        throw new Error("boom");
+      }
+    }
+    // Next.js's `loadGetInitialProps` does NOT catch — a throw surfaces as a
+    // 500 to the caller. vinext matches that contract so user bugs in
+    // `_document.tsx`'s getInitialProps are visible instead of silently
+    // erasing docProps from every render.
+    await expect(loadUserDocumentInitialProps(BadDocument as React.ComponentType)).rejects.toThrow(
+      "boom",
+    );
+  });
+});

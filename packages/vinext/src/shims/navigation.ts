@@ -35,6 +35,12 @@ import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { AppRouterContext } from "./internal/app-router-context.js";
 import { scrollToHashTarget } from "./hash-scroll.js";
+import {
+  beginAppRouterScrollIntent,
+  clearAppRouterScrollIntent,
+  consumeAppRouterScrollIntent,
+  type AppRouterScrollIntent,
+} from "./app-router-scroll-state.js";
 
 // ─── Layout segment context ───────────────────────────────────────────────────
 // Stores the child segments below the current layout. Each layout wraps its
@@ -333,8 +339,29 @@ export const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 /** Maximum number of entries in the RSC prefetch cache. */
 export const MAX_PREFETCH_CACHE_SIZE = 50;
 
-/** TTL for prefetch cache entries in ms (matches Next.js static prefetch TTL). */
-export const PREFETCH_CACHE_TTL = 30_000;
+/**
+ * TTL for prefetch cache entries in ms.
+ *
+ * Mirrors Next.js' `STATIC_STALETIME_MS` derivation. The plugin injects
+ * `process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME` from
+ * `experimental.staleTimes.static` (in seconds) at build time; we convert
+ * to ms here.
+ *
+ * Falls back to vinext's historical default of 30s when the env var is
+ * absent (e.g. unit tests that import this module without going through
+ * the plugin's `define` pipeline). When the plugin is active and the user
+ * has not set `experimental.staleTimes`, Next.js' 300s default applies
+ * (see `resolveStaleTimes` in `config/next-config.ts`).
+ */
+function resolvePrefetchCacheTtl(): number {
+  const raw = process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
+  if (raw === undefined || raw === "") return 30_000;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds < 0) return 30_000;
+  return seconds * 1000;
+}
+
+export const PREFETCH_CACHE_TTL = resolvePrefetchCacheTtl();
 
 /** A buffered RSC response stored as an ArrayBuffer for replay. */
 export type CachedRscResponse = {
@@ -1324,6 +1351,19 @@ function commitHashOnlyHistoryState(href: string, mode: "push" | "replace", scro
   }
 }
 
+function applyAppRouterScrollFallback(intent: AppRouterScrollIntent): void {
+  if (typeof document === "undefined" || typeof window === "undefined") {
+    return;
+  }
+
+  if (intent.hash !== null) {
+    scrollToHashTarget(intent.hash);
+    return;
+  }
+
+  document.documentElement.scrollTop = 0;
+}
+
 /**
  * Restore scroll position from a history state object (used on popstate).
  *
@@ -1418,6 +1458,10 @@ export async function navigateClientSide(
   // Extract hash for post-navigation scrolling
   const hashIdx = fullHref.indexOf("#");
   const hash = hashIdx !== -1 ? fullHref.slice(hashIdx) : "";
+  const scrollIntent = scroll ? beginAppRouterScrollIntent(hash || null) : null;
+  if (!scroll) {
+    clearAppRouterScrollIntent();
+  }
 
   // Trigger RSC re-fetch if available, and wait for the new content to render
   // before scrolling. This prevents the old page from visibly jumping to the
@@ -1428,22 +1472,37 @@ export async function navigateClientSide(
   // double-push and ensures window.location still reflects the *current* URL
   // when navigateRsc publishes the committed URL.
   const appNavigate = getNavigationRuntime()?.functions.navigate;
-  if (appNavigate) {
-    await appNavigate(fullHref, 0, "navigate", mode, undefined, programmaticTransition);
-  } else {
-    if (mode === "replace") {
-      replaceHistoryStateWithoutNotify(null, "", fullHref);
+  try {
+    if (appNavigate) {
+      await appNavigate(
+        fullHref,
+        0,
+        "navigate",
+        mode,
+        undefined,
+        programmaticTransition,
+        undefined,
+        scrollIntent,
+      );
     } else {
-      pushHistoryStateWithoutNotify(null, "", fullHref);
+      if (mode === "replace") {
+        replaceHistoryStateWithoutNotify(null, "", fullHref);
+      } else {
+        pushHistoryStateWithoutNotify(null, "", fullHref);
+      }
+      commitClientNavigationState();
     }
-    commitClientNavigationState();
+  } catch (error) {
+    if (scrollIntent) {
+      consumeAppRouterScrollIntent(scrollIntent);
+    }
+    throw error;
   }
 
-  if (scroll) {
-    if (hash) {
-      scrollToHashTarget(hash);
-    } else {
-      window.scrollTo(0, 0);
+  if (scrollIntent) {
+    const fallbackIntent = consumeAppRouterScrollIntent(scrollIntent);
+    if (fallbackIntent) {
+      applyAppRouterScrollFallback(fallbackIntent);
     }
   }
 }
@@ -1457,6 +1516,29 @@ export async function navigateClientSide(
 // matters for components that rely on referential equality (e.g. useMemo /
 // useEffect dependency arrays, React.memo bailouts).
 // ---------------------------------------------------------------------------
+
+// `router.refresh()` can run in the same outer transition after push/replace
+// while the nested navigation transition is still being scheduled.
+let scheduledAppRouterNavigationCount = 0;
+
+function trackScheduledAppRouterNavigation(): () => void {
+  scheduledAppRouterNavigationCount += 1;
+  let released = false;
+
+  return () => {
+    if (released) return;
+    released = true;
+    scheduledAppRouterNavigationCount = Math.max(0, scheduledAppRouterNavigationCount - 1);
+  };
+}
+
+function hasScheduledAppRouterNavigation(): boolean {
+  return scheduledAppRouterNavigationCount > 0;
+}
+
+function releaseScheduledAppRouterNavigationAfterCurrentTask(release: () => void): void {
+  queueMicrotask(release);
+}
 
 /**
  * App Router public router instance. Mirrors Next.js's
@@ -1472,16 +1554,30 @@ const _appRouter = {
   push(href: string, options?: { scroll?: boolean }): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
-    React.startTransition(() => {
-      void navigateClientSide(href, "push", options?.scroll !== false, true);
-    });
+    const releaseNavigation = trackScheduledAppRouterNavigation();
+    try {
+      React.startTransition(() => {
+        void navigateClientSide(href, "push", options?.scroll !== false, true);
+      });
+    } catch (error) {
+      releaseNavigation();
+      throw error;
+    }
+    releaseScheduledAppRouterNavigationAfterCurrentTask(releaseNavigation);
   },
   replace(href: string, options?: { scroll?: boolean }): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
-    React.startTransition(() => {
-      void navigateClientSide(href, "replace", options?.scroll !== false, true);
-    });
+    const releaseNavigation = trackScheduledAppRouterNavigation();
+    try {
+      React.startTransition(() => {
+        void navigateClientSide(href, "replace", options?.scroll !== false, true);
+      });
+    } catch (error) {
+      releaseNavigation();
+      throw error;
+    }
+    releaseScheduledAppRouterNavigationAfterCurrentTask(releaseNavigation);
   },
   back(): void {
     if (isServer) return;
@@ -1500,6 +1596,7 @@ const _appRouter = {
     // gated by a session that has since been cleared) would still satisfy a
     // subsequent client navigation and bypass the server's redirect logic.
     getNavigationRuntime()?.functions.clearNavigationCaches?.();
+    if (hasScheduledAppRouterNavigation()) return;
     // Re-fetch the current page's RSC stream
     const rscNavigate = getNavigationRuntime()?.functions.navigate;
     if (rscNavigate) {

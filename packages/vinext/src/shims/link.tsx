@@ -69,6 +69,7 @@ import {
   prefetchPagesData,
   resolvePagesDataNavigationTarget,
 } from "./internal/pages-data-target.js";
+import { markAppRouteDetectedOnPrefetch } from "./internal/app-route-detection.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
 
 type NavigateEvent = {
@@ -94,6 +95,14 @@ type LinkProps = {
   unstable_dynamicOnHover?: boolean;
   /** Whether to pass the href to the child element */
   passHref?: boolean;
+  /**
+   * Pre-Next.js-13 link behaviour. When true, <Link> expects its child to be
+   * an `<a>` (or a component that renders one) and forwards `href`, click,
+   * and prefetch handlers to the child via `React.cloneElement` instead of
+   * rendering its own wrapping `<a>`. Required when the user wants to
+   * style/instrument the anchor themselves.
+   */
+  legacyBehavior?: boolean;
   /** Scroll to top on navigation (default: true) */
   scroll?: boolean;
   /**
@@ -392,6 +401,14 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         if (dataTarget) {
           prefetchPagesData(dataTarget);
         } else {
+          // The target is not a Pages Router route — mark it on the Pages
+          // Router `components` map if it matches an App Router route in the
+          // shared prefetch manifest. Mirrors Next.js's `_bfl` marker write at
+          // `packages/next/src/shared/lib/router/router.ts:2525`; the Next.js
+          // deploy test reads `window.next.router.components[<path>]` to
+          // assert prefetch detection. See issue #1526.
+          markAppRouteDetectedOnPrefetch(fullHref, __basePath);
+
           // Legacy fallback: hint the browser to preload the HTML document.
           // Used in dev (no loader map populated) and for routes not in the
           // client loader map.
@@ -605,18 +622,30 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     prefetch: prefetchProp,
     scroll = true,
     shallow = false,
-    children,
+    children: childrenProp,
     onClick,
     onMouseEnter,
     onTouchStart,
     onNavigate,
     unstable_dynamicOnHover = false,
+    legacyBehavior = false,
+    passHref = false,
     ...rest
   },
   forwardedRef,
 ) {
   // Extract locale from rest props
   const { locale, ...restWithoutLocale } = rest;
+
+  // Next.js parity: in legacyBehavior, a string or number child is wrapped in
+  // a plain <a> so the cloneElement path below has an element to clone. The
+  // wrapper anchor receives the forwarded href + handlers from Link.
+  // Ported from Next.js: packages/next/src/client/link.tsx (around line 334)
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/link.tsx
+  let children: React.ReactNode = childrenProp;
+  if (legacyBehavior && (typeof childrenProp === "string" || typeof childrenProp === "number")) {
+    children = React.createElement("a", null, childrenProp);
+  }
 
   // If `as` is provided, use it as the actual URL (legacy Next.js pattern
   // where href is a route pattern like "/user/[id]" and as is "/user/1")
@@ -753,8 +782,16 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     [onTouchStart, prefetchOnIntent],
   );
 
-  const handleClick = async (e: MouseEvent<HTMLAnchorElement>) => {
-    if (onClick) onClick(e);
+  const handleClick = async (
+    e: MouseEvent<HTMLAnchorElement>,
+    options: { skipLinkOnClick?: boolean } = {},
+  ) => {
+    // In legacyBehavior, the onClick prop on <Link> itself is ignored — the
+    // child's onClick is the one that runs (and Next.js even warns when
+    // `onClick` is passed to <Link> alongside `legacyBehavior`). Skip the
+    // preamble that calls Link's own onClick when invoked from that path.
+    // See: .nextjs-ref/packages/next/src/client/link.tsx (legacyBehavior branch).
+    if (!options.skipLinkOnClick && onClick) onClick(e);
     if (e.defaultPrevented) return;
 
     // Native download links must keep the browser's default behavior.
@@ -867,8 +904,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     }
   };
 
-  // Remove props that shouldn't be on <a>
-  const { passHref: _p, ...anchorProps } = restWithoutLocale;
+  const anchorProps = restWithoutLocale;
 
   const linkStatusValue = React.useMemo(() => ({ pending }), [pending]);
 
@@ -885,10 +921,42 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // via React's event-handler runtime when `router.push` throws.
     // Ported from Next.js: test/e2e/app-dir/javascript-urls/javascript-urls.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/javascript-urls/javascript-urls.test.ts
-    const handleDangerousClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    const handleDangerousClick = (event: MouseEvent<HTMLAnchorElement>): void => {
       if (onClick) onClick(event);
       reportBlockedDangerousNavigation();
     };
+    // In legacyBehavior, clone the child instead of wrapping it in our own
+    // <a>. Otherwise the dangerous-href branch would still produce nested
+    // anchors. We do not forward the dangerous href to the child — Next.js's
+    // safety guarantee is that the navigation never happens; the child can
+    // keep its own (sanitized) href if it wants.
+    if (legacyBehavior) {
+      const child = React.Children.only(children) as React.ReactElement<{
+        onClick?: (event: MouseEvent<HTMLAnchorElement>) => void;
+        ref?: React.Ref<HTMLAnchorElement>;
+      }>;
+      const childOnClick = child.props.onClick;
+      const childRef = child.props.ref;
+      const setDangerousRefs = (node: HTMLAnchorElement | null): void => {
+        internalRef.current = node;
+        if (typeof childRef === "function") {
+          childRef(node);
+        } else if (childRef) {
+          (childRef as React.MutableRefObject<HTMLAnchorElement | null>).current = node;
+        }
+      };
+      return (
+        <LinkStatusContext.Provider value={linkStatusValue}>
+          {React.cloneElement(child, {
+            ref: setDangerousRefs,
+            onClick: (event: MouseEvent<HTMLAnchorElement>) => {
+              if (childOnClick) childOnClick(event);
+              reportBlockedDangerousNavigation();
+            },
+          })}
+        </LinkStatusContext.Provider>
+      );
+    }
     return (
       <LinkStatusContext.Provider value={linkStatusValue}>
         <a
@@ -900,6 +968,86 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         >
           {children}
         </a>
+      </LinkStatusContext.Provider>
+    );
+  }
+
+  // Next.js parity: in legacyBehavior, forward href/handlers to the single
+  // child via React.cloneElement instead of wrapping in our own <a>. This
+  // avoids the nested-anchor markup that broke onClick propagation and
+  // produced duplicated/hidden child content (issue #1469).
+  //
+  // Ported from Next.js: packages/next/src/client/link.tsx (around line 499)
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/link.tsx
+  if (legacyBehavior) {
+    const child = React.Children.only(children) as React.ReactElement<{
+      href?: string;
+      ref?: React.Ref<HTMLAnchorElement>;
+      onClick?: (event: MouseEvent<HTMLAnchorElement>) => void;
+      onMouseEnter?: (event: MouseEvent<HTMLAnchorElement>) => void;
+      onTouchStart?: (event: TouchEvent<HTMLAnchorElement>) => void;
+    }>;
+    if (process.env.NODE_ENV !== "production") {
+      if (onClick) {
+        console.warn(
+          `"onClick" was passed to <Link> with \`href\` of \`${resolveHref(href)}\` but "legacyBehavior" was set. The legacy behavior requires onClick be set on the child of next/link`,
+        );
+      }
+      if (onMouseEnter) {
+        console.warn(
+          `"onMouseEnter" was passed to <Link> with \`href\` of \`${resolveHref(href)}\` but "legacyBehavior" was set. The legacy behavior requires onMouseEnter be set on the child of next/link`,
+        );
+      }
+    }
+    const childPropsExisting = child.props;
+    // Use `'href' in props` (matches Next.js) so `href={undefined}` on the
+    // child is treated as "the child owns its href" — we won't overwrite it.
+    const childHasOwnHref = child.type === "a" ? "href" in childPropsExisting : false;
+    // Match Next.js: forward href when `passHref` is set OR the child is a
+    // plain <a> that does not already have an href. Otherwise, leave the
+    // child's href alone.
+    const shouldForwardHref = passHref || (child.type === "a" && !childHasOwnHref);
+    const childOnClick = childPropsExisting.onClick;
+    const childOnMouseEnter = childPropsExisting.onMouseEnter;
+    const childOnTouchStart = childPropsExisting.onTouchStart;
+    // Mirror Next.js: in legacy mode, the ref source is the child's own
+    // ref (e.g. `<a ref={myRef}>`), not Link's `forwardedRef`. In React 19
+    // `ref` is a regular prop on the element. Merge with our intersection
+    // observer ref via `setRefs` so prefetching still works.
+    const childRef = childPropsExisting.ref;
+    const setLegacyRefs = (node: HTMLAnchorElement | null): void => {
+      internalRef.current = node;
+      if (typeof childRef === "function") {
+        childRef(node);
+      } else if (childRef) {
+        (childRef as React.MutableRefObject<HTMLAnchorElement | null>).current = node;
+      }
+    };
+    const clonedProps: Record<string, unknown> = {
+      ref: setLegacyRefs,
+      onClick: (event: MouseEvent<HTMLAnchorElement>) => {
+        // Next.js parity: only the child's onClick runs in legacy mode. The
+        // onClick prop on <Link> is intentionally ignored (and a dev warning
+        // surfaces it above).
+        if (childOnClick) childOnClick(event);
+        if (event.defaultPrevented) return;
+        void handleClick(event, { skipLinkOnClick: true });
+      },
+      onMouseEnter: (event: MouseEvent<HTMLAnchorElement>) => {
+        if (childOnMouseEnter) childOnMouseEnter(event);
+        prefetchOnIntent();
+      },
+      onTouchStart: (event: TouchEvent<HTMLAnchorElement>) => {
+        if (childOnTouchStart) childOnTouchStart(event);
+        prefetchOnIntent();
+      },
+    };
+    if (shouldForwardHref) {
+      clonedProps.href = fullHref;
+    }
+    return (
+      <LinkStatusContext.Provider value={linkStatusValue}>
+        {React.cloneElement(child, clonedProps)}
       </LinkStatusContext.Provider>
     );
   }

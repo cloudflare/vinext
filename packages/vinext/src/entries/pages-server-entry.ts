@@ -24,6 +24,7 @@ const _pagesPageResponsePath = resolveEntryPath(
   import.meta.url,
 );
 const _pagesPageDataPath = resolveEntryPath("../server/pages-page-data.js", import.meta.url);
+const _pagesPageMethodPath = resolveEntryPath("../server/pages-page-method.js", import.meta.url);
 const _pagesDataRoutePath = resolveEntryPath("../server/pages-data-route.js", import.meta.url);
 const _pagesDefault404Path = resolveEntryPath("../server/pages-default-404.js", import.meta.url);
 const _pagesNodeCompatPath = resolveEntryPath("../server/pages-node-compat.js", import.meta.url);
@@ -69,9 +70,10 @@ export async function generateServerEntry(
       `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: api_${i} }`,
   );
 
-  // Check for _app and _document
+  // Check for _app, _document, and _error.
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
   const docFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
+  const errorFilePath = findFileWithExts(pagesDir, "_error", fileMatcher);
   // Embed the resolved _app path (or null) so the runtime can look it up
   // in the SSR manifest and include any CSS/JS chunks `_app` brings in
   // (e.g. global stylesheets imported by `_app.tsx`) alongside the page's
@@ -88,6 +90,13 @@ export async function generateServerEntry(
     docFilePath !== null
       ? `import { default as DocumentComponent } from ${JSON.stringify(normalizePathSeparators(docFilePath))};`
       : `const DocumentComponent = null;`;
+
+  const errorAssetPathJson =
+    errorFilePath !== null ? JSON.stringify(normalizePathSeparators(errorFilePath)) : "null";
+  const errorImportCode =
+    errorFilePath !== null
+      ? `import * as ErrorPageModule from ${JSON.stringify(normalizePathSeparators(errorFilePath))};`
+      : `const ErrorPageModule = null;`;
 
   // Serialize i18n config for embedding in the server entry
   const i18nConfigJson = nextConfig?.i18n
@@ -114,6 +123,11 @@ export async function generateServerEntry(
     headers: nextConfig?.headers ?? [],
     expireTime: nextConfig?.expireTime,
     i18n: nextConfig?.i18n ?? null,
+    // Mirrors Next.js `experimental.disableOptimizedLoading` — when false
+    // (the default), page scripts are emitted with `defer` in <head>. See
+    // `.nextjs-ref/packages/next/src/pages/_document.tsx` getScripts().
+    disableOptimizedLoading: nextConfig?.disableOptimizedLoading === true,
+    clientTraceMetadata: nextConfig?.clientTraceMetadata,
     images: {
       deviceSizes: nextConfig?.images?.deviceSizes,
       imageSizes: nextConfig?.images?.imageSizes,
@@ -241,6 +255,7 @@ import {
 } from ${JSON.stringify(_isrCachePath)};
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from ${JSON.stringify(_cspPath)};
 import { resolvePagesPageData as __resolvePagesPageData } from ${JSON.stringify(_pagesPageDataPath)};
+import { resolvePagesPageMethodResponse as __resolvePagesPageMethodResponse } from ${JSON.stringify(_pagesPageMethodPath)};
 import { buildNextDataJsonResponse as __buildNextDataJsonResponse, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse, isNextDataPathname as __isNextDataPathname, parseNextDataPathname as __parseNextDataPathname } from ${JSON.stringify(_pagesDataRoutePath)};
 import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
 import { renderPagesPageResponse as __renderPagesPageResponse } from ${JSON.stringify(_pagesPageResponsePath)};
@@ -339,11 +354,22 @@ ${apiImports.join("\n")}
 
 ${appImportCode}
 ${docImportCode}
+${errorImportCode}
 
 export const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
 ];
 const _pageRouteTrie = _buildRouteTrie(pageRoutes);
+const _errorPageRoute = ErrorPageModule
+  ? {
+      pattern: "/_error",
+      patternParts: ["_error"],
+      isDynamic: false,
+      params: [],
+      module: ErrorPageModule,
+      filePath: ${errorAssetPathJson},
+    }
+  : null;
 
 const apiRoutes = [
 ${apiRouteEntries.join(",\n")}
@@ -410,14 +436,39 @@ function patternToNextFormat(pattern) {
     .replace(/:([^\\/]+?)(?=\\/|$)/g, "[$1]");
 }
 
-function collectAssetTags(manifest, moduleIds, scriptNonce) {
+function resolveSsrManifest(manifest) {
   // Fall back to embedded manifest (set by vinext:cloudflare-build for Workers)
-  const m = (manifest && Object.keys(manifest).length > 0)
+  return (manifest && Object.keys(manifest).length > 0)
     ? manifest
     : (typeof globalThis !== "undefined" && globalThis.__VINEXT_SSR_MANIFEST__) || null;
+}
+
+function getManifestFilesForModule(manifest, moduleId) {
+  if (!manifest || !moduleId) return null;
+
+  var files = manifest[moduleId];
+  if (files) return files;
+
+  for (var key in manifest) {
+    if (moduleId.endsWith("/" + key) || moduleId === key) {
+      return manifest[key];
+    }
+  }
+  return null;
+}
+
+function collectAssetTags(manifest, moduleIds, scriptNonce) {
+  const m = resolveSsrManifest(manifest);
   const tags = [];
   const seen = new Set();
   const nonceAttr = __createNonceAttribute(scriptNonce);
+  // Mirrors Next.js \`_document\` behaviour: when \`experimental.disableOptimizedLoading\`
+  // is false (the default), page scripts are emitted with \`defer\` in <head>. See
+  // .nextjs-ref/packages/next/src/pages/_document.tsx getScripts() — \`defer={!disableOptimizedLoading}\`.
+  // vinext always emits \`type="module"\` (which already defers implicitly), but
+  // upstream tests (e.g. test/e2e/optimized-loading) assert the literal \`defer\`
+  // attribute, and adding it preserves parity without changing browser behaviour.
+  const deferAttr = vinextConfig.disableOptimizedLoading ? "" : " defer";
 
   // Load the set of lazy chunk filenames (only reachable via dynamic imports).
   // These should NOT get <link rel="modulepreload"> or <script type="module">
@@ -431,7 +482,7 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
     const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
     seen.add(entry);
     tags.push('<link rel="modulepreload"' + nonceAttr + ' href="/' + entry + '" />');
-    tags.push('<script type="module"' + nonceAttr + ' src="/' + entry + '" crossorigin></script>');
+    tags.push('<script type="module"' + deferAttr + nonceAttr + ' src="/' + entry + '" crossorigin></script>');
   }
   if (m) {
     // Always inject shared chunks (framework, vinext runtime, entry) and
@@ -447,18 +498,7 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
       // Collect assets for the requested page modules
       for (var mi = 0; mi < moduleIds.length; mi++) {
         var id = moduleIds[mi];
-        var files = m[id];
-        if (!files) {
-          // Absolute path didn't match — try matching by suffix.
-          // Manifest keys are relative (e.g. "pages/about.tsx") while
-          // moduleIds may be absolute (e.g. "/home/.../pages/about.tsx").
-          for (var mk in m) {
-            if (id.endsWith("/" + mk) || id === mk) {
-              files = m[mk];
-              break;
-            }
-          }
-        }
+        var files = getManifestFilesForModule(m, id);
         if (files) {
           for (var fi = 0; fi < files.length; fi++) allFiles.push(files[fi]);
         }
@@ -512,11 +552,23 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
         // (React.lazy, next/dynamic) and should only be fetched on demand.
         if (lazySet && lazySet.has(tf)) continue;
         tags.push('<link rel="modulepreload"' + nonceAttr + ' href="/' + tf + '" />');
-        tags.push('<script type="module"' + nonceAttr + ' src="/' + tf + '" crossorigin></script>');
+        tags.push('<script type="module"' + deferAttr + nonceAttr + ' src="/' + tf + '" crossorigin></script>');
       }
     }
   }
   return tags.join("\\n  ");
+}
+
+function resolveClientModuleUrl(manifest, moduleId) {
+  const files = getManifestFilesForModule(resolveSsrManifest(manifest), moduleId);
+  if (!files) return undefined;
+  for (var i = 0; i < files.length; i++) {
+    var file = files[i];
+    if (!file || !file.endsWith(".js")) continue;
+    if (file.charAt(0) !== "/") file = "/" + file;
+    return file;
+  }
+  return undefined;
 }
 
 export async function renderPage(request, url, manifest, ctx, middlewareHeaders, options) {
@@ -541,6 +593,14 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       }
     }
   }
+  const statusCode = options && typeof options.statusCode === "number" ? options.statusCode : undefined;
+  const asPath = options && typeof options.asPath === "string" ? options.asPath : undefined;
+  const renderErrorPageOnMiss = !(options && options.renderErrorPageOnMiss === false);
+  // Guard against infinite recursion when the user's custom 500/error page
+  // itself throws during render. When this flag is set, the catch block below
+  // returns the plain "Internal Server Error" text response instead of trying
+  // to render an error page again. Fixes #1458.
+  const isInternalErrorRender = !!(options && options.__isInternalErrorRender);
   const localeInfo = i18nConfig
     ? resolvePagesI18nRequest(
         url,
@@ -562,12 +622,35 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     return new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } });
   }
 
-  const match = matchRoute(routeUrl, pageRoutes);
+  // Internal error render path: caller has pinned a specific route (the
+  // user's pages/500 or pages/_error) to render in response to an SSR throw.
+  // Skip route matching so we don't accidentally double-route, and skip the
+  // missing-route 404 fallback. See catch block below. Fixes #1458.
+  let match = options && options.__forcedRoute
+    ? { route: options.__forcedRoute, params: {} }
+    : matchRoute(routeUrl, pageRoutes);
+  let renderStatusCodeOverride = statusCode;
+  let renderAsPath = asPath;
   if (!match) {
     if (isDataReq) {
       return __buildNextDataNotFoundResponse();
     }
-    return __buildDefaultPagesNotFoundResponse();
+    if (!renderErrorPageOnMiss) {
+      return __buildDefaultPagesNotFoundResponse();
+    }
+    const notFoundMatch = matchRoute("/404", pageRoutes);
+    // matchRoute may match a catch-all (e.g. [...slug]); only use the explicit pages/404 route.
+    if (notFoundMatch && notFoundMatch.route.pattern === "/404") {
+      match = notFoundMatch;
+      renderStatusCodeOverride = 404;
+      renderAsPath = routeUrl;
+    } else if (_errorPageRoute) {
+      match = { route: _errorPageRoute, params: {} };
+      renderStatusCodeOverride = 404;
+      renderAsPath = routeUrl;
+    } else {
+      return __buildDefaultPagesNotFoundResponse();
+    }
   }
 
   const { route, params } = match;
@@ -578,12 +661,13 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     ensureFetchPatch();
     try {
       const routePattern = patternToNextFormat(route.pattern);
+      const renderStatusCode = renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
       const query = mergeRouteParamsIntoQuery(parseQuery(routeUrl), params);
       if (typeof setSSRContext === "function") {
         setSSRContext({
           pathname: routePattern,
           query,
-          asPath: routeUrl,
+          asPath: renderAsPath || routeUrl,
           locale: locale,
           locales: i18nConfig ? i18nConfig.locales : undefined,
           defaultLocale: currentDefaultLocale,
@@ -606,6 +690,31 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       if (!PageComponent) {
         return new Response("Page has no default export", { status: 500 });
       }
+
+      // Refs #1463: reject non-GET/HEAD methods on static (no
+      // getServerSideProps) Pages routes with 405 + Allow: GET, HEAD.
+      // Skip for error/status pages (/_error, /404, /500), data requests
+      // (those go through the JSON envelope path and have their own shape),
+      // and renders that are already an error-page miss-render override.
+      // Mirrors Next.js's base-server.ts L2277 carve-outs.
+      if (
+        !isDataReq &&
+        routePattern !== "/_error" &&
+        routePattern !== "/404" &&
+        routePattern !== "/500" &&
+        renderStatusCodeOverride === undefined
+      ) {
+        const methodResponse = __resolvePagesPageMethodResponse({
+          hasGetServerSideProps: typeof pageModule.getServerSideProps === "function",
+          method: request.method,
+        });
+        if (methodResponse) {
+          return methodResponse;
+        }
+      }
+
+      const pageModuleUrl = resolveClientModuleUrl(manifest, route.filePath);
+      const appModuleUrl = resolveClientModuleUrl(manifest, _appAssetPath);
       const scriptNonce = __getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
       // Build font Link header early so it's available for ISR cached responses too.
       // Font preloads are module-level state populated at import time and persist across requests.
@@ -626,7 +735,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
             setSSRContext({
               pathname: routePattern,
               query,
-              asPath: routeUrl,
+              asPath: renderAsPath || routeUrl,
               locale: locale,
               locales: i18nConfig ? i18nConfig.locales : undefined,
               defaultLocale: currentDefaultLocale,
@@ -692,13 +801,21 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         safeJsonStringify,
         sanitizeDestination: sanitizeDestinationLocal,
         scriptNonce,
-        vinext: { hasMiddleware: __hasMiddleware },
+        statusCode: renderStatusCode,
         triggerBackgroundRegeneration,
+        vinext: {
+          pageModuleUrl,
+          appModuleUrl,
+          hasMiddleware: __hasMiddleware,
+        },
       });
       if (pageDataResult.kind === "response") {
         return pageDataResult.response;
       }
       let pageProps = pageDataResult.pageProps;
+      if (routePattern === "/_error" && typeof renderStatusCode === "number") {
+        pageProps = { ...pageProps, statusCode: renderStatusCode };
+      }
       var gsspRes = pageDataResult.gsspRes;
       let isrRevalidateSeconds = pageDataResult.isrRevalidateSeconds;
       const isFallbackRender = pageDataResult.isFallback === true;
@@ -711,7 +828,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         setSSRContext({
           pathname: routePattern,
           query,
-          asPath: routeUrl,
+          asPath: renderAsPath || routeUrl,
           locale: locale,
           locales: i18nConfig ? i18nConfig.locales : undefined,
           defaultLocale: currentDefaultLocale,
@@ -807,6 +924,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
           }
         },
         getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
+        clientTraceMetadata: vinextConfig.clientTraceMetadata,
         gsspRes,
         isrCacheKey,
         expireSeconds: vinextConfig.expireTime,
@@ -832,7 +950,12 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         routeUrl,
         safeJsonStringify,
         scriptNonce,
-        vinext: { hasMiddleware: __hasMiddleware },
+        statusCode: renderStatusCode,
+        vinext: {
+          pageModuleUrl,
+          appModuleUrl,
+          hasMiddleware: __hasMiddleware,
+        },
       });
     } catch (e) {
       console.error("[vinext] SSR error:", e);
@@ -841,6 +964,37 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
       ).catch(() => { /* ignore reporting errors */ });
+      // Data (_next/data) requests can't render HTML, and avoid recursion if
+      // we're already in the middle of rendering the error page itself.
+      // Mirrors Next.js base-server.ts which renders /500 (or _error) when
+      // SSR throws. Fixes #1458.
+      if (!isInternalErrorRender && !isDataReq) {
+        // Look for an explicit pages/500.tsx first, then fall back to _error.
+        // Only match the literal /500 pattern — never a catch-all/dynamic route.
+        let errorRoute = null;
+        for (var __i = 0; __i < pageRoutes.length; __i++) {
+          if (pageRoutes[__i].pattern === "/500") {
+            errorRoute = pageRoutes[__i];
+            break;
+          }
+        }
+        if (!errorRoute && _errorPageRoute) {
+          errorRoute = _errorPageRoute;
+        }
+        if (errorRoute) {
+          try {
+            return await _renderPage(request, url, manifest, middlewareHeaders, {
+              statusCode: 500,
+              asPath: url,
+              renderErrorPageOnMiss: false,
+              __isInternalErrorRender: true,
+              __forcedRoute: errorRoute,
+            });
+          } catch (errorPageErr) {
+            console.error("[vinext] Error page render failed:", errorPageErr);
+          }
+        }
+      }
       return new Response("Internal Server Error", { status: 500 });
     }
   });

@@ -1,4 +1,9 @@
-import { createInlineScriptTag, safeJsonStringify } from "./html.js";
+import {
+  createInlineScriptTag,
+  escapeHtmlAttr,
+  htmlTokenListContains,
+  safeJsonStringify,
+} from "./html.js";
 import {
   bytesToBase64,
   concatUint8Arrays,
@@ -15,6 +20,11 @@ type RscEmbedTransform = {
 };
 
 type HtmlInsertion = string | (() => string);
+type InlineCssManifest = Record<string, string>;
+type InlineCssRewriteResult = {
+  html: string;
+  consumedPrependCss: boolean;
+};
 
 const NAVIGATION_RUNTIME_REFERENCE = `self[Symbol.for(${safeJsonStringify(
   NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION,
@@ -143,6 +153,206 @@ export function fixPreloadAs(html: string): string {
   );
 }
 
+// These `g`-flag regexes carry mutable `lastIndex` state. Every consumer below
+// resets `lastIndex` before use, which is safe only because they run to
+// completion synchronously within a single call. They must not be shared across
+// concurrent/interleaved call paths.
+const LINK_TAG_RE = /<link\b[^>]*>/gi;
+const HTML_REWRITE_EXCLUDED_REGION_RE =
+  /<!--[\s\S]*?-->|<(script|style|textarea|title)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+const HTML_REWRITE_EXCLUDED_REGION_START_RE = /<!--|<(script|style|textarea|title)\b[^>]*>/gi;
+
+function getHtmlAttribute(tag: string, name: string): string | null {
+  const attrRe = /\s([^\s"'=<>`]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = attrRe.exec(tag)) !== null) {
+    if (match[1]?.toLowerCase() !== name.toLowerCase()) continue;
+    return match[2] ?? match[3] ?? match[4] ?? "";
+  }
+
+  return null;
+}
+
+function htmlAttributeHasToken(tag: string, name: string, token: string): boolean {
+  return htmlTokenListContains(getHtmlAttribute(tag, name), token);
+}
+
+function getInlineCss(manifest: InlineCssManifest, href: string): string | null {
+  if (Object.prototype.hasOwnProperty.call(manifest, href)) {
+    return manifest[href] ?? "";
+  }
+
+  try {
+    const pathname = new URL(href).pathname;
+    if (Object.prototype.hasOwnProperty.call(manifest, pathname)) {
+      return manifest[pathname] ?? "";
+    }
+  } catch {
+    // Relative asset URLs are looked up by their emitted href.
+  }
+
+  return null;
+}
+
+// Module-level regex; consumers reset `lastIndex` before each scan. Same
+// shared-state constraint as the other `g`-flag regexes above.
+const TRAILING_LINK_OPEN_RE = /<link/gi;
+
+function splitTrailingIncompleteLinkTag(html: string): { complete: string; trailing: string } {
+  // Scan forward to find the last `<link` opening without allocating a
+  // lowercased copy of `html` — this runs on every flush of the streaming
+  // hot path, and `html` can be tens of KB.
+  TRAILING_LINK_OPEN_RE.lastIndex = 0;
+  let lastIndex = -1;
+  let match: RegExpExecArray | null;
+  while ((match = TRAILING_LINK_OPEN_RE.exec(html)) !== null) {
+    lastIndex = match.index;
+  }
+  if (lastIndex === -1) return { complete: html, trailing: "" };
+  const close = html.indexOf(">", lastIndex);
+  if (close !== -1) return { complete: html, trailing: "" };
+  return {
+    complete: html.slice(0, lastIndex),
+    trailing: html.slice(lastIndex),
+  };
+}
+
+function findTrailingOpenHtmlRewriteExcludedRegionStart(html: string): number | null {
+  let match: RegExpExecArray | null;
+
+  HTML_REWRITE_EXCLUDED_REGION_START_RE.lastIndex = 0;
+  while ((match = HTML_REWRITE_EXCLUDED_REGION_START_RE.exec(html)) !== null) {
+    const start = match.index;
+    if (match[0] === "<!--") {
+      const close = html.indexOf("-->", HTML_REWRITE_EXCLUDED_REGION_START_RE.lastIndex);
+      if (close === -1) return start;
+      HTML_REWRITE_EXCLUDED_REGION_START_RE.lastIndex = close + 3;
+      continue;
+    }
+
+    const tagName = match[1]?.toLowerCase();
+    if (!tagName) continue;
+
+    const closeTagRe = new RegExp(`</${tagName}\\s*>`, "i");
+    const close = closeTagRe.exec(html.slice(HTML_REWRITE_EXCLUDED_REGION_START_RE.lastIndex));
+    if (!close) return start;
+    HTML_REWRITE_EXCLUDED_REGION_START_RE.lastIndex += close.index + close[0].length;
+  }
+
+  return null;
+}
+
+function splitTrailingInlineCssRewriteBoundary(html: string): {
+  complete: string;
+  trailing: string;
+} {
+  const linkSplit = splitTrailingIncompleteLinkTag(html);
+  const incompleteLinkStart = linkSplit.trailing ? linkSplit.complete.length : null;
+  const openRegionStart = findTrailingOpenHtmlRewriteExcludedRegionStart(html);
+  const trailingStart =
+    incompleteLinkStart === null
+      ? openRegionStart
+      : openRegionStart === null
+        ? incompleteLinkStart
+        : Math.min(incompleteLinkStart, openRegionStart);
+
+  if (trailingStart === null) return { complete: html, trailing: "" };
+
+  return {
+    complete: html.slice(0, trailingStart),
+    trailing: html.slice(trailingStart),
+  };
+}
+
+function escapeStyleText(css: string): string {
+  return css.replace(/<\/style/gi, "<\\/style");
+}
+
+const CSS_PREPEND_UNSAFE_PREAMBLE_RE =
+  /^\uFEFF?(?:\s|\/\*[\s\S]*?\*\/)*@(charset|import|layer|namespace)\b/i;
+
+function canPrependCss(css: string): boolean {
+  return !CSS_PREPEND_UNSAFE_PREAMBLE_RE.test(css);
+}
+
+function replaceLinkTags(html: string, replaceLinkTag: (tag: string) => string): string {
+  LINK_TAG_RE.lastIndex = 0;
+  return html.replace(LINK_TAG_RE, replaceLinkTag);
+}
+
+function replaceLinkTagsOutsideRawText(
+  html: string,
+  replaceLinkTag: (tag: string) => string,
+): string {
+  let rewritten = "";
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  HTML_REWRITE_EXCLUDED_REGION_RE.lastIndex = 0;
+  while ((match = HTML_REWRITE_EXCLUDED_REGION_RE.exec(html)) !== null) {
+    rewritten += replaceLinkTags(html.slice(cursor, match.index), replaceLinkTag);
+    rewritten += match[0];
+    cursor = match.index + match[0].length;
+  }
+
+  const tail = html.slice(cursor);
+  const openRegionStart = findTrailingOpenHtmlRewriteExcludedRegionStart(tail);
+  if (openRegionStart === null) {
+    return rewritten + replaceLinkTags(tail, replaceLinkTag);
+  }
+
+  return (
+    rewritten +
+    replaceLinkTags(tail.slice(0, openRegionStart), replaceLinkTag) +
+    tail.slice(openRegionStart)
+  );
+}
+
+function rewriteInlineCssStylesheetLinks(
+  html: string,
+  inlineCssManifest: InlineCssManifest | undefined,
+  prependCss: string,
+  ssrScriptNonce: string | undefined,
+): InlineCssRewriteResult {
+  if (!inlineCssManifest || Object.keys(inlineCssManifest).length === 0) {
+    return { html, consumedPrependCss: false };
+  }
+  let consumedPrependCss = false;
+
+  const rewritten = replaceLinkTagsOutsideRawText(html, (tag) => {
+    if (!htmlAttributeHasToken(tag, "rel", "stylesheet")) return tag;
+
+    const href = getHtmlAttribute(tag, "href");
+    const precedence =
+      getHtmlAttribute(tag, "data-precedence") ?? getHtmlAttribute(tag, "precedence");
+    if (!href || !precedence) return tag;
+
+    const css = getInlineCss(inlineCssManifest, href);
+    if (css === null) return tag;
+
+    // Prefer the link's own nonce if Fizz emitted one; otherwise fall back to
+    // the SSR-time script/style nonce so sites with CSP `style-src 'nonce-…'`
+    // policies don't block the inlined `<style>` block. The `<link>` tag this
+    // replaces wasn't subject to inline-style CSP, but the new `<style>` is.
+    const linkNonce = getHtmlAttribute(tag, "nonce");
+    const effectiveNonce = linkNonce ?? ssrScriptNonce;
+    const nonceAttr = effectiveNonce ? ` nonce="${escapeHtmlAttr(effectiveNonce)}"` : "";
+    const shouldPrependCss = !consumedPrependCss && prependCss.length > 0 && canPrependCss(css);
+    const cssPrefix = shouldPrependCss ? `${prependCss}\n` : "";
+    consumedPrependCss ||= cssPrefix.length > 0;
+
+    return (
+      `<style data-vinext-inline-css${nonceAttr}` +
+      ` data-precedence="${escapeHtmlAttr(precedence)}"` +
+      ` data-href="${escapeHtmlAttr(href)}">` +
+      `${escapeStyleText(cssPrefix + css)}</style>`
+    );
+  });
+
+  return { html: rewritten, consumedPrependCss };
+}
+
 /**
  * Match the `<head ...>` opening tag in a chunk. Matches both bare `<head>`
  * and `<head class="foo">` shapes. Used to splice HTML immediately after the
@@ -182,6 +392,10 @@ export function createTickBufferedTransform(
   rscEmbed: RscEmbedTransform,
   injectHTML: HtmlInsertion = "",
   injectAfterHeadOpenHTML: HtmlInsertion = "",
+  inlineCssManifest?: InlineCssManifest,
+  inlineCssPrependCss = "",
+  inlineCssPrependFallbackHTML = "",
+  inlineCssScriptNonce?: string,
 ): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
@@ -189,15 +403,26 @@ export function createTickBufferedTransform(
   let injected = false;
   let preHeadInjected = false;
   let buffered: string[] = [];
+  let pendingHtml = "";
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  // Computed once at transform creation: every flush is a hot path, so we
+  // avoid re-running Object.keys() on the manifest per chunk. Gates both the
+  // split-link boundary buffering and the inline-css link rewrite below.
+  const hasInlineCssManifest =
+    inlineCssManifest !== undefined && Object.keys(inlineCssManifest).length > 0;
   const readInsertion = (): string =>
     typeof injectHTML === "function" ? injectHTML() : injectHTML;
   const readPreHeadInsertion = (): string =>
     typeof injectAfterHeadOpenHTML === "function"
       ? injectAfterHeadOpenHTML()
       : injectAfterHeadOpenHTML;
+  const readInlineCssPrependFallback = (): string => {
+    if (!inlineCssPrependCss || !inlineCssPrependFallbackHTML) return "";
+    inlineCssPrependCss = "";
+    return inlineCssPrependFallbackHTML;
+  };
   const emitInsertion = (controller: TransformStreamDefaultController<Uint8Array>): void => {
-    const insertion = readInsertion();
+    const insertion = readInlineCssPrependFallback() + readInsertion();
     if (insertion) {
       controller.enqueue(encoder.encode(insertion));
     }
@@ -209,11 +434,11 @@ export function createTickBufferedTransform(
    * rewritten chunk and a flag indicating whether the splice happened, so the
    * caller can mark `preHeadInjected` and stop scanning further chunks.
    *
-   * NOTE: This is called only when `<head ...>` lies fully inside `chunk` —
-   * we deliberately avoid stitching across chunk boundaries because doing so
-   * would force the transform to hold output until it had seen `<head ...>`,
-   * which both delays TTFB and complicates the existing `</head>` injection
-   * path. In practice React Fizz emits the opening shell as a single chunk.
+   * NOTE: This is called only when `<head ...>` lies fully inside the current
+   * tick-buffered batch. We deliberately avoid retaining arbitrary output until
+   * a future chunk completes `<head ...>`, which would delay TTFB and complicate
+   * the existing `</head>` injection path. In practice React Fizz emits the
+   * opening shell as a single batch.
    */
   const spliceAfterHeadOpen = (chunk: string): { chunk: string; spliced: boolean } => {
     if (preHeadInjected) return { chunk, spliced: false };
@@ -228,8 +453,23 @@ export function createTickBufferedTransform(
     };
   };
 
-  const flushBuffered = (controller: TransformStreamDefaultController<Uint8Array>): void => {
-    if (buffered.length === 0) return;
+  const flushBuffered = (
+    controller: TransformStreamDefaultController<Uint8Array>,
+    final = false,
+  ): void => {
+    if (buffered.length === 0 && !pendingHtml) return;
+    const rawHtml = pendingHtml + buffered.join("");
+    buffered = [];
+    pendingHtml = "";
+
+    const split =
+      final || !hasInlineCssManifest
+        ? { complete: rawHtml, trailing: "" }
+        : splitTrailingInlineCssRewriteBoundary(rawHtml);
+    if (split.trailing) {
+      pendingHtml = split.trailing;
+    }
+    if (!split.complete) return;
 
     if (injected && insertsPerFlush) {
       // Emit newly collected server-inserted HTML before the next Fizz HTML
@@ -237,33 +477,45 @@ export function createTickBufferedTransform(
       emitInsertion(controller);
     }
 
-    for (const chunk of buffered) {
-      let working = chunk;
-      if (!preHeadInjected) {
-        const result = spliceAfterHeadOpen(working);
-        if (result.spliced) {
-          working = result.chunk;
-          preHeadInjected = true;
-        }
-      }
-      if (!injected) {
-        const headEnd = working.indexOf("</head>");
-        if (headEnd !== -1) {
-          const before = working.slice(0, headEnd);
-          const after = working.slice(headEnd);
-          controller.enqueue(encoder.encode(before + readInsertion() + after));
-          injected = true;
-          continue;
-        }
-      }
-      controller.enqueue(encoder.encode(working));
+    const preparedHtml = fixPreloadAs(split.complete);
+    const inlineCssResult = hasInlineCssManifest
+      ? rewriteInlineCssStylesheetLinks(
+          preparedHtml,
+          inlineCssManifest,
+          inlineCssPrependCss,
+          inlineCssScriptNonce,
+        )
+      : { html: preparedHtml, consumedPrependCss: false };
+    if (inlineCssResult.consumedPrependCss) {
+      inlineCssPrependCss = "";
     }
-    buffered = [];
+
+    let working = inlineCssResult.html;
+    if (!preHeadInjected) {
+      const result = spliceAfterHeadOpen(working);
+      if (result.spliced) {
+        working = result.chunk;
+        preHeadInjected = true;
+      }
+    }
+    if (!injected) {
+      const headEnd = working.indexOf("</head>");
+      if (headEnd !== -1) {
+        const before = working.slice(0, headEnd);
+        const after = working.slice(headEnd);
+        controller.enqueue(
+          encoder.encode(before + readInlineCssPrependFallback() + readInsertion() + after),
+        );
+        injected = true;
+        return;
+      }
+    }
+    controller.enqueue(encoder.encode(working));
   };
 
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
-      buffered.push(fixPreloadAs(decoder.decode(chunk, { stream: true })));
+      buffered.push(decoder.decode(chunk, { stream: true }));
 
       if (timeoutId !== null) return;
 
@@ -290,8 +542,12 @@ export function createTickBufferedTransform(
         clearTimeout(timeoutId);
         timeoutId = null;
       }
+      const remainder = decoder.decode();
+      if (remainder) {
+        buffered.push(remainder);
+      }
 
-      flushBuffered(controller);
+      flushBuffered(controller, true);
 
       if (!injected) {
         emitInsertion(controller);

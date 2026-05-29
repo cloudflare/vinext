@@ -600,6 +600,47 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     expect(config.aliases).toEqual({});
   });
 
+  it("invokes webpack loader callbacks so build-time process.env mutations land in the Node process", async () => {
+    // Regression test for #1500.
+    // Some Next.js webpack loaders mutate `process.env.X = ...` at build
+    // time, expecting the value to be visible to other modules during the
+    // same build. vinext doesn't run the webpack loader pipeline, so the
+    // env mutation never happens. We compensate by invoking each loader's
+    // callback once during config probing with a dummy source.
+    tmpDir = makeTempDir();
+
+    const loaderPath = path.join(tmpDir, "vinext-1500-loader.cjs");
+    fs.writeFileSync(
+      loaderPath,
+      `module.exports = function (source) {\n` +
+        `  process.env.VINEXT_ISSUE_1500_LOADER_RAN = "yes";\n` +
+        `  return source;\n` +
+        `};\n`,
+    );
+
+    const previous = process.env.VINEXT_ISSUE_1500_LOADER_RAN;
+    delete process.env.VINEXT_ISSUE_1500_LOADER_RAN;
+    try {
+      const rawConfig = {
+        webpack: (webpackConfig: any) => {
+          webpackConfig.module = webpackConfig.module || { rules: [] };
+          webpackConfig.module.rules.push({
+            test: /\.svg$/,
+            use: [loaderPath],
+          });
+          return webpackConfig;
+        },
+      };
+
+      await resolveNextConfig(rawConfig, tmpDir);
+
+      expect(process.env.VINEXT_ISSUE_1500_LOADER_RAN).toBe("yes");
+    } finally {
+      if (previous === undefined) delete process.env.VINEXT_ISSUE_1500_LOADER_RAN;
+      else process.env.VINEXT_ISSUE_1500_LOADER_RAN = previous;
+    }
+  });
+
   it("extracts aliases and mdx from a single async webpack probe", async () => {
     tmpDir = makeTempDir();
 
@@ -781,6 +822,21 @@ describe("resolveNextConfig serverActionsBodySizeLimit", () => {
     });
     expect(resolved.serverActionsBodySizeLimit).toBe(5242880);
   });
+
+  // Regression for #1519: `experimental.disableOptimizedLoading` defaults to
+  // `false` and is read into the resolved config. The default drives the
+  // `defer`-in-head behaviour for Pages Router scripts in production.
+  it("defaults disableOptimizedLoading to false", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.disableOptimizedLoading).toBe(false);
+  });
+
+  it("reads experimental.disableOptimizedLoading from next.config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { disableOptimizedLoading: true },
+    });
+    expect(resolved.disableOptimizedLoading).toBe(true);
+  });
 });
 
 describe("resolveNextConfig hashSalt", () => {
@@ -829,6 +885,184 @@ describe("resolveNextConfig hashSalt", () => {
     process.env.NEXT_HASH_SALT = "onlyenv";
     const resolved = await resolveNextConfig({ env: {} });
     expect(resolved.hashSalt).toBe("onlyenv");
+  });
+});
+
+describe("resolveNextConfig instrumentationClientInject", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(path.join(tmpDir, "package.json"), `{ "type": "module" }\n`);
+  });
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("loads instrumentationClientInject from next.config.mjs", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { instrumentationClientInject: ["./inject-a.js", "./inject-b.js"] };\n`,
+    );
+    const raw = await loadNextConfig(tmpDir);
+    const resolved = await resolveNextConfig(raw, tmpDir);
+    expect(resolved.instrumentationClientInject).toEqual(["./inject-a.js", "./inject-b.js"]);
+  });
+});
+
+describe("resolveNextConfig clientTraceMetadata", () => {
+  it("defaults to undefined when no config is provided", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.clientTraceMetadata).toBeUndefined();
+  });
+
+  it("defaults to undefined when experimental is not set", async () => {
+    const resolved = await resolveNextConfig({ env: {} });
+    expect(resolved.clientTraceMetadata).toBeUndefined();
+  });
+
+  it("defaults to undefined when experimental.clientTraceMetadata is omitted", async () => {
+    const resolved = await resolveNextConfig({ experimental: {} });
+    expect(resolved.clientTraceMetadata).toBeUndefined();
+  });
+
+  it("resolves a string array from experimental.clientTraceMetadata", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: {
+        clientTraceMetadata: ["my-test-key-1", "my-test-key-2", "my-parent-span-id"],
+      },
+    });
+    expect(resolved.clientTraceMetadata).toEqual([
+      "my-test-key-1",
+      "my-test-key-2",
+      "my-parent-span-id",
+    ]);
+  });
+
+  it("filters out non-string entries", async () => {
+    const resolved = await resolveNextConfig({
+      // oxlint-disable-next-line typescript/no-explicit-any
+      experimental: { clientTraceMetadata: ["valid-key", 42, null, "another-key"] as any },
+    });
+    expect(resolved.clientTraceMetadata).toEqual(["valid-key", "another-key"]);
+  });
+
+  it("returns undefined for a non-array value", async () => {
+    const resolved = await resolveNextConfig({
+      // oxlint-disable-next-line typescript/no-explicit-any
+      experimental: { clientTraceMetadata: "not-an-array" as any },
+    });
+    expect(resolved.clientTraceMetadata).toBeUndefined();
+  });
+
+  it("resolves to an empty array when experimental.clientTraceMetadata is an empty array", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { clientTraceMetadata: [] },
+    });
+    expect(resolved.clientTraceMetadata).toEqual([]);
+  });
+});
+
+describe("resolveNextConfig removeConsole", () => {
+  it("resolves `compiler: { removeConsole: true }` to `true`", async () => {
+    const resolved = await resolveNextConfig({ compiler: { removeConsole: true } });
+    expect(resolved.removeConsole).toBe(true);
+  });
+
+  it("resolves `compiler: { removeConsole: { exclude: ['error'] } }` to the same shape", async () => {
+    const resolved = await resolveNextConfig({
+      compiler: { removeConsole: { exclude: ["error"] } },
+    });
+    expect(resolved.removeConsole).toEqual({ exclude: ["error"] });
+  });
+
+  it("resolves `compiler: { removeConsole: {} }` to `{ exclude: [] }`", async () => {
+    const resolved = await resolveNextConfig({ compiler: { removeConsole: {} } });
+    expect(resolved.removeConsole).toEqual({ exclude: [] });
+  });
+
+  it("resolves missing `compiler` to `false`", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.removeConsole).toBe(false);
+  });
+
+  it("resolves `compiler: {}` (no removeConsole key) to `false`", async () => {
+    const resolved = await resolveNextConfig({ compiler: {} });
+    expect(resolved.removeConsole).toBe(false);
+  });
+
+  it("resolves `compiler: { removeConsole: false }` to `false`", async () => {
+    const resolved = await resolveNextConfig({ compiler: { removeConsole: false } });
+    expect(resolved.removeConsole).toBe(false);
+  });
+
+  it("coerces non-string entries in `exclude` away (sanitization)", async () => {
+    const resolved = await resolveNextConfig({
+      // oxlint-disable-next-line typescript/no-explicit-any
+      compiler: { removeConsole: { exclude: ["error", 42, null, "warn"] as any } },
+    });
+    expect(resolved.removeConsole).toEqual({ exclude: ["error", "warn"] });
+  });
+});
+
+// Ported from Next.js: test/e2e/define/define.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/define/define.test.ts
+describe("resolveNextConfig compiler.define / defineServer", () => {
+  it("defaults to empty maps when `compiler` is unset", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.compilerDefine).toEqual({});
+    expect(resolved.compilerDefineServer).toEqual({});
+  });
+
+  it("JSON-stringifies string, number, and boolean values for `define`", async () => {
+    const resolved = await resolveNextConfig({
+      compiler: {
+        define: {
+          MY_MAGIC_VARIABLE: "foobar",
+          "process.env.MY_MAGIC_EXPR": "barbaz",
+          MY_NUMBER_VARIABLE: 42,
+          MY_BOOLEAN_VARIABLE: true,
+        },
+      },
+    });
+    expect(resolved.compilerDefine).toEqual({
+      MY_MAGIC_VARIABLE: '"foobar"',
+      "process.env.MY_MAGIC_EXPR": '"barbaz"',
+      MY_NUMBER_VARIABLE: "42",
+      MY_BOOLEAN_VARIABLE: "true",
+    });
+    expect(resolved.compilerDefineServer).toEqual({});
+  });
+
+  it("JSON-stringifies values for `defineServer` and keeps them separate from `define`", async () => {
+    const resolved = await resolveNextConfig({
+      compiler: {
+        define: { CLIENT_SAFE: "shared" },
+        defineServer: {
+          MY_SERVER_VARIABLE: "server",
+          "process.env.MY_MAGIC_SERVER_EXPR": "serverbarbaz",
+        },
+      },
+    });
+    expect(resolved.compilerDefine).toEqual({ CLIENT_SAFE: '"shared"' });
+    expect(resolved.compilerDefineServer).toEqual({
+      MY_SERVER_VARIABLE: '"server"',
+      "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
+    });
+  });
+
+  it("ignores entries whose values are not string/number/boolean", async () => {
+    const resolved = await resolveNextConfig({
+      compiler: {
+        // oxlint-disable-next-line typescript/no-explicit-any
+        define: { OK: "yes", BAD_OBJ: { nope: 1 } as any, BAD_NULL: null as any },
+        // oxlint-disable-next-line typescript/no-explicit-any
+        defineServer: { OK_SRV: 1, BAD_ARR: [1, 2] as any },
+      },
+    });
+    expect(resolved.compilerDefine).toEqual({ OK: '"yes"' });
+    expect(resolved.compilerDefineServer).toEqual({ OK_SRV: "1" });
   });
 });
 
@@ -941,6 +1175,7 @@ describe("detectNextIntlConfig", () => {
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
       optimizePackageImports: [],
+      inlineCss: false,
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
       htmlLimitedBots: undefined,
       serverExternalPackages: [],
@@ -952,6 +1187,13 @@ describe("detectNextIntlConfig", () => {
       buildId: "test-build-id",
       deploymentId: undefined,
       sassOptions: null,
+      removeConsole: false,
+      disableOptimizedLoading: false,
+      compilerDefine: {},
+      compilerDefineServer: {},
+      instrumentationClientInject: [],
+      clientTraceMetadata: undefined,
+      staleTimes: { dynamic: 0, static: 300 },
       ...overrides,
     };
   }
@@ -1485,5 +1727,58 @@ describe("resolveNextConfig enablePrerenderSourceMaps", () => {
       enablePrerenderSourceMaps: false,
     });
     expect(resolved.enablePrerenderSourceMaps).toBe(false);
+  });
+});
+
+// Regression for issue #1490:
+// experimental.staleTimes should be surfaced through ResolvedNextConfig so the
+// plugin can inject the values into the client-side router cache.
+describe("resolveNextConfig staleTimes (#1490)", () => {
+  it("defaults to Next.js' { dynamic: 0, static: 300 } when no config is provided", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.staleTimes).toEqual({ dynamic: 0, static: 300 });
+  });
+
+  it("defaults to Next.js' { dynamic: 0, static: 300 } when experimental is not set", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.staleTimes).toEqual({ dynamic: 0, static: 300 });
+  });
+
+  it("reads experimental.staleTimes.{dynamic,static} verbatim (in seconds)", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { staleTimes: { dynamic: 30, static: 180 } },
+    });
+    expect(resolved.staleTimes).toEqual({ dynamic: 30, static: 180 });
+  });
+
+  it("falls back to defaults for individually-omitted keys", async () => {
+    const resolvedDynOnly = await resolveNextConfig({
+      experimental: { staleTimes: { dynamic: 45 } },
+    });
+    expect(resolvedDynOnly.staleTimes).toEqual({ dynamic: 45, static: 300 });
+
+    const resolvedStaticOnly = await resolveNextConfig({
+      experimental: { staleTimes: { static: 600 } },
+    });
+    expect(resolvedStaticOnly.staleTimes).toEqual({ dynamic: 0, static: 600 });
+  });
+
+  it("falls back to defaults when staleTimes contains non-numeric values", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: {
+        staleTimes: { dynamic: "oops" as unknown as number, static: undefined },
+      },
+    });
+    expect(resolved.staleTimes).toEqual({ dynamic: 0, static: 300 });
+  });
+
+  it("falls back to defaults when staleTimes contains negative values", async () => {
+    // Negative values are rejected at resolution time so we don't pass them
+    // downstream to `resolvePrefetchCacheTtl`, where they'd be re-validated.
+    // Matches the `seconds < 0` guard in `shims/navigation.ts`.
+    const resolved = await resolveNextConfig({
+      experimental: { staleTimes: { dynamic: -5, static: -1 } },
+    });
+    expect(resolved.staleTimes).toEqual({ dynamic: 0, static: 300 });
   });
 });

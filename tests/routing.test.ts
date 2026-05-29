@@ -108,6 +108,36 @@ describe("pagesRouter - route discovery", () => {
     expect(patterns).not.toContain("/_error");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/underscore-ignore-app-paths
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/underscore-ignore-app-paths/underscore-ignore-app-paths.test.ts
+  it("serves pages/_foo.tsx even when app/ also exists", async () => {
+    await withTempDir("vinext-pages-underscore-mixed-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(pagesDir, { recursive: true });
+      await mkdir(appDir, { recursive: true });
+      await writeFile(path.join(pagesDir, "_dashboard.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(pagesDir, "_hidden.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(pagesDir, "index.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+
+      invalidateRouteCache(pagesDir);
+      const routes = await pagesRouter(pagesDir);
+      const patterns = routes.map((r) => r.pattern);
+
+      // Pages Router: underscore-prefixed pages SHOULD be discovered
+      expect(patterns).toContain("/_dashboard");
+      expect(patterns).toContain("/_hidden");
+      expect(patterns).toContain("/");
+
+      // App Router: underscore-prefixed folders should still be ignored
+      invalidateAppRouteCache();
+      const appRoutes = await appRouter(appDir);
+      const appPatterns = appRoutes.map((r) => r.pattern);
+      expect(appPatterns).toContain("/");
+    });
+  });
+
   it("rejects non-terminal catch-all routes during discovery", async () => {
     await withTempDir("vinext-pages-nonterminal-catchall-", async (tmpDir) => {
       const pagesDir = path.join(tmpDir, "pages");

@@ -29,6 +29,10 @@ import {
   type PagesDataTarget,
 } from "./internal/pages-data-target.js";
 import { buildPagesDataHref } from "./internal/pages-data-url.js";
+import {
+  getPagesRouterComponentsMap,
+  markAppRouteDetectedOnPrefetch,
+} from "./internal/app-route-detection.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import { isUnknownRecord } from "../utils/record.js";
 import {
@@ -166,6 +170,8 @@ function resolveUrl(url: string | UrlObject): string {
  * data fetching, as for the browser URL). We collapse them because vinext's
  * navigateClient() fetches HTML from the target URL, so `as` must be a
  * server-resolvable path. Purely decorative `as` values are not supported.
+ * Pages error routes are handled as a narrow exception below because Next.js
+ * treats their href as the component route while preserving `as` in history.
  */
 function resolveNavigationTarget(
   url: string | UrlObject,
@@ -181,6 +187,54 @@ function getCurrentUrlLocale(): string | undefined {
     domainLocales: getDomainLocales(),
     hostname: getCurrentHostname(),
   });
+}
+
+function getLocalPathname(url: string): string | null {
+  if (typeof window === "undefined") return null;
+  if (isAbsoluteOrProtocolRelativeUrl(url)) {
+    const localPath = toSameOriginAppPath(url, __basePath);
+    if (localPath == null) return null;
+    return stripBasePath(new URL(localPath, window.location.href).pathname, __basePath);
+  }
+  try {
+    return stripBasePath(new URL(url, window.location.href).pathname, __basePath);
+  } catch {
+    return null;
+  }
+}
+
+function resolvePagesErrorHtmlFetchUrl(
+  url: string | UrlObject,
+  locale: string | undefined,
+): string | null {
+  const href = resolveUrl(url);
+  const errorRoutePathname = getLocalPathname(href);
+  if (errorRoutePathname !== "/404" && errorRoutePathname !== "/_error") return null;
+
+  const fetchHref = errorRoutePathname === "/_error" ? replaceUrlPathname(href, "/404") : href;
+  const resolvedUrl = applyNavigationLocale(fetchHref, locale);
+
+  let parsed: URL;
+  try {
+    parsed = new URL(resolvedUrl, window.location.href);
+  } catch {
+    return null;
+  }
+  const appPathname = stripBasePath(parsed.pathname, __basePath);
+  const fetchTarget = `${appPathname}${parsed.search}${parsed.hash}`;
+  return normalizePathTrailingSlash(
+    toBrowserNavigationHref(fetchTarget, window.location.href, __basePath),
+    __trailingSlash,
+  );
+}
+
+function replaceUrlPathname(url: string, pathname: string): string {
+  try {
+    const parsed = new URL(url, window.location.href);
+    return `${pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return pathname;
+  }
 }
 
 function resolveTransitionLocale(locale: TransitionOptions["locale"]): string | undefined {
@@ -386,6 +440,18 @@ function _buildClientPagesNavigationContext(
   return ctx;
 }
 
+// Server-side cache for snapshot stability. React's `useSyncExternalStore`
+// expects `getServerSnapshot` to return a stable reference within a single
+// render so it can use Object.is to decide whether to bail out. The SSR ctx is
+// per-request (ALS-isolated), so a WeakMap keyed on the ctx is concurrent-safe
+// and lets us reuse the same shape across every hook call in a single render.
+//
+// Without this, React logs:
+//   "The result of getServerSnapshot should be cached to avoid an infinite loop"
+// and may re-render until the snapshots stabilize, which is wasteful at best
+// and a hydration-mismatch hazard at worst.
+const _ssrPagesNavCtxCache = new WeakMap<SSRContext, PagesNavigationContextShape>();
+
 /**
  * Cross-router compat shim source for `next/navigation` hooks.
  *
@@ -406,12 +472,16 @@ export function getPagesNavigationContext(): PagesNavigationContextShape | null 
   if (typeof window === "undefined") {
     const ssrCtx = _getSSRContext();
     if (!ssrCtx) return null;
+    // Reuse the cached shape for this request so React's useSyncExternalStore
+    // sees Object.is-equal snapshots across hook calls in the same render.
+    // The WeakMap is keyed on the request-scoped ALS ctx, so this remains
+    // safe under concurrent SSR (each request has its own ctx).
+    const cached = _ssrPagesNavCtxCache.get(ssrCtx);
+    if (cached) return cached;
     // ssrCtx.pathname is the route pattern (e.g. "/blog/[slug]").
     // ssrCtx.asPath is the resolved URL with query string. For useSearchParams
     // we want only the URL search string; for useParams we want only the
-    // dynamic route params. Build a fresh object each call — server scope is
-    // request-isolated via ALS but module state must not be cached across
-    // concurrent requests.
+    // dynamic route params.
     let searchParams: URLSearchParams;
     let resolvedPath: string;
     try {
@@ -423,7 +493,9 @@ export function getPagesNavigationContext(): PagesNavigationContextShape | null 
       resolvedPath = ssrCtx.pathname;
     }
     const params = extractRouteParamsFromPath(ssrCtx.pathname, resolvedPath) ?? {};
-    return { pathname: resolvedPath, searchParams, params };
+    const ctx: PagesNavigationContextShape = { pathname: resolvedPath, searchParams, params };
+    _ssrPagesNavCtxCache.set(ssrCtx, ctx);
+    return ctx;
   }
 
   // Client: derive from window.location + __NEXT_DATA__. __NEXT_DATA__.page
@@ -580,6 +652,10 @@ function scheduleHardNavigationAndThrow(url: string, message: string): never {
   window.location.href = url;
   throw new HardNavigationScheduledError(message);
 }
+
+type NavigateClientOptions = {
+  allowNotFoundResponse?: boolean;
+};
 
 /** Wire format of `/_next/data/<id>/<page>.json` response bodies. */
 type PagesDataResponse = {
@@ -897,6 +973,7 @@ async function navigateClientHtml(
   controller: AbortController,
   navId: number,
   assertStillCurrent: () => void,
+  options: NavigateClientOptions = {},
 ): Promise<void> {
   let browserUrl = url;
   let pendingRedirectHistoryUrl: string | null = fetchUrl === url ? null : url;
@@ -931,7 +1008,7 @@ async function navigateClientHtml(
     }
   }
 
-  if (!res.ok) {
+  if (!res.ok && !(options.allowNotFoundResponse === true && res.status === 404)) {
     // Set window.location.href first so the browser navigates to the correct
     // page even if the caller suppresses the error.  The assignment schedules
     // the navigation asynchronously (as a task), so synchronous routeChangeError
@@ -1066,7 +1143,11 @@ async function navigateClientHtml(
  * fixups). The JSON path derives its own URL from the browser-facing `url`
  * because the data endpoint speaks the unprefixed path.
  */
-async function navigateClient(url: string, fetchUrl = url): Promise<void> {
+async function navigateClient(
+  url: string,
+  fetchUrl = url,
+  options: NavigateClientOptions = {},
+): Promise<void> {
   if (typeof window === "undefined") return;
 
   // Cancel any in-flight navigation (abort its fetch, mark it stale)
@@ -1084,36 +1165,52 @@ async function navigateClient(url: string, fetchUrl = url): Promise<void> {
   }
 
   try {
-    let browserUrl = url;
-    let htmlFetchUrl = fetchUrl;
-    const dataTarget = resolvePagesDataNavigationTarget(browserUrl, __basePath);
-    if (!dataTarget) {
-      let redirectLocation: string | null;
-      try {
-        redirectLocation = await resolveMiddlewareDataRedirect(browserUrl, controller.signal);
-      } catch (err: unknown) {
-        if (err instanceof DOMException && err.name === "AbortError") {
-          throw new NavigationCancelledError(browserUrl);
-        }
-        throw err;
-      }
-      assertStillCurrent();
-      if (redirectLocation) {
-        const redirectedUrl = resolveLocalRedirectUrl(redirectLocation);
-        if (!redirectedUrl) {
-          scheduleHardNavigationAndThrow(redirectLocation, "Navigation redirected externally");
-        }
-        window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
-        _lastPathnameAndSearch = window.location.pathname + window.location.search;
-        browserUrl = redirectedUrl;
-        htmlFetchUrl = redirectedUrl;
-      }
-    }
-
-    if (dataTarget) {
-      await navigateClientData(browserUrl, dataTarget, controller, navId, assertStillCurrent);
+    // Error-route navigation (`router.push('/404'|'/_error', as)`): the masked
+    // browser URL and the component route differ, and the error page has no
+    // data endpoint. Skip data navigation and middleware-redirect probing
+    // (both would target the fictional masked URL) and fetch the resolved
+    // error HTML directly, allowing a 404 response to hydrate.
+    if (options.allowNotFoundResponse === true) {
+      await navigateClientHtml(url, fetchUrl, controller, navId, assertStillCurrent, options);
     } else {
-      await navigateClientHtml(browserUrl, htmlFetchUrl, controller, navId, assertStillCurrent);
+      let browserUrl = url;
+      let htmlFetchUrl = fetchUrl;
+      const dataTarget = resolvePagesDataNavigationTarget(browserUrl, __basePath);
+      if (!dataTarget) {
+        let redirectLocation: string | null;
+        try {
+          redirectLocation = await resolveMiddlewareDataRedirect(browserUrl, controller.signal);
+        } catch (err: unknown) {
+          if (err instanceof DOMException && err.name === "AbortError") {
+            throw new NavigationCancelledError(browserUrl);
+          }
+          throw err;
+        }
+        assertStillCurrent();
+        if (redirectLocation) {
+          const redirectedUrl = resolveLocalRedirectUrl(redirectLocation);
+          if (!redirectedUrl) {
+            scheduleHardNavigationAndThrow(redirectLocation, "Navigation redirected externally");
+          }
+          window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
+          _lastPathnameAndSearch = window.location.pathname + window.location.search;
+          browserUrl = redirectedUrl;
+          htmlFetchUrl = redirectedUrl;
+        }
+      }
+
+      if (dataTarget) {
+        await navigateClientData(browserUrl, dataTarget, controller, navId, assertStillCurrent);
+      } else {
+        await navigateClientHtml(
+          browserUrl,
+          htmlFetchUrl,
+          controller,
+          navId,
+          assertStillCurrent,
+          options,
+        );
+      }
     }
   } finally {
     // Clean up the abort controller if this navigation is still the active one
@@ -1139,9 +1236,10 @@ async function runNavigateClient(
   fullUrl: string,
   resolvedUrl: string,
   fetchUrl = fullUrl,
+  options: NavigateClientOptions = {},
 ): Promise<"completed" | "cancelled" | "failed"> {
   try {
-    await navigateClient(fullUrl, fetchUrl);
+    await navigateClient(fullUrl, fetchUrl, options);
     return "completed";
   } catch (err: unknown) {
     routerEvents.emit("routeChangeError", err, resolvedUrl, { shallow: false });
@@ -1312,7 +1410,11 @@ async function performNavigation(
     toBrowserNavigationHref(resolved, window.location.href, __basePath),
     __trailingSlash,
   );
-  const htmlFetchUrl = getPagesHtmlFetchUrl(full, navigationLocale);
+  const errorRouteHtmlFetchUrl = resolvePagesErrorHtmlFetchUrl(url, navigationLocale);
+  const htmlFetchUrl = errorRouteHtmlFetchUrl ?? getPagesHtmlFetchUrl(full, navigationLocale);
+  const navigateOptions: NavigateClientOptions = errorRouteHtmlFetchUrl
+    ? { allowNotFoundResponse: true }
+    : {};
   const shallow = options?.shallow ?? false;
   const doScroll = options?.scroll !== false;
 
@@ -1333,7 +1435,7 @@ async function performNavigation(
   routerEvents.emit("beforeHistoryChange", resolved, { shallow });
   updateHistory(mode, full);
   if (!shallow) {
-    const result = await runNavigateClient(full, resolved, htmlFetchUrl);
+    const result = await runNavigateClient(full, resolved, htmlFetchUrl, navigateOptions);
     if (result === "cancelled") return true;
     if (result === "failed") return false;
   }
@@ -1376,6 +1478,13 @@ async function prefetchUrl(url: string): Promise<void> {
     prefetchPagesData(dataTarget);
     return;
   }
+
+  // The target is not a Pages Router route — mark it on `components` if the
+  // App Router prefetch manifest recognises it. Mirrors Next.js's `_bfl`
+  // marker write at `packages/next/src/shared/lib/router/router.ts:2525`;
+  // the Next.js deploy test reads `window.next.router.components[<path>]` to
+  // assert prefetch detection. See issue #1526.
+  markAppRouteDetectedOnPrefetch(url, __basePath);
 
   // Legacy fallback for routes without a registered loader (e.g. dev).
   // Hints the browser to preload the HTML document so the next click feels
@@ -1613,7 +1722,29 @@ export function withRouter<P extends WithRouterProps>(
 // error rather than a `ReferenceError: window is not defined`. The throws are
 // synchronous (not via the returned Promise) so render-time callers see the
 // error inline — matching Next.js behaviour and avoiding unhandled rejections.
+/**
+ * Pages Router `components` map exposed on the singleton.
+ *
+ * In Next.js, `Router.components` doubles as (a) the cached `PrivateRouteInfo`
+ * keyed by route pattern after a real page render, and (b) a marker store
+ * (`{ __appRouter: true }`) for App Router routes detected via prefetch (see
+ * `packages/next/src/shared/lib/router/router.ts:2525`). The Next.js deploy
+ * test suite asserts the latter through `window.next.router.components`.
+ *
+ * vinext only writes the marker variant — the cached-page-info side is handled
+ * by Vite's module graph + our own loader manifest — but the property must be
+ * present and mutable so the deploy assertion can find it. The map lives
+ * behind a `Symbol.for` global so the Link shim's Pages-mode prefetch branch
+ * writes to the same instance even when Vite resolves the router shim and
+ * the link shim through different module IDs.
+ *
+ * Issue: https://github.com/cloudflare/vinext/issues/1526
+ */
+const _components = getPagesRouterComponentsMap();
+
 const RouterMethods = {
+  /** See `_components` comment above for the dual role this map plays. */
+  components: _components,
   push: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
     if (typeof window === "undefined") throwNoRouterInstance();
     // Synchronously guard dangerous URI schemes (javascript:, data:, vbscript:)

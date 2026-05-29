@@ -32,22 +32,48 @@ export function middleware(request: NextRequest) {
 
   // Rewrite /mw-rewrite-query to /ssr-query — preserves the original
   // request's query params on the rewrite target so getServerSideProps
-  // sees them. Mirrors Next.js: test/e2e/edge-pages-support.
+  // sees them. Middleware preserves query by mutating `request.nextUrl`
+  // (which carries the original search) rather than constructing a new
+  // path-only URL. Mirrors Next.js: test/e2e/middleware-rewrites/app/middleware.js.
   if (url.pathname === "/mw-rewrite-query") {
-    return NextResponse.rewrite(new URL("/ssr-query", request.url));
+    const target = request.nextUrl.clone();
+    target.pathname = "/ssr-query";
+    return NextResponse.rewrite(target);
   }
 
   // Rewrite /mw-rewrite-dynamic-query to /posts/first — the rewrite
   // target is dynamic, so the resulting query should contain both the
   // dynamic param (id=first) and the original query (?hello=world).
   if (url.pathname === "/mw-rewrite-dynamic-query") {
-    return NextResponse.rewrite(new URL("/posts/first", request.url));
+    const target = request.nextUrl.clone();
+    target.pathname = "/posts/first";
+    return NextResponse.rewrite(target);
   }
 
-  // Rewrite target carries its own query — rewrite-target params should
-  // win over original request params on key conflicts.
+  // Rewrite target carries its own query — middleware overlays its key onto
+  // the existing nextUrl search before rewriting. The resulting query is the
+  // exact final URL (not an auto-merge): keys explicitly set by middleware
+  // override, untouched keys carry over because the middleware mutated the
+  // same NextURL instance that already has them.
   if (url.pathname === "/mw-rewrite-merge-query") {
-    return NextResponse.rewrite(new URL("/ssr-query?hello=from-rewrite", request.url));
+    const target = request.nextUrl.clone();
+    target.pathname = "/ssr-query";
+    target.searchParams.set("hello", "from-rewrite");
+    return NextResponse.rewrite(target);
+  }
+
+  // Issue #1342 / Next.js parity (test/e2e/middleware-rewrites
+  //   "should clear query parameters"):
+  // when middleware modifies `request.nextUrl.searchParams` (delete keys) and
+  // rewrites to it, the resulting query must match the modified destination
+  // exactly — vinext must NOT silently re-merge the original request's query.
+  if (url.pathname === "/mw-clear-query-params") {
+    const allowedKeys = new Set(["allowed"]);
+    for (const key of [...url.searchParams.keys()]) {
+      if (!allowedKeys.has(key)) url.searchParams.delete(key);
+    }
+    url.pathname = "/ssr-query";
+    return NextResponse.rewrite(url);
   }
 
   if (url.pathname === "/rewrite-with-cookie") {

@@ -1,7 +1,7 @@
 import { createElement, isValidElement, Suspense } from "react";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
-import { decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
+import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
 import type { RouteManifest, RouteManifestRoute } from "../routing/app-route-graph.js";
 import { stripRscCacheBustingSearchParam, stripRscSuffix } from "./app-rsc-cache-busting.js";
 import {
@@ -136,15 +136,16 @@ function matchNode(
   node: OptimisticRouteTrieNode,
   urlParts: readonly string[],
   index: number,
+  entries: Array<[string, string | string[]]>,
 ): OptimisticRouteMatch | null {
   if (index === urlParts.length) {
     if (node.route !== null) {
-      return { route: node.route, params: Object.create(null) };
+      return { route: node.route, params: buildParams(entries) };
     }
     if (node.optionalCatchAllChild !== null) {
       return {
         route: node.optionalCatchAllChild.route,
-        params: Object.create(null),
+        params: buildParams(entries),
       };
     }
     return null;
@@ -156,32 +157,27 @@ function matchNode(
     // Static children are authoritative for optimistic routing. If a known
     // static subtree does not contain the remaining URL, do not fall through to
     // a catch-all sibling and render the wrong loading boundary.
-    return matchNode(staticChild, urlParts, index + 1);
+    return matchNode(staticChild, urlParts, index + 1, entries);
   }
 
   if (node.dynamicChild !== null) {
-    const match = matchNode(node.dynamicChild.node, urlParts, index + 1);
-    if (match === null) return null;
-    match.params[node.dynamicChild.paramName] = segment;
-    return match;
+    entries.push([node.dynamicChild.paramName, segment]);
+    const match = matchNode(node.dynamicChild.node, urlParts, index + 1, entries);
+    if (match !== null) return match;
+    entries.pop();
   }
 
   if (node.catchAllChild !== null) {
-    return {
-      route: node.catchAllChild.route,
-      params: {
-        [node.catchAllChild.paramName]: urlParts.slice(index),
-      },
-    };
+    const params = buildParams(entries);
+    params[node.catchAllChild.paramName] = urlParts.slice(index);
+    return { route: node.catchAllChild.route, params };
   }
 
+  // At this point index < urlParts.length, so remaining always has ≥1 segment.
   if (node.optionalCatchAllChild !== null) {
-    return {
-      route: node.optionalCatchAllChild.route,
-      params: {
-        [node.optionalCatchAllChild.paramName]: urlParts.slice(index),
-      },
-    };
+    const params = buildParams(entries);
+    params[node.optionalCatchAllChild.paramName] = urlParts.slice(index);
+    return { route: node.optionalCatchAllChild.route, params };
   }
 
   return null;
@@ -209,7 +205,7 @@ export function matchOptimisticRouteManifestRoute(options: {
   const urlParts = hrefToRouteParts(options.href, options.basePath);
   if (urlParts === null) return null;
 
-  const match = matchNode(getRouteTrie(options.routeManifest), urlParts, 0);
+  const match = matchNode(getRouteTrie(options.routeManifest), urlParts, 0, []);
   if (match === null) return null;
 
   decodeMatchedParams(match.params);

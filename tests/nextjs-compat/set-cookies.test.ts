@@ -63,6 +63,24 @@ describe("Next.js compat: set-cookies", () => {
     expect(setCookies.some((c) => c.includes("theme=dark"))).toBe(true);
   });
 
+  it("route handler cookies().set() overrides preserve per-cookie attributes", async () => {
+    // Issue #1484 — mirrors Next.js's app/handler/route.js test fixture used by
+    // test/e2e/app-dir/actions/app-action.test.ts ("should support setting
+    // cookies in route handlers with the correct overrides").
+    //
+    // Each Set-Cookie line must carry its own attribute set; mutable cookies
+    // overridden by the returned Response's headers must still receive a
+    // `Path=/` default (matching Next.js's `appendMutableCookies`).
+    // https://github.com/cloudflare/vinext/issues/1484
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/handler-cookie-overrides`);
+    const setCookieHeader = res.headers.get("set-cookie") ?? "";
+    expect(setCookieHeader).toContain("bar=bar2; Path=/");
+    expect(setCookieHeader).toContain("baz=baz2; Path=/");
+    expect(setCookieHeader).toContain("foo=foo1; Path=/");
+    expect(setCookieHeader).toContain("test1=value1; Path=/; Secure");
+    expect(setCookieHeader).toContain("test2=value2; Path=/handler; HttpOnly");
+  });
+
   it("returned response cookies take precedence over mutable cookies with the same name", async () => {
     // Next.js app route handlers merge mutable cookies as fallbacks before
     // reapplying returned response cookies as the final values.

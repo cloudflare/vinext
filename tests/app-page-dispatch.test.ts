@@ -71,20 +71,29 @@ function createRoute(overrides: Partial<TestRoute> = {}): TestRoute {
 function createDispatchOptions(
   overrides: {
     buildPageElement?: DispatchOptions["buildPageElement"];
+    cleanPathname?: string;
     clearRequestContext?: DispatchOptions["clearRequestContext"];
+    findIntercept?: DispatchOptions["findIntercept"];
     generateStaticParams?: DispatchOptions["generateStaticParams"];
     formState?: DispatchOptions["formState"];
+    getSourceRoute?: DispatchOptions["getSourceRoute"];
     actionError?: DispatchOptions["actionError"];
     actionFailed?: DispatchOptions["actionFailed"];
+    interceptionContext?: string | null;
     isProgressiveActionRender?: DispatchOptions["isProgressiveActionRender"];
     isProduction?: boolean;
     isRscRequest?: boolean;
+    isrRscKey?: DispatchOptions["isrRscKey"];
     isrGet?: DispatchOptions["isrGet"];
+    loadSsrHandler?: DispatchOptions["loadSsrHandler"];
     middlewareContext?: AppPageMiddlewareContext;
+    mountedSlotsHeader?: string | null;
     renderToReadableStream?: DispatchOptions["renderToReadableStream"];
     request?: Request;
     revalidateSeconds?: number | null;
+    resolveRouteFetchCacheMode?: DispatchOptions["resolveRouteFetchCacheMode"];
     route?: TestRoute;
+    scheduleBackgroundRegeneration?: DispatchOptions["scheduleBackgroundRegeneration"];
     searchParams?: URLSearchParams;
     setNavigationContext?: DispatchOptions["setNavigationContext"];
   } = {},
@@ -97,17 +106,22 @@ function createDispatchOptions(
   const setNavigationContext = overrides.setNavigationContext ?? (() => {});
   const renderToReadableStream: DispatchOptions["renderToReadableStream"] =
     overrides.renderToReadableStream ?? (() => createStream(["flight"]));
+  const loadSsrHandler: DispatchOptions["loadSsrHandler"] =
+    overrides.loadSsrHandler ??
+    (async () => ({
+      async handleSsr() {
+        return createStream(["<html>page</html>"]);
+      },
+    }));
   const options: DispatchOptions = {
     buildPageElement,
-    cleanPathname: "/posts/hello",
+    cleanPathname: overrides.cleanPathname ?? "/posts/hello",
     clearRequestContext,
     createRscOnErrorHandler() {
       return () => null;
     },
     draftModeSecret: "draft-secret",
-    findIntercept() {
-      return null;
-    },
+    findIntercept: overrides.findIntercept ?? (() => null),
     generateStaticParams: overrides.generateStaticParams ?? null,
     getFontLinks() {
       return [];
@@ -121,9 +135,7 @@ function createDispatchOptions(
     getNavigationContext() {
       return { pathname: "/posts/hello" };
     },
-    getSourceRoute() {
-      return undefined;
-    },
+    getSourceRoute: overrides.getSourceRoute ?? (() => undefined),
     hasGenerateStaticParams: typeof overrides.generateStaticParams === "function",
     hasPageDefaultExport: true,
     hasPageModule: true,
@@ -131,7 +143,7 @@ function createDispatchOptions(
     formState: overrides.formState,
     actionError: overrides.actionError,
     actionFailed: overrides.actionFailed,
-    interceptionContext: null,
+    interceptionContext: overrides.interceptionContext ?? null,
     isProgressiveActionRender: overrides.isProgressiveActionRender,
     isProduction: overrides.isProduction ?? false,
     isRscRequest: overrides.isRscRequest ?? false,
@@ -139,21 +151,17 @@ function createDispatchOptions(
     isrHtmlKey(pathname: string) {
       return `html:${pathname}`;
     },
-    isrRscKey(pathname: string, mountedSlotsHeader?: string | null) {
-      return mountedSlotsHeader ? `rsc:${pathname}:${mountedSlotsHeader}` : `rsc:${pathname}`;
-    },
+    isrRscKey:
+      overrides.isrRscKey ??
+      ((pathname: string, mountedSlotsHeader?: string | null) =>
+        mountedSlotsHeader ? `rsc:${pathname}:${mountedSlotsHeader}` : `rsc:${pathname}`),
     isrSet: vi.fn(async () => {}),
-    async loadSsrHandler() {
-      return {
-        async handleSsr() {
-          return createStream(["<html>page</html>"]);
-        },
-      };
-    },
+    loadSsrHandler,
     middlewareContext: overrides.middlewareContext ?? {
       headers: null,
       status: null,
     },
+    mountedSlotsHeader: overrides.mountedSlotsHeader,
     params: { slug: "hello" },
     probeLayoutAt() {
       return null;
@@ -166,11 +174,12 @@ function createDispatchOptions(
     renderToReadableStream,
     request: overrides.request ?? new Request("https://example.test/posts/hello"),
     revalidateSeconds: overrides.revalidateSeconds ?? null,
+    resolveRouteFetchCacheMode: overrides.resolveRouteFetchCacheMode,
     route,
     runWithSuppressedHookWarning<T>(probe: () => Promise<T>) {
       return probe();
     },
-    scheduleBackgroundRegeneration: vi.fn(),
+    scheduleBackgroundRegeneration: overrides.scheduleBackgroundRegeneration ?? vi.fn(),
     searchParams: overrides.searchParams ?? new URLSearchParams(),
     setNavigationContext,
   };
@@ -420,5 +429,110 @@ describe("app page dispatch", () => {
     expect(response.headers.get("content-type")).toBe("text/x-component");
     expect(response.headers.get("x-from-middleware")).toBe("yes");
     await expect(response.text()).resolves.toBe("/feed:{}:modal@app/feed/@modal");
+  });
+
+  it("regenerates stale intercepted RSC cache entries from the source route", async () => {
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    const staleRscData = new TextEncoder().encode("stale-flight").buffer;
+    const buildPageElement = vi.fn(
+      async (
+        route: TestRoute,
+        params: Record<string, string | string[]>,
+        opts: Parameters<DispatchOptions["buildPageElement"]>[2],
+        searchParams: URLSearchParams,
+      ) =>
+        JSON.stringify({
+          params,
+          route: route.pattern,
+          search: searchParams.toString(),
+          slot: opts?.interceptSlotKey ?? "direct",
+        }),
+    );
+    let scheduledRender: unknown = null;
+    const scheduleBackgroundRegeneration: DispatchOptions["scheduleBackgroundRegeneration"] = (
+      _key,
+      renderFn,
+    ) => {
+      scheduledRender = renderFn;
+    };
+    const resolveRouteFetchCacheMode = vi.fn((route: TestRoute) =>
+      route === sourceRoute ? "force-cache" : null,
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      cleanPathname: "/photos/123",
+      findIntercept: () => ({
+        matchedParams: { id: "123" },
+        page: { default: "modal-page" },
+        slotId: "slot:modal:/feed",
+        slotKey: "modal@app/feed/@modal",
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+      interceptionContext: "/feed",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("", staleRscData), true),
+      ),
+      isrRscKey(pathname, mountedSlotsHeader, _renderMode, interceptionContext) {
+        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}:${interceptionContext ?? "none"}`;
+      },
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-intercepted-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>fresh</html>"]);
+        },
+      }),
+      mountedSlotsHeader: "slot:modal:/feed",
+      revalidateSeconds: 60,
+      resolveRouteFetchCacheMode,
+      route: currentRoute,
+      scheduleBackgroundRegeneration,
+      searchParams: new URLSearchParams("tab=popular"),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    await expect(response.text()).resolves.toBe("stale-flight");
+    expect(typeof scheduledRender).toBe("function");
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale intercepted RSC response to schedule regeneration");
+    }
+
+    await scheduledRender();
+
+    const [routeArg, paramsArg, optsArg, searchParamsArg] = buildPageElement.mock.calls[0];
+    expect(resolveRouteFetchCacheMode).toHaveBeenCalledWith(sourceRoute);
+    expect(routeArg).toBe(sourceRoute);
+    expect(paramsArg).toEqual({});
+    expect(searchParamsArg.toString()).toBe("");
+    expect(optsArg).toMatchObject({
+      interceptionContext: "/feed",
+      interceptParams: { id: "123" },
+      interceptSlotId: "slot:modal:/feed",
+      interceptSlotKey: "modal@app/feed/@modal",
+      interceptSourceMatchedUrl: "/feed",
+    });
+    expect(options.isrSet).toHaveBeenCalledWith(
+      "rsc:/photos/123:slot:modal:/feed:/feed",
+      expect.objectContaining({ kind: "APP_PAGE" }),
+      60,
+      expect.arrayContaining(["/photos/123", "_N_T_/feed/page"]),
+      undefined,
+    );
   });
 });

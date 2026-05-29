@@ -206,10 +206,16 @@ export function resolveAppPageHtmlResponsePolicy(
   }
 
   if (options.revalidateSeconds === Infinity) {
+    // `revalidate = false` / `revalidate = Infinity` ask for indefinite caching.
+    // The downstream Cache-Control header remains STATIC (1y s-maxage), but we
+    // also write to the ISR cache so repeated requests inside the same vinext
+    // process return identical bytes instead of re-rendering on every hit.
+    // This matches Next.js: indefinite-revalidate pages cache their rendered
+    // output and only re-render when their tags are explicitly invalidated.
     return {
       cacheControl: STATIC_CACHE_CONTROL,
-      cacheState: "STATIC",
-      shouldWriteToCache: false,
+      cacheState: options.isProduction ? "MISS" : "STATIC",
+      shouldWriteToCache: options.isProduction,
     };
   }
 

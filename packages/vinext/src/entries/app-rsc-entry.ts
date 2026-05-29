@@ -113,6 +113,12 @@ type AppRouterConfig = {
   /** Serialized next.config htmlLimitedBots regexp source. */
   htmlLimitedBots?: string;
   /**
+   * Allow-list of keys (from `experimental.clientTraceMetadata`) to surface
+   * from the active OpenTelemetry context as `<meta>` tags in the SSR head.
+   * Undefined or empty disables emission entirely.
+   */
+  clientTraceMetadata?: string[] | undefined;
+  /**
    * Resolved `assetPrefix` from next.config. Empty string when unset.
    * Embedded in the generated entry so the App Router prod-server reads
    * it from the imported module instead of a sidecar JSON file —
@@ -123,6 +129,8 @@ type AppRouterConfig = {
   assetPrefix?: string;
   /** Route-level expire fallback in seconds for ISR entries with numeric revalidate. */
   expireTime?: number;
+  /** Inline app CSS into production HTML (from experimental.inlineCss). */
+  inlineCss?: boolean;
   /** Internationalization routing config for middleware matcher locale handling. */
   i18n?: NextI18nConfig | null;
   /**
@@ -175,8 +183,10 @@ export function generateRscEntry(
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;
   const htmlLimitedBots = config?.htmlLimitedBots;
+  const clientTraceMetadata = config?.clientTraceMetadata;
   const assetPrefix = config?.assetPrefix ?? "";
   const expireTime = config?.expireTime ?? DEFAULT_EXPIRE_TIME;
+  const inlineCss = config?.inlineCss === true;
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
@@ -198,7 +208,7 @@ export function generateRscEntry(
     rootUnauthorizedVar,
     rootLayoutVars,
     globalErrorVar,
-    globalNotFoundVar,
+    globalNotFoundImportSpecifier,
   } = manifestCode;
   const loadPrerenderPagesRoutesCode = hasPagesDir
     ? `
@@ -396,12 +406,21 @@ const rootNotFoundModule = ${rootNotFoundVar ? rootNotFoundVar : "null"};
 const rootForbiddenModule = ${rootForbiddenVar ? rootForbiddenVar : "null"};
 const rootUnauthorizedModule = ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"};
 const rootLayouts = [${rootLayoutVars.join(", ")}];
-// Root-level app/global-not-found module. When present, route-miss 404s render
+// Root-level app/global-not-found loader. When present, route-miss 404s render
 // this module standalone (it provides its own html/body) instead of wrapping
 // the not-found.tsx boundary inside the root layout. Page-triggered notFound()
 // calls still use the regular not-found.tsx boundary inside the layouts.
+//
+// The module is loaded via dynamic \`import()\` (not a static \`import * as\`)
+// so the bundler emits it in its own JS+CSS chunk. Without that isolation,
+// global-not-found's CSS gets concatenated with the root layout's CSS into a
+// single file, where the CSS minifier (lightningcss) drops overlapping
+// declarations as dead code — breaking the cascade for route-miss 404s.
 // See https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
-const globalNotFoundModule = ${globalNotFoundVar ? globalNotFoundVar : "null"};
+// See Next.js test: test/e2e/app-dir/initial-css-order/initial-css-order.test.ts
+const __loadGlobalNotFoundModule = ${
+    globalNotFoundImportSpecifier ? `() => import(${globalNotFoundImportSpecifier})` : "null"
+  };
 
 const createRscOnErrorHandler = (request, pathname, routePath) =>
   createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
@@ -415,7 +434,7 @@ const __fallbackRenderer = __createAppFallbackRenderer({
     rootUnauthorizedModule,
   },
   globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
-  globalNotFoundModule,
+  loadGlobalNotFoundModule: __loadGlobalNotFoundModule,
   metadataRoutes,
   ssrLoader() {
     return import.meta.viteRsc.loadModule("ssr", "index");
@@ -476,10 +495,12 @@ const __publicFiles = new Set(${JSON.stringify(publicFiles)});
 const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
 const __expireTime = ${JSON.stringify(expireTime)};
 const __htmlLimitedBots = ${JSON.stringify(htmlLimitedBots)};
+const __clientTraceMetadata = ${JSON.stringify(clientTraceMetadata)};
 // Re-exported for the App Router prod-server to consume at startup —
 // mirrors the embedded \`__basePath\` pattern (and Pages Router's
 // \`vinextConfig\` export). Empty string when unset.
 export const __assetPrefix = ${JSON.stringify(assetPrefix)};
+export const __inlineCss = ${JSON.stringify(inlineCss)};
 
 export function seedMemoryCacheFromPrerender(serverDir) {
   return __seedMemoryCacheFromPrerender(serverDir, {
@@ -537,6 +558,7 @@ export default __createAppRscHandler({
     middlewareContext,
     mountedSlotsHeader,
     params,
+    staticParamsValidationParams,
     rootParams,
     request,
     route,
@@ -558,6 +580,7 @@ export default __createAppRscHandler({
     const _asyncRouteParams = makeThenableParams(params);
     return __dispatchAppPage({
       basePath: __basePath,
+      clientTraceMetadata: __clientTraceMetadata,
       buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams) {
         return buildPageElements(targetRoute, targetParams, cleanPathname, {
           opts: targetOpts,
@@ -615,6 +638,7 @@ export default __createAppRscHandler({
       middlewareContext,
       mountedSlotsHeader,
       params,
+      staticParamsValidationParams,
       rootParams,
       probeLayoutAt(li) {
         const LayoutComp = route.layouts[li]?.default;

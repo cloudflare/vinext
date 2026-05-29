@@ -57,11 +57,28 @@ export function isServerActionNotFoundError(error: unknown, actionId: string | n
   //
   // See: @vitejs/plugin-rsc dist/rsc.js (`server reference not found`) and
   // dist/plugin-*.js (`[vite-rsc] invalid <type> reference`).
+  //
+  // Action ids resolved from request headers carry the `#<exportName>` suffix
+  // (e.g. `/app/foo.ts#bar`), but `loadServerAction(id)` strips that suffix
+  // before calling `requireModule(file)`. The dev-mode validator therefore
+  // emits the module path WITHOUT the `#<exportName>` — so we also check the
+  // pre-`#` portion to match either shape (#1340).
   if (actionId) {
-    if (message.includes(`[vite-rsc] invalid server reference '${actionId}'`)) {
+    const moduleId = actionId.split("#")[0];
+    if (
+      message.includes(`[vite-rsc] invalid server reference '${actionId}'`) ||
+      (moduleId &&
+        moduleId !== actionId &&
+        message.includes(`[vite-rsc] invalid server reference '${moduleId}'`))
+    ) {
       return true;
     }
-    if (message.includes(`server reference not found '${actionId}'`)) {
+    if (
+      message.includes(`server reference not found '${actionId}'`) ||
+      (moduleId &&
+        moduleId !== actionId &&
+        message.includes(`server reference not found '${moduleId}'`))
+    ) {
       return true;
     }
     return false;

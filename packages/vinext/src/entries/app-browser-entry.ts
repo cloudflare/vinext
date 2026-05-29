@@ -17,12 +17,8 @@ export function generateBrowserEntry(
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const navigationRuntimePath = resolveClientRuntimeModule("navigation-runtime");
   const prefetchRoutes: VinextLinkPrefetchRoute[] = routes
-    .filter((route) => isLinkPrefetchRoute(route))
-    .map((route) => ({
-      canPrefetchLoadingShell: route.loadingPath !== null,
-      patternParts: [...route.patternParts],
-      isDynamic: route.isDynamic,
-    }));
+    .filter(isLinkPrefetchRoute)
+    .map(toLinkPrefetchRoute);
 
   return `import { registerNavigationRuntimeBootstrap } from ${JSON.stringify(navigationRuntimePath)};
 
@@ -33,9 +29,24 @@ registerNavigationRuntimeBootstrap({
 import ${JSON.stringify(entryPath)};`;
 }
 
-function isLinkPrefetchRoute(route: AppRoute): boolean {
+/**
+ * Filter for routes that should appear in the `__VINEXT_LINK_PREFETCH_ROUTES__`
+ * manifest. Exported so the Pages Router client entry can reuse it when
+ * emitting the same manifest for hybrid builds — see issue #1526 and
+ * `pages-client-entry.ts`.
+ */
+export function isLinkPrefetchRoute(route: AppRoute): boolean {
   if (route.pagePath !== null) return true;
   return route.routePath === null && route.layouts.length > 0;
+}
+
+/** Project an `AppRoute` down to the public `VinextLinkPrefetchRoute` shape. */
+export function toLinkPrefetchRoute(route: AppRoute): VinextLinkPrefetchRoute {
+  return {
+    canPrefetchLoadingShell: route.loadingPath !== null,
+    patternParts: [...route.patternParts],
+    isDynamic: route.isDynamic,
+  };
 }
 
 function buildRouteManifestExpression(routeManifest: RouteManifest | null): string {
