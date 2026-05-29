@@ -6,7 +6,7 @@ import {
   setCacheHandler,
   unstable_cache,
 } from "../packages/vinext/src/shims/cache.js";
-import { ensureFetchPatch, getOriginalFetch } from "../packages/vinext/src/shims/fetch-cache.js";
+import { ensureFetchPatch } from "../packages/vinext/src/shims/fetch-cache.js";
 import {
   createRequestContext,
   getRequestContext,
@@ -104,36 +104,36 @@ describe("app layout param observation", () => {
     ensureFetchPatch();
     setCacheHandler(new MemoryCacheHandler());
 
-    const original = getOriginalFetch();
-    try {
-      const tracker = createAppLayoutParamAccessTracker();
+    const tracker = createAppLayoutParamAccessTracker();
 
-      // runLayoutProbe runs the probe synchronously, snapshots
-      // observations, and marks the probe complete — all before the
-      // fetch promise settles. If the cacheable-fetch observation is
-      // deferred past await buildFetchCacheKey(), this assertion fails
-      // because the probe will have already snapshotted.
-      void runWithRequestContext(createRequestContext(), () => {
-        // Use runLayoutProbe synchronously (probe returns non-promise)
-        // so the sync path executes recordProbeDependencies immediately.
-        tracker.runLayoutProbe("layout:/banner", () => {
-          void fetch("https://example.com/data", {
-            next: { revalidate: 60, tags: ["banner"] },
-          });
-          // Do not await the fetch — it must still be observable.
-        });
+    // runLayoutProbe runs the probe synchronously, snapshots
+    // observations, and marks the probe complete — all before the
+    // fetch promise settles. If the cacheable-fetch observation is
+    // deferred past await buildFetchCacheKey(), this assertion fails
+    // because the probe will have already snapshotted.
+    void runWithRequestContext(createRequestContext(), () => {
+      // Use runLayoutProbe synchronously (probe returns non-promise)
+      // so the sync path executes recordProbeDependencies immediately.
+      tracker.runLayoutProbe("layout:/banner", () => {
+        // Do not await the fetch — it must still be observable.
+        // Catch the background promise so it cannot produce an
+        // unhandled rejection after the synchronous assertions
+        // complete. The patched fetch continues past observation
+        // into cache lookup and network fetch, which may fail in
+        // this test environment.
+        fetch("https://example.com/data", {
+          next: { revalidate: 60, tags: ["banner"] },
+        }).catch(() => {});
       });
+    });
 
-      // The observation must already include the cacheable fetch
-      // dependency, because recordCacheableFetchObservation runs
-      // synchronously before any await in the patched fetch branch.
-      expect(tracker.getLayoutObservation("layout:/banner")).toMatchObject({
-        cacheableFetchCount: 1,
-        cacheTags: ["banner"],
-        completeness: "complete",
-      });
-    } finally {
-      globalThis.fetch = original;
-    }
+    // The observation must already include the cacheable fetch
+    // dependency, because recordCacheableFetchObservation runs
+    // synchronously before any await in the patched fetch branch.
+    expect(tracker.getLayoutObservation("layout:/banner")).toMatchObject({
+      cacheableFetchCount: 1,
+      cacheTags: ["banner"],
+      completeness: "complete",
+    });
   });
 });
