@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { CacheStatusProbe } from "./components/cache-status-probe";
 
 export const revalidate = 0;
@@ -31,7 +32,7 @@ export default function HomePage() {
             Renders a server timestamp under <code>revalidate = 60</code>. Every reload after the
             first should hit the cache layer.
           </p>
-          <a href="/cached/intro">Open /cached/intro &rarr;</a>
+          <Link prefetch={false} href="/cached/intro">Open /cached/intro &rarr;</Link>
         </div>
 
         <div className="card">
@@ -43,7 +44,7 @@ export default function HomePage() {
             the page's cache entry. Try <code>revalidateTag(&quot;post:featured&quot;)</code> from
             the panel.
           </p>
-          <a href="/cached/featured">Open /cached/featured &rarr;</a>
+          <Link prefetch={false} href="/cached/featured">Open /cached/featured &rarr;</Link>
         </div>
 
         <div className="card">
@@ -54,7 +55,7 @@ export default function HomePage() {
             <code>/api/now</code> caches a JSON payload for 30s. Watch the timestamp freeze, then
             refresh after the revalidate window.
           </p>
-          <a href="/api/now">Open /api/now &rarr;</a>
+          <Link prefetch={false} href="/api/now">Open /api/now &rarr;</Link>
         </div>
 
         <div className="card">
@@ -65,7 +66,7 @@ export default function HomePage() {
             <code>force-dynamic</code> for comparison. The Worker runs on every request and the
             outer cache is bypassed.
           </p>
-          <a href="/dynamic">Open /dynamic &rarr;</a>
+          <Link prefetch={false} href="/dynamic">Open /dynamic &rarr;</Link>
         </div>
       </section>
     </main>

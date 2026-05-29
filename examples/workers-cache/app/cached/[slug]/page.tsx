@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { CacheStatusProbe } from "../../components/cache-status-probe";
 import { RevalidateControls } from "../../components/revalidate-controls";
 
@@ -56,7 +57,7 @@ export default async function CachedSlugPage({
   return (
     <main>
       <nav className="crumbs">
-        <a href="/">&larr; Demo home</a>
+        <Link prefetch={false} href="/">&larr; Demo home</Link>
       </nav>
       <h1>{post.title}</h1>
       <p className="tagline">

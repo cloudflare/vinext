@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { CacheStatusProbe } from "../components/cache-status-probe";
 
 // Comparison page: force-dynamic. The Worker runs on every request. vinext
@@ -11,7 +12,7 @@ export default function DynamicPage() {
   return (
     <main>
       <nav className="crumbs">
-        <a href="/">&larr; Demo home</a>
+        <Link prefetch={false} href="/">&larr; Demo home</Link>
       </nav>
       <h1>
         <code>/dynamic</code>
