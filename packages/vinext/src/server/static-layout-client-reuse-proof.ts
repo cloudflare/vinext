@@ -24,14 +24,13 @@ export function createStaticLayoutClientReuseRouteId(layoutId: string): string {
   return `static-layout:${createClientReusePayloadHash(layoutId)}`;
 }
 
+type ProofFieldPair = readonly [string, string | number | null];
+
 function createCanonicalProofPairs(
   input: StaticLayoutClientReuseProofInput,
-): readonly (readonly [string, string | number | null])[] {
+): readonly ProofFieldPair[] {
   return ARTIFACT_COMPATIBILITY_PROOF_FIELDS.map(
-    (field): readonly [string, string | number | null] => [
-      field,
-      input.artifactCompatibility[field],
-    ],
+    (field) => [field, input.artifactCompatibility[field]],
   );
 }
 
