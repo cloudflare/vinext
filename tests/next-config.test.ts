@@ -1183,6 +1183,7 @@ describe("detectNextIntlConfig", () => {
       cacheMaxMemorySize: undefined,
       hashSalt: "",
       enablePrerenderSourceMaps: true,
+      appShells: false,
       expireTime: 31_536_000,
       buildId: "test-build-id",
       deploymentId: undefined,
@@ -1780,5 +1781,68 @@ describe("resolveNextConfig staleTimes (#1490)", () => {
       experimental: { staleTimes: { dynamic: -5, static: -1 } },
     });
     expect(resolved.staleTimes).toEqual({ dynamic: 0, static: 300 });
+  });
+});
+
+describe("resolveNextConfig appShells", () => {
+  it("defaults appShells to false when not set", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.appShells).toBe(false);
+  });
+
+  it("defaults appShells to false for null config", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.appShells).toBe(false);
+  });
+
+  it("reads appShells: true from experimental config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { appShells: true },
+    });
+    expect(resolved.appShells).toBe(true);
+  });
+
+  it("reads appShells: false from experimental config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { appShells: false },
+    });
+    expect(resolved.appShells).toBe(false);
+  });
+
+  it("warns when appShells is enabled without required co-flags", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const resolved = await resolveNextConfig({
+      experimental: { appShells: true },
+    });
+    expect(resolved.appShells).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "experimental.appShells is enabled but requires the following co-flags",
+      ),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("cacheComponents"));
+    warnSpy.mockRestore();
+  });
+
+  it("does not warn when appShells is enabled with all required co-flags", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const resolved = await resolveNextConfig({
+      cacheComponents: true,
+      experimental: {
+        appShells: true,
+        prefetchInlining: true,
+        varyParams: true,
+        optimisticRouting: true,
+        cachedNavigations: true,
+      },
+    });
+    expect(resolved.appShells).toBe(true);
+    // The warning should NOT contain the appShells co-flags message
+    const appShellsWarnings = warnSpy.mock.calls.filter(
+      (call) =>
+        typeof call[0] === "string" && call[0].includes("experimental.appShells is enabled"),
+    );
+    expect(appShellsWarnings).toHaveLength(0);
+    warnSpy.mockRestore();
   });
 });

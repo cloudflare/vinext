@@ -232,6 +232,18 @@ export type NextConfig = {
    */
   cacheComponents?: boolean;
   /**
+   * Enable App Shell prefetching (Next.js 16+).
+   * When true, the client prefetches a route's param-independent loading shell
+   * so navigations to that route can render instantly while param-specific content
+   * streams in. Requires `cacheComponents` and other co-flags.
+   *
+   * In vinext this is config-plumbing only — the full segment-cache scheduler,
+   * shell vary-path, and two-pass navigation lookup are not yet implemented.
+   * Setting this to `true` will define `process.env.__NEXT_APP_SHELLS` for
+   * client-side feature gating but will not enable actual App Shell behavior.
+   */
+  appShells?: boolean;
+  /**
    * Enables source maps while generating static pages.
    * Helps with errors during the prerender phase in `vinext build`.
    * Defaults to `true`. Set to `false` to disable.
@@ -356,6 +368,13 @@ export type ResolvedNextConfig = {
   serverExternalPackages: string[];
   /** Enable sourcemaps for prerender error stack traces. Defaults to true. */
   enablePrerenderSourceMaps: boolean;
+  /**
+   * Enable App Shell prefetching (from experimental.appShells).
+   * Plumbing-only in vinext — the flag is accepted and forwarded to the client
+   * bundle via `process.env.__NEXT_APP_SHELLS`, but actual App Shell behavior
+   * requires the segment-cache architecture which is not yet implemented.
+   */
+  appShells: boolean;
   /** Resolved build ID (from generateBuildId, or a random UUID if not provided). */
   buildId: string;
   /** Resolved deployment ID from next.config.js or NEXT_DEPLOYMENT_ID. */
@@ -1126,6 +1145,7 @@ export async function resolveNextConfig(
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
       enablePrerenderSourceMaps: true,
+      appShells: false,
       hashSalt: process.env.NEXT_HASH_SALT ?? "",
       buildId,
       deploymentId,
@@ -1229,6 +1249,38 @@ export async function resolveNextConfig(
     ? rawOptimize.filter((x): x is string => typeof x === "string")
     : [];
   const inlineCss = experimental?.inlineCss === true;
+
+  // Validate experimental.appShells co-flags. Next.js requires all of the
+  // following to be enabled when appShells is true:
+  //   cacheComponents, prefetchInlining, varyParams, optimisticRouting, cachedNavigations
+  // vinext does not yet implement varyParams, optimisticRouting, or cachedNavigations,
+  // so we warn when appShells is enabled and explain which co-flags are missing.
+  const appShells = experimental?.appShells === true;
+  if (appShells) {
+    const missingCoFlags: string[] = [];
+    if (!config.cacheComponents) {
+      missingCoFlags.push("cacheComponents");
+    }
+    if (experimental?.prefetchInlining !== true) {
+      missingCoFlags.push("experimental.prefetchInlining");
+    }
+    if (experimental?.varyParams !== true) {
+      missingCoFlags.push("experimental.varyParams");
+    }
+    if (experimental?.optimisticRouting !== true) {
+      missingCoFlags.push("experimental.optimisticRouting");
+    }
+    if (experimental?.cachedNavigations !== true) {
+      missingCoFlags.push("experimental.cachedNavigations");
+    }
+    if (missingCoFlags.length > 0) {
+      console.warn(
+        `[vinext] experimental.appShells is enabled but requires the following co-flags which are not yet supported or not enabled: ${missingCoFlags.join(", ")}. ` +
+          "App Shell prefetching behavior is not implemented in vinext (see issue #1614). " +
+          "The flag will be accepted for config compatibility but has no functional effect.",
+      );
+    }
+  }
 
   // Resolve serverExternalPackages — support the current top-level key and the
   // legacy experimental.serverComponentsExternalPackages name that Next.js still
@@ -1351,6 +1403,7 @@ export async function resolveNextConfig(
     cacheHandler,
     cacheMaxMemorySize,
     enablePrerenderSourceMaps: config.enablePrerenderSourceMaps ?? true,
+    appShells: experimental?.appShells === true,
     hashSalt,
     buildId,
     deploymentId,

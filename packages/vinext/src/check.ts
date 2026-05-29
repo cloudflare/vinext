@@ -218,9 +218,9 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
       "not applicable; vinext uses Vite instead of SWC. A Vite-compatible polyfill solution may be explored in the future.",
   },
   "experimental.appShells": {
-    status: "unsupported",
+    status: "partial",
     detail:
-      "App Shell prefetching not yet implemented; requires cacheComponents and other co-flags vinext does not support",
+      "config recognized and validated; the flag is forwarded to client bundles via process.env.__NEXT_APP_SHELLS for feature gating, but actual App Shell prefetching behavior requires the segment-cache architecture which vinext does not yet implement (issue #1614)",
   },
   "experimental.inlineCss": {
     status: "supported",

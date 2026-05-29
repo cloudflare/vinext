@@ -336,7 +336,7 @@ describe("analyzeConfig", () => {
   });
 
   // Mirrors Next.js: test/e2e/app-dir/app-shells
-  it("detects experimental.appShells as unsupported", () => {
+  it("detects experimental.appShells as partial (config recognized, behavior not implemented)", () => {
     writeFile(
       "next.config.mjs",
       `export default {
@@ -347,7 +347,7 @@ describe("analyzeConfig", () => {
     );
 
     const items = analyzeConfig(tmpDir);
-    expect(items.find((i) => i.name === "experimental.appShells")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "experimental.appShells")?.status).toBe("partial");
   });
 
   it("detects experimental.serverActions as supported", () => {
