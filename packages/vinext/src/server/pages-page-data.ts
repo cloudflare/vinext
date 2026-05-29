@@ -3,8 +3,7 @@ import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
 import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache";
-import { buildCachedRevalidateCacheControl } from "./cache-control.js";
-import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
+import { applyCdnResponseHeaders, buildCachedRevalidateCacheControl } from "./cache-control.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
 import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import {
@@ -277,20 +276,20 @@ function buildPagesCacheResponse(
   // HIT/STALE served from the origin store: route the cache header through the
   // CDN adapter (default: identical single Cache-Control). Edge adapters never
   // reach this path because their readPage returns null.
-  const headers: Record<string, string> = {
+  const headers = new Headers({
     "Content-Type": "text/html",
     ...buildCacheStateHeaders(cacheState),
-    ...getCdnCacheAdapter().buildResponseHeaders({
-      cacheControl: buildCachedRevalidateCacheControl(
-        cacheState,
-        effectiveRevalidateSeconds,
-        effectiveExpireSeconds,
-      ),
-    }),
-  };
+  });
+  applyCdnResponseHeaders(headers, {
+    cacheControl: buildCachedRevalidateCacheControl(
+      cacheState,
+      effectiveRevalidateSeconds,
+      effectiveExpireSeconds,
+    ),
+  });
 
   if (fontLinkHeader) {
-    headers.Link = fontLinkHeader;
+    headers.set("Link", fontLinkHeader);
   }
 
   return new Response(html, {

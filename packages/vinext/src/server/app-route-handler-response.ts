@@ -251,6 +251,10 @@ export async function buildAppRouteCacheValue(response: Response): Promise<Cache
       key === VINEXT_CACHE_HEADER.toLowerCase() ||
       key === NEXTJS_CACHE_HEADER.toLowerCase() ||
       key === "cache-control" ||
+      // CDN policy headers are re-derived from the adapter on every served
+      // response, so they must not be baked into the stored value.
+      key === "cdn-cache-control" ||
+      key === "cache-tag" ||
       key.startsWith(MIDDLEWARE_HEADER_PREFIX)
     ) {
       return;

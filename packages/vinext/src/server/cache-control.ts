@@ -12,14 +12,16 @@ export const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
  * Route a cacheable response's headers through the active CDN cache adapter and
  * apply the result to `headers`. The default adapter yields a single
  * `Cache-Control` identical to `input.cacheControl` (no behavior change); edge
- * adapters may instead emit `CDN-Cache-Control` / `Cache-Tag`. Existing cache
- * headers are cleared first so the adapter's map is authoritative.
+ * adapters may instead emit `CDN-Cache-Control` / `Cache-Tag`.
+ *
+ * We only clear `Cache-Control` — the one header vinext stamps internally — so
+ * a stale vinext value never lingers if an adapter chooses not to emit one. The
+ * adapter's own headers are applied via `set()`, which overrides any prior value
+ * for the same name, so there's no need to pre-clear adapter-specific headers.
  */
 export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHeaderInput): void {
-  const map = getCdnCacheAdapter().buildResponseHeaders(input);
   headers.delete("Cache-Control");
-  headers.delete("CDN-Cache-Control");
-  headers.delete("Cache-Tag");
+  const map = getCdnCacheAdapter().buildResponseHeaders(input);
   for (const [name, value] of Object.entries(map)) {
     headers.set(name, value);
   }
