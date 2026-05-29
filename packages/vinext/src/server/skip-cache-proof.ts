@@ -1,5 +1,6 @@
 import {
   evaluateArtifactCompatibility,
+  ARTIFACT_COMPATIBILITY_PROOF_FIELDS,
   type ArtifactCompatibilityEnvelope,
   type ArtifactCompatibilityEvaluationOptions,
 } from "./artifact-compatibility.js";
@@ -14,8 +15,6 @@ import {
   type ClientReuseManifestSkipDisposition,
   type ClientReuseManifestTraceFields,
 } from "./client-reuse-manifest.js";
-import { ARTIFACT_COMPATIBILITY_PROOF_FIELDS } from "./static-layout-client-reuse-proof.js";
-
 export {
   createStaticLayoutClientReuseArtifactCompatibility,
   createStaticLayoutClientReusePayloadHash,
@@ -77,7 +76,7 @@ type ClientReuseSkipTransportPlan =
 
 type CreateClientReuseSkipTransportPlanInput = Readonly<{
   manifest: ClientReuseManifestParseResult;
-  maxEntriesToVerify?: number;
+  maxWireEntriesToVerify?: number;
   verifyEntry: (entry: ClientReuseManifestEntry) => SkipCacheCrossCheckResult;
 }>;
 
@@ -136,10 +135,12 @@ function isExactArtifactCompatibility(
   artifactCompatibility: ArtifactCompatibilityEnvelope,
   entryCompatibility: ArtifactCompatibilityEnvelope,
 ): boolean {
-  return (
-    collectArtifactCompatibilityProofMismatches(artifactCompatibility, entryCompatibility)
-      .length === 0
-  );
+  for (const field of ARTIFACT_COMPATIBILITY_PROOF_FIELDS) {
+    if (artifactCompatibility[field] !== entryCompatibility[field]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function assertNever(value: never): never {
@@ -163,11 +164,11 @@ function createRenderAndSendPlan(options: {
 
 function createVerificationBudgetExceededRejection(
   totalWireEntries: number,
-  maxEntriesToVerify: number,
+  maxWireEntriesToVerify: number,
 ): ClientReuseManifestRejection {
   return {
     code: "SKIP_VERIFICATION_BUDGET_EXCEEDED",
-    fields: { totalWireEntries, maxEntriesToVerify },
+    fields: { totalWireEntries, maxWireEntriesToVerify },
   };
 }
 
@@ -307,19 +308,19 @@ export function createClientReuseSkipTransportPlan(
     return createRenderAndSendPlan({ manifestRejection: manifest.rejection });
   }
 
-  const maxEntriesToVerify =
-    input.maxEntriesToVerify ?? STATIC_LAYOUT_SKIP_VERIFICATION_ENTRY_BUDGET;
-  if (!Number.isSafeInteger(maxEntriesToVerify) || maxEntriesToVerify < 0) {
-    throw new RangeError("maxEntriesToVerify must be a non-negative safe integer");
+  const maxWireEntriesToVerify =
+    input.maxWireEntriesToVerify ?? STATIC_LAYOUT_SKIP_VERIFICATION_ENTRY_BUDGET;
+  if (!Number.isSafeInteger(maxWireEntriesToVerify) || maxWireEntriesToVerify < 0) {
+    throw new RangeError("maxWireEntriesToVerify must be a non-negative safe integer");
   }
 
   const totalWireEntries = manifest.manifest.entries.length + manifest.entryRejections.length;
-  if (totalWireEntries > maxEntriesToVerify) {
+  if (totalWireEntries > maxWireEntriesToVerify) {
     return createRenderAndSendPlan({
       entryRejections: manifest.entryRejections,
       manifestRejection: createVerificationBudgetExceededRejection(
         totalWireEntries,
-        maxEntriesToVerify,
+        maxWireEntriesToVerify,
       ),
     });
   }

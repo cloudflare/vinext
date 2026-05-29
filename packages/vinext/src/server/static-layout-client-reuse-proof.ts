@@ -1,4 +1,7 @@
-import type { ArtifactCompatibilityEnvelope } from "./artifact-compatibility.js";
+import {
+  type ArtifactCompatibilityEnvelope,
+  ARTIFACT_COMPATIBILITY_PROOF_FIELDS,
+} from "./artifact-compatibility.js";
 import { createClientReusePayloadHash } from "./client-reuse-manifest.js";
 
 type StaticLayoutClientReuseProofInput = Readonly<{
@@ -9,22 +12,11 @@ type StaticLayoutClientReuseProofInput = Readonly<{
   variantCacheKey: string;
 }>;
 
-export const ARTIFACT_COMPATIBILITY_PROOF_FIELDS: readonly (keyof ArtifactCompatibilityEnvelope)[] =
-  [
-    "schemaVersion",
-    "graphVersion",
-    "deploymentVersion",
-    "appElementsSchemaVersion",
-    "rscPayloadSchemaVersion",
-    "rootBoundaryId",
-    "renderEpoch",
-  ];
+type ProofFieldPair = readonly [string, string | number | null];
 
 export function createStaticLayoutClientReuseRouteId(layoutId: string): string {
   return `static-layout:${createClientReusePayloadHash(layoutId)}`;
 }
-
-type ProofFieldPair = readonly [string, string | number | null];
 
 function createCanonicalProofPairs(
   input: StaticLayoutClientReuseProofInput,

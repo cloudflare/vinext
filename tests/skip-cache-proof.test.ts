@@ -492,7 +492,7 @@ describe("skip/cache proof cross-checks", () => {
 
     const plan = createClientReuseSkipTransportPlan({
       manifest,
-      maxEntriesToVerify: 1,
+      maxWireEntriesToVerify: 1,
       verifyEntry() {
         verifierCalled = true;
         throw new Error("over-budget manifests must not enter skip verification");
@@ -506,7 +506,7 @@ describe("skip/cache proof cross-checks", () => {
         code: "SKIP_VERIFICATION_BUDGET_EXCEEDED",
         fields: {
           totalWireEntries: 2,
-          maxEntriesToVerify: 1,
+          maxWireEntriesToVerify: 1,
         },
       },
       skippedEntryIds: [],
@@ -527,12 +527,12 @@ describe("skip/cache proof cross-checks", () => {
     expect(() =>
       createClientReuseSkipTransportPlan({
         manifest,
-        maxEntriesToVerify: -1,
+        maxWireEntriesToVerify: -1,
         verifyEntry() {
           throw new Error("invalid budgets must fail before verification");
         },
       }),
-    ).toThrow("maxEntriesToVerify must be a non-negative safe integer");
+    ).toThrow("maxWireEntriesToVerify must be a non-negative safe integer");
   });
 
   it("falls back without verifier work for absent manifests", () => {
