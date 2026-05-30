@@ -617,6 +617,14 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     ? (localeInfo.domainLocale ? localeInfo.domainLocale.defaultLocale : i18nConfig.defaultLocale)
     : undefined;
   const domainLocales = i18nConfig ? i18nConfig.domains : undefined;
+  const i18nCacheVariant = i18nConfig
+    ? (localeInfo.domainLocale
+      ? "domain:" + String(localeInfo.domainLocale.domain).toLowerCase()
+      : "locale:" + String(locale))
+    : null;
+  const pageIsrCacheKey = i18nCacheVariant
+    ? (router, pathname) => isrCacheKey(router, pathname + "::i18n=" + encodeURIComponent(i18nCacheVariant))
+    : isrCacheKey;
 
   if (localeInfo.redirectUrl) {
     return new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } });
@@ -769,7 +777,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
           defaultLocale: currentDefaultLocale,
           domainLocales: domainLocales,
         },
-        isrCacheKey,
+        isrCacheKey: pageIsrCacheKey,
         isrGet,
         isrSet,
         expireSeconds: vinextConfig.expireTime,
@@ -926,7 +934,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
         clientTraceMetadata: vinextConfig.clientTraceMetadata,
         gsspRes,
-        isrCacheKey,
+        isrCacheKey: pageIsrCacheKey,
         expireSeconds: vinextConfig.expireTime,
         isrRevalidateSeconds,
         isrSet,

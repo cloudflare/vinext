@@ -323,6 +323,7 @@ export function createSSRHandler(
     let locale: string | undefined;
     let localeStrippedUrl = url;
     let currentDefaultLocale: string | undefined;
+    let currentDomainLocaleDomain: string | undefined;
     const domainLocales = i18nConfig?.domains;
 
     if (i18nConfig) {
@@ -337,6 +338,7 @@ export function createSSRHandler(
       locale = resolved.locale;
       localeStrippedUrl = resolved.url;
       currentDefaultLocale = resolved.domainLocale?.defaultLocale ?? i18nConfig.defaultLocale;
+      currentDomainLocaleDomain = resolved.domainLocale?.domain;
 
       if (resolved.redirectUrl) {
         res.writeHead(307, { Location: resolved.redirectUrl });
@@ -344,6 +346,20 @@ export function createSSRHandler(
         return;
       }
     }
+
+    const i18nCacheVariant = i18nConfig
+      ? currentDomainLocaleDomain
+        ? "domain:" + currentDomainLocaleDomain.toLowerCase()
+        : "locale:" + String(locale)
+      : null;
+    const pagesIsrCacheKey = i18nCacheVariant
+      ? (pathname: string) =>
+          isrCacheKey(
+            "pages",
+            pathname + "::i18n=" + encodeURIComponent(i18nCacheVariant),
+            process.env.__VINEXT_BUILD_ID,
+          )
+      : (pathname: string) => isrCacheKey("pages", pathname, process.env.__VINEXT_BUILD_ID);
 
     const match = matchRoute(localeStrippedUrl, routes);
 
@@ -687,13 +703,7 @@ export function createSSRHandler(
 
         if (typeof pageModule.getStaticProps === "function" && !isFallbackRender) {
           // Check ISR cache before calling getStaticProps
-          const cacheKey = isrCacheKey(
-            "pages",
-            url.split("?")[0],
-            // __VINEXT_BUILD_ID is a compile-time define — undefined in dev,
-            // which is fine: dev doesn't need cross-deploy cache isolation.
-            process.env.__VINEXT_BUILD_ID,
-          );
+          const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
           const cached = await isrGet(cacheKey);
 
           if (
@@ -1220,13 +1230,7 @@ hydrate();
             withScriptNonce(isrElement, scriptNonce),
           );
           const isrHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
-          const cacheKey = isrCacheKey(
-            "pages",
-            url.split("?")[0],
-            // __VINEXT_BUILD_ID is a compile-time define — undefined in dev,
-            // which is fine: dev doesn't need cross-deploy cache isolation.
-            process.env.__VINEXT_BUILD_ID,
-          );
+          const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
           await isrSet(cacheKey, buildPagesCacheValue(isrHtml, pageProps), isrRevalidateSeconds);
           setRevalidateDuration(cacheKey, isrRevalidateSeconds);
         }
