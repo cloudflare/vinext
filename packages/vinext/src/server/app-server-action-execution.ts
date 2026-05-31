@@ -639,8 +639,7 @@ function shouldUseForwardedActionRedirectStatus<TRoute extends AppServerActionRo
 
 function canRenderActionRedirectTarget(route: AppServerActionRoute): boolean {
   if ("routeHandler" in route && route.routeHandler) return false;
-  if ("page" in route) return route.page !== null && route.page !== undefined;
-  return true;
+  return route.page !== null && route.page !== undefined;
 }
 
 function getActionHttpFallbackStatus(error: unknown): number | null {

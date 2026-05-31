@@ -77,6 +77,8 @@ function rootRouteBoundaryPath(
 ): string | null {
   if (!route) return null;
   if (route.pattern === "/") return fallbackPath ?? null;
+  // Boundary arrays are ordered from the root layout outward by the route
+  // scanner, so the first entry is the root boundary for non-root routes.
   return boundaryPaths?.[0] ?? fallbackPath ?? null;
 }
 

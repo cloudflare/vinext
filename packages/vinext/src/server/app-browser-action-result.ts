@@ -75,36 +75,6 @@ export function parseServerActionRevalidationHeader(
   }
 }
 
-type ServerActionRedirectLocation = {
-  href: string;
-  internal: boolean;
-};
-
-/**
- * Resolve a server-action redirect target against the URL that initiated the
- * action. Dot-relative redirects intentionally resolve as if the current route
- * pathname were a directory, matching Next.js' `assignLocation()` behavior:
- * `./subpage` from `/subdir` lands on `/subdir/subpage`, not `/subpage`.
- */
-export function resolveServerActionRedirectLocation(options: {
-  currentHref: string;
-  location: string;
-  origin: string;
-}): ServerActionRedirectLocation {
-  const currentUrl = new URL(options.currentHref, options.origin);
-  const redirectUrl = options.location.startsWith(".")
-    ? new URL(
-        options.location,
-        `${currentUrl.origin}${currentUrl.pathname.endsWith("/") ? currentUrl.pathname : `${currentUrl.pathname}/`}`,
-      )
-    : new URL(options.location, currentUrl.href);
-
-  return {
-    href: redirectUrl.href,
-    internal: redirectUrl.origin === currentUrl.origin,
-  };
-}
-
 function createServerActionHttpFallbackError(status: number): (Error & { digest: string }) | null {
   if (status < 400 || status > 599) return null;
 
@@ -126,9 +96,10 @@ export async function readInvalidServerActionResponseError(
   const isRscResponse = contentType.startsWith(VINEXT_RSC_CONTENT_TYPE);
   if (isRscResponse || hasRedirectLocation) return null;
 
-  // Parity with Next.js' server-action reducer: non-RSC action responses are
-  // surfaced to the action caller, using a plain text 4xx/5xx body when one is
-  // available and otherwise falling back to a stable generic message.
+  // Parity with Next.js' server-action reducer: any non-RSC action response,
+  // including a 2xx, is surfaced to the action caller. Plain text 4xx/5xx
+  // bodies are preserved when available; other responses use a stable generic
+  // message.
   const message =
     response.status >= 400 && contentType.toLowerCase().startsWith("text/plain")
       ? await response.text()

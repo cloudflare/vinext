@@ -243,7 +243,10 @@ test.describe("Server Actions", () => {
     await page.goto(`${BASE}/nextjs-compat/action-forwarded-redirect`);
     await waitForAppRouterHydration(page);
     await page.click("#run-forwarded-redirect");
-    await page.click("#go-forwarded-redirect-other");
+    await Promise.all([
+      page.waitForURL(`${BASE}/nextjs-compat/action-forwarded-redirect/other`),
+      page.click("#go-forwarded-redirect-other"),
+    ]);
     await expect(page.locator("#forwarded-redirect-other")).toHaveText("Forwarded Redirect Other");
 
     await expect(async () => {

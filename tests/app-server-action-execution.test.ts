@@ -178,7 +178,7 @@ function createRscOptions(
   TestInterceptOptions,
   TestTemporaryReferences
 > {
-  const route: TestRoute = { id: "dashboard", params: [], pattern: "/dashboard" };
+  const route: TestRoute = { id: "dashboard", page: {}, params: [], pattern: "/dashboard" };
 
   return {
     actionId: "action-id",
@@ -925,12 +925,12 @@ describe("app server action execution helpers", () => {
           if (pathname === "/redirect-target") {
             return {
               params: {},
-              route: { id: "redirect-target", params: [], pattern: "/redirect-target" },
+              route: { id: "redirect-target", page: {}, params: [], pattern: "/redirect-target" },
             };
           }
           return {
             params: {},
-            route: { id: "dashboard", params: [], pattern: "/dashboard" },
+            route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
           };
         },
       }),
@@ -964,12 +964,12 @@ describe("app server action execution helpers", () => {
           if (pathname === "/redirect-target") {
             return {
               params: {},
-              route: { id: "redirect-target", params: [], pattern: "/redirect-target" },
+              route: { id: "redirect-target", page: {}, params: [], pattern: "/redirect-target" },
             };
           }
           return {
             params: {},
-            route: { id: "dashboard", params: [], pattern: "/dashboard" },
+            route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
           };
         },
         request: createFetchActionRequest({
@@ -1015,12 +1015,12 @@ describe("app server action execution helpers", () => {
             if (pathname === "/redirect-target") {
               return {
                 params: {},
-                route: { id: "redirect-target", params: [], pattern: "/redirect-target" },
+                route: { id: "redirect-target", page: {}, params: [], pattern: "/redirect-target" },
               };
             }
             return {
               params: {},
-              route: { id: "dashboard", params: [], pattern: "/dashboard" },
+              route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
             };
           },
           renderToReadableStream() {
@@ -1057,7 +1057,7 @@ describe("app server action execution helpers", () => {
           if (pathname === "/pages-target") return null;
           return {
             params: {},
-            route: { id: "dashboard", params: [], pattern: "/dashboard" },
+            route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
           };
         },
       }),
@@ -1102,6 +1102,38 @@ describe("app server action execution helpers", () => {
 
     expect(response?.status).toBe(303);
     expect(response?.headers.get("x-action-redirect")).toBe("/api/logout");
+    expect(response?.headers.get("content-type")).toBeNull();
+    expect(response?.headers.get("vary")).toBeNull();
+    expect(await response?.text()).toBe("");
+    expect(buildPageElement).not.toHaveBeenCalled();
+  });
+
+  it("falls back to header-only redirects when the target route has no page", async () => {
+    const buildPageElement = vi.fn(() => "should-not-render");
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/layout-only"));
+        },
+        matchRoute(pathname) {
+          if (pathname === "/layout-only") {
+            return {
+              params: {},
+              route: { id: "layout-only", params: [], pattern: "/layout-only" },
+            };
+          }
+          return {
+            params: {},
+            route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
+          };
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(303);
+    expect(response?.headers.get("x-action-redirect")).toBe("/layout-only");
     expect(response?.headers.get("content-type")).toBeNull();
     expect(response?.headers.get("vary")).toBeNull();
     expect(await response?.text()).toBe("");
@@ -1493,6 +1525,7 @@ describe("app server action execution helpers", () => {
               params: {},
               route: {
                 id: "delayed-action-node",
+                page: {},
                 params: [],
                 pattern: "/delayed-action/node",
               },
@@ -1541,6 +1574,7 @@ describe("app server action execution helpers", () => {
               params: {},
               route: {
                 id: "delayed-action-node",
+                page: {},
                 params: [],
                 pattern: "/delayed-action/node",
                 runtime: null,
@@ -1591,6 +1625,7 @@ describe("app server action execution helpers", () => {
               params: {},
               route: {
                 id: "delayed-action-edge",
+                page: {},
                 params: [],
                 pattern: "/delayed-action/edge",
                 runtime: "edge",
@@ -1642,6 +1677,7 @@ describe("app server action execution helpers", () => {
               params: {},
               route: {
                 id: "delayed-action-node",
+                page: {},
                 params: [],
                 pattern: "/delayed-action/node",
               },
