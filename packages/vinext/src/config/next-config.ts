@@ -518,12 +518,65 @@ function isBareModuleSpecifier(id: string): boolean {
   );
 }
 
-function tsconfigBaseUrlResolverPlugin(baseUrl: string): Plugin {
+function stripViteRequestSuffix(id: string): string {
+  const queryIndex = id.indexOf("?");
+  const hashIndex = id.indexOf("#");
+  const endIndex =
+    queryIndex === -1
+      ? hashIndex === -1
+        ? id.length
+        : hashIndex
+      : hashIndex === -1
+        ? queryIndex
+        : Math.min(queryIndex, hashIndex);
+  return id.slice(0, endIndex);
+}
+
+function fsPathFromImporter(importer: string): string | null {
+  const cleanImporter = stripViteRequestSuffix(importer);
+  if (cleanImporter.startsWith("file://")) {
+    try {
+      return fileURLToPath(cleanImporter);
+    } catch {
+      return null;
+    }
+  }
+
+  return path.isAbsolute(cleanImporter) ? cleanImporter : null;
+}
+
+function hasNodeModulesSegment(id: string): boolean {
+  return id.split(/[\\/]+/).includes("node_modules");
+}
+
+function isPathInside(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return (
+    relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative))
+  );
+}
+
+function isProjectOwnedImporter(importer: string, projectRoot: string): boolean {
+  const importerPath = fsPathFromImporter(importer);
+  if (!importerPath || hasNodeModulesSegment(importerPath)) return false;
+
+  const realImporterPath = safeRealpath(path.resolve(importerPath));
+  if (hasNodeModulesSegment(realImporterPath)) return false;
+
+  return isPathInside(projectRoot, realImporterPath);
+}
+
+function tsconfigBaseUrlResolverPlugin(projectRoot: string, baseUrl: string): Plugin {
+  const realProjectRoot = safeRealpath(path.resolve(projectRoot));
   return {
     name: "vinext:next-config-tsconfig-base-url",
-    enforce: "post",
+    // Vite's alias plugin runs before user `pre` plugins, and the core package
+    // resolver runs after them. That gives tsconfig paths first priority,
+    // then baseUrl-local files, then package fallback.
+    enforce: "pre",
     async resolveId(id, importer, options) {
       if (!importer || !isBareModuleSpecifier(id)) return null;
+      if (!isProjectOwnedImporter(importer, realProjectRoot)) return null;
 
       return await this.resolve(path.resolve(baseUrl, id), importer, {
         ...options,
@@ -845,6 +898,17 @@ export async function loadNextConfig(
       root,
       logLevel: "error",
       clearScreen: false,
+      environments: {
+        inline: {
+          resolve: {
+            // Vite's module runner externalizes installed bare packages before
+            // calling resolveId. next.config.ts needs tsconfig baseUrl to get
+            // the first lookup, so keep config imports inside the resolver
+            // pipeline and let unresolved local lookups fall through to packages.
+            noExternal: true,
+          },
+        },
+      },
       resolve: {
         alias: tsconfigResolution.aliases,
         // Include `.cjs` and `.cts` so `vite-plugin-commonjs` recognises
@@ -877,7 +941,7 @@ export async function loadNextConfig(
       plugins: [
         ...(/\.[cm]?ts$/.test(configPath) ? [cjsGlobalsInjectorPlugin(configPath)] : []),
         ...(tsconfigResolution.baseUrl
-          ? [tsconfigBaseUrlResolverPlugin(tsconfigResolution.baseUrl)]
+          ? [tsconfigBaseUrlResolverPlugin(root, tsconfigResolution.baseUrl)]
           : []),
         commonjs({
           filter: (id: string) => {

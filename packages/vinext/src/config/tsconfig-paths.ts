@@ -124,12 +124,7 @@ function loadResolutionFromTsconfigFile(
   if (!parsed) return emptyResolution();
 
   let resolution = emptyResolution();
-  const extendsList =
-    typeof parsed.extends === "string"
-      ? [parsed.extends]
-      : Array.isArray(parsed.extends)
-        ? parsed.extends.filter((value): value is string => typeof value === "string")
-        : [];
+  const extendsList = typeof parsed.extends === "string" ? [parsed.extends] : [];
 
   for (const extendsSpecifier of extendsList) {
     const extendedPath = resolveTsconfigExtends(configPath, extendsSpecifier);
