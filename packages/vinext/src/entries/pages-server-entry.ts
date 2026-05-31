@@ -122,6 +122,7 @@ export async function generateServerEntry(
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
     headers: nextConfig?.headers ?? [],
     expireTime: nextConfig?.expireTime,
+    cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
     i18n: nextConfig?.i18n ?? null,
     // Mirrors Next.js `experimental.disableOptimizedLoading` — when false
     // (the default), page scripts are emitted with `defer` in <head>. See
@@ -227,7 +228,7 @@ import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext, wrapWithRouterContext } from "next/router";
-import { _runWithCacheState } from "next/cache";
+import { _runWithCacheState, configureMemoryCacheHandler as __configureMemoryCacheHandler } from "next/cache";
 import { runWithPrivateCache } from "vinext/cache-runtime";
 import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -275,6 +276,8 @@ const __hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
+
+__configureMemoryCacheHandler({ cacheMaxMemorySize: vinextConfig.cacheMaxMemorySize });
 
 // Path to the user's pages/_app file (or null). Used to look up the
 // _app's CSS/JS chunks in the SSR manifest so any global styles imported

@@ -193,6 +193,64 @@ type MemoryEntry = {
   cacheControl?: CacheControlMetadata;
 };
 
+const DEFAULT_MEMORY_CACHE_MAX_SIZE = 50 * 1024 * 1024;
+const MAX_REVALIDATED_TAG_ENTRIES = 10_000;
+
+type MemoryCacheHandlerOptions = Pick<CacheHandlerContext, "maxMemoryCacheSize"> & {
+  cacheMaxMemorySize?: number;
+};
+
+function estimateStringMapSize(map: Record<string, string | string[]> | undefined): number {
+  if (!map) return 0;
+  let size = 0;
+  for (const [key, value] of Object.entries(map)) {
+    size += key.length;
+    if (Array.isArray(value)) {
+      for (const item of value) size += item.length;
+    } else {
+      size += value.length;
+    }
+  }
+  return size;
+}
+
+function estimateIncrementalCacheValueSize(value: IncrementalCacheValue | null): number {
+  if (value === null) return 25;
+
+  switch (value.kind) {
+    case "FETCH":
+      return JSON.stringify(value.data ?? "").length;
+    case "PAGES":
+      return (
+        value.html.length +
+        JSON.stringify(value.pageData ?? {}).length +
+        estimateStringMapSize(value.headers)
+      );
+    case "APP_PAGE":
+      return (
+        value.html.length +
+        (value.rscData?.byteLength ?? 0) +
+        (value.postponed?.length ?? 0) +
+        estimateStringMapSize(value.headers)
+      );
+    case "APP_ROUTE":
+      return value.body.byteLength + estimateStringMapSize(value.headers);
+    case "REDIRECT":
+      return JSON.stringify(value.props ?? {}).length;
+    case "IMAGE":
+      return value.buffer.byteLength + value.extension.length + value.etag.length;
+    default:
+      return JSON.stringify(value).length;
+  }
+}
+
+function resolveMemoryCacheMaxSize(options?: number | MemoryCacheHandlerOptions): number {
+  if (typeof options === "number") return options;
+  if (typeof options?.cacheMaxMemorySize === "number") return options.cacheMaxMemorySize;
+  if (typeof options?.maxMemoryCacheSize === "number") return options.maxMemoryCacheSize;
+  return DEFAULT_MEMORY_CACHE_MAX_SIZE;
+}
+
 function readStringArrayField(ctx: Record<string, unknown> | undefined, field: string): string[] {
   const value = ctx?.[field];
   if (!Array.isArray(value)) return [];
@@ -202,6 +260,40 @@ function readStringArrayField(ctx: Record<string, unknown> | undefined, field: s
 export class MemoryCacheHandler implements CacheHandler {
   private store = new Map<string, MemoryEntry>();
   private tagRevalidatedAt = new Map<string, number>();
+  private readonly maxMemoryCacheSize: number;
+  private currentMemoryCacheSize = 0;
+
+  constructor(options?: number | MemoryCacheHandlerOptions) {
+    this.maxMemoryCacheSize = resolveMemoryCacheMaxSize(options);
+  }
+
+  private estimateEntrySize(entry: MemoryEntry): number {
+    return (
+      estimateIncrementalCacheValueSize(entry.value) +
+      entry.tags.reduce((sum, tag) => sum + tag.length, 0) +
+      64
+    );
+  }
+
+  private deleteEntry(key: string): void {
+    const existing = this.store.get(key);
+    if (!existing) return;
+    this.currentMemoryCacheSize -= this.estimateEntrySize(existing);
+    this.store.delete(key);
+  }
+
+  private touchEntry(key: string, entry: MemoryEntry): void {
+    this.store.delete(key);
+    this.store.set(key, entry);
+  }
+
+  private evictLeastRecentlyUsed(): void {
+    while (this.maxMemoryCacheSize > 0 && this.currentMemoryCacheSize > this.maxMemoryCacheSize) {
+      const oldestKey = this.store.keys().next().value;
+      if (oldestKey === undefined) return;
+      this.deleteEntry(oldestKey);
+    }
+  }
 
   async get(key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     const entry = this.store.get(key);
@@ -213,7 +305,7 @@ export class MemoryCacheHandler implements CacheHandler {
     for (const tag of entry.tags) {
       const revalidatedAt = this.tagRevalidatedAt.get(tag);
       if (revalidatedAt && revalidatedAt >= entry.lastModified) {
-        this.store.delete(key);
+        this.deleteEntry(key);
         return null;
       }
     }
@@ -228,9 +320,11 @@ export class MemoryCacheHandler implements CacheHandler {
     // Check hard expiry first. Past `expire`, Next.js blocks on fresh
     // regeneration instead of serving stale with background work.
     if (entry.expireAt !== null && Date.now() > entry.expireAt) {
-      this.store.delete(key);
+      this.deleteEntry(key);
       return null;
     }
+
+    this.touchEntry(key, entry);
 
     // Check time-based revalidation — return stale entry with cacheState="stale"
     // instead of deleting, so ISR can serve stale-while-revalidate
@@ -291,14 +385,26 @@ export class MemoryCacheHandler implements CacheHandler {
           : { revalidate: effectiveRevalidate, expire: effectiveExpire }
         : undefined;
 
-    this.store.set(key, {
+    if (this.maxMemoryCacheSize === 0) return;
+
+    const entry = {
       value: data,
       tags,
       lastModified: now,
       revalidateAt,
       expireAt,
       cacheControl,
-    });
+    };
+    const entrySize = this.estimateEntrySize(entry);
+    if (entrySize > this.maxMemoryCacheSize) {
+      this.deleteEntry(key);
+      return;
+    }
+
+    this.deleteEntry(key);
+    this.store.set(key, entry);
+    this.currentMemoryCacheSize += entrySize;
+    this.evictLeastRecentlyUsed();
   }
 
   async revalidateTag(tags: string | string[], _durations?: { expire?: number }): Promise<void> {
@@ -306,6 +412,11 @@ export class MemoryCacheHandler implements CacheHandler {
     const now = Date.now();
     for (const tag of tagList) {
       this.tagRevalidatedAt.set(tag, now);
+      while (this.tagRevalidatedAt.size > MAX_REVALIDATED_TAG_ENTRIES) {
+        const oldest = this.tagRevalidatedAt.keys().next().value;
+        if (oldest === undefined) break;
+        this.tagRevalidatedAt.delete(oldest);
+      }
     }
   }
 
@@ -343,6 +454,12 @@ const _gHandler = globalThis as unknown as Record<PropertyKey, CacheHandler>;
 
 function _getActiveHandler(): CacheHandler {
   return _gHandler[_HANDLER_KEY] ?? (_gHandler[_HANDLER_KEY] = new MemoryCacheHandler());
+}
+
+export function configureMemoryCacheHandler(options?: MemoryCacheHandlerOptions): void {
+  const current = _gHandler[_HANDLER_KEY];
+  if (current && !(current instanceof MemoryCacheHandler)) return;
+  _gHandler[_HANDLER_KEY] = new MemoryCacheHandler(options);
 }
 
 /**
