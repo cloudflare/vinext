@@ -4,7 +4,10 @@ import {
   type ArtifactCompatibilityEnvelope,
 } from "../packages/vinext/src/server/artifact-compatibility.js";
 import {
+  DEFAULT_CLIENT_REUSE_MANIFEST_LIMITS,
+  createClientReuseManifest,
   createClientReusePayloadHash,
+  parseClientReuseManifestHeader,
   type ClientReuseManifestEntry,
 } from "../packages/vinext/src/server/client-reuse-manifest.js";
 import {
@@ -18,6 +21,9 @@ import {
 } from "../packages/vinext/src/server/cache-proof.js";
 import {
   crossCheckClientReuseManifestEntryWithCache,
+  createClientReuseSkipTransportPlan,
+  createStaticLayoutClientReuseArtifactCompatibility,
+  createStaticLayoutClientReusePayloadHash,
   type SkipCacheInvalidationProof,
 } from "../packages/vinext/src/server/skip-cache-proof.js";
 
@@ -146,7 +152,7 @@ function createVerifiedFixture(
 }
 
 describe("skip/cache proof cross-checks", () => {
-  it("verifies a matching public layout entry without enabling skip transport", () => {
+  it("enables static-layout skip transport for a verified public layout entry", () => {
     const fixture = createVerifiedFixture();
 
     const result = crossCheckClientReuseManifestEntryWithCache({
@@ -160,10 +166,443 @@ describe("skip/cache proof cross-checks", () => {
       entryId: "layout:/dashboard",
       kind: "verified",
       skipDisposition: {
+        code: "SKIP_STATIC_LAYOUT_VERIFIED",
+        enabled: true,
+        mode: "skipStaticLayout",
+        skippedEntryIds: ["layout:/dashboard"],
+      },
+    });
+  });
+
+  it("enables static-layout skip for sibling routes using the real proof helpers", () => {
+    // Layout /dashboard rendered during a visit to /dashboard/settings is
+    // reused when navigating to sibling route /dashboard/profile.  The test
+    // exercises the three exported static-layout proof helpers —
+    // createStaticLayoutClientReusePayloadHash,
+    // createStaticLayoutClientReuseArtifactCompatibility, and the variant
+    // cache key from buildCacheVariantWithRouteBudget — to prove sibling
+    // routes produce identical proof identity when routeId is excluded.
+    const baseCompatibility = createCompatibility();
+    const dashboardLayoutId = "layout:/dashboard";
+    const rootBoundaryId = "layout:/";
+    const settingsRouteId = "route:/dashboard/settings";
+    const profileRouteId = "route:/dashboard/profile";
+
+    const candidateOutput: LayoutOutputScope = {
+      kind: "layout",
+      layoutId: dashboardLayoutId,
+      rootBoundaryId,
+      routeId: settingsRouteId,
+    };
+    const currentOutput: LayoutOutputScope = {
+      kind: "layout",
+      layoutId: dashboardLayoutId,
+      rootBoundaryId,
+      routeId: profileRouteId,
+    };
+
+    // Build real variant cache keys for both the cache proof (candidate)
+    // and the client manifest entry.  Both originate from the same candidate
+    // render, so the variant cache key is identical.
+    const candidateVariant = buildCacheVariantWithRouteBudget({
+      budget: DEFAULT_CACHE_VARIANT_BUDGET,
+      dimensions: [],
+      output: candidateOutput,
+      routeBudget: { routeId: candidateOutput.routeId, variantCacheKeys: [] },
+    });
+    if (candidateVariant.kind !== "variant") throw new Error("Expected variant");
+    const variantCacheKey = candidateVariant.variant.cacheKey;
+
+    // Build artifact compatibilities with the exported helper.
+    // routeId is excluded from renderEpoch, so sibling routes produce
+    // layout-scoped identity.
+    const serverArtifact = createStaticLayoutClientReuseArtifactCompatibility({
+      artifactCompatibility: baseCompatibility,
+      layoutId: dashboardLayoutId,
+      rootBoundaryId,
+      routeId: profileRouteId,
+      variantCacheKey,
+    });
+    const clientArtifact = createStaticLayoutClientReuseArtifactCompatibility({
+      artifactCompatibility: baseCompatibility,
+      layoutId: dashboardLayoutId,
+      rootBoundaryId,
+      routeId: settingsRouteId,
+      variantCacheKey,
+    });
+
+    // Build payload hashes with the exported helper.  routeId is excluded
+    // from the hash, so sibling routes produce identical payload hashes.
+    const serverPayloadHash = createStaticLayoutClientReusePayloadHash({
+      artifactCompatibility: serverArtifact,
+      layoutId: dashboardLayoutId,
+      rootBoundaryId,
+      routeId: profileRouteId,
+      variantCacheKey,
+    });
+    const clientPayloadHash = createStaticLayoutClientReusePayloadHash({
+      artifactCompatibility: clientArtifact,
+      layoutId: dashboardLayoutId,
+      rootBoundaryId,
+      routeId: settingsRouteId,
+      variantCacheKey,
+    });
+    expect(serverPayloadHash).toBe(clientPayloadHash);
+
+    // Build the cache decision with sibling-route topology: the candidate
+    // (cached) output is the settings route; the current output is the
+    // profile route.  The proof authorizes static-layout reuse across routes.
+    const decision = createStaticLayoutArtifactReuseDecision({
+      currentArtifactCompatibility: serverArtifact,
+      candidateArtifactCompatibility: serverArtifact,
+      candidateObservation: buildRenderObservation({
+        boundaryOutcome: { kind: "success" },
+        cacheability: "public",
+        cacheTags: ["dashboard"],
+        completeness: "complete",
+        dynamicFetches: [],
+        output: candidateOutput,
+        pathTags: ["/dashboard"],
+        requestApis: buildRenderRequestApiObservations({
+          completeness: "complete",
+          observed: [],
+        }),
+      }),
+      candidateVariant,
+      currentOutput,
+    });
+    expectReuseDecision(decision);
+
+    const result = crossCheckClientReuseManifestEntryWithCache({
+      artifact: {
+        compatibility: serverArtifact,
+        invalidation: { kind: "valid" },
+        payloadHash: serverPayloadHash,
+      },
+      cacheDecision: decision,
+      entry: createManifestEntry({
+        artifactCompatibility: clientArtifact,
+        payloadHash: clientPayloadHash,
+        variantCacheKey,
+      }),
+    });
+
+    expect(result).toMatchObject({
+      code: "SKIP_CACHE_CROSS_CHECK_PASSED",
+      entryId: dashboardLayoutId,
+      kind: "verified",
+      skipDisposition: {
+        code: "SKIP_STATIC_LAYOUT_VERIFIED",
+        enabled: true,
+        mode: "skipStaticLayout",
+        skippedEntryIds: [dashboardLayoutId],
+      },
+    });
+  });
+
+  it("builds a skip transport plan from verified entries while preserving rejection traces", () => {
+    const fixture = createVerifiedFixture();
+    const manifest = parseClientReuseManifestHeader(
+      JSON.stringify(
+        createClientReuseManifest({
+          entries: [
+            fixture.entry,
+            createManifestEntry({
+              artifactCompatibility: fixture.artifact.compatibility,
+              id: "layout:/billing",
+              payloadHash: fixture.entry.payloadHash,
+              variantCacheKey: fixture.decision.proof.variant.cacheKey,
+            }),
+          ],
+          visibleCommitVersion: 1,
+        }),
+      ),
+    );
+    let verificationCount = 0;
+
+    const plan = createClientReuseSkipTransportPlan({
+      manifest,
+      verifyEntry(entry) {
+        verificationCount++;
+        return crossCheckClientReuseManifestEntryWithCache({
+          artifact: fixture.artifact,
+          cacheDecision: fixture.decision,
+          entry,
+        });
+      },
+    });
+
+    expect(verificationCount).toBe(2);
+    expect(plan).toMatchObject({
+      kind: "skip",
+      skippedEntryIds: ["layout:/dashboard"],
+      skipDisposition: {
+        code: "SKIP_STATIC_LAYOUT_VERIFIED",
+        enabled: true,
+        mode: "skipStaticLayout",
+        skippedEntryIds: ["layout:/dashboard"],
+      },
+      entryRejections: [
+        {
+          code: "SKIP_CACHE_ENTRY_ID_MISMATCH",
+          entryId: "layout:/billing",
+        },
+      ],
+    });
+  });
+
+  it("uses the verified manifest entry id instead of trusting verifier-provided skipped ids", () => {
+    const fixture = createVerifiedFixture();
+    const manifest = parseClientReuseManifestHeader(
+      JSON.stringify(
+        createClientReuseManifest({
+          entries: [fixture.entry],
+          visibleCommitVersion: 1,
+        }),
+      ),
+    );
+
+    const plan = createClientReuseSkipTransportPlan({
+      manifest,
+      verifyEntry(entry) {
+        const verified = crossCheckClientReuseManifestEntryWithCache({
+          artifact: fixture.artifact,
+          cacheDecision: fixture.decision,
+          entry,
+        });
+        if (verified.kind !== "verified") {
+          throw new Error("Expected fixture entry to verify");
+        }
+        return {
+          ...verified,
+          skipDisposition: {
+            ...verified.skipDisposition,
+            skippedEntryIds: ["layout:/unverified"],
+          },
+        };
+      },
+    });
+
+    expect(plan).toMatchObject({
+      kind: "skip",
+      skippedEntryIds: ["layout:/dashboard"],
+    });
+  });
+
+  it("rejects verified results whose entry id does not match the manifest entry", () => {
+    const fixture = createVerifiedFixture();
+    const manifest = parseClientReuseManifestHeader(
+      JSON.stringify(
+        createClientReuseManifest({
+          entries: [fixture.entry],
+          visibleCommitVersion: 1,
+        }),
+      ),
+    );
+
+    const plan = createClientReuseSkipTransportPlan({
+      manifest,
+      verifyEntry(entry) {
+        const verified = crossCheckClientReuseManifestEntryWithCache({
+          artifact: fixture.artifact,
+          cacheDecision: fixture.decision,
+          entry,
+        });
+        if (verified.kind !== "verified") {
+          throw new Error("Expected fixture entry to verify");
+        }
+        // Buggy verifier: returns a verified result for a different entry.
+        return {
+          ...verified,
+          entryId: "layout:/billing",
+        };
+      },
+    });
+
+    expect(plan).toMatchObject({
+      kind: "renderAndSend",
+      skippedEntryIds: [],
+      entryRejections: [
+        {
+          code: "SKIP_CACHE_ENTRY_ID_MISMATCH",
+          entryId: "layout:/dashboard",
+          fields: {
+            verifierEntryId: "layout:/billing",
+            manifestEntryId: "layout:/dashboard",
+          },
+        },
+      ],
+    });
+  });
+
+  it("falls back without verifier work for oversized manifests", () => {
+    const manifest = parseClientReuseManifestHeader('{"entries":[]}', {
+      limits: { ...DEFAULT_CLIENT_REUSE_MANIFEST_LIMITS, maxManifestBytes: 8 },
+    });
+    let verifierCalled = false;
+
+    const plan = createClientReuseSkipTransportPlan({
+      manifest,
+      verifyEntry() {
+        verifierCalled = true;
+        throw new Error("oversized manifests must not enter skip verification");
+      },
+    });
+
+    expect(verifierCalled).toBe(false);
+    expect(plan).toEqual({
+      kind: "renderAndSend",
+      entryRejections: [],
+      manifestRejection: {
+        code: "SKIP_MANIFEST_TOO_LARGE",
+        fields: {
+          manifestBytes: 14,
+          maxManifestBytes: 8,
+        },
+      },
+      skipDisposition: {
         code: "SKIP_MODEL_DISABLED",
         enabled: false,
         mode: "renderAndSend",
       },
+      skipIneligibleEntryIds: [],
+      skippedEntryIds: [],
+    });
+  });
+
+  it("falls back without verifier work when verification would exceed the local budget", () => {
+    const fixture = createVerifiedFixture();
+    const manifest = parseClientReuseManifestHeader(
+      JSON.stringify(
+        createClientReuseManifest({
+          entries: [
+            fixture.entry,
+            createManifestEntry({
+              artifactCompatibility: fixture.artifact.compatibility,
+              id: "layout:/profile",
+              payloadHash: fixture.entry.payloadHash,
+              variantCacheKey: fixture.decision.proof.variant.cacheKey,
+            }),
+          ],
+          visibleCommitVersion: 1,
+        }),
+      ),
+    );
+    let verifierCalled = false;
+
+    const plan = createClientReuseSkipTransportPlan({
+      manifest,
+      maxWireEntriesToVerify: 1,
+      verifyEntry() {
+        verifierCalled = true;
+        throw new Error("over-budget manifests must not enter skip verification");
+      },
+    });
+
+    expect(verifierCalled).toBe(false);
+    expect(plan).toMatchObject({
+      kind: "renderAndSend",
+      manifestRejection: {
+        code: "SKIP_VERIFICATION_BUDGET_EXCEEDED",
+        fields: {
+          totalWireEntries: 2,
+          maxWireEntriesToVerify: 1,
+        },
+      },
+      skippedEntryIds: [],
+    });
+  });
+
+  it("throws for invalid local verification budgets", () => {
+    const fixture = createVerifiedFixture();
+    const manifest = parseClientReuseManifestHeader(
+      JSON.stringify(
+        createClientReuseManifest({
+          entries: [fixture.entry],
+          visibleCommitVersion: 1,
+        }),
+      ),
+    );
+
+    expect(() =>
+      createClientReuseSkipTransportPlan({
+        manifest,
+        maxWireEntriesToVerify: -1,
+        verifyEntry() {
+          throw new Error("invalid budgets must fail before verification");
+        },
+      }),
+    ).toThrow("maxWireEntriesToVerify must be a non-negative safe integer");
+  });
+
+  it("falls back without verifier work for absent manifests", () => {
+    const manifest = parseClientReuseManifestHeader(null);
+    let verifierCalled = false;
+
+    const plan = createClientReuseSkipTransportPlan({
+      manifest,
+      verifyEntry() {
+        verifierCalled = true;
+        throw new Error("absent manifests must not enter skip verification");
+      },
+    });
+
+    expect(verifierCalled).toBe(false);
+    expect(plan).toEqual({
+      kind: "renderAndSend",
+      entryRejections: [],
+      skipDisposition: {
+        code: "SKIP_MODEL_DISABLED",
+        enabled: false,
+        mode: "renderAndSend",
+      },
+      skipIneligibleEntryIds: [],
+      skippedEntryIds: [],
+    });
+  });
+
+  it("falls back without verifier work when malicious entries all reject at parse time", () => {
+    const manifest = parseClientReuseManifestHeader(
+      JSON.stringify(
+        createClientReuseManifest({
+          entries: [
+            {
+              artifactCompatibility: createCompatibility(),
+              id: "layout:/account",
+              payloadHash: createClientReusePayloadHash("account"),
+              privacy: "private",
+              variantCacheKey: "cp1:account",
+            },
+            {
+              artifactCompatibility: createCompatibility(),
+              id: "opaque:future-entry",
+              payloadHash: createClientReusePayloadHash("future"),
+              privacy: "public",
+              variantCacheKey: "cp1:future",
+            },
+          ],
+          visibleCommitVersion: 1,
+        }),
+      ),
+    );
+    let verifierCalled = false;
+
+    const plan = createClientReuseSkipTransportPlan({
+      manifest,
+      verifyEntry() {
+        verifierCalled = true;
+        throw new Error("parse-rejected entries must not enter skip verification");
+      },
+    });
+
+    expect(verifierCalled).toBe(false);
+    expect(plan).toMatchObject({
+      kind: "renderAndSend",
+      entryRejections: [
+        { code: "SKIP_PRIVATE_ENTRY", entryId: "layout:/account" },
+        { code: "SKIP_UNKNOWN_ENTRY", entryId: "opaque:future-entry" },
+      ],
+      skippedEntryIds: [],
     });
   });
 
@@ -274,7 +713,7 @@ describe("skip/cache proof cross-checks", () => {
     });
   });
 
-  it("verifies canary and rollback skip hints when deployments share a compatibility set", () => {
+  it("verifies canary and rollback skip hints without enabling transport skips", () => {
     const rollbackCompatibility = createCompatibility({
       deploymentVersion: "deploy-rollback",
     });
@@ -339,6 +778,51 @@ describe("skip/cache proof cross-checks", () => {
         enabled: false,
         mode: "renderAndSend",
       },
+    });
+  });
+
+  it("builds a renderAndSend plan for compatibility-bridged entries that pass cross-check but fail exact equality", () => {
+    const rollbackCompatibility = createCompatibility({
+      deploymentVersion: "deploy-rollback",
+    });
+    const fixture = createVerifiedFixture({ artifactCompatibility: rollbackCompatibility });
+    const manifest = parseClientReuseManifestHeader(
+      JSON.stringify(
+        createClientReuseManifest({
+          entries: [
+            {
+              ...fixture.entry,
+              artifactCompatibility: createCompatibility({
+                deploymentVersion: "deploy-canary",
+              }),
+            },
+          ],
+          visibleCommitVersion: 1,
+        }),
+      ),
+    );
+    let verifierCalled = false;
+
+    const plan = createClientReuseSkipTransportPlan({
+      manifest,
+      verifyEntry(entry) {
+        verifierCalled = true;
+        return crossCheckClientReuseManifestEntryWithCache({
+          artifact: fixture.artifact,
+          cacheDecision: fixture.decision,
+          compatibilityMap: {
+            deploymentVersions: [["deploy-stable", "deploy-canary", "deploy-rollback"]],
+          },
+          entry,
+        });
+      },
+    });
+
+    expect(verifierCalled).toBe(true);
+    expect(plan).toMatchObject({
+      kind: "renderAndSend",
+      skipIneligibleEntryIds: ["layout:/dashboard"],
+      skippedEntryIds: [],
     });
   });
 

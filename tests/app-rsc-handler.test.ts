@@ -740,6 +740,44 @@ describe("createAppRscHandler", () => {
     expect(matchRoute).not.toHaveBeenCalled();
   });
 
+  it("lets middleware Cache-Control override static metadata route defaults", async () => {
+    // Ported from Next.js: test/e2e/app-dir/no-duplicate-headers-middleware/no-duplicate-headers-middleware.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/no-duplicate-headers-middleware/no-duplicate-headers-middleware.test.ts
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: () => null,
+      metadataRoutes: [
+        {
+          type: "favicon",
+          isDynamic: false,
+          filePath: "/tmp/app/favicon.ico",
+          routePrefix: "",
+          routeSegments: [],
+          servedUrl: "/favicon.ico",
+          contentType: "image/x-icon",
+          fileDataBase64: btoa("icon-bytes"),
+        },
+      ],
+      middlewareModule: {
+        middleware() {
+          return new Response(null, {
+            headers: {
+              "Cache-Control": "max-age=1234",
+              "x-middleware-next": "1",
+            },
+          });
+        },
+      },
+    });
+
+    const response = await handler(new Request("https://example.test/docs/favicon.ico"), null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("max-age=1234");
+    expect(response.headers.get("content-type")).toBe("image/x-icon");
+    await expect(response.text()).resolves.toBe("icon-bytes");
+  });
+
   it("lets server actions short-circuit routing while still applying final headers", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
     const handleServerActionRequest = vi.fn(

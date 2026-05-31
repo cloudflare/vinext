@@ -145,6 +145,50 @@ export const config = { matcher: ["/"] };
   return { tmpDir };
 }
 
+async function buildPagesClientServerOnlyViolationFixture(): Promise<void> {
+  const workspaceRoot = path.resolve(import.meta.dirname, "..");
+  const workspaceNodeModules = path.join(workspaceRoot, "node_modules");
+  const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-server-only-"));
+
+  await writeFile(
+    path.join(tmpDir, "pages", "index.tsx"),
+    `import Comp from "../components/Comp";
+
+export default function Page() {
+  return <Comp />;
+}
+`,
+  );
+  await writeFile(
+    path.join(tmpDir, "components", "Comp.tsx"),
+    `import "server-only";
+
+export default function Comp() {
+  return <p>hello world</p>;
+}
+`,
+  );
+
+  await fsp.symlink(workspaceNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+  const { default: vinext } = await import(
+    pathToFileURL(path.join(workspaceRoot, "packages/vinext/src/index.ts")).href
+  );
+  const { createBuilder } = await import("vite");
+  const rscOutDir = path.join(tmpDir, "dist", "server");
+  const ssrOutDir = path.join(tmpDir, "dist", "server", "ssr");
+  const clientOutDir = path.join(tmpDir, "dist", "client");
+
+  const builder = await createBuilder({
+    root: tmpDir,
+    configFile: false,
+    plugins: [vinext({ appDir: tmpDir, rscOutDir, ssrOutDir, clientOutDir })],
+    logLevel: "error",
+  });
+
+  await builder.buildApp();
+}
+
 describe("middleware can import server-only", () => {
   let tmpDir: string;
 
@@ -215,5 +259,15 @@ describe("middleware can import server-only", () => {
       found.some(Boolean),
       "expected lib/auth's __AUTH_TAG sentinel to appear in at least one server artifact",
     ).toBe(true);
+  });
+});
+
+describe("Pages Router client builds reject server-only", () => {
+  it("errors when a Pages client graph imports server-only", async () => {
+    // Ported from Next.js: test/development/acceptance/server-component-compiler-errors-in-pages.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/development/acceptance/server-component-compiler-errors-in-pages.test.ts
+    await expect(buildPagesClientServerOnlyViolationFixture()).rejects.toThrow(
+      /server-only.*Server Components in the App Router/s,
+    );
   });
 });

@@ -1609,6 +1609,68 @@ describe("resolveNextConfig swcEnvOptions warning", () => {
   });
 });
 
+describe("resolveNextConfig cachedNavigations warning", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("emits a warning when experimental.cachedNavigations is set without cacheComponents", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: { cachedNavigations: true },
+    });
+
+    const cachedNavigationsWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("cachedNavigations"),
+    );
+
+    expect(cachedNavigationsWarning).toBeDefined();
+    expect(cachedNavigationsWarning![0]).toContain("experimental.cachedNavigations");
+    expect(cachedNavigationsWarning![0]).toContain("cacheComponents: true");
+  });
+
+  it("does not warn when experimental.cachedNavigations is set with cacheComponents", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      cacheComponents: true,
+      experimental: { cachedNavigations: true },
+    });
+
+    const cachedNavigationsWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("cachedNavigations"),
+    );
+    expect(cachedNavigationsWarning).toBeUndefined();
+  });
+
+  it("does not warn when experimental.cachedNavigations is not set", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: {},
+    });
+
+    const cachedNavigationsWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("cachedNavigations"),
+    );
+    expect(cachedNavigationsWarning).toBeUndefined();
+  });
+
+  it("does not warn when experimental.cachedNavigations is false", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: { cachedNavigations: false },
+    });
+
+    const cachedNavigationsWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("cachedNavigations"),
+    );
+    expect(cachedNavigationsWarning).toBeUndefined();
+  });
+});
+
 describe("resolveNextConfig rootParams deprecation warning", () => {
   afterEach(() => {
     vi.restoreAllMocks();

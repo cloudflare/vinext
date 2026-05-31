@@ -7,7 +7,8 @@
  *
  * Extracted from index.ts.
  */
-import { resolveEntryPath, normalizePathSeparators } from "./runtime-entry-module.js";
+import { resolveEntryPath } from "./runtime-entry-module.js";
+import { normalizePathSeparators } from "../utils/path.js";
 import { pagesRouter, apiRouter, type Route } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
@@ -121,6 +122,7 @@ export async function generateServerEntry(
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
     headers: nextConfig?.headers ?? [],
     expireTime: nextConfig?.expireTime,
+    cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
     i18n: nextConfig?.i18n ?? null,
     // Mirrors Next.js `experimental.disableOptimizedLoading` — when false
     // (the default), page scripts are emitted with `defer` in <head>. See
@@ -226,7 +228,7 @@ import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext, wrapWithRouterContext } from "next/router";
-import { _runWithCacheState } from "next/cache";
+import { _runWithCacheState, configureMemoryCacheHandler as __configureMemoryCacheHandler } from "next/cache";
 import { runWithPrivateCache } from "vinext/cache-runtime";
 import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -274,6 +276,8 @@ const __hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
+
+__configureMemoryCacheHandler({ cacheMaxMemorySize: vinextConfig.cacheMaxMemorySize });
 
 // Path to the user's pages/_app file (or null). Used to look up the
 // _app's CSS/JS chunks in the SSR manifest so any global styles imported
@@ -616,6 +620,14 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     ? (localeInfo.domainLocale ? localeInfo.domainLocale.defaultLocale : i18nConfig.defaultLocale)
     : undefined;
   const domainLocales = i18nConfig ? i18nConfig.domains : undefined;
+  const i18nCacheVariant = i18nConfig
+    ? (localeInfo.domainLocale
+      ? "domain:" + String(localeInfo.domainLocale.domain).toLowerCase()
+      : "locale:" + String(locale))
+    : null;
+  const pageIsrCacheKey = i18nCacheVariant
+    ? (router, pathname) => isrCacheKey(router, pathname + "::i18n=" + encodeURIComponent(i18nCacheVariant))
+    : isrCacheKey;
 
   if (localeInfo.redirectUrl) {
     return new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } });
@@ -768,7 +780,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
           defaultLocale: currentDefaultLocale,
           domainLocales: domainLocales,
         },
-        isrCacheKey,
+        isrCacheKey: pageIsrCacheKey,
         isrGet,
         isrSet,
         expireSeconds: vinextConfig.expireTime,
@@ -925,7 +937,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
         clientTraceMetadata: vinextConfig.clientTraceMetadata,
         gsspRes,
-        isrCacheKey,
+        isrCacheKey: pageIsrCacheKey,
         expireSeconds: vinextConfig.expireTime,
         isrRevalidateSeconds,
         isrSet,

@@ -87,7 +87,7 @@ import {
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-request-headers.js";
 import { detectPackageManager } from "./utils/project.js";
-import { manifestFileWithBase, manifestFilesWithBase } from "./utils/manifest-paths.js";
+import { manifestFilesWithBase } from "./utils/manifest-paths.js";
 import { hasBasePath } from "./utils/base-path.js";
 import { mergeRewriteQuery } from "./utils/query.js";
 import {
@@ -124,6 +124,7 @@ import {
 } from "./plugins/fonts.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import { computeLazyChunks } from "./utils/lazy-chunks.js";
+import { findClientEntryFile, readClientBuildManifest } from "./utils/client-build-manifest.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import { buildSassPreprocessorOptions } from "./plugins/sass.js";
 import {
@@ -142,6 +143,7 @@ import {
 } from "./build/ssr-manifest.js";
 import { stripServerExports } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
+import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -168,6 +170,61 @@ function createRscCompatibilityId(nextConfig: ResolvedNextConfig): string {
 }
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
+
+function hasServerOnlyMarkerImport(code: string): boolean {
+  if (!code.includes("server-only")) return false;
+
+  let ast: ReturnType<typeof parseAst>;
+  try {
+    ast = parseAst(code);
+  } catch {
+    return false;
+  }
+
+  function walk(node: ASTNode | ASTNode[] | null | undefined): boolean {
+    if (!node) return false;
+    if (Array.isArray(node)) return node.some((child) => walk(child));
+    if (typeof node !== "object") return false;
+
+    if (node.type === "ImportDeclaration") {
+      const source = (node as ASTNode & { source?: { value?: unknown } }).source?.value;
+      if (source === "server-only") return true;
+    }
+
+    if (node.type === "CallExpression") {
+      const call = node as ASTNode & {
+        callee?: { type?: string; name?: string };
+        arguments?: Array<{ type?: string; value?: unknown }>;
+      };
+      if (
+        call.callee?.type === "Identifier" &&
+        call.callee.name === "require" &&
+        call.arguments?.[0]?.type === "Literal" &&
+        call.arguments[0].value === "server-only"
+      ) {
+        return true;
+      }
+    }
+
+    for (const key of Object.keys(node)) {
+      if (key === "type" || key === "start" || key === "end" || key === "loc" || key === "parent") {
+        continue;
+      }
+      const value = (node as unknown as Record<string, unknown>)[key];
+      if (Array.isArray(value)) {
+        if (value.some((child) => child && typeof child === "object" && walk(child as ASTNode))) {
+          return true;
+        }
+      } else if (value && typeof value === "object" && "type" in value) {
+        if (walk(value as ASTNode)) return true;
+      }
+    }
+
+    return false;
+  }
+
+  return walk(ast.body);
+}
 
 const __dirname = import.meta.dirname;
 type VitePluginReactModule = typeof import("@vitejs/plugin-react");
@@ -2315,6 +2372,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               clientTraceMetadata: nextConfig?.clientTraceMetadata,
               assetPrefix: nextConfig?.assetPrefix,
               expireTime: nextConfig?.expireTime,
+              cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
               inlineCss: nextConfig?.inlineCss,
               i18n: nextConfig?.i18n,
               hasPagesDir,
@@ -3504,6 +3562,30 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         };
       },
     },
+    // Match Next.js's server-only boundary for browser/client graphs. The
+    // marker is valid in App Router Server Components and middleware/server
+    // targets, but importing it from client-reachable code (including Pages
+    // Router browser bundles) must fail instead of silently resolving to the
+    // empty shim.
+    //
+    // Ported behavior from Next.js:
+    // test/development/acceptance/server-component-compiler-errors-in-pages.test.ts
+    // packages/next/src/build/webpack-config.ts (server-only/client-only layers)
+    {
+      name: "vinext:validate-server-only-client-imports",
+      transform: {
+        filter: { id: /\.(tsx?|jsx?|mjs)$/, code: "server-only" },
+        handler(code, id) {
+          if (this.environment?.name !== "client") return null;
+          if (id.startsWith("\0")) return null;
+          if (!hasServerOnlyMarkerImport(code)) return null;
+
+          throw new Error(
+            `You're importing a module that depends on "server-only". This API is only available in Server Components in the App Router, but this module is reachable from a client bundle.`,
+          );
+        },
+      },
+    },
     // Strip server-only data-fetching exports (getServerSideProps, getStaticProps,
     // getStaticPaths) from page modules in the client bundle. These functions
     // often import server-only modules (database drivers, fs, etc.) that would
@@ -3925,6 +4007,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
+    createImportMetaUrlPlugin({
+      getRoot: () => root,
+    }),
     // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
     // see src/plugins/og-assets.ts
     createOgInlineFetchAssetsPlugin(),
@@ -4278,21 +4363,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           let lazyChunksData: string[] | null = null;
           let clientEntryFile: string | null = null;
           const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
-          if (fs.existsSync(buildManifestPath)) {
-            try {
-              const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
-              // oxlint-disable-next-line typescript/no-explicit-any
-              for (const [, value] of Object.entries(buildManifest) as [string, any][]) {
-                if (value && value.isEntry && value.file) {
-                  clientEntryFile = manifestFileWithBase(value.file, clientBase);
-                  break;
-                }
-              }
-              const lazy = manifestFilesWithBase(computeLazyChunks(buildManifest), clientBase);
-              if (lazy.length > 0) lazyChunksData = lazy;
-            } catch {
-              /* ignore parse errors */
-            }
+          const buildManifest = readClientBuildManifest(buildManifestPath);
+          if (buildManifest) {
+            clientEntryFile =
+              findClientEntryFile({
+                buildManifest,
+                clientDir,
+                assetsSubdir: resolveAssetsDir(nextConfig?.assetPrefix),
+                assetBase: clientBase,
+              }) ?? null;
+            const lazy = manifestFilesWithBase(computeLazyChunks(buildManifest), clientBase);
+            if (lazy.length > 0) lazyChunksData = lazy;
           }
 
           // Read SSR manifest for per-page CSS/JS injection
@@ -4359,18 +4440,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // and the prod-server lookup path, so this fallback works for every
             // layout supported by the rest of the pipeline.
             if (!clientEntryFile) {
-              const assetsSubdir = resolveAssetsDir(nextConfig?.assetPrefix);
-              const assetsDir = path.join(clientDir, assetsSubdir);
-              if (fs.existsSync(assetsDir)) {
-                const files = fs.readdirSync(assetsDir);
-                const entry = files.find(
-                  (f: string) =>
-                    (f.includes("vinext-client-entry") || f.includes("vinext-app-browser-entry")) &&
-                    f.endsWith(".js"),
-                );
-                if (entry)
-                  clientEntryFile = manifestFileWithBase(`${assetsSubdir}/${entry}`, clientBase);
-              }
+              clientEntryFile =
+                findClientEntryFile({
+                  clientDir,
+                  assetsSubdir: resolveAssetsDir(nextConfig?.assetPrefix),
+                  assetBase: clientBase,
+                }) ?? null;
             }
 
             // Prepend globals to worker entry

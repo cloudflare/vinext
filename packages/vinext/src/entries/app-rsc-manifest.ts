@@ -1,7 +1,11 @@
-import { convertSegmentsToRouteParts, type AppRoute } from "../routing/app-router.js";
+import {
+  computeAppRouteStaticSiblings,
+  convertSegmentsToRouteParts,
+  type AppRoute,
+} from "../routing/app-router.js";
 import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
-import { normalizePathSeparators } from "./runtime-entry-module.js";
+import { normalizePathSeparators } from "../utils/path.js";
 
 type AppRscManifestCode = {
   imports: string[];
@@ -157,6 +161,12 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
 
 function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string[] {
   return routes.map((route, routeIdx) => {
+    // Pre-compute static-sibling segment names for the matched route's
+    // dynamic URL levels. The client router uses this to decide if a cached
+    // dynamic-route prefetch can be reused when navigating to a static
+    // sibling URL (issue cloudflare/vinext#1525). Emitted only when there are
+    // siblings so static routes get an empty literal and stay lean.
+    const staticSiblings = route.isDynamic ? computeAppRouteStaticSiblings(routes, route) : [];
     const layoutVars = route.layouts.map((l) => imports.getImportVar(l));
     const templateVars = route.templates.map((t) => imports.getImportVar(t));
     const notFoundVars = (route.notFoundPaths ?? []).map((nf) =>
@@ -208,6 +218,7 @@ ${interceptEntries.join(",\n")}
     patternParts: ${JSON.stringify(route.patternParts)},
     isDynamic: ${route.isDynamic},
     params: ${JSON.stringify(route.params)},
+    staticSiblings: ${JSON.stringify(staticSiblings)},
     rootParamNames: ${JSON.stringify(route.rootParamNames ?? [])},
     page: ${route.pagePath ? imports.getImportVar(route.pagePath) : "null"},
     routeHandler: ${route.routePath ? imports.getImportVar(route.routePath) : "null"},
