@@ -1,5 +1,52 @@
 import type { UserConfig } from "vite";
 
+type ClientAssetFileNameInfo = {
+  readonly name?: string;
+  readonly names?: readonly string[];
+  readonly originalFileName?: string;
+  readonly originalFileNames?: readonly string[];
+};
+
+const NEXT_CLIENT_CSS_ASSET_FILE_NAMES = "css/[name].[hash:8][extname]";
+const NEXT_CLIENT_STATIC_MEDIA_FILE_NAMES = "media/[name].[hash:8][extname]";
+
+function withoutTrailingSlash(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "/") end -= 1;
+  return value.slice(0, end);
+}
+
+function joinAssetFileNamePattern(assetsDir: string, pattern: string): string {
+  const normalizedAssetsDir = withoutTrailingSlash(assetsDir);
+  if (!normalizedAssetsDir) return pattern;
+  return `${normalizedAssetsDir}/${pattern}`;
+}
+
+function getAssetSourceNames(assetInfo: ClientAssetFileNameInfo): string[] {
+  const names: string[] = [];
+
+  for (const name of assetInfo.names ?? []) names.push(name);
+  if (assetInfo.name) names.push(assetInfo.name);
+  for (const originalFileName of assetInfo.originalFileNames ?? []) names.push(originalFileName);
+  if (assetInfo.originalFileName) names.push(assetInfo.originalFileName);
+
+  return names;
+}
+
+export function createClientAssetFileNames(assetsDir: string) {
+  const cssAssetFileNames = joinAssetFileNamePattern(assetsDir, NEXT_CLIENT_CSS_ASSET_FILE_NAMES);
+  const staticMediaFileNames = joinAssetFileNamePattern(
+    assetsDir,
+    NEXT_CLIENT_STATIC_MEDIA_FILE_NAMES,
+  );
+
+  return function getClientAssetFileNames(assetInfo: ClientAssetFileNameInfo): string {
+    const sourceNames = getAssetSourceNames(assetInfo);
+    const isCssAsset = sourceNames.some((name) => name.toLowerCase().endsWith(".css"));
+    return isCssAsset ? cssAssetFileNames : staticMediaFileNames;
+  };
+}
+
 /**
  * Extract the npm package name from a module ID (file path).
  * Returns null if not in node_modules.
@@ -85,8 +132,12 @@ export function createClientManualChunks(shimsDir: string) {
  * compression efficiency — small files restart the compression dictionary,
  * adding ~5-15% wire overhead vs fewer larger chunks.
  */
-export function createClientOutputConfig(clientManualChunks: (id: string) => string | undefined) {
+export function createClientOutputConfig(
+  clientManualChunks: (id: string) => string | undefined,
+  assetsDir: string,
+) {
   return {
+    assetFileNames: createClientAssetFileNames(assetsDir),
     manualChunks: clientManualChunks,
     experimentalMinChunkSize: 10_000,
   };
