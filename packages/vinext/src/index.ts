@@ -135,7 +135,10 @@ import {
   getBuildBundlerOptions,
   withBuildBundlerOptions,
 } from "./build/client-build-config.js";
-import { restoreDedupedCssAssetReferences } from "./build/css-url-assets.js";
+import {
+  markCssUrlAssetReferences,
+  restoreDedupedCssAssetReferences,
+} from "./build/css-url-assets.js";
 import {
   augmentSsrManifestFromBundle,
   tryRealpathSync,
@@ -2497,10 +2500,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
     },
     {
-      name: "vinext:css-url-assets",
+      name: "vinext:css-url-assets-mark",
+      enforce: "pre",
+
+      transform(code, id) {
+        if (this.environment?.name !== "client") return null;
+        return markCssUrlAssetReferences(code, id);
+      },
+    },
+    {
+      name: "vinext:css-url-assets-restore",
       enforce: "post",
 
       generateBundle(_options, bundle) {
+        if (this.environment?.name !== "client") return;
         restoreDedupedCssAssetReferences(bundle, (asset) => {
           this.emitFile({
             type: "asset",

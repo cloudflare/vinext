@@ -69,6 +69,76 @@ async function makePagesCssUrlFixture(): Promise<string> {
   return tmpDir;
 }
 
+async function makePagesSplitCssUrlFixture(): Promise<string> {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-split-css-url-assets-"));
+  await fs.symlink(ROOT_NODE_MODULES, path.join(tmpDir, "node_modules"), "junction");
+
+  const stylesDir = path.join(tmpDir, "styles");
+  await fs.mkdir(stylesDir, { recursive: true });
+  await fs.writeFile(path.join(stylesDir, "dark.svg"), DARK_SVG);
+  await fs.writeFile(path.join(stylesDir, "dark2.svg"), DARK_2_SVG);
+  await fs.writeFile(
+    path.join(stylesDir, "home.module.css"),
+    '.home { background-image: url("./dark.svg"); }\n',
+  );
+  await fs.writeFile(
+    path.join(stylesDir, "about.module.css"),
+    '.about { background-image: url("./dark2.svg"); }\n',
+  );
+
+  const pagesDir = path.join(tmpDir, "pages");
+  await fs.mkdir(pagesDir, { recursive: true });
+  await fs.writeFile(
+    path.join(pagesDir, "_app.jsx"),
+    [
+      "export default function App({ Component, pageProps }) {",
+      "  return <Component {...pageProps} />;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await fs.writeFile(
+    path.join(pagesDir, "index.jsx"),
+    [
+      'import styles from "../styles/home.module.css";',
+      "",
+      "export default function Home() {",
+      "  return <div className={styles.home}>Home</div>;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await fs.writeFile(
+    path.join(pagesDir, "about.jsx"),
+    [
+      'import styles from "../styles/about.module.css";',
+      "",
+      "export default function About() {",
+      "  return <div className={styles.about}>About</div>;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+
+  return tmpDir;
+}
+
+async function listFiles(dir: string): Promise<string[]> {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  const files: string[] = [];
+
+  for (const entry of entries) {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await listFiles(entryPath)));
+    } else if (entry.isFile()) {
+      files.push(entryPath);
+    }
+  }
+
+  return files;
+}
+
 function extractStylesheetHrefs(html: string): string[] {
   const hrefs: string[] = [];
   const hrefRe = /<link\s+rel="stylesheet"[^>]*\shref="([^"]+\.css)"/g;
@@ -152,6 +222,73 @@ describe("Pages Router CSS url() asset emission", () => {
           expect(assetRes.status, `expected ${assetUrl} to be served`).toBe(200);
           expect(assetRes.headers.get("content-type")).toMatch(/^image\/svg\+xml/);
           expect(await assetRes.text()).toContain("<svg");
+        }
+      } finally {
+        await closeServer(server);
+      }
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 180_000);
+
+  it("preserves url() asset provenance across separate emitted CSS chunks", async () => {
+    const tmpDir = await makePagesSplitCssUrlFixture();
+    try {
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ disableAppRouter: true })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const emittedCssFiles = (await listFiles(path.join(tmpDir, "dist", "client"))).filter(
+        (file) => file.endsWith(".css"),
+      );
+      const emittedCss = await Promise.all(
+        emittedCssFiles.map(async (file) => ({
+          file,
+          text: await fs.readFile(file, "utf-8"),
+        })),
+      );
+      const cssWithSvgUrls = emittedCss.filter(({ text }) =>
+        extractCssUrls(text).some((url) => url.includes(".svg")),
+      );
+      expect(cssWithSvgUrls.length).toBeGreaterThanOrEqual(2);
+
+      const homeCss = cssWithSvgUrls.find(({ text }) => text.includes("_home_"));
+      const aboutCss = cssWithSvgUrls.find(({ text }) => text.includes("_about_"));
+      expect(homeCss, `emitted CSS with .home module class not found`).toBeDefined();
+      expect(aboutCss, `emitted CSS with .about module class not found`).toBeDefined();
+
+      const homeAssetUrls = extractCssUrls(homeCss?.text ?? "").filter((url) =>
+        url.includes(".svg"),
+      );
+      const aboutAssetUrls = extractCssUrls(aboutCss?.text ?? "").filter((url) =>
+        url.includes(".svg"),
+      );
+
+      expect(homeAssetUrls).toEqual([
+        expect.stringMatching(/^\/_next\/static\/media\/dark\.[A-Za-z0-9_-]+\.svg$/),
+      ]);
+      expect(aboutAssetUrls).toEqual([
+        expect.stringMatching(/^\/_next\/static\/media\/dark2\.[A-Za-z0-9_-]+\.svg$/),
+      ]);
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const { server, port } = await startProdServer({
+        port: 0,
+        host: "127.0.0.1",
+        outDir: path.join(tmpDir, "dist"),
+        noCompression: true,
+      });
+
+      try {
+        const baseUrl = `http://127.0.0.1:${port}`;
+        for (const assetUrl of [...homeAssetUrls, ...aboutAssetUrls]) {
+          const assetRes = await fetch(new URL(assetUrl, baseUrl));
+          expect(assetRes.status, `expected ${assetUrl} to be served`).toBe(200);
+          expect(assetRes.headers.get("content-type")).toMatch(/^image\/svg\+xml/);
         }
       } finally {
         await closeServer(server);
