@@ -1475,8 +1475,16 @@ describe("Link prefetch scheduling", () => {
     vi.stubEnv("__VINEXT_PREFETCH_INLINING", "true");
     const observer = stubIntersectionObserver();
     let resolveShell: ((response: Response) => void) | undefined;
+    let releaseShellBody: (() => void) | undefined;
     const shellPromise = new Promise<Response>((resolve) => {
       resolveShell = resolve;
+    });
+    const shellBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        releaseShellBody = () => {
+          controller.close();
+        };
+      },
     });
     const result = await renderIsolatedLink({
       href: "/intent-prefetch-target",
@@ -1507,7 +1515,14 @@ describe("Link prefetch scheduling", () => {
       if (resolveShell === undefined) {
         throw new Error("Expected shell prefetch resolver");
       }
-      resolveShell(new Response("shell"));
+      resolveShell(new Response(shellBody));
+      await flushPrefetchTasks();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+
+      if (releaseShellBody === undefined) {
+        throw new Error("Expected shell body release");
+      }
+      releaseShellBody();
       await waitForFetchCalls(result.fetch, 2);
 
       const secondInit = result.fetch.mock.calls[1]?.[1];

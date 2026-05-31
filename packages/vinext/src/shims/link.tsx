@@ -407,7 +407,7 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
                 if (!shellResponse.ok) {
                   return shellResponse;
                 }
-                void shellResponse.arrayBuffer().catch(() => {});
+                await shellResponse.arrayBuffer().catch(() => {});
                 return fetch(rscUrl, {
                   headers,
                   credentials: "include",

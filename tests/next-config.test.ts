@@ -822,7 +822,9 @@ describe("resolveNextConfig serverActionsBodySizeLimit", () => {
     });
     expect(resolved.serverActionsBodySizeLimit).toBe(5242880);
   });
+});
 
+describe("resolveNextConfig disableOptimizedLoading", () => {
   // Regression for #1519: `experimental.disableOptimizedLoading` defaults to
   // `false` and is read into the resolved config. The default drives the
   // `defer`-in-head behaviour for Pages Router scripts in production.
@@ -837,7 +839,9 @@ describe("resolveNextConfig serverActionsBodySizeLimit", () => {
     });
     expect(resolved.disableOptimizedLoading).toBe(true);
   });
+});
 
+describe("resolveNextConfig prefetchInlining", () => {
   it("reads experimental.prefetchInlining from next.config", async () => {
     const disabled = await resolveNextConfig({});
     expect(disabled.prefetchInlining).toBe(false);
