@@ -368,10 +368,10 @@ describe("loadNextConfig with tsconfig path aliases", () => {
   // Ported from Next.js: test/e2e/app-dir/next-config-ts/import-alias-paths-only/
   //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-config-ts/import-alias-paths-only/
   // and import-alias-paths-with-baseurl/.
-  // Next.js's transpile-config.ts reads compilerOptions.paths from tsconfig.json
-  // and passes them to SWC so that next.config.ts can import via tsconfig
-  // aliases. vinext mirrors this by passing tsconfig paths to Vite as
-  // resolve.alias when calling runnerImport.
+  // Next.js's transpile-config.ts reads compilerOptions.paths/baseUrl from
+  // tsconfig.json and passes them to SWC so that next.config.ts can import via
+  // tsconfig aliases and baseUrl bare specifiers. vinext mirrors this with
+  // Vite resolver settings when calling runnerImport.
 
   let tmpDir: string;
 
@@ -458,6 +458,48 @@ describe("loadNextConfig with tsconfig path aliases", () => {
 
     const config = await loadNextConfig(tmpDir);
     expect(config?.env?.BAZ).toBe("baz");
+  });
+
+  it("follows extended tsconfig baseUrl when resolving bare imports", async () => {
+    // Ported from Next.js: test/e2e/app-dir/next-config-ts/tsconfig-extends/
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-config-ts/tsconfig-extends/next-config-ts-tsconfig-extends-cjs.test.ts
+    tmpDir = makeTempDir();
+
+    fs.mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "src", "foo.ts"), `export const foo = "foo";\n`);
+    fs.writeFileSync(path.join(tmpDir, "bar.ts"), `export const bar = "bar";\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({
+        type: "module",
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.base.json"),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+          paths: {
+            "@/*": ["./src/*"],
+          },
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        extends: "./tsconfig.base.json",
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { foo } from "@/foo";\n` +
+        `import { bar } from "bar";\n` +
+        `export default { env: { VALUE: foo + bar } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.VALUE).toBe("foobar");
   });
 
   it("loads config without tsconfig.json (no aliases needed)", async () => {
