@@ -1,3 +1,15 @@
+// Rewrites direct `import.meta.url` reads in user modules to the source-module
+// URL (a real file URL on the server, a Turbopack-style `file:///ROOT/...` URL
+// on the client) so module identity survives bundling, matching Next.js.
+//
+// Two known limitations, both matching Vite's own `import.meta.url` handling:
+//   1. Destructured access — `const { url } = import.meta;` — is not detected
+//      and will leak the bundled chunk URL.
+//   2. An aliased `import.meta.url` used as a `new URL()` base — e.g.
+//      `const u = import.meta.url; new URL("./file", u);` — is rewritten,
+//      breaking Vite's asset detection for that expression. Only the direct
+//      `new URL("./file", import.meta.url)` form is preserved.
+// Both are edge cases that are unlikely in real Next.js apps.
 import { normalizePath, parseAst, type Plugin } from "vite";
 import MagicString from "magic-string";
 import fs from "node:fs";
@@ -242,7 +254,8 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
         if (index === 1 && isImportMetaUrlOrChainedNode(args[index])) continue;
         visit(args[index]);
       }
-      visit(value.callee);
+      // The callee is always the bare `URL` identifier (see isNewUrlExpression),
+      // so it can never contain an import.meta.url read — no need to visit it.
       return;
     }
 

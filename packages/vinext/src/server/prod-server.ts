@@ -1419,24 +1419,21 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   // the Worker entry at build time.
   const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
   const buildManifest = readClientBuildManifest(buildManifestPath);
+  // findClientEntryFile handles a missing manifest by skipping the manifest
+  // lookup and going straight to the on-disk fallback, so the call is the same
+  // either way — only the lazy-chunk computation needs the manifest.
+  globalThis.__VINEXT_CLIENT_ENTRY__ = findClientEntryFile({
+    buildManifest,
+    clientDir,
+    assetsSubdir: resolveAssetsDir(assetPrefix),
+    assetBase,
+  });
   if (buildManifest) {
-    globalThis.__VINEXT_CLIENT_ENTRY__ = findClientEntryFile({
-      buildManifest,
-      clientDir,
-      assetsSubdir: resolveAssetsDir(assetPrefix),
-      assetBase,
-    });
-
     const lazyChunks = computeLazyChunks(buildManifest).map((file) =>
       manifestFileWithBase(file, assetBase),
     );
     globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks.length > 0 ? lazyChunks : undefined;
   } else {
-    globalThis.__VINEXT_CLIENT_ENTRY__ = findClientEntryFile({
-      clientDir,
-      assetsSubdir: resolveAssetsDir(assetPrefix),
-      assetBase,
-    });
     globalThis.__VINEXT_LAZY_CHUNKS__ = undefined;
   }
 
