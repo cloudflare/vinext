@@ -16,7 +16,6 @@ type ParsedArgs = {
   prerenderAll?: boolean;
   prerenderConcurrency?: number;
   precompress?: boolean;
-  env?: string;
   positionals?: string[];
 };
 
@@ -150,15 +149,6 @@ export function parseArgs(args: string[]): ParsedArgs {
         break;
       }
 
-      case "--env": {
-        // Wrangler environment name from `env.<name>` in wrangler.jsonc. Used by
-        // `vinext build` to set CLOUDFLARE_ENV so the @cloudflare/vite-plugin
-        // emits the merged config for the requested environment. See issue #1210.
-        result.env = takeValue(arg, args, i);
-        i++;
-        break;
-      }
-
       default: {
         // Handle --flag=value forms (e.g. --port=3000, --hostname=0.0.0.0).
         const eqRaw = tryEqualsForm(arg, "port");
@@ -180,14 +170,6 @@ export function parseArgs(args: string[]): ParsedArgs {
             prerenderConcurrencyRaw,
             "--prerender-concurrency",
           );
-          break;
-        }
-        const envRaw = tryEqualsForm(arg, "env");
-        if (envRaw !== null) {
-          if (envRaw === "") {
-            throw new Error(`--env requires a value, but none was provided.`);
-          }
-          result.env = envRaw;
           break;
         }
         if (!FLAG_PATTERN.test(arg)) {
