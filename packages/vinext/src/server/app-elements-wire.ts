@@ -25,6 +25,15 @@ export const APP_RENDER_OBSERVATION_KEY = "__renderObservation";
 export const APP_ROUTE_KEY = "__route";
 export const APP_ROOT_LAYOUT_KEY = "__rootLayout";
 export const APP_SLOT_BINDINGS_KEY = "__slotBindings";
+/**
+ * Static sibling segment names for the matched route, surfaced so the client
+ * router can determine if a cached prefetch of a dynamic route can be reused
+ * when navigating to a static sibling URL.
+ *
+ * Mirrors Next.js's `staticSiblings` tuple element on the loader-tree dynamic
+ * segments (issue cloudflare/vinext#1525).
+ */
+export const APP_STATIC_SIBLINGS_KEY = "__staticSiblings";
 export const APP_UNMATCHED_SLOT_WIRE_VALUE = "__VINEXT_UNMATCHED_SLOT__";
 
 export const UNMATCHED_SLOT = Symbol.for("vinext.unmatchedSlot");
@@ -227,6 +236,7 @@ export type AppOutgoingElements = Readonly<
     | AppElementsInterception
     | RenderObservation
     | readonly AppElementsSlotBinding[]
+    | readonly string[]
   >
 >;
 
@@ -254,7 +264,13 @@ type AppElementsWireCodec = {
     element:
       | ReactNode
       | Readonly<
-          Record<string, ReactNode | AppElementsInterception | readonly AppElementsSlotBinding[]>
+          Record<
+            string,
+            | ReactNode
+            | AppElementsInterception
+            | readonly AppElementsSlotBinding[]
+            | readonly string[]
+          >
         >;
     artifactCompatibility?: ArtifactCompatibilityEnvelope;
     cacheEntryReuseProof?: CacheEntryReuseProof;
@@ -599,7 +615,13 @@ export function buildOutgoingAppPayload(input: {
   element:
     | ReactNode
     | Readonly<
-        Record<string, ReactNode | AppElementsInterception | readonly AppElementsSlotBinding[]>
+        Record<
+          string,
+          | ReactNode
+          | AppElementsInterception
+          | readonly AppElementsSlotBinding[]
+          | readonly string[]
+        >
       >;
   artifactCompatibility?: ArtifactCompatibilityEnvelope;
   cacheEntryReuseProof?: CacheEntryReuseProof;
@@ -618,6 +640,7 @@ export function buildOutgoingAppPayload(input: {
     | AppElementsInterception
     | RenderObservation
     | readonly AppElementsSlotBinding[]
+    | readonly string[]
   > = {
     ...input.element,
     [APP_LAYOUT_FLAGS_KEY]: input.layoutFlags,

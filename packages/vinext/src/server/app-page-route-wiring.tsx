@@ -2,6 +2,7 @@ import { Suspense, type ComponentType, type ReactNode } from "react";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_STATIC_SIBLINGS_KEY,
   normalizeAppElementsSlotBindings,
   type AppElements,
   type AppElementsInterception,
@@ -44,6 +45,7 @@ import {
   resolveAppPageRouteStateKey,
   resolveAppPageSegmentStateKey,
 } from "./app-page-segment-state.js";
+import type { AppPageRenderIdentity } from "./app-page-render-identity.js";
 
 export { resolveAppPageChildSegments } from "./app-page-segment-state.js";
 
@@ -114,6 +116,19 @@ export type AppPageRouteWiringRoute<
    * Keyed by stable slot id (name + owner path), not necessarily the slot prop name.
    */
   slots?: Readonly<Record<string, AppPageRouteWiringSlot<TModule, TErrorModule>>> | null;
+  /**
+   * Static sibling segment names at each dynamic URL level for this route. Used
+   * by the client router to determine if a cached prefetch of the dynamic
+   * route can be reused when navigating to a static sibling URL.
+   *
+   * Mirrors Next.js's `staticSiblings` tuple element on the loader-tree
+   * dynamic segments — see `.nextjs-ref/packages/next/src/shared/lib/app-router-types.ts`
+   * (DynamicSegmentTuple) and the loader emit in
+   * `packages/next/src/build/webpack/loaders/next-app-loader/index.ts`.
+   *
+   * Issue: https://github.com/cloudflare/vinext/issues/1525
+   */
+  staticSiblings?: readonly string[] | null;
   templateTreePositions?: readonly number[] | null;
   templates?: readonly (TModule | null | undefined)[] | null;
 };
@@ -171,6 +186,7 @@ type BuildAppPageElementsOptions<
   interceptionContext?: string | null;
   isRscRequest?: boolean;
   mountedSlotIds?: ReadonlySet<string> | null;
+  renderIdentity?: AppPageRenderIdentity;
   renderMode?: AppRscRenderMode;
   routePath: string;
 };
@@ -390,12 +406,17 @@ export function buildAppPageElements<
   TModule extends AppPageModule,
   TErrorModule extends AppPageErrorModule,
 >(options: BuildAppPageElementsOptions<TModule, TErrorModule>): AppElements {
-  const interceptionContext = options.interceptionContext ?? null;
+  const renderIdentity = options.renderIdentity;
+  const interceptionContext =
+    renderIdentity?.interceptionContext ?? options.interceptionContext ?? null;
   const renderMode = options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION;
   const routeSegments = options.route.routeSegments ?? [];
   const routeResetKey = resolveAppPageRouteStateKey(routeSegments, options.matchedParams);
-  const routeId = AppElementsWire.encodeRouteId(options.routePath, interceptionContext);
-  const pageId = AppElementsWire.encodePageId(options.routePath, interceptionContext);
+  const routeId =
+    renderIdentity?.routeId ??
+    AppElementsWire.encodeRouteId(options.routePath, interceptionContext);
+  const pageId =
+    renderIdentity?.pageId ?? AppElementsWire.encodePageId(options.routePath, interceptionContext);
   const layoutEntries = createAppPageLayoutEntries(options.route);
   const templateEntries = createAppPageTemplateEntries(options.route);
   const errorEntries = createAppPageErrorEntries(options.route);
@@ -451,10 +472,15 @@ export function buildAppPageElements<
   };
   const elements: Record<
     string,
-    ReactNode | string | null | AppElementsInterception | readonly AppElementsSlotBinding[]
+    | ReactNode
+    | string
+    | null
+    | AppElementsInterception
+    | readonly AppElementsSlotBinding[]
+    | readonly string[]
   > = {
     ...AppElementsWire.createMetadataEntries({
-      interception: options.interception ?? null,
+      interception: renderIdentity?.interception ?? options.interception ?? null,
       interceptionContext,
       layoutIds: options.route.ids?.layouts ?? layoutEntries.map((entry) => entry.id),
       rootLayoutTreePath,
@@ -462,6 +488,15 @@ export function buildAppPageElements<
       slotBindings: createAppPageSlotBindings(options.route, layoutEntries, resolveSlotOverride),
     }),
   };
+  // Surface static-sibling info on the wire so the client router can decide
+  // whether a cached dynamic-route prefetch can be reused when navigating to a
+  // static sibling URL. Mirrors Next.js's loader-tree `staticSiblings` tuple
+  // element (issue cloudflare/vinext#1525). Only included when the route has
+  // dynamic segments with static siblings — keeps the payload lean for
+  // fully-static routes.
+  if (options.route.staticSiblings && options.route.staticSiblings.length > 0) {
+    elements[APP_STATIC_SIBLINGS_KEY] = options.route.staticSiblings;
+  }
   const getEffectiveSlotParams = (slotKey: string, slotName: string): AppPageParams =>
     resolveSlotOverride(slotKey, slotName)?.params ?? options.matchedParams;
 

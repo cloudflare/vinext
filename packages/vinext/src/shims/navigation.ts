@@ -339,8 +339,29 @@ export const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 /** Maximum number of entries in the RSC prefetch cache. */
 export const MAX_PREFETCH_CACHE_SIZE = 50;
 
-/** TTL for prefetch cache entries in ms (matches Next.js static prefetch TTL). */
-export const PREFETCH_CACHE_TTL = 30_000;
+/**
+ * TTL for prefetch cache entries in ms.
+ *
+ * Mirrors Next.js' `STATIC_STALETIME_MS` derivation. The plugin injects
+ * `process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME` from
+ * `experimental.staleTimes.static` (in seconds) at build time; we convert
+ * to ms here.
+ *
+ * Falls back to vinext's historical default of 30s when the env var is
+ * absent (e.g. unit tests that import this module without going through
+ * the plugin's `define` pipeline). When the plugin is active and the user
+ * has not set `experimental.staleTimes`, Next.js' 300s default applies
+ * (see `resolveStaleTimes` in `config/next-config.ts`).
+ */
+function resolvePrefetchCacheTtl(): number {
+  const raw = process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
+  if (raw === undefined || raw === "") return 30_000;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds < 0) return 30_000;
+  return seconds * 1000;
+}
+
+export const PREFETCH_CACHE_TTL = resolvePrefetchCacheTtl();
 
 /** A buffered RSC response stored as an ArrayBuffer for replay. */
 export type CachedRscResponse = {
@@ -1453,7 +1474,16 @@ export async function navigateClientSide(
   const appNavigate = getNavigationRuntime()?.functions.navigate;
   try {
     if (appNavigate) {
-      await appNavigate(fullHref, 0, "navigate", mode, undefined, programmaticTransition);
+      await appNavigate(
+        fullHref,
+        0,
+        "navigate",
+        mode,
+        undefined,
+        programmaticTransition,
+        undefined,
+        scrollIntent,
+      );
     } else {
       if (mode === "replace") {
         replaceHistoryStateWithoutNotify(null, "", fullHref);
@@ -1487,6 +1517,29 @@ export async function navigateClientSide(
 // useEffect dependency arrays, React.memo bailouts).
 // ---------------------------------------------------------------------------
 
+// `router.refresh()` can run in the same outer transition after push/replace
+// while the nested navigation transition is still being scheduled.
+let scheduledAppRouterNavigationCount = 0;
+
+function trackScheduledAppRouterNavigation(): () => void {
+  scheduledAppRouterNavigationCount += 1;
+  let released = false;
+
+  return () => {
+    if (released) return;
+    released = true;
+    scheduledAppRouterNavigationCount = Math.max(0, scheduledAppRouterNavigationCount - 1);
+  };
+}
+
+function hasScheduledAppRouterNavigation(): boolean {
+  return scheduledAppRouterNavigationCount > 0;
+}
+
+function releaseScheduledAppRouterNavigationAfterCurrentTask(release: () => void): void {
+  queueMicrotask(release);
+}
+
 /**
  * App Router public router instance. Mirrors Next.js's
  * `publicAppRouterInstance` from
@@ -1501,16 +1554,30 @@ const _appRouter = {
   push(href: string, options?: { scroll?: boolean }): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
-    React.startTransition(() => {
-      void navigateClientSide(href, "push", options?.scroll !== false, true);
-    });
+    const releaseNavigation = trackScheduledAppRouterNavigation();
+    try {
+      React.startTransition(() => {
+        void navigateClientSide(href, "push", options?.scroll !== false, true);
+      });
+    } catch (error) {
+      releaseNavigation();
+      throw error;
+    }
+    releaseScheduledAppRouterNavigationAfterCurrentTask(releaseNavigation);
   },
   replace(href: string, options?: { scroll?: boolean }): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
-    React.startTransition(() => {
-      void navigateClientSide(href, "replace", options?.scroll !== false, true);
-    });
+    const releaseNavigation = trackScheduledAppRouterNavigation();
+    try {
+      React.startTransition(() => {
+        void navigateClientSide(href, "replace", options?.scroll !== false, true);
+      });
+    } catch (error) {
+      releaseNavigation();
+      throw error;
+    }
+    releaseScheduledAppRouterNavigationAfterCurrentTask(releaseNavigation);
   },
   back(): void {
     if (isServer) return;
@@ -1529,6 +1596,7 @@ const _appRouter = {
     // gated by a session that has since been cleared) would still satisfy a
     // subsequent client navigation and bypass the server's redirect logic.
     getNavigationRuntime()?.functions.clearNavigationCaches?.();
+    if (hasScheduledAppRouterNavigation()) return;
     // Re-fetch the current page's RSC stream
     const rscNavigate = getNavigationRuntime()?.functions.navigate;
     if (rscNavigate) {

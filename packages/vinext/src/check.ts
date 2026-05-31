@@ -222,6 +222,23 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     detail:
       "App Shell prefetching not yet implemented; requires cacheComponents and other co-flags vinext does not support",
   },
+  "experimental.inlineCss": {
+    status: "supported",
+    detail:
+      "App Router production HTML inlines stylesheet links as <style> in <head>; next/font CSS is merged into the first inline style",
+  },
+  "experimental.varyParams": {
+    status: "partial",
+    detail: "config recognized; vinext does not implement root-param-aware cache keying",
+  },
+  "experimental.optimisticRouting": {
+    status: "partial",
+    detail: "config recognized; vinext does not implement optimistic client navigation",
+  },
+  "experimental.cachedNavigations": {
+    status: "partial",
+    detail: "config recognized; vinext does not implement navigation result caching",
+  },
   "i18n.domains": {
     status: "partial",
     detail: "supported for Pages Router; App Router unchanged",

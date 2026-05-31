@@ -11,6 +11,7 @@
  */
 import React from "react";
 import { appRouterInstance, isNextRouterError } from "./navigation.js";
+import { RouterContext } from "./internal/router-context.js";
 
 type ErrorProps = {
   statusCode: number;
@@ -98,14 +99,14 @@ export default ErrorComponent;
 //     client — it calls `appRouterInstance.refresh()` inside a
 //     React.startTransition and then resets the boundary. On the server it
 //     throws (consistent with React class components only running on the
-//     server during SSR setup, where retry isn't meaningful). The
-//     Pages-Router-only error message Next.js throws
-//     (`unstable_retry()` can only be used in the App Router. Use
-//     `reset()` in the Pages Router.) is not currently dispatched because
-//     vinext's boundary doesn't read `PagesRouterContext`. Calling retry
-//     under Pages Router will trigger an App Router refresh, which is a
-//     no-op in that environment — the error remains visible until
-//     `reset()` is called. Tracked as a parity follow-up.
+//     server during SSR setup, where retry isn't meaningful). When the
+//     boundary is rendered under the Pages Router (detected via
+//     `RouterContext` in the wrapper), `unstable_retry()` throws Next.js's
+//     verbatim error message (`unstable_retry() can only be used in the
+//     App Router. Use reset() in the Pages Router.`) — matching
+//     `client/components/catch-error.tsx` in the Next.js source and the
+//     `should throw when unstable_retry is called on Pages Router` test in
+//     `test/e2e/app-dir/catch-error/catch-error.test.ts`.
 //   - Bot-user-agent graceful-degradation, `handleHardNavError`, and
 //     `handleISRError` are not yet supported. Errors always render the
 //     fallback in non-bot contexts.
@@ -136,6 +137,18 @@ class _CatchError<P extends _UserProps> extends React.Component<
   },
   { error: _CatchErrorState }
 > {
+  // Read the Pages Router context via class `contextType` (matching Next.js's
+  // pattern in `client/components/catch-error.tsx` which uses
+  // `static contextType = AppRouterContext`). When `this.context` is non-null
+  // we're rendered under a Pages Router page; `unstable_retry()` then throws
+  // the Next.js parity error message. Using `contextType` rather than
+  // `useContext` in the wrapper keeps the wrapper a pure JSX factory so
+  // existing introspection-style unit tests (which invoke the wrapper as a
+  // bare function to extract the inner class) continue to work without
+  // React's render lifecycle.
+  static contextType = RouterContext;
+  declare context: React.ContextType<typeof RouterContext>;
+
   // Match Next.js's DevTools label so userland tooling/snapshots align.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/catch-error.tsx
   static displayName = "unstable_catchError(Next.CatchError)";
@@ -156,6 +169,23 @@ class _CatchError<P extends _UserProps> extends React.Component<
   };
 
   unstable_retry = (): void => {
+    // Pages Router has no segment-refresh primitive — Next.js documents
+    // `unstable_retry` as App Router only and throws this exact message
+    // from the boundary itself. Mirrors
+    // packages/next/src/client/components/catch-error.tsx and is asserted
+    // by `should throw when unstable_retry is called on Pages Router` in
+    // test/e2e/app-dir/catch-error/catch-error.test.ts.
+    //
+    // `RouterContext` is populated for every page rendered by the vinext
+    // Pages Router runtime (see `shims/router.ts` wrapWithRouterContext); a
+    // non-null value here means we're under Pages Router. Under App Router
+    // the context default is `null` and we fall through to the refresh
+    // branch below.
+    if (this.context !== null) {
+      throw new Error(
+        "`unstable_retry()` can only be used in the App Router. Use `reset()` in the Pages Router.",
+      );
+    }
     // Matches Next.js's App Router branch in
     // packages/next/src/client/components/catch-error.tsx — refresh the
     // current route, then clear the error so children re-render. Wrapped in

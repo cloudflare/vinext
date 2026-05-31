@@ -546,6 +546,8 @@ import {
   isOpenRedirectShaped,
   normalizeTrailingSlash,
 } from "vinext/server/request-pipeline";
+import { notFoundStaticAssetResponse } from "vinext/server/http-error-responses";
+import { assetPrefixPathname, isNextStaticPath } from "vinext/utils/asset-prefix";
 import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "vinext/server/pages-i18n";
 import { mergeRewriteQuery } from "vinext/utils/query";
 
@@ -570,6 +572,7 @@ interface ExecutionContext {
 
 // Extract config values (embedded at build time in the server entry)
 const basePath: string = vinextConfig?.basePath ?? "";
+const assetPathPrefix: string = assetPrefixPathname(vinextConfig?.assetPrefix ?? "");
 const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
 const i18nConfig = vinextConfig?.i18n ?? null;
 const configRedirects = vinextConfig?.redirects ?? [];
@@ -607,6 +610,16 @@ export default {
       // would also navigate to the attacker's origin.
       if (isOpenRedirectShaped(pathname)) {
         return new Response("This page could not be found", { status: 404 });
+      }
+
+      // Invalid \`_next/static/*\` paths short-circuit with a plain-text 404
+      // instead of falling through to renderPage (which would render the full
+      // HTML 404 page with bootstrap scripts + CSS). Valid assets are served
+      // by Cloudflare's ASSETS binding BEFORE the worker runs; only misses
+      // reach this code. Matches Next.js (#1337):
+      //   packages/next/src/server/lib/router-server.ts
+      if (isNextStaticPath(pathname, basePath, assetPathPrefix)) {
+        return notFoundStaticAssetResponse();
       }
 
       // Capture x-nextjs-data before filterInternalHeaders strips it -- the

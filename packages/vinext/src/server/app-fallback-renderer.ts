@@ -49,13 +49,23 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
   getNavigationContext: () => unknown;
   globalErrorModule?: TModule | null;
   /**
-   * Optional `app/global-not-found.tsx` module. When provided, route-miss 404s
-   * render this module as a standalone document (skipping the root layout)
-   * because it ships its own `<html>` and `<body>`. Page-triggered `notFound()`
-   * calls continue to use the regular `not-found.tsx` boundary inside layouts.
+   * Loader for the user's `app/global-not-found.tsx` module. When provided,
+   * route-miss 404s render this module as a standalone document (skipping the
+   * root layout) because it ships its own `<html>` and `<body>`. Page-triggered
+   * `notFound()` calls continue to use the regular `not-found.tsx` boundary
+   * inside layouts.
+   *
+   * Passed as a deferred loader (rather than the resolved module) so the
+   * generated RSC entry can use `() => import(...)` for chunk isolation.
+   * Without that isolation, the bundler co-locates global-not-found's CSS
+   * with the root layout's CSS in a single chunk and the CSS minifier
+   * (lightningcss) drops overlapping declarations as dead code — breaking
+   * the cascade for route-miss 404s where only global-not-found is rendered.
+   *
    * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx
+   * @see Next.js test: test/e2e/app-dir/initial-css-order/initial-css-order.test.ts
    */
-  globalNotFoundModule?: TModule | null;
+  loadGlobalNotFoundModule?: (() => Promise<TModule | null | undefined>) | null;
   makeThenableParams: (params: AppPageParams) => unknown;
   metadataRoutes: MetadataFileRoute[];
   /** Configured next.config `basePath`, threaded into file-based metadata href emission. */
@@ -132,7 +142,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
     fontProviders,
     getNavigationContext,
     globalErrorModule,
-    globalNotFoundModule,
+    loadGlobalNotFoundModule,
     makeThenableParams,
     metadataRoutes,
     resolveChildSegments,
@@ -164,8 +174,21 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
   const effectiveRootNotFoundModule: TModule | null =
     rootNotFoundModule ?? (DEFAULT_NOT_FOUND_MODULE as unknown as TModule);
 
+  // Cache the result of `loadGlobalNotFoundModule()` so subsequent route-miss
+  // 404s in the same worker hit a warm import instead of re-resolving the
+  // dynamic chunk. The loader itself is invoked at most once per worker;
+  // failures are surfaced on every call so they don't get swallowed.
+  let globalNotFoundModulePromise: Promise<TModule | null | undefined> | null = null;
+  function resolveGlobalNotFoundModule(): Promise<TModule | null | undefined> | null {
+    if (!loadGlobalNotFoundModule) return null;
+    if (globalNotFoundModulePromise === null) {
+      globalNotFoundModulePromise = Promise.resolve().then(loadGlobalNotFoundModule);
+    }
+    return globalNotFoundModulePromise;
+  }
+
   return {
-    renderHttpAccessFallback(
+    async renderHttpAccessFallback(
       route,
       statusCode,
       isRscRequest,
@@ -184,9 +207,10 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       // regular not-found.tsx boundary inside the route's layouts.
       // See https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
       const useGlobalNotFound =
-        statusCode === 404 && !!globalNotFoundModule && !route && !opts?.boundaryComponent;
+        statusCode === 404 && !!loadGlobalNotFoundModule && !route && !opts?.boundaryComponent;
 
       if (useGlobalNotFound) {
+        const globalNotFoundModule = await resolveGlobalNotFoundModule();
         const globalNotFoundComponent = globalNotFoundModule?.default ?? null;
         if (globalNotFoundComponent) {
           return renderAppPageHttpAccessFallback({

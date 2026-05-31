@@ -44,9 +44,14 @@ function renderSsrErrorMetaTag(error: unknown, options: SsrErrorMetaRenderOption
 
   const httpError = parseNextHttpErrorDigest(digest);
   if (httpError) {
-    let html = '<meta name="robots" content="noindex" />';
+    // Output format matches Next.js's `make-get-server-inserted-html.tsx`,
+    // which serializes these meta tags via React's HTML renderer. React's
+    // void-element output uses no space before `/>`, and Next.js tests assert
+    // on that exact substring (e.g. `'<meta name="robots" content="noindex"/>'`).
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/make-get-server-inserted-html.tsx
+    let html = '<meta name="robots" content="noindex"/>';
     if ((options.nodeEnv ?? process.env.NODE_ENV) === "development") {
-      html += '<meta name="next-error" content="not-found" />';
+      html += '<meta name="next-error" content="not-found"/>';
     }
     return html;
   }
@@ -61,7 +66,7 @@ function renderSsrErrorMetaTag(error: unknown, options: SsrErrorMetaRenderOption
     delay +
     ";url=" +
     escapeHtmlAttr(location) +
-    '" />'
+    '"/>'
   );
 }
 

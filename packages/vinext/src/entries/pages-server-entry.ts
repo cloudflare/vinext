@@ -7,7 +7,8 @@
  *
  * Extracted from index.ts.
  */
-import { resolveEntryPath, normalizePathSeparators } from "./runtime-entry-module.js";
+import { resolveEntryPath } from "./runtime-entry-module.js";
+import { normalizePathSeparators } from "../utils/path.js";
 import { pagesRouter, apiRouter, type Route } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
@@ -23,6 +24,7 @@ const _pagesPageResponsePath = resolveEntryPath(
   import.meta.url,
 );
 const _pagesPageDataPath = resolveEntryPath("../server/pages-page-data.js", import.meta.url);
+const _pagesPageMethodPath = resolveEntryPath("../server/pages-page-method.js", import.meta.url);
 const _pagesDataRoutePath = resolveEntryPath("../server/pages-data-route.js", import.meta.url);
 const _pagesDefault404Path = resolveEntryPath("../server/pages-default-404.js", import.meta.url);
 const _pagesNodeCompatPath = resolveEntryPath("../server/pages-node-compat.js", import.meta.url);
@@ -120,7 +122,13 @@ export async function generateServerEntry(
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
     headers: nextConfig?.headers ?? [],
     expireTime: nextConfig?.expireTime,
+    cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
     i18n: nextConfig?.i18n ?? null,
+    // Mirrors Next.js `experimental.disableOptimizedLoading` — when false
+    // (the default), page scripts are emitted with `defer` in <head>. See
+    // `.nextjs-ref/packages/next/src/pages/_document.tsx` getScripts().
+    disableOptimizedLoading: nextConfig?.disableOptimizedLoading === true,
+    clientTraceMetadata: nextConfig?.clientTraceMetadata,
     images: {
       deviceSizes: nextConfig?.images?.deviceSizes,
       imageSizes: nextConfig?.images?.imageSizes,
@@ -220,7 +228,7 @@ import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext, wrapWithRouterContext } from "next/router";
-import { _runWithCacheState } from "next/cache";
+import { _runWithCacheState, configureMemoryCacheHandler as __configureMemoryCacheHandler } from "next/cache";
 import { runWithPrivateCache } from "vinext/cache-runtime";
 import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -248,6 +256,7 @@ import {
 } from ${JSON.stringify(_isrCachePath)};
 import { getScriptNonceFromHeaderSources as __getScriptNonceFromHeaderSources } from ${JSON.stringify(_cspPath)};
 import { resolvePagesPageData as __resolvePagesPageData } from ${JSON.stringify(_pagesPageDataPath)};
+import { resolvePagesPageMethodResponse as __resolvePagesPageMethodResponse } from ${JSON.stringify(_pagesPageMethodPath)};
 import { buildNextDataJsonResponse as __buildNextDataJsonResponse, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse, isNextDataPathname as __isNextDataPathname, parseNextDataPathname as __parseNextDataPathname } from ${JSON.stringify(_pagesDataRoutePath)};
 import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
 import { renderPagesPageResponse as __renderPagesPageResponse } from ${JSON.stringify(_pagesPageResponsePath)};
@@ -267,6 +276,8 @@ const __hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
+
+__configureMemoryCacheHandler({ cacheMaxMemorySize: vinextConfig.cacheMaxMemorySize });
 
 // Path to the user's pages/_app file (or null). Used to look up the
 // _app's CSS/JS chunks in the SSR manifest so any global styles imported
@@ -454,6 +465,13 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
   const tags = [];
   const seen = new Set();
   const nonceAttr = __createNonceAttribute(scriptNonce);
+  // Mirrors Next.js \`_document\` behaviour: when \`experimental.disableOptimizedLoading\`
+  // is false (the default), page scripts are emitted with \`defer\` in <head>. See
+  // .nextjs-ref/packages/next/src/pages/_document.tsx getScripts() — \`defer={!disableOptimizedLoading}\`.
+  // vinext always emits \`type="module"\` (which already defers implicitly), but
+  // upstream tests (e.g. test/e2e/optimized-loading) assert the literal \`defer\`
+  // attribute, and adding it preserves parity without changing browser behaviour.
+  const deferAttr = vinextConfig.disableOptimizedLoading ? "" : " defer";
 
   // Load the set of lazy chunk filenames (only reachable via dynamic imports).
   // These should NOT get <link rel="modulepreload"> or <script type="module">
@@ -467,7 +485,7 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
     const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
     seen.add(entry);
     tags.push('<link rel="modulepreload"' + nonceAttr + ' href="/' + entry + '" />');
-    tags.push('<script type="module"' + nonceAttr + ' src="/' + entry + '" crossorigin></script>');
+    tags.push('<script type="module"' + deferAttr + nonceAttr + ' src="/' + entry + '" crossorigin></script>');
   }
   if (m) {
     // Always inject shared chunks (framework, vinext runtime, entry) and
@@ -537,7 +555,7 @@ function collectAssetTags(manifest, moduleIds, scriptNonce) {
         // (React.lazy, next/dynamic) and should only be fetched on demand.
         if (lazySet && lazySet.has(tf)) continue;
         tags.push('<link rel="modulepreload"' + nonceAttr + ' href="/' + tf + '" />');
-        tags.push('<script type="module"' + nonceAttr + ' src="/' + tf + '" crossorigin></script>');
+        tags.push('<script type="module"' + deferAttr + nonceAttr + ' src="/' + tf + '" crossorigin></script>');
       }
     }
   }
@@ -581,6 +599,11 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
   const statusCode = options && typeof options.statusCode === "number" ? options.statusCode : undefined;
   const asPath = options && typeof options.asPath === "string" ? options.asPath : undefined;
   const renderErrorPageOnMiss = !(options && options.renderErrorPageOnMiss === false);
+  // Guard against infinite recursion when the user's custom 500/error page
+  // itself throws during render. When this flag is set, the catch block below
+  // returns the plain "Internal Server Error" text response instead of trying
+  // to render an error page again. Fixes #1458.
+  const isInternalErrorRender = !!(options && options.__isInternalErrorRender);
   const localeInfo = i18nConfig
     ? resolvePagesI18nRequest(
         url,
@@ -597,12 +620,26 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     ? (localeInfo.domainLocale ? localeInfo.domainLocale.defaultLocale : i18nConfig.defaultLocale)
     : undefined;
   const domainLocales = i18nConfig ? i18nConfig.domains : undefined;
+  const i18nCacheVariant = i18nConfig
+    ? (localeInfo.domainLocale
+      ? "domain:" + String(localeInfo.domainLocale.domain).toLowerCase()
+      : "locale:" + String(locale))
+    : null;
+  const pageIsrCacheKey = i18nCacheVariant
+    ? (router, pathname) => isrCacheKey(router, pathname + "::i18n=" + encodeURIComponent(i18nCacheVariant))
+    : isrCacheKey;
 
   if (localeInfo.redirectUrl) {
     return new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } });
   }
 
-  let match = matchRoute(routeUrl, pageRoutes);
+  // Internal error render path: caller has pinned a specific route (the
+  // user's pages/500 or pages/_error) to render in response to an SSR throw.
+  // Skip route matching so we don't accidentally double-route, and skip the
+  // missing-route 404 fallback. See catch block below. Fixes #1458.
+  let match = options && options.__forcedRoute
+    ? { route: options.__forcedRoute, params: {} }
+    : matchRoute(routeUrl, pageRoutes);
   let renderStatusCodeOverride = statusCode;
   let renderAsPath = asPath;
   if (!match) {
@@ -664,6 +701,29 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       if (!PageComponent) {
         return new Response("Page has no default export", { status: 500 });
       }
+
+      // Refs #1463: reject non-GET/HEAD methods on static (no
+      // getServerSideProps) Pages routes with 405 + Allow: GET, HEAD.
+      // Skip for error/status pages (/_error, /404, /500), data requests
+      // (those go through the JSON envelope path and have their own shape),
+      // and renders that are already an error-page miss-render override.
+      // Mirrors Next.js's base-server.ts L2277 carve-outs.
+      if (
+        !isDataReq &&
+        routePattern !== "/_error" &&
+        routePattern !== "/404" &&
+        routePattern !== "/500" &&
+        renderStatusCodeOverride === undefined
+      ) {
+        const methodResponse = __resolvePagesPageMethodResponse({
+          hasGetServerSideProps: typeof pageModule.getServerSideProps === "function",
+          method: request.method,
+        });
+        if (methodResponse) {
+          return methodResponse;
+        }
+      }
+
       const pageModuleUrl = resolveClientModuleUrl(manifest, route.filePath);
       const appModuleUrl = resolveClientModuleUrl(manifest, _appAssetPath);
       const scriptNonce = __getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
@@ -720,7 +780,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
           defaultLocale: currentDefaultLocale,
           domainLocales: domainLocales,
         },
-        isrCacheKey,
+        isrCacheKey: pageIsrCacheKey,
         isrGet,
         isrSet,
         expireSeconds: vinextConfig.expireTime,
@@ -875,8 +935,9 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
           }
         },
         getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
+        clientTraceMetadata: vinextConfig.clientTraceMetadata,
         gsspRes,
-        isrCacheKey,
+        isrCacheKey: pageIsrCacheKey,
         expireSeconds: vinextConfig.expireTime,
         isrRevalidateSeconds,
         isrSet,
@@ -914,6 +975,37 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
       ).catch(() => { /* ignore reporting errors */ });
+      // Data (_next/data) requests can't render HTML, and avoid recursion if
+      // we're already in the middle of rendering the error page itself.
+      // Mirrors Next.js base-server.ts which renders /500 (or _error) when
+      // SSR throws. Fixes #1458.
+      if (!isInternalErrorRender && !isDataReq) {
+        // Look for an explicit pages/500.tsx first, then fall back to _error.
+        // Only match the literal /500 pattern — never a catch-all/dynamic route.
+        let errorRoute = null;
+        for (var __i = 0; __i < pageRoutes.length; __i++) {
+          if (pageRoutes[__i].pattern === "/500") {
+            errorRoute = pageRoutes[__i];
+            break;
+          }
+        }
+        if (!errorRoute && _errorPageRoute) {
+          errorRoute = _errorPageRoute;
+        }
+        if (errorRoute) {
+          try {
+            return await _renderPage(request, url, manifest, middlewareHeaders, {
+              statusCode: 500,
+              asPath: url,
+              renderErrorPageOnMiss: false,
+              __isInternalErrorRender: true,
+              __forcedRoute: errorRoute,
+            });
+          } catch (errorPageErr) {
+            console.error("[vinext] Error page render failed:", errorPageErr);
+          }
+        }
+      }
       return new Response("Internal Server Error", { status: 500 });
     }
   });

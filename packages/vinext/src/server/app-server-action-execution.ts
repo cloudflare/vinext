@@ -19,6 +19,7 @@ import {
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { getSetCookieName } from "./cookie-utils.js";
 import {
   APP_RSC_RENDER_MODE_ACTION_RERENDER_PRESERVE_UI,
   type AppRscRenderMode,
@@ -77,17 +78,38 @@ type AppServerActionRoute = {
   pattern: string;
 };
 
+/**
+ * Side-effect headers captured during a progressive (no-JS) server action's
+ * non-redirect execution. The caller (app-rsc-handler) must apply these to the
+ * page render response so that `cookies().set(...)` and revalidation kinds
+ * propagate to the browser. Without this, no-JS form submissions silently
+ * lose cookie/header mutations — see issue #1483.
+ *
+ * Next.js' equivalent path mutates `res.setHeader('set-cookie', ...)` during
+ * action execution (action-handler.ts → app-render.tsx), then `sendResponse`
+ * merges those headers with the rendered Response. vinext works with Response
+ * objects directly so the cookies must ride out via the result instead.
+ */
+type ProgressiveServerActionSideEffects = {
+  /** `Set-Cookie` headers from `cookies().set(...)` / `cookies().delete(...)`. */
+  pendingCookies: string[];
+  /** `Set-Cookie` header from `draftMode().enable()/disable()` (if any). */
+  draftCookie: string | null | undefined;
+  /** Resolved revalidation kind to emit via `x-action-revalidated`. */
+  revalidationKind: ActionRevalidationKind;
+};
+
 type ProgressiveServerActionResult =
-  | {
+  | ({
       formState: ReactFormState | null;
       kind: "form-state";
-    }
-  | {
+    } & ProgressiveServerActionSideEffects)
+  | ({
       actionError: unknown;
       actionFailed: true;
       formState: null;
       kind: "form-state";
-    };
+    } & ProgressiveServerActionSideEffects);
 
 type AppServerActionMatch<TRoute extends AppServerActionRoute> = {
   params: AppPageParams;
@@ -241,6 +263,39 @@ function resolveActionRevalidationKind(hasModifiedCookies: boolean): ActionReval
 
 function isRequestBodyTooLarge(error: unknown): boolean {
   return error instanceof Error && error.message === "Request body too large";
+}
+
+/**
+ * Collapse repeated `cookies().set(name, ...)` / `cookies().delete(name)`
+ * calls down to the last value per name, matching Next.js'
+ * `MutableRequestCookiesAdapter` semantics. Next.js stores response cookies in
+ * a `ResponseCookies` Map keyed by name — multiple sets for the same cookie
+ * collapse to the final value, and emit a single Set-Cookie header.
+ *
+ * Insertion order is preserved by first occurrence (Map iteration order),
+ * which mirrors how `ResponseCookies` iterates its underlying Map. See
+ * packages/next/src/server/web/spec-extension/adapters/request-cookies.ts.
+ * Issue: https://github.com/cloudflare/vinext/issues/1481
+ */
+function dedupePendingCookies(cookies: readonly string[]): string[] {
+  if (cookies.length <= 1) {
+    return cookies.slice();
+  }
+  const byName = new Map<string, string>();
+  const unkeyed: string[] = [];
+  for (const cookie of cookies) {
+    const name = getSetCookieName(cookie);
+    if (name === null) {
+      unkeyed.push(cookie);
+      continue;
+    }
+    // Map.set on an existing key replaces the value but preserves the
+    // insertion position of the original key — exactly the behaviour we need
+    // for `cookies().set("foo", "1"); cookies().set("bar", "2"); cookies().set("foo", "3")`
+    // to come out as [foo=3, bar=2].
+    byName.set(name, cookie);
+  }
+  return [...unkeyed, ...byName.values()];
 }
 
 function isAppServerActionFunction(action: unknown): action is AppServerActionFunction {
@@ -512,16 +567,41 @@ export async function handleProgressiveServerActionRequest(
     }
 
     if (!actionRedirect) {
-      getAndClearActionRevalidationKind();
+      // Capture cookies/headers set during action execution so the caller can
+      // apply them to the rendered page response. Mirrors Next.js'
+      // `res.setHeader('set-cookie', ...)` path in app-render.tsx, which
+      // flushes `requestStore.mutableCookies` onto the response before SSR
+      // streaming begins. Without this, no-JS server-action form POSTs lose
+      // cookies/headers — see issue #1483.
+      const actionPendingCookies = options.getAndClearPendingCookies();
+      const actionDraftCookie = options.getDraftModeCookieHeader();
+      const revalidationKind = resolveActionRevalidationKind(
+        actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
+      );
+
       if (actionFailed) {
-        return { kind: "form-state", formState: null, actionError, actionFailed };
+        return {
+          kind: "form-state",
+          formState: null,
+          actionError,
+          actionFailed,
+          pendingCookies: actionPendingCookies,
+          draftCookie: actionDraftCookie,
+          revalidationKind,
+        };
       }
 
       const formState = await options.decodeFormState(actionResult, body);
-      return { kind: "form-state", formState: formState ?? null };
+      return {
+        kind: "form-state",
+        formState: formState ?? null,
+        pendingCookies: actionPendingCookies,
+        draftCookie: actionDraftCookie,
+        revalidationKind,
+      };
     }
 
-    const actionPendingCookies = options.getAndClearPendingCookies();
+    const actionPendingCookies = dedupePendingCookies(options.getAndClearPendingCookies());
     const actionDraftCookie = options.getDraftModeCookieHeader();
     const actionRevalidationKind = resolveActionRevalidationKind(
       actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
@@ -690,7 +770,7 @@ export async function handleServerActionRscRequest<
     }
 
     if (actionRedirect) {
-      const actionPendingCookies = options.getAndClearPendingCookies();
+      const actionPendingCookies = dedupePendingCookies(options.getAndClearPendingCookies());
       const actionDraftCookie = options.getDraftModeCookieHeader();
       const actionRevalidationKind = resolveActionRevalidationKind(
         actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
@@ -721,7 +801,7 @@ export async function handleServerActionRscRequest<
       return new Response("", { status: 200, headers: redirectHeaders });
     }
 
-    const actionPendingCookies = options.getAndClearPendingCookies();
+    const actionPendingCookies = dedupePendingCookies(options.getAndClearPendingCookies());
     const actionDraftCookie = options.getDraftModeCookieHeader();
     const actionRevalidationKind = resolveActionRevalidationKind(
       actionPendingCookies.length > 0 || Boolean(actionDraftCookie),

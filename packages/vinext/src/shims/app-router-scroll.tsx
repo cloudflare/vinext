@@ -2,12 +2,13 @@
 
 import * as React from "react";
 import * as ReactDOM from "react-dom";
-import { decodeHashFragment } from "./hash-scroll.js";
 import {
   consumeAppRouterScrollIntent,
   getPendingAppRouterScrollIntent,
 } from "./app-router-scroll-state.js";
+import { decodeHashFragment } from "./hash-scroll.js";
 
+const AppRouterScrollCommitContext = React.createContext<number | null>(null);
 const reactDomInternalsKey = "__DOM_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE";
 const rectProperties = ["bottom", "height", "left", "right", "top", "width", "x", "y"] as const;
 
@@ -103,14 +104,19 @@ function scrollToElement(target: HTMLElement, hash: string | null): void {
   }
 }
 
-// Must stay a class component: findDOMNode() needs a mounted class instance to
-// locate the first DOM node rendered by the children without introducing a
-// wrapper element. Converting this to a function component would break the
-// wrapperless targeting that mirrors Next's default scroll handler.
-export class AppRouterScrollTarget extends React.Component<{ children: React.ReactNode }> {
+// The inner component must stay a class: findDOMNode() needs a mounted
+// class instance to locate the first DOM node rendered by the children
+// without introducing a wrapper element. The outer AppRouterScrollTarget
+// function component reads context and delegates here; only the inner
+// class retains wrapperless targeting.
+export class AppRouterScrollTargetInner extends React.Component<{
+  children: React.ReactNode;
+  commitId: number | null;
+}> {
   handlePotentialScroll = () => {
     const intent = getPendingAppRouterScrollIntent();
     if (intent === null) return;
+    if (this.props.commitId === null || intent.commitId !== this.props.commitId) return;
 
     let target: HTMLElement | null;
     if (intent.hash !== null) {
@@ -121,7 +127,7 @@ export class AppRouterScrollTarget extends React.Component<{ children: React.Rea
     }
     if (target === null) return;
 
-    const consumed = consumeAppRouterScrollIntent(intent);
+    const consumed = consumeAppRouterScrollIntent(intent, this.props.commitId);
     if (consumed === null) return;
 
     scrollToElement(target, consumed.hash);
@@ -142,4 +148,23 @@ export class AppRouterScrollTarget extends React.Component<{ children: React.Rea
   render() {
     return this.props.children;
   }
+}
+
+export function AppRouterScrollCommitProvider({
+  children,
+  commitId,
+}: {
+  children?: React.ReactNode;
+  commitId: number | null;
+}) {
+  return (
+    <AppRouterScrollCommitContext.Provider value={commitId}>
+      {children}
+    </AppRouterScrollCommitContext.Provider>
+  );
+}
+
+export function AppRouterScrollTarget({ children }: { children: React.ReactNode }) {
+  const commitId = React.useContext(AppRouterScrollCommitContext);
+  return <AppRouterScrollTargetInner commitId={commitId}>{children}</AppRouterScrollTargetInner>;
 }

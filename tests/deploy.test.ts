@@ -938,6 +938,30 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("!isExternalUrl(redirect.destination)");
     expect(content).toContain("!hasBasePath(redirect.destination, basePath)");
   });
+
+  // Regression for #1337: invalid `_next/static/*` paths must short-circuit
+  // with a plain-text 404 instead of falling through to renderPage (which
+  // would render the full HTML 404 page with bootstrap scripts + CSS).
+  // Matches Next.js: packages/next/src/server/lib/router-server.ts.
+  it("short-circuits invalid `_next/static/*` paths with plain-text 404", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain(
+      'import { notFoundStaticAssetResponse } from "vinext/server/http-error-responses"',
+    );
+    expect(content).toContain(
+      'import { assetPrefixPathname, isNextStaticPath } from "vinext/utils/asset-prefix"',
+    );
+    expect(content).toContain("assetPrefixPathname(vinextConfig?.assetPrefix");
+    expect(content).toContain("isNextStaticPath(pathname, basePath, assetPathPrefix)");
+    expect(content).toContain("return notFoundStaticAssetResponse();");
+
+    // The short-circuit must fire BEFORE renderPage so the rich HTML 404
+    // is never rendered for asset misses.
+    const staticPos = content.indexOf("isNextStaticPath(pathname, basePath, assetPathPrefix)");
+    const renderPagePos = content.indexOf("renderPage(request, resolvedUrl");
+    expect(staticPos).toBeGreaterThan(-1);
+    expect(renderPagePos).toBeGreaterThan(staticPos);
+  });
 });
 
 // ─── Vite Config Generation ─────────────────────────────────────────────��───

@@ -29,6 +29,10 @@ import {
   type PagesDataTarget,
 } from "./internal/pages-data-target.js";
 import { buildPagesDataHref } from "./internal/pages-data-url.js";
+import {
+  getPagesRouterComponentsMap,
+  markAppRouteDetectedOnPrefetch,
+} from "./internal/app-route-detection.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import { isUnknownRecord } from "../utils/record.js";
 import {
@@ -436,6 +440,18 @@ function _buildClientPagesNavigationContext(
   return ctx;
 }
 
+// Server-side cache for snapshot stability. React's `useSyncExternalStore`
+// expects `getServerSnapshot` to return a stable reference within a single
+// render so it can use Object.is to decide whether to bail out. The SSR ctx is
+// per-request (ALS-isolated), so a WeakMap keyed on the ctx is concurrent-safe
+// and lets us reuse the same shape across every hook call in a single render.
+//
+// Without this, React logs:
+//   "The result of getServerSnapshot should be cached to avoid an infinite loop"
+// and may re-render until the snapshots stabilize, which is wasteful at best
+// and a hydration-mismatch hazard at worst.
+const _ssrPagesNavCtxCache = new WeakMap<SSRContext, PagesNavigationContextShape>();
+
 /**
  * Cross-router compat shim source for `next/navigation` hooks.
  *
@@ -456,12 +472,16 @@ export function getPagesNavigationContext(): PagesNavigationContextShape | null 
   if (typeof window === "undefined") {
     const ssrCtx = _getSSRContext();
     if (!ssrCtx) return null;
+    // Reuse the cached shape for this request so React's useSyncExternalStore
+    // sees Object.is-equal snapshots across hook calls in the same render.
+    // The WeakMap is keyed on the request-scoped ALS ctx, so this remains
+    // safe under concurrent SSR (each request has its own ctx).
+    const cached = _ssrPagesNavCtxCache.get(ssrCtx);
+    if (cached) return cached;
     // ssrCtx.pathname is the route pattern (e.g. "/blog/[slug]").
     // ssrCtx.asPath is the resolved URL with query string. For useSearchParams
     // we want only the URL search string; for useParams we want only the
-    // dynamic route params. Build a fresh object each call — server scope is
-    // request-isolated via ALS but module state must not be cached across
-    // concurrent requests.
+    // dynamic route params.
     let searchParams: URLSearchParams;
     let resolvedPath: string;
     try {
@@ -473,7 +493,9 @@ export function getPagesNavigationContext(): PagesNavigationContextShape | null 
       resolvedPath = ssrCtx.pathname;
     }
     const params = extractRouteParamsFromPath(ssrCtx.pathname, resolvedPath) ?? {};
-    return { pathname: resolvedPath, searchParams, params };
+    const ctx: PagesNavigationContextShape = { pathname: resolvedPath, searchParams, params };
+    _ssrPagesNavCtxCache.set(ssrCtx, ctx);
+    return ctx;
   }
 
   // Client: derive from window.location + __NEXT_DATA__. __NEXT_DATA__.page
@@ -1457,6 +1479,13 @@ async function prefetchUrl(url: string): Promise<void> {
     return;
   }
 
+  // The target is not a Pages Router route — mark it on `components` if the
+  // App Router prefetch manifest recognises it. Mirrors Next.js's `_bfl`
+  // marker write at `packages/next/src/shared/lib/router/router.ts:2525`;
+  // the Next.js deploy test reads `window.next.router.components[<path>]` to
+  // assert prefetch detection. See issue #1526.
+  markAppRouteDetectedOnPrefetch(url, __basePath);
+
   // Legacy fallback for routes without a registered loader (e.g. dev).
   // Hints the browser to preload the HTML document so the next click feels
   // faster, even though we can't resolve the chunk ahead of time.
@@ -1693,7 +1722,29 @@ export function withRouter<P extends WithRouterProps>(
 // error rather than a `ReferenceError: window is not defined`. The throws are
 // synchronous (not via the returned Promise) so render-time callers see the
 // error inline — matching Next.js behaviour and avoiding unhandled rejections.
+/**
+ * Pages Router `components` map exposed on the singleton.
+ *
+ * In Next.js, `Router.components` doubles as (a) the cached `PrivateRouteInfo`
+ * keyed by route pattern after a real page render, and (b) a marker store
+ * (`{ __appRouter: true }`) for App Router routes detected via prefetch (see
+ * `packages/next/src/shared/lib/router/router.ts:2525`). The Next.js deploy
+ * test suite asserts the latter through `window.next.router.components`.
+ *
+ * vinext only writes the marker variant — the cached-page-info side is handled
+ * by Vite's module graph + our own loader manifest — but the property must be
+ * present and mutable so the deploy assertion can find it. The map lives
+ * behind a `Symbol.for` global so the Link shim's Pages-mode prefetch branch
+ * writes to the same instance even when Vite resolves the router shim and
+ * the link shim through different module IDs.
+ *
+ * Issue: https://github.com/cloudflare/vinext/issues/1526
+ */
+const _components = getPagesRouterComponentsMap();
+
 const RouterMethods = {
+  /** See `_components` comment above for the dual role this map plays. */
+  components: _components,
   push: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
     if (typeof window === "undefined") throwNoRouterInstance();
     // Synchronously guard dangerous URI schemes (javascript:, data:, vbscript:)

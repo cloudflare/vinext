@@ -12,6 +12,7 @@ import {
   type PagesI18nRenderContext,
 } from "./pages-page-response.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
+import { isSerializableProps } from "./pages-serializable-props.js";
 
 type PagesRedirectResult = {
   destination: string;
@@ -454,6 +455,18 @@ export async function resolvePagesPageData(
       };
     }
 
+    // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getServerSideProps", data.props)`
+    // check, gated on `!metadata.isRedirect && !metadata.isNotFound` (both
+    // short-circuit above). Throws a friendly `SerializableError` so the
+    // caller's existing try/catch surfaces a clear 500 instead of rendering
+    // an empty page. See
+    // .nextjs-ref/packages/next/src/server/render.tsx (~line 1200) and
+    // .nextjs-ref/packages/next/src/lib/is-serializable-props.ts. Tracked in
+    // vinext#1478.
+    if (result?.props !== undefined) {
+      isSerializableProps(options.routePattern, "getServerSideProps", pageProps);
+    }
+
     gsspRes = res;
   }
 
@@ -598,6 +611,18 @@ export async function resolvePagesPageData(
           ? buildPagesDataNotFoundResponse()
           : buildPagesNotFoundResponse(),
       };
+    }
+
+    // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getStaticProps", data.props)`
+    // check, gated on `!metadata.isNotFound` (notFound + redirect both
+    // short-circuit above). Throws a friendly `SerializableError` so the
+    // caller's existing try/catch surfaces a clear 500 instead of rendering
+    // an empty page. See
+    // .nextjs-ref/packages/next/src/server/render.tsx (~line 982) and
+    // .nextjs-ref/packages/next/src/lib/is-serializable-props.ts. Tracked in
+    // vinext#1478.
+    if (result?.props !== undefined) {
+      isSerializableProps(options.routePattern, "getStaticProps", pageProps);
     }
 
     if (typeof result?.revalidate === "number" && result.revalidate > 0) {

@@ -428,6 +428,147 @@ describe("app server action execution helpers", () => {
     expect(clearContext).toHaveBeenCalledTimes(1);
   });
 
+  // Mirrors Next.js' MutableRequestCookiesAdapter behaviour: multiple
+  // `cookies().set()` calls on the same name collapse to a single Set-Cookie
+  // header with the most recent value, while sets for different names each
+  // produce their own Set-Cookie line. See issue #1481 and
+  // packages/next/src/server/web/spec-extension/adapters/request-cookies.ts.
+  it("deduplicates pending Set-Cookie headers by name (last value wins) on action redirects", async () => {
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+
+    const response = requireProgressiveActionResponse(
+      await handleProgressiveServerActionRequest(
+        createOptions({
+          async decodeAction() {
+            return () => {
+              throw { digest: "NEXT_REDIRECT;replace;%2Fresult;307" };
+            };
+          },
+          getAndClearPendingCookies() {
+            // Three sets: foo (twice), bar (once). Next.js semantics collapse
+            // the two foo entries to the final "foo=2" value and emit one
+            // Set-Cookie per distinct name.
+            return ["foo=1; Path=/", "foo=2; Path=/; HttpOnly", "bar=3; Path=/"];
+          },
+          readFormDataWithLimit() {
+            return Promise.resolve(formData);
+          },
+        }),
+      ),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.getSetCookie()).toEqual(["foo=2; Path=/; HttpOnly", "bar=3; Path=/"]);
+  });
+
+  // Same dedup contract for the RSC fetch-action path (used by progressive
+  // enhancement and client-invoked actions).
+  it("deduplicates pending Set-Cookie headers by name on fetch action responses", async () => {
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        getAndClearPendingCookies() {
+          return ["session=old; Path=/", "session=new; Path=/; HttpOnly", "lang=en; Path=/"];
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.getSetCookie()).toEqual([
+      "session=new; Path=/; HttpOnly",
+      "lang=en; Path=/",
+    ]);
+  });
+
+  it("deduplicates pending Set-Cookie headers by name on fetch action redirects", async () => {
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        loadServerAction() {
+          return Promise.resolve(() => {
+            throw { digest: "NEXT_REDIRECT;push;%2Fresult;307" };
+          });
+        },
+        getAndClearPendingCookies() {
+          return ["session=old; Path=/", "session=new; Path=/; HttpOnly", "lang=en; Path=/"];
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.getSetCookie()).toEqual([
+      "session=new; Path=/; HttpOnly",
+      "lang=en; Path=/",
+    ]);
+  });
+
+  // Regression for issue #1483 — no-JS form POST actions that set cookies but
+  // do not redirect must still surface those Set-Cookie headers (and the
+  // revalidation marker) on the rerender response. Before the fix, the
+  // pending cookies and draft-mode cookie set during action execution were
+  // silently dropped because the non-redirect path returned only the
+  // form-state and never read them out of the request scope.
+  it("captures pending cookies, draft cookie, and revalidation kind from non-redirect actions (#1483)", async () => {
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+    const phaseCalls: string[] = [];
+
+    const result = await handleProgressiveServerActionRequest(
+      createOptions({
+        async decodeAction() {
+          return () => undefined;
+        },
+        getAndClearPendingCookies: vi.fn(() => ["session=abc; Path=/", "theme=dark; Path=/"]),
+        getDraftModeCookieHeader: vi.fn(() => "__prerender_bypass=secret; Path=/"),
+        readFormDataWithLimit() {
+          return Promise.resolve(formData);
+        },
+        setHeadersAccessPhase(phase) {
+          phaseCalls.push(phase);
+          return "render";
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: "form-state",
+      formState: null,
+      // Non-zero revalidation kind because cookies were mutated.
+      revalidationKind: 1,
+      pendingCookies: ["session=abc; Path=/", "theme=dark; Path=/"],
+      draftCookie: "__prerender_bypass=secret; Path=/",
+    });
+    // Headers access phase must still be flipped back after the action runs
+    // so the subsequent page rerender sees the regular render phase.
+    expect(phaseCalls).toEqual(["action", "render"]);
+  });
+
+  // Issue #1483 — when an action reads cookies but does not mutate them and
+  // doesn't redirect, the result should report a zero revalidation kind so the
+  // client router cache is not unnecessarily invalidated.
+  it("reports a zero revalidation kind when a non-redirect action does not mutate cookies (#1483)", async () => {
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+
+    const result = await handleProgressiveServerActionRequest(
+      createOptions({
+        async decodeAction() {
+          return () => undefined;
+        },
+        readFormDataWithLimit() {
+          return Promise.resolve(formData);
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: "form-state",
+      formState: null,
+      pendingCookies: [],
+      draftCookie: null,
+      revalidationKind: 0,
+    });
+  });
+
   it("returns decoded form state after successful non-redirect actions without consuming the original body", async () => {
     const formData = new FormData();
     formData.set("$ACTION_ID_test", "");
@@ -458,7 +599,13 @@ describe("app server action execution helpers", () => {
       }),
     );
 
-    expect(result).toEqual({ kind: "form-state", formState });
+    expect(result).toEqual({
+      kind: "form-state",
+      formState,
+      pendingCookies: [],
+      draftCookie: null,
+      revalidationKind: 0,
+    });
     expect(actionRan).toBe(true);
     expect((await request.formData()).get("field")).toBe("value");
   });
@@ -487,6 +634,9 @@ describe("app server action execution helpers", () => {
         formState: null,
         actionError: { digest },
         actionFailed: true,
+        pendingCookies: [],
+        draftCookie: null,
+        revalidationKind: 0,
       });
       expect(reportedErrors).toEqual([]);
       expect(clearContext).not.toHaveBeenCalled(); // Let app-rsc-handler clear it after render
@@ -495,6 +645,8 @@ describe("app server action execution helpers", () => {
 
   it("passes action execution failures as actionError to be rendered by error boundaries", async () => {
     const reportedErrors: Error[] = [];
+    // Failure-path renders still need to flush action-set cookies onto the
+    // error page response (issue #1483), so the handler captures them here.
     const clearedCookies = vi.fn(() => ["session=1; Path=/"]);
     const clearContext = vi.fn();
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -521,9 +673,12 @@ describe("app server action execution helpers", () => {
       formState: null,
       actionError: error,
       actionFailed: true,
+      pendingCookies: ["session=1; Path=/"],
+      draftCookie: null,
+      revalidationKind: 1,
     });
     expect(reportedErrors.map((e) => e.message)).toEqual(["boom"]);
-    expect(clearedCookies).not.toHaveBeenCalled(); // Only cleared if response is rendered here
+    expect(clearedCookies).toHaveBeenCalledTimes(1);
     expect(clearContext).not.toHaveBeenCalled(); // Handled by app-rsc-handler
 
     errorSpy.mockRestore();
@@ -548,6 +703,9 @@ describe("app server action execution helpers", () => {
         formState: null,
         actionError: 0,
         actionFailed: true,
+        pendingCookies: [],
+        draftCookie: null,
+        revalidationKind: 0,
       });
     } finally {
       errorSpy.mockRestore();
@@ -849,6 +1007,43 @@ describe("app server action execution helpers", () => {
     expect(decodeReply).not.toHaveBeenCalled();
   });
 
+  // Regression coverage for #1340: realistic action ids include `#<exportName>`,
+  // but @vitejs/plugin-rsc's reference-validation virtual module only knows the
+  // module path portion. The dev-mode "invalid server reference '<id>'" error
+  // therefore contains the module path WITHOUT the `#<exportName>` suffix,
+  // while the caller's actionId still has it. The 404 detection has to match
+  // either form so an unknown server action does not surface as an unrelated
+  // 500.
+  it("returns action-not-found when the Vite error elides the #exportName suffix", async () => {
+    const renderToReadableStream = vi.fn();
+    const reportRequestError = vi.fn();
+    const clearRequestContext = vi.fn();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        actionId: "/app/actions/actions.ts#staleAction",
+        clearRequestContext,
+        loadServerAction() {
+          // Vite's reference-validation virtual module reports only the module
+          // path — the `#staleAction` suffix is dropped because the validator
+          // sees the require call, not the action id.
+          return Promise.reject(
+            new Error("[vite-rsc] invalid server reference '/app/actions/actions.ts'"),
+          );
+        },
+        renderToReadableStream,
+        reportRequestError,
+      }),
+    );
+
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await response?.text()).toBe("Server action not found.");
+    expect(renderToReadableStream).not.toHaveBeenCalled();
+    expect(reportRequestError).not.toHaveBeenCalled();
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
+  });
+
   // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
   it("returns the Next.js action-not-found response for stale fetch action ids", async () => {
@@ -1077,6 +1272,46 @@ describe("app server action execution helpers", () => {
         returnValue: { ok: false, data: fallbackError },
       });
     }
+  });
+
+  // Regression coverage for #1340: when a server action throws `notFound()` AND
+  // the action also revalidates (so the page rerendering path runs instead of
+  // the skip-rerender shortcut), the response must still carry the 404 status
+  // and the rejected actionResult — not 200 with the original page.
+  //
+  // Mirrors Next.js: when isHTTPAccessFallbackError(err) is true, the
+  // action-handler sets res.statusCode = getAccessFallbackHTTPStatus(err)
+  // before generating the Flight payload.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/action-handler.ts
+  it("preserves the 404 status when notFound() is thrown by a revalidating fetch action", async () => {
+    let renderedModel: TestActionModel | null = null;
+    const fallbackError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        // Pending cookie forces the revalidating page-rerender branch instead
+        // of the no-revalidate shortcut that already had coverage above.
+        getAndClearPendingCookies() {
+          return ["action=1; Path=/"];
+        },
+        loadServerAction() {
+          return Promise.resolve(() => {
+            throw fallbackError;
+          });
+        },
+        renderToReadableStream(model) {
+          renderedModel = model;
+          return new Response("notfound-flight").body;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(404);
+    expect(await response?.text()).toBe("notfound-flight");
+    expect(renderedModel).toMatchObject({
+      returnValue: { ok: false, data: fallbackError },
+    });
+    expect(response?.headers.get("x-action-revalidated")).toBe("1");
   });
 
   it("emits the `x-edge-runtime: 1` marker on rerendered RSC action responses for edge-runtime routes", async () => {

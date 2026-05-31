@@ -193,6 +193,23 @@ describe("app page response helpers", () => {
       }),
     ).toEqual({
       cacheControl: "s-maxage=31536000, stale-while-revalidate",
+      cacheState: "MISS",
+      shouldWriteToCache: true,
+    });
+
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: false,
+        revalidateSeconds: Infinity,
+      }),
+    ).toEqual({
+      cacheControl: "s-maxage=31536000, stale-while-revalidate",
       cacheState: "STATIC",
       shouldWriteToCache: false,
     });
