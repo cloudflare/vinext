@@ -837,6 +837,21 @@ describe("resolveNextConfig serverActionsBodySizeLimit", () => {
     });
     expect(resolved.disableOptimizedLoading).toBe(true);
   });
+
+  it("reads experimental.prefetchInlining from next.config", async () => {
+    const disabled = await resolveNextConfig({});
+    expect(disabled.prefetchInlining).toBe(false);
+
+    const enabledByBoolean = await resolveNextConfig({
+      experimental: { prefetchInlining: true },
+    });
+    expect(enabledByBoolean.prefetchInlining).toBe(true);
+
+    const enabledByThresholds = await resolveNextConfig({
+      experimental: { prefetchInlining: { maxSize: Infinity, maxBundleSize: Infinity } },
+    });
+    expect(enabledByThresholds.prefetchInlining).toBe(true);
+  });
 });
 
 describe("resolveNextConfig hashSalt", () => {
@@ -1165,6 +1180,7 @@ describe("detectNextIntlConfig", () => {
       output: "",
       pageExtensions: ["tsx", "ts", "jsx", "js"],
       cacheComponents: false,
+      prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: [],

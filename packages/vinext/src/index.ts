@@ -1197,6 +1197,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME"] = JSON.stringify(
           String(nextConfig.staleTimes.static),
         );
+        defines["process.env.__VINEXT_PREFETCH_INLINING"] = JSON.stringify(
+          nextConfig.prefetchInlining ? "true" : "false",
+        );
         // Expose trailingSlash to client-side code so <Link> can render hrefs
         // in the canonical form and avoid an unnecessary 308 redirect bounce.
         defines["process.env.__VINEXT_TRAILING_SLASH"] = JSON.stringify(

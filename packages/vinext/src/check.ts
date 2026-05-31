@@ -206,7 +206,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "experimental.prefetchInlining": {
     status: "partial",
     detail:
-      "config recognized; vinext uses unified RSC navigation payloads so per-segment prefetch inlining is a no-op",
+      "config recognized; Link prefetch preserves pending/dedup semantics, but vinext does not implement per-segment cache storage",
   },
   "experimental.outputHashSalt": {
     status: "supported",

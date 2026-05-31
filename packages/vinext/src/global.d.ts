@@ -365,6 +365,12 @@ declare global {
       __VINEXT_DEPLOYMENT_ID?: string;
 
       /**
+       * `"true"` when `next.config.js` enables
+       * `experimental.prefetchInlining`.
+       */
+      __VINEXT_PREFETCH_INLINING?: string;
+
+      /**
        * JSON-encoded array of `RemotePattern` objects from
        * `next.config.js` → `images.remotePatterns`.
        */

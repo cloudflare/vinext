@@ -15,7 +15,7 @@ import {
   __basePath,
   appRouterInstance,
   commitClientNavigationState,
-  consumePrefetchResponse,
+  consumePrefetchResponseForNavigation,
   createCachedRscResponseSnapshot,
   createClientNavigationRenderSnapshot,
   getClientNavigationRenderContext,
@@ -1479,11 +1479,15 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         let navResponse: Response | undefined;
         let navResponseUrl: string | null = null;
         if (navigationKind !== "refresh") {
-          const prefetchedResponse = consumePrefetchResponse(
+          const prefetchedResponse = await consumePrefetchResponseForNavigation(
             rscUrl,
             requestInterceptionContext,
             mountedSlotsHeader,
+            {
+              shouldConsume: () => browserNavigationController.isCurrentNavigation(navId),
+            },
           );
+          if (!browserNavigationController.isCurrentNavigation(navId)) return;
           if (prefetchedResponse) {
             navResponse = restoreRscResponse(prefetchedResponse, false);
             navResponseUrl = prefetchedResponse.url;
