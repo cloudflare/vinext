@@ -88,6 +88,39 @@ describe("clientManualChunks", () => {
     expect(clientManualChunks("/node_modules/react-dom/client.js")).toBe("framework");
   });
 
+  it("splits the react-dom server renderer into its own 'react-dom-server' chunk", () => {
+    // Server-only Fizz entrypoints + their cjs implementation must NOT ride in
+    // the always-loaded framework chunk — only routes that render to a string
+    // (e.g. embedded Sanity Studio) import them.
+    expect(clientManualChunks("/node_modules/react-dom/server.browser.js")).toBe(
+      "react-dom-server",
+    );
+    expect(clientManualChunks("/node_modules/react-dom/server.edge.js")).toBe("react-dom-server");
+    expect(clientManualChunks("/node_modules/react-dom/static.edge.js")).toBe("react-dom-server");
+    expect(
+      clientManualChunks("/node_modules/react-dom/cjs/react-dom-server.browser.production.js"),
+    ).toBe("react-dom-server");
+    expect(
+      clientManualChunks(
+        "/node_modules/react-dom/cjs/react-dom-server-legacy.browser.production.js",
+      ),
+    ).toBe("react-dom-server");
+  });
+
+  it("keeps react-dom client + shared internals + server stub in 'framework'", () => {
+    expect(clientManualChunks("/node_modules/react-dom/index.js")).toBe("framework");
+    expect(clientManualChunks("/node_modules/react-dom/cjs/react-dom-client.production.js")).toBe(
+      "framework",
+    );
+    expect(clientManualChunks("/node_modules/react-dom/cjs/react-dom.production.js")).toBe(
+      "framework",
+    );
+    // The client-side stub that throws if server APIs are called — stays with the client.
+    expect(clientManualChunks("/node_modules/react-dom/server-rendering-stub.js")).toBe(
+      "framework",
+    );
+  });
+
   it("groups scheduler into 'framework' chunk", () => {
     expect(clientManualChunks("/node_modules/scheduler/index.js")).toBe("framework");
   });
