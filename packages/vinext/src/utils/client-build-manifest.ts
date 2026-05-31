@@ -44,13 +44,19 @@ export function findClientEntryFileFromManifest(
   buildManifest: ClientBuildManifest,
   assetBase: string,
 ): string | undefined {
-  for (const entry of Object.values(buildManifest)) {
-    if (entry.isEntry && entry.file) {
-      return manifestFileWithBase(entry.file, assetBase);
-    }
-  }
+  const entries = Object.values(buildManifest).filter((entry) => entry.isEntry && entry.file);
+  // A client build can emit more than one `isEntry` chunk (e.g. the client
+  // entry plus instrumentation or middleware entries), and the manifest's
+  // iteration order is not guaranteed to surface the client entry first.
+  // Prefer the chunk whose file carries a known client-entry marker — matching
+  // the precise on-disk scan in findClientEntryFileInAssetsDir — and only fall
+  // back to the first entry when nothing is marked.
+  const markedEntry = entries.find((entry) =>
+    CLIENT_ENTRY_MARKERS.some((marker) => entry.file.includes(marker)),
+  );
+  const chosen = markedEntry ?? entries[0];
 
-  return undefined;
+  return chosen ? manifestFileWithBase(chosen.file, assetBase) : undefined;
 }
 
 function findClientEntryFileInAssetsDir(options: {

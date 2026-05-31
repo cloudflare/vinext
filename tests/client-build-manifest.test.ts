@@ -66,6 +66,24 @@ describe("client build manifest helpers", () => {
     expect(entry).toBe("docs/_next/static/vinext-client-entry-abcd.js");
   });
 
+  it("prefers the marked client entry over other isEntry chunks regardless of order", () => {
+    const entry = findClientEntryFileFromManifest(
+      {
+        "instrumentation-client.ts": {
+          file: "_next/static/vinext-instrumentation-client-0001.js",
+          isEntry: true,
+        },
+        "pages-client-entry.ts": {
+          file: "_next/static/vinext-client-entry-abcd.js",
+          isEntry: true,
+        },
+      },
+      "/",
+    );
+
+    expect(entry).toBe("_next/static/vinext-client-entry-abcd.js");
+  });
+
   it("falls back to the on-disk assets directory when the manifest has no entry", async () => {
     const assetsSubdir = "_next/static";
     await fsp.mkdir(path.join(clientDir, assetsSubdir), { recursive: true });
