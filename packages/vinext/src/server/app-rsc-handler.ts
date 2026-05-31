@@ -92,6 +92,24 @@ type AppRscRouteMatch<TRoute> = {
   route: TRoute;
 };
 
+function applyMiddlewareContextToResponse(
+  response: Response,
+  middlewareContext: AppRscMiddlewareContext,
+): Response {
+  if (!middlewareContext.headers && middlewareContext.status == null) {
+    return response;
+  }
+
+  const headers = new Headers(response.headers);
+  mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+
+  return new Response(response.body, {
+    status: middlewareContext.status ?? response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 type DispatchMatchedPageOptions<TRoute> = {
   cleanPathname: string;
   formState: ReactFormState | null;
@@ -478,7 +496,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     cleanPathname,
     makeThenableParams: options.makeThenableParams,
   });
-  if (metadataRouteResponse) return metadataRouteResponse;
+  if (metadataRouteResponse) {
+    return applyMiddlewareContextToResponse(metadataRouteResponse, middlewareContext);
+  }
 
   const publicFileResponse = resolvePublicFileRoute({
     cleanPathname,
