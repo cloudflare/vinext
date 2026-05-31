@@ -15,6 +15,7 @@ import {
   type ReactNode,
   type ComponentType,
 } from "react";
+import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { RouterContext } from "./internal/router-context.js";
 import {
   applyVinextLocaleGlobals,
@@ -1542,7 +1543,36 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
     [pathname, query, asPath],
   );
 
-  return createElement(RouterContext.Provider, { value: router }, children);
+  const appRouter = useMemo(
+    (): AppRouterInstance => ({
+      bfcacheId: "0",
+      back() {
+        Router.back();
+      },
+      forward() {
+        if (typeof window === "undefined") throwNoRouterInstance();
+        window.history.forward();
+      },
+      refresh() {
+        Router.reload();
+      },
+      push(href, options) {
+        void Router.push(href, undefined, { scroll: options?.scroll });
+      },
+      replace(href, options) {
+        void Router.replace(href, undefined, { scroll: options?.scroll });
+      },
+      prefetch(href) {
+        void Router.prefetch(href);
+      },
+    }),
+    [],
+  );
+
+  const content = createElement(RouterContext.Provider, { value: router }, children);
+  return AppRouterContext
+    ? createElement(AppRouterContext.Provider, { value: appRouter }, content)
+    : content;
 }
 
 // beforePopState callback: called before handling browser back/forward.

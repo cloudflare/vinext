@@ -98,9 +98,11 @@ function getRedirectTypeFromError(error: RedirectError): "push" | "replace" {
 function HandleRedirect({
   redirect,
   redirectType,
+  reset,
 }: {
   redirect: string;
   redirectType: "push" | "replace";
+  reset: () => void;
 }) {
   const router = useRouter();
 
@@ -111,17 +113,9 @@ function HandleRedirect({
       } else {
         router.replace(redirect);
       }
-      // Intentionally no reset() here. The boundary stays in its "redirect
-      // caught" state (rendering this component, which returns null) until
-      // router.push()/replace() triggers a new render at the destination
-      // route. That naturally unmounts this boundary and mounts a fresh one.
-      // Calling reset() would clear the boundary state, causing React to
-      // re-render children — which re-mounts the page component that threw
-      // redirect() in the first place. For deterministic redirects (e.g.
-      // auth guards), that creates an infinite redirect loop.
-      // Matches Next.js's HandleRedirect in redirect-boundary.tsx.
+      reset();
     });
-  }, [redirect, redirectType, router]);
+  }, [redirect, redirectType, reset, router]);
 
   return null;
 }
@@ -140,13 +134,7 @@ export class RedirectErrorBoundary extends React.Component<
 
   static getDerivedStateFromError(error: unknown): RedirectBoundaryState {
     if (isRedirectError(error)) {
-      // The public `isRedirectError` narrows to `Error & { digest: string }`.
-      // Cast to the local `RedirectError` (which also carries the optional
-      // `handled` field) so the parity logic below compiles. The cast is
-      // safe because every error that matches the prefix predicate is — by
-      // construction — produced by vinext's `redirect()` /
-      // `permanentRedirect()` helpers, which yield `Error` instances.
-      const redirectError = error as RedirectError;
+      const redirectError: RedirectError = error;
       // Next.js parity: an outer RedirectBoundary that has already started
       // handling a redirect marks the error as `handled` so that, if React
       // re-throws the same error during a retry render, an inner boundary
@@ -179,10 +167,23 @@ export class RedirectErrorBoundary extends React.Component<
     throw error;
   }
 
+  resetRedirect = () => {
+    this.setState({
+      redirect: null,
+      redirectType: null,
+    });
+  };
+
   render() {
     const { redirect, redirectType } = this.state;
     if (redirect !== null && redirectType !== null) {
-      return <HandleRedirect redirect={redirect} redirectType={redirectType} />;
+      return (
+        <HandleRedirect
+          redirect={redirect}
+          redirectType={redirectType}
+          reset={this.resetRedirect}
+        />
+      );
     }
 
     return this.props.children;
@@ -190,6 +191,36 @@ export class RedirectErrorBoundary extends React.Component<
 }
 
 export function RedirectBoundary({ children }: { children?: React.ReactNode }) {
+  const router = useRouter();
+
+  React.useEffect(() => {
+    function handleUnhandledRedirect(event: ErrorEvent | PromiseRejectionEvent): void {
+      const error = "reason" in event ? event.reason : event.error;
+      if (!isRedirectError(error)) return;
+
+      const redirectError: RedirectError = error;
+      const url = getURLFromRedirectError(redirectError);
+      if (url === null) return;
+
+      event.preventDefault();
+      React.startTransition(() => {
+        if (getRedirectTypeFromError(redirectError) === "push") {
+          router.push(url);
+        } else {
+          router.replace(url);
+        }
+      });
+    }
+
+    window.addEventListener("error", handleUnhandledRedirect);
+    window.addEventListener("unhandledrejection", handleUnhandledRedirect);
+
+    return () => {
+      window.removeEventListener("error", handleUnhandledRedirect);
+      window.removeEventListener("unhandledrejection", handleUnhandledRedirect);
+    };
+  }, [router]);
+
   return <RedirectErrorBoundary>{children}</RedirectErrorBoundary>;
 }
 
@@ -311,7 +342,12 @@ class NotFoundBoundaryInner extends React.Component<
 
   render() {
     if (this.state.notFound) {
-      return this.props.fallback;
+      return (
+        <>
+          <meta name="robots" content="noindex" />
+          {this.props.fallback}
+        </>
+      );
     }
     return this.props.children;
   }

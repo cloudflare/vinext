@@ -436,10 +436,10 @@ describe("app page execution helpers", () => {
     });
 
     expect(response.status).toBe(307);
-    expect(response.headers.get("location")).toMatch(/redirected\.rsc/);
+    expect(response.headers.get("location")).toMatch(/redirected\?_rsc/);
   });
 
-  it("canonicalizes same-origin RSC redirect locations to .rsc URLs", async () => {
+  it("canonicalizes same-origin RSC redirect locations to Next-style RSC URLs", async () => {
     const response = await buildAppPageSpecialErrorResponse({
       clearRequestContext: vi.fn(),
       isRscRequest: true,
@@ -459,7 +459,7 @@ describe("app page execution helpers", () => {
 
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toMatch(
-      /^https:\/\/example\.com\/redirected\.rsc\?tab=1&_rsc=/,
+      /^https:\/\/example\.com\/redirected\?tab=1&_rsc=/,
     );
   });
 

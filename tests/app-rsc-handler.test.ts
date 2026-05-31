@@ -543,7 +543,7 @@ describe("createAppRscHandler", () => {
 
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe(
-      `https://example.test/docs/about.rsc?from=old&_rsc=${expectedHash}`,
+      `https://example.test/docs/about?from=old&_rsc=${expectedHash}`,
     );
   });
 

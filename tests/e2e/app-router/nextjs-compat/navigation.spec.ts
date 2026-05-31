@@ -39,6 +39,19 @@ test.describe("Next.js compat: navigation (browser)", () => {
     expect(page.url()).toContain("/nextjs-compat/nav-redirect-result");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+  test("client-side redirect() sentinel navigates and resets the boundary", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/nav-client-redirect-sentinel`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#trigger-redirect");
+    await expect(page.locator("#result-page")).toHaveText("Result Page", {
+      timeout: 10_000,
+    });
+    expect(page.url()).toContain("/nextjs-compat/nav-redirect-result");
+  });
+
   // Next.js: 'should trigger not-found in a server component'
   // Source: navigation.test.ts#L136-L146
   test("server component notFound() renders not-found component", async ({ page }) => {
@@ -65,6 +78,8 @@ test.describe("Next.js compat: navigation (browser)", () => {
       const text = await page.locator("body").textContent();
       expect(text).toContain("404");
     }).toPass({ timeout: 10_000 });
+
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex");
   });
 
   // Next.js: Link-based client-side navigation
@@ -166,5 +181,33 @@ test.describe("Next.js compat: navigation (browser)", () => {
       () => (window as any).__APP_RELATIVE_ONNAV_URL__ ?? null,
     );
     expect(reportedUrl).toBe("/nextjs-compat/nav-link-test?page=2");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+  test("router.push to an external URL keeps useTransition pending until unload", async ({
+    page,
+  }) => {
+    const storageKey = `external-${Date.now()}`;
+    await page.goto(`${BASE}/nextjs-compat/router-push-external-pending/${storageKey}`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#go");
+    await page.waitForURL("https://example.vercel.sh/stuff?abc=123", { timeout: 10_000 });
+
+    await page.goto(`${BASE}/nextjs-compat/router-push-external-pending/${storageKey}`);
+    await expect(page.locator("#storage")).toContainText(
+      `path-/nextjs-compat/router-push-external-pending/${storageKey}`,
+    );
+    const stored = JSON.parse((await page.locator("#storage").textContent()) ?? "{}");
+
+    expect(stored).toMatchObject({
+      [`path-/nextjs-compat/router-push-external-pending/${storageKey}`]: "true",
+      lastIsPending: "true",
+    });
+
+    if (stored["navigation-supported"] === "true") {
+      expect(stored["navigate-https://example.vercel.sh/stuff?abc=123"]).toBe("1");
+    }
   });
 });

@@ -41,8 +41,18 @@ describe("App Router RSC cache-busting", () => {
     const headers = createRscRequestHeaders();
 
     await expect(createRscRequestUrl("/dashboard?tab=activity", headers)).resolves.toBe(
-      "/dashboard.rsc?tab=activity&_rsc",
+      "/dashboard?tab=activity&_rsc",
     );
+  });
+
+  it("uses the canonical route URL for root RSC navigations", async () => {
+    // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+    // Client-side App Router navigations fetch the route URL with RSC: 1 and
+    // _rsc cache busting, not Vinext's legacy /.rsc transport path.
+    const headers = createRscRequestHeaders();
+
+    await expect(createRscRequestUrl("/", headers)).resolves.toBe("/?_rsc");
   });
 
   it("hashes Vinext RSC variant headers into the request URL", async () => {
@@ -55,7 +65,7 @@ describe("App Router RSC cache-busting", () => {
 
     expect(hash).not.toBe("");
     await expect(createRscRequestUrl("/photos/42", headers)).resolves.toBe(
-      `/photos/42.rsc?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}=${hash}`,
+      `/photos/42?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}=${hash}`,
     );
   });
 

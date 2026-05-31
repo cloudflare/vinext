@@ -119,7 +119,7 @@ describe("prefetch cache eviction", () => {
     await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
 
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(fetchedUrl).toMatch(/^\/dashboard\.rsc\?tab=1&_rsc(?:=.+)?$/);
+    expect(fetchedUrl).toMatch(/^\/dashboard\?tab=1&_rsc(?:=.+)?$/);
     expect(getPrefetchedUrls().has(AppElementsWire.encodeCacheKey(String(fetchedUrl), null))).toBe(
       true,
     );

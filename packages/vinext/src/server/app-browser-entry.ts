@@ -149,6 +149,11 @@ type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 type ServerActionResult = AppBrowserServerActionResult<AppWireElements>;
 
 type NavigationKind = "navigate" | "traverse" | "refresh";
+type MpaNavigationState = {
+  href: string;
+  historyUpdateMode: HistoryUpdateMode;
+  kind: "mpa-navigation";
+};
 
 // Maps NavigationKind to the AppRouterAction type used by the reducer.
 // "refresh" is intentionally treated as "navigate" (merge, preserve absent slots).
@@ -222,7 +227,7 @@ function parseEncodedJsonHeader<T>(value: string | null): T | null {
 }
 
 function isRouterStatePromise(
-  value: AppRouterState | Promise<AppRouterState>,
+  value: AppRouterState | Promise<AppRouterState> | MpaNavigationState,
 ): value is Promise<AppRouterState> {
   return value instanceof Promise;
 }
@@ -239,6 +244,9 @@ let browserRouterStateHasEverCommitted = false;
 // of stranding them on the previous URL with a blank page. Cleared once the
 // commit effect runs (URL update succeeded) or the navigation is superseded.
 let pendingNavigationRecoveryHref: string | null = null;
+let pendingMpaNavigationHref: string | null = null;
+let pendingMpaNavigationToken = 0;
+const unresolvedMpaNavigation = new Promise<never>(() => {});
 let currentHistoryTraversalIndex: number | null =
   readHistoryStateTraversalIndex(window.history.state) ?? 0;
 let nextHistoryTraversalIndex: number = currentHistoryTraversalIndex;
@@ -800,6 +808,51 @@ function handleDevRecoveryBoundaryCatch(resetKey: number): void {
   browserNavigationController.drainPrePaintEffects(resetKey);
 }
 
+function isMpaNavigationState(
+  value: AppRouterState | Promise<AppRouterState> | MpaNavigationState,
+): value is MpaNavigationState {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "kind" in value &&
+    value.kind === "mpa-navigation"
+  );
+}
+
+function performMpaNavigation(href: string, historyUpdateMode: HistoryUpdateMode): void {
+  if (pendingMpaNavigationHref === href) {
+    return;
+  }
+
+  pendingMpaNavigationHref = href;
+  pendingMpaNavigationToken += 1;
+  const token = pendingMpaNavigationToken;
+  const navigate = () => {
+    if (pendingMpaNavigationHref !== href || pendingMpaNavigationToken !== token) {
+      return;
+    }
+
+    if (historyUpdateMode === "replace") {
+      window.location.replace(href);
+    } else {
+      window.location.assign(href);
+    }
+  };
+
+  // Match Next's MPA path by suspending forever, but delay the actual location
+  // mutation just enough for the old tree to commit the pending transition
+  // signal before unload. The token prevents retry renders from firing stale
+  // targets if a newer MPA navigation supersedes this one.
+  if (typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(() => {
+      window.setTimeout(navigate, 0);
+    });
+    return;
+  }
+
+  window.setTimeout(navigate, 0);
+}
+
 function decodeAppElementsPromise(payload: Promise<AppWireElements>): Promise<AppElements> {
   // Wrap in Promise.resolve() because createFromReadableStream() returns a
   // React Flight thenable whose .then() returns undefined (not a new Promise).
@@ -816,7 +869,9 @@ function BrowserRoot({
 }) {
   const resolvedElements = use(initialElements);
   const initialMetadata = AppElementsWire.readMetadata(resolvedElements);
-  const [treeStateValue, setTreeStateValue] = useState<AppRouterState | Promise<AppRouterState>>({
+  const [treeStateValue, setTreeStateValue] = useState<
+    AppRouterState | Promise<AppRouterState> | MpaNavigationState
+  >({
     activeOperation: null,
     elements: resolvedElements,
     interception: initialMetadata.interception,
@@ -831,6 +886,10 @@ function BrowserRoot({
     slotBindings: initialMetadata.slotBindings,
     visibleCommitVersion: 0,
   });
+  if (isMpaNavigationState(treeStateValue)) {
+    performMpaNavigation(treeStateValue.href, treeStateValue.historyUpdateMode);
+    throw unresolvedMpaNavigation;
+  }
   const treeState = isRouterStatePromise(treeStateValue) ? use(treeStateValue) : treeStateValue;
 
   // Keep the latest router state in a ref so external callers (navigate(),
@@ -848,10 +907,23 @@ function BrowserRoot({
   // after hydrateRoot() returns; by then this layout effect has already run for
   // the hydration commit, so getBrowserRouterState() never observes a null ref.
   useLayoutEffect(() => {
+    const setAppRouterStateValue = (value: AppRouterState | Promise<AppRouterState>) => {
+      setTreeStateValue(value);
+    };
     const detach = browserNavigationController.attachBrowserRouterState(
-      setTreeStateValue,
+      setAppRouterStateValue,
       stateRef,
     );
+    registerNavigationRuntimeFunctions({
+      navigateExternal: (href, historyUpdateMode) => {
+        setTreeStateValue({
+          href,
+          historyUpdateMode,
+          kind: "mpa-navigation",
+        });
+        return new Promise<void>(() => {});
+      },
+    });
     browserRouterStateHasEverCommitted = true;
     // App Router uses this timestamp as first committed tree readiness: the
     // browser router state is attached and link/router interactions can safely
@@ -863,6 +935,7 @@ function BrowserRoot({
     window.__NEXT_HYDRATED_AT = hydratedAt;
     window.__NEXT_HYDRATED_CB?.();
     return () => {
+      registerNavigationRuntimeFunctions({ navigateExternal: undefined });
       detach();
       setMountedSlotsHeader(null);
     };
@@ -962,7 +1035,15 @@ function restoreHydrationNavigationContext(
   });
 }
 
-function restorePopstateScrollPosition(state: unknown): void {
+function restorePopstateScrollPosition(
+  state: unknown,
+  options?: {
+    shouldContinue?: () => boolean;
+  },
+): void {
+  const shouldContinue = options?.shouldContinue ?? (() => true);
+  if (!shouldContinue()) return;
+
   if (!(state && typeof state === "object" && "__vinext_scrollY" in state)) {
     if (window.location.hash) {
       scrollToHashTargetOnNextFrame(window.location.hash);
@@ -973,9 +1054,18 @@ function restorePopstateScrollPosition(state: unknown): void {
   const y = Number(state.__vinext_scrollY);
   const x = "__vinext_scrollX" in state ? Number(state.__vinext_scrollX) : 0;
 
-  requestAnimationFrame(() => {
+  let attempts = 0;
+  const restore = () => {
+    if (!shouldContinue()) return;
+
     window.scrollTo(x, y);
-  });
+    if (!shouldContinue() || Math.abs(window.scrollY - y) <= 1 || attempts >= 60) {
+      return;
+    }
+    attempts += 1;
+    requestAnimationFrame(restore);
+  };
+  restore();
 }
 
 function isSameAppRoutePopstateTarget(href: string): boolean {

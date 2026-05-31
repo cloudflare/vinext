@@ -1395,15 +1395,25 @@ function restoreScrollPosition(state: unknown): void {
       if (pending) {
         // Wait for the RSC navigation to finish rendering, then scroll.
         void pending.then(() => {
-          requestAnimationFrame(() => {
+          let attempts = 0;
+          const restore = () => {
             window.scrollTo(x, y);
-          });
+            if (Math.abs(window.scrollY - y) <= 1 || attempts >= 60) return;
+            attempts += 1;
+            requestAnimationFrame(restore);
+          };
+          restore();
         });
       } else {
         // No RSC navigation in flight (Pages Router or already settled).
-        requestAnimationFrame(() => {
+        let attempts = 0;
+        const restore = () => {
           window.scrollTo(x, y);
-        });
+          if (Math.abs(window.scrollY - y) <= 1 || attempts >= 60) return;
+          attempts += 1;
+          requestAnimationFrame(restore);
+        };
+        restore();
       }
     });
   }
@@ -1423,12 +1433,20 @@ export async function navigateClientSide(
   if (isExternalUrl(href)) {
     const localPath = toSameOriginAppPath(href, __basePath);
     if (localPath == null) {
-      // Truly external: use full page navigation
+      notifyAppRouterTransitionStart(href, mode);
+
+      const externalNavigate = getNavigationRuntime()?.functions.navigateExternal;
+      if (externalNavigate) {
+        await externalNavigate(href, mode);
+        return;
+      }
+
       if (mode === "replace") {
         window.location.replace(href);
       } else {
         window.location.assign(href);
       }
+      await new Promise<void>(() => {});
       return;
     }
     normalizedHref = localPath;
