@@ -761,6 +761,16 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });
 
+  it("generateRscEntry passes page-slot dynamic stale time config into App page dispatch", () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain(
+      "parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page)",
+    );
+    expect(code).toContain("dynamicStaleTimeSeconds: __segmentConfig.dynamicStaleTimeSeconds");
+  });
+
   it("generateRscEntry threads globalNotFoundPath from config into the fallback renderer", () => {
     // The generated entry's createAppFallbackRenderer call must receive a
     // loader so route-miss 404s can render app/global-not-found.tsx standalone.

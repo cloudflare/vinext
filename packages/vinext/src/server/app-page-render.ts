@@ -94,6 +94,7 @@ type RenderAppPageLifecycleOptions = {
   getDraftModeCookieHeader: () => string | null | undefined;
   handlerStart: number;
   hasLoadingBoundary: boolean;
+  dynamicStaleTimeSeconds?: number;
   isDynamicError: boolean;
   isDraftMode: boolean;
   isEdgeRuntime?: boolean;
@@ -424,6 +425,7 @@ export async function renderAppPageLifecycle(
       revalidateSeconds,
     });
     const rscResponse = buildAppPageRscResponse(rscForResponse, {
+      dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareContext: options.middlewareContext,
       mountedSlotsHeader: options.mountedSlotsHeader,

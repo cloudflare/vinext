@@ -181,6 +181,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   debugClassification?: (layoutId: string, reason: ClassificationReason) => void;
   draftModeSecret: string;
   dynamicConfig?: string;
+  dynamicStaleTimeSeconds?: number;
   dynamicParamsConfig?: boolean;
   fetchCache?: FetchCacheMode | null;
   findIntercept: (pathname: string) => AppPageDispatchIntercept | null;
@@ -764,6 +765,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         }
       },
     },
+    dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
     revalidateSeconds: currentRevalidateSeconds,
     mountedSlotsHeader: options.mountedSlotsHeader,
     renderMode: options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
