@@ -717,9 +717,11 @@ describe("Head _document.getInitialProps() merge (issue #1569)", () => {
   });
 });
 
-// ─── client hydration sync keeps defaults & order (issue #1569 regression) ──
+// ─── client hydration sync keeps defaults & order (issue #1569 / #1677) ─────
 //
-// On the client, the first <Head> mount runs _syncClientHead(). It must:
+// Underlying issue #1569 was fixed for SSR by #1677; this exercises the client
+// path, which regressed: on the client, the first <Head> mount runs
+// _syncClientHead(). It must:
 //   1. keep the server-rendered charset / viewport defaults (which carry
 //      data-next-head="") — they must not vanish after hydration, and
 //   2. reconcile in place (diff via isEqualNode) rather than wipe-and-rebuild,
@@ -727,7 +729,7 @@ describe("Head _document.getInitialProps() merge (issue #1569)", () => {
 // This mirrors Next.js's reduceComponents() (always seeds defaultHead()) and
 // head-manager.ts updateElements() (in-place reconciliation).
 
-describe("Head client sync (defaults + order, issue #1569)", () => {
+describe("Head client sync (defaults + order, issue #1569 / #1677)", () => {
   // Minimal DOM double — the repo has no jsdom/happy-dom. Only the surface
   // _syncClientHead() touches is implemented.
   class FakeElement {
@@ -931,6 +933,37 @@ describe("Head client sync (defaults + order, issue #1569)", () => {
       // defaultHead()'s charset must be prepended ahead of the script.
       expect(head.children[0]?.tagName).toBe("meta");
       expect(head.children[0]?.getAttribute("charset")).toBe("utf-8");
+    } finally {
+      restore();
+    }
+  });
+
+  it("lets a user key='viewport' override the default viewport on the client", () => {
+    // Mirrors the SSR override test (head.test.ts) on the client path: the
+    // default viewport carries key="viewport", so a user tag with the same key
+    // wins the dedupe in reduceHeadChildren — same precedence as Next.js.
+    const { head, restore } = installFakeDocument();
+    try {
+      _clientHeadChildren.set(
+        Symbol("test"),
+        React.createElement("meta", {
+          name: "viewport",
+          content: "width=500",
+          key: "viewport",
+        }),
+      );
+      _syncClientHead();
+
+      const viewports = head.children.filter(
+        (el) => el.tagName === "meta" && el.getAttribute("name") === "viewport",
+      );
+      // Exactly one viewport, and it is the user's override.
+      expect(viewports).toHaveLength(1);
+      expect(viewports[0]?.getAttribute("content")).toBe("width=500");
+      // The default charset is still emitted alongside the override.
+      expect(
+        head.children.some((el) => el.tagName === "meta" && el.getAttribute("charset") === "utf-8"),
+      ).toBe(true);
     } finally {
       restore();
     }

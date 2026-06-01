@@ -456,6 +456,13 @@ export function _syncClientHead(): void {
 
     // Reuse an identical node already in <head> so its DOM position (and thus
     // the head ordering produced by SSR) is preserved.
+    //
+    // Note: Next.js routes <title> through document.title rather than
+    // updateElements(), so a title node never moves. We reconcile <title> like
+    // any other tag — on hydration with an unchanged title it is reused in
+    // place via isEqualNode (the common case), and only on a client-side title
+    // *change* does the old node get removed and the new one appended. The
+    // position of <title> in <head> is not observable, so this is cosmetic.
     let isNew = true;
     for (const oldTag of oldTags) {
       if (oldTag.isEqualNode(domEl)) {
@@ -473,7 +480,15 @@ export function _syncClientHead(): void {
   }
 
   // Insert genuinely new tags. Keep <meta charset> first in <head> so the
-  // declared encoding stays at the top, matching Next.js.
+  // declared encoding stays at the top.
+  //
+  // This deliberately diverges from Next.js's literal head-manager.ts, which
+  // does `if (charset) headEl.prepend(newTag)` with NO `else` and then
+  // unconditionally `headEl.appendChild(newTag)` — moving a newly-created
+  // charset node twice and landing it last. We use a proper if/else so a new
+  // charset is prepended and only prepended. Don't "fix" this back to match
+  // Next.js's sequence. (This branch only runs on client-only navigation; on
+  // SSR hydration the charset is reused in place via isEqualNode above.)
   for (const newTag of newTags) {
     if (newTag.tagName.toLowerCase() === "meta" && newTag.getAttribute("charset") !== null) {
       headEl.prepend(newTag);
