@@ -91,8 +91,8 @@ catalogs:
       specifier: ^6.0.1
       version: 6.0.1
     '@vitejs/plugin-rsc':
-      specifier: ^0.5.26
-      version: 0.5.26
+      specifier: ^0.5.27
+      version: 0.5.27
     '@vitest/coverage-istanbul':
       specifier: 4.1.6
       version: 4.1.6
@@ -271,7 +271,7 @@ importers:
         version: 7.0.0-dev.20260217.1
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       '@vitest/coverage-istanbul':
         specifier: 'catalog:'
         version: 4.1.6(@voidzero-dev/vite-plus-test@0.1.22)
@@ -353,7 +353,7 @@ importers:
         version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       drizzle-kit:
         specifier: 'catalog:'
         version: 0.31.10
@@ -396,7 +396,7 @@ importers:
     devDependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       vite:
         specifier: npm:@voidzero-dev/vite-plus-core@0.1.22
         version: '@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3)'
@@ -414,7 +414,7 @@ importers:
         version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       react:
         specifier: 'catalog:'
         version: 19.2.6
@@ -546,7 +546,7 @@ importers:
         version: 19.2.3(@types/react@19.2.14)
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       postcss:
         specifier: 'catalog:'
         version: 8.5.10
@@ -585,7 +585,7 @@ importers:
         version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       react:
         specifier: 'catalog:'
         version: 19.2.6
@@ -668,7 +668,7 @@ importers:
         version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       postcss:
         specifier: 'catalog:'
         version: 8.5.10
@@ -701,7 +701,7 @@ importers:
         version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       ms:
         specifier: 'catalog:'
         version: 3.0.0-canary.1
@@ -772,7 +772,7 @@ importers:
         version: 19.2.3(@types/react@19.2.14)
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
@@ -864,7 +864,7 @@ importers:
         version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       react:
         specifier: 'catalog:'
         version: 19.2.6
@@ -941,7 +941,7 @@ importers:
         version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       react-server-dom-webpack:
         specifier: 'catalog:'
         version: 19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -953,7 +953,7 @@ importers:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       fake-context-lib:
         specifier: file:./__test_packages__/fake-context-lib
         version: file:tests/fixtures/app-basic/__test_packages__/fake-context-lib
@@ -987,7 +987,7 @@ importers:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       react:
         specifier: 'catalog:'
         version: 19.2.6
@@ -1012,7 +1012,7 @@ importers:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       react:
         specifier: 'catalog:'
         version: 19.2.6
@@ -1043,7 +1043,7 @@ importers:
         version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       react:
         specifier: 'catalog:'
         version: 19.2.6
@@ -1074,7 +1074,7 @@ importers:
         version: 1.9.1
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       better-auth:
         specifier: 'catalog:'
         version: 1.5.6(@cloudflare/workers-types@4.20260313.1)(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@vitest/coverage-istanbul@4.1.6(@voidzero-dev/vite-plus-test@0.1.22))(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(better-sqlite3@12.6.2)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260313.1)(@opentelemetry/api@1.9.1)(better-sqlite3@12.6.2)(kysely@0.28.15))(esbuild@0.27.3)(jiti@2.6.1)(next@16.2.6(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3)
@@ -1105,7 +1105,7 @@ importers:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       next-intl:
         specifier: 'catalog:'
         version: 4.11.1(next@16.2.6(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(typescript@5.9.3)
@@ -1133,7 +1133,7 @@ importers:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       next-themes:
         specifier: 'catalog:'
         version: 0.4.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -1161,7 +1161,7 @@ importers:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       next-view-transitions:
         specifier: 'catalog:'
         version: 0.3.5(next@16.2.6(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -1189,7 +1189,7 @@ importers:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       nuqs:
         specifier: 'catalog:'
         version: 2.8.8(next@16.2.6(@opentelemetry/api@1.9.1)(@playwright/test@1.58.2)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
@@ -1226,7 +1226,7 @@ importers:
         version: 1.2.4(@types/react@19.2.14)(react@19.2.6)
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       class-variance-authority:
         specifier: 'catalog:'
         version: 0.7.1
@@ -1282,7 +1282,7 @@ importers:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       react:
         specifier: 'catalog:'
         version: 19.2.6
@@ -1307,7 +1307,7 @@ importers:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       react:
         specifier: 'catalog:'
         version: 19.2.6
@@ -1370,7 +1370,7 @@ importers:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       react:
         specifier: 'catalog:'
         version: 19.2.6
@@ -3644,11 +3644,11 @@ packages:
   '@rolldown/pluginutils@1.0.0':
     resolution: {integrity: sha512-aKs/3GSWyV0mrhNmt/96/Z3yczC3yvrzYATCiCXQebBsGyYzjNdUphRVLeJQ67ySKVXRfMxt2lm12pmXvbPFQQ==}
 
-  '@rolldown/pluginutils@1.0.0-rc.18':
-    resolution: {integrity: sha512-CUY5Mnhe64xQBGZEEXQ5WyZwsc1JU3vAZLIxtrsBt3LO6UOb+C8GunVKqe9sT8NeWb4lqSaoJtp2xo6GxT1MNw==}
-
   '@rolldown/pluginutils@1.0.0-rc.7':
     resolution: {integrity: sha512-qujRfC8sFVInYSPPMLQByRh7zhwkGFS4+tyMQ83srV1qrxL4g8E2tyxVVyxd0+8QeBM1mIk9KbWxkegRr76XzA==}
+
+  '@rolldown/pluginutils@1.0.1':
+    resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
   '@rollup/pluginutils@5.3.0':
     resolution: {integrity: sha512-5EdhGZtnu3V88ces7s53hhfK5KSASnJZv8Lulpc04cWO3REESroJXg73DFsOmgbU2BhwV0E20bu2IDZb3VKW4Q==}
@@ -4188,8 +4188,8 @@ packages:
       babel-plugin-react-compiler:
         optional: true
 
-  '@vitejs/plugin-rsc@0.5.26':
-    resolution: {integrity: sha512-T8W8ODEutblw9qXQB512LDPyv1tAbJRD/Gf0QEGsAoydl4nxEtIrghnhoI9oLY9R+7aw+cLk1ZEltxWHWf4aHw==}
+  '@vitejs/plugin-rsc@0.5.27':
+    resolution: {integrity: sha512-s1fd5DUkPXk86DDHPM/kP93WrvI0MoA8klxdDZmD1fMSaA9xujfgunsm8ZoUH0FemR+63vNalFsIDR0AJH4ktg==}
     peerDependencies:
       react: '*'
       react-dom: '*'
@@ -8400,9 +8400,9 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.0': {}
 
-  '@rolldown/pluginutils@1.0.0-rc.18': {}
-
   '@rolldown/pluginutils@1.0.0-rc.7': {}
+
+  '@rolldown/pluginutils@1.0.1': {}
 
   '@rollup/pluginutils@5.3.0':
     dependencies:
@@ -8838,9 +8838,9 @@ snapshots:
       '@rolldown/pluginutils': 1.0.0-rc.7
       vite: '@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3)'
 
-  '@vitejs/plugin-rsc@0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)':
+  '@vitejs/plugin-rsc@0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)':
     dependencies:
-      '@rolldown/pluginutils': 1.0.0-rc.18
+      '@rolldown/pluginutils': 1.0.1
       es-module-lexer: 2.1.0
       estree-walker: 3.0.3
       magic-string: 0.30.21
