@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
+import {
+  createPprFallbackShellState,
+  runWithPprFallbackShellState,
+} from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 
 describe("makeThenableParams", () => {
@@ -149,5 +153,29 @@ describe("makeThenableParams", () => {
 
     expect(slug).toBe("post");
     expect(observedKeys).toEqual([["slug"]]);
+  });
+
+  it("suspends only fallback params during cacheComponents fallback-shell prerendering", () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+    let thrown: unknown;
+
+    runWithPprFallbackShellState(state, () => {
+      const params = makeThenableParams({ locale: "en", slug: "[slug]" });
+
+      expect(params.locale).toBe("en");
+      expect(Object.keys(params)).toEqual(["locale", "slug"]);
+      try {
+        Reflect.get(params, "slug");
+      } catch (error) {
+        thrown = error;
+      }
+    });
+    state.abortController.abort();
+
+    expect(thrown).toBeDefined();
+    expect(typeof (thrown as Promise<unknown>).then).toBe("function");
   });
 });

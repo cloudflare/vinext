@@ -1,3 +1,8 @@
+import {
+  createPprFallbackShellSuspensePromise,
+  getPprFallbackShellState,
+} from "./ppr-fallback-shell.js";
+
 function hasParamProperty<T extends Record<string, unknown>>(obj: T, prop: PropertyKey): boolean {
   return Object.prototype.hasOwnProperty.call(obj, prop);
 }
@@ -99,7 +104,21 @@ export function makeThenableParams<T extends Record<string, unknown>>(
   observer?: ThenableParamsObserver,
 ): ThenableParams<T> {
   const plain = { ...obj };
-  const promise = Promise.resolve(plain);
+  const fallbackShellState = getPprFallbackShellState();
+  const fallbackParamNames =
+    fallbackShellState &&
+    Object.keys(plain).some((key) => fallbackShellState.fallbackParamNames.has(key))
+      ? fallbackShellState.fallbackParamNames
+      : null;
+  const fallbackShellPromise = fallbackParamNames
+    ? createPprFallbackShellSuspensePromise<T>("`params`")
+    : null;
+
+  function isFallbackParam(prop: PropertyKey): boolean {
+    return typeof prop === "string" && (fallbackParamNames?.has(prop) ?? false);
+  }
+
+  const promise = fallbackShellPromise ?? Promise.resolve(plain);
 
   // The Proxy implements both Promise and plain-object behaviour so that
   // `await params` and `params.id` both work. TypeScript's Proxy type
@@ -121,6 +140,9 @@ export function makeThenableParams<T extends Record<string, unknown>>(
       }
 
       if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
+        if (fallbackShellPromise && isFallbackParam(prop)) {
+          throw fallbackShellPromise;
+        }
         return Reflect.get(plain, prop);
       }
 
@@ -133,6 +155,16 @@ export function makeThenableParams<T extends Record<string, unknown>>(
       }
 
       if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
+        if (fallbackShellPromise && isFallbackParam(prop)) {
+          return {
+            configurable: true,
+            enumerable: true,
+            get() {
+              throw fallbackShellPromise;
+            },
+          };
+        }
+
         return {
           configurable: true,
           enumerable: true,
