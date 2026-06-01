@@ -250,7 +250,10 @@ export class ErrorBoundaryInner extends React.Component<
 > {
   constructor(props: ErrorBoundaryInnerProps) {
     super(props);
-    this.state = { error: null, ...readBoundaryResetState(props) };
+    this.state = {
+      error: null,
+      ...readBoundaryResetState(props),
+    };
   }
 
   static getDerivedStateFromProps(
@@ -261,7 +264,10 @@ export class ErrorBoundaryInner extends React.Component<
     if (state.error && shouldResetBoundary(nextResetState, state)) {
       return { error: null, ...nextResetState };
     }
-    return { error: state.error, ...nextResetState };
+    return {
+      error: state.error,
+      ...nextResetState,
+    };
   }
 
   static getDerivedStateFromError(error: unknown): Partial<ErrorBoundaryState> {

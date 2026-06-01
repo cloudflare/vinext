@@ -100,6 +100,192 @@ test.describe("Server Actions", () => {
     await expect(page.locator("h1")).toHaveText("About");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+  test("server action posts to the visible route and exposes text/plain failures", async ({
+    page,
+  }) => {
+    await page.route("**/nextjs-compat/action-response-semantics", async (route) => {
+      const headers = await route.request().allHeaders();
+      if (headers["next-action"]) {
+        await route.fulfill({
+          status: 500,
+          contentType: "text/plain",
+          body: "Custom error!",
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto(`${BASE}/nextjs-compat/action-response-semantics`);
+    await waitForAppRouterHydration(page);
+    await page.click("#complete-action");
+
+    await expect(page.locator("#action-error")).toHaveText("Custom error!");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+  test("server action exposes a stable error for invalid action response content-type", async ({
+    page,
+  }) => {
+    await page.route("**/nextjs-compat/action-response-semantics", async (route) => {
+      const headers = await route.request().allHeaders();
+      if (headers["next-action"]) {
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "Custom error!" }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto(`${BASE}/nextjs-compat/action-response-semantics`);
+    await waitForAppRouterHydration(page);
+    await page.click("#complete-action");
+
+    await expect(page.locator("#action-error")).toHaveText(
+      "An unexpected response was received from the server.",
+    );
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+  test("server action notFound renders the route not-found boundary", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/action-response-semantics`);
+    await waitForAppRouterHydration(page);
+    await page.click("#missing-action");
+
+    await expect(page.locator("#action-not-found")).toHaveText("Action not found boundary");
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+  test("same-origin server action redirects complete in a single POST response", async ({
+    page,
+  }) => {
+    const actionResponses: number[] = [];
+    page.on("response", (response) => {
+      const request = response.request();
+      if (
+        request.method() === "POST" &&
+        new URL(response.url()).pathname === "/nextjs-compat/action-response-semantics"
+      ) {
+        actionResponses.push(response.status());
+      }
+    });
+
+    await page.goto(`${BASE}/nextjs-compat/action-response-semantics`);
+    await waitForAppRouterHydration(page);
+    await page.click("#redirect-action");
+
+    await expect(page).toHaveURL(`${BASE}/about`);
+    await expect(page.locator("h1")).toHaveText("About");
+    expect(actionResponses).toEqual([303]);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/actions/app-action-node-middleware.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action-node-middleware.test.ts
+  test("server action redirects merge action cookies and strip next-action from the target render", async ({
+    page,
+  }) => {
+    const actionResponses: number[] = [];
+    page.on("response", (response) => {
+      const request = response.request();
+      if (
+        request.method() === "POST" &&
+        new URL(response.url()).pathname === "/nextjs-compat/action-redirect-cookies"
+      ) {
+        actionResponses.push(response.status());
+      }
+    });
+
+    await page.context().addCookies([
+      {
+        name: "stale",
+        value: "1",
+        url: BASE,
+      },
+    ]);
+
+    await page.goto(`${BASE}/nextjs-compat/action-redirect-cookies`);
+    await waitForAppRouterHydration(page);
+    await page.click("#redirect-with-cookie-mutation");
+
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/action-redirect-cookies/target?baz=1`);
+    await expect(page.locator("#target-theme")).toHaveText("dark");
+    await expect(page.locator("#target-stale")).toHaveText("missing");
+    await expect(page.locator("#target-baz")).toHaveText("1");
+    expect(actionResponses).toEqual([303]);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+  test("stale child-route server action redirects return a 200 wrapper response", async ({
+    page,
+  }) => {
+    let redirectResponseStatus: number | undefined;
+    page.on("response", (response) => {
+      const request = response.request();
+      if (
+        request.method() === "POST" &&
+        response.headers()["x-action-redirect"] &&
+        new URL(response.url()).pathname === "/nextjs-compat/action-forwarded-redirect/other"
+      ) {
+        redirectResponseStatus = response.status();
+      }
+    });
+
+    await page.goto(`${BASE}/nextjs-compat/action-forwarded-redirect`);
+    await waitForAppRouterHydration(page);
+    await page.click("#run-forwarded-redirect");
+    await Promise.all([
+      page.waitForURL(`${BASE}/nextjs-compat/action-forwarded-redirect/other`),
+      page.click("#go-forwarded-redirect-other"),
+    ]);
+    await expect(page.locator("#forwarded-redirect-other")).toHaveText("Forwarded Redirect Other");
+
+    await expect(async () => {
+      expect(redirectResponseStatus).toBe(200);
+    }).toPass({ timeout: 10_000 });
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/action-forwarded-redirect`);
+    await expect(page.locator("#run-forwarded-redirect")).toBeVisible();
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+  test("cross-runtime server action redirects return a 200 wrapper response", async ({ page }) => {
+    let redirectResponseStatus: number | undefined;
+    page.on("response", (response) => {
+      const request = response.request();
+      if (
+        request.method() === "POST" &&
+        response.headers()["x-action-redirect"] &&
+        new URL(response.url()).pathname === "/nextjs-compat/action-forwarded-redirect/edge/other"
+      ) {
+        redirectResponseStatus = response.status();
+      }
+    });
+
+    await page.goto(`${BASE}/nextjs-compat/action-forwarded-redirect/edge`);
+    await waitForAppRouterHydration(page);
+    await page.click("#run-cross-runtime-redirect");
+    await page.click("#go-cross-runtime-other");
+    await expect(page.locator("#cross-runtime-other")).toHaveText("Cross Runtime Other");
+
+    await expect(async () => {
+      expect(redirectResponseStatus).toBe(200);
+    }).toPass({ timeout: 10_000 });
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/action-forwarded-redirect/node`);
+    await expect(page.locator("#cross-runtime-node-target")).toHaveText(
+      "Cross Runtime Node Target",
+    );
+  });
+
   test("server action cookie writes do not make the rerender path mutable", async ({ page }) => {
     test.slow();
     await page.goto(`${BASE}/nextjs-compat/action-cookie-phase`);

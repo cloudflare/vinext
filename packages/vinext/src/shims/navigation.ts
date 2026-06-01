@@ -774,6 +774,39 @@ export function consumePrefetchResponse(
   return null;
 }
 
+/**
+ * Consume a prefetched response for navigation. Unlike the synchronous cache
+ * read above, this waits for an already-started prefetch snapshot before
+ * deciding whether to fetch again. That preserves the ownership invariant set
+ * up by prefetchRscResponse(): a pending cache entry means this URL already has
+ * one in-flight network request that navigation should share.
+ */
+type ConsumePrefetchResponseForNavigationOptions = {
+  shouldConsume?: () => boolean;
+};
+
+export async function consumePrefetchResponseForNavigation(
+  rscUrl: string,
+  interceptionContext: string | null = null,
+  mountedSlotsHeader: string | null = null,
+  options?: ConsumePrefetchResponseForNavigationOptions,
+): Promise<CachedRscResponse | null> {
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  const cache = getPrefetchCache();
+  const entry = cache.get(cacheKey);
+  if (!entry) return null;
+  if (entry.cacheForNavigation === false) return null;
+
+  if (entry.pending !== undefined) {
+    await entry.pending.catch(() => {});
+    if (cache.get(cacheKey) !== entry) return null;
+  }
+
+  if (options?.shouldConsume?.() === false) return null;
+
+  return consumePrefetchResponse(rscUrl, interceptionContext, mountedSlotsHeader);
+}
+
 // ---------------------------------------------------------------------------
 // Client navigation state — stored on a Symbol.for global to survive
 // multiple Vite module instances loading this file through different IDs.
@@ -1329,7 +1362,7 @@ export function replaceHistoryStateWithoutNotify(
  * Uses replaceHistoryStateWithoutNotify to avoid triggering the patched
  * history.replaceState interception (which would cause spurious re-renders).
  */
-function saveScrollPosition(): void {
+export function saveScrollPosition(): void {
   const state = window.history.state ?? {};
   replaceHistoryStateWithoutNotify(
     { ...state, __vinext_scrollX: window.scrollX, __vinext_scrollY: window.scrollY },

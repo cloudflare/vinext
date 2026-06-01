@@ -11,6 +11,7 @@ import {
 } from "./app-elements.js";
 import { createRscRequestHeaders } from "./app-rsc-cache-busting.js";
 import {
+  NEXT_ACTION_HEADER,
   RSC_ACTION_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
@@ -226,6 +227,7 @@ export function resolveServerActionRequestState(
 ): ResolveServerActionRequestStateResult {
   const headers = createRscRequestHeaders();
   headers.set(RSC_ACTION_HEADER, options.actionId);
+  headers.set(NEXT_ACTION_HEADER, options.actionId);
 
   const interceptionContext = resolveInterceptionContextFromPreviousNextUrl(
     options.previousNextUrl,

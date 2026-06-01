@@ -276,6 +276,37 @@ describe("app route handler response helpers", () => {
     await expect(result.text()).resolves.toBe("body");
   });
 
+  it("normalizes returned response cookies when they override mutable cookie fallbacks", async () => {
+    // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+    const response = new Response("body", {
+      headers: [
+        ["Set-Cookie", "bar=bar2"],
+        ["Set-Cookie", "baz=baz2"],
+      ],
+    });
+
+    const result = finalizeRouteHandlerResponse(response, {
+      pendingCookies: [
+        "foo=foo1; Path=/",
+        "bar=bar1; Path=/",
+        "test1=value1; Path=/; Secure",
+        "test2=value2; Path=/handler; HttpOnly",
+      ],
+      draftCookie: null,
+      isHead: false,
+    });
+
+    expect(result.headers.getSetCookie()).toEqual([
+      "foo=foo1; Path=/",
+      "test1=value1; Path=/; Secure",
+      "test2=value2; Path=/handler; HttpOnly",
+      "bar=bar2; Path=/",
+      "baz=baz2; Path=/",
+    ]);
+    await expect(result.text()).resolves.toBe("body");
+  });
+
   it("strips internal middleware headers from finalized route handler responses", async () => {
     const response = new Response("body", {
       headers: [

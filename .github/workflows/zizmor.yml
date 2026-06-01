@@ -13,6 +13,7 @@ jobs:
     name: Run zizmor
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       security-events: write
     steps:
       - name: Checkout repository

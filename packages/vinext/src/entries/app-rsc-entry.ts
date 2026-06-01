@@ -364,6 +364,13 @@ function __resolveRouteFetchCacheMode(route) {
   });
 }
 
+function __resolveRouteRuntime(route) {
+  return __resolveAppPageSegmentConfig({
+    layouts: route.layouts,
+    page: route.page,
+  }).runtime ?? null;
+}
+
 ${imports.join("\n")}
 
 ${
@@ -848,6 +855,7 @@ export default __createAppRscHandler({
       readFormDataWithLimit: __readFormDataWithLimit,
       renderToReadableStream,
       reportRequestError: _reportRequestError,
+      resolveRouteRuntime: __resolveRouteRuntime,
       request,
       sanitizeErrorForClient(error) {
         return __sanitizeErrorForClient(error);
