@@ -189,6 +189,78 @@ export default function Comp() {
   await builder.buildApp();
 }
 
+async function buildAppServerActionServerOnlyFixture(): Promise<void> {
+  const workspaceRoot = path.resolve(import.meta.dirname, "..");
+  const workspaceNodeModules = path.join(workspaceRoot, "node_modules");
+  const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-action-server-only-"));
+
+  await writeFile(
+    path.join(tmpDir, "app", "layout.tsx"),
+    `export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return <html lang="en"><body>{children}</body></html>;
+}
+`,
+  );
+  // A Server Actions module ("use server") that imports server-only. This
+  // mirrors Next.js's own fixture, which is valid because server actions run
+  // in the server/action layer — not the client layer that server-only guards.
+  await writeFile(
+    path.join(tmpDir, "app", "actions.ts"),
+    `'use server'
+
+import 'server-only'
+
+export async function inc(value: number) {
+  return value + 1;
+}
+`,
+  );
+  // A client component that references the action. This is what pulls the
+  // action module into the client environment graph, where the
+  // vinext:validate-server-only-client-imports guard runs.
+  await writeFile(
+    path.join(tmpDir, "app", "counter.tsx"),
+    `'use client'
+
+import { useState } from "react";
+import { inc } from "./actions";
+
+export default function Counter() {
+  const [value, setValue] = useState(0);
+  return <button onClick={async () => setValue(await inc(value))}>{value}</button>;
+}
+`,
+  );
+  await writeFile(
+    path.join(tmpDir, "app", "page.tsx"),
+    `import Counter from "./counter";
+
+export default function Home() {
+  return <Counter />;
+}
+`,
+  );
+
+  await fsp.symlink(workspaceNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+  const { default: vinext } = await import(
+    pathToFileURL(path.join(workspaceRoot, "packages/vinext/src/index.ts")).href
+  );
+  const { createBuilder } = await import("vite");
+  const rscOutDir = path.join(tmpDir, "dist", "server");
+  const ssrOutDir = path.join(tmpDir, "dist", "server", "ssr");
+  const clientOutDir = path.join(tmpDir, "dist", "client");
+
+  const builder = await createBuilder({
+    root: tmpDir,
+    configFile: false,
+    plugins: [vinext({ appDir: tmpDir, rscOutDir, ssrOutDir, clientOutDir })],
+    logLevel: "error",
+  });
+
+  await builder.buildApp();
+}
+
 describe("middleware can import server-only", () => {
   let tmpDir: string;
 
@@ -270,4 +342,17 @@ describe("Pages Router client builds reject server-only", () => {
       /server-only.*Server Components in the App Router/s,
     );
   });
+});
+
+describe("App Router Server Actions can import server-only", () => {
+  it("builds when a 'use server' module imports server-only", async () => {
+    // Mirrors Next.js's test/e2e/app-dir/actions fixture, whose
+    // app/client/actions.js is a `'use server'` module with `import 'server-only'`.
+    // Server Actions run in the server/action layer, so server-only is allowed
+    // even though the client bundle references the actions to invoke them.
+    // The validate-server-only-client-imports guard (added in #1697) must not
+    // false-positive on these or it breaks the whole client build — regression
+    // test for the actions/app-basepath deploy-suite failures.
+    await expect(buildAppServerActionServerOnlyFixture()).resolves.toBeUndefined();
+  }, 120_000);
 });

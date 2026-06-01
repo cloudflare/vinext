@@ -171,6 +171,29 @@ function createRscCompatibilityId(nextConfig: ResolvedNextConfig): string {
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
 
+// Detect a module-level `"use server"` directive (a Server Actions module).
+// Directives form the leading prologue of string-literal ExpressionStatements,
+// so we only scan until the first non-directive statement.
+function hasModuleLevelUseServerDirective(body: ReturnType<typeof parseAst>["body"]): boolean {
+  for (const node of body) {
+    if (node.type !== "ExpressionStatement") break;
+    const directive = (node as ASTNode & { directive?: unknown }).directive;
+    const expression = (node as ASTNode & { expression?: { type?: string; value?: unknown } })
+      .expression;
+    const value =
+      typeof directive === "string"
+        ? directive
+        : expression?.type === "Literal"
+          ? expression.value
+          : undefined;
+    if (value === "use server") return true;
+    // Keep scanning through other directives (e.g. "use strict"); a
+    // non-string-literal statement ends the directive prologue.
+    if (typeof value !== "string") break;
+  }
+  return false;
+}
+
 function hasServerOnlyMarkerImport(code: string): boolean {
   if (!code.includes("server-only")) return false;
 
@@ -180,6 +203,15 @@ function hasServerOnlyMarkerImport(code: string): boolean {
   } catch {
     return false;
   }
+
+  // Server Actions modules (`"use server"`) live in the server/action layer,
+  // not the client layer. Next.js allows them to `import "server-only"` even
+  // though the client bundle holds references used to invoke the actions
+  // (see test/e2e/app-dir/actions/app/client/actions.js, which does exactly
+  // this). Treating them as client-reachable here is a false positive that
+  // breaks the entire client build, so exempt them while still rejecting
+  // genuine client modules below.
+  if (hasModuleLevelUseServerDirective(ast.body)) return false;
 
   function walk(node: ASTNode | ASTNode[] | null | undefined): boolean {
     if (!node) return false;
