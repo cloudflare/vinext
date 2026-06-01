@@ -929,7 +929,7 @@ function AppRouterRedirectBridge({ children }: { children?: React.ReactNode }) {
       const error = "reason" in event ? event.reason : event.error;
       if (!isRedirectError(error)) return;
 
-      const result = decodeRedirectError((error as Error & { digest: string }).digest);
+      const result = decodeRedirectError(error.digest);
       if (!result) return;
 
       event.preventDefault();

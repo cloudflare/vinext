@@ -21,11 +21,6 @@ type RedirectBoundaryState = {
   redirectType: "push" | "replace" | null;
 };
 
-type RedirectError = Error & {
-  digest: string;
-  handled?: boolean;
-};
-
 type ErrorBoundaryInnerProps = {
   pathname: string;
 } & ErrorBoundaryProps;
@@ -110,7 +105,6 @@ export class RedirectErrorBoundary extends React.Component<
 
   static getDerivedStateFromError(error: unknown): RedirectBoundaryState {
     if (isRedirectError(error)) {
-      const redirectError: RedirectError = error;
       // Next.js parity: an outer RedirectBoundary that has already started
       // handling a redirect marks the error as `handled` so that, if React
       // re-throws the same error during a retry render, an inner boundary
@@ -118,14 +112,14 @@ export class RedirectErrorBoundary extends React.Component<
       // currently emit `handled` itself (we never assign it on the error
       // object), but we keep the branch so behavior matches Next.js if a
       // host or future change ever does.
-      if (redirectError.handled) {
+      if ("handled" in error && error.handled) {
         return {
           redirect: null,
           redirectType: null,
         };
       }
 
-      const result = decodeRedirectError(redirectError.digest);
+      const result = decodeRedirectError(error.digest);
       if (!result) {
         // Malformed digest (e.g. `NEXT_REDIRECT;push;` with an empty URL
         // segment). The server-side parser at next-error-digest.ts:51 also

@@ -2051,15 +2051,10 @@ type _RedirectErrorShape = Error & { digest: string };
  * `shims/error-boundary.tsx`.
  */
 export function isRedirectError(error: unknown): error is _RedirectErrorShape {
-  if (
-    !error ||
-    typeof error !== "object" ||
-    !("digest" in error) ||
-    typeof (error as { digest: unknown }).digest !== "string"
-  ) {
-    return false;
-  }
-  return (error as { digest: string }).digest.startsWith("NEXT_REDIRECT;");
+  if (!error || typeof error !== "object") return false;
+  if (!("digest" in error)) return false;
+  if (typeof error.digest !== "string") return false;
+  return error.digest.startsWith("NEXT_REDIRECT;");
 }
 
 /**
