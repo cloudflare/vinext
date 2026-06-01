@@ -4,9 +4,21 @@ import { isUnknownRecord } from "../utils/record.js";
 export type PrerenderRouteParams = Record<string, string | string[]>;
 
 export type PrerenderRouteParamsPayload = {
+  fallbackParamNames?: readonly string[];
   params: PrerenderRouteParams;
   routePattern: string;
 };
+
+type PrerenderRouteParamsRouteMatch =
+  | {
+      kind: "exact";
+      params: PrerenderRouteParams;
+    }
+  | {
+      fallbackParamNames: readonly string[];
+      kind: "fallback-shell";
+      params: PrerenderRouteParams;
+    };
 
 function isPrerenderRouteParams(value: unknown): value is PrerenderRouteParams {
   if (!isUnknownRecord(value)) return false;
@@ -22,7 +34,20 @@ function isPrerenderRouteParams(value: unknown): value is PrerenderRouteParams {
 
 function isPrerenderRouteParamsPayload(value: unknown): value is PrerenderRouteParamsPayload {
   if (!isUnknownRecord(value)) return false;
-  if (Object.keys(value).length !== 2) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 2 && keys.length !== 3) return false;
+  if (
+    keys.some((key) => key !== "fallbackParamNames" && key !== "params" && key !== "routePattern")
+  ) {
+    return false;
+  }
+  if (
+    "fallbackParamNames" in value &&
+    (!Array.isArray(value.fallbackParamNames) ||
+      !value.fallbackParamNames.every((name) => typeof name === "string"))
+  ) {
+    return false;
+  }
   return (
     typeof value.routePattern === "string" &&
     value.routePattern.startsWith("/") &&
@@ -116,24 +141,55 @@ export function prerenderRouteParamsPayloadMatchesRoute(
   routePattern: string,
   params: PrerenderRouteParams,
 ): payload is PrerenderRouteParamsPayload {
-  if (payload === null) return false;
-  if (payload.routePattern !== routePattern) return false;
+  const match = matchPrerenderRouteParamsPayload(payload, routePattern, params);
+  return match?.kind === "exact";
+}
 
+function matchPrerenderRouteParamsPayload(
+  payload: PrerenderRouteParamsPayload | null,
+  routePattern: string,
+  params: PrerenderRouteParams,
+): PrerenderRouteParamsRouteMatch | null {
+  if (payload === null) return null;
+  if (payload.routePattern !== routePattern) return null;
   const prerenderParamKeys = Object.keys(payload.params);
-  if (prerenderParamKeys.length !== Object.keys(params).length) return false;
+  if (prerenderParamKeys.length !== Object.keys(params).length) return null;
 
   for (const [key, prerenderValue] of Object.entries(payload.params)) {
     const matchedValue = params[key];
-    if (matchedValue === undefined) return false;
-    if (!decodedPrerenderRouteParamEquals(prerenderValue, matchedValue)) return false;
+    if (matchedValue === undefined) return null;
+    if (!decodedPrerenderRouteParamEquals(prerenderValue, matchedValue)) return null;
   }
 
-  return true;
+  if (payload.fallbackParamNames) {
+    const routeParamNames = new Set(
+      routePattern
+        .split("/")
+        .filter((part) => part.startsWith(":"))
+        .map((part) =>
+          part.endsWith("+") || part.endsWith("*") ? part.slice(1, -1) : part.slice(1),
+        ),
+    );
+    const fallbackParamNames = payload.fallbackParamNames.filter(
+      (name, index, names) => routeParamNames.has(name) && names.indexOf(name) === index,
+    );
+    if (fallbackParamNames.length !== payload.fallbackParamNames.length) return null;
+    if (fallbackParamNames.length === 0) return null;
+
+    return {
+      fallbackParamNames,
+      kind: "fallback-shell",
+      params: payload.params,
+    };
+  }
+
+  return { kind: "exact", params: payload.params };
 }
 
 export function encodePrerenderRouteParams(
   pattern: string,
   params: PrerenderRouteParams,
+  fallbackParamNames?: readonly string[],
 ): PrerenderRouteParamsPayload | null {
   const encoded: PrerenderRouteParams = {};
 
@@ -154,5 +210,11 @@ export function encodePrerenderRouteParams(
     }
   }
 
-  return Object.keys(encoded).length > 0 ? { routePattern: pattern, params: encoded } : null;
+  return Object.keys(encoded).length > 0
+    ? {
+        ...(fallbackParamNames && fallbackParamNames.length > 0 ? { fallbackParamNames } : {}),
+        routePattern: pattern,
+        params: encoded,
+      }
+    : null;
 }

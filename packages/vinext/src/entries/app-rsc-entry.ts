@@ -133,6 +133,8 @@ type AppRouterConfig = {
   cacheMaxMemorySize?: number;
   /** Inline app CSS into production HTML (from experimental.inlineCss). */
   inlineCss?: boolean;
+  /** Enables Next.js Cache Components semantics for App Router document HTML. */
+  cacheComponents?: boolean;
   /** Internationalization routing config for middleware matcher locale handling. */
   i18n?: NextI18nConfig | null;
   /**

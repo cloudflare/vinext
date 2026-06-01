@@ -71,6 +71,18 @@ class PrerenderProgress {
   }
 }
 
+function readBuiltBuildId(serverDir: string): string | null {
+  try {
+    const buildId = fs.readFileSync(path.join(serverDir, "BUILD_ID"), "utf-8").trim();
+    return buildId.length > 0 ? buildId : null;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
 // ─── Shared runner ────────────────────────────────────────────────────────────
 
 type RunPrerenderOptions = {
@@ -143,6 +155,8 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // cleaned with the rest of vinext's build output on rebuild and co-located
   // with server artifacts.
   const manifestDir = path.join(root, "dist", "server");
+  const rscBundlePath = options.rscBundlePath ?? path.join(root, "dist", "server", "index.js");
+  const serverDir = path.dirname(rscBundlePath);
 
   const loadedConfig = await resolveNextConfig(await loadNextConfig(root), root);
   const config = options.nextConfigOverride
@@ -151,7 +165,11 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       // nextConfigOverride replace the entire nested object from loadedConfig.
       // This is intentional for test usage (top-level overrides only); a deep
       // merge would be needed to support partial nested overrides in the future.
-      loadedConfig;
+      { ...loadedConfig };
+  const builtBuildId = readBuiltBuildId(serverDir);
+  if (builtBuildId) {
+    config.buildId = builtBuildId;
+  }
   // Activate export mode when next.config.js sets `output: 'export'`.
   // In export mode, SSR routes and any dynamic routes without static params are
   // build errors rather than silently skipped.
@@ -180,9 +198,6 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     mode === "export"
       ? path.join(root, "dist", "client")
       : path.join(root, "dist", "server", "prerendered-routes");
-
-  const rscBundlePath = options.rscBundlePath ?? path.join(root, "dist", "server", "index.js");
-  const serverDir = path.dirname(rscBundlePath);
 
   // For hybrid builds (both app/ and pages/ present), start a single shared
   // prod server and pass it to both phases. This avoids spinning up two servers
