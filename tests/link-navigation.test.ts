@@ -192,6 +192,21 @@ async function waitForFetchCalls(
   }
 }
 
+function expectCanonicalRscFetchCall(
+  call: unknown[] | undefined,
+  pathname: string,
+  initMatcher: unknown,
+): void {
+  expect(call).toBeDefined();
+  const input = call?.[0];
+  expect(typeof input).toBe("string");
+  if (typeof input !== "string") return;
+  const url = new URL(input, "https://example.com");
+  expect(url.pathname).toBe(pathname);
+  expect(url.searchParams.has("_rsc")).toBe(true);
+  expect(call?.[1]).toEqual(initMatcher);
+}
+
 describe("Link prefetch pure decisions", () => {
   it("decides whether Link should prefetch and with which priority", () => {
     const cases = [
@@ -1166,8 +1181,9 @@ describe("Link prefetch scheduling", () => {
       await waitForFetchCalls(result.fetch, 1);
 
       expect(observer.unobserve).not.toHaveBeenCalledWith(result.anchor);
-      expect(result.fetch).toHaveBeenCalledWith(
-        expect.stringContaining("/viewport-prefetch-target.rsc"),
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/viewport-prefetch-target",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
@@ -1196,8 +1212,9 @@ describe("Link prefetch scheduling", () => {
       await flushPrefetchTasks();
 
       expect(result.fetch).toHaveBeenCalledTimes(2);
-      expect(result.fetch).toHaveBeenLastCalledWith(
-        expect.stringContaining("/viewport-prefetch-target.rsc"),
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[1],
+        "/viewport-prefetch-target",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
@@ -1222,8 +1239,9 @@ describe("Link prefetch scheduling", () => {
       await waitForFetchCalls(result.fetch, 1);
 
       expect(observer.unobserve).not.toHaveBeenCalledWith(result.anchor);
-      expect(result.fetch).toHaveBeenCalledWith(
-        expect.stringContaining("/blog/hello.rsc"),
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/blog/hello",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
@@ -1276,8 +1294,9 @@ describe("Link prefetch scheduling", () => {
       await flushPrefetchTasks();
 
       expect(observer.unobserve).not.toHaveBeenCalledWith(result.anchor);
-      expect(result.fetch).toHaveBeenCalledWith(
-        expect.stringContaining("/blog/hello.rsc"),
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/blog/hello",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
@@ -1370,8 +1389,9 @@ describe("Link prefetch scheduling", () => {
       await flushPrefetchTasks();
 
       expect(userOnMouseEnter).toHaveBeenCalledTimes(1);
-      expect(result.fetch).toHaveBeenCalledWith(
-        expect.stringContaining("/intent-prefetch-target.rsc"),
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/intent-prefetch-target",
         expect.objectContaining({
           credentials: "include",
           priority: "high",
@@ -1394,8 +1414,9 @@ describe("Link prefetch scheduling", () => {
     try {
       observer.dispatchIntersectingEntry(result.anchor);
       await waitForFetchCalls(result.fetch, 1);
-      expect(result.fetch).toHaveBeenCalledWith(
-        expect.stringContaining("/blog/hello.rsc"),
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/blog/hello",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
@@ -1423,8 +1444,9 @@ describe("Link prefetch scheduling", () => {
       await waitForFetchCalls(result.fetch, 3);
 
       expect(result.fetch).toHaveBeenCalledTimes(3);
-      expect(result.fetch).toHaveBeenLastCalledWith(
-        expect.stringContaining("/blog/hello.rsc"),
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[2],
+        "/blog/hello",
         expect.objectContaining({
           credentials: "include",
           priority: "low",
@@ -1449,8 +1471,9 @@ describe("Link prefetch scheduling", () => {
       await flushPrefetchTasks();
 
       expect(userOnTouchStart).toHaveBeenCalledTimes(1);
-      expect(result.fetch).toHaveBeenCalledWith(
-        expect.stringContaining("/touch-prefetch-target.rsc"),
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/touch-prefetch-target",
         expect.objectContaining({
           credentials: "include",
           priority: "high",
@@ -1506,17 +1529,23 @@ describe("Link prefetch scheduling", () => {
       result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
       await flushPrefetchTasks();
 
-      expect(result.fetch).toHaveBeenCalledWith(
-        expect.stringContaining("/same-origin-intent-prefetch-target.rsc"),
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/same-origin-intent-prefetch-target",
         expect.objectContaining({
           credentials: "include",
           priority: "high",
         }),
       );
-      expect(result.fetch).not.toHaveBeenCalledWith(
-        expect.stringContaining("https://example.com/same-origin-intent-prefetch-target.rsc"),
-        expect.anything(),
-      );
+      expect(
+        result.fetch.mock.calls.some((call) => {
+          const input = call[0];
+          return (
+            typeof input === "string" &&
+            input.startsWith("https://example.com/same-origin-intent-prefetch-target")
+          );
+        }),
+      ).toBe(false);
     } finally {
       result.restoreNodeEnv();
     }

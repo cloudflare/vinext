@@ -10,7 +10,7 @@
  */
 
 import { test, expect, type Page } from "@playwright/test";
-import { waitForAppRouterHydration } from "../../helpers";
+import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../../helpers";
 
 const BASE = "http://localhost:4174";
 
@@ -19,7 +19,7 @@ test.describe("Next.js compat: actions-revalidate (browser)", () => {
     return page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        response.url().includes("/nextjs-compat/action-discarding.rsc"),
+        isAppRouterRscRequestForPath(response.request(), "/nextjs-compat/action-discarding"),
     );
   }
 

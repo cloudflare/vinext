@@ -98,6 +98,30 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
   });
 
+  it("does not trailing-slash redirect RSC requests built from already-canonical trailingSlash paths", async () => {
+    const headers = createRscRequestHeaders();
+    const requestPath = await createRscRequestUrl("/about/", headers);
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const route = createPageRoute({ pattern: "/about/", routeSegments: ["about"] });
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchRoute(pathname: string) {
+        return pathname === "/about/" ? { params: {}, route } : null;
+      },
+      trailingSlash: true,
+    });
+
+    const response = await handler(
+      new Request(`https://example.test/docs${requestPath}`, { headers }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.has("location")).toBe(false);
+    expect(dispatchMatchedPage).toHaveBeenCalledTimes(1);
+  });
+
   it("marks progressive action page renders even when decoded form state is null", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
     const handler = createHandler({

@@ -191,6 +191,21 @@ export class RedirectErrorBoundary extends React.Component<
 }
 
 export function RedirectBoundary({ children }: { children?: React.ReactNode }) {
+  // This wrapper is rendered in both the browser entry and server-side route
+  // element tests. The global unhandled-redirect bridge is browser-only; eager
+  // `useRouter()` during SSR would require an AppRouterContext for routes that
+  // never redirect and would make a passive boundary observable.
+  const globalRedirectHandler = typeof window === "undefined" ? null : <UnhandledRedirectHandler />;
+
+  return (
+    <>
+      {globalRedirectHandler}
+      <RedirectErrorBoundary>{children}</RedirectErrorBoundary>
+    </>
+  );
+}
+
+function UnhandledRedirectHandler() {
   const router = useRouter();
 
   React.useEffect(() => {
@@ -221,7 +236,7 @@ export function RedirectBoundary({ children }: { children?: React.ReactNode }) {
     };
   }, [router]);
 
-  return <RedirectErrorBoundary>{children}</RedirectErrorBoundary>;
+  return null;
 }
 
 /**

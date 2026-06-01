@@ -285,12 +285,7 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
 function toRscRequestPath(href: string): string {
   const hashIndex = href.indexOf("#");
   const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
-  const queryIndex = beforeHash.indexOf("?");
-  const pathname = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
-  const query = queryIndex === -1 ? "" : beforeHash.slice(queryIndex);
-  const normalizedPath =
-    pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
-  return `${normalizedPath}${query}`;
+  return beforeHash;
 }
 
 export async function createRscRequestUrl(href: string, headers: Headers): Promise<string> {

@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { waitForAppRouterHydration } from "../helpers";
+import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 const VISITED_CACHE_MARKER = "__VINEXT_VISITED_CACHE_MARKER__";
@@ -79,8 +79,7 @@ test.describe("App Router RSC compatibility navigation", () => {
   }) => {
     const aboutRscRequests: string[] = [];
     page.on("request", (request) => {
-      const url = new URL(request.url());
-      if (url.pathname === "/about.rsc" && url.searchParams.has("_rsc")) {
+      if (isAppRouterRscRequestForPath(request, "/about")) {
         aboutRscRequests.push(request.url());
       }
     });

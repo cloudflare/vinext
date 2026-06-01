@@ -12,7 +12,7 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { waitForAppRouterHydration } from "../../helpers";
+import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../../helpers";
 
 const BASE = "http://localhost:4174";
 
@@ -50,6 +50,33 @@ test.describe("Next.js compat: navigation (browser)", () => {
       timeout: 10_000,
     });
     expect(page.url()).toContain("/nextjs-compat/nav-redirect-result");
+  });
+
+  test("client-side redirect() guard navigates once and does not loop", async ({ page }) => {
+    const loginRscRequests: string[] = [];
+    page.on("request", (request) => {
+      if (isAppRouterRscRequestForPath(request, "/nextjs-compat/nav-redirect-guard/login")) {
+        loginRscRequests.push(request.url());
+      }
+    });
+
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) {
+        throw new Error("window.next.router is not installed");
+      }
+      void router.push("/nextjs-compat/nav-redirect-guard");
+    });
+
+    await expect(page.locator("#redirect-guard-login")).toHaveText("Login Page", {
+      timeout: 10_000,
+    });
+    expect(new URL(page.url()).pathname).toBe("/nextjs-compat/nav-redirect-guard/login");
+    await page.waitForLoadState("networkidle");
+    expect(loginRscRequests).toHaveLength(1);
   });
 
   // Next.js: 'should trigger not-found in a server component'

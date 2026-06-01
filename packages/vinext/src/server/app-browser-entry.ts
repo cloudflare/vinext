@@ -60,6 +60,7 @@ import {
   type NavigationPayloadOutcome,
   type PendingBrowserRouterState,
 } from "./app-browser-navigation-controller.js";
+import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.js";
 import { resolveManifestNavigationInterceptionContext } from "./app-browser-interception-context.js";
 import {
   createDiscardedServerActionRefreshScheduler,
@@ -244,8 +245,7 @@ let browserRouterStateHasEverCommitted = false;
 // of stranding them on the previous URL with a blank page. Cleared once the
 // commit effect runs (URL update succeeded) or the navigation is superseded.
 let pendingNavigationRecoveryHref: string | null = null;
-let pendingMpaNavigationHref: string | null = null;
-let pendingMpaNavigationToken = 0;
+const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
 const unresolvedMpaNavigation = new Promise<never>(() => {});
 let currentHistoryTraversalIndex: number | null =
   readHistoryStateTraversalIndex(window.history.state) ?? 0;
@@ -820,37 +820,10 @@ function isMpaNavigationState(
 }
 
 function performMpaNavigation(href: string, historyUpdateMode: HistoryUpdateMode): void {
-  if (pendingMpaNavigationHref === href) {
-    return;
-  }
-
-  pendingMpaNavigationHref = href;
-  pendingMpaNavigationToken += 1;
-  const token = pendingMpaNavigationToken;
-  const navigate = () => {
-    if (pendingMpaNavigationHref !== href || pendingMpaNavigationToken !== token) {
-      return;
-    }
-
-    if (historyUpdateMode === "replace") {
-      window.location.replace(href);
-    } else {
-      window.location.assign(href);
-    }
-  };
-
   // Match Next's MPA path by suspending forever, but delay the actual location
   // mutation just enough for the old tree to commit the pending transition
-  // signal before unload. The token prevents retry renders from firing stale
-  // targets if a newer MPA navigation supersedes this one.
-  if (typeof window.requestAnimationFrame === "function") {
-    window.requestAnimationFrame(() => {
-      window.setTimeout(navigate, 0);
-    });
-    return;
-  }
-
-  window.setTimeout(navigate, 0);
+  // signal before unload.
+  mpaNavigationScheduler.navigate(window, href, historyUpdateMode);
 }
 
 function decodeAppElementsPromise(payload: Promise<AppWireElements>): Promise<AppElements> {

@@ -55,6 +55,12 @@ describe("App Router RSC cache-busting", () => {
     await expect(createRscRequestUrl("/", headers)).resolves.toBe("/?_rsc");
   });
 
+  it("preserves the route pathname trailing slash when building canonical RSC URLs", async () => {
+    const headers = createRscRequestHeaders();
+
+    await expect(createRscRequestUrl("/docs/", headers)).resolves.toBe("/docs/?_rsc");
+  });
+
   it("hashes Vinext RSC variant headers into the request URL", async () => {
     const headers = createRscRequestHeaders({
       interceptionContext: "/feed",
