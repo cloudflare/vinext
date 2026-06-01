@@ -44,8 +44,8 @@ jobs:
         with:
           model: "cloudflare-ai-gateway/openai/gpt-5.5"
           mentions: "/bonk,@ask-bonk"
-          variant: "xhigh"
+          variant: "high"
           permissions: write
           opencode_dev: false
-          opencode_version: 1.14.40
-          agent: reviewer
+          opencode_version: 1.15.13
+          agent: viguy
