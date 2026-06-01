@@ -2042,13 +2042,17 @@ export function isRedirectError(error: unknown): error is _RedirectErrorShape {
 /**
  * Parse a redirect error digest into its URL and type components.
  *
- * Handles both vinext's 3-part format
- * (`NEXT_REDIRECT;{type};{encoded-url}`) and Next.js's 5-part format
- * (`NEXT_REDIRECT;{type};{url};{status};{isClient}`). Returns null for
- * malformed digests that have an empty URL segment.
+ * Supports two formats:
+ *   - vinext's 3-part: `NEXT_REDIRECT;{type};{encoded-url}`
+ *   - Next.js's 5-part: `NEXT_REDIRECT;{type};{url};{status};{isClient}`
  *
- * The returned URL is safely decoded — a malformed percent-encoding
- * returns null rather than throwing.
+ * The URL segment is always percent-encoded on the write side
+ * (encodeURIComponent is used), so re-joining with ";" for the 5-part
+ * format is defensive — it correctly handles any unencoded ";" that
+ * might appear in an externally-sourced digest.
+ *
+ * Returns null for malformed digests that have an empty URL segment, or
+ * when the URL contains invalid percent-encoding.
  */
 export function decodeRedirectError(
   digest: string,
