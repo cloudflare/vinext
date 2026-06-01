@@ -100,6 +100,11 @@ export function createAppPprFallbackShells(
     }
 
     if (!isValidShell) continue;
+    // Placeholder brackets (`[slug]`, `[...slug]`) become literal `[`/`]` in the
+    // shell pathname, which `new URL()` percent-encodes at fetch time. The
+    // prerender render path must supply params via the prerender-params header
+    // rather than URL matching, because encoded brackets won't match the route
+    // pattern's literal brackets.
     shells.push({
       fallbackParamNames,
       pathname: "/" + segments.join("/"),
