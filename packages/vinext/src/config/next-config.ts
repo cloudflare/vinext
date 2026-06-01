@@ -9,7 +9,6 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import type { Plugin } from "vite";
 import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
@@ -17,6 +16,7 @@ import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
+import { getViteMajorVersion } from "../utils/vite-version.js";
 
 /**
  * Parse a body size limit value (string or number) into bytes.
@@ -521,84 +521,6 @@ function warnConfigLoadFailure(filename: string, err: Error): void {
   }
 }
 
-function isBareModuleSpecifier(id: string): boolean {
-  return (
-    !id.startsWith(".") &&
-    !id.startsWith("/") &&
-    !id.startsWith("\\") &&
-    !id.startsWith("\0") &&
-    !/^[A-Za-z][A-Za-z\d+.-]*:/.test(id)
-  );
-}
-
-function stripViteRequestSuffix(id: string): string {
-  const queryIndex = id.indexOf("?");
-  const hashIndex = id.indexOf("#");
-  const endIndex =
-    queryIndex === -1
-      ? hashIndex === -1
-        ? id.length
-        : hashIndex
-      : hashIndex === -1
-        ? queryIndex
-        : Math.min(queryIndex, hashIndex);
-  return id.slice(0, endIndex);
-}
-
-function fsPathFromImporter(importer: string): string | null {
-  const cleanImporter = stripViteRequestSuffix(importer);
-  if (cleanImporter.startsWith("file://")) {
-    try {
-      return fileURLToPath(cleanImporter);
-    } catch {
-      return null;
-    }
-  }
-
-  return path.isAbsolute(cleanImporter) ? cleanImporter : null;
-}
-
-function hasNodeModulesSegment(id: string): boolean {
-  return id.split(/[\\/]+/).includes("node_modules");
-}
-
-function isPathInside(parent: string, child: string): boolean {
-  const relative = path.relative(parent, child);
-  return (
-    relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative))
-  );
-}
-
-function isProjectOwnedImporter(importer: string, projectRoot: string): boolean {
-  const importerPath = fsPathFromImporter(importer);
-  if (!importerPath || hasNodeModulesSegment(importerPath)) return false;
-
-  const realImporterPath = safeRealpath(path.resolve(importerPath));
-  if (hasNodeModulesSegment(realImporterPath)) return false;
-
-  return isPathInside(projectRoot, realImporterPath);
-}
-
-function tsconfigBaseUrlResolverPlugin(projectRoot: string, baseUrl: string): Plugin {
-  const realProjectRoot = safeRealpath(path.resolve(projectRoot));
-  return {
-    name: "vinext:next-config-tsconfig-base-url",
-    // Vite's alias plugin runs before user `pre` plugins, and the core package
-    // resolver runs after them. That gives tsconfig paths first priority,
-    // then baseUrl-local files, then package fallback.
-    enforce: "pre",
-    async resolveId(id, importer, options) {
-      if (!importer || !isBareModuleSpecifier(id)) return null;
-      if (!isProjectOwnedImporter(importer, realProjectRoot)) return null;
-
-      return await this.resolve(path.resolve(baseUrl, id), importer, {
-        ...options,
-        skipSelf: true,
-      });
-    },
-  };
-}
-
 /**
  * Resolve a Next-style config value, calling it if it's a function-form config
  * (Next.js supports `module.exports = (phase, opts) => config`).
@@ -901,6 +823,13 @@ export async function loadNextConfig(
   const tsconfigResolution = loadTsconfigResolutionForRoot(root);
   const tsconfigBaseUrl = isTypeScriptConfig ? tsconfigResolution.baseUrl : null;
 
+  // Vite 8 (Rolldown) resolves tsconfig `baseUrl` bare imports natively via
+  // `resolve.tsconfigPaths` (oxc-resolver). Vite 7 has no equivalent option,
+  // so baseUrl-based imports in `next.config.ts` are a documented Vite 7/8
+  // capability gap (see docs). `paths` aliases still work on both via
+  // `resolve.alias`. Mirrors the Vite-major gate used in index.ts.
+  const useNativeTsconfigPaths = !!tsconfigBaseUrl && getViteMajorVersion() >= 8;
+
   // Symlink-resolved config path, used by the `commonjs()` filter below to
   // exclude the config file itself. macOS uses /private/var symlinks, so
   // string-compare without realpath would falsely include the config.
@@ -913,16 +842,16 @@ export async function loadNextConfig(
       root,
       logLevel: "error",
       clearScreen: false,
-      ...(tsconfigBaseUrl
+      ...(useNativeTsconfigPaths
         ? {
             environments: {
               inline: {
                 resolve: {
                   // Vite's module runner externalizes installed bare packages
-                  // before calling resolveId. TypeScript next.config files need
-                  // tsconfig baseUrl to get the first lookup, so keep those
-                  // config imports inside the resolver pipeline and let
-                  // unresolved local lookups fall through to packages.
+                  // before calling resolveId, which would let a package win over
+                  // a baseUrl-local file of the same name. Keep those config
+                  // imports inside the resolver pipeline so the native tsconfig
+                  // resolver gets first lookup, then fall through to packages.
                   noExternal: true,
                 },
               },
@@ -931,6 +860,14 @@ export async function loadNextConfig(
         : {}),
       resolve: {
         alias: tsconfigResolution.aliases,
+        // On Vite 8, use native tsconfig resolution (oxc-resolver
+        // `tsconfig: 'auto'`), which mirrors Next.js's SWC `paths` + `baseUrl`
+        // handling: it follows `extends`, resolves baseUrl-local bare imports
+        // before package fallback, and scopes the app baseUrl to project-owned
+        // importers via per-importer tsconfig discovery. Vite 7 has no native
+        // equivalent, so baseUrl bare imports in next.config.ts are unsupported
+        // there (documented gap); `resolve.alias` still covers `paths` aliases.
+        ...(useNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
         // Include `.cjs` and `.cts` so `vite-plugin-commonjs` recognises
         // those extensions (the plugin keys off `config.resolve.extensions`,
         // which on Vite defaults to `[.mjs, .js, .mts, .ts, .jsx, .tsx,
@@ -960,7 +897,6 @@ export async function loadNextConfig(
       // declared` syntax error.
       plugins: [
         ...(isTypeScriptConfig ? [cjsGlobalsInjectorPlugin(configPath)] : []),
-        ...(tsconfigBaseUrl ? [tsconfigBaseUrlResolverPlugin(root, tsconfigBaseUrl)] : []),
         commonjs({
           filter: (id: string) => {
             const idPath = id.startsWith("file://") ? fileURLToPath(id) : id.split("?")[0];

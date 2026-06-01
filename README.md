@@ -563,6 +563,7 @@ These are gaps we'd like to close — distinct from the [intentional exclusions]
 - **Route segment config** — `runtime` and `preferredRegion` are ignored (everything runs in the same environment).
 - **Node.js production server (`vinext start`)** works for testing but is less complete than Workers deployment. Cloudflare Workers is the primary target.
 - **Native Node modules (sharp, resvg, satori, lightningcss, @napi-rs/canvas)** crash Vite's RSC dev environment. Dynamic OG image/icon routes using these work in production builds but not in dev mode. These are auto-stubbed during `vinext deploy`.
+- **`next.config.ts` `baseUrl` bare imports require Vite 8.** A `next.config.ts` that imports a bare specifier resolved through `tsconfig.json`'s `compilerOptions.baseUrl` (e.g. `import { bar } from "bar"` resolving to a local `bar.ts`) relies on Vite 8's native `resolve.tsconfigPaths` (Rolldown/oxc-resolver). On Vite 7 there is no native equivalent, so these imports are not resolved. `compilerOptions.paths` aliases (e.g. `@/foo`) work on both Vite 7 and 8.
 
 ## Benchmarks
 
