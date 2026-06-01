@@ -2125,8 +2125,11 @@ if (typeof document !== "undefined") {
   // the flag stuck at true, which would silently swallow every subsequent
   // RSC navigation error for the lifetime of that tab. Matches Next.js'
   // fetch-server-response.ts handler pair.
-  window.addEventListener("pageshow", () => {
+  window.addEventListener("pageshow", (event) => {
     isPageUnloading = false;
+    if (event.persisted) {
+      mpaNavigationScheduler.reset();
+    }
   });
   void main();
 }

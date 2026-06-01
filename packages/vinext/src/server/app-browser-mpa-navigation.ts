@@ -16,6 +16,10 @@ export class AppBrowserMpaNavigationScheduler {
   #pendingNavigation: PendingMpaNavigation | null = null;
   #nextToken = 0;
 
+  reset(): void {
+    this.#pendingNavigation = null;
+  }
+
   navigate(
     targetWindow: AppBrowserMpaNavigationWindow,
     href: string,

@@ -70,4 +70,19 @@ describe("AppBrowserMpaNavigationScheduler", () => {
     flushNextTimeout();
     expect(replace).toHaveBeenCalledTimes(1);
   });
+
+  it("allows the same external navigation again after reset", () => {
+    const scheduler = new AppBrowserMpaNavigationScheduler();
+    const { assign, flushNextTimeout, targetWindow } = createNavigationWindow();
+
+    scheduler.navigate(targetWindow, "https://external.test/login", "push");
+    flushNextTimeout();
+    expect(assign).toHaveBeenCalledTimes(1);
+
+    scheduler.reset();
+
+    scheduler.navigate(targetWindow, "https://external.test/login", "push");
+    flushNextTimeout();
+    expect(assign).toHaveBeenCalledTimes(2);
+  });
 });
