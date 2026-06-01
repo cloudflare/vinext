@@ -341,11 +341,6 @@ function applyGsspHeaders(
 export async function renderPagesPageResponse(
   options: RenderPagesPageResponseOptions,
 ): Promise<Response> {
-  const pageElement = withScriptNonce(
-    React.createElement(React.Fragment, null, options.createPageElement(options.pageProps)),
-    options.scriptNonce,
-  );
-
   options.resetSSRHead?.();
   await options.flushPreloads?.();
 
@@ -381,7 +376,12 @@ export async function renderPagesPageResponse(
     DocumentComponent: options.DocumentComponent,
     enhancePageElement: options.enhancePageElement,
     renderToReadableStream: options.renderToReadableStream,
-    renderStylesToString: options.renderDocumentToString,
+    // Render the collected `styles` fragment with the plain stream renderer
+    // rather than the full `<Document>` shell renderer — the styles tree is a
+    // standalone fragment, so it doesn't need the heavier document pipeline.
+    // Mirrors the dev path, which passes its `renderToStringAsync` wrapper.
+    renderStylesToString: async (element) =>
+      readStreamAsText(await options.renderToReadableStream(element)),
     scriptNonce: options.scriptNonce,
     context: {
       pathname: options.routePattern,
@@ -404,6 +404,14 @@ export async function renderPagesPageResponse(
     // them. This fixes a race condition where head styles were silently dropped
     // because they were collected before the page had finished rendering.
     // Mirrors Next.js fix: vercel/next.js@9853944
+    //
+    // Built lazily here: when the renderPage contract produced the body
+    // (`rendered`), this element is never used, so there's no point
+    // constructing the tree on that path.
+    const pageElement = withScriptNonce(
+      React.createElement(React.Fragment, null, options.createPageElement(options.pageProps)),
+      options.scriptNonce,
+    );
     bodyStream = await options.renderToReadableStream(pageElement);
   }
 

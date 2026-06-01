@@ -1293,6 +1293,10 @@ hydrate();
           // App/Component with user enhancers (e.g. styled-components,
           // emotion). The streaming path otherwise renders `element` as-is.
           // Returns the bare enhanced tree — nonce is applied by the helper.
+          // `pageProps` is captured from the closure (mirrors the prod entry's
+          // `enhancePageElement`) — this closure is only ever invoked for this
+          // one request with this one `pageProps`, so there is nothing to thread
+          // through; the renderPage contract only varies the enhancers.
           enhancePageElement: (renderPageOpts) => {
             // oxlint-disable-next-line @typescript-eslint/no-explicit-any
             let FinalApp: any = AppComponent;
