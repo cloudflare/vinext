@@ -34,7 +34,7 @@ import { stripBasePath } from "../utils/base-path.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { AppRouterContext } from "./internal/app-router-context.js";
-import { scrollToHashTarget } from "./hash-scroll.js";
+import { retryScrollTo, scrollToHashTarget } from "./hash-scroll.js";
 import {
   beginAppRouterScrollIntent,
   clearAppRouterScrollIntent,
@@ -1424,27 +1424,9 @@ function restoreScrollPosition(state: unknown): void {
       const pending: Promise<void> | null = window.__VINEXT_RSC_PENDING__ ?? null;
 
       if (pending) {
-        // Wait for the RSC navigation to finish rendering, then scroll.
-        void pending.then(() => {
-          let attempts = 0;
-          const restore = () => {
-            window.scrollTo(x, y);
-            if (Math.abs(window.scrollY - y) <= 1 || attempts >= 60) return;
-            attempts += 1;
-            requestAnimationFrame(restore);
-          };
-          restore();
-        });
+        void pending.then(() => retryScrollTo(x, y));
       } else {
-        // No RSC navigation in flight (Pages Router or already settled).
-        let attempts = 0;
-        const restore = () => {
-          window.scrollTo(x, y);
-          if (Math.abs(window.scrollY - y) <= 1 || attempts >= 60) return;
-          attempts += 1;
-          requestAnimationFrame(restore);
-        };
-        restore();
+        retryScrollTo(x, y);
       }
     });
   }

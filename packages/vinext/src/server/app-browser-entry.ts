@@ -52,7 +52,7 @@ import {
   type NavigationRuntimeNavigate,
   type NavigationRuntimeRscBootstrap,
 } from "../client/navigation-runtime.js";
-import { scrollToHashTargetOnNextFrame } from "vinext/shims/hash-scroll";
+import { retryScrollTo, scrollToHashTargetOnNextFrame } from "vinext/shims/hash-scroll";
 import { AppRouterScrollCommitProvider } from "vinext/shims/app-router-scroll";
 import {
   beginAppRouterScrollIntent,
@@ -1159,18 +1159,7 @@ function restorePopstateScrollPosition(
   const y = Number(state.__vinext_scrollY);
   const x = "__vinext_scrollX" in state ? Number(state.__vinext_scrollX) : 0;
 
-  let attempts = 0;
-  const restore = () => {
-    if (!shouldContinue()) return;
-
-    window.scrollTo(x, y);
-    if (!shouldContinue() || Math.abs(window.scrollY - y) <= 1 || attempts >= 60) {
-      return;
-    }
-    attempts += 1;
-    requestAnimationFrame(restore);
-  };
-  restore();
+  retryScrollTo(x, y, { shouldContinue });
 }
 
 function isSameAppRoutePopstateTarget(href: string): boolean {

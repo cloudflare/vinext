@@ -357,7 +357,12 @@ export class ForbiddenBoundaryInner extends React.Component<
 
   render() {
     if (this.state.forbidden) {
-      return this.props.fallback;
+      return (
+        <>
+          <meta name="robots" content="noindex" />
+          {this.props.fallback}
+        </>
+      );
     }
     return this.props.children;
   }
@@ -424,7 +429,12 @@ export class UnauthorizedBoundaryInner extends React.Component<
 
   render() {
     if (this.state.unauthorized) {
-      return this.props.fallback;
+      return (
+        <>
+          <meta name="robots" content="noindex" />
+          {this.props.fallback}
+        </>
+      );
     }
     return this.props.children;
   }
