@@ -571,6 +571,28 @@ describe("loadNextConfig with tsconfig path aliases", () => {
     expect(config?.env?.BAR).toBe("package");
   });
 
+  it("does not apply tsconfig baseUrl package shadowing to next.config.mjs", async () => {
+    tmpDir = makeTempDir();
+
+    fs.writeFileSync(path.join(tmpDir, "bar.ts"), `export const bar = "local";\n`);
+    writeBarePackage("bar", `export const bar = "package";\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `import { bar } from "bar";\nexport default { env: { BAR: bar } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.BAR).toBe("package");
+  });
+
   it("does not apply the app baseUrl to package dependency imports", async () => {
     tmpDir = makeTempDir();
 

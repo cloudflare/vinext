@@ -878,6 +878,7 @@ export async function loadNextConfig(
   if (!configPath) return null;
 
   const filename = path.basename(configPath);
+  const isTypeScriptConfig = /\.[cm]?ts$/.test(configPath);
 
   // Mirror Next.js: read `compilerOptions.paths` from the project's
   // tsconfig.json so aliased imports inside next.config.ts (e.g.
@@ -885,6 +886,7 @@ export async function loadNextConfig(
   // passes `paths` and `baseUrl` to SWC; we thread both into Vite's resolver.
   // See packages/next/src/build/next-config-ts/transpile-config.ts.
   const tsconfigResolution = loadTsconfigResolutionForRoot(root);
+  const tsconfigBaseUrl = isTypeScriptConfig ? tsconfigResolution.baseUrl : null;
 
   // Symlink-resolved config path, used by the `commonjs()` filter below to
   // exclude the config file itself. macOS uses /private/var symlinks, so
@@ -898,17 +900,22 @@ export async function loadNextConfig(
       root,
       logLevel: "error",
       clearScreen: false,
-      environments: {
-        inline: {
-          resolve: {
-            // Vite's module runner externalizes installed bare packages before
-            // calling resolveId. next.config.ts needs tsconfig baseUrl to get
-            // the first lookup, so keep config imports inside the resolver
-            // pipeline and let unresolved local lookups fall through to packages.
-            noExternal: true,
-          },
-        },
-      },
+      ...(tsconfigBaseUrl
+        ? {
+            environments: {
+              inline: {
+                resolve: {
+                  // Vite's module runner externalizes installed bare packages
+                  // before calling resolveId. TypeScript next.config files need
+                  // tsconfig baseUrl to get the first lookup, so keep those
+                  // config imports inside the resolver pipeline and let
+                  // unresolved local lookups fall through to packages.
+                  noExternal: true,
+                },
+              },
+            },
+          }
+        : {}),
       resolve: {
         alias: tsconfigResolution.aliases,
         // Include `.cjs` and `.cts` so `vite-plugin-commonjs` recognises
@@ -939,10 +946,8 @@ export async function loadNextConfig(
       // same source produces an `Identifier 'module' has already been
       // declared` syntax error.
       plugins: [
-        ...(/\.[cm]?ts$/.test(configPath) ? [cjsGlobalsInjectorPlugin(configPath)] : []),
-        ...(tsconfigResolution.baseUrl
-          ? [tsconfigBaseUrlResolverPlugin(root, tsconfigResolution.baseUrl)]
-          : []),
+        ...(isTypeScriptConfig ? [cjsGlobalsInjectorPlugin(configPath)] : []),
+        ...(tsconfigBaseUrl ? [tsconfigBaseUrlResolverPlugin(root, tsconfigBaseUrl)] : []),
         commonjs({
           filter: (id: string) => {
             const idPath = id.startsWith("file://") ? fileURLToPath(id) : id.split("?")[0];

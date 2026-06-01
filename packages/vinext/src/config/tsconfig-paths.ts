@@ -6,8 +6,9 @@
  * through Vite's `runnerImport`.
  *
  * Next.js's own `next.config.ts` loader (packages/next/src/build/next-config-ts/
- * transpile-config.ts) reads `compilerOptions.paths` from the project's
- * `tsconfig.json` and passes them to SWC so that imports like
+ * transpile-config.ts) reads `compilerOptions.paths` and
+ * `compilerOptions.baseUrl` from the project's `tsconfig.json` and passes them
+ * to SWC so that imports like
  * `import { foo } from '@/foo'` and `import { bar } from 'bar'` resolve at
  * config load time. We do the same here with Vite resolver settings.
  *
