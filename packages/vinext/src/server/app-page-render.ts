@@ -425,7 +425,17 @@ export async function renderAppPageLifecycle(
       revalidateSeconds,
     });
     const rscResponse = buildAppPageRscResponse(rscForResponse, {
-      dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
+      // Only emit the dynamic stale time on dynamic renders — not prerenders or
+      // force-static. Next.js gates this on !workStore.isStaticGeneration because
+      // the client treats the header's presence as authoritative; leaking it onto
+      // static/prerendered responses would cause the client cache to apply dynamic
+      // stale time semantics to a statically-cached entry.
+      // Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
+      //   generateDynamicRSCPayload
+      dynamicStaleTimeSeconds:
+        options.isPrerender === true || options.isForceStatic
+          ? undefined
+          : options.dynamicStaleTimeSeconds,
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareContext: options.middlewareContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
