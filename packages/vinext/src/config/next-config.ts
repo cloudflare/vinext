@@ -828,6 +828,11 @@ export async function loadNextConfig(
   // so baseUrl-based imports in `next.config.ts` are a documented Vite 7/8
   // capability gap (see docs). `paths` aliases still work on both via
   // `resolve.alias`. Mirrors the Vite-major gate used in index.ts.
+  //
+  // Note: installed packages stay externalized (so CJS config plugins like
+  // `@next/mdx` that call `require`/`require.resolve` at runtime keep working).
+  // baseUrl resolves bare imports that have no installed package of the same
+  // name; it does not shadow an installed package with a baseUrl-local file.
   const useNativeTsconfigPaths = !!tsconfigBaseUrl && getViteMajorVersion() >= 8;
 
   // Symlink-resolved config path, used by the `commonjs()` filter below to
@@ -842,31 +847,16 @@ export async function loadNextConfig(
       root,
       logLevel: "error",
       clearScreen: false,
-      ...(useNativeTsconfigPaths
-        ? {
-            environments: {
-              inline: {
-                resolve: {
-                  // Vite's module runner externalizes installed bare packages
-                  // before calling resolveId, which would let a package win over
-                  // a baseUrl-local file of the same name. Keep those config
-                  // imports inside the resolver pipeline so the native tsconfig
-                  // resolver gets first lookup, then fall through to packages.
-                  noExternal: true,
-                },
-              },
-            },
-          }
-        : {}),
       resolve: {
         alias: tsconfigResolution.aliases,
         // On Vite 8, use native tsconfig resolution (oxc-resolver
         // `tsconfig: 'auto'`), which mirrors Next.js's SWC `paths` + `baseUrl`
-        // handling: it follows `extends`, resolves baseUrl-local bare imports
-        // before package fallback, and scopes the app baseUrl to project-owned
-        // importers via per-importer tsconfig discovery. Vite 7 has no native
-        // equivalent, so baseUrl bare imports in next.config.ts are unsupported
-        // there (documented gap); `resolve.alias` still covers `paths` aliases.
+        // handling: it follows `extends` and resolves baseUrl-local bare imports
+        // via per-importer tsconfig discovery. Installed packages stay
+        // externalized, so a baseUrl-local file does not shadow a package of the
+        // same name. Vite 7 has no native equivalent, so baseUrl bare imports in
+        // next.config.ts are unsupported there (documented gap); `resolve.alias`
+        // still covers `paths` aliases on both.
         ...(useNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
         // Include `.cjs` and `.cts` so `vite-plugin-commonjs` recognises
         // those extensions (the plugin keys off `config.resolve.extensions`,

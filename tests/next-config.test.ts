@@ -528,7 +528,14 @@ describe("loadNextConfig with tsconfig path aliases", () => {
     expect(config?.env?.VALUE).toBe("foobar");
   });
 
-  it("resolves baseUrl local imports before packages with the same bare name", async () => {
+  it("prefers an installed package over a baseUrl-local file of the same name", async () => {
+    // When a bare import matches both an installed package and a baseUrl-local
+    // file, the installed package wins. vinext keeps installed packages
+    // externalized so that CJS config plugins (e.g. @next/mdx) that call
+    // `require`/`require.resolve` at runtime keep working; the trade-off is
+    // that a baseUrl-local file does not shadow a package of the same name.
+    // (Pure TypeScript baseUrl semantics would prefer the local file, but that
+    // requires de-externalizing every package, which breaks CJS plugins.)
     tmpDir = makeTempDir();
 
     fs.writeFileSync(path.join(tmpDir, "bar.ts"), `export const bar = "local";\n`);
@@ -547,7 +554,41 @@ describe("loadNextConfig with tsconfig path aliases", () => {
     );
 
     const config = await loadNextConfig(tmpDir);
-    expect(config?.env?.BAR).toBe("local");
+    expect(config?.env?.BAR).toBe("package");
+  });
+
+  it("loads a CJS config plugin that calls require.resolve at runtime", async () => {
+    // Regression for @next/mdx-style plugins: next.config.ts imports a CJS
+    // package whose factory calls `require.resolve(...)` when invoked. Keeping
+    // installed packages externalized (rather than forcing them through the
+    // module runner) ensures `require` is defined. Reproduces the
+    // app-router-playground deploy failure: "require is not defined".
+    tmpDir = makeTempDir();
+
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+    writePackage(
+      "fake-mdx",
+      { type: "commonjs", main: "index.js" },
+      {
+        "index.js":
+          `module.exports = (opts = {}) => (config = {}) => ({\n` +
+          `  ...config,\n` +
+          `  loaderPath: require.resolve("./loader.js"),\n` +
+          `});\n`,
+        "loader.js": `module.exports = "loader";\n`,
+      },
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { baseUrl: "." } }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import withMDX from "fake-mdx";\n` + `export default withMDX({})({ env: { OK: "yes" } });\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.OK).toBe("yes");
   });
 
   it("falls through to packages when baseUrl has no local match", async () => {
