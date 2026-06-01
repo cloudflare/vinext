@@ -145,7 +145,7 @@ export function prerenderRouteParamsPayloadMatchesRoute(
   return match?.kind === "exact";
 }
 
-function matchPrerenderRouteParamsPayload(
+export function matchPrerenderRouteParamsPayload(
   payload: PrerenderRouteParamsPayload | null,
   routePattern: string,
   params: PrerenderRouteParams,
