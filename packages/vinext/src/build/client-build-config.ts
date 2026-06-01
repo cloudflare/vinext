@@ -24,11 +24,18 @@ function joinAssetFileNamePattern(assetsDir: string, pattern: string): string {
 
 function getAssetSourceNames(assetInfo: ClientAssetFileNameInfo): string[] {
   const names: string[] = [];
+  const seen = new Set<string>();
 
-  for (const name of assetInfo.names ?? []) names.push(name);
-  if (assetInfo.name) names.push(assetInfo.name);
-  for (const originalFileName of assetInfo.originalFileNames ?? []) names.push(originalFileName);
-  if (assetInfo.originalFileName) names.push(assetInfo.originalFileName);
+  function addName(name: string | undefined): void {
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    names.push(name);
+  }
+
+  for (const name of assetInfo.names ?? []) addName(name);
+  addName(assetInfo.name);
+  for (const originalFileName of assetInfo.originalFileNames ?? []) addName(originalFileName);
+  addName(assetInfo.originalFileName);
 
   return names;
 }

@@ -216,6 +216,7 @@ describe("Pages Router CSS url() asset emission", () => {
           expect.stringMatching(/^\/_next\/static\/media\/dark\.[A-Za-z0-9_-]+\.svg$/),
           expect.stringMatching(/^\/_next\/static\/media\/dark2\.[A-Za-z0-9_-]+\.svg$/),
         ]);
+        expect(new Set(assetUrls).size, "asset URLs should be unique").toBe(assetUrls.length);
 
         for (const assetUrl of assetUrls) {
           const assetRes = await fetch(new URL(assetUrl, baseUrl));
@@ -274,6 +275,10 @@ describe("Pages Router CSS url() asset emission", () => {
       expect(aboutAssetUrls).toEqual([
         expect.stringMatching(/^\/_next\/static\/media\/dark2\.[A-Za-z0-9_-]+\.svg$/),
       ]);
+      expect(
+        new Set([...homeAssetUrls, ...aboutAssetUrls]).size,
+        "split CSS asset URLs should be unique",
+      ).toBe(homeAssetUrls.length + aboutAssetUrls.length);
 
       const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
       const { server, port } = await startProdServer({

@@ -752,7 +752,13 @@ describe("treeshake config integration", () => {
     const mainPlugin = plugins.find(
       (p: any) => p.name === "vinext:config" && typeof p.config === "function",
     );
+    const clientAssetsDefaultsPlugin = plugins.find(
+      (p: any) =>
+        p.name === "vinext:client-css-url-assets-defaults" &&
+        typeof p.configEnvironment === "function",
+    );
     expect(mainPlugin).toBeDefined();
+    expect(clientAssetsDefaultsPlugin).toBeDefined();
 
     const os = await import("node:os");
     const fsp = await import("node:fs/promises");
@@ -786,15 +792,28 @@ describe("treeshake config integration", () => {
 
       // Global bundler options should NOT have treeshake (would leak into RSC/SSR)
       expect(getBuildBundlerOptions(result).treeshake).toBeUndefined();
+      expect(result.build.assetsInlineLimit).toBeUndefined();
 
       // Client environment should have treeshake
       expect(getEnvBuildBundlerOptions(result.environments.client).treeshake).toEqual({
         moduleSideEffects: "no-external",
       });
+      expect(result.environments.client.build.assetsInlineLimit).toBe(0);
 
       // RSC and SSR environments should NOT have treeshake
       expect(getEnvBuildBundlerOptions(result.environments.rsc)?.treeshake).toBeUndefined();
       expect(getEnvBuildBundlerOptions(result.environments.ssr)?.treeshake).toBeUndefined();
+      expect(result.environments.rsc.build.assetsInlineLimit).toBeUndefined();
+      expect(result.environments.ssr.build.assetsInlineLimit).toBeUndefined();
+
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment("client", {}, { command: "build" }),
+      ).toEqual({
+        build: { assetsInlineLimit: 0 },
+      });
+      expect(
+        (clientAssetsDefaultsPlugin as any).configEnvironment("ssr", {}, { command: "build" }),
+      ).toBeNull();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

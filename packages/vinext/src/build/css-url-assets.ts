@@ -125,6 +125,8 @@ function isExternalOrRuntimeUrl(pathname: string): boolean {
     pathname.startsWith("#") ||
     pathname.startsWith("//") ||
     /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(pathname) ||
+    // Avoid treating CSS function syntax as an asset path in values such as
+    // gradient fallbacks. Filenames with parentheses stay on Vite's default path.
     pathname.includes("(")
   );
 }
@@ -287,6 +289,9 @@ function findAssetForUrlPath(urlPath: string, indexes: AssetIndexes): BundleAsse
   const directAsset = indexes.assetsByFileName.get(normalizedPath);
   if (directAsset) return directAsset;
 
+  // Vite normally rewrites marked CSS URLs to absolute emitted paths that hit
+  // the direct lookup above. These fallbacks keep the marker repair resilient to
+  // relative or rebased CSS URL output from future Vite/Rolldown changes.
   for (const [fileName, asset] of indexes.assetsByFileName) {
     if (normalizedPath.endsWith(fileName)) return asset;
   }
@@ -335,6 +340,9 @@ function ensureAssetFileNameForSource(
   emitRestoredAsset: EmitRestoredCssUrlAsset,
 ): string {
   const sourceBaseName = basename(sourceName);
+  // Rolldown's deduped asset record does not preserve enough URL provenance to
+  // disambiguate same-basename files from different directories. In that case
+  // both references intentionally share one restored filename for the same bytes.
   const restoreKey = `${asset.fileName}\0${sourceBaseName}`;
   const cachedFileName = indexes.restoredFileNames.get(restoreKey);
   if (cachedFileName) return cachedFileName;
@@ -426,6 +434,15 @@ function restoreMarkedCssUrls(
   return restoredSource + source.slice(lastIndex);
 }
 
+/**
+ * Mutates emitted CSS assets so byte-identical CSS url() dependencies keep
+ * Next-compatible source basenames, emitting sibling media files through the
+ * callback when Rolldown collapsed multiple source files to one asset.
+ *
+ * This expects CSS sources to have been passed through
+ * `markCssUrlAssetReferences()` before Vite resolves relative asset URLs.
+ * The private marker is stripped from final CSS here.
+ */
 export function restoreDedupedCssAssetReferences(
   bundle: CssUrlAssetBundle,
   emitRestoredAsset: EmitRestoredCssUrlAsset,

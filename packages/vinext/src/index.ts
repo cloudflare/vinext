@@ -734,6 +734,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let instrumentationPath: string | null = null;
   let instrumentationClientPath: string | null = null;
   let clientInjectModule: string | null = null;
+  let clientAssetsInlineLimit: NonNullable<UserConfig["build"]>["assetsInlineLimit"] = 0;
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
@@ -1513,12 +1514,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // or `build.ssr` in config). SSR builds must NOT use manualChunks
         // because they use inlineDynamicImports which is incompatible.
         const isSSR = !!config.build?.ssr;
+        const hasBuildInput = getBuildBundlerOptions(config.build)?.input !== undefined;
         // Detect if this is a multi-environment build (App Router or Cloudflare).
         // In multi-env builds, manualChunks must only be set per-environment
         // (on the client env), not globally — otherwise it leaks into RSC/SSR
         // environments where it can cause asset resolution issues.
         const isMultiEnv = hasAppDir || hasCloudflarePlugin || hasNitroPlugin;
+        const shouldInjectPlainPagesEnvironments =
+          !hasAppDir && !hasCloudflarePlugin && !isSSR && !hasBuildInput;
+        const hasClientBuildEnvironment =
+          hasAppDir || hasCloudflarePlugin || hasNitroPlugin || shouldInjectPlainPagesEnvironments;
         const clientAssetsDir = resolveAssetsDir(nextConfig.assetPrefix ?? "");
+        clientAssetsInlineLimit = config.build?.assetsInlineLimit ?? 0;
 
         const viteConfig: UserConfig = {
           // Disable Vite's default HTML serving - we handle all routing
@@ -1600,11 +1607,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // `<assetPrefix?>/_next/static/...` requests directly, and
             // misses naturally fall through as plain-text 404s.
             assetsDir: clientAssetsDir,
-            // Next.js emits CSS url() dependencies as separate files
-            // (`asset/resource`) instead of inlining small files as data URLs.
-            // Keep an explicit user-provided Vite override, but default vinext
-            // builds to the Next.js asset graph.
-            assetsInlineLimit: config.build?.assetsInlineLimit ?? 0,
+            // For single-build client output there is no client environment to
+            // carry this default, so apply it at the top level. Multi-env builds
+            // set it on `environments.client.build` below to avoid changing RSC
+            // or SSR asset handling.
+            ...(!isSSR && !hasClientBuildEnvironment
+              ? { assetsInlineLimit: clientAssetsInlineLimit }
+              : {}),
             ...withBuildBundlerOptions(viteMajorVersion, {
               // Suppress "Module level directives cause errors when bundled"
               // warnings for "use client" / "use server" directives. Our shims
@@ -2056,6 +2065,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // on every page — defeating code-splitting for React.lazy() and
                 // next/dynamic boundaries.
                 ...(hasCloudflarePlugin ? { manifest: true } : {}),
+                // Next.js emits CSS url() dependencies as separate files
+                // (`asset/resource`) instead of inlining small files as data URLs.
+                // Scope vinext's default to the client build so RSC/SSR keep
+                // their normal asset handling unless the user configured Vite
+                // globally.
+                assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_APP_BROWSER_ENTRY },
                   output: getClientOutputConfigForVite(viteMajorVersion, clientAssetsDir),
@@ -2077,6 +2092,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               build: {
                 manifest: true,
                 ssrManifest: true,
+                assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_CLIENT_ENTRY },
                   output: getClientOutputConfigForVite(viteMajorVersion, clientAssetsDir),
@@ -2085,7 +2101,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
             },
           };
-        } else if (!isSSR && !getBuildBundlerOptions(config.build)?.input) {
+        } else if (shouldInjectPlainPagesEnvironments) {
           // Plain Pages Router (Node): define client + ssr environments so
           // createBuilder + buildApp() produces both dist/client and
           // dist/server/entry.js. Without this, buildApp() only sees the
@@ -2103,6 +2119,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 outDir: "dist/client",
                 manifest: true,
                 ssrManifest: true,
+                assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_CLIENT_ENTRY },
                   output: getClientOutputConfigForVite(viteMajorVersion, clientAssetsDir),
@@ -2506,6 +2523,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       transform(code, id) {
         if (this.environment?.name !== "client") return null;
         return markCssUrlAssetReferences(code, id);
+      },
+    },
+    {
+      name: "vinext:client-css-url-assets-defaults",
+
+      configEnvironment(name) {
+        if (name !== "client") return null;
+        return { build: { assetsInlineLimit: clientAssetsInlineLimit } };
       },
     },
     {
