@@ -123,6 +123,49 @@ async function makePagesSplitCssUrlFixture(): Promise<string> {
   return tmpDir;
 }
 
+async function makeAppCssUrlFixture(): Promise<string> {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-app-css-url-assets-"));
+  await fs.symlink(ROOT_NODE_MODULES, path.join(tmpDir, "node_modules"), "junction");
+
+  const appDir = path.join(tmpDir, "app");
+  await fs.mkdir(appDir, { recursive: true });
+  await fs.writeFile(path.join(appDir, "dark.svg"), DARK_SVG);
+  await fs.writeFile(path.join(appDir, "dark2.svg"), DARK_2_SVG);
+  await fs.writeFile(
+    path.join(appDir, "page.module.css"),
+    [
+      ".redText {",
+      "  color: red;",
+      '  background-image: url("./dark.svg"), url(dark2.svg);',
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await fs.writeFile(
+    path.join(appDir, "layout.tsx"),
+    [
+      "export default function RootLayout({ children }: { children: React.ReactNode }) {",
+      "  return <html><body>{children}</body></html>;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  await fs.writeFile(
+    path.join(appDir, "page.tsx"),
+    [
+      '"use client";',
+      'import styles from "./page.module.css";',
+      "",
+      "export default function Home() {",
+      "  return <main className={styles.redText}>App CSS URL asset test</main>;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+
+  return tmpDir;
+}
+
 async function listFiles(dir: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const files: string[] = [];
@@ -168,7 +211,30 @@ async function closeServer(server: Server): Promise<void> {
   });
 }
 
+function isPluginNamed(plugin: unknown, name: string): plugin is { name: string; apply?: unknown } {
+  return (
+    typeof plugin === "object" &&
+    plugin !== null &&
+    !Array.isArray(plugin) &&
+    "name" in plugin &&
+    plugin.name === name
+  );
+}
+
 describe("Pages Router CSS url() asset emission", () => {
+  it("marks and restores CSS URL assets only during build", async () => {
+    const plugins = vinext({ disableAppRouter: true });
+    const markPlugin = plugins.find((plugin) =>
+      isPluginNamed(plugin, "vinext:css-url-assets-mark"),
+    );
+    const restorePlugin = plugins.find((plugin) =>
+      isPluginNamed(plugin, "vinext:css-url-assets-restore"),
+    );
+
+    expect(markPlugin).toMatchObject({ apply: "build" });
+    expect(restorePlugin).toMatchObject({ apply: "build" });
+  });
+
   it("emits global CSS svg url() dependencies under /_next/static/media/", async () => {
     const tmpDir = await makePagesCssUrlFixture();
     try {
@@ -297,6 +363,49 @@ describe("Pages Router CSS url() asset emission", () => {
         }
       } finally {
         await closeServer(server);
+      }
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 180_000);
+});
+
+describe("App Router CSS url() asset emission", () => {
+  it("emits App page CSS svg url() dependencies from the client environment", async () => {
+    const tmpDir = await makeAppCssUrlFixture();
+    try {
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const emittedCssFiles = (await listFiles(path.join(tmpDir, "dist", "client"))).filter(
+        (file) => file.endsWith(".css"),
+      );
+      const css = (
+        await Promise.all(emittedCssFiles.map((file) => fs.readFile(file, "utf-8")))
+      ).join("\n");
+
+      expect(css, `expected emitted app CSS under dist/client`).toContain("redText");
+      expect(css).not.toContain("vinext_css_url_asset");
+
+      const assetUrls = extractCssUrls(css).filter((url) => url.includes(".svg"));
+      expect(assetUrls, `expected SVG URLs in emitted CSS:\n${css}`).toHaveLength(2);
+      expect(assetUrls).toEqual([
+        expect.stringMatching(/^\/_next\/static\/media\/dark\.[A-Za-z0-9_-]+\.svg$/),
+        expect.stringMatching(/^\/_next\/static\/media\/dark2\.[A-Za-z0-9_-]+\.svg$/),
+      ]);
+      expect(new Set(assetUrls).size, "App Router asset URLs should be unique").toBe(
+        assetUrls.length,
+      );
+
+      for (const assetUrl of assetUrls) {
+        const assetPath = path.join(tmpDir, "dist", "client", assetUrl);
+        const assetStat = await fs.stat(assetPath);
+        expect(assetStat.isFile(), `expected emitted asset ${assetUrl}`).toBe(true);
       }
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});

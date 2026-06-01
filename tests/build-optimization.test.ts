@@ -9,7 +9,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
-import { parseAst } from "vite";
+import { createBuilder, parseAst } from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import { stripServerExports as _stripServerExports } from "../packages/vinext/src/plugins/strip-server-exports.js";
 import {
@@ -818,6 +818,59 @@ describe("treeshake config integration", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
+
+  it("resolves CSS URL asset inline defaults through Vite's builder lifecycle", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-css-assets-env-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+
+    try {
+      const defaultBuilder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+
+      expect(defaultBuilder.environments.client.config.build.assetsInlineLimit).toBe(0);
+      expect(defaultBuilder.environments.rsc.config.build.assetsInlineLimit).not.toBe(0);
+      expect(defaultBuilder.environments.ssr.config.build.assetsInlineLimit).not.toBe(0);
+
+      const userAssetsInlineLimit = 1234;
+      const userBuilder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+        build: {
+          assetsInlineLimit: userAssetsInlineLimit,
+        },
+      });
+
+      expect(userBuilder.environments.client.config.build.assetsInlineLimit).toBe(
+        userAssetsInlineLimit,
+      );
+      expect(userBuilder.environments.rsc.config.build.assetsInlineLimit).toBe(
+        userAssetsInlineLimit,
+      );
+      expect(userBuilder.environments.ssr.config.build.assetsInlineLimit).toBe(
+        userAssetsInlineLimit,
+      );
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 30_000);
 
   it("client output config includes minimum chunk sizing", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;

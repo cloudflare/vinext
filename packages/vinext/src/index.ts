@@ -2519,6 +2519,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     {
       name: "vinext:css-url-assets-mark",
       enforce: "pre",
+      apply: "build",
 
       transform(code, id) {
         if (this.environment?.name !== "client") return null;
@@ -2536,6 +2537,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     {
       name: "vinext:css-url-assets-restore",
       enforce: "post",
+      apply: "build",
 
       generateBundle(_options, bundle) {
         if (this.environment?.name !== "client") return;
