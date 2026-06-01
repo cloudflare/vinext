@@ -83,7 +83,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
     expect(loginRscRequests).toHaveLength(1);
   });
 
-  test("client-side redirect() from App Router does not leak stale params into Pages Router", async ({
+  test("client-side navigation from App Router does not leak stale params into Pages Router", async ({
     page,
   }) => {
     await page.goto(`${BASE}/nextjs-compat/app-to-pages-params/alpha`);

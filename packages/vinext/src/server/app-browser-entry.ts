@@ -29,6 +29,7 @@ import {
   getClientNavigationRenderContext,
   getPrefetchCache,
   invalidatePrefetchCache,
+  decodeRedirectError,
   isRedirectError,
   pushHistoryStateWithoutNotify,
   replaceClientParamsWithoutNotify,
@@ -928,17 +929,15 @@ function AppRouterRedirectBridge({ children }: { children?: React.ReactNode }) {
       const error = "reason" in event ? event.reason : event.error;
       if (!isRedirectError(error)) return;
 
-      const redirectError = error as Error & { digest: string };
-      const parts = redirectError.digest.split(";");
-      const url = parts.length >= 5 ? parts.slice(2, -2).join(";") : parts[2];
-      if (!url) return;
+      const result = decodeRedirectError((error as Error & { digest: string }).digest);
+      if (!result) return;
 
       event.preventDefault();
       startTransition(() => {
-        if (parts[1] === "push") {
-          router.push(decodeURIComponent(url));
+        if (result.type === "push") {
+          router.push(result.url);
         } else {
-          router.replace(decodeURIComponent(url));
+          router.replace(result.url);
         }
       });
     };

@@ -2063,6 +2063,37 @@ export function isRedirectError(error: unknown): error is _RedirectErrorShape {
 }
 
 /**
+ * Parse a redirect error digest into its URL and type components.
+ *
+ * Handles both vinext's 3-part format
+ * (`NEXT_REDIRECT;{type};{encoded-url}`) and Next.js's 5-part format
+ * (`NEXT_REDIRECT;{type};{url};{status};{isClient}`). Returns null for
+ * malformed digests that have an empty URL segment.
+ *
+ * The returned URL is safely decoded — a malformed percent-encoding
+ * returns null rather than throwing.
+ */
+export function decodeRedirectError(
+  digest: string,
+): { url: string; type: "push" | "replace" } | null {
+  if (!digest.startsWith("NEXT_REDIRECT;")) return null;
+
+  const parts = digest.split(";");
+  const encodedTarget = parts.length >= 5 ? parts.slice(2, -2).join(";") : parts[2];
+  if (!encodedTarget) return null;
+
+  let url: string;
+  try {
+    url = decodeURIComponent(encodedTarget);
+  } catch {
+    return null;
+  }
+
+  const type: "push" | "replace" = parts[1] === "push" ? "push" : "replace";
+  return { url, type };
+}
+
+/**
  * Returns true if the error is a Next.js navigation signal — either a redirect
  * or an HTTP access fallback (notFound / forbidden / unauthorized).
  *

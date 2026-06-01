@@ -3,7 +3,7 @@
 import React from "react";
 // Import the local shim, not the public next/navigation alias. The built
 // package may execute this file before the plugin's resolveId hook is active.
-import { isRedirectError, usePathname, useRouter } from "./navigation.js";
+import { decodeRedirectError, isRedirectError, usePathname, useRouter } from "./navigation.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 
 export type ErrorBoundaryProps = {
@@ -71,30 +71,6 @@ function shouldResetBoundary(
   return nextResetState.previousPathname !== previousResetState.previousPathname;
 }
 
-function decodeRedirectTarget(target: string): string {
-  try {
-    return decodeURIComponent(target);
-  } catch {
-    return target;
-  }
-}
-
-function getURLFromRedirectError(error: RedirectError): string | null {
-  const parts = error.digest.split(";");
-  // vinext emits 3-part (redirect: `NEXT_REDIRECT;;<encoded>`) or 4-part
-  // (permanentRedirect: `NEXT_REDIRECT;<type>;<encoded>;308`) digests;
-  // Next.js emits 5-part digests (`NEXT_REDIRECT;<type>;<url>;<status>;<isClient>`).
-  // vinext's `isRedirectError` is more permissive (just `startsWith("NEXT_REDIRECT;")`)
-  // so we branch on length rather than always using `slice(2, -2)`.
-  const encodedTarget = parts.length >= 5 ? parts.slice(2, -2).join(";") : parts[2];
-  return encodedTarget ? decodeRedirectTarget(encodedTarget) : null;
-}
-
-function getRedirectTypeFromError(error: RedirectError): "push" | "replace" {
-  const type = error.digest.split(";", 2)[1];
-  return type === "push" ? "push" : "replace";
-}
-
 function HandleRedirect({
   redirect,
   redirectType,
@@ -149,8 +125,8 @@ export class RedirectErrorBoundary extends React.Component<
         };
       }
 
-      const url = getURLFromRedirectError(redirectError);
-      if (url === null) {
+      const result = decodeRedirectError(redirectError.digest);
+      if (!result) {
         // Malformed digest (e.g. `NEXT_REDIRECT;push;` with an empty URL
         // segment). The server-side parser at next-error-digest.ts:51 also
         // rejects this. Re-throw so the error reaches a regular error
@@ -159,8 +135,8 @@ export class RedirectErrorBoundary extends React.Component<
       }
 
       return {
-        redirect: url,
-        redirectType: getRedirectTypeFromError(redirectError),
+        redirect: result.url,
+        redirectType: result.type,
       };
     }
 
