@@ -19,7 +19,8 @@ type HeadProps = {
 
 let _ssrHeadChildren: React.ReactNode[] = [];
 let _documentInitialHead: React.ReactNode[] = [];
-const _clientHeadChildren = new Map<symbol, React.ReactNode>();
+/** @internal — exposed for unit tests of the client head projection. */
+export const _clientHeadChildren = new Map<symbol, React.ReactNode>();
 
 let _getSSRHeadChildren = (): React.ReactNode[] => _ssrHeadChildren;
 let _resetSSRHeadImpl = (): void => {
@@ -416,10 +417,17 @@ export function _applyHeadPropsToElement(
   }
 }
 
-function syncClientHead(): void {
+/** @internal — exported for unit tests; called from the Head client effect. */
+export function _syncClientHead(): void {
   document.querySelectorAll("[data-next-head]").forEach((el) => el.remove());
 
-  for (const child of reduceHeadChildren([..._clientHeadChildren.values()])) {
+  // Seed defaultHead() (charset + viewport) ahead of user tags, mirroring the
+  // SSR path in getSSRHeadHTML() and Next.js's reduceComponents() (which always
+  // concatenates defaultHead()). Without this, the first <Head> mount after
+  // hydration would strip the server-rendered defaults — which carry
+  // data-next-head="" — and never re-add them. Users can still override via
+  // key="charset" / key="viewport" because they win in the dedupe pipeline.
+  for (const child of reduceHeadChildren([...defaultHead(), ..._clientHeadChildren.values()])) {
     if (typeof child.type !== "string") continue;
 
     const domEl = document.createElement(child.type);
@@ -450,11 +458,11 @@ function Head({ children }: HeadProps): null {
   useEffect(() => {
     const instanceId = headInstanceIdRef.current!;
     _clientHeadChildren.set(instanceId, children);
-    syncClientHead();
+    _syncClientHead();
 
     return () => {
       _clientHeadChildren.delete(instanceId);
-      syncClientHead();
+      _syncClientHead();
     };
   }, [children]);
 
