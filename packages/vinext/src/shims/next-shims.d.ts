@@ -228,13 +228,17 @@ declare module "next/navigation" {
     compatibilityIdHeader?: string | null;
     buffer: ArrayBuffer;
     contentType: string;
+    dynamicStaleTimeSeconds?: number;
+    expiresAt?: number;
     mountedSlotsHeader?: string | null;
     paramsHeader: string | null;
     url: string;
   };
   export type PrefetchCacheEntry = {
     cacheForNavigation?: boolean;
+    expiresAt?: number;
     invalidationTimer?: ReturnType<typeof setTimeout>;
+    mountedSlotsHeader?: string | null;
     onInvalidateCallbacks?: Set<() => void>;
     optimisticRouteShell?: boolean;
     outcome: "pending" | "cache-seeded";
@@ -248,6 +252,14 @@ declare module "next/navigation" {
   export function getPrefetchCache(): Map<string, PrefetchCacheEntry>;
   export function getPrefetchedUrls(): Set<string>;
   export function invalidatePrefetchCache(): void;
+  export function resolvePrefetchCacheEntryMountedSlotsHeader(
+    entry: PrefetchCacheEntry,
+  ): string | null;
+  export function hasPrefetchCacheEntryForNavigation(
+    rscUrl: string,
+    interceptionContext?: string | null,
+    mountedSlotsHeader?: string | null,
+  ): boolean;
   export function storePrefetchResponse(
     rscUrl: string,
     response: Response,

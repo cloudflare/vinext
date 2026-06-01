@@ -31,6 +31,7 @@ import {
   getPrefetchCache,
   getPrefetchedUrls,
   getMountedSlotsHeader,
+  hasPrefetchCacheEntryForNavigation,
   navigateClientSide,
   prefetchRscResponse,
 } from "./navigation.js";
@@ -379,6 +380,12 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
               existing.cacheForNavigation = true;
             }
           }
+          return;
+        }
+        if (
+          autoPrefetch.cacheForNavigation &&
+          hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader)
+        ) {
           return;
         }
         prefetched.add(cacheKey);
