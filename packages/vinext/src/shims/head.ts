@@ -417,25 +417,69 @@ export function _applyHeadPropsToElement(
   }
 }
 
-/** @internal — exported for unit tests; called from the Head client effect. */
+/**
+ * Reconcile the document <head> against the desired projection.
+ *
+ * Mirrors Next.js's client `head-manager.ts` `updateElements()`: rather than
+ * wiping every [data-next-head] node and re-appending (which reorders the
+ * SSR-emitted tags to the end of <head> and causes flicker on each update),
+ * we diff the desired tags against the existing ones with isEqualNode(). Tags
+ * that already match are left untouched in their original DOM position, only
+ * genuinely new tags are inserted, and stale tags are removed.
+ *
+ * The desired list seeds defaultHead() (charset + viewport) ahead of user
+ * tags — matching the SSR path in getSSRHeadHTML() and Next.js's
+ * reduceComponents(), which always concatenates defaultHead() on both server
+ * and client. Without it the first <Head> mount after hydration would drop the
+ * server-rendered defaults. Users can still override via key="charset" /
+ * key="viewport" through the dedupe pipeline.
+ *
+ * @internal — exported for unit tests; called from the Head client effect.
+ */
 export function _syncClientHead(): void {
-  document.querySelectorAll("[data-next-head]").forEach((el) => el.remove());
+  const headEl = document.head;
+  if (!headEl) return;
 
-  // Seed defaultHead() (charset + viewport) ahead of user tags, mirroring the
-  // SSR path in getSSRHeadHTML() and Next.js's reduceComponents() (which always
-  // concatenates defaultHead()). Without this, the first <Head> mount after
-  // hydration would strip the server-rendered defaults — which carry
-  // data-next-head="" — and never re-add them. Users can still override via
-  // key="charset" / key="viewport" because they win in the dedupe pipeline.
+  // Existing vinext-managed tags. Also fold in any <meta charset> even if it
+  // somehow lost the marker, so we never end up with a duplicate charset.
+  const oldTags = new Set<Element>(headEl.querySelectorAll("[data-next-head]"));
+  const charsetEl = headEl.querySelector("meta[charset]");
+  if (charsetEl) oldTags.add(charsetEl);
+
+  const newTags: Element[] = [];
   for (const child of reduceHeadChildren([...defaultHead(), ..._clientHeadChildren.values()])) {
     if (typeof child.type !== "string") continue;
 
     const domEl = document.createElement(child.type);
-    const props = child.props as Record<string, unknown>;
-    _applyHeadPropsToElement(domEl, props);
-
+    _applyHeadPropsToElement(domEl, child.props as Record<string, unknown>);
     domEl.setAttribute("data-next-head", "");
-    document.head.appendChild(domEl);
+
+    // Reuse an identical node already in <head> so its DOM position (and thus
+    // the head ordering produced by SSR) is preserved.
+    let isNew = true;
+    for (const oldTag of oldTags) {
+      if (oldTag.isEqualNode(domEl)) {
+        oldTags.delete(oldTag);
+        isNew = false;
+        break;
+      }
+    }
+    if (isNew) newTags.push(domEl);
+  }
+
+  // Remove tags that are no longer desired.
+  for (const oldTag of oldTags) {
+    oldTag.parentNode?.removeChild(oldTag);
+  }
+
+  // Insert genuinely new tags. Keep <meta charset> first in <head> so the
+  // declared encoding stays at the top, matching Next.js.
+  for (const newTag of newTags) {
+    if (newTag.tagName.toLowerCase() === "meta" && newTag.getAttribute("charset") !== null) {
+      headEl.prepend(newTag);
+    } else {
+      headEl.appendChild(newTag);
+    }
   }
 }
 

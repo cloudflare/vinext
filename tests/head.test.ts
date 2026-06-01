@@ -717,65 +717,88 @@ describe("Head _document.getInitialProps() merge (issue #1569)", () => {
   });
 });
 
-// ─── client hydration sync keeps defaults (issue #1569 regression) ─────────
+// ─── client hydration sync keeps defaults & order (issue #1569 regression) ──
 //
-// On the client, the first <Head> mount runs _syncClientHead(), which removes
-// every [data-next-head] element (including the server-rendered charset /
-// viewport defaults) and rebuilds the projection. If the client reduce does
-// not seed defaultHead() — like the SSR path does — the charset and viewport
-// meta tags vanish after hydration. This mirrors Next.js's reduceComponents(),
-// which always concatenates defaultHead() on both server and client.
+// On the client, the first <Head> mount runs _syncClientHead(). It must:
+//   1. keep the server-rendered charset / viewport defaults (which carry
+//      data-next-head="") — they must not vanish after hydration, and
+//   2. reconcile in place (diff via isEqualNode) rather than wipe-and-rebuild,
+//      so SSR head ordering is preserved and <meta charset> stays first.
+// This mirrors Next.js's reduceComponents() (always seeds defaultHead()) and
+// head-manager.ts updateElements() (in-place reconciliation).
 
-describe("Head client sync keeps defaults after hydration (issue #1569)", () => {
+describe("Head client sync (defaults + order, issue #1569)", () => {
   // Minimal DOM double — the repo has no jsdom/happy-dom. Only the surface
   // _syncClientHead() touches is implemented.
   class FakeElement {
     attributes = new Map<string, string>();
     innerHTML = "";
     textContent = "";
-    constructor(
-      public tagName: string,
-      private readonly onRemove: (el: FakeElement) => void,
-    ) {}
+    parentNode: FakeHead | null = null;
+    constructor(public readonly tagName: string) {}
     setAttribute(name: string, value: string): void {
       this.attributes.set(name, value);
+    }
+    getAttribute(name: string): string | null {
+      return this.attributes.has(name) ? this.attributes.get(name)! : null;
     }
     hasAttribute(name: string): boolean {
       return this.attributes.has(name);
     }
-    remove(): void {
-      this.onRemove(this);
+    isEqualNode(other: unknown): boolean {
+      if (!(other instanceof FakeElement)) return false;
+      if (this.tagName.toLowerCase() !== other.tagName.toLowerCase()) return false;
+      if (this.attributes.size !== other.attributes.size) return false;
+      for (const [k, v] of this.attributes) {
+        if (other.attributes.get(k) !== v) return false;
+      }
+      return this.textContent === other.textContent && this.innerHTML === other.innerHTML;
+    }
+  }
+
+  class FakeHead {
+    children: FakeElement[] = [];
+    appendChild(el: FakeElement): void {
+      el.parentNode?.removeChild(el);
+      el.parentNode = this;
+      this.children.push(el);
+    }
+    prepend(el: FakeElement): void {
+      el.parentNode?.removeChild(el);
+      el.parentNode = this;
+      this.children.unshift(el);
+    }
+    removeChild(el: FakeElement): void {
+      const idx = this.children.indexOf(el);
+      if (idx >= 0) this.children.splice(idx, 1);
+      el.parentNode = null;
+    }
+    querySelectorAll(selector: string): FakeElement[] {
+      if (selector !== "[data-next-head]") return [];
+      return this.children.filter((el) => el.hasAttribute("data-next-head"));
+    }
+    querySelector(selector: string): FakeElement | null {
+      if (selector !== "meta[charset]") return null;
+      return (
+        this.children.find(
+          (el) => el.tagName.toLowerCase() === "meta" && el.hasAttribute("charset"),
+        ) ?? null
+      );
     }
   }
 
   function installFakeDocument(): {
     restore: () => void;
-    headChildren: FakeElement[];
+    head: FakeHead;
     createElement: (tag: string) => FakeElement;
   } {
-    const headChildren: FakeElement[] = [];
-    const removeChild = (el: FakeElement) => {
-      const idx = headChildren.indexOf(el);
-      if (idx >= 0) headChildren.splice(idx, 1);
-    };
-    const createElement = (tag: string) => new FakeElement(tag, removeChild);
-    const fakeDocument = {
-      createElement,
-      querySelectorAll: (selector: string) => {
-        if (selector !== "[data-next-head]") return [];
-        // Return a snapshot so .remove() during iteration is safe.
-        return headChildren.filter((el) => el.hasAttribute("data-next-head"));
-      },
-      head: {
-        appendChild: (el: FakeElement) => {
-          headChildren.push(el);
-        },
-      },
-    };
+    const head = new FakeHead();
+    const createElement = (tag: string) => new FakeElement(tag);
+    const fakeDocument = { createElement, head };
     const prevDocument = (globalThis as Record<string, unknown>).document;
     (globalThis as Record<string, unknown>).document = fakeDocument;
     return {
-      headChildren,
+      head,
       createElement,
       restore: () => {
         (globalThis as Record<string, unknown>).document = prevDocument;
@@ -783,58 +806,145 @@ describe("Head client sync keeps defaults after hydration (issue #1569)", () => 
     };
   }
 
+  // Build a server-rendered <head> matching what SSR emits for the example:
+  // charset, viewport, title (all data-next-head), followed by a modulepreload
+  // link that is NOT vinext-managed.
+  function seedServerHead(head: FakeHead, createElement: (tag: string) => FakeElement) {
+    const charset = createElement("meta");
+    charset.setAttribute("charset", "utf-8");
+    charset.setAttribute("data-next-head", "");
+    const viewport = createElement("meta");
+    viewport.setAttribute("name", "viewport");
+    viewport.setAttribute("content", "width=device-width");
+    viewport.setAttribute("data-next-head", "");
+    const title = createElement("title");
+    title.textContent = "Cloudflare Pages Router";
+    title.setAttribute("data-next-head", "");
+    const modulepreload = createElement("link");
+    modulepreload.setAttribute("rel", "modulepreload");
+    modulepreload.setAttribute("href", "/_next/static/index.js");
+    head.children.push(charset, viewport, title, modulepreload);
+    for (const el of head.children) el.parentNode = head;
+    return { charset, viewport, title, modulepreload };
+  }
+
   beforeEach(() => {
     _clientHeadChildren.clear();
   });
 
-  it("re-adds charset + viewport defaults alongside user tags on sync", () => {
-    const { headChildren, createElement, restore } = installFakeDocument();
+  it("preserves SSR order and reuses matching nodes (no reorder, no churn)", () => {
+    const { head, createElement, restore } = installFakeDocument();
     try {
-      // Simulate the server-rendered defaults already present in <head>.
-      const serverCharset = createElement("meta");
-      serverCharset.setAttribute("charset", "utf-8");
-      serverCharset.setAttribute("data-next-head", "");
-      const serverViewport = createElement("meta");
-      serverViewport.setAttribute("name", "viewport");
-      serverViewport.setAttribute("data-next-head", "");
-      headChildren.push(serverCharset, serverViewport);
+      const server = seedServerHead(head, createElement);
 
-      // A user <Head> with just a <title> mounts on the client.
-      _clientHeadChildren.set(Symbol("test"), React.createElement("title", null, "Hi"));
+      // The page's <Head> re-declares the same title on the client.
+      _clientHeadChildren.set(
+        Symbol("test"),
+        React.createElement("title", null, "Cloudflare Pages Router"),
+      );
       _syncClientHead();
 
-      // The server-rendered defaults were removed and rebuilt — not duplicated.
-      const byTag = (tag: string) => headChildren.filter((el) => el.tagName === tag);
-      const metas = byTag("meta");
-      expect(metas.filter((el) => el.attributes.get("charset") === "utf-8")).toHaveLength(1);
-      expect(metas.filter((el) => el.attributes.get("name") === "viewport")).toHaveLength(1);
+      // Order is unchanged and the exact same node instances are reused.
+      expect(head.children).toEqual([
+        server.charset,
+        server.viewport,
+        server.title,
+        server.modulepreload,
+      ]);
+      // No duplicate charset/viewport.
+      const metas = head.children.filter((el) => el.tagName === "meta");
+      expect(metas.filter((el) => el.getAttribute("charset") === "utf-8")).toHaveLength(1);
+      expect(metas.filter((el) => el.getAttribute("name") === "viewport")).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
 
-      const charset = metas.find((el) => el.attributes.get("charset") === "utf-8");
-      const viewport = metas.find((el) => el.attributes.get("name") === "viewport");
-      const title = byTag("title")[0];
+  it("appends genuinely new tags without disturbing existing order", () => {
+    const { head, createElement, restore } = installFakeDocument();
+    try {
+      const server = seedServerHead(head, createElement);
 
-      // Defaults survive the sync and still carry data-next-head.
-      expect(charset).toBeDefined();
-      expect(charset?.attributes.get("data-next-head")).toBe("");
-      expect(viewport).toBeDefined();
-      expect(viewport?.attributes.get("content")).toBe("width=device-width");
-      expect(viewport?.attributes.get("data-next-head")).toBe("");
-      // User tag is present too.
-      expect(title?.textContent).toBe("Hi");
+      _clientHeadChildren.set(
+        Symbol("test"),
+        React.createElement(
+          React.Fragment,
+          null,
+          React.createElement("title", null, "Cloudflare Pages Router"),
+          React.createElement("meta", { name: "description", content: "hi" }),
+        ),
+      );
+      _syncClientHead();
+
+      // Defaults + title kept in place; the new description meta is appended.
+      const description = head.children.find((el) => el.getAttribute("name") === "description");
+      expect(description).toBeDefined();
+      expect(head.children.indexOf(server.charset)).toBe(0);
+      expect(head.children.indexOf(server.viewport)).toBe(1);
+      expect(head.children.indexOf(server.title)).toBe(2);
+      // The new tag lands after the previously-existing children.
+      expect(head.children.indexOf(description!)).toBeGreaterThan(
+        head.children.indexOf(server.modulepreload),
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("removes stale vinext-managed tags that are no longer desired", () => {
+    const { head, createElement, restore } = installFakeDocument();
+    try {
+      seedServerHead(head, createElement);
+      const stale = createElement("meta");
+      stale.setAttribute("name", "stale");
+      stale.setAttribute("data-next-head", "");
+      head.appendChild(stale);
+
+      // Client <Head> declares only the title (defaults come from defaultHead()).
+      _clientHeadChildren.set(
+        Symbol("test"),
+        React.createElement("title", null, "Cloudflare Pages Router"),
+      );
+      _syncClientHead();
+
+      expect(head.children.includes(stale)).toBe(false);
+      // Defaults remain.
+      const metas = head.children.filter((el) => el.tagName === "meta");
+      expect(metas.some((el) => el.getAttribute("charset") === "utf-8")).toBe(true);
+      expect(metas.some((el) => el.getAttribute("name") === "viewport")).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it("prepends a newly-created <meta charset> so it stays first", () => {
+    const { head, createElement, restore } = installFakeDocument();
+    try {
+      // <head> has a non-managed script first and no charset yet.
+      const script = createElement("script");
+      script.setAttribute("src", "/a.js");
+      head.appendChild(script);
+
+      _clientHeadChildren.set(Symbol("test"), null);
+      _syncClientHead();
+
+      // defaultHead()'s charset must be prepended ahead of the script.
+      expect(head.children[0]?.tagName).toBe("meta");
+      expect(head.children[0]?.getAttribute("charset")).toBe("utf-8");
     } finally {
       restore();
     }
   });
 
   it("emits defaults even when the client <Head> has no children", () => {
-    const { headChildren, restore } = installFakeDocument();
+    const { head, restore } = installFakeDocument();
     try {
       _clientHeadChildren.set(Symbol("test"), null);
       _syncClientHead();
 
-      const metas = headChildren.filter((el) => el.tagName === "meta");
-      expect(metas.some((el) => el.attributes.get("charset") === "utf-8")).toBe(true);
-      expect(metas.some((el) => el.attributes.get("name") === "viewport")).toBe(true);
+      const metas = head.children.filter((el) => el.tagName === "meta");
+      expect(metas.some((el) => el.getAttribute("charset") === "utf-8")).toBe(true);
+      expect(metas.some((el) => el.getAttribute("name") === "viewport")).toBe(true);
     } finally {
       restore();
     }
