@@ -1,6 +1,14 @@
 /// <reference types="vite/client" />
 
-import { createElement, startTransition, use, useLayoutEffect, useRef, useState } from "react";
+import {
+  createElement,
+  startTransition,
+  use,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   createFromFetch,
   createFromReadableStream,
@@ -21,6 +29,7 @@ import {
   getClientNavigationRenderContext,
   getPrefetchCache,
   invalidatePrefetchCache,
+  isRedirectError,
   pushHistoryStateWithoutNotify,
   replaceClientParamsWithoutNotify,
   replaceHistoryStateWithoutNotify,
@@ -30,6 +39,7 @@ import {
   setPendingPathname,
   setMountedSlotsHeader,
   setNavigationContext,
+  useRouter,
   type CachedRscResponse,
   type ClientNavigationRenderSnapshot,
   type PrefetchCacheEntry,
@@ -910,6 +920,41 @@ function performMpaNavigation(href: string, historyUpdateMode: HistoryUpdateMode
   mpaNavigationScheduler.navigate(window, href, historyUpdateMode);
 }
 
+function AppRouterRedirectBridge({ children }: { children?: React.ReactNode }) {
+  const router = useRouter();
+
+  useEffect(() => {
+    const handleUnhandledRedirect = (event: ErrorEvent | PromiseRejectionEvent): void => {
+      const error = "reason" in event ? event.reason : event.error;
+      if (!isRedirectError(error)) return;
+
+      const redirectError = error as Error & { digest: string };
+      const parts = redirectError.digest.split(";");
+      const url = parts.length >= 5 ? parts.slice(2, -2).join(";") : parts[2];
+      if (!url) return;
+
+      event.preventDefault();
+      startTransition(() => {
+        if (parts[1] === "push") {
+          router.push(decodeURIComponent(url));
+        } else {
+          router.replace(decodeURIComponent(url));
+        }
+      });
+    };
+
+    window.addEventListener("error", handleUnhandledRedirect);
+    window.addEventListener("unhandledrejection", handleUnhandledRedirect);
+
+    return () => {
+      window.removeEventListener("error", handleUnhandledRedirect);
+      window.removeEventListener("unhandledrejection", handleUnhandledRedirect);
+    };
+  }, [router]);
+
+  return children ?? null;
+}
+
 function decodeAppElementsPromise(payload: Promise<AppWireElements>): Promise<AppElements> {
   // Wrap in Promise.resolve() because createFromReadableStream() returns a
   // React Flight thenable whose .then() returns undefined (not a new Promise).
@@ -1033,7 +1078,11 @@ function BrowserRoot({
     ),
   );
   const innerTree = AppRouterContext
-    ? createElement(AppRouterContext.Provider, { value: appRouterInstance }, routeTree)
+    ? createElement(
+        AppRouterContext.Provider,
+        { value: appRouterInstance },
+        createElement(AppRouterRedirectBridge, null, routeTree),
+      )
     : routeTree;
 
   // In dev, wrap the route tree in a top-level recovery boundary. A render

@@ -167,13 +167,6 @@ export class RedirectErrorBoundary extends React.Component<
     throw error;
   }
 
-  resetRedirect = () => {
-    this.setState({
-      redirect: null,
-      redirectType: null,
-    });
-  };
-
   render() {
     const { redirect, redirectType } = this.state;
     if (redirect !== null && redirectType !== null) {
@@ -181,7 +174,7 @@ export class RedirectErrorBoundary extends React.Component<
         <HandleRedirect
           redirect={redirect}
           redirectType={redirectType}
-          reset={this.resetRedirect}
+          reset={() => this.setState({ redirect: null, redirectType: null })}
         />
       );
     }
@@ -191,52 +184,7 @@ export class RedirectErrorBoundary extends React.Component<
 }
 
 export function RedirectBoundary({ children }: { children?: React.ReactNode }) {
-  // This wrapper is rendered in both the browser entry and server-side route
-  // element tests. The global unhandled-redirect bridge is browser-only; eager
-  // `useRouter()` during SSR would require an AppRouterContext for routes that
-  // never redirect and would make a passive boundary observable.
-  const globalRedirectHandler = typeof window === "undefined" ? null : <UnhandledRedirectHandler />;
-
-  return (
-    <>
-      {globalRedirectHandler}
-      <RedirectErrorBoundary>{children}</RedirectErrorBoundary>
-    </>
-  );
-}
-
-function UnhandledRedirectHandler() {
-  const router = useRouter();
-
-  React.useEffect(() => {
-    function handleUnhandledRedirect(event: ErrorEvent | PromiseRejectionEvent): void {
-      const error = "reason" in event ? event.reason : event.error;
-      if (!isRedirectError(error)) return;
-
-      const redirectError: RedirectError = error;
-      const url = getURLFromRedirectError(redirectError);
-      if (url === null) return;
-
-      event.preventDefault();
-      React.startTransition(() => {
-        if (getRedirectTypeFromError(redirectError) === "push") {
-          router.push(url);
-        } else {
-          router.replace(url);
-        }
-      });
-    }
-
-    window.addEventListener("error", handleUnhandledRedirect);
-    window.addEventListener("unhandledrejection", handleUnhandledRedirect);
-
-    return () => {
-      window.removeEventListener("error", handleUnhandledRedirect);
-      window.removeEventListener("unhandledrejection", handleUnhandledRedirect);
-    };
-  }, [router]);
-
-  return null;
+  return <RedirectErrorBoundary>{children}</RedirectErrorBoundary>;
 }
 
 /**

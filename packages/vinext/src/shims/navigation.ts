@@ -1137,13 +1137,11 @@ export function clearPendingPathname(navId: number): void {
 
 function getClientParamsSnapshot(): Record<string, string | string[]> {
   const state = getClientNavigationState();
+  const pagesCtx = _getPagesNavigationContext();
+  if (pagesCtx) return pagesCtx.params;
   if (state && Object.keys(state.clientParams).length > 0) {
     return state.clientParams;
   }
-  // Fall back to the Pages Router compat shim if nothing has populated the
-  // App Router client params (Pages Router pages never call setClientParams).
-  const pagesCtx = _getPagesNavigationContext();
-  if (pagesCtx) return pagesCtx.params;
   return state?.clientParams ?? _EMPTY_PARAMS;
 }
 

@@ -12,7 +12,11 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../../helpers";
+import {
+  isAppRouterRscRequestForPath,
+  waitForAppRouterHydration,
+  waitForHydration,
+} from "../../helpers";
 
 const BASE = "http://localhost:4174";
 
@@ -77,6 +81,21 @@ test.describe("Next.js compat: navigation (browser)", () => {
     expect(new URL(page.url()).pathname).toBe("/nextjs-compat/nav-redirect-guard/login");
     await page.waitForLoadState("networkidle");
     expect(loginRscRequests).toHaveLength(1);
+  });
+
+  test("client-side redirect() from App Router does not leak stale params into Pages Router", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/app-to-pages-params/alpha`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#go-to-pages-params");
+    await waitForHydration(page);
+
+    await expect(page.locator("#params")).toHaveText('{"foo":"foo"}', {
+      timeout: 10_000,
+    });
+    await expect(page.locator("#params-change-count")).toHaveText("1");
   });
 
   // Next.js: 'should trigger not-found in a server component'
