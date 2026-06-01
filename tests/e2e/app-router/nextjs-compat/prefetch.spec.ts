@@ -95,10 +95,21 @@ test.describe("Next.js compat: prefetch (browser)", () => {
       testWindow.__VINEXT_PENDING_PREFETCH_REUSE_TEST__ = state;
 
       window.fetch = async (input, init) => {
-        const url =
+        const rawUrl =
           typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const url = new URL(rawUrl, window.location.href);
+        const headers = new Headers(input instanceof Request ? input.headers : undefined);
+        if (init?.headers) {
+          new Headers(init.headers).forEach((value, key) => {
+            headers.set(key, value);
+          });
+        }
 
-        if (url.includes("/nextjs-compat/prefetch-test/target.rsc")) {
+        if (
+          url.pathname === "/nextjs-compat/prefetch-test/target" &&
+          url.searchParams.has("_rsc") &&
+          headers.get("rsc") === "1"
+        ) {
           if (state.targetPrefetchRequests === 0) {
             state.targetPrefetchRequests += 1;
             await new Promise<void>((resolve) => {
@@ -174,10 +185,18 @@ test.describe("Next.js compat: prefetch (browser)", () => {
       };
       testWindow.__VINEXT_PREFETCH_TEST__ = state;
       window.fetch = (input, init) => {
-        const url =
+        const rawUrl =
           typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-        if (url.includes(".rsc")) {
-          state.fetchUrls.push(url);
+        const url = new URL(rawUrl, window.location.href);
+        const headers = new Headers(input instanceof Request ? input.headers : undefined);
+        if (init?.headers) {
+          new Headers(init.headers).forEach((value, key) => {
+            headers.set(key, value);
+          });
+        }
+
+        if (url.searchParams.has("_rsc") && headers.get("rsc") === "1") {
+          state.fetchUrls.push(url.href);
         }
         return originalFetch(input, init);
       };
@@ -198,10 +217,12 @@ test.describe("Next.js compat: prefetch (browser)", () => {
     await page.goto(`${BASE}/nextjs-compat/prefetch-test`);
     await waitForAppRouterHydration(page);
 
-    // Verify the fetch instrumentation sees .rsc URLs before relying on it
+    // Verify the fetch instrumentation sees canonical RSC URLs before relying on it
     // to assert that Link prefetch does not issue a no-prefetch request.
     await page.evaluate(async () => {
-      await window.fetch("/nextjs-compat/prefetch-test/target.rsc");
+      await window.fetch("/nextjs-compat/prefetch-test/target?_rsc", {
+        headers: { Accept: "text/x-component", RSC: "1" },
+      });
     });
     await expect
       .poll(async () =>
@@ -209,7 +230,13 @@ test.describe("Next.js compat: prefetch (browser)", () => {
           const testWindow: PrefetchTestWindow = window;
           const state = testWindow.__VINEXT_PREFETCH_TEST__;
           if (state === undefined) throw new Error("Missing prefetch test instrumentation");
-          return state.fetchUrls.some((url) => url.includes("target.rsc"));
+          return state.fetchUrls.some((url) => {
+            const parsed = new URL(url);
+            return (
+              parsed.pathname === "/nextjs-compat/prefetch-test/target" &&
+              parsed.searchParams.has("_rsc")
+            );
+          });
         }),
       )
       .toBe(true);
@@ -239,7 +266,15 @@ test.describe("Next.js compat: prefetch (browser)", () => {
         requestIdleCallbackCalls: state.requestIdleCallbackCalls,
       };
     });
-    expect(diagnostics.fetchUrls.some((url) => url.includes("no-prefetch.rsc"))).toBe(false);
+    expect(
+      diagnostics.fetchUrls.some((url) => {
+        const parsed = new URL(url);
+        return (
+          parsed.pathname === "/nextjs-compat/prefetch-test/no-prefetch" &&
+          parsed.searchParams.has("_rsc")
+        );
+      }),
+    ).toBe(false);
     expect(diagnostics.requestIdleCallbackCalls).toBe(0);
   });
 });

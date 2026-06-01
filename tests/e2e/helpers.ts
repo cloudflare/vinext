@@ -8,6 +8,15 @@ export function isAppRouterRscRequestForPath(request: Request, pathname: string)
   );
 }
 
+export function isAppRouterServerActionRequestForPath(request: Request, pathname: string): boolean {
+  const url = new URL(request.url());
+  return (
+    request.method() === "POST" &&
+    url.pathname === pathname &&
+    request.headers()["next-action"] !== undefined
+  );
+}
+
 /**
  * Wait for Pages Router hydration to complete.
  * Checks for window.__VINEXT_ROOT__.

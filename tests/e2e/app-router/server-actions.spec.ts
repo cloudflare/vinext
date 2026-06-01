@@ -160,6 +160,7 @@ test.describe("Server Actions", () => {
     await page.click("#missing-action");
 
     await expect(page.locator("#action-not-found")).toHaveText("Action not found boundary");
+    await expect(page.locator('meta[name="robots"]')).toHaveCount(1);
     await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex");
   });
 

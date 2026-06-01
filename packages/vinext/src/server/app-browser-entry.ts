@@ -1399,7 +1399,6 @@ function registerServerActionCallback(): void {
       Promise.resolve(flightResponse),
       { temporaryReferences },
     );
-    syncServerActionHttpFallbackHead(fetchResponse.status);
     if (shouldClearClientNavigationCachesForServerActionResult(result, revalidation)) {
       clearClientNavigationCaches();
     }
@@ -1444,6 +1443,9 @@ function registerServerActionCallback(): void {
       browserNavigationController.performHardNavigation(actionRedirectTarget.href);
       return undefined;
     }
+
+    const hasSameUrlRerenderPayload = isServerActionResult(result) && result.root !== undefined;
+    syncServerActionHttpFallbackHead(hasSameUrlRerenderPayload ? null : fetchResponse.status);
 
     // Server actions stay on the same URL and use commitSameUrlNavigatePayload()
     // for merge-based dispatch. This path does not call
