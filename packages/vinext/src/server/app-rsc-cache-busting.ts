@@ -300,6 +300,13 @@ export async function createRscRequestUrl(href: string, headers: Headers): Promi
   return `${url.pathname}${url.search}`;
 }
 
+export function createServerActionRequestUrl(href: string): string {
+  const hashIndex = href.indexOf("#");
+  const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
+  const url = new URL(beforeHash, "http://vinext.local");
+  return `${url.pathname}${url.search}`;
+}
+
 export async function createRscRedirectLocation(
   location: string,
   request: Request,

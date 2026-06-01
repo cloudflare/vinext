@@ -151,6 +151,8 @@ function mockReactAnchorCaptureForLinkOnly_DO_NOT_REUSE(
   vi.doMock("react/jsx-dev-runtime", async () => {
     const actual =
       await vi.importActual<typeof import("react/jsx-dev-runtime")>("react/jsx-dev-runtime");
+    const jsxRuntime =
+      await vi.importActual<typeof import("react/jsx-runtime")>("react/jsx-runtime");
     return {
       ...actual,
       jsxDEV(
@@ -162,7 +164,10 @@ function mockReactAnchorCaptureForLinkOnly_DO_NOT_REUSE(
         self?: Parameters<typeof actual.jsxDEV>[5],
       ) {
         options.captureAnchor(type, props);
-        return actual.jsxDEV(type, props, key, isStaticChildren ?? false, source, self);
+        if (typeof actual.jsxDEV === "function") {
+          return actual.jsxDEV(type, props, key, isStaticChildren ?? false, source, self);
+        }
+        return jsxRuntime.jsx(type, props, key);
       },
     };
   });
@@ -839,6 +844,156 @@ describe("Link onNavigate prop", () => {
   });
 });
 
+// ───────────────────────────────────────────────────────────────────────────
+// Pages Router onClick / preventDefault semantics
+//
+// Regression coverage for issue #1470: in new-link-behavior mode (the only
+// supported behavior in Next.js 13+), the `onClick` prop passed to <Link>
+// must fire on click, and `event.preventDefault()` inside that handler must
+// cancel the resulting client-side navigation.
+//
+// Mirrors Next.js: test/e2e/new-link-behavior/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/new-link-behavior/index.test.ts
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("Pages Router Link onClick semantics", () => {
+  async function renderPagesRouterLinkAndClick(args: {
+    href: string;
+    props?: Record<string, unknown>;
+  }) {
+    vi.resetModules();
+
+    let capturedAnchorProps: CapturedAnchorProps | undefined;
+    const captureAnchor = (type: unknown, props: unknown) => {
+      if (type === "a" && props !== null && typeof props === "object") {
+        capturedAnchorProps = props;
+      }
+    };
+
+    mockReactAnchorCaptureForLinkOnly_DO_NOT_REUSE({ captureAnchor });
+
+    // Stub Pages Router navigation at our own boundary instead of mocking
+    // `next/router` itself — keeps the mock surface to vinext-owned modules
+    // and avoids the dynamic-import-into-unknown-module timing pitfall.
+    const pagesRouterCalls: { href: string; replace: boolean }[] = [];
+    vi.doMock("../packages/vinext/src/client/pages-router-link-navigation.js", () => ({
+      navigatePagesRouterLink: async (
+        _router: unknown,
+        opts: { href: string; replace: boolean },
+      ) => {
+        pagesRouterCalls.push({ href: opts.href, replace: opts.replace });
+      },
+    }));
+    // The handler still tries `await import("next/router")` before calling
+    // navigatePagesRouterLink. Stub it so the import resolves cleanly (the
+    // returned Router is never used because we mocked navigatePagesRouterLink).
+    vi.doMock("next/router", () => ({ default: { push() {}, replace() {} } }));
+
+    const pushState = vi.fn();
+    const replaceState = vi.fn();
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal("window", {
+      // No vinext.navigationRuntime — that selects the Pages Router branch
+      // inside Link's click handler.
+      addEventListener: vi.fn(),
+      dispatchEvent,
+      history: { pushState, replaceState },
+      location: {
+        href: "https://example.com/current",
+        origin: "https://example.com",
+      },
+      scrollTo: vi.fn(),
+      __NEXT_DATA__: { props: {} },
+    });
+
+    const { default: IsolatedLink } = await import("../packages/vinext/src/shims/link.js");
+    const React = await vi.importActual<typeof import("react")>("react");
+
+    ReactDOMServer.renderToString(
+      React.createElement(
+        IsolatedLink,
+        { href: args.href, prefetch: false, ...args.props },
+        "target",
+      ),
+    );
+
+    const onClickHandler = capturedAnchorProps?.onClick;
+    if (typeof onClickHandler !== "function") {
+      throw new Error("Expected rendered Link anchor to expose an onClick handler");
+    }
+
+    const clickEvent = {
+      button: 0,
+      currentTarget: { hasAttribute: () => false, target: "" },
+      defaultPrevented: false,
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+    };
+
+    await onClickHandler(clickEvent);
+    // The anchor's onClick handler is sync (`void handleClick(event)`) — it
+    // kicks off the async handleClick without awaiting it. Drain the
+    // microtask queue so the dynamic import + router push finish before we
+    // observe side effects.
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+
+    return { clickEvent, pushState, replaceState, dispatchEvent, pagesRouterCalls };
+  }
+
+  it("fires the onClick prop on Link click", async () => {
+    let onClickCalls = 0;
+    let receivedEvent: { defaultPrevented?: boolean } | undefined;
+    const onClick = (event: { preventDefault(): void; defaultPrevented?: boolean }) => {
+      onClickCalls += 1;
+      receivedEvent = event;
+    };
+
+    const result = await renderPagesRouterLinkAndClick({
+      href: "/",
+      props: { onClick },
+    });
+
+    expect(onClickCalls).toBe(1);
+    // The onClick handler must have actually been invoked with the click
+    // event — Next.js parity: passing onClick to <Link> in the new-link
+    // behavior must run the user's handler on click.
+    expect(receivedEvent).toBe(result.clickEvent);
+    // The click's default is prevented so the browser does not perform a
+    // full-page navigation — Link takes over via the router.
+    expect(result.clickEvent.defaultPrevented).toBe(true);
+    // ...and the Pages Router navigation is actually scheduled.
+    expect(result.pagesRouterCalls).toEqual([{ href: "/", replace: false }]);
+  });
+
+  it("cancels client-side navigation when onClick calls preventDefault", async () => {
+    let observedAfterPreventDefault: boolean | undefined;
+    let observedHandlerCalls = 0;
+    const onClick = (event: { preventDefault(): void; defaultPrevented?: boolean }) => {
+      observedHandlerCalls += 1;
+      event.preventDefault();
+      observedAfterPreventDefault = event.defaultPrevented;
+    };
+
+    const result = await renderPagesRouterLinkAndClick({
+      href: "/about",
+      props: { onClick },
+    });
+
+    expect(observedHandlerCalls).toBe(1);
+    // Sanity: the user's onClick actually toggled defaultPrevented on the event.
+    expect(observedAfterPreventDefault).toBe(true);
+    expect(result.clickEvent.defaultPrevented).toBe(true);
+    // The user called preventDefault inside onClick: Link MUST honor it and
+    // skip its own navigation. No router push, no history mutation, no
+    // popstate dispatch.
+    expect(result.pagesRouterCalls).toEqual([]);
+    expect(result.pushState).not.toHaveBeenCalled();
+    expect(result.replaceState).not.toHaveBeenCalled();
+    expect(result.dispatchEvent).not.toHaveBeenCalled();
+  });
+});
+
 async function renderIsolatedLink(options: {
   appNavigation?: boolean;
   href: string;
@@ -878,6 +1033,8 @@ async function renderIsolatedLink(options: {
   const location = {
     href: "https://example.com/current",
     origin: "https://example.com",
+    pathname: "/current",
+    search: "",
   };
   const navigationRuntime =
     options.appNavigation === false ? undefined : createTestNavigationRuntime(navigate);
@@ -1227,6 +1384,153 @@ describe("Link prefetch scheduling", () => {
           priority: "high",
         }),
       );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("checks high-priority intent prefetch before queued click navigation can consume the cache", async () => {
+    const idleCallbacks: Array<() => void> = [];
+    const requestIdleCallback = vi.fn((callback: () => void) => {
+      idleCallbacks.push(callback);
+      return idleCallbacks.length;
+    });
+    const result = await renderIsolatedLink({
+      href: "/intent-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: { requestIdleCallback },
+    });
+    const { createRscRequestHeaders, createRscRequestUrl } =
+      await import("../packages/vinext/src/server/app-rsc-cache-busting.js");
+    const { consumePrefetchResponse, getPrefetchCache, getPrefetchedUrls } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    const rscUrl = await createRscRequestUrl("/intent-prefetch-target", createRscRequestHeaders());
+    const snapshot = {
+      buffer: new TextEncoder().encode("flight").buffer,
+      contentType: "text/x-component",
+      mountedSlotsHeader: null,
+      paramsHeader: null,
+      url: rscUrl,
+    };
+
+    try {
+      getPrefetchCache().set(rscUrl, {
+        cacheForNavigation: true,
+        outcome: "cache-seeded",
+        snapshot,
+        timestamp: Date.now(),
+      });
+      getPrefetchedUrls().add(rscUrl);
+
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(requestIdleCallback).not.toHaveBeenCalled();
+      expect(idleCallbacks).toEqual([]);
+      expect(result.fetch).not.toHaveBeenCalled();
+
+      // Simulate the click navigation consuming the existing viewport prefetch.
+      expect(consumePrefetchResponse(rscUrl, null, null)).toEqual(snapshot);
+      for (const callback of idleCallbacks) {
+        callback();
+      }
+      await flushPrefetchTasks();
+
+      expect(result.fetch).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("does not reprefetch a visible link after navigation makes it the current URL", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/intent-prefetch-target",
+      nodeEnv: "production",
+    });
+    const { getPrefetchCache, getPrefetchedUrls } =
+      await import("../packages/vinext/src/shims/navigation.js");
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      getPrefetchCache().clear();
+      getPrefetchedUrls().clear();
+      result.fetch.mockClear();
+      window.location.href = "https://example.com/intent-prefetch-target";
+      window.location.pathname = "/intent-prefetch-target";
+      window.location.search = "";
+
+      pingVisibleLinksFromRuntime();
+      await flushPrefetchTasks();
+
+      expect(result.fetch).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("gates prefetchInlining full payload behind a loading-shell request", async () => {
+    vi.stubEnv("__VINEXT_PREFETCH_INLINING", "true");
+    const observer = stubIntersectionObserver();
+    let resolveShell: ((response: Response) => void) | undefined;
+    let releaseShellBody: (() => void) | undefined;
+    const shellPromise = new Promise<Response>((resolve) => {
+      resolveShell = resolve;
+    });
+    const shellBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        releaseShellBody = () => {
+          controller.close();
+        };
+      },
+    });
+    const result = await renderIsolatedLink({
+      href: "/intent-prefetch-target",
+      nodeEnv: "production",
+    });
+
+    result.fetch
+      .mockImplementationOnce(() => shellPromise)
+      .mockImplementationOnce(() => Promise.resolve(new Response("full")));
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      const firstInit = result.fetch.mock.calls[0]?.[1];
+      expect(firstInit?.headers).toBeInstanceOf(Headers);
+      if (!(firstInit?.headers instanceof Headers)) {
+        throw new Error("Expected prefetch request headers");
+      }
+      expect(firstInit.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      );
+
+      pingVisibleLinksFromRuntime();
+      await flushPrefetchTasks();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+
+      if (resolveShell === undefined) {
+        throw new Error("Expected shell prefetch resolver");
+      }
+      resolveShell(new Response(shellBody));
+      await flushPrefetchTasks();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+
+      if (releaseShellBody === undefined) {
+        throw new Error("Expected shell body release");
+      }
+      releaseShellBody();
+      await waitForFetchCalls(result.fetch, 2);
+
+      const secondInit = result.fetch.mock.calls[1]?.[1];
+      expect(secondInit?.headers).toBeInstanceOf(Headers);
+      if (!(secondInit?.headers instanceof Headers)) {
+        throw new Error("Expected full prefetch request headers");
+      }
+      expect(secondInit.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
     } finally {
       result.restoreNodeEnv();
     }

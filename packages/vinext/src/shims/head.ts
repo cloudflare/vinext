@@ -18,11 +18,17 @@ type HeadProps = {
 // browser. The ALS-backed implementation lives in head-state.ts (server-only).
 
 let _ssrHeadChildren: React.ReactNode[] = [];
+let _documentInitialHead: React.ReactNode[] = [];
 const _clientHeadChildren = new Map<symbol, React.ReactNode>();
 
 let _getSSRHeadChildren = (): React.ReactNode[] => _ssrHeadChildren;
 let _resetSSRHeadImpl = (): void => {
   _ssrHeadChildren = [];
+  _documentInitialHead = [];
+};
+let _getDocumentInitialHead = (): React.ReactNode[] => _documentInitialHead;
+let _setDocumentInitialHead = (head: React.ReactNode[]): void => {
+  _documentInitialHead = head;
 };
 
 /**
@@ -32,9 +38,17 @@ let _resetSSRHeadImpl = (): void => {
 export function _registerHeadStateAccessors(accessors: {
   getSSRHeadChildren: () => React.ReactNode[];
   resetSSRHead: () => void;
+  getDocumentInitialHead?: () => React.ReactNode[];
+  setDocumentInitialHead?: (head: React.ReactNode[]) => void;
 }): void {
   _getSSRHeadChildren = accessors.getSSRHeadChildren;
   _resetSSRHeadImpl = accessors.resetSSRHead;
+  if (accessors.getDocumentInitialHead) {
+    _getDocumentInitialHead = accessors.getDocumentInitialHead;
+  }
+  if (accessors.setDocumentInitialHead) {
+    _setDocumentInitialHead = accessors.setDocumentInitialHead;
+  }
 }
 
 /** Reset the SSR head collector. Call before render. */
@@ -42,9 +56,56 @@ export function resetSSRHead(): void {
   _resetSSRHeadImpl();
 }
 
+/**
+ * Register head tags returned by a user `_document.getInitialProps()` call.
+ * Mirrors Next.js: `_document` may extend the head array passed to its render,
+ * and those tags are merged into the final `<head>` output. We treat them the
+ * same as `next/head` children — they go through the same dedupe pipeline so
+ * later tags (by key or meta-type) win, matching Next.js semantics.
+ *
+ * Pass an empty array (or simply don't call this) to skip the merge.
+ */
+export function setDocumentInitialHead(head: React.ReactNode[]): void {
+  _setDocumentInitialHead(head);
+}
+
+/**
+ * Default head tags emitted alongside every Pages Router render — charset
+ * first, then viewport. Mirrors Next.js's `defaultHead()` in
+ * `packages/next/src/shared/lib/head.tsx`, which seeds the head array used
+ * by `HeadManagerContext` before any user `<Head>` reduces over it.
+ *
+ * The canonical Next.js order is `<meta charset>` then `<meta viewport>`
+ * then user tags, all with `data-next-head=""`. See assertion in
+ * `test/e2e/next-head/index.test.ts`.
+ */
+function defaultHead(): React.ReactElement[] {
+  return [
+    React.createElement("meta", { charSet: "utf-8", key: "charset" }),
+    React.createElement("meta", {
+      name: "viewport",
+      content: "width=device-width",
+      key: "viewport",
+    }),
+  ];
+}
+
 /** Get collected head HTML. Call after render. */
 export function getSSRHeadHTML(): string {
-  return reduceHeadChildren(_getSSRHeadChildren())
+  // Order mirrors Next.js's `_document.tsx`: defaultHead seeds the head array,
+  // user `next/head` tags reduce over it, and then `_document.getInitialProps`
+  // may extend the array. The final `_document` render emits `{head}` (which
+  // contains the defaults + user tags + initial-props tags) ahead of any
+  // children declared inside `_document`'s own `<Head>`. Because the user
+  // children inside `_document`'s `<Head>` are tracked via React tree render
+  // (not next/head), they don't appear in this collector — so emitting
+  // `defaultHead + user + initialProps` here matches Next.js's serialised
+  // output up to that boundary.
+  return reduceHeadChildren([
+    ...defaultHead(),
+    ..._getSSRHeadChildren(),
+    ..._getDocumentInitialHead(),
+  ])
     .map((child) => headChildToHTML(child.type as string, child.props as Record<string, unknown>))
     .filter(Boolean)
     .join("\n  ");
@@ -207,6 +268,30 @@ export function isSafeAttrName(name: string): boolean {
 }
 
 /**
+ * Map React JSX attribute names to their HTML serialised form for the small
+ * set of head-relevant attributes where the two differ. React's own renderer
+ * normalises these automatically, but we serialise tags by hand so they reach
+ * the final HTML in the canonical lowercase / kebab-case shape that browsers
+ * (and Next.js's `test/e2e/next-head/index.test.ts`) expect.
+ */
+const JSX_TO_HTML_ATTR_MAP: Record<string, string> = {
+  charSet: "charset",
+  httpEquiv: "http-equiv",
+  acceptCharset: "accept-charset",
+  itemProp: "itemprop",
+  itemType: "itemtype",
+  itemID: "itemid",
+  itemRef: "itemref",
+  itemScope: "itemscope",
+  crossOrigin: "crossorigin",
+  referrerPolicy: "referrerpolicy",
+};
+
+function jsxAttrToHtml(name: string): string {
+  return JSX_TO_HTML_ATTR_MAP[name] ?? name;
+}
+
+/**
  * Convert props + tag to an HTML string for SSR head injection.
  * Callers must only pass tags that have already been validated against
  * ALLOWED_HEAD_TAGS (e.g. via reduceHeadChildren / collectHeadElements).
@@ -236,10 +321,10 @@ function headChildToHTML(tag: string, props: Record<string, unknown>): string {
       attrs.push(`class="${escapeAttr(String(value))}"`);
     } else if (typeof value === "string") {
       if (!isSafeAttrName(key)) continue;
-      attrs.push(`${key}="${escapeAttr(value)}"`);
+      attrs.push(`${jsxAttrToHtml(key)}="${escapeAttr(value)}"`);
     } else if (typeof value === "boolean" && value) {
       if (!isSafeAttrName(key)) continue;
-      attrs.push(key);
+      attrs.push(jsxAttrToHtml(key));
     }
   }
 
@@ -316,10 +401,17 @@ export function _applyHeadPropsToElement(
       domEl.setAttribute("class", String(value));
     } else if (typeof value === "boolean" && value) {
       if (!isSafeAttrName(key)) continue;
-      domEl.setAttribute(key, "");
+      // Map JSX attribute names (charSet, httpEquiv, ...) to the HTML form
+      // (charset, http-equiv, ...) so the client-side mutation matches the
+      // SSR output. `setAttribute` is case-insensitive for HTML elements, so
+      // `charSet` would land as `charset` by coincidence, but `httpEquiv`
+      // would lowercase to `httpequiv` rather than `http-equiv` and produce
+      // a hydration mismatch. The shared mapping in jsxAttrToHtml keeps both
+      // paths in lockstep.
+      domEl.setAttribute(jsxAttrToHtml(key), "");
     } else if (typeof value === "string") {
       if (!isSafeAttrName(key)) continue;
-      domEl.setAttribute(key, value);
+      domEl.setAttribute(jsxAttrToHtml(key), value);
     }
   }
 }

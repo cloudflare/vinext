@@ -128,18 +128,28 @@ type DocumentRenderPageInput = {
  *                  normal `loadUserDocumentInitialProps` fast path, which may
  *                  invoke `getInitialProps` itself.
  *   - `rendered` — `renderPage` produced the body. `bodyHtml` is the rendered
- *                  page string, `stylesHTML` the rendered `styles`, and
- *                  `docProps` the remaining props to spread onto `<Document>`.
+ *                  page string, `stylesHTML` the rendered `styles`, `docProps`
+ *                  the remaining props to spread onto `<Document>`, and `head`
+ *                  the head nodes returned by `getInitialProps` (forward them to
+ *                  `setDocumentInitialHead()` — do NOT call
+ *                  `callDocumentGetInitialProps()` as well).
  *   - `consumed` — `getInitialProps` WAS invoked but no body was produced
  *                  (it never called `renderPage`, returned no `{ html }`, or
  *                  threw). Callers must NOT re-invoke `getInitialProps` (that
- *                  would call it a second time) — render the streaming body and
- *                  spread `docProps` (possibly empty) onto `<Document>`.
+ *                  would call it a second time) — render the streaming body,
+ *                  spread `docProps` (possibly empty) onto `<Document>`, and
+ *                  forward `head` to `setDocumentInitialHead()`.
  */
 type RunDocumentRenderPageResult =
   | { status: "skipped" }
-  | { status: "rendered"; bodyHtml: string; stylesHTML: string; docProps: Record<string, unknown> }
-  | { status: "consumed"; docProps: Record<string, unknown> };
+  | {
+      status: "rendered";
+      bodyHtml: string;
+      stylesHTML: string;
+      docProps: Record<string, unknown>;
+      head: ReactNode[];
+    }
+  | { status: "consumed"; docProps: Record<string, unknown>; head: ReactNode[] };
 
 /**
  * Run a user `_document.getInitialProps()` with a `ctx.renderPage()` that
@@ -216,24 +226,29 @@ export async function runDocumentRenderPage(
     // Falls back cleanly: render the streaming body and a bare Document.
     // `getInitialProps` was already invoked, so the caller must not re-call it.
     console.error("[vinext] _document.getInitialProps() threw:", err);
-    return { status: "consumed", docProps: {} };
+    return { status: "consumed", docProps: {}, head: [] };
   }
 
   // Strip the contract fields the pipeline consumes itself so the rest can be
   // spread onto `<Document>` like Next.js does. `html` is the body; `head`/
-  // `styles` are merged into the SSR head.
-  const { html: _html, head: _head, styles: _styles, ...docProps } = docInitialProps ?? {};
+  // `styles` are merged into the SSR head. `head` is surfaced back to the
+  // caller so it can be folded into the dedupe pipeline via
+  // `setDocumentInitialHead()` — `getInitialProps` is only ever invoked once
+  // (here), so the standalone `callDocumentGetInitialProps()` path must not
+  // run again for the same render.
+  const { html: _html, head: rawHead, styles: _styles, ...docProps } = docInitialProps ?? {};
+  const head: ReactNode[] = Array.isArray(rawHead) ? (rawHead as ReactNode[]) : [];
 
   // If the user implemented getInitialProps but never invoked renderPage
   // (uncommon — but possible if they only return head/styles), fall back to
   // the streaming render so the body content is produced normally.
-  if (!renderPageCalled) return { status: "consumed", docProps };
+  if (!renderPageCalled) return { status: "consumed", docProps, head };
 
   if (!docInitialProps || typeof docInitialProps.html !== "string") {
     console.error(
       `[vinext] "${DocCtor.displayName ?? DocCtor.name ?? "Document"}.getInitialProps()" did not return an object with a string "html" prop`,
     );
-    return { status: "consumed", docProps };
+    return { status: "consumed", docProps, head };
   }
 
   // Render `styles` returned by `getInitialProps()` (e.g. collected
@@ -251,5 +266,5 @@ export async function runDocumentRenderPage(
     }
   }
 
-  return { status: "rendered", bodyHtml: docInitialProps.html, stylesHTML, docProps };
+  return { status: "rendered", bodyHtml: docInitialProps.html, stylesHTML, docProps, head };
 }

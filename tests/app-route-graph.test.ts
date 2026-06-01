@@ -175,6 +175,72 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  // Regression for https://github.com/cloudflare/vinext/issues/1339
+  // Ported from Next.js: test/e2e/app-dir/parallel-routes-layouts/
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-layouts/parallel-routes-layouts.test.ts
+  //
+  // When a slot owns both a matched page and a default.tsx, the matched page
+  // must win — vinext previously fell back to default.tsx ("default page"
+  // instead of "Hello from Nested"). This locks in page-over-default priority
+  // for the children slot and for sibling @foo/@bar slots simultaneously.
+  it("prefers a matched slot page over default.tsx across sibling slots (issue #1339)", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "nested/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "nested/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "nested/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "nested/@foo/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "nested/@foo/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "nested/@foo/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "nested/@bar/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "nested/@bar/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "nested/@bar/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "nested/@bar/subroute/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+      // At /nested the children slot must render nested/page.tsx, not the
+      // sibling nested/default.tsx fallback.
+      const nested = findRoute(graph.routes, "/nested");
+      expect(nested.pagePath).toBe(path.join(appDir, "nested/page.tsx"));
+
+      // Each sibling slot has its own page AND its own default — the page wins.
+      const foo = nested.parallelSlots.find((slot) => slot.name === "foo");
+      const bar = nested.parallelSlots.find((slot) => slot.name === "bar");
+      expect(foo).toMatchObject({
+        name: "foo",
+        pagePath: path.join(appDir, "nested/@foo/page.tsx"),
+        defaultPath: path.join(appDir, "nested/@foo/default.tsx"),
+        routeSegments: [],
+      });
+      expect(bar).toMatchObject({
+        name: "bar",
+        pagePath: path.join(appDir, "nested/@bar/page.tsx"),
+        defaultPath: path.join(appDir, "nested/@bar/default.tsx"),
+        routeSegments: [],
+      });
+
+      // /nested/subroute only has a match for the @bar slot. The children slot
+      // falls back to nested/default.tsx, @bar mirrors its subroute page, and
+      // @foo (no subroute page) keeps its default fallback.
+      const subroute = findRoute(graph.routes, "/nested/subroute");
+      expect(subroute.pagePath).toBe(path.join(appDir, "nested/default.tsx"));
+      const subBar = subroute.parallelSlots.find((slot) => slot.name === "bar");
+      const subFoo = subroute.parallelSlots.find((slot) => slot.name === "foo");
+      expect(subBar).toMatchObject({
+        name: "bar",
+        pagePath: path.join(appDir, "nested/@bar/subroute/page.tsx"),
+        routeSegments: ["subroute"],
+      });
+      expect(subFoo).toMatchObject({
+        name: "foo",
+        pagePath: null,
+        defaultPath: path.join(appDir, "nested/@foo/default.tsx"),
+      });
+    });
+  });
+
   it("materializes synthetic routes from a sibling route-group's parallel slot", async () => {
     // Two sibling route groups share the same URL pattern at the root:
     //   (group-a) provides a layout-only route with a catch-all parallel slot

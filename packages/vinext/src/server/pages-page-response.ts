@@ -14,6 +14,7 @@ import {
   runDocumentRenderPage,
 } from "./pages-document-initial-props.js";
 import { readStreamAsText } from "../utils/text-stream.js";
+import { callDocumentGetInitialProps } from "./document-initial-head.js";
 
 type PagesFontPreload = {
   href: string;
@@ -66,6 +67,7 @@ type RenderPagesPageResponseOptions = {
    * head. Undefined or empty disables emission.
    */
   clientTraceMetadata?: readonly string[] | undefined;
+  setDocumentInitialHead?: ((head: ReactNode[]) => void) | undefined;
   gsspRes: PagesGsspResponse | null;
   isrCacheKey: (router: string, pathname: string) => string;
   expireSeconds?: number;
@@ -207,10 +209,11 @@ async function buildPagesShellHtml(
     return html;
   }
 
+  // charset + viewport are emitted via getSSRHeadHTML() (next/head's
+  // defaultHead seeds them with data-next-head=""), matching Next.js's
+  // canonical ordering. Don't duplicate them here.
   return (
     "<!DOCTYPE html>\n<html>\n<head>\n" +
-    '  <meta charset="utf-8" />\n' +
-    '  <meta name="viewport" content="width=device-width, initial-scale=1" />\n' +
     `  ${fontHeadHTML}${options.ssrHeadHTML}\n` +
     `  ${options.assetTags}\n` +
     "</head>\n<body>\n" +
@@ -402,6 +405,19 @@ export async function renderPagesPageResponse(
     // because they were collected before the page had finished rendering.
     // Mirrors Next.js fix: vercel/next.js@9853944
     bodyStream = await options.renderToReadableStream(pageElement);
+  }
+
+  // Fold any head tags returned by `_document.getInitialProps()` into the
+  // dedupe pipeline before getSSRHeadHTML serialises the final <head>. Mirrors
+  // Next.js's `_document` contract. `runDocumentRenderPage` already invokes
+  // `getInitialProps` for the renderPage contract (rendered/consumed), so reuse
+  // the head it surfaced rather than calling it a second time. Only the
+  // `skipped` path (no override, or no `enhancePageElement` wired) falls back to
+  // the standalone helper — which itself skips the unmodified default shim.
+  if (documentRenderPage.status === "skipped") {
+    await callDocumentGetInitialProps(options.DocumentComponent, options.setDocumentInitialHead);
+  } else {
+    options.setDocumentInitialHead?.(documentRenderPage.head);
   }
 
   const headFromShim = options.getSSRHeadHTML?.() ?? "";

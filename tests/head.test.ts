@@ -13,6 +13,7 @@ import Head, {
   getSSRHeadHTML,
   escapeAttr,
   reduceHeadChildren,
+  setDocumentInitialHead,
   _applyHeadPropsToElement,
 } from "../packages/vinext/src/shims/head.js";
 
@@ -173,9 +174,15 @@ describe("Head SSR collection", () => {
     expect(headHtml).not.toContain("Page 1");
   });
 
-  it("returns empty string when no head elements", () => {
+  it("returns only default charset/viewport when no user head elements", () => {
+    // Even without any user `<Head>`, vinext emits next/head's defaultHead()
+    // (charset + viewport) to match Next.js's canonical head ordering.
     const headHtml = getSSRHeadHTML();
-    expect(headHtml).toBe("");
+    expect(headHtml).toContain('<meta charset="utf-8"');
+    expect(headHtml).toContain('<meta name="viewport"');
+    // No other tags.
+    expect(headHtml).not.toContain("<title");
+    expect(headHtml).not.toContain("<link");
   });
 
   it("dedupes keyed tags across multiple Head instances and keeps the last one", () => {
@@ -305,7 +312,7 @@ describe("Head disallowed tags", () => {
     );
     const headHtml = getSSRHeadHTML();
     expect(headHtml).not.toContain("<div");
-    expect(headHtml).toBe("");
+    expect(headHtml).not.toContain("bad");
     warn.mockRestore();
   });
 
@@ -316,7 +323,7 @@ describe("Head disallowed tags", () => {
     );
     const headHtml = getSSRHeadHTML();
     expect(headHtml).not.toContain("<iframe");
-    expect(headHtml).toBe("");
+    expect(headHtml).not.toContain("evil.com");
     warn.mockRestore();
   });
 
@@ -329,7 +336,7 @@ describe("Head disallowed tags", () => {
     );
     const headHtml = getSSRHeadHTML();
     // Component elements are ignored because child.type is not a string
-    expect(headHtml).toBe("");
+    expect(headHtml).not.toContain('name="custom"');
   });
 
   it("keeps allowed tags while ignoring disallowed ones", () => {
@@ -531,6 +538,29 @@ describe("Head client sync", () => {
     expect(element.textContent).toBe("abc");
     expect(element.innerHTML).toBe("");
   });
+
+  it("maps JSX attribute names to HTML form when applying to DOM", () => {
+    // The SSR path emits `<meta http-equiv="..." />` (hyphenated). The client
+    // path must use the same mapping or hydration will mismatch. setAttribute
+    // is case-insensitive for HTML elements, so `charSet` would lowercase to
+    // `charset` by coincidence — but `httpEquiv` would become `httpequiv`
+    // (no hyphen), not `http-equiv`.
+    const element = createElementDouble();
+    _applyHeadPropsToElement(element, {
+      httpEquiv: "X-UA-Compatible",
+      content: "IE=edge",
+    });
+    expect(element.attributes.get("http-equiv")).toBe("X-UA-Compatible");
+    expect(element.attributes.get("httpEquiv")).toBeUndefined();
+    expect(element.attributes.get("content")).toBe("IE=edge");
+  });
+
+  it("maps JSX charSet attribute to HTML charset when applying to DOM", () => {
+    const element = createElementDouble();
+    _applyHeadPropsToElement(element, { charSet: "utf-8" });
+    expect(element.attributes.get("charset")).toBe("utf-8");
+    expect(element.attributes.get("charSet")).toBeUndefined();
+  });
 });
 
 // ─── escapeAttr utility ─────────────────────────────────────────────────
@@ -554,5 +584,133 @@ describe("escapeAttr", () => {
 
   it("escapes all special chars together", () => {
     expect(escapeAttr('&"<>')).toBe("&amp;&quot;&lt;&gt;");
+  });
+});
+
+// ─── charset / viewport ordering (issue #1569) ─────────────────────────────
+//
+// Mirrors Next.js's test/e2e/next-head/index.test.ts assertion that
+// `<meta charset>` is emitted first, then `<meta viewport>`, then user tags,
+// all carrying `data-next-head=""`. Next.js's `defaultHead()` in
+// shared/lib/head.tsx is what seeds those defaults — vinext must include the
+// same defaults via getSSRHeadHTML().
+
+describe("Head default tags (charset/viewport ordering, issue #1569)", () => {
+  beforeEach(() => {
+    resetSSRHead();
+    setDocumentInitialHead([]);
+  });
+
+  it("emits charset first, then viewport, before user tags", () => {
+    ReactDOMServer.renderToString(
+      React.createElement(
+        Head,
+        null,
+        React.createElement("meta", { name: "test-head-1", content: "hello" }),
+      ),
+    );
+
+    const html = getSSRHeadHTML();
+    const charsetIdx = html.indexOf('charset="utf-8"');
+    const viewportIdx = html.indexOf('name="viewport"');
+    const userIdx = html.indexOf('name="test-head-1"');
+
+    expect(charsetIdx).toBeGreaterThanOrEqual(0);
+    expect(viewportIdx).toBeGreaterThan(charsetIdx);
+    expect(userIdx).toBeGreaterThan(viewportIdx);
+  });
+
+  it("default tags carry data-next-head attribute", () => {
+    const html = getSSRHeadHTML();
+    // Match the segment from the charset tag through the next "/>"
+    const charsetMatch = html.match(/<meta charset="utf-8"[^/]*\/>/);
+    expect(charsetMatch).not.toBeNull();
+    expect(charsetMatch?.[0]).toContain('data-next-head=""');
+
+    const viewportMatch = html.match(/<meta name="viewport"[^/]*\/>/);
+    expect(viewportMatch).not.toBeNull();
+    expect(viewportMatch?.[0]).toContain('data-next-head=""');
+  });
+
+  it("user-supplied charset overrides the default (charSet meta-type dedupe)", () => {
+    // charSet is special: META_TYPES dedupe always treats it as unique-only,
+    // so any user-supplied charset replaces the default regardless of key.
+    ReactDOMServer.renderToString(
+      React.createElement(Head, null, React.createElement("meta", { charSet: "utf-16" })),
+    );
+
+    const html = getSSRHeadHTML();
+    expect(html).toContain('charset="utf-16"');
+    expect(html).not.toContain('charset="utf-8"');
+  });
+
+  it("user-supplied viewport with key='viewport' overrides the default", () => {
+    // The default viewport carries `key="viewport"`. User tags must use the
+    // same key to dedupe — matches Next.js's `key`-based merge semantics.
+    ReactDOMServer.renderToString(
+      React.createElement(
+        Head,
+        null,
+        React.createElement("meta", {
+          name: "viewport",
+          content: "width=500",
+          key: "viewport",
+        }),
+      ),
+    );
+
+    const html = getSSRHeadHTML();
+    expect(html).toContain('content="width=500"');
+    expect(html).not.toContain('content="width=device-width"');
+  });
+
+  it("emits defaults even when no user <Head> is mounted", () => {
+    const html = getSSRHeadHTML();
+    expect(html).toContain('<meta charset="utf-8"');
+    expect(html).toContain('<meta name="viewport"');
+  });
+});
+
+// ─── _document.getInitialProps() head merge (issue #1569) ──────────────────
+//
+// Mirrors Next.js's test/e2e/next-head/index.test.ts assertion that head tags
+// returned from a user `_document.getInitialProps()` appear in the rendered
+// `<head>`. vinext's SSR pipeline forwards them to the head shim via
+// setDocumentInitialHead() so they flow through the same dedupe pipeline.
+
+describe("Head _document.getInitialProps() merge (issue #1569)", () => {
+  beforeEach(() => {
+    resetSSRHead();
+    setDocumentInitialHead([]);
+  });
+
+  it("includes meta tags returned by setDocumentInitialHead in the output", () => {
+    ReactDOMServer.renderToString(
+      React.createElement(
+        Head,
+        null,
+        React.createElement("meta", { name: "test-head-1", content: "hello" }),
+      ),
+    );
+    setDocumentInitialHead([
+      React.createElement("meta", { name: "test-head-initial-props", content: "hello" }),
+    ]);
+
+    const html = getSSRHeadHTML();
+    expect(html).toContain('name="test-head-initial-props"');
+    expect(html).toContain('content="hello"');
+    // The user's next/head tag still appears.
+    expect(html).toContain('name="test-head-1"');
+  });
+
+  it("resets between renders so initial-props head does not leak", () => {
+    setDocumentInitialHead([
+      React.createElement("meta", { name: "leaked", content: "should-be-gone" }),
+    ]);
+    expect(getSSRHeadHTML()).toContain('name="leaked"');
+
+    resetSSRHead();
+
+    expect(getSSRHeadHTML()).not.toContain('name="leaked"');
   });
 });

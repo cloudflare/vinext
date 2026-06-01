@@ -2358,3 +2358,63 @@ function joinRoutePattern(basePattern: string, subPath: string): string {
   if (!subPath) return basePattern;
   return basePattern === "/" ? `/${subPath}` : `${basePattern}/${subPath}`;
 }
+
+/**
+ * Returns the unique static sibling segment names at each dynamic URL level
+ * of the matched route. Mirrors Next.js's `getStaticSiblingSegments` from
+ * the next-app-loader: for `/products/[id]` with a sibling route at
+ * `/products/sale`, the dynamic `[id]` segment has `staticSiblings: ['sale']`.
+ *
+ * The returned list flattens siblings across all dynamic positions and is
+ * intended for the RSC payload — the client router uses it to determine if
+ * a cached dynamic-route prefetch can be reused when navigating to a static
+ * sibling URL.
+ *
+ * Ported from Next.js: packages/next/src/build/webpack/loaders/next-app-loader/index.ts
+ * (getStaticSiblingSegments).
+ *
+ * Route group segments and parallel-route slot segments are part of the
+ * filesystem tree but not the URL namespace — sibling computation is done on
+ * the URL-level `patternParts`, so they are correctly transparent here.
+ */
+export function computeAppRouteStaticSiblings(
+  allRoutes: readonly { patternParts?: readonly string[] | null }[],
+  matchedRoute: { patternParts?: readonly string[] | null },
+): string[] {
+  const siblings = new Set<string>();
+  const parts = matchedRoute.patternParts;
+  if (!parts) return [];
+
+  for (let level = 0; level < parts.length; level++) {
+    const segmentAtLevel = parts[level];
+    // Only compute siblings for dynamic segments (`:id`, `:rest+`, `:rest*`).
+    if (!segmentAtLevel.startsWith(":")) continue;
+
+    for (const otherRoute of allRoutes) {
+      const otherParts = otherRoute.patternParts;
+      if (!otherParts || otherParts.length <= level) continue;
+
+      // Parent prefix (segments before `level`) must match exactly. We
+      // intentionally do not normalize dynamic-to-dynamic equivalence here:
+      // siblings are only collected when the prefix is literally the same,
+      // matching Next.js's path-string comparison.
+      let prefixMatches = true;
+      for (let i = 0; i < level; i++) {
+        if (parts[i] !== otherParts[i]) {
+          prefixMatches = false;
+          break;
+        }
+      }
+      if (!prefixMatches) continue;
+
+      const otherSegmentAtLevel = otherParts[level];
+      if (otherSegmentAtLevel === segmentAtLevel) continue;
+      // Only collect static siblings.
+      if (otherSegmentAtLevel.startsWith(":")) continue;
+
+      siblings.add(otherSegmentAtLevel);
+    }
+  }
+
+  return Array.from(siblings);
+}

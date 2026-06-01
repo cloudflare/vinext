@@ -2,13 +2,15 @@
  * tsconfig.json `compilerOptions.paths` loader.
  *
  * Used to make tsconfig path aliases (e.g. `@/foo` mapping to `./src/foo`)
- * available when vinext loads `next.config.ts` through Vite's `runnerImport`.
+ * and `baseUrl` bare imports available when vinext loads `next.config.ts`
+ * through Vite's `runnerImport`.
  *
  * Next.js's own `next.config.ts` loader (packages/next/src/build/next-config-ts/
- * transpile-config.ts) reads `compilerOptions.paths` from the project's
- * `tsconfig.json` and passes them to SWC so that imports like
- * `import { foo } from '@/foo'` resolve at config load time. We do the same
- * here, but as Vite `resolve.alias` entries.
+ * transpile-config.ts) reads `compilerOptions.paths` and
+ * `compilerOptions.baseUrl` from the project's `tsconfig.json` and passes them
+ * to SWC so that imports like
+ * `import { foo } from '@/foo'` and `import { bar } from 'bar'` resolve at
+ * config load time. We do the same here with Vite resolver settings.
  *
  * The implementation is intentionally minimal:
  *   - Static JSON-style parse of tsconfig.json (handles trailing commas /
@@ -26,6 +28,11 @@ import { createRequire } from "node:module";
 import { parseStaticObjectLiteral } from "../plugins/fonts.js";
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
+
+type TsconfigPathResolution = {
+  aliases: Record<string, string>;
+  baseUrl: string | null;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -98,57 +105,87 @@ function materializeAliases(
   return aliases;
 }
 
-function loadAliasesFromTsconfigFile(
+function emptyResolution(): TsconfigPathResolution {
+  return { aliases: {}, baseUrl: null };
+}
+
+function loadResolutionFromTsconfigFile(
   configPath: string,
   seen: Set<string>,
-): Record<string, string> {
-  if (seen.has(configPath)) return {};
+): TsconfigPathResolution {
+  if (seen.has(configPath)) return emptyResolution();
   seen.add(configPath);
 
   let parsed: Record<string, unknown> | null = null;
   try {
     parsed = parseStaticObjectLiteral(fs.readFileSync(configPath, "utf-8"));
   } catch {
-    return {};
+    return emptyResolution();
   }
-  if (!parsed) return {};
+  if (!parsed) return emptyResolution();
 
-  let aliases: Record<string, string> = {};
-  if (typeof parsed.extends === "string") {
-    const extendedPath = resolveTsconfigExtends(configPath, parsed.extends);
+  let resolution = emptyResolution();
+  const extendsList = typeof parsed.extends === "string" ? [parsed.extends] : [];
+
+  for (const extendsSpecifier of extendsList) {
+    const extendedPath = resolveTsconfigExtends(configPath, extendsSpecifier);
     if (extendedPath) {
-      aliases = loadAliasesFromTsconfigFile(extendedPath, seen);
+      const parent = loadResolutionFromTsconfigFile(extendedPath, seen);
+      resolution = {
+        aliases: { ...resolution.aliases, ...parent.aliases },
+        baseUrl: parent.baseUrl ?? resolution.baseUrl,
+      };
     }
   }
 
   const compilerOptions = isRecord(parsed.compilerOptions) ? parsed.compilerOptions : null;
+  const ownBaseUrl =
+    compilerOptions && typeof compilerOptions.baseUrl === "string"
+      ? path.resolve(path.dirname(configPath), compilerOptions.baseUrl)
+      : null;
+  const baseUrl = ownBaseUrl ?? resolution.baseUrl;
+
   const pathsConfig =
     compilerOptions && isRecord(compilerOptions.paths) ? compilerOptions.paths : null;
-  if (!pathsConfig) return aliases;
+  if (!pathsConfig) {
+    return {
+      aliases: resolution.aliases,
+      baseUrl,
+    };
+  }
 
-  const baseUrl =
-    compilerOptions && typeof compilerOptions.baseUrl === "string" ? compilerOptions.baseUrl : ".";
-  const resolvedBaseUrl = path.resolve(path.dirname(configPath), baseUrl);
+  const pathsBaseUrl = baseUrl ?? path.dirname(configPath);
 
   return {
-    ...aliases,
-    ...materializeAliases(pathsConfig, resolvedBaseUrl),
+    aliases: {
+      ...resolution.aliases,
+      ...materializeAliases(pathsConfig, pathsBaseUrl),
+    },
+    baseUrl,
   };
 }
 
 /**
  * Read the project's tsconfig.json (or jsconfig.json) and return its
- * `compilerOptions.paths` as absolute-path Vite `resolve.alias` entries.
+ * path-resolution settings as absolute paths.
  *
- * Returns an empty object if no config is found or no paths are configured.
+ * Returns an empty resolution if no config is found or no relevant compiler
+ * options are configured.
  * Errors during parsing are swallowed — this is a best-effort helper that
  * must not break config loading.
  */
-export function loadTsconfigPathAliasesForRoot(projectRoot: string): Record<string, string> {
+export function loadTsconfigResolutionForRoot(projectRoot: string): TsconfigPathResolution {
   for (const name of TSCONFIG_FILES) {
     const candidate = path.join(projectRoot, name);
     if (!fs.existsSync(candidate)) continue;
-    return loadAliasesFromTsconfigFile(candidate, new Set());
+    return loadResolutionFromTsconfigFile(candidate, new Set());
   }
-  return {};
+  return emptyResolution();
+}
+
+/**
+ * Back-compat helper for call sites that only need `compilerOptions.paths`.
+ */
+export function loadTsconfigPathAliasesForRoot(projectRoot: string): Record<string, string> {
+  return loadTsconfigResolutionForRoot(projectRoot).aliases;
 }

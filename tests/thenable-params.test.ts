@@ -102,4 +102,52 @@ describe("makeThenableParams", () => {
     expect(Object.keys(params)).toEqual([]);
     expect(await params).toEqual({});
   });
+
+  it("reports direct param property access to an observer", () => {
+    const observedKeys: string[][] = [];
+    const params = makeThenableParams(
+      { slug: "post" },
+      {
+        observeParamAccess(keys) {
+          observedKeys.push([...keys]);
+        },
+      },
+    );
+
+    expect(params.slug).toBe("post");
+    expect(observedKeys).toEqual([["slug"]]);
+  });
+
+  it("reports awaited params as an all-keys access", async () => {
+    const observedKeys: string[][] = [];
+    const params = makeThenableParams(
+      { slug: "post", category: "news" },
+      {
+        observeParamAccess(keys) {
+          observedKeys.push([...keys]);
+        },
+      },
+    );
+
+    await params;
+
+    expect(observedKeys).toEqual([["slug", "category"]]);
+  });
+
+  it("reports destructured param property access to an observer", () => {
+    const observedKeys: string[][] = [];
+    const params = makeThenableParams(
+      { slug: "post" },
+      {
+        observeParamAccess(keys) {
+          observedKeys.push([...keys]);
+        },
+      },
+    );
+
+    const { slug } = params;
+
+    expect(slug).toBe("post");
+    expect(observedKeys).toEqual([["slug"]]);
+  });
 });

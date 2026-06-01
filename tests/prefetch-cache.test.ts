@@ -23,8 +23,10 @@ let MAX_PREFETCH_CACHE_SIZE: Navigation["MAX_PREFETCH_CACHE_SIZE"];
 let PREFETCH_CACHE_TTL: Navigation["PREFETCH_CACHE_TTL"];
 let snapshotRscResponse: Navigation["snapshotRscResponse"];
 let restoreRscResponse: Navigation["restoreRscResponse"];
+let prefetchRscResponse: Navigation["prefetchRscResponse"];
 let invalidatePrefetchCache: Navigation["invalidatePrefetchCache"];
 let appRouterInstance: Navigation["appRouterInstance"];
+let consumePrefetchResponseForNavigation: Navigation["consumePrefetchResponseForNavigation"];
 
 beforeEach(async () => {
   // Set window BEFORE importing so isServer evaluates to false
@@ -53,8 +55,10 @@ beforeEach(async () => {
   PREFETCH_CACHE_TTL = nav.PREFETCH_CACHE_TTL;
   snapshotRscResponse = nav.snapshotRscResponse;
   restoreRscResponse = nav.restoreRscResponse;
+  prefetchRscResponse = nav.prefetchRscResponse;
   invalidatePrefetchCache = nav.invalidatePrefetchCache;
   appRouterInstance = nav.appRouterInstance;
+  consumePrefetchResponseForNavigation = nav.consumePrefetchResponseForNavigation;
 });
 
 afterEach(() => {
@@ -83,6 +87,19 @@ function fillCache(count: number, timestamp: number, keyPrefix = "/page-"): void
     });
     prefetched.add(key);
   }
+}
+
+function createDeferredResponse(): {
+  promise: Promise<Response>;
+  resolve: (response: Response) => void;
+} {
+  let resolve: (response: Response) => void = () => {
+    throw new Error("Deferred response was not initialized");
+  };
+  const promise = new Promise<Response>((resolveInner) => {
+    resolve = resolveInner;
+  });
+  return { promise, resolve };
 }
 
 async function waitForPrefetchSetup(isReady: () => boolean = () => true): Promise<void> {
@@ -331,6 +348,61 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchCache().has(cacheKey)).toBe(false);
     expect(getPrefetchedUrls().has(cacheKey)).toBe(false);
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("awaits an in-flight prefetch instead of missing the navigation cache", async () => {
+    const rscUrl = "/dashboard.rsc";
+    const deferred = createDeferredResponse();
+    let settled = false;
+
+    prefetchRscResponse(rscUrl, deferred.promise, null, null);
+
+    const consumedPromise = consumePrefetchResponseForNavigation(rscUrl, null, null).then(
+      (snapshot) => {
+        settled = true;
+        return snapshot;
+      },
+    );
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(getPrefetchCache().get(rscUrl)?.outcome).toBe("pending");
+
+    deferred.resolve(new Response("flight", { headers: { "content-type": "text/x-component" } }));
+
+    const consumed = await consumedPromise;
+    expect(settled).toBe(true);
+    expect(consumed).not.toBeNull();
+    if (consumed === null) return;
+    await expect(restoreRscResponse(consumed).text()).resolves.toBe("flight");
+    expect(getPrefetchCache().has(rscUrl)).toBe(false);
+    expect(getPrefetchedUrls().has(rscUrl)).toBe(false);
+  });
+
+  it("leaves a resolved in-flight prefetch for a newer navigation when the old navigation is stale", async () => {
+    const rscUrl = "/dashboard.rsc";
+    const deferred = createDeferredResponse();
+    let currentNavigation = true;
+
+    prefetchRscResponse(rscUrl, deferred.promise, null, null);
+
+    const staleNavigationConsume = consumePrefetchResponseForNavigation(rscUrl, null, null, {
+      shouldConsume: () => currentNavigation,
+    });
+
+    await Promise.resolve();
+    currentNavigation = false;
+    deferred.resolve(new Response("flight", { headers: { "content-type": "text/x-component" } }));
+
+    await expect(staleNavigationConsume).resolves.toBeNull();
+    expect(getPrefetchCache().get(rscUrl)?.outcome).toBe("cache-seeded");
+
+    const consumed = await consumePrefetchResponseForNavigation(rscUrl, null, null);
+    expect(consumed).not.toBeNull();
+    if (consumed === null) return;
+    await expect(restoreRscResponse(consumed).text()).resolves.toBe("flight");
+    expect(getPrefetchCache().has(rscUrl)).toBe(false);
+    expect(getPrefetchedUrls().has(rscUrl)).toBe(false);
   });
 
   it("sweeps all expired entries before FIFO", () => {
