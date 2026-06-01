@@ -64,9 +64,11 @@ import {
   ASSET_PREFIX_URL_DIR,
   assetPrefixPathname,
   isAbsoluteAssetPrefix,
+  resolveAssetsDir,
 } from "../utils/asset-prefix.js";
 import { computeLazyChunks } from "../utils/lazy-chunks.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
+import { findClientEntryFile, readClientBuildManifest } from "../utils/client-build-manifest.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { collectInlineCssManifest } from "../build/inline-css.js";
@@ -1411,22 +1413,28 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     ssrManifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
   }
 
-  // Load the build manifest to compute lazy chunks — chunks only reachable via
-  // dynamic imports (React.lazy, next/dynamic). These should not be
-  // modulepreloaded since they are fetched on demand.
+  // Load the build manifest to expose the Pages Router client entry and compute
+  // lazy chunks. Prerendered HTML is rendered through this Node server too, so
+  // it needs the same client-entry global that Cloudflare builds inject into
+  // the Worker entry at build time.
   const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
-  if (fs.existsSync(buildManifestPath)) {
-    try {
-      const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
-      const lazyChunks = computeLazyChunks(buildManifest).map((file: string) =>
-        manifestFileWithBase(file, assetBase),
-      );
-      if (lazyChunks.length > 0) {
-        globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks;
-      }
-    } catch {
-      /* ignore parse errors */
-    }
+  const buildManifest = readClientBuildManifest(buildManifestPath);
+  // findClientEntryFile handles a missing manifest by skipping the manifest
+  // lookup and going straight to the on-disk fallback, so the call is the same
+  // either way — only the lazy-chunk computation needs the manifest.
+  globalThis.__VINEXT_CLIENT_ENTRY__ = findClientEntryFile({
+    buildManifest,
+    clientDir,
+    assetsSubdir: resolveAssetsDir(assetPrefix),
+    assetBase,
+  });
+  if (buildManifest) {
+    const lazyChunks = computeLazyChunks(buildManifest).map((file) =>
+      manifestFileWithBase(file, assetBase),
+    );
+    globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks.length > 0 ? lazyChunks : undefined;
+  } else {
+    globalThis.__VINEXT_LAZY_CHUNKS__ = undefined;
   }
 
   // Build the static file metadata cache at startup (same as App Router).

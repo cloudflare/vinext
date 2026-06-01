@@ -161,6 +161,26 @@ describe("resolveAppPageSegmentConfig", () => {
     });
   });
 
+  it("uses the child route runtime when segment runtimes differ", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ runtime: "edge" }],
+        page: { runtime: "nodejs" },
+      }).runtime,
+    ).toBe("nodejs");
+  });
+
+  it("ignores unknown runtime values", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ runtime: "bun" }],
+        page: {},
+      }),
+    ).toEqual({
+      revalidateSeconds: null,
+    });
+  });
+
   it("keeps explicit dynamicParams false sticky across child segments", () => {
     expect(
       resolveAppPageSegmentConfig({

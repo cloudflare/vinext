@@ -4,6 +4,7 @@ import {
   computeRscCacheBustingSearchParam,
   createRscRequestHeaders,
   createRscRequestUrl,
+  createServerActionRequestUrl,
   isRscCompatibilityIdCompatible,
   resolveInvalidRscCacheBustingRequest,
   setRscCacheBustingSearchParam,
@@ -57,6 +58,12 @@ describe("App Router RSC cache-busting", () => {
     await expect(createRscRequestUrl("/photos/42", headers)).resolves.toBe(
       `/photos/42.rsc?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}=${hash}`,
     );
+  });
+
+  it("keeps server action POSTs on the visible route URL", () => {
+    // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
+    expect(createServerActionRequestUrl("/server?name=alice#section")).toBe("/server?name=alice");
   });
 
   it("changes the hash when a varying header changes", async () => {

@@ -691,10 +691,18 @@ let _unstableIoWarned = false;
 // ---------------------------------------------------------------------------
 export type UnstableCacheRevalidationMode = "foreground" | "background";
 export type ActionRevalidationKind = 0 | 1 | 2;
+export type UnstableCacheObservation = Readonly<{
+  kind: "unstable_cache";
+  keyHash: string;
+  revalidate: number | false | null;
+  tagCount: number;
+  tagHash: string | null;
+}>;
 
 export type CacheState = {
   actionRevalidationKind: ActionRevalidationKind;
   requestScopedCacheLife: CacheLifeConfig | null;
+  unstableCacheObservations: Map<string, UnstableCacheObservation>;
   unstableCacheRevalidation: UnstableCacheRevalidationMode;
 };
 
@@ -705,6 +713,7 @@ const _cacheAls = getOrCreateAls<CacheState>("vinext.cache.als");
 const _cacheFallbackState = (_g[_FALLBACK_KEY] ??= {
   actionRevalidationKind: 0,
   requestScopedCacheLife: null,
+  unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
   unstableCacheRevalidation: "foreground",
 } satisfies CacheState) as CacheState;
 
@@ -732,12 +741,14 @@ export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> 
     return runWithUnifiedStateMutation((uCtx) => {
       uCtx.actionRevalidationKind = ACTION_DID_NOT_REVALIDATE;
       uCtx.requestScopedCacheLife = null;
+      uCtx.unstableCacheObservations = new Map<string, UnstableCacheObservation>();
       uCtx.unstableCacheRevalidation = "foreground";
     }, fn);
   }
   const state: CacheState = {
     actionRevalidationKind: ACTION_DID_NOT_REVALIDATE,
     requestScopedCacheLife: null,
+    unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
     unstableCacheRevalidation: "foreground",
   };
   return _cacheAls.run(state, fn);
@@ -752,6 +763,7 @@ export function _initRequestScopedCacheState(): void {
   const state = _getCacheState();
   state.actionRevalidationKind = ACTION_DID_NOT_REVALIDATE;
   state.requestScopedCacheLife = null;
+  state.unstableCacheObservations = new Map<string, UnstableCacheObservation>();
 }
 
 function markActionRevalidation(kind: ActionRevalidationKind): void {
@@ -825,6 +837,16 @@ export function _consumeRequestScopedCacheLife(): CacheLifeConfig | null {
   const config = state.requestScopedCacheLife;
   state.requestScopedCacheLife = null;
   return config;
+}
+
+function recordUnstableCacheObservation(observation: UnstableCacheObservation): void {
+  _getCacheState().unstableCacheObservations.set(observation.keyHash, observation);
+}
+
+export function _peekUnstableCacheObservations(): UnstableCacheObservation[] {
+  return [..._getCacheState().unstableCacheObservations.values()].sort((a, b) =>
+    a.keyHash.localeCompare(b.keyHash),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1164,6 +1186,18 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   const cachedFn = async (...args: Parameters<T>) => {
     const argsKey = JSON.stringify(args);
     const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
+    recordUnstableCacheObservation({
+      kind: "unstable_cache",
+      keyHash: fnv1a64(cacheKey),
+      revalidate:
+        typeof revalidateSeconds === "number"
+          ? revalidateSeconds
+          : revalidateSeconds === false
+            ? false
+            : null,
+      tagCount: tags.length,
+      tagHash: tags.length > 0 ? fnv1a64(JSON.stringify(tags)) : null,
+    });
 
     // Try to get from cache. Stale entries are usable in normal App Router
     // requests, but foreground-refresh inside revalidation scopes so the

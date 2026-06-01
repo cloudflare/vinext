@@ -269,6 +269,12 @@ declare module "next/navigation" {
     interceptionContext?: string | null,
     mountedSlotsHeader?: string | null,
   ): CachedRscResponse | null;
+  export function consumePrefetchResponseForNavigation(
+    rscUrl: string,
+    interceptionContext?: string | null,
+    mountedSlotsHeader?: string | null,
+    options?: { shouldConsume?: () => boolean },
+  ): Promise<CachedRscResponse | null>;
 }
 
 declare module "next/image" {

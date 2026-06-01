@@ -188,7 +188,8 @@ function normalizeReturnedCookie(cookie: string): string {
   if (hasCookieAttribute(cookie, "Path")) {
     return cookie;
   }
-  return `${cookie}; Path=/`;
+  const trimmed = cookie.replace(/;\s*$/, "");
+  return `${trimmed}; Path=/`;
 }
 
 function applyMutableCookieFallbacks(headers: Headers, pendingCookies: string[]): void {

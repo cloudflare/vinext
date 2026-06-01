@@ -8,17 +8,18 @@ export default function RedirectForm() {
 
   return (
     <div>
-      <form
-        action={() => {
-          startTransition(async () => {
-            await redirectAction();
+      <button
+        type="button"
+        data-testid="redirect-btn"
+        disabled={isPending}
+        onClick={() => {
+          startTransition(() => {
+            void redirectAction();
           });
         }}
       >
-        <button type="submit" data-testid="redirect-btn" disabled={isPending}>
-          {isPending ? "Redirecting..." : "Redirect to About"}
-        </button>
-      </form>
+        {isPending ? "Redirecting..." : "Redirect to About"}
+      </button>
     </div>
   );
 }

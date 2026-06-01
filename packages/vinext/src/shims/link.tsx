@@ -153,6 +153,7 @@ export function useLinkStatus(): LinkStatusContextValue {
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 /** trailingSlash from next.config.js, injected by the plugin at build time */
 const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
+const __prefetchInlining: boolean = process.env.__VINEXT_PREFETCH_INLINING === "true";
 const linkPrefetchRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
 
 function resolveHref(href: LinkProps["href"]): string {
@@ -328,8 +329,21 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
   if (prefetchHref == null) return;
 
   const fullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
+  const target = new URL(fullHref, window.location.href);
+  if (
+    target.origin === window.location.origin &&
+    target.pathname === window.location.pathname &&
+    target.search === window.location.search
+  ) {
+    return;
+  }
 
-  const schedule = window.requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100));
+  const schedule =
+    priority === "high"
+      ? (fn: () => void) => {
+          fn();
+        }
+      : (window.requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100)));
 
   schedule(() => {
     void (async () => {
@@ -368,15 +382,50 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
           return;
         }
         prefetched.add(cacheKey);
+        // Next's `prefetchInlining` Segment Cache path reserves the final
+        // payload while a route-tree request is still pending. Vinext keeps a
+        // unified route payload, so gate that payload behind a loading-shell
+        // request to preserve the same pending/dedup observable contract.
+        const fetchPromise =
+          __prefetchInlining && autoPrefetch.cacheForNavigation
+            ? (async () => {
+                const shellHeaders = createRscRequestHeaders({
+                  interceptionContext,
+                  renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+                });
+                if (mountedSlotsHeader) {
+                  shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+                }
+                const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
+                const shellResponse = await fetch(shellRscUrl, {
+                  headers: shellHeaders,
+                  credentials: "include",
+                  priority,
+                  // @ts-expect-error — purpose is a valid fetch option in some browsers
+                  purpose: "prefetch",
+                });
+                if (!shellResponse.ok) {
+                  return shellResponse;
+                }
+                await shellResponse.arrayBuffer().catch(() => {});
+                return fetch(rscUrl, {
+                  headers,
+                  credentials: "include",
+                  priority,
+                  // @ts-expect-error — purpose is a valid fetch option in some browsers
+                  purpose: "prefetch",
+                });
+              })()
+            : fetch(rscUrl, {
+                headers,
+                credentials: "include",
+                priority,
+                // @ts-expect-error — purpose is a valid fetch option in some browsers
+                purpose: "prefetch",
+              });
         prefetchRscResponse(
           rscUrl,
-          fetch(rscUrl, {
-            headers,
-            credentials: "include",
-            priority,
-            // @ts-expect-error — purpose is a valid fetch option in some browsers
-            purpose: "prefetch",
-          }),
+          fetchPromise,
           interceptionContext,
           mountedSlotsHeader,
           undefined,
