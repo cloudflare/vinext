@@ -157,6 +157,7 @@ import {
   ACTION_REDIRECT_HEADER,
   ACTION_REDIRECT_STATUS_HEADER,
   ACTION_REDIRECT_TYPE_HEADER,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
 } from "./headers.js";
@@ -1660,12 +1661,12 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         const routerStateAtNavStart = getBrowserRouterState();
         const elementsAtNavStart = routerStateAtNavStart.elements;
         const mountedSlotsHeader = getMountedSlotIdsHeader(elementsAtNavStart);
-        const clientReuseManifestHeader =
-          navigationKind === "navigate"
-            ? createClientReuseManifestHeaderFromVisibleAppState(routerStateAtNavStart)
-            : null;
+        // The client reuse manifest is excluded from VINEXT_RSC_VARY_HEADER, so
+        // it never affects the cache-busting URL. Defer producing it until the
+        // visited-response cache miss is confirmed below — its producer iterates
+        // the visible layout ids and binary-searches a byte budget, which is
+        // pure waste on the cache-hit soft-nav path.
         const requestHeaders = createRscRequestHeaders({
-          clientReuseManifestHeader,
           interceptionContext: requestInterceptionContext,
           mountedSlotsHeader,
           renderMode:
@@ -1807,6 +1808,17 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         }
 
         if (!navResponse) {
+          // Produce the client reuse manifest only now that prefetch/optimistic
+          // paths did not satisfy the navigation and a real request is required.
+          // Computed from the nav-start router state so it matches the snapshot
+          // the request would have carried if produced earlier.
+          if (navigationKind === "navigate") {
+            const clientReuseManifestHeader =
+              createClientReuseManifestHeaderFromVisibleAppState(routerStateAtNavStart);
+            if (clientReuseManifestHeader !== null) {
+              requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
+            }
+          }
           navResponse = await fetch(rscUrl, {
             headers: requestHeaders,
             credentials: "include",
