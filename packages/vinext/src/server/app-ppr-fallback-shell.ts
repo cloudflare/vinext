@@ -105,6 +105,13 @@ export function createAppPprFallbackShells(
     // prerender render path must supply params via the prerender-params header
     // rather than URL matching, because encoded brackets won't match the route
     // pattern's literal brackets.
+    //
+    // Note: this describes the intended end-state. As of this PR
+    // (generation-only), `prerenderRouteParamsPayloadMatchesRoute` accepts only
+    // `kind === "exact"` payloads, so a fallback-shell render currently resolves
+    // params from the URL (the literal `[slug]` placeholder) rather than the
+    // prerender-params header. The header-supplied placeholder params are wired
+    // up by the fallback-shell render-lifecycle follow-up (#1715).
     shells.push({
       fallbackParamNames,
       pathname: "/" + segments.join("/"),

@@ -166,6 +166,14 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       // This is intentional for test usage (top-level overrides only); a deep
       // merge would be needed to support partial nested overrides in the future.
       { ...loadedConfig };
+  // Prerender must reuse the exact BUILD_ID that `vinext build` wrote to disk
+  // rather than re-resolving a fresh one. `config.buildId` is consumed when
+  // computing prerendered-output identity (prerender.ts), so re-resolving here
+  // would produce artifacts keyed to a different buildId than the deployed
+  // bundle. Reading it back from the built `BUILD_ID` file keeps prerender
+  // output aligned with the bundle it was generated from. (Spreading
+  // `loadedConfig` above is required so this assignment does not mutate the
+  // shared loaded config.)
   const builtBuildId = readBuiltBuildId(serverDir);
   if (builtBuildId) {
     config.buildId = builtBuildId;
