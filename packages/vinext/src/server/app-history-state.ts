@@ -30,12 +30,18 @@ function cloneHistoryState(state: unknown): HistoryStateRecord {
   return nextState;
 }
 
+function readHistoryStateRecord(state: unknown): Record<string, unknown> | null {
+  if (!state || typeof state !== "object" || Array.isArray(state)) {
+    return null;
+  }
+  return state as Record<string, unknown>;
+}
+
 export function createHistoryStateWithPreviousNextUrl(
   state: unknown,
   previousNextUrl: string | null,
-  bfcacheIds?: BfcacheIdMap | null,
 ): HistoryStateRecord | null {
-  return createHistoryStateWithNavigationMetadata(state, { bfcacheIds, previousNextUrl });
+  return createHistoryStateWithNavigationMetadata(state, { previousNextUrl });
 }
 
 export function createHistoryStateWithNavigationMetadata(
@@ -59,7 +65,7 @@ export function createHistoryStateWithNavigationMetadata(
   }
 
   if (metadata.traversalIndex !== undefined) {
-    if (isValidHistoryTraversalIndex(metadata.traversalIndex)) {
+    if (isNonNegativeSafeInteger(metadata.traversalIndex)) {
       nextState[VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY] = metadata.traversalIndex;
     } else {
       delete nextState[VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY];
@@ -78,7 +84,7 @@ export function createHistoryStateWithNavigationMetadata(
   if (metadata.bfcacheVersion !== undefined) {
     if (bfcacheIdsWereCleared) {
       delete nextState[VINEXT_BFCACHE_VERSION_HISTORY_STATE_KEY];
-    } else if (isValidBfcacheVersion(metadata.bfcacheVersion)) {
+    } else if (isNonNegativeSafeInteger(metadata.bfcacheVersion)) {
       nextState[VINEXT_BFCACHE_VERSION_HISTORY_STATE_KEY] = metadata.bfcacheVersion;
     } else {
       delete nextState[VINEXT_BFCACHE_VERSION_HISTORY_STATE_KEY];
@@ -110,7 +116,7 @@ export function createExternalHistoryStatePreservingMetadata(
 }
 
 export function readHistoryStatePreviousNextUrl(state: unknown): string | null {
-  const value = cloneHistoryState(state)[VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY];
+  const value = readHistoryStateRecord(state)?.[VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY];
   return typeof value === "string" ? value : null;
 }
 
@@ -125,7 +131,7 @@ export function isBfcacheSegmentId(id: string): boolean {
 }
 
 export function readHistoryStateBfcacheIds(state: unknown): BfcacheIdMap | null {
-  const value = cloneHistoryState(state)[VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY];
+  const value = readHistoryStateRecord(state)?.[VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY];
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
@@ -140,13 +146,13 @@ export function readHistoryStateBfcacheIds(state: unknown): BfcacheIdMap | null 
   return ids;
 }
 
-function isValidBfcacheVersion(value: unknown): value is number {
+function isNonNegativeSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 export function readHistoryStateBfcacheVersion(state: unknown): number | null {
-  const value = cloneHistoryState(state)[VINEXT_BFCACHE_VERSION_HISTORY_STATE_KEY];
-  return isValidBfcacheVersion(value) ? value : null;
+  const value = readHistoryStateRecord(state)?.[VINEXT_BFCACHE_VERSION_HISTORY_STATE_KEY];
+  return isNonNegativeSafeInteger(value) ? value : null;
 }
 
 export function createHashOnlyHistoryStatePreservingNavigationMetadata(state: unknown): unknown {
@@ -168,13 +174,9 @@ export function createHashOnlyHistoryStatePreservingNavigationMetadata(state: un
   });
 }
 
-function isValidHistoryTraversalIndex(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
 export function readHistoryStateTraversalIndex(state: unknown): number | null {
-  const value = cloneHistoryState(state)[VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY];
-  return isValidHistoryTraversalIndex(value) ? value : null;
+  const value = readHistoryStateRecord(state)?.[VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY];
+  return isNonNegativeSafeInteger(value) ? value : null;
 }
 
 export function resolveHistoryTraversalIntent(options: {

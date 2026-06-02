@@ -33,7 +33,12 @@ import {
   type RouteSnapshotV0,
 } from "./navigation-planner.js";
 import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
-import { isInvisibleSegment, normalizePathnameForRouteMatch } from "../routing/utils.js";
+import {
+  countConsumedPathnameSegments,
+  isInvisibleSegment,
+  normalizePathnameForRouteMatch,
+  splitPathSegments,
+} from "../routing/utils.js";
 import { normalizePath } from "./normalize-path.js";
 import { INITIAL_BFCACHE_ID } from "./app-bfcache-id.js";
 import { isBfcacheSegmentId, type BfcacheIdMap } from "./app-history-state.js";
@@ -163,10 +168,6 @@ function mintBfcacheId(): string {
   return `_b_${nextBfcacheId}_`;
 }
 
-function getPathSegments(pathname: string): string[] {
-  return pathname.split("/").filter(Boolean);
-}
-
 function getVisibleTreePathSegments(treePath: string): string[] {
   // Tree paths contain raw filesystem segments (route groups, parallel @slots,
   // and "." default segments). Only URL-visible segments consume a pathname
@@ -174,30 +175,17 @@ function getVisibleTreePathSegments(treePath: string): string[] {
   // using the same authority the route graph uses (isInvisibleSegment). Missing
   // @slot/"." here over-counts consumed segments and re-mints bfcache ids for
   // segments that actually persisted across a parallel-route navigation.
-  return treePath
-    .split("/")
-    .filter(Boolean)
-    .filter((segment) => !isInvisibleSegment(segment));
-}
-
-function isCatchAllTreePathSegment(segment: string): boolean {
-  return (
-    (segment.startsWith("[...") && segment.endsWith("]") && segment.length > 5) ||
-    (segment.startsWith("[[...") && segment.endsWith("]]") && segment.length > 7)
-  );
+  return splitPathSegments(treePath).filter((segment) => !isInvisibleSegment(segment));
 }
 
 function getTreePathIdentityPrefix(pathname: string, treePath: string): string {
-  const pathnameSegments = getPathSegments(pathname);
-  let consumedPathnameSegments = 0;
-
-  for (const segment of getVisibleTreePathSegments(treePath)) {
-    if (isCatchAllTreePathSegment(segment)) {
-      consumedPathnameSegments = pathnameSegments.length;
-      break;
-    }
-    consumedPathnameSegments += 1;
-  }
+  const pathnameSegments = splitPathSegments(pathname);
+  // countConsumedPathnameSegments is the shared, browser-safe slice of the
+  // canonical filesystem-segment → URL-segment mapping in app-route-graph.ts.
+  const consumedPathnameSegments = countConsumedPathnameSegments(
+    getVisibleTreePathSegments(treePath),
+    pathnameSegments.length,
+  );
 
   if (consumedPathnameSegments === 0) return "/";
   const segments = pathnameSegments.slice(0, consumedPathnameSegments);
@@ -206,21 +194,41 @@ function getTreePathIdentityPrefix(pathname: string, treePath: string): string {
 
 type AppElementsMetadata = ReturnType<typeof AppElementsWire.readMetadata>;
 
-function readAppElementsMetadata(elements: AppElements): AppElementsMetadata | null {
+/**
+ * Metadata parsed once per element map, paired with a slotId→binding index so
+ * per-slot identity lookups are O(1) instead of a linear `slotBindings.find`
+ * scan (which made per-commit identity derivation O(slots^2)).
+ */
+type ParsedAppElementsMetadata = {
+  metadata: AppElementsMetadata;
+  slotBindingsBySlotId: ReadonlyMap<string, AppElementsSlotBinding>;
+};
+
+function readAppElementsMetadata(elements: AppElements): ParsedAppElementsMetadata | null {
+  let metadata: AppElementsMetadata;
   try {
-    return AppElementsWire.readMetadata(elements);
+    metadata = AppElementsWire.readMetadata(elements);
   } catch {
+    // Some low-level tests pass partial element maps without metadata.
     return null;
   }
+  const slotBindingsBySlotId = new Map<string, AppElementsSlotBinding>();
+  for (const binding of metadata.slotBindings) {
+    slotBindingsBySlotId.set(binding.slotId, binding);
+  }
+  return { metadata, slotBindingsBySlotId };
 }
 
-function createActiveSlotIdentity(id: string, metadata: AppElementsMetadata | null): string | null {
-  const activeSlotBinding = metadata?.slotBindings.find((binding) => binding.slotId === id);
+function createActiveSlotIdentity(
+  id: string,
+  parsed: ParsedAppElementsMetadata | null,
+): string | null {
+  const activeSlotBinding = parsed?.slotBindingsBySlotId.get(id);
   if (activeSlotBinding?.activeRouteId != null) {
     return `${id}@${activeSlotBinding.activeRouteId}`;
   }
 
-  const interception = metadata?.interception;
+  const interception = parsed?.metadata.interception;
   if (interception?.slotId !== id) return null;
 
   return `${id}@${interception.targetRouteId}`;
@@ -233,7 +241,7 @@ function createActiveSlotIdentity(id: string, metadata: AppElementsMetadata | nu
  */
 function createBfcacheSegmentIdentity(
   id: string,
-  options: { metadata: AppElementsMetadata | null; pathname: string },
+  options: { metadata: ParsedAppElementsMetadata | null; pathname: string },
 ): string | null {
   const parsed = AppElementsWire.parseElementKey(id);
   if (!parsed) return null;
@@ -256,14 +264,16 @@ function createBfcacheSegmentIdentity(
   return null;
 }
 
-function collectBfcacheSegmentIds(elements: AppElements): string[] {
+function collectBfcacheSegmentIds(
+  elements: AppElements,
+  parsed?: ParsedAppElementsMetadata | null,
+): string[] {
   const ids = new Set(Object.keys(elements));
-  try {
-    for (const layoutId of AppElementsWire.readMetadata(elements).layoutIds) {
-      ids.add(layoutId);
-    }
-  } catch {
-    // Some low-level tests pass partial element maps without metadata.
+  // Reuse already-parsed metadata when the caller has it; only fall back to a
+  // fresh parse when metadata was not threaded in (e.g. createInitialBfcacheIdMap).
+  const metadata = parsed === undefined ? readAppElementsMetadata(elements) : parsed;
+  for (const layoutId of metadata?.metadata.layoutIds ?? []) {
+    ids.add(layoutId);
   }
 
   return Array.from(ids).filter(isBfcacheSegmentId);
@@ -295,7 +305,7 @@ export function createNextBfcacheIdMap(options: {
   const currentMetadata = readAppElementsMetadata(options.currentElements);
   const nextMetadata = readAppElementsMetadata(options.elements);
   const ids: Record<string, string> = {};
-  for (const id of collectBfcacheSegmentIds(options.elements)) {
+  for (const id of collectBfcacheSegmentIds(options.elements, nextMetadata)) {
     const currentIdentity = createBfcacheSegmentIdentity(id, {
       metadata: currentMetadata,
       pathname: options.currentPathname,
