@@ -451,39 +451,35 @@ function restoreMarkedCssUrls(
   return restoredSource + source.slice(lastIndex);
 }
 
-// Strips the private provenance marker from a url() without restoration. Used
-// for CSS that Vite inlined into a JS chunk (`cssCodeSplit: false` or the
-// `?inline` query) instead of emitting as a standalone `.css` asset: there the
-// asset URL is already final (Vite inlined or rewrote it), so we only need to
-// remove the leaked marker query and never emit sibling media files.
-function stripMarkedCssUrl(rawUrl: string): string | null {
-  const parts = splitUrl(rawUrl);
-  if (getQueryParam(parts.query, CSS_URL_ASSET_MARKER) === null) return null;
-  return joinUrl({ ...parts, query: removeQueryParam(parts.query, CSS_URL_ASSET_MARKER) });
-}
+// Matches the private provenance marker query param embedded in a URL string,
+// in either leading (`?marker=value`) or subsequent (`&marker=value`) position.
+// The value is the URL-encoded source basename, which never contains a query
+// separator (`&`), URL terminator (`#`), or string/CSS delimiter — so the value
+// run stops at any of those. This deliberately does NOT parse `url()` syntax:
+// chunk code is JS where Vite JSON-stringifies inlined CSS, so quoted
+// `url("...")` appears as `url(\"...\")` with escaped quotes that a CSS-quote
+// regex would miss. Stripping the marker param directly is quoting-agnostic.
+const CSS_URL_MARKER_PARAM_RE = new RegExp(
+  // Either: leading `?marker=v` followed by `&` (promote next param to leading),
+  // captured so we can keep the `?` and drop the consumed `&`.
+  `(\\?)${CSS_URL_ASSET_MARKER}=[^&#'")\\\\\\s]*&` +
+    // Or: `?marker=v` / `&marker=v` with nothing chained after the value.
+    `|[?&]${CSS_URL_ASSET_MARKER}=[^&#'")\\\\\\s]*`,
+  "g",
+);
 
+// Strips the private provenance marker from CSS that Vite inlined into a JS
+// chunk (`cssCodeSplit: false` or the `?inline` query) instead of emitting as a
+// standalone `.css` asset. The asset URL is already final there (Vite inlined or
+// rewrote it), so we only remove the leaked marker query and never emit sibling
+// media files. Operates on the raw chunk string to stay agnostic to JS escaping.
 function stripMarkedCssUrls(source: string): string {
-  let strippedSource = "";
-  let lastIndex = 0;
-  let didStrip = false;
-
-  CSS_URL_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = CSS_URL_RE.exec(source)) !== null) {
-    const rawUrl = match[1] ?? match[2] ?? match[3]?.trim();
-    if (!rawUrl || !rawUrl.includes(CSS_URL_ASSET_MARKER)) continue;
-
-    const strippedUrl = stripMarkedCssUrl(rawUrl);
-    if (!strippedUrl) continue;
-
-    strippedSource += source.slice(lastIndex, match.index);
-    strippedSource += getCssUrlReplacement(match, strippedUrl);
-    lastIndex = match.index + match[0].length;
-    didStrip = true;
-  }
-
-  if (!didStrip) return source;
-  return strippedSource + source.slice(lastIndex);
+  return source.replace(CSS_URL_MARKER_PARAM_RE, (_match, leadingQuestion?: string) =>
+    // The first alternative captured a leading `?`; preserve it (the trailing
+    // `&` it consumed promotes the next param to leading position). The second
+    // alternative matched the whole param including its separator — drop it all.
+    leadingQuestion ? leadingQuestion : "",
+  );
 }
 
 /**

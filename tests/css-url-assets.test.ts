@@ -414,36 +414,69 @@ describe("App Router CSS url() asset emission", () => {
   }, 180_000);
 });
 
-describe("restoreDedupedCssAssetReferences chunk handling", () => {
-  it("strips the private marker from CSS inlined into a JS chunk", () => {
-    // Simulates `cssCodeSplit: false` / `?inline`: the marked CSS ends up in a
-    // JS chunk's `code` rather than a standalone `.css` asset, so the restore
-    // pass must still strip the leaked provenance marker.
-    const bundle = {
-      "main.js": {
-        type: "chunk" as const,
-        fileName: "main.js",
-        code: 'const css = ".x{background:url(/_next/static/media/dark.abc123.svg?vinext_css_url_asset=dark.svg)}";',
-      },
-    } as unknown as Parameters<typeof restoreDedupedCssAssetReferences>[0];
+function makeChunkBundle(code: string) {
+  return {
+    "main.js": { type: "chunk" as const, fileName: "main.js", code },
+  } as unknown as Parameters<typeof restoreDedupedCssAssetReferences>[0];
+}
 
+function stripChunk(code: string): string {
+  const bundle = makeChunkBundle(code);
+  restoreDedupedCssAssetReferences(bundle, () => {});
+  return (bundle["main.js"] as { code: string }).code;
+}
+
+describe("restoreDedupedCssAssetReferences chunk handling", () => {
+  it("strips the marker from CSS inlined into a JS chunk (Vite's escaped-quote layout)", () => {
+    // `cssCodeSplit: false` / `?inline`: Vite JSON-stringifies the CSS into a JS
+    // string, so a quoted `url("...")` becomes `url(\"...\")` with escaped
+    // double quotes. The strip must be agnostic to that escaping.
+    const css =
+      '.x{background:url("/_next/static/media/dark.abc123.svg?vinext_css_url_asset=dark.svg")}';
+    const code = `const css = ${JSON.stringify(css)};`;
+    expect(code).toContain('\\"'); // sanity: realistic escaped-quote layout
+
+    const bundle = makeChunkBundle(code);
     const emitted: unknown[] = [];
     restoreDedupedCssAssetReferences(bundle, (asset) => emitted.push(asset));
 
-    const code = (bundle["main.js"] as { code: string }).code;
-    expect(code).not.toContain("vinext_css_url_asset");
-    expect(code).toContain("/_next/static/media/dark.abc123.svg");
+    const out = (bundle["main.js"] as { code: string }).code;
+    expect(out).not.toContain("vinext_css_url_asset");
+    expect(out).toContain("/_next/static/media/dark.abc123.svg");
+    // The escaped quotes and surrounding URL are preserved.
+    expect(out).toContain('url(\\"/_next/static/media/dark.abc123.svg\\")');
     // Inlined CSS URLs are already final; no sibling media files are emitted.
     expect(emitted).toHaveLength(0);
   });
 
+  it("strips the marker from unquoted and single-quoted inlined url()", () => {
+    expect(stripChunk("url(/m/dark.svg?vinext_css_url_asset=dark.svg)")).toBe("url(/m/dark.svg)");
+    expect(stripChunk("url('/m/dark.svg?vinext_css_url_asset=dark.svg')")).toBe(
+      "url('/m/dark.svg')",
+    );
+  });
+
+  it("preserves other query params and fragments when stripping the marker", () => {
+    // Marker is the leading param, another param follows.
+    expect(stripChunk("url(/m/dark.svg?vinext_css_url_asset=dark.svg&v=2)")).toBe(
+      "url(/m/dark.svg?v=2)",
+    );
+    // Marker is a trailing param.
+    expect(stripChunk("url(/m/dark.svg?v=2&vinext_css_url_asset=dark.svg)")).toBe(
+      "url(/m/dark.svg?v=2)",
+    );
+    // Marker is a middle param.
+    expect(stripChunk("url(/m/dark.svg?v=2&vinext_css_url_asset=dark.svg&w=3)")).toBe(
+      "url(/m/dark.svg?v=2&w=3)",
+    );
+    // Marker followed by a fragment.
+    expect(stripChunk("url(/m/dark.svg?vinext_css_url_asset=dark.svg#f)")).toBe(
+      "url(/m/dark.svg#f)",
+    );
+  });
+
   it("leaves chunks without the marker untouched", () => {
     const original = 'const css = ".x{background:url(/_next/static/media/dark.abc123.svg)}";';
-    const bundle = {
-      "main.js": { type: "chunk" as const, fileName: "main.js", code: original },
-    } as unknown as Parameters<typeof restoreDedupedCssAssetReferences>[0];
-
-    restoreDedupedCssAssetReferences(bundle, () => {});
-    expect((bundle["main.js"] as { code: string }).code).toBe(original);
+    expect(stripChunk(original)).toBe(original);
   });
 });
