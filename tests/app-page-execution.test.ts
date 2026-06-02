@@ -905,6 +905,72 @@ describe("app page execution helpers", () => {
     });
   });
 
+  it("flips a build-time static layout to dynamic when a runtime observation is unsafe for static reuse", async () => {
+    // Parity guard for the observation override: a layout the build classified
+    // `static` is downgraded to `"d"` at request time when
+    // `isLayoutObservationDynamic` reports the observed render is unsafe for
+    // static reuse (finite revalidate, cache tags, request APIs, param scope,
+    // etc.). The emitted debug reason switches from the stale build-time reason
+    // to `runtime-probe`/`dynamic` so the flag and reason stay in agreement.
+    const calls: Array<{ layoutId: string; reason: unknown }> = [];
+
+    const result = await probeAppPageLayouts({
+      layoutCount: 2,
+      onLayoutError() {
+        return Promise.resolve(null);
+      },
+      probeLayoutAt() {
+        return null;
+      },
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [1, "static"],
+        ]),
+        buildTimeReasons: new Map([
+          [0, { layer: "segment-config", key: "dynamic", value: "force-static" }],
+          [1, { layer: "segment-config", key: "dynamic", value: "force-static" }],
+        ]),
+        debugClassification(layoutId, reason) {
+          calls.push({ layoutId, reason });
+        },
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/dashboard"][layoutIndex];
+        },
+        // Only the dashboard layout's observation is unsafe for static reuse.
+        isLayoutObservationDynamic(layoutId) {
+          return layoutId === "layout:/dashboard";
+        },
+        runWithIsolatedDynamicScope() {
+          throw new Error("isolated scope must not run for build-time classified layouts");
+        },
+      },
+    });
+
+    expect(result.response).toBeNull();
+    // dashboard: build-time static, but the observation flips it to dynamic.
+    // root: build-time static with a safe observation stays static.
+    expect(result.layoutFlags).toEqual({
+      "layout:/": "s",
+      "layout:/dashboard": "d",
+    });
+
+    const byId = Object.fromEntries(calls.map((c) => [c.layoutId, c.reason]));
+    expect(byId["layout:/dashboard"]).toEqual({
+      layer: "runtime-probe",
+      outcome: "dynamic",
+    });
+    // The unflipped layout keeps reporting its build-time reason.
+    expect(byId["layout:/"]).toEqual({
+      layer: "segment-config",
+      key: "dynamic",
+      value: "force-static",
+    });
+  });
+
   it("emits runtime-probe reason with the error message when the probe throws", async () => {
     const calls: Array<{ layoutId: string; reason: unknown }> = [];
 
