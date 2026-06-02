@@ -13,12 +13,20 @@ import {
   type AppPageSlotOverride,
   buildAppPageElements,
   createAppPageLayoutEntries,
+  probeAppPageLayoutWithTracking,
   resolveAppPageChildSegments,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
+import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import {
+  createRequestContext,
+  getRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 import { buildPageElements as buildResolvedPageElements } from "../packages/vinext/src/server/app-page-element-builder.js";
 
 function readNode(value: unknown): string {
@@ -327,6 +335,81 @@ function LayoutWithoutChildren() {
 }
 
 describe("app page route wiring helpers", () => {
+  it("probes returned layout children with param and revalidate tracking", async () => {
+    const calls: string[] = [];
+    const layoutParamAccess = createAppLayoutParamAccessTracker();
+
+    function Child() {
+      calls.push("child");
+      return null;
+    }
+
+    function Layout() {
+      calls.push("layout");
+      return createElement("section", null, createElement(Child));
+    }
+
+    await probeAppPageLayoutWithTracking({
+      layoutIndex: 0,
+      layoutParamAccess,
+      makeThenableParams,
+      matchedParams: {},
+      route: {
+        layoutTreePositions: [0],
+        layouts: [{ default: Layout, revalidate: 60 }],
+        routeSegments: ["dashboard"],
+      },
+    });
+
+    expect(calls).toEqual(["layout", "child"]);
+    expect(layoutParamAccess.getLayoutObservation("layout:/")).toMatchObject({
+      completeness: "complete",
+      finiteRevalidateSeconds: 60,
+    });
+  });
+
+  it("probes layout branches that render only when children are present", async () => {
+    const calls: string[] = [];
+    const layoutParamAccess = createAppLayoutParamAccessTracker();
+
+    function ChromeThatUsesTaggedData() {
+      calls.push("chrome");
+      getRequestContext().currentRequestTags.push("tag:dashboard-chrome");
+      return null;
+    }
+
+    function Layout(props: { children?: ReactNode }) {
+      calls.push("layout");
+      if (!props.children) return null;
+      return createElement(
+        "section",
+        null,
+        createElement(ChromeThatUsesTaggedData),
+        props.children,
+      );
+    }
+
+    await runWithRequestContext(createRequestContext(), () =>
+      probeAppPageLayoutWithTracking({
+        layoutIndex: 0,
+        layoutParamAccess,
+        makeThenableParams,
+        matchedParams: {},
+        route: {
+          layoutTreePositions: [0],
+          layouts: [{ default: Layout }],
+          routeSegments: ["dashboard"],
+        },
+      }),
+    );
+
+    expect(calls).toEqual(["layout", "chrome"]);
+    expect(layoutParamAccess.getLayoutObservation("layout:/")).toMatchObject({
+      cacheTags: ["tag:dashboard-chrome"],
+      completeness: "complete",
+    });
+  });
+
   it("renders generated metadata in a hidden body outlet for streaming-capable requests", async () => {
     // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts

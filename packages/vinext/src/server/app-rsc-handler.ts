@@ -53,6 +53,7 @@ import type { MiddlewareModule } from "./middleware-runtime.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
@@ -111,6 +112,7 @@ function applyMiddlewareContextToResponse(
 }
 
 type DispatchMatchedPageOptions<TRoute> = {
+  clientReuseManifest: ClientReuseManifestParseResult;
   cleanPathname: string;
   formState: ReactFormState | null;
   actionError?: unknown;
@@ -354,8 +356,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const normalized = normalizeRscRequest(request, options.basePath);
   if (normalized instanceof Response) return normalized;
 
-  const { url, isRscRequest, interceptionContextHeader, mountedSlotsHeader, renderMode } =
-    normalized;
+  const {
+    url,
+    isRscRequest,
+    interceptionContextHeader,
+    mountedSlotsHeader,
+    renderMode,
+    clientReuseManifest,
+  } = normalized;
   let { pathname, cleanPathname } = normalized;
   // Canonical (external) pathname the user requested. Middleware rewrites and
   // next.config.js rewrites mutate `cleanPathname` so internal route matching
@@ -688,6 +696,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const pageResponse = await options.dispatchMatchedPage({
+    clientReuseManifest,
     cleanPathname,
     formState,
     actionError,

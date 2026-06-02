@@ -10,6 +10,7 @@ import {
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_URL_HEADER,
   RSC_HEADER,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
@@ -44,6 +45,7 @@ const CACHE_BUSTING_DIGEST_BYTES = 12;
 const textEncoder = new TextEncoder();
 
 type CreateRscRequestHeadersOptions = {
+  clientReuseManifestHeader?: string | null;
   interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
   renderMode?: AppRscRenderMode;
@@ -272,6 +274,13 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
 
   if (options.mountedSlotsHeader !== undefined && options.mountedSlotsHeader !== null) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
+  }
+
+  if (
+    options.clientReuseManifestHeader !== undefined &&
+    options.clientReuseManifestHeader !== null
+  ) {
+    headers.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, options.clientReuseManifestHeader);
   }
 
   const renderMode = options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION;

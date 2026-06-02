@@ -49,6 +49,8 @@ import {
   createEmptyAppPageRenderObservationState,
   type AppPageRenderObservationState,
 } from "./app-page-render-observation.js";
+import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
+import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -141,6 +143,12 @@ type RenderAppPageLifecycleOptions = {
   mountedSlotsHeader?: string | null;
   renderMode?: AppRscRenderMode;
   waitUntil?: (promise: Promise<void>) => void;
+  // Parsed manifest threaded through dispatch for future skip planner use.
+  // PR3 does not consume it; the planner call lives in the enable-transport slice.
+  clientReuseManifest?: ClientReuseManifestParseResult;
+  // Per-layout observation tracker. Constructed in dispatch, consumed by the
+  // planner in the enable-transport slice.
+  layoutParamAccess?: AppLayoutParamAccessTracker;
   element: ReactNode | Readonly<Record<string, ReactNode>>;
   classification?: LayoutClassificationOptions | null;
 };

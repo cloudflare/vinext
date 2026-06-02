@@ -5,6 +5,19 @@ export type AppRenderDependency = {
   release: () => void;
 };
 
+const appElementRenderDependencies = new WeakMap<
+  Readonly<Record<string, unknown>>,
+  ReadonlyMap<string, AppRenderDependency>
+>();
+
+export function registerAppElementRenderDependencies(
+  elements: Readonly<Record<string, unknown>>,
+  dependenciesByElementId: ReadonlyMap<string, AppRenderDependency>,
+): void {
+  if (dependenciesByElementId.size === 0) return;
+  appElementRenderDependencies.set(elements, dependenciesByElementId);
+}
+
 export function createAppRenderDependency(): AppRenderDependency {
   let released = false;
   let resolve!: () => void;

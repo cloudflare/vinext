@@ -57,7 +57,6 @@ const appPageRouteWiringPath = resolveEntryPath(
   import.meta.url,
 );
 const appPageProbePath = resolveEntryPath("../server/app-page-probe.js", import.meta.url);
-const appPageParamsPath = resolveEntryPath("../server/app-page-params.js", import.meta.url);
 const appPageDispatchPath = resolveEntryPath("../server/app-page-dispatch.js", import.meta.url);
 const appPageRequestPath = resolveEntryPath("../server/app-page-request.js", import.meta.url);
 const appSegmentConfigPath = resolveEntryPath("../server/app-segment-config.js", import.meta.url);
@@ -277,12 +276,10 @@ import {
   AppElementsWire as __AppElementsWire,
 } from ${JSON.stringify(appElementsPath)};
 import {
+  probeAppPageLayoutWithTracking as __probeAppPageLayoutWithTracking,
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
 import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
-import {
-  resolveAppPageSegmentParams as __resolveAppPageSegmentParams,
-} from ${JSON.stringify(appPageParamsPath)};
 import { probeAppPage as __probeAppPage } from ${JSON.stringify(appPageProbePath)};
 import {
   dispatchAppPage as __dispatchAppPage,
@@ -483,7 +480,7 @@ function findIntercept(pathname, sourcePathname = null) {
   return __routeMatcher.findIntercept(pathname, sourcePathname);
 }
 
-async function buildPageElements(route, params, routePath, pageRequest) {
+async function buildPageElements(route, params, routePath, pageRequest, layoutParamAccess) {
   return __buildPageElements({
     route,
     params,
@@ -494,6 +491,7 @@ async function buildPageElements(route, params, routePath, pageRequest) {
     rootForbiddenModule: ${rootForbiddenVar ? rootForbiddenVar : "null"},
     rootUnauthorizedModule: ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"},
     metadataRoutes,
+    layoutParamAccess,
     basePath: __basePath,
     htmlLimitedBots: __htmlLimitedBots,
   });
@@ -560,6 +558,7 @@ export default __createAppRscHandler({
   configRewrites: __configRewrites,
   draftModeSecret: __draftModeSecret,
   dispatchMatchedPage({
+    clientReuseManifest,
     cleanPathname,
     formState,
     actionError,
@@ -594,7 +593,7 @@ export default __createAppRscHandler({
     return __dispatchAppPage({
       basePath: __basePath,
       clientTraceMetadata: __clientTraceMetadata,
-      buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams) {
+      buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams, layoutParamAccess) {
         return buildPageElements(targetRoute, targetParams, cleanPathname, {
           opts: targetOpts,
           searchParams: targetSearchParams,
@@ -602,8 +601,9 @@ export default __createAppRscHandler({
           request,
           mountedSlotsHeader,
           renderMode,
-        });
+        }, layoutParamAccess);
       },
+      clientReuseManifest,
       cleanPathname,
       clearRequestContext() {
         __clearRequestContext();
@@ -653,16 +653,13 @@ export default __createAppRscHandler({
       params,
       staticParamsValidationParams,
       rootParams,
-      probeLayoutAt(li) {
-        const LayoutComp = route.layouts[li]?.default;
-        if (!LayoutComp) return null;
-        return LayoutComp({
-          params: makeThenableParams(__resolveAppPageSegmentParams(
-            route.routeSegments,
-            route.layoutTreePositions?.[li] ?? 0,
-            params,
-          )),
-          children: null,
+      probeLayoutAt(li, layoutParamAccess) {
+        return __probeAppPageLayoutWithTracking({
+          layoutIndex: li,
+          layoutParamAccess,
+          makeThenableParams,
+          matchedParams: params,
+          route,
         });
       },
       probePage() {

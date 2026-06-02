@@ -122,6 +122,7 @@ import { ElementsContext, Slot } from "vinext/shims/slot";
 import type { RouteManifest } from "../routing/app-route-graph.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { createOnUncaughtError } from "./app-browser-error.js";
+import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
 import {
   devOnCaughtError,
   devOnUncaughtError,
@@ -156,7 +157,6 @@ import {
   ACTION_REDIRECT_HEADER,
   ACTION_REDIRECT_STATUS_HEADER,
   ACTION_REDIRECT_TYPE_HEADER,
-  VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
 } from "./headers.js";
@@ -1657,16 +1657,20 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // Pass navId so only this navigation (or a newer one) can clear it later.
         setPendingPathname(url.pathname, navId);
 
-        const elementsAtNavStart = getBrowserRouterState().elements;
+        const routerStateAtNavStart = getBrowserRouterState();
+        const elementsAtNavStart = routerStateAtNavStart.elements;
         const mountedSlotsHeader = getMountedSlotIdsHeader(elementsAtNavStart);
+        const clientReuseManifestHeader =
+          navigationKind === "navigate"
+            ? createClientReuseManifestHeaderFromVisibleAppState(routerStateAtNavStart)
+            : null;
         const requestHeaders = createRscRequestHeaders({
+          clientReuseManifestHeader,
           interceptionContext: requestInterceptionContext,
+          mountedSlotsHeader,
           renderMode:
             navigationKind === "refresh" ? APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI : undefined,
         });
-        if (mountedSlotsHeader) {
-          requestHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
-        }
         const rscUrl = await createRscRequestUrl(url.pathname + url.search, requestHeaders);
         const cachedRoute = getVisitedResponse(
           rscUrl,

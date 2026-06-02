@@ -6,6 +6,12 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
+import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
+import {
+  createClientReuseManifest,
+  createClientReusePayloadHash,
+} from "../packages/vinext/src/server/client-reuse-manifest.js";
+import { VINEXT_CLIENT_REUSE_MANIFEST_HEADER } from "../packages/vinext/src/server/headers.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 
 type TestRoute = {
@@ -614,6 +620,45 @@ describe("createAppRscHandler", () => {
       expect.objectContaining({
         cleanPathname: "/about",
         isRscRequest: false,
+      }),
+    );
+  });
+
+  it("passes parsed ClientReuseManifest hints from canonical RSC requests to page dispatch", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const manifest = createClientReuseManifest({
+      entries: [
+        {
+          artifactCompatibility: createArtifactCompatibilityEnvelope(),
+          id: "layout:/",
+          payloadHash: createClientReusePayloadHash("root-layout"),
+          privacy: "public",
+          variantCacheKey: "cp1:root",
+        },
+      ],
+      visibleCommitVersion: 1,
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about.rsc", {
+        headers: {
+          [VINEXT_CLIENT_REUSE_MANIFEST_HEADER]: JSON.stringify(manifest),
+        },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clientReuseManifest: expect.objectContaining({
+          kind: "parsed",
+        }),
+        isRscRequest: true,
       }),
     );
   });

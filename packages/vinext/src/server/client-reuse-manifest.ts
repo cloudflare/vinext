@@ -230,7 +230,7 @@ function createCanonicalWireEntries(
 }
 
 // Manifest byte budgets are enforced over UTF-8 encoded header values.
-function countUtf8Bytes(input: string): number {
+export function countUtf8Bytes(input: string): number {
   return textEncoder.encode(input).length;
 }
 

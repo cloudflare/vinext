@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
+import type { ClientReuseManifestParseResult } from "../packages/vinext/src/server/client-reuse-manifest.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 
 type TestRoute = {
@@ -85,6 +86,7 @@ function createDispatchOptions(
     isRscRequest?: boolean;
     isrRscKey?: DispatchOptions["isrRscKey"];
     isrGet?: DispatchOptions["isrGet"];
+    clientReuseManifest?: ClientReuseManifestParseResult;
     loadSsrHandler?: DispatchOptions["loadSsrHandler"];
     middlewareContext?: AppPageMiddlewareContext;
     mountedSlotsHeader?: string | null;
@@ -157,6 +159,7 @@ function createDispatchOptions(
         mountedSlotsHeader ? `rsc:${pathname}:${mountedSlotsHeader}` : `rsc:${pathname}`),
     isrSet: vi.fn(async () => {}),
     loadSsrHandler,
+    clientReuseManifest: overrides.clientReuseManifest ?? { kind: "absent" },
     middlewareContext: overrides.middlewareContext ?? {
       headers: null,
       status: null,
