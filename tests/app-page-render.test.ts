@@ -783,6 +783,27 @@ describe("app page render lifecycle", () => {
     expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
     await expect(response.text()).resolves.toBe("flight-data");
   });
+
+  it("omits the dynamic stale time header on production default-config renders that turn dynamic", async () => {
+    // Documents the known over-gating at the cache-capture boundary: a production
+    // default-config route (revalidateSeconds === null, not force-dynamic) that
+    // uses a late dynamic API is genuinely dynamic, but shouldCaptureRscForCacheMetadata
+    // is true (computed from config before the stream runs), so the header is omitted.
+    // Next.js would emit it here (!isStaticGeneration); the value is unknowable until
+    // after the headers are built, so the advisory hint is dropped on this NO_STORE
+    // response. See app-page-render.ts gating comment.
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeDynamicUsage: vi.fn(() => true),
+      dynamicStaleTimeSeconds: 60,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: null,
+    });
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
+    await expect(response.text()).resolves.toBe("flight-data");
+  });
 });
 
 describe("layoutFlags injection into RSC payload", () => {

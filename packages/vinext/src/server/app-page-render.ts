@@ -430,6 +430,16 @@ export async function renderAppPageLifecycle(
       // shouldCaptureRscForCacheMetadata is the runtime analog of isStaticGeneration: a render
       // written to the ISR cache (incl. production ISR, where isPrerender is false at runtime)
       // must not emit the authoritative per-page stale time.
+      //
+      // Known over-gating: shouldCaptureRscForCacheMetadata is computed from config
+      // alone (line 387), before the RSC stream is consumed, so it cannot see late
+      // dynamic-API usage (cookies()/headers()). A production default-config route
+      // (revalidateSeconds === null, not force-dynamic) that becomes dynamic at
+      // render time is !isStaticGeneration in Next.js (header emitted), but here the
+      // header is omitted even though the cache write is later skipped via two-phase
+      // dynamic detection (consumeDynamicUsage in scheduleAppPageRscCacheWrite). The
+      // exact value is unknowable at this point since the stream has not yet run, so
+      // we accept dropping the (advisory) stale-time hint on those NO_STORE responses.
       dynamicStaleTimeSeconds:
         options.isPrerender === true || options.isForceStatic || shouldCaptureRscForCacheMetadata
           ? undefined
