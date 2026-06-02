@@ -578,14 +578,8 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   // which omits the `parent` argument when a cached `generateMetadata` does not
   // declare/use it, so non-serializable parent values (like a `URL`
   // `metadataBase`) never reach the cache-key encoder.
-  try {
-    Object.defineProperty(cachedFn, "length", {
-      value: fn.length,
-      configurable: true,
-    });
-  } catch {
-    // Some environments may make `length` non-configurable; ignore.
-  }
+  // Function `length` is always `configurable: true` per spec, so this is safe.
+  Object.defineProperty(cachedFn, "length", { value: fn.length, configurable: true });
 
   return cachedFn;
 }
