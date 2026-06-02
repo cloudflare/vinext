@@ -17,6 +17,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
+import { restoreDedupedCssAssetReferences } from "../packages/vinext/src/build/css-url-assets.js";
 
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 const DARK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><path fill="black" d="M0 0h2v2H0z"/></svg>\n`;
@@ -411,4 +412,38 @@ describe("App Router CSS url() asset emission", () => {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 180_000);
+});
+
+describe("restoreDedupedCssAssetReferences chunk handling", () => {
+  it("strips the private marker from CSS inlined into a JS chunk", () => {
+    // Simulates `cssCodeSplit: false` / `?inline`: the marked CSS ends up in a
+    // JS chunk's `code` rather than a standalone `.css` asset, so the restore
+    // pass must still strip the leaked provenance marker.
+    const bundle = {
+      "main.js": {
+        type: "chunk" as const,
+        fileName: "main.js",
+        code: 'const css = ".x{background:url(/_next/static/media/dark.abc123.svg?vinext_css_url_asset=dark.svg)}";',
+      },
+    } as unknown as Parameters<typeof restoreDedupedCssAssetReferences>[0];
+
+    const emitted: unknown[] = [];
+    restoreDedupedCssAssetReferences(bundle, (asset) => emitted.push(asset));
+
+    const code = (bundle["main.js"] as { code: string }).code;
+    expect(code).not.toContain("vinext_css_url_asset");
+    expect(code).toContain("/_next/static/media/dark.abc123.svg");
+    // Inlined CSS URLs are already final; no sibling media files are emitted.
+    expect(emitted).toHaveLength(0);
+  });
+
+  it("leaves chunks without the marker untouched", () => {
+    const original = 'const css = ".x{background:url(/_next/static/media/dark.abc123.svg)}";';
+    const bundle = {
+      "main.js": { type: "chunk" as const, fileName: "main.js", code: original },
+    } as unknown as Parameters<typeof restoreDedupedCssAssetReferences>[0];
+
+    restoreDedupedCssAssetReferences(bundle, () => {});
+    expect((bundle["main.js"] as { code: string }).code).toBe(original);
+  });
 });

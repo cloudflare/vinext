@@ -451,6 +451,41 @@ function restoreMarkedCssUrls(
   return restoredSource + source.slice(lastIndex);
 }
 
+// Strips the private provenance marker from a url() without restoration. Used
+// for CSS that Vite inlined into a JS chunk (`cssCodeSplit: false` or the
+// `?inline` query) instead of emitting as a standalone `.css` asset: there the
+// asset URL is already final (Vite inlined or rewrote it), so we only need to
+// remove the leaked marker query and never emit sibling media files.
+function stripMarkedCssUrl(rawUrl: string): string | null {
+  const parts = splitUrl(rawUrl);
+  if (getQueryParam(parts.query, CSS_URL_ASSET_MARKER) === null) return null;
+  return joinUrl({ ...parts, query: removeQueryParam(parts.query, CSS_URL_ASSET_MARKER) });
+}
+
+function stripMarkedCssUrls(source: string): string {
+  let strippedSource = "";
+  let lastIndex = 0;
+  let didStrip = false;
+
+  CSS_URL_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = CSS_URL_RE.exec(source)) !== null) {
+    const rawUrl = match[1] ?? match[2] ?? match[3]?.trim();
+    if (!rawUrl || !rawUrl.includes(CSS_URL_ASSET_MARKER)) continue;
+
+    const strippedUrl = stripMarkedCssUrl(rawUrl);
+    if (!strippedUrl) continue;
+
+    strippedSource += source.slice(lastIndex, match.index);
+    strippedSource += getCssUrlReplacement(match, strippedUrl);
+    lastIndex = match.index + match[0].length;
+    didStrip = true;
+  }
+
+  if (!didStrip) return source;
+  return strippedSource + source.slice(lastIndex);
+}
+
 /**
  * Mutates emitted CSS assets so byte-identical CSS url() dependencies keep
  * Next-compatible source basenames, emitting sibling media files through the
@@ -459,6 +494,12 @@ function restoreMarkedCssUrls(
  * This expects CSS sources to have been passed through
  * `markCssUrlAssetReferences()` before Vite resolves relative asset URLs.
  * The private marker is stripped from final CSS here.
+ *
+ * CSS that Vite inlined into a JS chunk (`cssCodeSplit: false` or `?inline`)
+ * never becomes a standalone `.css` asset, so the restore pass would otherwise
+ * leak the private marker into the served CSS string. We defensively strip the
+ * marker from chunk code as well (without sibling-emit, since inlined asset URLs
+ * are already final).
  */
 export function restoreDedupedCssAssetReferences(
   bundle: CssUrlAssetBundle,
@@ -467,10 +508,17 @@ export function restoreDedupedCssAssetReferences(
   const indexes = createAssetIndexes(bundle);
 
   for (const entry of Object.values(bundle)) {
-    if (entry.type !== "asset") continue;
-    if (!isCssFileName(entry.fileName)) continue;
-    if (typeof entry.source !== "string") continue;
+    if (entry.type === "asset") {
+      if (!isCssFileName(entry.fileName)) continue;
+      if (typeof entry.source !== "string") continue;
+      entry.source = restoreMarkedCssUrls(entry.source, indexes, emitRestoredAsset);
+      continue;
+    }
 
-    entry.source = restoreMarkedCssUrls(entry.source, indexes, emitRestoredAsset);
+    // type === "chunk": CSS inlined into JS. Only strip the leaked marker.
+    if (typeof entry.code !== "string" || !entry.code.includes(CSS_URL_ASSET_MARKER)) {
+      continue;
+    }
+    entry.code = stripMarkedCssUrls(entry.code);
   }
 }
