@@ -766,6 +766,23 @@ describe("app page render lifecycle", () => {
     expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
     await expect(response.text()).resolves.toBe("flight-data");
   });
+
+  it("omits the dynamic stale time header on production ISR renders captured into the cache", async () => {
+    // Production ISR (revalidate > 0, not force-static, not a build prerender)
+    // satisfies shouldCaptureRscForCacheMetadata, so the render feeds the ISR
+    // cache. Like Next.js's !workStore.isStaticGeneration guard, the
+    // authoritative per-page stale time must not be emitted on such responses.
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      dynamicStaleTimeSeconds: 60,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: 60,
+    });
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
+    await expect(response.text()).resolves.toBe("flight-data");
+  });
 });
 
 describe("layoutFlags injection into RSC payload", () => {

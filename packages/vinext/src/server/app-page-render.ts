@@ -427,8 +427,11 @@ export async function renderAppPageLifecycle(
     const rscResponse = buildAppPageRscResponse(rscForResponse, {
       // Only emit on dynamic renders — Next.js gates on !workStore.isStaticGeneration (line 2223).
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L2223-L2229
+      // shouldCaptureRscForCacheMetadata is the runtime analog of isStaticGeneration: a render
+      // written to the ISR cache (incl. production ISR, where isPrerender is false at runtime)
+      // must not emit the authoritative per-page stale time.
       dynamicStaleTimeSeconds:
-        options.isPrerender === true || options.isForceStatic
+        options.isPrerender === true || options.isForceStatic || shouldCaptureRscForCacheMetadata
           ? undefined
           : options.dynamicStaleTimeSeconds,
       isEdgeRuntime: options.isEdgeRuntime,
