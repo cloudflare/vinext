@@ -734,6 +734,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let instrumentationPath: string | null = null;
   let instrumentationClientPath: string | null = null;
   let clientInjectModule: string | null = null;
+  // Populated by the `config` hook from the user's `build.assetsInlineLimit`,
+  // then read by `configEnvironment` (the client-css-url-assets-defaults plugin)
+  // and the per-environment build config. The `config` hook always runs before
+  // `configEnvironment`/build for a single `vinext()` instance, and the `= 0`
+  // initializer guards any unexpected ordering.
   let clientAssetsInlineLimit: NonNullable<UserConfig["build"]>["assetsInlineLimit"] = 0;
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
@@ -2523,7 +2528,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
       transform(code, id) {
         if (this.environment?.name !== "client") return null;
-        return markCssUrlAssetReferences(code, id);
+        const marked = markCssUrlAssetReferences(code, id);
+        if (marked === null) return null;
+        // No source map: marking only edits text within a single `url(...)`
+        // token and never shifts line/column positions, so a passthrough map
+        // carries no information. Matches the css-data-url plugin's contract.
+        return { code: marked, map: null };
       },
     },
     {
