@@ -277,16 +277,15 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
 /**
  * Request-time counterpart to the build-time `classifyLayoutSegmentConfig`
  * (`build/report.ts`). Both classify a layout by its `dynamic`/`revalidate`
- * segment config and must stay in sync on the shared cases; keep them aligned
- * when either changes.
+ * segment config and agree on the shared cases (the build-time version
+ * normalizes `revalidate = false` to `Infinity` upstream, so both treat it as
+ * static); keep them aligned when either changes.
  *
- * Intentional divergence: this request-time pass reads the resolved module
- * value, so it can treat `revalidate === false` (alongside `Infinity`) as
- * static, whereas the build-time version only sees the numeric literal and so
- * normalizes `false` to `Infinity` upstream. The runtime override is merged on
- * top of the build-time classification map in
- * `createEffectiveLayoutClassifications`, so layouts not captured at build time
- * (e.g. dev mode) are classified here where they previously were not.
+ * The meaningful difference is scope, not logic: this request-time pass reads
+ * the resolved module value, so it classifies layouts that were never captured
+ * at build time (e.g. dev mode). Its result is merged on top of the build-time
+ * classification map in `createEffectiveLayoutClassifications`, so such layouts
+ * are classified here where they previously were not.
  */
 function classifyLayoutSegmentConfigFromModule(
   layout: AppPageModule | null | undefined,
@@ -334,6 +333,11 @@ function createEffectiveLayoutClassifications(
     const classification = classifyLayoutSegmentConfigFromModule(route.layouts[index]);
     if (classification === null) continue;
 
+    // Precedence: when a layout's module segment config classifies, it is
+    // authoritative and overrides the build-time map for that layout — even if
+    // a Layer 1/2 build-time classifier marked it differently for a
+    // non-segment-config reason. Downstream consumers should treat this merged
+    // result, not `__buildTimeClassifications`, as the source of truth.
     classifications.set(index, classification.kind);
     reasons?.set(index, classification.reason);
   }
