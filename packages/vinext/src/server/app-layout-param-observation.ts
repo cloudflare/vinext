@@ -9,7 +9,7 @@ import {
   peekCacheableFetchObservations,
   peekDynamicFetchObservations,
 } from "vinext/shims/fetch-cache";
-import { peekRenderRequestApiUsage } from "vinext/shims/headers";
+import { peekDynamicUsage, peekRenderRequestApiUsage } from "vinext/shims/headers";
 import {
   isInsideUnifiedScope,
   runWithUnifiedStateMutation,
@@ -22,6 +22,13 @@ export type AppLayoutParamAccessObservation = Readonly<{
   cacheableFetchCount: number;
   completeness: "complete" | "unknown";
   dynamicFetchCount: number;
+  /**
+   * `markDynamicUsage()` fired during the probe (e.g. `"use cache: private"`,
+   * `connection()`) with no other observable trace. Folded in from the
+   * isolated probe scope so this signal can't diverge from the Layer-3
+   * `dynamicDetected` path it replaced.
+   */
+  dynamicUsageObserved: boolean;
   finiteRevalidateSeconds: number | null;
   keys: readonly string[];
   observed: boolean;
@@ -45,6 +52,7 @@ export function isAppLayoutObservationUnsafeForStaticReuse(
     observation.completeness !== "complete" ||
     observation.paramScopeKeys.length > 0 ||
     observation.observed ||
+    observation.dynamicUsageObserved ||
     observation.requestApis.length > 0 ||
     observation.finiteRevalidateSeconds !== null ||
     observation.cacheLifeObserved ||
@@ -60,6 +68,7 @@ type MutableLayoutParamAccessObservation = {
   cacheTags: Set<string>;
   cacheableFetches: Set<string>;
   dynamicFetches: Set<string>;
+  dynamicUsageObserved: boolean;
   finiteRevalidateSeconds: number | null;
   keys: Set<string>;
   observed: boolean;
@@ -90,6 +99,7 @@ export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker
       cacheTags: new Set(),
       cacheableFetches: new Set(),
       dynamicFetches: new Set(),
+      dynamicUsageObserved: false,
       finiteRevalidateSeconds: null,
       keys: new Set(),
       observed: false,
@@ -132,6 +142,14 @@ export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker
 
   const recordProbeDependencies = (layoutId: string) => {
     const observation = ensureObservation(layoutId);
+    // Capture the probe's child-scope dynamic-usage flag before the isolated
+    // scope is discarded. `markDynamicUsage()` calls that leave no other
+    // observable trace (e.g. `"use cache: private"`) would otherwise be lost
+    // when the child scope resets `dynamicUsageDetected`, masking the Layer-3
+    // `dynamicDetected` signal this probe wiring replaced.
+    if (peekDynamicUsage()) {
+      observation.dynamicUsageObserved = true;
+    }
     if (_peekRequestScopedCacheLife() !== null) {
       observation.cacheLifeObserved = true;
     }
@@ -169,6 +187,7 @@ export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker
           cacheableFetchCount: 0,
           completeness: "unknown",
           dynamicFetchCount: 0,
+          dynamicUsageObserved: false,
           finiteRevalidateSeconds: null,
           keys: [],
           observed: false,
@@ -184,6 +203,7 @@ export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker
         cacheableFetchCount: observation.cacheableFetches.size,
         completeness: observation.probeComplete ? "complete" : "unknown",
         dynamicFetchCount: observation.dynamicFetches.size,
+        dynamicUsageObserved: observation.dynamicUsageObserved,
         finiteRevalidateSeconds: observation.finiteRevalidateSeconds,
         keys: [...observation.keys].sort(),
         observed: observation.observed,

@@ -320,6 +320,17 @@ export function consumeDynamicUsage(): boolean {
   return used;
 }
 
+/**
+ * Read the dynamic usage flag without resetting it.
+ * Used by the layout probe to fold a probe-scoped `markDynamicUsage()` into the
+ * per-layout observation before the isolated probe scope is discarded, so the
+ * observation captures `markDynamicUsage()` paths (e.g. `"use cache: private"`)
+ * that leave no other observable trace.
+ */
+export function peekDynamicUsage(): boolean {
+  return _getState().dynamicUsageDetected;
+}
+
 function _setStatePhase(
   state: VinextHeadersShimState,
   phase: HeadersAccessPhase,

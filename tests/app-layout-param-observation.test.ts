@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
+import {
+  createAppLayoutParamAccessTracker,
+  isAppLayoutObservationUnsafeForStaticReuse,
+} from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
   cacheLife,
   MemoryCacheHandler,
@@ -12,9 +15,39 @@ import {
   getRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
-import { markRenderRequestApiUsage } from "../packages/vinext/src/shims/headers.js";
+import {
+  markDynamicUsage,
+  markRenderRequestApiUsage,
+} from "../packages/vinext/src/shims/headers.js";
 
 describe("app layout param observation", () => {
+  it("folds a probe-scoped markDynamicUsage() into the observation as unsafe for static reuse", () => {
+    // Regression guard: the probe runs inside an isolated child scope that
+    // resets `dynamicUsageDetected`, so a `markDynamicUsage()` with no other
+    // observable trace (e.g. `"use cache: private"`) would be discarded when
+    // the scope exits — masking the Layer-3 `dynamicDetected` signal. The
+    // tracker must capture it so the two signals can't diverge.
+    const tracker = createAppLayoutParamAccessTracker();
+
+    void runWithRequestContext(createRequestContext(), () => {
+      tracker.runLayoutProbe("layout:/dynamic", () => {
+        // No request API, cache tag, fetch, or param access — only the raw
+        // dynamic-usage flag, which is the path the old code caught via
+        // `consumeDynamicUsage()`.
+        markDynamicUsage();
+      });
+      tracker.runLayoutProbe("layout:/static", () => null);
+    });
+
+    const dynamicObservation = tracker.getLayoutObservation("layout:/dynamic");
+    expect(dynamicObservation.dynamicUsageObserved).toBe(true);
+    expect(isAppLayoutObservationUnsafeForStaticReuse(dynamicObservation)).toBe(true);
+
+    const staticObservation = tracker.getLayoutObservation("layout:/static");
+    expect(staticObservation.dynamicUsageObserved).toBe(false);
+    expect(isAppLayoutObservationUnsafeForStaticReuse(staticObservation)).toBe(false);
+  });
+
   it("isolates fetch and cacheLife observations to the current layout probe", async () => {
     const tracker = createAppLayoutParamAccessTracker();
 
