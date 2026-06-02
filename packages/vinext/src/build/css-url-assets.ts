@@ -3,6 +3,9 @@ import type { Rolldown } from "vite";
 // Carried through Vite's CSS asset transform and stripped from final CSS.
 // Avoid double underscores here because unresolved asset placeholders use them.
 const CSS_URL_ASSET_MARKER = "vinext_css_url_asset";
+// Module-level and stateful because of the `g` flag: callers MUST reset
+// `CSS_URL_RE.lastIndex = 0` before each new scan, otherwise the regex resumes
+// from the previous match position and silently skips url() references.
 const CSS_URL_RE = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^'")]*?))\s*\)/g;
 const CSS_ASSET_EXT_RE =
   /\.(?:avif|bmp|gif|ico|jpe?g|png|svg|webp|woff2?|eot|ttf|otf|mp4|webm|ogg|mp3|wav|flac|aac|wasm)$/i;
@@ -367,6 +370,11 @@ function ensureAssetFileNameForSource(
   const restoredFileName = reserveBundleFileName(derivedFileName, indexes.usedFileNames);
   emitRestoredAsset({ fileName: restoredFileName, source: asset.source });
   indexes.restoredFileNames.set(restoreKey, restoredFileName);
+  // Index by the sibling's name but keep the original deduped asset object: we
+  // only need its `source` for the byte-identity check above, and the restore
+  // cache (`restoredFileNames`) short-circuits before this index is consulted
+  // for the sibling. Callers must not assume the indexed asset's `.fileName`
+  // matches the key — for this entry it still points at the original.
   indexes.assetsByFileName.set(restoredFileName, asset);
 
   const base = basename(restoredFileName);

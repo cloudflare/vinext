@@ -2528,6 +2528,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
     {
       name: "vinext:client-css-url-assets-defaults",
+      apply: "build",
 
       configEnvironment(name) {
         if (name !== "client") return null;

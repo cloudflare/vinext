@@ -22,6 +22,12 @@ function joinAssetFileNamePattern(assetsDir: string, pattern: string): string {
   return `${normalizedAssetsDir}/${pattern}`;
 }
 
+// Collects the source name/path candidates Rolldown exposes for an asset,
+// deduping on the full string. This differs from the same-named helper in
+// `css-url-assets.ts`, which dedupes on `basename()`: there we derive an output
+// filename and want one entry per basename, whereas here we only need the
+// candidates to test their extension (e.g. `.css`), so the full path is the
+// correct dedup key.
 function getAssetSourceNames(assetInfo: ClientAssetFileNameInfo): string[] {
   const names: string[] = [];
   const seen = new Set<string>();
