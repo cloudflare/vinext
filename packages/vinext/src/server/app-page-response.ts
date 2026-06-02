@@ -98,7 +98,6 @@ function applyTimingHeader(headers: Headers, timing?: AppPageResponseTiming): vo
 function applyDynamicStaleTimeHeader(headers: Headers, dynamicStaleTimeSeconds?: number): void {
   if (
     dynamicStaleTimeSeconds !== undefined &&
-    Number.isFinite(dynamicStaleTimeSeconds) &&
     Number.isInteger(dynamicStaleTimeSeconds) &&
     dynamicStaleTimeSeconds >= 0
   ) {

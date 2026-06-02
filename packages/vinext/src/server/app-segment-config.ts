@@ -75,12 +75,7 @@ function resolveDynamicStaleTimeSeconds(
   current: number | undefined,
   value: unknown,
 ): number | undefined {
-  if (
-    typeof value !== "number" ||
-    !Number.isFinite(value) ||
-    !Number.isInteger(value) ||
-    value < 0
-  ) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
     return current;
   }
 
