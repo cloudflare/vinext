@@ -181,3 +181,16 @@ export function decodeMatchedParams(params: Record<string, string | string[]>): 
     }
   }
 }
+
+/**
+ * Check whether a path segment is invisible in the URL (route groups, parallel
+ * slots, "."). Single source of truth shared by the route graph (Node) and
+ * browser-side bfcache identity logic. Lives in this browser-safe utils module
+ * so importing it does not drag node:path/node:fs into the client bundle.
+ */
+export function isInvisibleSegment(segment: string): boolean {
+  if (segment === ".") return true;
+  if (segment.startsWith("(") && segment.endsWith(")")) return true;
+  if (segment.startsWith("@")) return true;
+  return false;
+}

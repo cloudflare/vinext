@@ -1,5 +1,5 @@
 import { stripBasePath } from "../utils/base-path.js";
-import { isInvisibleSegment, type RouteManifest } from "../routing/app-route-graph.js";
+import type { RouteManifest } from "../routing/app-route-graph.js";
 import {
   AppElementsWire,
   getMountedSlotIds,
@@ -33,7 +33,7 @@ import {
   type RouteSnapshotV0,
 } from "./navigation-planner.js";
 import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
-import { normalizePathnameForRouteMatch } from "../routing/utils.js";
+import { isInvisibleSegment, normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { normalizePath } from "./normalize-path.js";
 import { INITIAL_BFCACHE_ID } from "./app-bfcache-id.js";
 import { isBfcacheSegmentId, type BfcacheIdMap } from "./app-history-state.js";
