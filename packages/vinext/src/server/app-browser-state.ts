@@ -46,6 +46,7 @@ import { isBfcacheSegmentId, type BfcacheIdMap } from "./app-history-state.js";
 export {
   createHistoryStateWithNavigationMetadata,
   createHistoryStateWithPreviousNextUrl,
+  isHistoryStateBfcacheVersionCurrent,
   readHistoryStateBfcacheIds,
   readHistoryStateBfcacheVersion,
   readHistoryStatePreviousNextUrl,

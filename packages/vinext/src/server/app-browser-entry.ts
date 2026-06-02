@@ -105,6 +105,7 @@ import {
   VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
   createHistoryStateWithNavigationMetadata,
   createInitialBfcacheIdMap,
+  isHistoryStateBfcacheVersionCurrent,
   readHistoryStateBfcacheIds,
   readHistoryStateBfcacheVersion,
   readHistoryStatePreviousNextUrl,
@@ -294,14 +295,7 @@ let currentHistoryTraversalIndex: number | null =
 let nextHistoryTraversalIndex: number = currentHistoryTraversalIndex;
 
 function isCurrentBfcacheVersion(state: unknown): boolean {
-  // A missing/invalid stored version must NEVER be treated as matching the
-  // current version. Coercing null to 0 would let un-versioned entries (older
-  // builds / external pushState) pass the gate on a fresh document where
-  // currentBfcacheVersion is 0, defeating the document-scoped stale-id
-  // rejection. App-written entries always carry an explicit version, so the
-  // legitimate first-document path (version 0 === 0) still matches.
-  const version = readHistoryStateBfcacheVersion(state);
-  return version !== null && version === currentBfcacheVersion;
+  return isHistoryStateBfcacheVersionCurrent(state, currentBfcacheVersion);
 }
 
 function readCurrentBfcacheVersionHistoryIds(

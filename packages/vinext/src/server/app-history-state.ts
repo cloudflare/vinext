@@ -155,6 +155,23 @@ export function readHistoryStateBfcacheVersion(state: unknown): number | null {
   return isNonNegativeSafeInteger(value) ? value : null;
 }
 
+/**
+ * Whether a history entry's stored bfcache version matches the document's
+ * current version. A missing/invalid stored version (null) is NEVER current:
+ * coercing it to 0 would let un-versioned entries (older builds / external
+ * pushState) pass the gate on a fresh document whose current version is 0,
+ * defeating the document-scoped stale-id rejection. App-written entries always
+ * carry an explicit version, so the legitimate first-document path (0 === 0)
+ * still matches.
+ */
+export function isHistoryStateBfcacheVersionCurrent(
+  state: unknown,
+  currentVersion: number,
+): boolean {
+  const version = readHistoryStateBfcacheVersion(state);
+  return version !== null && version === currentVersion;
+}
+
 export function createHashOnlyHistoryStatePreservingNavigationMetadata(state: unknown): unknown {
   const previousNextUrl = readHistoryStatePreviousNextUrl(state);
   const bfcacheIds = readHistoryStateBfcacheIds(state);

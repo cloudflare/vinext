@@ -56,6 +56,7 @@ import {
   VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
   createPendingNavigationCommit,
   isCacheRestorableAppPayloadMetadata,
+  isHistoryStateBfcacheVersionCurrent,
   readHistoryStateBfcacheIds,
   readHistoryStateBfcacheVersion,
   readHistoryStatePreviousNextUrl,
@@ -4644,6 +4645,29 @@ describe("app browser entry bfcacheId helpers", () => {
     });
     expect(readHistoryStateBfcacheIds(state)).toBeNull();
     expect(readHistoryStateBfcacheVersion(state)).toBeNull();
+  });
+
+  it("treats a matching stored bfcache version as current", () => {
+    const state = createHistoryStateWithNavigationMetadata(null, {
+      bfcacheIds: { [pageX1Id]: "_b_9_" },
+      bfcacheVersion: 3,
+      previousNextUrl: null,
+    });
+
+    expect(isHistoryStateBfcacheVersionCurrent(state, 3)).toBe(true);
+    expect(isHistoryStateBfcacheVersionCurrent(state, 4)).toBe(false);
+  });
+
+  it("rejects a missing bfcache version even when the current version is 0", () => {
+    // Regression guard: a history entry carrying bfcache ids but no version key
+    // (older build / external pushState) must NOT pass the document-scoped gate
+    // on a fresh document whose current version is 0. Coercing the missing
+    // version to 0 would let stale ids be restored across documents.
+    const unversioned = { __vinext_bfcacheIds: { [pageX1Id]: "_b_9_" } };
+
+    expect(readHistoryStateBfcacheVersion(unversioned)).toBeNull();
+    expect(isHistoryStateBfcacheVersionCurrent(unversioned, 0)).toBe(false);
+    expect(isHistoryStateBfcacheVersionCurrent(null, 0)).toBe(false);
   });
 
   it("uses restored history bfcache ids for traversal commits", async () => {
