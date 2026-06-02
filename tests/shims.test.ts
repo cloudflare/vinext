@@ -4522,6 +4522,26 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(1);
   });
 
+  it("preserves the original function arity on the cached wrapper", async () => {
+    // The wrapper is declared as `(...args)` (arity 0). Callers like
+    // `resolveModuleMetadata` rely on `fn.length` to decide whether to pass
+    // optional arguments (e.g. the metadata `parent`), so the wrapper must
+    // expose the original arity rather than 0.
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const zero = registerCachedFunction(async () => ({}), "test:arity-0");
+    const one = registerCachedFunction(async (_a: unknown) => ({}), "test:arity-1");
+    const two = registerCachedFunction(async (_a: unknown, _b: unknown) => ({}), "test:arity-2");
+
+    expect(zero.length).toBe(0);
+    expect(one.length).toBe(1);
+    expect(two.length).toBe(2);
+  });
+
   it("falls back to JSON when RSC module is unavailable (test environment)", async () => {
     // In vitest, @vitejs/plugin-rsc/react/rsc is not available (no Vite RSC
     // environment). The runtime should gracefully fall back to JSON.stringify
