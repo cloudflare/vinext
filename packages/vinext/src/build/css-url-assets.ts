@@ -166,6 +166,15 @@ function getCssUrlReplacement(match: RegExpExecArray, nextUrl: string): string {
   return `url(${nextUrl})`;
 }
 
+// Intentionally runs on every client-environment CSS request, including
+// `node_modules` stylesheets. The scope is wider than the upstream Next.js
+// fixture exercises, but it is deliberate and safe: marking only appends the
+// private provenance query carrying the source basename, it is idempotent (the
+// marker check in `shouldMarkCssUrlAsset` bails on already-marked URLs), and the
+// restore phase strips the marker before emit — so vendored CSS gets the same
+// correct per-source provenance with no behavioral difference. Narrowing this to
+// exclude `node_modules` would risk dropping provenance for legitimate vendored
+// `url()` assets, so we keep the scope broad.
 export function markCssUrlAssetReferences(code: string, id: string): string | null {
   if (!isCssRequest(id) || !code.includes("url(")) return null;
 
