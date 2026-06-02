@@ -1,5 +1,5 @@
 import { stripBasePath } from "../utils/base-path.js";
-import type { RouteManifest } from "../routing/app-route-graph.js";
+import { isInvisibleSegment, type RouteManifest } from "../routing/app-route-graph.js";
 import {
   AppElementsWire,
   getMountedSlotIds,
@@ -168,10 +168,16 @@ function getPathSegments(pathname: string): string[] {
 }
 
 function getVisibleTreePathSegments(treePath: string): string[] {
+  // Tree paths contain raw filesystem segments (route groups, parallel @slots,
+  // and "." default segments). Only URL-visible segments consume a pathname
+  // segment when deriving the identity prefix, so filter the invisible ones
+  // using the same authority the route graph uses (isInvisibleSegment). Missing
+  // @slot/"." here over-counts consumed segments and re-mints bfcache ids for
+  // segments that actually persisted across a parallel-route navigation.
   return treePath
     .split("/")
     .filter(Boolean)
-    .filter((segment) => !(segment.startsWith("(") && segment.endsWith(")")));
+    .filter((segment) => !isInvisibleSegment(segment));
 }
 
 function isCatchAllTreePathSegment(segment: string): boolean {

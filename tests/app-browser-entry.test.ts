@@ -4316,22 +4316,37 @@ describe("app browser entry bfcacheId helpers", () => {
     });
   });
 
-  it("does not seed hydration bfcache ids from history state", () => {
+  it("does not seed hydration bfcache ids from previously minted ids", () => {
     // Next generates the public "_b_0_" hydration sentinel from an internal
-    // zero cache node on both SSR and initial client hydration. Persisted
-    // history maps are restored only for explicit back/forward traversals.
-    const persistedHistoryIds = {
-      [rootLayoutId]: "0",
-      [pageX1Id]: "_b_10_",
-      [pageX2Id]: "_b_11_",
-    };
+    // zero cache node on both SSR and initial client hydration. Minted ids
+    // (and persisted history maps) are restored only for explicit back/forward
+    // traversals, never folded into the initial map.
+    //
+    // Mint real "_b_N_" ids for these segments first, then prove that building
+    // the initial map for the same elements ignores them and resets every
+    // segment to the raw "0" hydration sentinel. This would fail if
+    // createInitialBfcacheIdMap ever started seeding from prior/minted state.
+    const minted = createNextBfcacheIdMap({
+      current: {
+        [rootLayoutId]: "0",
+        [groupLayoutId]: "_b_4_",
+        [pageX2Id]: "_b_5_",
+      },
+      currentElements: createBfcacheElements(pageX2Id),
+      currentPathname: "/x/2",
+      elements: createBfcacheElements(pageX1Id),
+      nextPathname: "/x/1",
+    });
+    expect(minted[pageX1Id]).toMatch(/^_b_\d+_$/);
 
-    expect(createInitialBfcacheIdMap(createBfcacheElements(pageX1Id))).toEqual({
+    const initial = createInitialBfcacheIdMap(createBfcacheElements(pageX1Id));
+    expect(initial).toEqual({
       [rootLayoutId]: "0",
       [groupLayoutId]: "0",
       [pageX1Id]: "0",
     });
-    expect(persistedHistoryIds[pageX1Id]).toBe("_b_10_");
+    // No segment carries a minted "_b_N_" id into the initial map.
+    expect(Object.values(initial).every((value) => value === "0")).toBe(true);
   });
 
   it("preserves shared segment ids and mints ids for fresh segments", () => {
@@ -4409,6 +4424,55 @@ describe("app browser entry bfcacheId helpers", () => {
 
     expect(next[nestedGroupLayoutId]).toMatch(/^_b_\d+_$/);
     expect(next[nestedGroupLayoutId]).not.toBe("0");
+  });
+
+  it("preserves a parallel-slot layout id when its visible URL prefix is unchanged", () => {
+    // Regression: a layout nested under a parallel slot has a tree path that
+    // contains an invisible "@slot" segment before its visible URL segments
+    // (e.g. app/feed/@modal/photos/layout.tsx -> "/feed/@modal/photos", which
+    // maps to the URL prefix "/feed/photos"). Deriving the identity prefix must
+    // skip the "@modal" segment; otherwise it over-counts consumed pathname
+    // segments and re-mints the layout id on every navigation that keeps the
+    // layout mounted (a divergence from Next.js bfcacheId semantics).
+    const modalPhotosLayoutId = AppElementsWire.encodeLayoutId("/feed/@modal/photos");
+    const photo1Id = AppElementsWire.encodePageId("/feed/photos/1", null);
+    const photo2Id = AppElementsWire.encodePageId("/feed/photos/2", null);
+
+    const next = createNextBfcacheIdMap({
+      current: {
+        [rootLayoutId]: "0",
+        [modalPhotosLayoutId]: "_b_4_",
+        [photo1Id]: "_b_5_",
+      },
+      currentElements: createResolvedElements(
+        "route:/feed/@modal/photos/[id]",
+        "/",
+        null,
+        {
+          [modalPhotosLayoutId]: React.createElement("div", null),
+          [photo1Id]: React.createElement("main", null),
+        },
+        [rootLayoutId, modalPhotosLayoutId],
+      ),
+      currentPathname: "/feed/photos/1",
+      elements: createResolvedElements(
+        "route:/feed/@modal/photos/[id]",
+        "/",
+        null,
+        {
+          [modalPhotosLayoutId]: React.createElement("div", null),
+          [photo2Id]: React.createElement("main", null),
+        },
+        [rootLayoutId, modalPhotosLayoutId],
+      ),
+      nextPathname: "/feed/photos/2",
+    });
+
+    // The layout persists across the navigation, so its id must be preserved.
+    expect(next[modalPhotosLayoutId]).toBe("_b_4_");
+    // The leaf page changes, so it mints a fresh id (sanity check).
+    expect(next[photo2Id]).toMatch(/^_b_\d+_$/);
+    expect(next[photo2Id]).not.toBe("_b_5_");
   });
 
   it("mints a fresh layout id when a catch-all segment value changes", () => {

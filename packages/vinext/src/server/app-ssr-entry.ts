@@ -319,9 +319,12 @@ export async function handleSsr(
             { value: elements },
             createReactElement(Slot, { id: metadata.routeId }),
           );
-          // BfcacheSegmentIdContext is intentionally omitted during SSR:
-          // per-segment bfcache ids are browser-only, so useRouter().bfcacheId
-          // returns the hydration sentinel before client context takes over.
+          // During SSR we only provide the id *map*, seeded entirely with the
+          // INITIAL_BFCACHE_ID sentinel. BfcacheSlotBoundary may still publish a
+          // BfcacheSegmentIdContext value here, but every map entry is the "0"
+          // sentinel, so formatPublicBfcacheId resolves useRouter().bfcacheId to
+          // the public hydration sentinel ("_b_0_") regardless until the client
+          // context takes over. Per-segment minted ids are browser-only.
           return BfcacheIdMapContext
             ? createReactElement(
                 BfcacheIdMapContext.Provider,
