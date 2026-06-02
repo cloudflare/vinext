@@ -409,23 +409,37 @@ export async function probeAppPageLayouts(
       if (cls && buildTimeResult) {
         const layoutId = cls.getLayoutId(layoutIndex);
         // Build-time classified (Layer 1 or Layer 2): skip dynamic isolation,
-        // but still probe for special errors (redirects, not-found).
+        // but still probe for special errors (redirects, not-found). Record the
+        // build-time flag up front so it survives a short-circuit if the error
+        // probe returns a special-error response below.
         layoutFlags[layoutId] = buildTimeResult === "static" ? "s" : "d";
-        if (cls.debugClassification) {
-          // `no-classifier` is the documented fallback for a layout that was
-          // build-time classified but whose reason payload is absent — either
-          // because the build was run without `VINEXT_DEBUG_CLASSIFICATION` or
-          // because no Layer 1/2 classifier attached a reason. This is the sole
-          // producer of the variant; see `layout-classification-types.ts`.
-          cls.debugClassification(
-            layoutId,
-            cls.buildTimeReasons?.get(layoutIndex) ?? { layer: "no-classifier" },
-          );
-        }
         const errorResponse = await probeLayoutForErrors(options, layoutIndex);
         if (errorResponse) return errorResponse;
+        // Compute the final flag before reporting so the emitted debug reason
+        // always agrees with `layoutFlags[layoutId]`. A runtime observation can
+        // override a build-time `static` decision to dynamic; in that case we
+        // report a `runtime-probe` reason rather than the stale build-time one.
         const observationDynamic = cls.isLayoutObservationDynamic?.(layoutId) === true;
-        layoutFlags[layoutId] = buildTimeResult === "dynamic" || observationDynamic ? "d" : "s";
+        const layoutDynamic = buildTimeResult === "dynamic" || observationDynamic;
+        layoutFlags[layoutId] = layoutDynamic ? "d" : "s";
+        if (cls.debugClassification) {
+          if (observationDynamic && buildTimeResult === "static") {
+            cls.debugClassification(layoutId, {
+              layer: "runtime-probe",
+              outcome: "dynamic",
+            });
+          } else {
+            // `no-classifier` is the documented fallback for a layout that was
+            // build-time classified but whose reason payload is absent — either
+            // because the build was run without `VINEXT_DEBUG_CLASSIFICATION` or
+            // because no Layer 1/2 classifier attached a reason. This is the sole
+            // producer of the variant; see `layout-classification-types.ts`.
+            cls.debugClassification(
+              layoutId,
+              cls.buildTimeReasons?.get(layoutIndex) ?? { layer: "no-classifier" },
+            );
+          }
+        }
         continue;
       }
 

@@ -274,6 +274,20 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   renderMode?: AppRscRenderMode;
 };
 
+/**
+ * Request-time counterpart to the build-time `classifyLayoutSegmentConfig`
+ * (`build/report.ts`). Both classify a layout by its `dynamic`/`revalidate`
+ * segment config and must stay in sync on the shared cases; keep them aligned
+ * when either changes.
+ *
+ * Intentional divergence: this request-time pass reads the resolved module
+ * value, so it can treat `revalidate === false` (alongside `Infinity`) as
+ * static, whereas the build-time version only sees the numeric literal and so
+ * normalizes `false` to `Infinity` upstream. The runtime override is merged on
+ * top of the build-time classification map in
+ * `createEffectiveLayoutClassifications`, so layouts not captured at build time
+ * (e.g. dev mode) are classified here where they previously were not.
+ */
 function classifyLayoutSegmentConfigFromModule(
   layout: AppPageModule | null | undefined,
 ): LayoutSegmentConfigClassification | null {
