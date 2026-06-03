@@ -7,14 +7,15 @@
  * https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/scss/url-global/url-global.test.ts
  *
  * The upstream fixture is SCSS, but the parity contract lives one layer lower
- * (once CSS reaches the bundler), so these exercise plain CSS against the
- * committed `pages-basic` / `app-basic` fixtures:
+ * (once CSS reaches the bundler), so these exercise plain CSS against dedicated
+ * minimal committed fixtures:
  *
- *   - pages-basic: styles/css-url-global.module.css references dark.svg and the
- *     byte-identical dark2.svg from one stylesheet (the ported index page), and
- *     css-url-split-{a,b}.module.css reference them from separate page chunks.
- *   - app-basic: app/nextjs-compat/css-test/url-assets is the App Router
- *     counterpart (client component + CSS module).
+ *   - tests/fixtures/css-url-assets-pages — Pages Router. styles/global.module.css
+ *     references dark.svg and the byte-identical dark2.svg from one stylesheet
+ *     (pages/index.tsx, the ported index page); split-{a,b}.module.css reference
+ *     them from separate page chunks (pages/split-{a,b}.tsx).
+ *   - tests/fixtures/css-url-assets-app — App Router. app/page.module.css is the
+ *     counterpart referenced from a client-component page (app/page.tsx).
  *
  * Both svg sources have identical bytes, which is what makes the dedupe
  * collapse observable.
