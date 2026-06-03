@@ -48,6 +48,15 @@ export function addPregeneratedConcretePath(routePattern: string, pathname: stri
   paths.add(normalized);
 }
 
+/**
+ * Returns the live backing `Set` for a route pattern (not a copy) to keep
+ * lookups allocation-free on the serving hot path. The `ReadonlySet` type
+ * forbids mutation at compile time. Callers must treat the result as
+ * point-in-time and must NOT retain it across a re-seed: each
+ * `initPregeneratedPathsFromGlobals` call runs `clearPregeneratedConcretePaths`,
+ * which empties the map, leaving any previously-returned reference stale. Read
+ * it, use it, drop it — never cache the reference.
+ */
 export function getRenderedConcreteUrlPathsForRoute(
   routePattern: string,
 ): ReadonlySet<string> | undefined {
@@ -72,6 +81,12 @@ export function initPregeneratedPathsFromGlobals(): void {
   }
 }
 
+// Validates the global table shape strictly: a single malformed entry rejects
+// the whole payload. Repeated `routePattern` entries are NOT deduped here by
+// design — if `deploy.ts` ever emits the same pattern twice, the paths merge
+// additively into one `Set` via `addPregeneratedConcretePath`, which dedups by
+// value, so the merged result is identical to a single combined entry. No
+// one-entry-per-pattern invariant is enforced because none is needed.
 function parsePregeneratedConcretePaths(value: unknown): Array<[string, string[]]> | undefined {
   if (!Array.isArray(value)) return undefined;
   const result: Array<[string, string[]]> = [];
