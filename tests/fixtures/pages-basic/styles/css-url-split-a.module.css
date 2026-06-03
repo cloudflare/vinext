@@ -1,7 +1,0 @@
-/* Half of the split-chunk regression: references dark.svg only. Built into a
- * different CSS chunk than css-url-split-b (which references the byte-identical
- * dark2.svg), so the two references land in separate emitted stylesheets. Each
- * must keep its own source-derived media filename. */
-.splitA {
-  background-image: url("./dark.svg");
-}

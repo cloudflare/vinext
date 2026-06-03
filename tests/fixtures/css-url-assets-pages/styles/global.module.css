@@ -3,8 +3,7 @@
  * Two CSS url() dependencies whose source files (dark.svg, dark2.svg) have
  * byte-identical contents. Vite/Rolldown dedupe assets by content, so without
  * vinext's CSS url() asset handling the second reference would collapse onto
- * dark.*.svg and dark2.*.svg would never be emitted. Next.js (webpack
- * asset/resource) keeps both, and vinext must match that.
+ * dark.*.svg and dark2.*.svg would never be emitted.
  */
 .redText {
   color: red;

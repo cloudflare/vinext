@@ -1,6 +1,6 @@
-import styles from "../styles/css-url-split-b.module.css";
+import styles from "../styles/split-b.module.css";
 
-export default function CssUrlSplitB() {
+export default function SplitB() {
   return (
     <div data-testid="css-url-split-b" className={styles.splitB}>
       split b

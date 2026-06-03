@@ -27,7 +27,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
 import { restoreDedupedCssAssetReferences } from "../packages/vinext/src/build/css-url-assets.js";
-import { APP_FIXTURE_DIR, PAGES_FIXTURE_DIR, createIsolatedFixture } from "./helpers.js";
+import { APP_FIXTURE_DIR, createIsolatedFixture } from "./helpers.js";
+
+// Dedicated, minimal committed fixtures (not the large app-basic/pages-basic):
+// these build in ~1-2s, so the suite stays fast and these tests don't contend
+// for CPU with the heavyweight fixture builds running in parallel under CI.
+const PAGES_CSS_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/css-url-assets-pages");
+const APP_CSS_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/css-url-assets-app");
 
 const MEDIA_SVG_RE = (name: string) =>
   new RegExp(`^/_next/static/media/${name}\\.[A-Za-z0-9_-]+\\.svg$`);
@@ -164,13 +170,13 @@ describe("restoreDedupedCssAssetReferences chunk handling", () => {
 
 // ── Integration (Pages Router): build + serve the committed pages-basic ──────
 
-describe("Pages Router CSS url() asset emission (pages-basic fixture)", () => {
+describe("Pages Router CSS url() asset emission", () => {
   let tmpDir: string;
   let server: Server;
   let baseUrl: string;
 
   beforeAll(async () => {
-    tmpDir = await createIsolatedFixture(PAGES_FIXTURE_DIR, "vinext-css-url-pages-");
+    tmpDir = await createIsolatedFixture(PAGES_CSS_FIXTURE, "vinext-css-url-pages-");
     const outDir = path.join(tmpDir, "dist");
 
     // Pages Router only — no RSC pipeline, so separate build() calls work.
@@ -240,7 +246,7 @@ describe("Pages Router CSS url() asset emission (pages-basic fixture)", () => {
   }
 
   it("emits both byte-identical url() svgs from one stylesheet (url-global parity)", async () => {
-    const css = await fetchPageStylesheets("/css-url-assets");
+    const css = await fetchPageStylesheets("/");
     expect(css).toContain("redText");
 
     const assetUrls = svgUrls(css);
@@ -254,8 +260,8 @@ describe("Pages Router CSS url() asset emission (pages-basic fixture)", () => {
   });
 
   it("preserves url() asset provenance across separate page CSS chunks", async () => {
-    const cssA = await fetchPageStylesheets("/css-url-split-a");
-    const cssB = await fetchPageStylesheets("/css-url-split-b");
+    const cssA = await fetchPageStylesheets("/split-a");
+    const cssB = await fetchPageStylesheets("/split-b");
 
     const aSvgs = svgUrls(cssA);
     const bSvgs = svgUrls(cssB);
@@ -271,16 +277,17 @@ describe("Pages Router CSS url() asset emission (pages-basic fixture)", () => {
 
 // ── Integration (App Router): build the committed app-basic, inspect output ──
 
-describe("App Router CSS url() asset emission (app-basic fixture)", () => {
+describe("App Router CSS url() asset emission", () => {
   let tmpDir: string;
   let clientDir: string;
 
   beforeAll(async () => {
     // Build an isolated copy so the client output (which vinext writes to
     // <root>/dist/client) lands in a temp dir instead of the committed fixture.
-    // app-basic resolves `file:` fake-package deps from its own node_modules.
+    // Borrow app-basic's node_modules for the RSC/React-server deps the App
+    // Router build needs (@vitejs/plugin-rsc, react-server-dom-webpack, …).
     tmpDir = await createIsolatedFixture(
-      APP_FIXTURE_DIR,
+      APP_CSS_FIXTURE,
       "vinext-css-url-app-",
       undefined,
       path.join(APP_FIXTURE_DIR, "node_modules"),
