@@ -5,6 +5,15 @@ declare global {
   var __VINEXT_PREGENERATED_CONCRETE_PATHS: unknown;
 }
 
+// Uses the non-strict `normalizePathnameForRouteMatch` on purpose, rather than
+// the strict variant the live request pipeline uses to compute `cleanPathname`
+// (see `app-rsc-request-normalization.ts`). Registry seeding runs over
+// build-time data and must not throw, whereas the strict variant rejects
+// malformed percent-encoding so the runtime can return a 400. The two only
+// diverge on malformed encoding (e.g. `%GG`), which the runtime rejects before
+// any lookup happens, so valid pathnames normalize identically and lookups
+// still match. Do not "fix" this to the strict variant — it would reintroduce a
+// build-time throw on malformed seed data.
 export function normalizePregeneratedPathname(pathname: string): string {
   return normalizePath(normalizePathnameForRouteMatch(pathname));
 }
@@ -23,13 +32,20 @@ export function clearPregeneratedConcretePaths(): void {
   concreteUrlPathsByRoute.clear();
 }
 
+/**
+ * Records a concrete URL path for a route pattern. The pathname is normalized
+ * here so this is the single source of truth: every caller — the Worker global
+ * table and the Node `seed-cache.ts` path — stores the canonical form that
+ * matches the runtime `cleanPathname` lookup without having to pre-normalize.
+ */
 export function addPregeneratedConcretePath(routePattern: string, pathname: string): void {
+  const normalized = normalizePregeneratedPathname(pathname);
   let paths = concreteUrlPathsByRoute.get(routePattern);
   if (!paths) {
     paths = new Set();
     concreteUrlPathsByRoute.set(routePattern, paths);
   }
-  paths.add(pathname);
+  paths.add(normalized);
 }
 
 export function getRenderedConcreteUrlPathsForRoute(
@@ -41,7 +57,8 @@ export function getRenderedConcreteUrlPathsForRoute(
 /**
  * Populate the registry from `globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS`.
  * No-op when the global is not set (Node path — seed-cache handles it later).
- * Pathnames are normalised so they match the runtime `cleanPathname`.
+ * `addPregeneratedConcretePath` normalizes each pathname so it matches the
+ * runtime `cleanPathname`.
  */
 export function initPregeneratedPathsFromGlobals(): void {
   const raw = globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;
@@ -50,7 +67,7 @@ export function initPregeneratedPathsFromGlobals(): void {
   clearPregeneratedConcretePaths();
   for (const [routePattern, pathnames] of data) {
     for (const pathname of pathnames) {
-      addPregeneratedConcretePath(routePattern, normalizePregeneratedPathname(pathname));
+      addPregeneratedConcretePath(routePattern, pathname);
     }
   }
 }

@@ -9,7 +9,7 @@ export type PrerenderRouteParamsPayload = {
   routePattern: string;
 };
 
-type PrerenderRouteParamsRouteMatch =
+export type PrerenderRouteParamsRouteMatch =
   | {
       kind: "exact";
       params: PrerenderRouteParams;
