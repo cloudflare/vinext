@@ -51,6 +51,7 @@ import {
   type StaticLayoutCacheProofOutputScope,
 } from "./cache-proof.js";
 import type {
+  ClientReuseManifestEntry,
   ClientReuseManifestParseResult,
   ClientReuseManifestSkipDisposition,
 } from "./client-reuse-manifest.js";
@@ -69,7 +70,10 @@ import {
   createEmptyAppPageRenderObservationState,
   type AppPageRenderObservationState,
 } from "./app-page-render-observation.js";
-import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
+import type {
+  AppLayoutParamAccessObservation,
+  AppLayoutParamAccessTracker,
+} from "./app-layout-param-observation.js";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -272,6 +276,118 @@ function createStaticLayoutOutputScope(input: {
   };
 }
 
+function createRenderAndSendSkipDisposition(): ClientReuseManifestSkipDisposition {
+  return {
+    code: "SKIP_MODEL_DISABLED",
+    enabled: false,
+    mode: "renderAndSend",
+  };
+}
+
+function rejectStaticLayoutObservation(
+  entry: ClientReuseManifestEntry,
+  code:
+    | "SKIP_LAYOUT_CACHE_LIFE_OBSERVED"
+    | "SKIP_LAYOUT_CACHE_TAGS_OBSERVED"
+    | "SKIP_LAYOUT_CACHEABLE_FETCHES_OBSERVED"
+    | "SKIP_LAYOUT_DYNAMIC_FETCHES_OBSERVED"
+    | "SKIP_LAYOUT_PARAMS_OBSERVED"
+    | "SKIP_LAYOUT_PARAMS_OBSERVATION_INCOMPLETE"
+    | "SKIP_LAYOUT_PARAMS_PRESENT"
+    | "SKIP_LAYOUT_REVALIDATE_PRESENT"
+    | "SKIP_LAYOUT_REQUEST_API_OBSERVED"
+    | "SKIP_LAYOUT_UNSTABLE_CACHE_OBSERVED",
+  observation?: AppLayoutParamAccessObservation,
+): ReturnType<typeof crossCheckClientReuseManifestEntryWithCache> {
+  return {
+    kind: "rejected",
+    rejection: {
+      code,
+      entryId: entry.id,
+      fields: observation
+        ? {
+            cacheLifeObserved: observation.cacheLifeObserved,
+            cacheTags: observation.cacheTags,
+            cacheableFetchCount: observation.cacheableFetchCount,
+            dynamicFetchCount: observation.dynamicFetchCount,
+            finiteRevalidateSeconds: observation.finiteRevalidateSeconds,
+            observedParamKeys: observation.keys,
+            paramScopeKeys: observation.paramScopeKeys,
+            requestApis: observation.requestApis,
+            unstableCacheCount: observation.unstableCaches.length,
+            unstableCacheKeyHashes: observation.unstableCaches.map((cache) => cache.keyHash),
+            unstableCacheRevalidates: observation.unstableCaches.map((cache) =>
+              String(cache.revalidate),
+            ),
+            unstableCacheTagCounts: observation.unstableCaches.map((cache) =>
+              String(cache.tagCount),
+            ),
+            unstableCacheTagHashes: observation.unstableCaches.map(
+              (cache) => cache.tagHash ?? "none",
+            ),
+          }
+        : {},
+    },
+    skipDisposition: createRenderAndSendSkipDisposition(),
+  };
+}
+
+function rejectUnsafeStaticLayoutObservation(
+  entry: ClientReuseManifestEntry,
+  layoutParamAccess: AppLayoutParamAccessTracker | undefined,
+): ReturnType<typeof crossCheckClientReuseManifestEntryWithCache> | null {
+  const observation = layoutParamAccess?.getLayoutObservation(entry.id);
+  if (!observation || observation.completeness !== "complete") {
+    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_PARAMS_OBSERVATION_INCOMPLETE");
+  }
+
+  if (observation.paramScopeKeys.length > 0) {
+    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_PARAMS_PRESENT", observation);
+  }
+
+  if (observation.observed) {
+    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_PARAMS_OBSERVED", observation);
+  }
+
+  if (observation.requestApis.length > 0) {
+    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_REQUEST_API_OBSERVED", observation);
+  }
+
+  if (observation.finiteRevalidateSeconds !== null) {
+    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_REVALIDATE_PRESENT", observation);
+  }
+
+  if (observation.cacheLifeObserved) {
+    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_CACHE_LIFE_OBSERVED", observation);
+  }
+
+  if (observation.unstableCaches.length > 0) {
+    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_UNSTABLE_CACHE_OBSERVED", observation);
+  }
+
+  if (observation.cacheTags.length > 0) {
+    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_CACHE_TAGS_OBSERVED", observation);
+  }
+
+  if (observation.cacheableFetchCount > 0) {
+    return rejectStaticLayoutObservation(
+      entry,
+      "SKIP_LAYOUT_CACHEABLE_FETCHES_OBSERVED",
+      observation,
+    );
+  }
+
+  if (observation.dynamicFetchCount > 0) {
+    return rejectStaticLayoutObservation(
+      entry,
+      "SKIP_LAYOUT_DYNAMIC_FETCHES_OBSERVED",
+      observation,
+    );
+  }
+
+  return null;
+}
+
 function createRenderLifecycleSkipDisposition(input: {
   artifactCompatibility: ArtifactCompatibilityEnvelope | undefined;
   cleanPathname: string;
@@ -337,6 +453,13 @@ function createRenderLifecycleSkipDisposition(input: {
           cacheDecision: null,
           entry,
         });
+      }
+      const observationRejection = rejectUnsafeStaticLayoutObservation(
+        entry,
+        input.layoutParamAccess,
+      );
+      if (observationRejection) {
+        return observationRejection;
       }
       const candidateRouteId = createStaticLayoutClientReuseRouteId(entry.id);
       const candidateOutput: StaticLayoutCacheProofOutputScope = {
