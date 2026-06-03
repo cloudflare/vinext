@@ -26,6 +26,7 @@ import {
 import { createCacheEntryReuseProof, type CacheEntryReuseProof } from "./cache-proof.js";
 import {
   navigationPlanner,
+  resolveDefaultOrUnmatchedSlotPersistenceForLayouts,
   type MountedParallelSlotSnapshotV0,
   type NavigationDecisionV0,
   type OperationLane,
@@ -692,6 +693,7 @@ function mergeSkippedLayoutPreservation(options: {
   const targetLayoutIds = new Set(options.pending.action.layoutIds);
   const preserveElementIds = [...options.decision.preserveElementIds];
   const seenPreservedIds = new Set(preserveElementIds);
+  const newlyPreservedLayoutIds: string[] = [];
 
   for (const id of options.pending.skippedLayoutIds) {
     if (seenPreservedIds.has(id)) continue;
@@ -701,16 +703,57 @@ function mergeSkippedLayoutPreservation(options: {
 
     preserveElementIds.push(id);
     seenPreservedIds.add(id);
+    newlyPreservedLayoutIds.push(id);
   }
 
-  if (preserveElementIds.length === options.decision.preserveElementIds.length) {
+  if (newlyPreservedLayoutIds.length === 0) {
     return options.decision;
   }
+
+  // Restoring a skipped layout into preserveElementIds without restoring the
+  // default/unmatched parallel slots it owns would break the planner invariant
+  // documented at resolveCurrentRootBoundaryCommitElementPersistence: every
+  // preserved slot's owner layout is present in preserveElementIds, and vice
+  // versa. The topology-unknown path returns empty slot persistence, so a
+  // slot-owning layout skipped server-side would otherwise commit with a
+  // missing slot (mergeElements starts from the next payload and, with
+  // preserveAbsentSlots: false, never restores it). Derive the owned slots the
+  // same way the planner does so the preserved layout keeps its slot content.
+  const preservePreviousSlotIds = mergeSkippedLayoutSlotPreservation({
+    currentSlotBindings: options.currentState.slotBindings,
+    preservePreviousSlotIds: options.decision.preservePreviousSlotIds,
+    skippedLayoutIds: newlyPreservedLayoutIds,
+    targetSlotBindings: options.pending.action.slotBindings,
+  });
 
   return {
     ...options.decision,
     preserveElementIds,
+    preservePreviousSlotIds,
   };
+}
+
+function mergeSkippedLayoutSlotPreservation(options: {
+  currentSlotBindings: readonly AppElementsSlotBinding[];
+  preservePreviousSlotIds: readonly string[];
+  skippedLayoutIds: readonly string[];
+  targetSlotBindings: readonly AppElementsSlotBinding[];
+}): readonly string[] {
+  const ownedSlotIds = resolveDefaultOrUnmatchedSlotPersistenceForLayouts({
+    currentSlotBindings: options.currentSlotBindings,
+    preservedLayoutIds: options.skippedLayoutIds,
+    targetSlotBindings: options.targetSlotBindings,
+  });
+  if (ownedSlotIds.length === 0) return options.preservePreviousSlotIds;
+
+  const preservePreviousSlotIds = [...options.preservePreviousSlotIds];
+  const seenSlotIds = new Set(preservePreviousSlotIds);
+  for (const slotId of ownedSlotIds) {
+    if (seenSlotIds.has(slotId)) continue;
+    preservePreviousSlotIds.push(slotId);
+    seenSlotIds.add(slotId);
+  }
+  return preservePreviousSlotIds;
 }
 
 export async function createPendingNavigationCommit(options: {

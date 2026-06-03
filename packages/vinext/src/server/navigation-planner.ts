@@ -555,7 +555,7 @@ function resolveCurrentRootBoundaryCommitSlotPersistence(options: {
  *
  * Wire absence and UNMATCHED_SLOT markers are not semantic proof.
  */
-function resolveDefaultOrUnmatchedSlotPersistenceForLayouts(options: {
+export function resolveDefaultOrUnmatchedSlotPersistenceForLayouts(options: {
   currentSlotBindings: readonly ParallelSlotBindingSnapshotV0[];
   preservedLayoutIds: readonly string[];
   targetSlotBindings: readonly ParallelSlotBindingSnapshotV0[];

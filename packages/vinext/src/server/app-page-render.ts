@@ -378,9 +378,17 @@ function createRenderLifecycleSkipDisposition(input: {
           dynamicFetches: [],
           output: candidateOutput,
           pathTags: [input.cleanPathname],
+          // Invariant: reaching this point requires staticLayoutIds.has(entry.id),
+          // and a layout that observed any request API is flagged "d" by
+          // isLayoutObservationDynamic (isAppLayoutObservationUnsafeForStaticReuse
+          // rejects requestApis.length > 0) and excluded from staticLayoutIds. So
+          // the observed request-API set is necessarily empty here. Hardcoded
+          // rather than read back from the per-layout observation so that a future
+          // reordering of the classification gate cannot feed stale request-API
+          // reads into this synthetic cache proof.
           requestApis: buildRenderRequestApiObservations({
             completeness: "complete",
-            observed: input.layoutParamAccess?.getLayoutObservation(entry.id).requestApis ?? [],
+            observed: [],
           }),
         }),
         candidateVariant,

@@ -3947,6 +3947,96 @@ describe("app browser entry previousNextUrl helpers", () => {
     });
   });
 
+  it("preserves the default parallel slot owned by a skipped slot-owning layout", async () => {
+    const rootLayout = React.createElement("div", null, "root layout");
+    const dashboardLayout = React.createElement("div", null, "dashboard layout");
+    const modalSlot = React.createElement("div", null, "modal");
+    const modalSlotId = AppElementsWire.encodeSlotId("modal", "/dashboard");
+    const currentModalBinding = {
+      ownerLayoutId: "layout:/dashboard",
+      slotId: modalSlotId,
+      state: "active",
+    } satisfies AppElementsSlotBinding;
+    const currentState = createState({
+      elements: createResolvedElements(
+        "route:/dashboard",
+        "/",
+        null,
+        {
+          "layout:/": rootLayout,
+          "layout:/dashboard": dashboardLayout,
+          [modalSlotId]: modalSlot,
+        },
+        ["layout:/", "layout:/dashboard"],
+        [currentModalBinding],
+      ),
+      layoutFlags: {
+        "layout:/": "s",
+        "layout:/dashboard": "s",
+      },
+      layoutIds: ["layout:/", "layout:/dashboard"],
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/dashboard", {}),
+      routeId: "route:/dashboard",
+      slotBindings: [currentModalBinding],
+    });
+    // Sibling navigation: the server proves layout:/dashboard reusable and omits
+    // it from the payload, and the modal slot resolves to its default (no active
+    // content) for the target route. In the topology-unknown path the planner
+    // preserves neither the layout nor its slot, so the skip merge must restore
+    // both — otherwise the retained layout commits with a missing slot.
+    const pending = await createPendingNavigationCommit({
+      currentState,
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/dashboard/settings",
+        {},
+      ),
+      nextElements: Promise.resolve(
+        createResolvedElements(
+          "route:/dashboard/settings",
+          "/",
+          null,
+          {
+            [APP_LAYOUT_FLAGS_KEY]: {},
+            [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/dashboard"],
+            "page:/dashboard/settings": React.createElement("main", null, "settings"),
+          },
+          ["layout:/", "layout:/dashboard"],
+          [
+            {
+              ownerLayoutId: "layout:/dashboard",
+              slotId: modalSlotId,
+              state: "default",
+            },
+          ],
+        ),
+      ),
+      operationLane: "navigation",
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      renderId: 1,
+      type: "navigate",
+    });
+    const approval = approvePendingNavigationCommit({
+      activeNavigationId: 1,
+      currentState,
+      pending,
+      routeManifest: null,
+      startedNavigationId: 1,
+      targetHref: "https://example.com/dashboard/settings",
+    });
+
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+    expect(approval.decision.disposition).toBe("commit");
+    if (approval.decision.disposition !== "commit") return;
+
+    expect(approval.decision.preserveElementIds).toContain("layout:/dashboard");
+    expect(approval.decision.preservePreviousSlotIds).toContain(modalSlotId);
+
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+    expect(nextState.elements["layout:/dashboard"]).toBe(dashboardLayout);
+    expect(nextState.elements[modalSlotId]).toBe(modalSlot);
+  });
+
   it("clears stale parallel slots on approved traverse commits", async () => {
     const state = createState({
       elements: createResolvedElements("route:/feed", "/", null, {
