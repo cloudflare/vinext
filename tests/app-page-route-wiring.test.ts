@@ -5,6 +5,8 @@ import {
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_SLOT_BINDINGS_KEY,
   APP_UNMATCHED_SLOT_WIRE_VALUE,
+  buildOutgoingAppPayload,
+  isAppElementsRecord,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
@@ -1228,6 +1230,64 @@ describe("app page route wiring helpers", () => {
 
     expect(body).toContain("page:de");
     expect(body).not.toContain("page:en");
+  });
+
+  it("releases skipped layout dependencies before serializing retained child entries", async () => {
+    let activeLocale = "en";
+
+    async function StaticLayout(props: Record<string, unknown>) {
+      await Promise.resolve();
+      activeLocale = "de";
+      return createElement("div", { "data-layout": "static" }, readChildren(props.children));
+    }
+
+    function LocalePage() {
+      return createElement("main", null, `page:${activeLocale}`);
+    }
+
+    const elements = buildAppPageElements({
+      element: createElement(LocalePage),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      resolvedMetadata: null,
+      resolvedViewport: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: StaticLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["skip-layout"],
+        slots: null,
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/skip-layout",
+      rootNotFoundModule: null,
+    });
+
+    const payload = buildOutgoingAppPayload({
+      element: elements,
+      layoutFlags: { "layout:/": "s" },
+      skipDisposition: {
+        code: "SKIP_STATIC_LAYOUT_VERIFIED",
+        enabled: true,
+        mode: "skipStaticLayout",
+        skippedEntryIds: ["layout:/"],
+      },
+    });
+
+    expect(isAppElementsRecord(payload)).toBe(true);
+    if (!isAppElementsRecord(payload)) return;
+    expect(Object.hasOwn(payload, "layout:/")).toBe(false);
+
+    const body = await withTimeout(renderHtml(readChildren(payload["page:/skip-layout"])), 1_000);
+
+    expect(body).toContain("page:en");
   });
 
   it("renders template-only segments in the route entry even without a matching layout", async () => {

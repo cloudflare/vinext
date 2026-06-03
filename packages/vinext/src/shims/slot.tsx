@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import {
+  APP_SKIPPED_LAYOUT_IDS_KEY,
   AppElementsWire,
   UNMATCHED_SLOT,
   type AppElementValue,
@@ -75,6 +76,14 @@ function isSlotBindingListValue(value: unknown): value is readonly AppElementsSl
   return Array.isArray(value) && value.length > 0 && value.every(isSlotBindingValue);
 }
 
+function isSkippedLayoutIdsMetadataValue(id: string, value: unknown): value is readonly string[] {
+  return (
+    id === APP_SKIPPED_LAYOUT_IDS_KEY &&
+    Array.isArray(value) &&
+    value.every((entry) => typeof entry === "string")
+  );
+}
+
 function isInterceptionMetadataValue(value: unknown): value is AppElementsInterception {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   return (
@@ -97,18 +106,21 @@ function isCacheEntryReuseProofValue(value: unknown): value is CacheEntryReusePr
 }
 
 function isTransportMetadataValue(
+  id: string,
   value: AppElementValue | undefined,
 ): value is
   | LayoutFlags
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
   | AppElementsInterception
+  | readonly string[]
   | readonly AppElementsSlotBinding[] {
   return (
     isLayoutFlagsValue(value) ||
     isArtifactCompatibilityEnvelopeValue(value) ||
     isCacheEntryReuseProofValue(value) ||
     isInterceptionMetadataValue(value) ||
+    isSkippedLayoutIdsMetadataValue(id, value) ||
     isSlotBindingListValue(value)
   );
 }
@@ -211,7 +223,7 @@ export function Slot({
   }
 
   const element = elements[id];
-  if (isTransportMetadataValue(element)) {
+  if (isTransportMetadataValue(id, element)) {
     warnTransportMetadataEntry(id);
     return null;
   }

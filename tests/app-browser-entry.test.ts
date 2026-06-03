@@ -33,10 +33,12 @@ import {
   devOnUncaughtError,
 } from "../packages/vinext/src/server/dev-error-overlay.js";
 import {
+  APP_CACHE_ENTRY_REUSE_PROOF_KEY,
   AppElementsWire,
   APP_LAYOUT_FLAGS_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
+  APP_SKIPPED_LAYOUT_IDS_KEY,
   UNMATCHED_SLOT,
   getMountedSlotIds,
   getMountedSlotIdsHeader,
@@ -81,6 +83,7 @@ import {
   NavigationTraceTransactionCodes,
   createNavigationTrace,
 } from "../packages/vinext/src/server/navigation-trace.js";
+import { createCacheEntryReuseProof } from "../packages/vinext/src/server/cache-proof.js";
 import {
   ACTION_REVALIDATED_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
@@ -1580,6 +1583,23 @@ describe("app browser entry state helpers", () => {
     const elements = createResolvedElements("route:/dashboard/settings", "/", null, {
       "page:/dashboard/settings": React.createElement("main", null, "settings"),
     });
+
+    expect(isCacheRestorableAppPayloadMetadata(AppElementsWire.readMetadata(elements))).toBe(false);
+  });
+
+  it("does not classify skip-pruned payload metadata as cache-restorable", () => {
+    const layoutId = AppElementsWire.encodeLayoutId("/");
+    const elements = createResolvedElements(
+      "route:/dashboard/settings",
+      "/",
+      null,
+      {
+        [APP_CACHE_ENTRY_REUSE_PROOF_KEY]: createCacheEntryReuseProof(null),
+        [APP_SKIPPED_LAYOUT_IDS_KEY]: [layoutId],
+        "page:/dashboard/settings": React.createElement("main", null, "settings"),
+      },
+      [layoutId],
+    );
 
     expect(isCacheRestorableAppPayloadMetadata(AppElementsWire.readMetadata(elements))).toBe(false);
   });
@@ -3861,6 +3881,70 @@ describe("app browser entry previousNextUrl helpers", () => {
 
     expect(Object.hasOwn(nextState.elements, "layout:/")).toBe(false);
     expect(nextState.layoutIds).toEqual([]);
+  });
+
+  it("preserves explicitly skipped retained layouts on approved navigate commits", async () => {
+    const rootLayout = React.createElement("div", null, "root layout");
+    const staleLayout = React.createElement("div", null, "stale layout");
+    const currentState = createState({
+      elements: createResolvedElements(
+        "route:/dashboard",
+        "/",
+        null,
+        {
+          "layout:/": rootLayout,
+          "layout:/stale": staleLayout,
+        },
+        ["layout:/"],
+      ),
+      layoutFlags: {
+        "layout:/": "s",
+        "layout:/stale": "s",
+      },
+      layoutIds: ["layout:/"],
+    });
+    const pending = await createPendingNavigationCommit({
+      currentState,
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+      nextElements: Promise.resolve(
+        createResolvedElements(
+          "route:/settings",
+          "/",
+          null,
+          {
+            [APP_LAYOUT_FLAGS_KEY]: {},
+            [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/", "layout:/stale"],
+            "page:/settings": React.createElement("main", null, "settings"),
+          },
+          ["layout:/"],
+        ),
+      ),
+      operationLane: "navigation",
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      renderId: 1,
+      type: "navigate",
+    });
+    const approval = approvePendingNavigationCommit({
+      activeNavigationId: 1,
+      currentState,
+      pending,
+      routeManifest: null,
+      startedNavigationId: 1,
+      targetHref: "https://example.com/settings",
+    });
+
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+
+    expect(approval.decision.preserveElementIds).toEqual(["layout:/"]);
+
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+
+    expect(nextState.elements["layout:/"]).toBe(rootLayout);
+    expect(Object.hasOwn(nextState.elements, "layout:/stale")).toBe(false);
+    expect(nextState.layoutFlags).toEqual({
+      "layout:/": "s",
+    });
   });
 
   it("clears stale parallel slots on approved traverse commits", async () => {

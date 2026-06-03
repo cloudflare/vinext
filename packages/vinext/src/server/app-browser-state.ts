@@ -106,6 +106,7 @@ export type AppRouterAction = {
   renderId: number;
   rootLayoutTreePath: string | null;
   routeId: string;
+  skippedLayoutIds: readonly string[];
   slotBindings: readonly AppElementsSlotBinding[];
   type: "navigate" | "replace" | "traverse";
 };
@@ -118,6 +119,7 @@ export type PendingNavigationCommit = {
   previousNextUrl: string | null;
   rootLayoutTreePath: string | null;
   routeId: string;
+  skippedLayoutIds: readonly string[];
 };
 
 export type AppNavigationPayloadOrigin = Readonly<
@@ -134,6 +136,7 @@ export const VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN: AppNavigationPayloadOr
 type PendingNavigationCommitDisposition = "dispatch" | "hard-navigate" | "skip";
 type CacheRestorableAppPayloadMetadata = Readonly<{
   cacheEntryReuseProof?: CacheEntryReuseProof;
+  skippedLayoutIds: readonly string[];
 }>;
 type DispatchPendingNavigationCommitDispositionDecision = {
   disposition: "dispatch";
@@ -370,7 +373,7 @@ function createOperationRecord(options: {
 export function isCacheRestorableAppPayloadMetadata(
   metadata: CacheRestorableAppPayloadMetadata,
 ): metadata is CacheRestorableAppPayloadMetadata & { cacheEntryReuseProof: CacheEntryReuseProof } {
-  return metadata.cacheEntryReuseProof !== undefined;
+  return metadata.cacheEntryReuseProof !== undefined && metadata.skippedLayoutIds.length === 0;
 }
 
 function requiresCacheEntryReuseProof(origin: AppNavigationPayloadOrigin): boolean {
@@ -485,7 +488,7 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
     };
   }
 
-  return mapNavigationDecisionToPendingDisposition(
+  const decision = mapNavigationDecisionToPendingDisposition(
     planPendingRootBoundaryFlightResponse({
       currentState: options.currentState,
       pending: options.pending,
@@ -494,6 +497,12 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
       traceFields,
     }),
   );
+
+  return mergeSkippedLayoutPreservation({
+    currentState: options.currentState,
+    decision,
+    pending: options.pending,
+  });
 }
 
 function createPendingNavigationTraceFields(options: {
@@ -671,6 +680,39 @@ function mapNavigationDecisionToPendingDisposition(
   }
 }
 
+function mergeSkippedLayoutPreservation(options: {
+  currentState: AppRouterState;
+  decision: PendingNavigationCommitDispositionDecision;
+  pending: PendingNavigationCommit;
+}): PendingNavigationCommitDispositionDecision {
+  if (options.decision.disposition !== "dispatch") return options.decision;
+  if (options.pending.skippedLayoutIds.length === 0) return options.decision;
+
+  const currentLayoutIds = new Set(options.currentState.layoutIds);
+  const targetLayoutIds = new Set(options.pending.action.layoutIds);
+  const preserveElementIds = [...options.decision.preserveElementIds];
+  const seenPreservedIds = new Set(preserveElementIds);
+
+  for (const id of options.pending.skippedLayoutIds) {
+    if (seenPreservedIds.has(id)) continue;
+    if (AppElementsWire.parseElementKey(id)?.kind !== "layout") continue;
+    if (!currentLayoutIds.has(id) || !targetLayoutIds.has(id)) continue;
+    if (!Object.hasOwn(options.currentState.elements, id)) continue;
+
+    preserveElementIds.push(id);
+    seenPreservedIds.add(id);
+  }
+
+  if (preserveElementIds.length === options.decision.preserveElementIds.length) {
+    return options.decision;
+  }
+
+  return {
+    ...options.decision,
+    preserveElementIds,
+  };
+}
+
 export async function createPendingNavigationCommit(options: {
   currentState: AppRouterState;
   nextElements: Promise<AppElements>;
@@ -724,6 +766,7 @@ export async function createPendingNavigationCommit(options: {
       renderId: options.renderId,
       rootLayoutTreePath: metadata.rootLayoutTreePath,
       routeId: metadata.routeId,
+      skippedLayoutIds: metadata.skippedLayoutIds,
       type: options.type,
     },
     // Convenience aliases — always equal their action.* counterparts.
@@ -733,5 +776,6 @@ export async function createPendingNavigationCommit(options: {
     previousNextUrl,
     rootLayoutTreePath: metadata.rootLayoutTreePath,
     routeId: metadata.routeId,
+    skippedLayoutIds: metadata.skippedLayoutIds,
   };
 }

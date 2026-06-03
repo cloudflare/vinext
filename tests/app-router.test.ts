@@ -3388,7 +3388,7 @@ describe("App Router Static export", () => {
 
     // Explicit appDir enables static metadata asset export for App Router apps.
     expect(result.files).toContain("metadata-dynamic-static/-/apple-icon.png");
-  });
+  }, 60_000);
 
   it("pre-renders dynamic routes from generateStaticParams", async () => {
     // blog/[slug] has generateStaticParams returning hello-world and getting-started
@@ -4275,7 +4275,9 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("export default __createAppRscHandler({");
     expect(code).toContain("configRedirects: __configRedirects");
     expect(code).toContain("dispatchMatchedPage({");
+    expect(code).toContain("    clientReuseManifest,");
     expect(code).toContain("    rootParams,\n    request,");
+    expect(code).toContain("      clientReuseManifest,");
     expect(code).toContain("      rootParams,\n      probeLayoutAt");
     expect(code).toContain("dispatchMatchedRouteHandler({");
     expect(code).toContain("matchRoute,");

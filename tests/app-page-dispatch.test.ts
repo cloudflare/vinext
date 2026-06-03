@@ -1,17 +1,42 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import {
+  APP_ROOT_LAYOUT_KEY,
+  APP_ROUTE_KEY,
+  AppElementsWire,
+} from "../packages/vinext/src/server/app-elements.js";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
+import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
+import type { AppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
+import {
+  resolveAppPageSegmentParamScopeKeys,
+  resolveAppPageSegmentParams,
+} from "../packages/vinext/src/server/app-page-params.js";
+import { createAppPageTreePath } from "../packages/vinext/src/server/app-page-route-wiring.js";
+import {
+  createArtifactCompatibilityEnvelope,
+  createArtifactCompatibilityGraphVersion,
+} from "../packages/vinext/src/server/artifact-compatibility.js";
+import {
+  parseClientReuseManifestHeader,
+  type ClientReuseManifestParseResult,
+} from "../packages/vinext/src/server/client-reuse-manifest.js";
+import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
-import type { ClientReuseManifestParseResult } from "../packages/vinext/src/server/client-reuse-manifest.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
+import {
+  runWithExecutionContext,
+  type ExecutionContextLike,
+} from "../packages/vinext/src/shims/request-context.js";
 
 type TestRoute = {
+  __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
   error?: { default?: unknown } | null;
   errors?: readonly ({ default?: unknown } | null | undefined)[];
   forbiddens?: readonly ({ default?: unknown } | null | undefined)[];
   isDynamic: boolean;
-  layouts: readonly { default?: unknown }[];
+  layouts: readonly { default?: unknown; dynamic?: unknown; revalidate?: unknown }[];
   layoutTreePositions?: readonly number[];
   loading?: { default?: unknown } | null;
   notFounds?: readonly ({ default?: unknown } | null | undefined)[];
@@ -31,6 +56,13 @@ function createStream(chunks: string[]): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
+}
+
+function captureRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !React.isValidElement(value) && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  throw new Error("Expected AppElements record payload");
 }
 
 function buildISRCacheEntry(value: CachedAppPageValue, isStale = false): ISRCacheEntry {
@@ -90,6 +122,8 @@ function createDispatchOptions(
     loadSsrHandler?: DispatchOptions["loadSsrHandler"];
     middlewareContext?: AppPageMiddlewareContext;
     mountedSlotsHeader?: string | null;
+    params?: Record<string, string | string[]>;
+    probeLayoutAt?: DispatchOptions["probeLayoutAt"];
     renderToReadableStream?: DispatchOptions["renderToReadableStream"];
     request?: Request;
     revalidateSeconds?: number | null;
@@ -105,6 +139,7 @@ function createDispatchOptions(
     overrides.buildPageElement ?? (async () => React.createElement("main", null, "page"));
   const clearRequestContext = overrides.clearRequestContext ?? (() => {});
   const isrGet = overrides.isrGet ?? (async () => null);
+  const params = overrides.params ?? { slug: "hello" };
   const setNavigationContext = overrides.setNavigationContext ?? (() => {});
   const renderToReadableStream: DispatchOptions["renderToReadableStream"] =
     overrides.renderToReadableStream ?? (() => createStream(["flight"]));
@@ -165,10 +200,8 @@ function createDispatchOptions(
       status: null,
     },
     mountedSlotsHeader: overrides.mountedSlotsHeader,
-    params: { slug: "hello" },
-    probeLayoutAt() {
-      return null;
-    },
+    params,
+    probeLayoutAt: overrides.probeLayoutAt ?? createLayoutParamProbe(route, params, []),
     probePage() {
       return null;
     },
@@ -194,6 +227,96 @@ function createDispatchOptions(
     route,
     setNavigationContext,
     options,
+  };
+}
+
+function createVerifiedStaticLayoutManifest(input: {
+  deploymentVersion: string;
+  layoutId?: string;
+  layoutIds?: readonly string[];
+  rootBoundaryId: string;
+  routeId: string;
+  routePattern: string;
+}): ClientReuseManifestParseResult {
+  const layoutIds = input.layoutIds ?? (input.layoutId ? [input.layoutId] : []);
+  if (layoutIds.length === 0) {
+    throw new Error("Expected at least one static layout manifest entry");
+  }
+  const artifactCompatibility = createArtifactCompatibilityEnvelope({
+    deploymentVersion: input.deploymentVersion,
+    graphVersion: createArtifactCompatibilityGraphVersion({
+      routePattern: input.routePattern,
+      rootBoundaryId: input.rootBoundaryId,
+    }),
+    rootBoundaryId: input.rootBoundaryId,
+  });
+  const retainedLayouts = Object.fromEntries(
+    layoutIds.map((layoutId) => [layoutId, `retained-${layoutId}`]),
+  );
+  const layoutFlags: Record<string, "s"> = {};
+  for (const layoutId of layoutIds) {
+    layoutFlags[layoutId] = "s";
+  }
+  const header = createClientReuseManifestHeaderFromVisibleAppState({
+    elements: {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds,
+        rootLayoutTreePath: input.rootBoundaryId,
+        routeId: input.routeId,
+      }),
+      [AppElementsWire.keys.artifactCompatibility]: artifactCompatibility,
+      [AppElementsWire.keys.layoutFlags]: layoutFlags,
+      ...retainedLayouts,
+    },
+    visibleCommitVersion: 1,
+  });
+  if (header === null) {
+    throw new Error("Expected retained static layout manifest");
+  }
+  return parseClientReuseManifestHeader(header);
+}
+
+type LayoutParamProbeReader = (params: unknown) => unknown;
+
+function createLayoutParamProbe(
+  route: TestRoute,
+  matchedParams: Record<string, string | string[]>,
+  readers: readonly (LayoutParamProbeReader | null | undefined)[],
+): DispatchOptions["probeLayoutAt"] {
+  return (layoutIndex, layoutParamAccess) => {
+    const treePath = createAppPageTreePath(
+      route.routeSegments,
+      route.layoutTreePositions?.[layoutIndex] ?? 0,
+    );
+    const layoutId = AppElementsWire.encodeLayoutId(treePath);
+    const runProbe = (tracker: AppLayoutParamAccessTracker | undefined) => {
+      const segmentParams = resolveAppPageSegmentParams(
+        route.routeSegments,
+        route.layoutTreePositions?.[layoutIndex] ?? 0,
+        matchedParams,
+      );
+      tracker?.recordLayoutParamScope(
+        layoutId,
+        resolveAppPageSegmentParamScopeKeys(
+          route.routeSegments,
+          route.layoutTreePositions?.[layoutIndex] ?? 0,
+        ),
+      );
+      const revalidate = route.layouts[layoutIndex]?.revalidate;
+      if (typeof revalidate === "number" && Number.isFinite(revalidate) && revalidate > 0) {
+        tracker?.recordLayoutFiniteRevalidate(layoutId, revalidate);
+      }
+      const params = makeThenableParams(
+        segmentParams,
+        tracker?.createThenableParamsObserver(layoutId),
+      );
+      return readers[layoutIndex]?.(params) ?? null;
+    };
+
+    return layoutParamAccess
+      ? layoutParamAccess.runLayoutProbe(layoutId, () => runProbe(layoutParamAccess))
+      : runProbe(undefined);
   };
 }
 
@@ -368,6 +491,122 @@ describe("app page dispatch", () => {
 
     expect(response.status).toBe(405);
     expect(response.headers.get("allow")).toBe("GET, HEAD");
+  });
+
+  it("uses a verified client reuse manifest to omit static layouts only from RSC transport", async () => {
+    const originalBuildId = process.env.__VINEXT_BUILD_ID;
+    process.env.__VINEXT_BUILD_ID = "deploy-test";
+    const sourceRouteId = "route:/dashboard/settings";
+    const sourceRoutePattern = "/dashboard/settings";
+    const targetRouteId = "route:/dashboard/profile";
+    const targetRoutePattern = "/dashboard/profile";
+    const rootBoundaryId = "/";
+    const layoutId = AppElementsWire.encodeLayoutId("/");
+    const pageId = AppElementsWire.encodePageId("/dashboard/profile", null);
+    const element = {
+      [APP_ROUTE_KEY]: targetRouteId,
+      [APP_ROOT_LAYOUT_KEY]: rootBoundaryId,
+      [layoutId]: "root-layout",
+      [pageId]: "profile-page",
+    };
+    const route = createRoute({
+      __buildTimeClassifications: new Map([[0, "static"]]),
+      layoutTreePositions: [0],
+      layouts: [{ default() {} }],
+      pattern: targetRoutePattern,
+    });
+    const clientReuseManifest = createVerifiedStaticLayoutManifest({
+      deploymentVersion: "deploy-test",
+      layoutId,
+      rootBoundaryId,
+      routeId: sourceRouteId,
+      routePattern: sourceRoutePattern,
+    });
+    const capturedRscPayloads: Record<string, unknown>[] = [];
+    const capturedHtmlPayloads: Record<string, unknown>[] = [];
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    } satisfies ExecutionContextLike;
+
+    try {
+      const { options: rscOptions } = createDispatchOptions({
+        buildPageElement: async () => element,
+        clientReuseManifest,
+        isProduction: true,
+        isRscRequest: true,
+        revalidateSeconds: 60,
+        renderToReadableStream(payload) {
+          capturedRscPayloads.push(captureRecord(payload));
+          return createStream(["flight"]);
+        },
+        route,
+      });
+
+      const rscResponse = await runWithExecutionContext(executionContext, () =>
+        dispatchAppPage(rscOptions),
+      );
+
+      expect(rscResponse.status).toBe(200);
+      expect(rscResponse.headers.get("cache-control")).toBe("no-store, must-revalidate");
+      expect(rscResponse.headers.get("x-vinext-cache")).toBeNull();
+      expect(waitUntilPromises).toHaveLength(0);
+      expect(capturedRscPayloads).toHaveLength(1);
+      expect(Object.hasOwn(capturedRscPayloads[0], layoutId)).toBe(false);
+      expect(capturedRscPayloads[0][pageId]).toBe("profile-page");
+
+      const capturedDynamicPayloads: Record<string, unknown>[] = [];
+      const { options: dynamicOptions } = createDispatchOptions({
+        buildPageElement: async () => element,
+        clientReuseManifest,
+        isProduction: true,
+        isRscRequest: true,
+        renderToReadableStream(payload) {
+          capturedDynamicPayloads.push(captureRecord(payload));
+          return createStream(["flight"]);
+        },
+        route: createRoute({
+          __buildTimeClassifications: new Map([[0, "dynamic"]]),
+          layoutTreePositions: [0],
+          layouts: [{ default() {} }],
+          pattern: targetRoutePattern,
+        }),
+      });
+
+      const dynamicResponse = await dispatchAppPage(dynamicOptions);
+
+      expect(dynamicResponse.status).toBe(200);
+      expect(capturedDynamicPayloads).toHaveLength(1);
+      expect(capturedDynamicPayloads[0][layoutId]).toBe("root-layout");
+      expect(capturedDynamicPayloads[0][pageId]).toBe("profile-page");
+
+      const { options: htmlOptions } = createDispatchOptions({
+        buildPageElement: async () => element,
+        clientReuseManifest,
+        isProduction: true,
+        isRscRequest: false,
+        renderToReadableStream(payload) {
+          capturedHtmlPayloads.push(captureRecord(payload));
+          return createStream(["flight"]);
+        },
+        route,
+      });
+
+      const htmlResponse = await dispatchAppPage(htmlOptions);
+
+      expect(htmlResponse.status).toBe(200);
+      expect(capturedHtmlPayloads).toHaveLength(1);
+      expect(capturedHtmlPayloads[0][layoutId]).toBe("root-layout");
+      expect(capturedHtmlPayloads[0][pageId]).toBe("profile-page");
+    } finally {
+      if (originalBuildId === undefined) {
+        delete process.env.__VINEXT_BUILD_ID;
+      } else {
+        process.env.__VINEXT_BUILD_ID = originalBuildId;
+      }
+    }
   });
 
   it("returns not found for dynamicParams=false paths outside generated params", async () => {

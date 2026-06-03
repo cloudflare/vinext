@@ -95,10 +95,6 @@ export type ClientReuseManifestRejectionCode =
   | "SKIP_CACHE_PROOF_REJECTED"
   | "SKIP_CACHE_REUSE_CLASS_UNSUPPORTED"
   | "SKIP_CACHE_VARIANT_MISMATCH"
-  // Forward declarations — emitted by the render-observation tracker in a
-  // later slice.  The planner never produces them, but the rejection code
-  // union must carry them so the tracker's entry rejection is assignable to
-  // ClientReuseManifestRejectionCode without a cast.
   | "SKIP_LAYOUT_CACHE_LIFE_OBSERVED"
   | "SKIP_LAYOUT_CACHE_TAGS_OBSERVED"
   | "SKIP_LAYOUT_CACHEABLE_FETCHES_OBSERVED"
