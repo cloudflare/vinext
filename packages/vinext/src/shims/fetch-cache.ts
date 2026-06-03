@@ -941,7 +941,6 @@ function createPatchedFetch(): typeof globalThis.fetch {
       }
       throw err;
     }
-    recordCacheableFetchObservation(input);
     const handler = getCacheHandler();
 
     // Try cache first
