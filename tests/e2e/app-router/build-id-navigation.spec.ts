@@ -80,8 +80,7 @@ test.describe("App Router RSC compatibility navigation", () => {
   }) => {
     const manifestHeaders: string[] = [];
     page.on("request", (request) => {
-      const url = new URL(request.url());
-      if (url.pathname === "/client-nav-test.rsc" && url.searchParams.has("_rsc")) {
+      if (isAppRouterRscRequestForPath(request, "/client-nav-test")) {
         const manifestHeader = request.headers()[CLIENT_REUSE_MANIFEST_HEADER];
         if (manifestHeader) {
           manifestHeaders.push(manifestHeader);
@@ -93,14 +92,11 @@ test.describe("App Router RSC compatibility navigation", () => {
     await waitForAppRouterHydration(page);
     await captureRscNavigationPromises(page);
 
-    const rscResponsePromise = page.waitForResponse((response) => {
-      const url = new URL(response.url());
-      return (
-        url.pathname === "/client-nav-test.rsc" &&
-        url.searchParams.has("_rsc") &&
-        response.request().headers()[CLIENT_REUSE_MANIFEST_HEADER] !== undefined
-      );
-    });
+    const rscResponsePromise = page.waitForResponse(
+      (response) =>
+        isAppRouterRscRequestForPath(response.request(), "/client-nav-test") &&
+        response.request().headers()[CLIENT_REUSE_MANIFEST_HEADER] !== undefined,
+    );
 
     await pushAppRoute(page, "/client-nav-test");
     await expect(page.locator("h1")).toHaveText("Client Nav Test");
