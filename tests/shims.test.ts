@@ -1904,8 +1904,13 @@ describe("window.next debug global", () => {
       expect(fetchSpy).not.toHaveBeenCalled();
       // The visible URL is `as` (/redirect-1), even though the underlying
       // route is `url` (/). The server's redirect rule for /redirect-1
-      // must not fire on a shallow update.
-      expect(pushState).toHaveBeenCalledWith({}, "", "/redirect-1");
+      // must not fire on a shallow update. History state now follows the
+      // Next.js shape (`{ url, as, options, __N, key }`) instead of `{}`.
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/redirect-1",
+      );
     } finally {
       (globalThis as any).window = previousWindow;
       globalThis.fetch = originalFetch;
