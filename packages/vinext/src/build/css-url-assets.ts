@@ -224,7 +224,9 @@ export function restoreDedupedCssAssetReferences(
   emitRestoredAsset: EmitRestoredCssUrlAsset,
 ): void {
   // Index emitted non-CSS assets by output basename so a reference's current
-  // (deduped) URL basename resolves back to its asset record.
+  // (deduped) URL basename resolves back to its asset record. Output basenames
+  // embed an 8-char content hash, so a basename collision between two distinct
+  // emitted assets would require a hash collision — last-write-wins is safe.
   const assetsByBase = new Map<string, BundleAsset>();
   for (const entry of Object.values(bundle)) {
     if (entry.type === "asset" && !isCssFileName(entry.fileName)) {

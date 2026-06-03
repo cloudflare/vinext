@@ -14,7 +14,11 @@ const NEXT_CLIENT_CSS_ASSET_FILE_NAMES = "css/[name].[hash:8][extname]";
 const NEXT_CLIENT_STATIC_MEDIA_FILE_NAMES = "media/[name].[hash:8][extname]";
 
 function joinAssetFileNamePattern(assetsDir: string, pattern: string): string {
-  const normalized = assetsDir.replace(/\/+$/, "");
+  // Strip trailing slashes without a regex (avoids a needless ReDoS lint flag;
+  // `assetsDir` is build-time config, but a plain loop is clearer and linear).
+  let end = assetsDir.length;
+  while (end > 0 && assetsDir[end - 1] === "/") end -= 1;
+  const normalized = assetsDir.slice(0, end);
   return normalized ? `${normalized}/${pattern}` : pattern;
 }
 

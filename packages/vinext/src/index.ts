@@ -2543,8 +2543,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (this.environment?.name !== "client") return null;
         const marked = markCssUrlAssetReferences(code, id);
         if (marked === null) return null;
-        // No source map: marking only edits text inside a single `url(...)`
-        // token and never shifts line/column positions.
+        // No source map: the marker is transient — it's stripped before final
+        // output (generateBundle), so emitted CSS positions are unchanged, and
+        // a map over the intermediate marked text carries no useful information.
         return { code: marked, map: null };
       },
     },

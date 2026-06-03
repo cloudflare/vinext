@@ -21,13 +21,12 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
-import { build } from "vite";
+import { build, createBuilder } from "vite";
 import type { Server } from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
 import { restoreDedupedCssAssetReferences } from "../packages/vinext/src/build/css-url-assets.js";
-import { createBuilder } from "vite";
 import { APP_FIXTURE_DIR, PAGES_FIXTURE_DIR, createIsolatedFixture } from "./helpers.js";
 
 const MEDIA_SVG_RE = (name: string) =>
