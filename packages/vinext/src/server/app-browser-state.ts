@@ -698,6 +698,15 @@ function mergeSkippedLayoutPreservation(options: {
   for (const id of options.pending.skippedLayoutIds) {
     if (seenPreservedIds.has(id)) continue;
     if (AppElementsWire.parseElementKey(id)?.kind !== "layout") continue;
+    // Set membership here is intentionally broader than the planner's
+    // prefix-based persistence (resolveSameLayoutAncestorPersistenceForTopologies
+    // breaks at the first divergence). A layout present in both the current and
+    // target chains but past that divergence point is admitted here even though
+    // the planner would not preserve it. That is correct rather than a
+    // divergence bug: the server only emits a skip for a layout it proved
+    // byte-identical via the static-layout cache proof, so preserving the
+    // retained-and-identical layout — together with its owned slots derived
+    // below — is sound regardless of ancestor-chain position.
     if (!currentLayoutIds.has(id) || !targetLayoutIds.has(id)) continue;
     if (!Object.hasOwn(options.currentState.elements, id)) continue;
 
