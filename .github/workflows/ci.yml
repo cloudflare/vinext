@@ -122,7 +122,7 @@ jobs:
         working-directory: packages/vinext
 
       - name: Scaffold a fresh create-next-app project
-        run: vp dlx create-next-app@16.2.6 "${{ runner.temp }}/cna-test" --yes
+        run: vp dlx create-next-app@16.2.7 "${{ runner.temp }}/cna-test" --yes
 
       - name: Deny build scripts in scaffolded project
         working-directory: ${{ runner.temp }}/cna-test
