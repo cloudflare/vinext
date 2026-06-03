@@ -61,7 +61,16 @@ const externalizeBareThirdPartySpecifiers = (
   if (isFirstParty(id)) return false;
   // Packages inlined into `dist` via `alwaysBundle` must keep resolving so they
   // get bundled rather than externalized.
-  if (id === "am-i-vibing" || id === "process-ancestry" || id === "pathslash") return false;
+  if (
+    id === "am-i-vibing" ||
+    id === "process-ancestry" ||
+    id === "pathslash" ||
+    id === "ipaddr.js" ||
+    id === "web-vitals" ||
+    id === "image-size"
+  ) {
+    return false;
+  }
   return true;
 };
 
@@ -74,12 +83,22 @@ export default defineConfig({
       // than requiring vinext consumers to install it. Same for pathslash:
       // it is our own ~90-line node:path wrapper (zero deps), so bundling it
       // keeps it out of consumers' install graphs.
-      alwaysBundle: ["am-i-vibing", "process-ancestry", "pathslash"],
+      alwaysBundle: [
+        "am-i-vibing",
+        "process-ancestry",
+        "pathslash",
+        "ipaddr.js",
+        "web-vitals",
+        "image-size",
+      ],
       neverBundle: (id) =>
         id.includes("node_modules") &&
         !id.includes("am-i-vibing") &&
         !id.includes("process-ancestry") &&
-        !id.includes("pathslash"),
+        !id.includes("pathslash") &&
+        !id.includes("ipaddr.js") &&
+        !id.includes("web-vitals") &&
+        !id.includes("image-size"),
     },
     inputOptions: {
       external: externalizeBareThirdPartySpecifiers,

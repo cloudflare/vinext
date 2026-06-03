@@ -177,11 +177,8 @@
     "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
     "@vinext/types": "workspace:^",
-    "image-size": "catalog:",
-    "ipaddr.js": "catalog:",
     "magic-string": "catalog:",
-    "vite-plugin-commonjs": "catalog:",
-    "web-vitals": "catalog:"
+    "vite-plugin-commonjs": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
@@ -191,9 +188,12 @@
     "@vitejs/plugin-rsc": "catalog:",
     "am-i-vibing": "catalog:",
     "pathslash": "catalog:",
+    "image-size": "catalog:",
+    "ipaddr.js": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "vite": "catalog:",
-    "vite-plus": "catalog:"
+    "vite-plus": "catalog:",
+    "web-vitals": "catalog:"
   },
   "peerDependencies": {
     "@mdx-js/rollup": "^3.0.0",
