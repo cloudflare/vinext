@@ -95,9 +95,9 @@
     "@mdx-js/rollup": "^3.0.0",
     "@vitejs/plugin-react": "^5.1.4 || ^6.0.0",
     "@vitejs/plugin-rsc": "^0.5.26",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
-    "react-server-dom-webpack": "^19.2.6",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-server-dom-webpack": "^19.2.7",
     "vite": "^7.0.0 || ^8.0.0"
   },
   "peerDependenciesMeta": {

@@ -34,13 +34,13 @@ catalog:
   "@types/mdx": 2.0.13
   "@types/ms": 2.1.0
   "@types/node": ^25.2.3
-  "@types/react": ^19.2.14
+  "@types/react": ^19.2.16
   "@types/react-dom": ^19.2.3
   "@typescript/native-preview": ^7.0.0-dev.20260213.1
   "@unpic/react": ^1.0.2
   "@vercel/og": ^0.8.6
   "@vitejs/plugin-react": ^6.0.1
-  "@next/mdx": 16.2.6
+  "@next/mdx": 16.2.7
   recma-codehike: 0.0.1
   remark-codehike: 0.0.1
   "@vitejs/plugin-rsc": ^0.5.27
@@ -64,7 +64,7 @@ catalog:
   "@mswjs/interceptors": ^0.41.3
   msw: ^2.14.6
   ms: 3.0.0-canary.1
-  next: 16.2.6
+  next: 16.2.7
   next-intl: ^4.9.2
   next-themes: ^0.4.6
   next-view-transitions: ^0.3.5
@@ -72,9 +72,9 @@ catalog:
   nuqs: ^2.8.8
   playwright: ^1.52.0
   postcss: 8.5.10
-  react: ^19.2.6
-  react-dom: ^19.2.6
-  react-server-dom-webpack: ^19.2.6
+  react: ^19.2.7
+  react-dom: ^19.2.7
+  react-server-dom-webpack: ^19.2.7
   server-only: ^0.0.1
   swr: ^2.0.0
   tailwind-merge: ^3.3.0
