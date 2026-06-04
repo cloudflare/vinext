@@ -286,14 +286,18 @@ function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: st
     ? entries.map((entry) => latestEntriesByStateKey.current.get(entry.stateKey) ?? entry)
     : orderedEntries;
 
-  // Without cacheComponents, a single keyed active entry remounts on state-key
-  // change, resetting client state for a fresh segment. The key lives on the
-  // wrapper so a new active stateKey remounts the whole provider subtree.
+  // Without cacheComponents there is no Activity retention, so this boundary must
+  // reconcile in place exactly like the baseline router. The segment stateKey
+  // tracks the pathname (see createBfcacheSegmentIdentity), so keying the active
+  // entry by it would remount every slot whose identity moves with the URL —
+  // shared layouts and interception source slots included — discarding client
+  // state that survives a normal navigation. Reset for genuinely fresh entries is
+  // driven by userland bfcacheId keying, not by remounting the slot subtree, so
+  // the active entry renders unkeyed here.
   if (!process.env.__NEXT_CACHE_COMPONENTS) {
     const activeEntry = renderEntries[0];
     return (
       <BfcacheEntryProviders
-        key={activeEntry.stateKey}
         entry={activeEntry}
         fallbackElements={elements}
         fallbackSegmentId={id}
