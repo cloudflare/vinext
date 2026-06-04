@@ -249,6 +249,7 @@ import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } 
     : ""
 }
 import { createAppRscHandler as __createAppRscHandler } from ${JSON.stringify(appRscHandlerPath)};
+import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import { decodePathParams as __decodePathParams } from ${JSON.stringify(normalizePathModulePath)};
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
 import {
@@ -555,6 +556,7 @@ export default __createAppRscHandler({
   clearRequestContext() {
     __clearRequestContext();
   },
+  registerCacheAdapters: __registerConfiguredCacheAdapters,
   configHeaders: __configHeaders,
   configRedirects: __configRedirects,
   configRewrites: __configRewrites,

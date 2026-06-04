@@ -231,6 +231,14 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     options: DispatchMatchedRouteHandlerOptions<TRoute>,
   ) => Promise<Response>;
   ensureInstrumentation?: () => Promise<void>;
+  /**
+   * Register cache adapters configured via the vinext() `cache` option. Wired
+   * from the generated RSC entry (which can import `virtual:vinext-cache-adapters`)
+   * so config-driven cache handlers apply to App Router on EVERY runtime — the
+   * Node server and dev included, not just the Cloudflare worker entry. Called
+   * per request and self-guards, so it's a cheap no-op after the first call.
+   */
+  registerCacheAdapters?: (env?: Record<string, unknown>) => void;
   handleProgressiveActionRequest: (
     options: HandleProgressiveActionRequestOptions,
   ) => Promise<Response | ProgressiveActionFormStateResult | null>;
@@ -782,6 +790,11 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
 ): (request: Request, ctx: unknown) => Promise<Response> {
   return async function appRscHandler(rawRequest, ctx) {
+    // Register config-driven cache adapters before anything touches the cache.
+    // On the Cloudflare worker the entry already registered them with `env`
+    // (this guarded call is then a no-op); on Node/dev this is where they get
+    // wired, with no bindings available.
+    options.registerCacheAdapters?.();
     await options.ensureInstrumentation?.();
 
     // Strip forged internal headers at the App Router request boundary.

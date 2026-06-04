@@ -23,8 +23,8 @@ import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import {
   VIRTUAL_CACHE_ADAPTERS,
   generateCacheAdaptersModule,
-  type VinextCacheConfig,
 } from "./cache/cache-adapters-virtual.js";
+import type { VinextCacheConfig } from "vinext/shims/cache-adapter";
 import {
   generateBrowserEntry,
   isLinkPrefetchRoute,

@@ -559,6 +559,8 @@ import { mergeRewriteQuery } from "vinext/utils/query";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { renderPage, handleApiRoute, runMiddleware, vinextConfig, matchPageRoute } from "virtual:vinext-server-entry";
+// @ts-expect-error -- virtual module resolved by vinext at build time
+import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 
 interface Env {
   ASSETS: Fetcher;
@@ -603,6 +605,10 @@ function stripBasePath(pathname: string, basePath: string): string {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // Wire up cache adapters configured via the vinext() \`cache\` option, with
+    // the Worker \`env\` so binding-backed adapters (e.g. KV) resolve. Self-guards
+    // (runs once per isolate); a no-op when no adapters are configured.
+    registerConfiguredCacheAdapters(env);
     try {
       const url = new URL(request.url);
       let pathname = url.pathname;

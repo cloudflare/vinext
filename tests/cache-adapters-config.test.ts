@@ -8,17 +8,23 @@
  *  - The Cloudflare adapter modules: their config-time builders (kvDataAdapter,
  *    cdnAdapter) and their runtime factory default exports.
  */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect } from "vite-plus/test";
 import {
   generateCacheAdaptersModule,
   VIRTUAL_CACHE_ADAPTERS,
 } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
-import createKvDataCacheAdapter, {
-  kvDataAdapter,
-} from "../packages/vinext/src/cloudflare/cache/kv-data-adapter.js";
-import createCloudflareCdnCacheAdapter, {
-  cdnAdapter,
-} from "../packages/vinext/src/cloudflare/cache/cdn-adapter.js";
+import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import { generateServerEntry } from "../packages/vinext/src/entries/pages-server-entry.js";
+import { generatePagesRouterWorkerEntry } from "../packages/vinext/src/deploy.js";
+import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
+import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
+import { kvDataAdapter } from "../packages/vinext/src/cloudflare/cache/kv-data-adapter.js";
+import createKvDataCacheAdapter from "../packages/vinext/src/cloudflare/cache/kv-data-adapter.runtime.js";
+import { cdnAdapter } from "../packages/vinext/src/cloudflare/cache/cdn-adapter.js";
+import createCloudflareCdnCacheAdapter from "../packages/vinext/src/cloudflare/cache/cdn-adapter.runtime.js";
 import { KVCacheHandler } from "../packages/vinext/src/cloudflare/kv-cache-handler.js";
 import { CloudflareCdnCacheAdapter } from "../packages/vinext/src/cloudflare/cloudflare-cdn-cache.js";
 
@@ -93,15 +99,14 @@ describe("generateCacheAdaptersModule", () => {
 });
 
 describe("kvDataAdapter builder", () => {
-  it("returns a serializable descriptor without touching the Workers runtime", () => {
-    expect(kvDataAdapter()).toEqual({
-      adapter: "vinext/cloudflare/cache/kv-data-adapter",
-      options: undefined,
-    });
-    expect(kvDataAdapter({ binding: "MY_KV", ttlSeconds: 60 })).toEqual({
-      adapter: "vinext/cloudflare/cache/kv-data-adapter",
-      options: { binding: "MY_KV", ttlSeconds: 60 },
-    });
+  it("resolves the runtime factory to an absolute path without touching the Workers runtime", () => {
+    const descriptor = kvDataAdapter({ binding: "MY_KV", ttlSeconds: 60 });
+    // `adapter` is an absolute path to the sibling runtime module (require.resolve),
+    // NOT a bare specifier — so it resolves regardless of package export wiring.
+    expect(path.isAbsolute(descriptor.adapter)).toBe(true);
+    expect(descriptor.adapter.endsWith("kv-data-adapter.runtime.js")).toBe(true);
+    expect(descriptor.options).toEqual({ binding: "MY_KV", ttlSeconds: 60 });
+    expect(kvDataAdapter().options).toBeUndefined();
   });
 
   it("validates the binding option at config time", () => {
@@ -140,12 +145,79 @@ describe("Cloudflare kv-data-adapter factory", () => {
   });
 });
 
+describe("registration is wired into every router/runtime entry", () => {
+  const minimalAppRoutes = [
+    {
+      pattern: "/",
+      patternParts: [],
+      pagePath: "/tmp/test/app/page.tsx",
+      routePath: null,
+      layouts: ["/tmp/test/app/layout.tsx"],
+      templates: [],
+      parallelSlots: [],
+      loadingPath: null,
+      errorPath: null,
+      layoutErrorPaths: [null],
+      notFoundPath: null,
+      notFoundPaths: [null],
+      forbiddenPaths: [null],
+      forbiddenPath: null,
+      unauthorizedPaths: [null],
+      unauthorizedPath: null,
+      routeSegments: [],
+      templateTreePositions: [],
+      layoutTreePositions: [0],
+      isDynamic: false,
+      params: [],
+    },
+  ] as unknown as Parameters<typeof generateRscEntry>[1];
+
+  it("App Router RSC entry imports and passes the registrar to the shared handler", () => {
+    // The RSC handler is the single chokepoint for App Router on Workers, Node,
+    // and dev — wiring registration here covers all three.
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+    expect(code).toContain('from "virtual:vinext-cache-adapters"');
+    expect(code).toContain("registerCacheAdapters: __registerConfiguredCacheAdapters");
+  });
+
+  it("Pages Router server entry registers in renderPage and handleApiRoute", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cache-pages-entry-"));
+    try {
+      const pagesDir = path.join(tmpDir, "pages");
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+      const code = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        null,
+        null,
+      );
+      expect(code).toContain('from "virtual:vinext-cache-adapters"');
+      // Called from both request handlers (covers Node, dev, and Workers).
+      const calls = code.split("__registerConfiguredCacheAdapters();").length - 1;
+      expect(calls).toBeGreaterThanOrEqual(2);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("Pages Router worker entry registers with env", () => {
+    const code = generatePagesRouterWorkerEntry();
+    expect(code).toContain('from "virtual:vinext-cache-adapters"');
+    expect(code).toContain("registerConfiguredCacheAdapters(env)");
+  });
+});
+
 describe("cdnAdapter builder + factory", () => {
-  it("builder returns a serializable descriptor", () => {
-    expect(cdnAdapter()).toEqual({
-      adapter: "vinext/cloudflare/cache/cdn-adapter",
-      options: undefined,
-    });
+  it("builder resolves the runtime factory to an absolute path", () => {
+    const descriptor = cdnAdapter();
+    expect(path.isAbsolute(descriptor.adapter)).toBe(true);
+    expect(descriptor.adapter.endsWith("cdn-adapter.runtime.js")).toBe(true);
+    expect(descriptor.options).toBeUndefined();
   });
 
   it("factory returns a CloudflareCdnCacheAdapter regardless of env", () => {

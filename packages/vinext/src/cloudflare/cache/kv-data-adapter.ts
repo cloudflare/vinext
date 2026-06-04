@@ -1,5 +1,5 @@
 /**
- * Config-driven Cloudflare KV data cache adapter.
+ * Cloudflare KV data cache adapter — config-time builder.
  *
  * Configure the data cache (fetch / `"use cache"` / `unstable_cache`) from your
  * vite config without writing a custom worker entry or calling
@@ -16,21 +16,15 @@
  *     ],
  *   });
  *
- * `kvDataAdapter(...)` returns a plain descriptor at config time — it does not
- * touch the Workers runtime. The KV namespace is resolved from `env[binding]`
- * on the first request. The default binding name is `VINEXT_CACHE`:
- *
- *   { "kv_namespaces": [{ "binding": "VINEXT_CACHE", "id": "<your-kv-namespace-id>" }] }
+ * `kvDataAdapter(...)` runs at config time and only returns a serializable
+ * descriptor — it never touches the Workers runtime. It `require.resolve`s the
+ * sibling runtime factory (`./kv-data-adapter.runtime.js`) to an absolute path,
+ * which the generated registration imports and invokes on the first request to
+ * resolve `env[binding]` (default `VINEXT_CACHE`) and build the KV handler.
  */
 
-import type { CacheAdapterDescriptor, DataCacheAdapterFactory } from "vinext/shims/cache-adapter";
-import { KVCacheHandler } from "../kv-cache-handler.js";
-
-/** Module specifier of this adapter, used by the {@link kvDataAdapter} builder. */
-const ADAPTER_MODULE = "vinext/cloudflare/cache/kv-data-adapter";
-
-/** Default KV namespace binding name read from the Worker `env`. */
-const DEFAULT_BINDING = "VINEXT_CACHE";
+import { fileURLToPath } from "node:url";
+import type { CacheAdapterDescriptor } from "vinext/shims/cache-adapter";
 
 /** Options accepted by {@link kvDataAdapter}, forwarded to the runtime factory. */
 export type KvDataAdapterOptions = {
@@ -45,9 +39,9 @@ export type KvDataAdapterOptions = {
 };
 
 /**
- * Config-time builder: returns a serializable descriptor pointing at this
- * module, with the given options forwarded to the runtime factory. Safe to call
- * from vite.config — it never instantiates the KV handler.
+ * Config-time builder: returns a serializable descriptor whose `adapter` is the
+ * absolute path to the runtime factory. Safe to call from vite.config — it
+ * never instantiates the KV handler or reads a binding.
  */
 export function kvDataAdapter(
   options?: KvDataAdapterOptions,
@@ -55,27 +49,8 @@ export function kvDataAdapter(
   if (options?.binding !== undefined && typeof options.binding !== "string") {
     throw new TypeError("[vinext] kvDataAdapter({ binding }) must be a string KV binding name.");
   }
-  return { adapter: ADAPTER_MODULE, options };
+  return {
+    adapter: fileURLToPath(import.meta.resolve("./kv-data-adapter.runtime.js")),
+    options,
+  };
 }
-
-const createKvDataCacheAdapter: DataCacheAdapterFactory<KvDataAdapterOptions> = ({
-  env,
-  options,
-}) => {
-  const binding = options?.binding ?? DEFAULT_BINDING;
-  const namespace = env?.[binding];
-  if (!namespace) {
-    throw new Error(
-      `[vinext] The KV data cache adapter requires a \`${binding}\` KV namespace binding.\n` +
-        `  Add it to wrangler.jsonc:\n` +
-        `    "kv_namespaces": [{ "binding": "${binding}", "id": "<your-kv-namespace-id>" }]`,
-    );
-  }
-  return new KVCacheHandler(namespace as ConstructorParameters<typeof KVCacheHandler>[0], {
-    appPrefix: options?.appPrefix,
-    ttlSeconds: options?.ttlSeconds,
-    tagCacheTtlMs: options?.tagCacheTtlMs,
-  });
-};
-
-export default createKvDataCacheAdapter;
