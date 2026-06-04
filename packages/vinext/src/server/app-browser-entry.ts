@@ -840,9 +840,9 @@ function getVisitedResponse(
     return null;
   }
 
-  // `isVisitedResponseCacheEntryFresh` already bypasses the cache for
-  // `navigationKind === "refresh"`, so the refresh case falls through to the
-  // miss path below (which also evicts the stale entry).
+  // `isVisitedResponseCacheEntryFresh` is the single source of truth for
+  // freshness and returns `false` for `navigationKind === "refresh"`, so a
+  // refresh falls through to the miss path below.
   if (
     isVisitedResponseCacheEntryFresh(cached, {
       navigationKind,
@@ -855,6 +855,10 @@ function getVisitedResponse(
     return cached;
   }
 
+  // Stale (or refresh) entries are evicted on read. A refresh intentionally
+  // drops any prior snapshot here — the navigation re-fetches and re-stores a
+  // fresh one, so leaving the old entry around would only risk a later
+  // non-refresh navigation reusing a snapshot the user explicitly refreshed.
   visitedResponseCache.delete(cacheKey);
   return null;
 }
