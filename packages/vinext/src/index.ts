@@ -91,8 +91,6 @@ import {
 import { proxyExternalRequest } from "./config/config-matchers.js";
 import { detectPackageManager } from "./utils/project.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
-import { hasBasePath } from "./utils/base-path.js";
-import { mergeRewriteQuery } from "./utils/query.js";
 import {
   ASSET_PREFIX_URL_DIR,
   resolveAssetUrlPrefix,
@@ -128,6 +126,10 @@ import {
 } from "./plugins/fonts.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import { computeClientRuntimeMetadata } from "./utils/client-runtime-metadata.js";
+import {
+  VINEXT_CLIENT_ENTRY_MANIFEST,
+  type ClientEntryManifest,
+} from "./utils/client-entry-manifest.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import { buildSassPreprocessorOptions, createSassTildeImporter } from "./plugins/sass.js";
 import {
@@ -4673,7 +4675,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             clientDir,
             assetBase: clientBase,
             assetPrefix: nextConfig.assetPrefix,
-            includeClientEntry: !hasAppDir,
+            includeClientEntry: !hasAppDir ? true : hasPagesDir ? "pages-client-entry" : false,
           });
           const lazyChunksData: string[] | null = runtimeMetadata.lazyChunks ?? null;
           const dynamicPreloadsData: Record<string, string[]> | null =
@@ -4697,18 +4699,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // fallback routes still render through the Pages entry and need
             // the Pages client entry global.
             const workerEntry = path.resolve(distDir, "server", "index.js");
-            if (!clientEntryFile && hasPagesDir) {
-              clientEntryFile =
-                findPagesClientEntryFile({
-                  clientDir,
-                  assetsSubdir: resolveAssetsDir(nextConfig?.assetPrefix),
-                  assetBase: clientBase,
-                }) ?? null;
-            }
 
             if (
               fs.existsSync(workerEntry) &&
-              (lazyChunksData || dynamicPreloadsData || ssrManifestData || (hasPagesDir && clientEntryFile))
+              (lazyChunksData ||
+                dynamicPreloadsData ||
+                ssrManifestData ||
+                (hasPagesDir && clientEntryFile))
             ) {
               let code = fs.readFileSync(workerEntry, "utf-8");
               const globals: string[] = [];

@@ -5,7 +5,7 @@ import {
   resolveAssetUrlPrefix,
 } from "./asset-prefix.js";
 
-export function normalizeManifestFile(file: string): string {
+function normalizeManifestFile(file: string): string {
   return file.startsWith("/") ? file.slice(1) : file;
 }
 

@@ -266,16 +266,6 @@ function matchesIfNoneMatchHeader(ifNoneMatch: string | undefined, etag: string)
     .some((value) => value === etag);
 }
 
-function stripHeaders(
-  headersRecord: Record<string, string | string[]>,
-  names: readonly string[],
-): void {
-  const targets = new Set(names.map((name) => name.toLowerCase()));
-  for (const key of Object.keys(headersRecord)) {
-    if (targets.has(key.toLowerCase())) delete headersRecord[key];
-  }
-}
-
 function installClientBuildManifestGlobals(
   clientDir: string,
   assetBase: string,
@@ -1031,7 +1021,8 @@ function installPagesClientAssetGlobals(options: {
     clientDir: options.clientDir,
     assetBase: options.assetBase,
     assetPrefix: options.assetPrefix,
-    includeClientEntry: options.clientEntryLookup,
+    includeClientEntry:
+      options.clientEntryLookup === "pages-client-entry" ? "pages-client-entry" : true,
   });
 
   globalThis.__VINEXT_CLIENT_ENTRY__ = metadata.clientEntryFile;

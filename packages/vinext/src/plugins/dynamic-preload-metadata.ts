@@ -92,14 +92,14 @@ function collectDynamicImportLocals(ast: unknown): Set<string> {
   return locals;
 }
 
-function isIdentifierNamed(node: unknown, names: Set<string>): boolean {
+function isIdentifierNameInSet(node: unknown, names: Set<string>): boolean {
   if (!isRecord(node)) return false;
   return getString(node, "type") === "Identifier" && names.has(getString(node, "name") ?? "");
 }
 
 function isDynamicCall(node: AstRecord, dynamicLocals: Set<string>): boolean {
   if (getString(node, "type") !== "CallExpression") return false;
-  return isIdentifierNamed(node.callee, dynamicLocals);
+  return isIdentifierNameInSet(node.callee, dynamicLocals);
 }
 
 function addBindingName(pattern: unknown, names: Set<string>): void {

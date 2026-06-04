@@ -31,17 +31,10 @@ import {
   findInNodeModules,
   ensureViteConfigCompatibility,
 } from "../packages/vinext/src/utils/project.js";
-import {
-  manifestFileWithAssetPrefix,
-  manifestFileWithBase,
-} from "../packages/vinext/src/utils/manifest-paths.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
-import {
-  computeDynamicImportPreloads,
-  computeLazyChunks,
-  dynamicImportPreloadsWithBase,
-} from "../packages/vinext/src/utils/lazy-chunks.js";
+import { computeLazyChunks } from "../packages/vinext/src/utils/lazy-chunks.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
+import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 import {
   mergeHeaders,
   resolveStaticAssetSignal,
@@ -2203,9 +2196,8 @@ describe("Cloudflare _headers file generation", () => {
 describe("Cloudflare closeBundle lazy chunk injection", () => {
   /**
    * Replicates the closeBundle hook logic for App Router builds.
-   * In #358's architecture, the RSC env IS the worker, so the worker entry
-   * is at dist/server/index.js. The RSC plugin handles __VINEXT_CLIENT_ENTRY__,
-   * but we still need to inject __VINEXT_LAZY_CHUNKS__ and __VINEXT_SSR_MANIFEST__.
+   * Uses the real computeClientRuntimeMetadata helper instead of
+   * duplicating manifest/runtime-metadata logic.
    */
   function simulateCloseBundleAppRouter(buildRoot: string, base = "/", assetPrefix = ""): void {
     const distDir = path.resolve(buildRoot, "dist");
@@ -2213,26 +2205,11 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
 
     const clientDir = path.resolve(buildRoot, "dist", "client");
 
-    // Read build manifest and compute dynamic chunk metadata
-    let lazyChunksData: string[] | null = null;
-    let dynamicPreloadsData: Record<string, string[]> | null = null;
-    const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
-    if (fs.existsSync(buildManifestPath)) {
-      try {
-        const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
-        const lazy = computeLazyChunks(buildManifest).map((file) =>
-          manifestFileWithAssetPrefix(file, base, assetPrefix),
-        );
-        if (lazy.length > 0) lazyChunksData = lazy;
-        const dynamicPreloads = dynamicImportPreloadsWithBase(
-          computeDynamicImportPreloads(buildManifest),
-          (file) => manifestFileWithAssetPrefix(file, base, assetPrefix),
-        );
-        if (Object.keys(dynamicPreloads).length > 0) dynamicPreloadsData = dynamicPreloads;
-      } catch {
-        /* ignore */
-      }
-    }
+    const runtimeMetadata = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: base,
+      assetPrefix,
+    });
 
     // Read SSR manifest
     let ssrManifestData: Record<string, string[]> | null = null;
@@ -2245,20 +2222,24 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
       }
     }
 
-    // App Router: inject into dist/server/index.js (NOT __VINEXT_CLIENT_ENTRY__)
     const workerEntry = path.resolve(distDir, "server", "index.js");
-    if (fs.existsSync(workerEntry) && (lazyChunksData || dynamicPreloadsData || ssrManifestData)) {
+    if (
+      fs.existsSync(workerEntry) &&
+      (runtimeMetadata.lazyChunks || runtimeMetadata.dynamicPreloads || ssrManifestData)
+    ) {
       let code = fs.readFileSync(workerEntry, "utf-8");
       const globals: string[] = [];
       if (ssrManifestData) {
         globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
       }
-      if (lazyChunksData) {
-        globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
-      }
-      if (dynamicPreloadsData) {
+      if (runtimeMetadata.lazyChunks) {
         globals.push(
-          `globalThis.__VINEXT_DYNAMIC_PRELOADS__ = ${JSON.stringify(dynamicPreloadsData)};`,
+          `globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(runtimeMetadata.lazyChunks)};`,
+        );
+      }
+      if (runtimeMetadata.dynamicPreloads) {
+        globals.push(
+          `globalThis.__VINEXT_DYNAMIC_PRELOADS__ = ${JSON.stringify(runtimeMetadata.dynamicPreloads)};`,
         );
       }
       code = globals.join("\n") + "\n" + code;
@@ -2268,14 +2249,21 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
 
   /**
    * Replicates the closeBundle hook logic for Pages Router builds.
-   * The worker entry is found by scanning dist/ for a directory containing
-   * wrangler.json. All three globals are injected.
+   * Uses the real computeClientRuntimeMetadata helper instead of
+   * duplicating manifest/runtime-metadata logic.
    */
   function simulateCloseBundlePagesRouter(buildRoot: string, base = "/", assetPrefix = ""): void {
     const distDir = path.resolve(buildRoot, "dist");
     if (!fs.existsSync(distDir)) return;
 
     const clientDir = path.resolve(buildRoot, "dist", "client");
+
+    const runtimeMetadata = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: base,
+      assetPrefix,
+      includeClientEntry: true,
+    });
 
     // Find worker output directory (contains wrangler.json)
     let workerOutDir: string | null = null;
@@ -2295,34 +2283,6 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     const workerEntry = path.join(workerOutDir, "index.js");
     if (!fs.existsSync(workerEntry)) return;
 
-    // Read build manifest and compute dynamic chunk metadata
-    let lazyChunksData: string[] | null = null;
-    let dynamicPreloadsData: Record<string, string[]> | null = null;
-    let clientEntryFile: string | null = null;
-    const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
-    if (fs.existsSync(buildManifestPath)) {
-      try {
-        const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
-        for (const [, value] of Object.entries(buildManifest) as [string, any][]) {
-          if (value && value.isEntry && value.file) {
-            clientEntryFile = manifestFileWithBase(value.file, base);
-            break;
-          }
-        }
-        const lazy = computeLazyChunks(buildManifest).map((file) =>
-          manifestFileWithAssetPrefix(file, base, assetPrefix),
-        );
-        if (lazy.length > 0) lazyChunksData = lazy;
-        const dynamicPreloads = dynamicImportPreloadsWithBase(
-          computeDynamicImportPreloads(buildManifest),
-          (file) => manifestFileWithAssetPrefix(file, base, assetPrefix),
-        );
-        if (Object.keys(dynamicPreloads).length > 0) dynamicPreloadsData = dynamicPreloads;
-      } catch {
-        /* ignore */
-      }
-    }
-
     // Read SSR manifest
     let ssrManifestData: Record<string, string[]> | null = null;
     const ssrManifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
@@ -2334,22 +2294,30 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
       }
     }
 
-    // Pages Router: inject all three globals
-    if (clientEntryFile || ssrManifestData || lazyChunksData || dynamicPreloadsData) {
+    if (
+      runtimeMetadata.clientEntryFile ||
+      ssrManifestData ||
+      runtimeMetadata.lazyChunks ||
+      runtimeMetadata.dynamicPreloads
+    ) {
       let code = fs.readFileSync(workerEntry, "utf-8");
       const globals: string[] = [];
-      if (clientEntryFile) {
-        globals.push(`globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`);
+      if (runtimeMetadata.clientEntryFile) {
+        globals.push(
+          `globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(runtimeMetadata.clientEntryFile)};`,
+        );
       }
       if (ssrManifestData) {
         globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
       }
-      if (lazyChunksData) {
-        globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
-      }
-      if (dynamicPreloadsData) {
+      if (runtimeMetadata.lazyChunks) {
         globals.push(
-          `globalThis.__VINEXT_DYNAMIC_PRELOADS__ = ${JSON.stringify(dynamicPreloadsData)};`,
+          `globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(runtimeMetadata.lazyChunks)};`,
+        );
+      }
+      if (runtimeMetadata.dynamicPreloads) {
+        globals.push(
+          `globalThis.__VINEXT_DYNAMIC_PRELOADS__ = ${JSON.stringify(runtimeMetadata.dynamicPreloads)};`,
         );
       }
       code = globals.join("\n") + "\n" + code;

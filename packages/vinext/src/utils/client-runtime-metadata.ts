@@ -24,9 +24,8 @@ type ClientRuntimeMetadata = {
 };
 
 /**
- * Read the client build manifest (`.vite/manifest.json`) and compute runtime
- * metadata used by the Cloudflare worker entry (build time) and the Pages
- * Router production server (startup time).
+ * Read the client build manifest and compute runtime metadata used by
+ * Cloudflare worker entry injection and Node production server startup.
  *
  * - `lazyChunks` — chunks only reachable through dynamic `import()`, excluded
  *   from modulepreload hints.
@@ -60,9 +59,9 @@ export function computeClientRuntimeMetadata(opts: {
     const entry =
       opts.includeClientEntry === "pages-client-entry"
         ? (findPagesClientEntryFileFromVinextManifest(clientEntryManifest, opts.assetBase) ??
-           findPagesClientEntryFile(entryOptions))
+          findPagesClientEntryFile(entryOptions))
         : (findClientEntryFileFromVinextManifest(clientEntryManifest, opts.assetBase) ??
-           findClientEntryFile(entryOptions));
+          findClientEntryFile(entryOptions));
     if (entry) metadata.clientEntryFile = entry;
   }
 
