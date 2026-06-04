@@ -1356,6 +1356,41 @@ describe("augmentSsrManifestFromBundle", () => {
     expect(augmented["pages/about.tsx"]).toEqual(["assets/about.js", "assets/about.css"]);
   });
 
+  it("collapses a basePath that Vite duplicated in the SSR manifest", () => {
+    // basePath baked into fileNames + reapplied by Vite yields a doubled URL
+    // that 404s; both sources must dedupe to one single-base path here.
+    const bundle = {
+      "docs/_next/static/_slug_.js": {
+        type: "chunk" as const,
+        fileName: "docs/_next/static/_slug_.js",
+        imports: [],
+        modules: {
+          "/proj/pages/[slug].tsx": {},
+        },
+      },
+    };
+
+    const ssrManifest = {
+      "pages/[slug].tsx": ["docs/docs/_next/static/_slug_.js"],
+    };
+
+    const augmented = _augmentSsrManifestFromBundle(ssrManifest, bundle, "/proj", "/docs/");
+
+    expect(augmented["pages/[slug].tsx"]).toEqual(["docs/_next/static/_slug_.js"]);
+  });
+
+  it("leaves a single basePath prefix untouched (no over-collapse)", () => {
+    // Guards the collapse logic against rewriting a correctly single-prefixed
+    // entry (e.g. when the bundler does not bake base into fileNames).
+    const ssrManifest = {
+      "pages/index.tsx": ["docs/_next/static/index.js"],
+    };
+
+    const augmented = _augmentSsrManifestFromBundle(ssrManifest, {}, "/proj", "/docs/");
+
+    expect(augmented["pages/index.tsx"]).toEqual(["docs/_next/static/index.js"]);
+  });
+
   it("normalizes existing absolute manifest keys before merging bundle metadata", () => {
     const bundle = {
       "assets/counter.js": {
