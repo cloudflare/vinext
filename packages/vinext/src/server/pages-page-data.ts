@@ -275,7 +275,7 @@ function buildPagesCacheResponse(
     cacheControl === undefined ? undefined : (cacheControl.expire ?? expireSeconds);
   // HIT/STALE served from the origin store: route the cache header through the
   // CDN adapter (default: identical single Cache-Control). Edge adapters never
-  // reach this path because their readPage returns null.
+  // reach this path because their get() returns null.
   const headers = new Headers({
     "Content-Type": "text/html",
     ...buildCacheStateHeaders(cacheState),

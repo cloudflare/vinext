@@ -436,7 +436,7 @@ async function _invalidateEncodedTag(
   durations?: { expire?: number },
 ): Promise<void> {
   await _getActiveHandler().revalidateTag(encoded, durations);
-  await getCdnCacheAdapter().revalidate(encoded, durations);
+  await getCdnCacheAdapter().revalidateTag(encoded, durations);
 }
 
 /**

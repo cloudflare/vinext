@@ -48,7 +48,7 @@ export type ISRCacheEntry = {
 export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
   // Page-level reads go through the CDN cache adapter. The default adapter
   // reads the data cache; an edge adapter may return null so the CDN serves.
-  const result = await getCdnCacheAdapter().readPage(key);
+  const result = await getCdnCacheAdapter().get(key);
   if (!result || !result.value) return null;
   // Built-in handlers hard-delete expired entries and return null, but custom
   // CacheHandler implementations may surface expiry explicitly.
@@ -70,7 +70,7 @@ export async function isrSet(
   tags?: string[],
   expireSeconds?: number,
 ): Promise<void> {
-  await getCdnCacheAdapter().writePage(key, data, {
+  await getCdnCacheAdapter().set(key, data, {
     cacheControl:
       expireSeconds === undefined
         ? { revalidate: revalidateSeconds }
@@ -91,7 +91,7 @@ export async function isrSetPrerenderedAppPage(
   if (process.env.NEXT_PRIVATE_DEBUG_CACHE) {
     console.debug("[vinext] ISR: seed", key);
   }
-  await getCdnCacheAdapter().writePage(
+  await getCdnCacheAdapter().set(
     key,
     data,
     revalidateSeconds === undefined

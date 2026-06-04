@@ -6,10 +6,10 @@
  * the data cache and serves HIT/STALE itself), this adapter delegates serving
  * to Cloudflare's edge:
  *
- * - The origin never serves from a store — `readPage` returns `null`, so any
+ * - The origin never serves from a store — `get` returns `null`, so any
  *   request that reaches the Worker renders fresh. The edge absorbs HIT/STALE
  *   traffic and revalidates in the background (the `UPDATING` cache status).
- * - `writePage` is a no-op: the platform caches the *response* based on its
+ * - `set` is a no-op: the platform caches the *response* based on its
  *   cache headers, so there is nothing to persist at the origin.
  * - `buildResponseHeaders` emits the SWR policy as `CDN-Cache-Control`
  *   (`public, max-age=…, stale-while-revalidate=…`) so the edge caches and
@@ -20,12 +20,13 @@
  *   the framework computes the policy with `s-maxage` for shared caches, but
  *   `CDN-Cache-Control` is already CDN-scoped so `max-age` is the correct knob
  *   for the edge to honor max-age + stale-while-revalidate.
- * - `revalidate` purges the edge via the request context's `cache.purge({ tags })`.
+ * - `revalidateTag` purges the edge via the request context's `cache.purge({ tags })`.
  *
  * Tag alignment: the tags emitted in `Cache-Tag` come from the page's render
- * tags (already canonicalised via `encodeCacheTag`), and `revalidateTag` /
- * `revalidatePath` pass the same canonical form to `revalidate`, so a purge
- * targets exactly the responses that carried the tag.
+ * tags (already canonicalised via `encodeCacheTag`), and the framework's
+ * `revalidateTag` / `revalidatePath` pass the same canonical form to this
+ * adapter's `revalidateTag`, so a purge targets exactly the responses that
+ * carried the tag.
  */
 
 import type {
@@ -123,12 +124,12 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
    * The origin keeps no page store — return null so the request renders fresh.
    * The edge serves cached HIT/STALE responses without reaching the origin.
    */
-  async readPage(): Promise<CacheHandlerValue | null> {
+  async get(): Promise<CacheHandlerValue | null> {
     return null;
   }
 
   /** No-op: the platform caches the response via its headers, not an origin store. */
-  async writePage(
+  async set(
     _key: string,
     _data: IncrementalCacheValue | null,
     _ctx?: Record<string, unknown>,
@@ -164,7 +165,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   }
 
   /** Purge edge-cached responses by tag via the request context's `cache.purge`. */
-  async revalidate(tags: string | string[], _durations?: { expire?: number }): Promise<void> {
+  async revalidateTag(tags: string | string[], _durations?: { expire?: number }): Promise<void> {
     const cache = getWorkersCache();
     if (!cache) return; // no host cache in the request context (e.g. Node dev)
 

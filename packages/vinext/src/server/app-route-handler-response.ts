@@ -122,7 +122,7 @@ export function buildRouteHandlerCachedResponse(
       : (options.cacheControl.expire ?? options.expireSeconds);
   // HIT/STALE served from the origin store: route the cache header through the
   // CDN adapter (default: identical single Cache-Control). Edge adapters never
-  // reach this path because their readPage returns null.
+  // reach this path because their get() returns null.
   applyCdnResponseHeaders(headers, {
     cacheControl: buildRouteHandlerCacheControl(
       options.cacheState,

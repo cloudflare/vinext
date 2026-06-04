@@ -31,5 +31,11 @@
   // `revalidatePath()` out to it alongside the inner CacheHandler.
   "cache": {
     "enabled": true
+  },
+  // Auto-detection of the Workers Cache (`ctx.cache`) for page-level ISR is
+  // OFF by default (it needs deployment skew protection to be safe). This demo
+  // opts in via the env flag so the edge-managed CDN adapter is selected.
+  "vars": {
+    "VINEXT_CDN_CACHE_AUTO_DETECT": "1"
   }
 }
