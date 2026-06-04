@@ -194,8 +194,9 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
   if (Array.isArray(config.kv_namespaces)) {
     const vinextKV = config.kv_namespaces.find(
       (ns: Record<string, unknown>) =>
-        (ns && typeof ns === "object" && ns.binding === "VINEXT_KV_CACHE") ||
-        ns.binding === "VINEXT_CACHE",
+        ns &&
+        typeof ns === "object" &&
+        (ns.binding === "VINEXT_KV_CACHE" || ns.binding === "VINEXT_CACHE"),
     );
     if (vinextKV && typeof vinextKV.id === "string" && vinextKV.id !== "<your-kv-namespace-id>") {
       result.kvNamespaceId = vinextKV.id;
