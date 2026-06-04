@@ -56,44 +56,42 @@ const items = Array.from({ length: 5000 }, (_, id) => ({ id }));
 
 export default function HashRscRequestsPage() {
   return (
-    <main style={{ fontFamily: "sans-serif", fontSize: "16px" }}>
-      <h1>Hash RSC Requests</h1>
-      <nav>
-        <Link href="/nextjs-compat/hash-rsc-requests#hash-6" id="link-to-6">
-          To 6
-        </Link>
-        <Link href="/nextjs-compat/hash-rsc-requests#hash-50" id="link-to-50">
-          To 50
-        </Link>
-        <Link href="/nextjs-compat/hash-rsc-requests#hash-160" id="link-to-160">
-          To 160
-        </Link>
-        <Link href="/nextjs-compat/hash-rsc-requests#hash-300" id="link-to-300">
-          To 300
-        </Link>
-        <Link href="#hash-500" id="link-to-500">
-          To 500
-        </Link>
-        <Link href="/nextjs-compat/hash-rsc-requests#top" id="link-to-top">
-          To Top
-        </Link>
-        <Link href="/nextjs-compat/hash-rsc-requests#non-existent" id="link-to-non-existent">
-          To non-existent
-        </Link>
-      </nav>
+    <div style={{ fontFamily: "sans-serif", fontSize: "16px" }}>
+      <p>Hash Page</p>
+      <Link href="/nextjs-compat/hash-rsc-requests#hash-6" id="link-to-6">
+        To 6
+      </Link>
+      <Link href="/nextjs-compat/hash-rsc-requests#hash-50" id="link-to-50">
+        To 50
+      </Link>
+      <Link href="/nextjs-compat/hash-rsc-requests#hash-160" id="link-to-160">
+        To 160
+      </Link>
+      <Link href="/nextjs-compat/hash-rsc-requests#hash-300" id="link-to-300">
+        To 300
+      </Link>
+      <Link href="#hash-500" id="link-to-500">
+        To 500 (hash only)
+      </Link>
+      <Link href="/nextjs-compat/hash-rsc-requests#top" id="link-to-top">
+        To Top
+      </Link>
+      <Link href="/nextjs-compat/hash-rsc-requests#non-existent" id="link-to-non-existent">
+        To non-existent
+      </Link>
       <div>
         <Link href="?with-query-param#hash-160" id="link-to-query-param">
-          To 160 with query param
+          To 160 (with query param)
         </Link>
       </div>
       <div>
         {items.map((item) => (
-          <div id={\`hash-\${item.id}\`} key={item.id}>
-            {item.id}
+          <div key={item.id}>
+            <div id={\`hash-\${item.id}\`}>{item.id}</div>
           </div>
         ))}
       </div>
-    </main>
+    </div>
   );
 }
 `,
@@ -192,40 +190,30 @@ test.describe("Next.js compat: hash RSC requests in production", () => {
           rscRequestUrls.add(request.url());
         }
       });
+      const checkLink = async (id: number | string, expectedScroll: number) => {
+        await page.locator(`#link-to-${id.toString()}`).click();
+        await expect.poll(() => page.evaluate(() => window.pageYOffset)).toBe(expectedScroll);
+      };
 
       await page.goto(`${app.baseUrl}/nextjs-compat/hash-rsc-requests`);
       await waitForAppRouterHydration(page);
-      await expect(page.locator("h1")).toHaveText("Hash RSC Requests");
+      await expect(page.locator("p")).toHaveText("Hash Page");
       rscRequestUrls.clear();
 
-      await page.locator("#link-to-6").click();
-      await expect(page.locator("#hash-6")).toBeInViewport();
-
-      await page.locator("#link-to-50").click();
-      await expect(page.locator("#hash-50")).toBeInViewport();
-
-      await page.locator("#link-to-160").click();
-      await expect(page.locator("#hash-160")).toBeInViewport();
-
-      await page.locator("#link-to-300").click();
-      await expect(page.locator("#hash-300")).toBeInViewport();
-
-      await page.locator("#link-to-500").click();
-      await expect(page.locator("#hash-500")).toBeInViewport();
-
-      await page.locator("#link-to-top").click();
-      await expect.poll(() => page.evaluate(() => window.pageYOffset)).toBe(0);
-
-      await page.locator("#link-to-non-existent").click();
-      await expect.poll(() => page.evaluate(() => window.pageYOffset)).toBe(0);
+      await checkLink(6, 128);
+      await checkLink(50, 744);
+      await checkLink(160, 2284);
+      await checkLink(300, 4244);
+      await checkLink(500, 7044);
+      await checkLink("top", 0);
+      await checkLink("non-existent", 0);
 
       const hasQueryParamRscRequestBeforeQueryChange = Array.from(rscRequestUrls).some((url) =>
         url.includes("with-query-param"),
       );
       expect(hasQueryParamRscRequestBeforeQueryChange).toBe(false);
 
-      await page.locator("#link-to-query-param").click();
-      await expect(page.locator("#hash-160")).toBeInViewport();
+      await checkLink("query-param", 2284);
       await expect(page).toHaveURL(
         `${app.baseUrl}/nextjs-compat/hash-rsc-requests?with-query-param#hash-160`,
       );
