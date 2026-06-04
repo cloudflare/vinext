@@ -382,14 +382,10 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
           if (existing?.cacheForNavigation === false) {
             existing.cacheForNavigation = true;
           }
-
-          if (hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader)) {
-            return;
-          }
-
-          // stale/orphaned exact entry was deleted by helper, or set was stale
-          prefetched.delete(cacheKey);
         }
+        // A single freshness-aware gate covers both an exact prior prefetch and
+        // an equivalent `_rsc` variant; the helper also deletes any stale exact
+        // entry, so a stale `prefetched` member is harmlessly re-added below.
         if (
           autoPrefetch.cacheForNavigation &&
           hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader)

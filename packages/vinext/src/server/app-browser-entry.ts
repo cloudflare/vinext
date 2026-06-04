@@ -840,10 +840,9 @@ function getVisitedResponse(
     return null;
   }
 
-  if (navigationKind === "refresh") {
-    return null;
-  }
-
+  // `isVisitedResponseCacheEntryFresh` already bypasses the cache for
+  // `navigationKind === "refresh"`, so the refresh case falls through to the
+  // miss path below (which also evicts the stale entry).
   if (
     isVisitedResponseCacheEntryFresh(cached, {
       navigationKind,
