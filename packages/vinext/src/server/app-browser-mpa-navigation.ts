@@ -1,5 +1,11 @@
 import type { HistoryUpdateMode } from "./app-browser-navigation-controller.js";
 
+const NEXT_APP_ROUTER_PAGE_REDIRECT_MARKER_ID = "__next-page-redirect";
+
+type AppRouterPageRedirectDocument = {
+  getElementById(id: string): object | null;
+};
+
 export type AppBrowserMpaNavigationWindow = {
   location: Pick<Location, "assign" | "replace">;
   requestAnimationFrame?: (callback: FrameRequestCallback) => unknown;
@@ -11,6 +17,12 @@ type PendingMpaNavigation = {
   historyUpdateMode: HistoryUpdateMode;
   token: number;
 };
+
+export function hasPendingAppRouterPageRedirect(
+  targetDocument: AppRouterPageRedirectDocument,
+): boolean {
+  return targetDocument.getElementById(NEXT_APP_ROUTER_PAGE_REDIRECT_MARKER_ID) !== null;
+}
 
 export class AppBrowserMpaNavigationScheduler {
   #pendingNavigation: PendingMpaNavigation | null = null;

@@ -27,6 +27,7 @@ import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "../server/app-rsc-cache-busting.js";
+import { hasPendingAppRouterPageRedirect } from "../server/app-browser-mpa-navigation.js";
 import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
@@ -1710,6 +1711,25 @@ export async function navigateClientSide(
   // Save scroll position before navigating (for back/forward restoration)
   if (mode === "push") {
     saveScrollPosition();
+  }
+
+  // Next.js treats a streamed redirect meta tag as an MPA-navigation marker.
+  // A soft RSC redirect would leave the source document alive long enough for
+  // the delayed meta refresh to fire and render the target a second time.
+  if (hasPendingAppRouterPageRedirect(document)) {
+    const mpaNavigate = getNavigationRuntime()?.functions.navigateExternal;
+    if (mpaNavigate) {
+      await mpaNavigate(fullHref, mode);
+      return;
+    }
+
+    if (mode === "replace") {
+      window.location.replace(fullHref);
+    } else {
+      window.location.assign(fullHref);
+    }
+    await new Promise<void>(() => {});
+    return;
   }
 
   // Hash-only change: update URL and scroll to target, skip RSC fetch
