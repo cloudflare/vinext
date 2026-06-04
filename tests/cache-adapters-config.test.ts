@@ -22,11 +22,13 @@ import { generatePagesRouterWorkerEntry } from "../packages/vinext/src/deploy.js
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import { kvDataAdapter } from "../packages/vinext/src/cloudflare/cache/kv-data-adapter.js";
-import createKvDataCacheAdapter from "../packages/vinext/src/cloudflare/cache/kv-data-adapter.runtime.js";
 import { cdnAdapter } from "../packages/vinext/src/cloudflare/cache/cdn-adapter.js";
-import createCloudflareCdnCacheAdapter from "../packages/vinext/src/cloudflare/cache/cdn-adapter.runtime.js";
-import { KVCacheHandler } from "../packages/vinext/src/cloudflare/kv-cache-handler.js";
-import { CloudflareCdnCacheAdapter } from "../packages/vinext/src/cloudflare/cloudflare-cdn-cache.js";
+import createKvDataCacheAdapter, {
+  KVCacheHandler,
+} from "../packages/vinext/src/cloudflare/cache/kv-data-adapter.runtime.js";
+import createCloudflareCdnCacheAdapter, {
+  CloudflareCdnCacheAdapter,
+} from "../packages/vinext/src/cloudflare/cache/cdn-adapter.runtime.js";
 
 describe("generateCacheAdaptersModule", () => {
   it("exposes the public virtual module id", () => {

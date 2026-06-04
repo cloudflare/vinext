@@ -10,7 +10,7 @@ import {
   markRouteHandlerCacheMiss,
 } from "../packages/vinext/src/server/app-route-handler-response.js";
 import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
-import { CloudflareCdnCacheAdapter } from "../packages/vinext/src/cloudflare/cloudflare-cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/vinext/src/cloudflare/cache/cdn-adapter.runtime.js";
 
 function buildCachedRouteValue(
   body: string,

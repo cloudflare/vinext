@@ -16757,7 +16757,7 @@ describe("KVCacheHandler", () => {
 
   it("stores and retrieves a cache entry", async () => {
     const { KVCacheHandler } =
-      await import("../packages/vinext/src/cloudflare/kv-cache-handler.js");
+      await import("../packages/vinext/src/cloudflare/cache/kv-data-adapter.runtime.js");
     const kv = createMockKV();
     const handler = new KVCacheHandler(kv as any);
 
@@ -16781,7 +16781,7 @@ describe("KVCacheHandler", () => {
 
   it("returns null for missing keys", async () => {
     const { KVCacheHandler } =
-      await import("../packages/vinext/src/cloudflare/kv-cache-handler.js");
+      await import("../packages/vinext/src/cloudflare/cache/kv-data-adapter.runtime.js");
     const kv = createMockKV();
     const handler = new KVCacheHandler(kv as any);
 
@@ -16791,7 +16791,7 @@ describe("KVCacheHandler", () => {
 
   it("handles tag-based invalidation", async () => {
     const { KVCacheHandler } =
-      await import("../packages/vinext/src/cloudflare/kv-cache-handler.js");
+      await import("../packages/vinext/src/cloudflare/cache/kv-data-adapter.runtime.js");
     const kv = createMockKV();
     const handler = new KVCacheHandler(kv as any);
 
@@ -16820,7 +16820,7 @@ describe("KVCacheHandler", () => {
 
   it("returns stale entry when past revalidation time", async () => {
     const { KVCacheHandler } =
-      await import("../packages/vinext/src/cloudflare/kv-cache-handler.js");
+      await import("../packages/vinext/src/cloudflare/cache/kv-data-adapter.runtime.js");
     const kv = createMockKV();
     const handler = new KVCacheHandler(kv as any);
 
@@ -16851,7 +16851,7 @@ describe("KVCacheHandler", () => {
 
   it("serializes and restores APP_PAGE with rscData ArrayBuffer", async () => {
     const { KVCacheHandler } =
-      await import("../packages/vinext/src/cloudflare/kv-cache-handler.js");
+      await import("../packages/vinext/src/cloudflare/cache/kv-data-adapter.runtime.js");
     const kv = createMockKV();
     const handler = new KVCacheHandler(kv as any);
 
@@ -16880,7 +16880,7 @@ describe("KVCacheHandler", () => {
 
   it("serializes and restores APP_ROUTE with body ArrayBuffer", async () => {
     const { KVCacheHandler } =
-      await import("../packages/vinext/src/cloudflare/kv-cache-handler.js");
+      await import("../packages/vinext/src/cloudflare/cache/kv-data-adapter.runtime.js");
     const kv = createMockKV();
     const handler = new KVCacheHandler(kv as any);
 
@@ -16903,7 +16903,7 @@ describe("KVCacheHandler", () => {
 
   it("sets KV expiration TTL based on revalidation period", async () => {
     const { KVCacheHandler } =
-      await import("../packages/vinext/src/cloudflare/kv-cache-handler.js");
+      await import("../packages/vinext/src/cloudflare/cache/kv-data-adapter.runtime.js");
     const kv = createMockKV();
     const handler = new KVCacheHandler(kv as any);
 
@@ -16933,7 +16933,7 @@ describe("KVCacheHandler", () => {
 
   it("handles multiple tag invalidation in parallel", async () => {
     const { KVCacheHandler } =
-      await import("../packages/vinext/src/cloudflare/kv-cache-handler.js");
+      await import("../packages/vinext/src/cloudflare/cache/kv-data-adapter.runtime.js");
     const kv = createMockKV();
     const handler = new KVCacheHandler(kv as any);
 
@@ -16957,7 +16957,7 @@ describe("KVCacheHandler", () => {
 
   it("handles corrupted KV entries gracefully", async () => {
     const { KVCacheHandler } =
-      await import("../packages/vinext/src/cloudflare/kv-cache-handler.js");
+      await import("../packages/vinext/src/cloudflare/cache/kv-data-adapter.runtime.js");
     const kv = createMockKV();
     const handler = new KVCacheHandler(kv as any);
 

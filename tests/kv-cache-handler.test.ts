@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "vite-plus/test";
-import { KVCacheHandler } from "../packages/vinext/src/cloudflare/kv-cache-handler.js";
+import { KVCacheHandler } from "../packages/vinext/src/cloudflare/cache/kv-data-adapter.runtime.js";
 import {
   revalidatePath,
   revalidateTag,
