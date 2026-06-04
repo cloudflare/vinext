@@ -1,8 +1,10 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { waitForAppRouterHydration } from "../../helpers";
+import { waitForAppRouterHydration } from "../helpers";
 
-const BASE = "http://localhost:4174";
+// Runs against the dedicated app-bfcache fixture (cacheComponents: true), where
+// inactive segment entries stay mounted as hidden Activity DOM. Locators here are
+// intentionally :visible-scoped because duplicate hidden DOM is expected.
 const ROUTE = "/nextjs-compat/back-forward-cache/page";
 const NESTED_ROUTE = "/nextjs-compat/back-forward-cache/nested";
 
@@ -61,7 +63,7 @@ test.describe("Next.js compat: back/forward cache", () => {
   // Ported from Next.js: test/e2e/app-dir/back-forward-cache/back-forward-cache.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/back-forward-cache/back-forward-cache.test.ts
   test("preserves React state when navigating with browser back and forward", async ({ page }) => {
-    await page.goto(`${BASE}${ROUTE}/1`);
+    await page.goto(`${ROUTE}/1`);
     await waitForAppRouterHydration(page);
     await expectPage(page, 1);
 
@@ -80,7 +82,7 @@ test.describe("Next.js compat: back/forward cache", () => {
   });
 
   test("preserves React state when returning to a recent segment with links", async ({ page }) => {
-    await page.goto(`${BASE}${ROUTE}/1`);
+    await page.goto(`${ROUTE}/1`);
     await waitForAppRouterHydration(page);
     await expectPage(page, 1);
 
@@ -97,7 +99,7 @@ test.describe("Next.js compat: back/forward cache", () => {
   });
 
   test("preserves only the three most recent segment entries", async ({ page }) => {
-    await page.goto(`${BASE}${ROUTE}/1`);
+    await page.goto(`${ROUTE}/1`);
     await waitForAppRouterHydration(page);
     await expectPage(page, 1);
 
@@ -119,7 +121,7 @@ test.describe("Next.js compat: back/forward cache", () => {
   test("reuses cached entries without evicting when repeatedly moving between them", async ({
     page,
   }) => {
-    await page.goto(`${BASE}${ROUTE}/1`);
+    await page.goto(`${ROUTE}/1`);
     await waitForAppRouterHydration(page);
     await expectPage(page, 1);
 
@@ -142,7 +144,7 @@ test.describe("Next.js compat: back/forward cache", () => {
   });
 
   test("preserves nested layout and page state across segment navigations", async ({ page }) => {
-    await page.goto(`${BASE}${NESTED_ROUTE}/a/item/1`);
+    await page.goto(`${NESTED_ROUTE}/a/item/1`);
     await waitForAppRouterHydration(page);
     await expect(page.locator("h2:visible").first()).toHaveText("Section a");
     await expect(page.locator("h3:visible").first()).toHaveText("Item 1 in section a");

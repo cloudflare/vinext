@@ -215,7 +215,7 @@ test.describe("Next.js compat: useRouter().bfcacheId", () => {
     expect(photo42BfcacheId).toMatch(/^_b_\d+_$/);
     await visibleTestId(page, "photo-modal-input").fill("photo-42-state");
 
-    await page.locator("#modal-photo-43-link:visible").first().click();
+    await page.locator("#modal-photo-43-link").click();
     await expect(visibleTestId(page, "photo-modal")).toContainText("Viewing photo 43");
     const photo43BfcacheId = await visibleTestId(page, "photo-modal-bfcache-id").textContent();
     expect(photo43BfcacheId).toMatch(/^_b_\d+_$/);

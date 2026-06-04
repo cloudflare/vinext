@@ -1,4 +1,4 @@
-import { Counter } from "../counter";
+import { Counter } from "../../counter";
 
 export default async function ItemPage({
   params,
