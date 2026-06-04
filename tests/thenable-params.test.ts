@@ -213,6 +213,9 @@ describe("makeThenableParams", () => {
 
       const resolved = await params;
       expect(resolved.locale).toBe("en");
+      // Known-param access must not convert the shell into a
+      // dynamic-boundary shell — only actual fallback-param access does.
+      expect(state.hasDynamicBoundary).toBe(false);
     });
 
     expect(observedKeys).toEqual([["locale"]]);
