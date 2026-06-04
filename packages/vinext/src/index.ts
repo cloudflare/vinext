@@ -136,6 +136,13 @@ import {
   findPagesClientEntryFile,
   readClientBuildManifest,
 } from "./utils/client-build-manifest.js";
+import {
+  findClientEntryFileFromVinextManifest,
+  findPagesClientEntryFileFromVinextManifest,
+  readClientEntryManifest,
+  type ClientEntryManifest,
+  VINEXT_CLIENT_ENTRY_MANIFEST,
+} from "./utils/client-entry-manifest.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import { buildSassPreprocessorOptions } from "./plugins/sass.js";
 import {
@@ -537,6 +544,14 @@ const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
 
 function isValidExportIdentifier(name: string): boolean {
   return /^[$A-Z_a-z][$\w]*$/.test(name);
+}
+
+function isVirtualEntryFacade(id: string | null | undefined, virtualId: string): boolean {
+  if (!id) return false;
+  const cleanId = id.startsWith("\0") ? id.slice(1) : id;
+  return (
+    cleanId === virtualId || cleanId.endsWith("/" + virtualId) || cleanId.endsWith("\\" + virtualId)
+  );
 }
 
 /**
@@ -2627,6 +2642,33 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         });
       },
     },
+    {
+      name: "vinext:client-entry-manifest",
+      apply: "build",
+
+      generateBundle(_options, bundle) {
+        if (this.environment?.name !== "client") return;
+
+        const manifest: ClientEntryManifest = {};
+        for (const chunk of Object.values(bundle)) {
+          if (chunk.type !== "chunk" || !chunk.isEntry) continue;
+
+          if (isVirtualEntryFacade(chunk.facadeModuleId, VIRTUAL_CLIENT_ENTRY)) {
+            manifest.pagesClientEntry = chunk.fileName;
+          } else if (isVirtualEntryFacade(chunk.facadeModuleId, VIRTUAL_APP_BROWSER_ENTRY)) {
+            manifest.appBrowserEntry = chunk.fileName;
+          }
+        }
+
+        if (!manifest.pagesClientEntry && !manifest.appBrowserEntry) return;
+
+        this.emitFile({
+          type: "asset",
+          fileName: VINEXT_CLIENT_ENTRY_MANIFEST,
+          source: JSON.stringify(manifest, null, 2) + "\n",
+        });
+      },
+    },
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
     createInstrumentationClientTransformPlugin(() => instrumentationClientPath),
@@ -4531,16 +4573,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // routes rendered through the Pages Router entry.
           let lazyChunksData: string[] | null = null;
           let clientEntryFile: string | null = null;
+          const clientEntryManifest = readClientEntryManifest(clientDir);
+          clientEntryFile =
+            (hasAppDir && hasPagesDir
+              ? findPagesClientEntryFileFromVinextManifest
+              : findClientEntryFileFromVinextManifest)(clientEntryManifest, clientBase) ?? null;
           const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
           const buildManifest = readClientBuildManifest(buildManifestPath);
           if (buildManifest) {
-            clientEntryFile =
-              (hasAppDir && hasPagesDir ? findPagesClientEntryFile : findClientEntryFile)({
-                buildManifest,
-                clientDir,
-                assetsSubdir: resolveAssetsDir(nextConfig?.assetPrefix),
-                assetBase: clientBase,
-              }) ?? null;
+            if (!clientEntryFile) {
+              clientEntryFile =
+                (hasAppDir && hasPagesDir ? findPagesClientEntryFile : findClientEntryFile)({
+                  buildManifest,
+                  clientDir,
+                  assetsSubdir: resolveAssetsDir(nextConfig?.assetPrefix),
+                  assetBase: clientBase,
+                }) ?? null;
+            }
             const lazy = manifestFilesWithBase(computeLazyChunks(buildManifest), clientBase);
             if (lazy.length > 0) lazyChunksData = lazy;
           }

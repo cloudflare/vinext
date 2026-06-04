@@ -73,6 +73,11 @@ import {
   findPagesClientEntryFile,
   readClientBuildManifest,
 } from "../utils/client-build-manifest.js";
+import {
+  findClientEntryFileFromVinextManifest,
+  findPagesClientEntryFileFromVinextManifest,
+  readClientEntryManifest,
+} from "../utils/client-entry-manifest.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
@@ -1075,6 +1080,7 @@ function installPagesClientAssetGlobals(options: {
   const buildManifest = readClientBuildManifest(
     path.join(options.clientDir, ".vite", "manifest.json"),
   );
+  const clientEntryManifest = readClientEntryManifest(options.clientDir);
   const entryOptions = {
     clientDir: options.clientDir,
     assetsSubdir: options.assetsSubdir,
@@ -1083,8 +1089,10 @@ function installPagesClientAssetGlobals(options: {
   };
   globalThis.__VINEXT_CLIENT_ENTRY__ =
     options.clientEntryLookup === "pages-client-entry"
-      ? findPagesClientEntryFile(entryOptions)
-      : findClientEntryFile(entryOptions);
+      ? (findPagesClientEntryFileFromVinextManifest(clientEntryManifest, options.assetBase) ??
+        findPagesClientEntryFile(entryOptions))
+      : (findClientEntryFileFromVinextManifest(clientEntryManifest, options.assetBase) ??
+        findClientEntryFile(entryOptions));
 
   if (buildManifest) {
     const lazyChunks = computeLazyChunks(buildManifest).map((file) =>

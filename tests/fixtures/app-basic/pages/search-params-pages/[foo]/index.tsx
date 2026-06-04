@@ -8,6 +8,7 @@ export default function Page() {
   const [paramsChangeCount, setParamsChangeCount] = useState(0);
 
   useEffect(() => {
+    console.log("params changed");
     setParamsChangeCount((value) => value + 1);
   }, [params]);
 

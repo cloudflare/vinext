@@ -14,6 +14,12 @@ import {
   buildNextClientSsgManifestContent,
   emitNextClientRuntimeManifests,
 } from "../packages/vinext/src/build/next-client-runtime-manifests.js";
+import {
+  findClientEntryFileFromVinextManifest,
+  findPagesClientEntryFileFromVinextManifest,
+  readClientEntryManifest,
+  VINEXT_CLIENT_ENTRY_MANIFEST,
+} from "../packages/vinext/src/utils/client-entry-manifest.js";
 
 describe("client build manifest helpers", () => {
   let tmpDir: string;
@@ -123,6 +129,25 @@ describe("client build manifest helpers", () => {
 
     expect(findPagesClientEntryFileFromManifest(manifest, "/")).toBe(
       "_next/static/vinext-client-entry-abcd.js",
+    );
+  });
+
+  it("reads vinext's entry manifest for hashed client entry names", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, VINEXT_CLIENT_ENTRY_MANIFEST),
+      JSON.stringify({
+        appBrowserEntry: "_next/static/index-app.js",
+        pagesClientEntry: "_next/static/index-pages.js",
+      }),
+    );
+
+    const manifest = readClientEntryManifest(clientDir);
+
+    expect(findClientEntryFileFromVinextManifest(manifest, "/docs/")).toBe(
+      "docs/_next/static/index-pages.js",
+    );
+    expect(findPagesClientEntryFileFromVinextManifest(manifest, "/")).toBe(
+      "_next/static/index-pages.js",
     );
   });
 
