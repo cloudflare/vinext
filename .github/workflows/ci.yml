@@ -251,6 +251,7 @@ jobs:
         project:
           - pages-router
           - app-router
+          - app-router-bfcache
           - app-router-chrome-browser-specific
           - app-router-webkit-browser-specific
           - cloudflare-pages-router
