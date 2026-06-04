@@ -53,24 +53,8 @@ import {
   ASSET_PREFIX_URL_DIR,
   assetPrefixPathname,
   isAbsoluteAssetPrefix,
-  resolveAssetsDir,
 } from "../utils/asset-prefix.js";
-import {
-  computeDynamicImportPreloads,
-  computeLazyChunks,
-  dynamicImportPreloadsWithBase,
-} from "../utils/lazy-chunks.js";
-import { manifestFileWithAssetPrefix, manifestFileWithBase } from "../utils/manifest-paths.js";
-import {
-  findClientEntryFile,
-  findPagesClientEntryFile,
-  readClientBuildManifest,
-} from "../utils/client-build-manifest.js";
-import {
-  findClientEntryFileFromVinextManifest,
-  findPagesClientEntryFileFromVinextManifest,
-  readClientEntryManifest,
-} from "../utils/client-entry-manifest.js";
+import { computeClientRuntimeMetadata } from "../utils/client-runtime-metadata.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
@@ -297,31 +281,9 @@ function installClientBuildManifestGlobals(
   assetBase: string,
   assetPrefix: string,
 ): void {
-  globalThis.__VINEXT_LAZY_CHUNKS__ = undefined;
-  globalThis.__VINEXT_DYNAMIC_PRELOADS__ = undefined;
-
-  const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
-  if (!fs.existsSync(buildManifestPath)) return;
-
-  try {
-    const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
-    const lazyChunks = computeLazyChunks(buildManifest).map((file: string) =>
-      manifestFileWithAssetPrefix(file, assetBase, assetPrefix),
-    );
-    if (lazyChunks.length > 0) {
-      globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks;
-    }
-
-    const dynamicPreloads = dynamicImportPreloadsWithBase(
-      computeDynamicImportPreloads(buildManifest),
-      (file) => manifestFileWithAssetPrefix(file, assetBase, assetPrefix),
-    );
-    if (Object.keys(dynamicPreloads).length > 0) {
-      globalThis.__VINEXT_DYNAMIC_PRELOADS__ = dynamicPreloads;
-    }
-  } catch {
-    /* ignore parse errors */
-  }
+  const metadata = computeClientRuntimeMetadata({ clientDir, assetBase, assetPrefix });
+  globalThis.__VINEXT_LAZY_CHUNKS__ = metadata.lazyChunks;
+  globalThis.__VINEXT_DYNAMIC_PRELOADS__ = metadata.dynamicPreloads;
 }
 function isNoBodyResponseStatus(status: number): boolean {
   return NO_BODY_RESPONSE_STATUSES.has(status);
@@ -1057,7 +1019,7 @@ function readSsrManifest(clientDir: string): Record<string, string[]> {
 
 function installPagesClientAssetGlobals(options: {
   clientDir: string;
-  assetsSubdir: string;
+  assetPrefix: string;
   assetBase: string;
   clientEntryLookup: PagesClientEntryLookup;
 }): Record<string, string[]> {
@@ -1065,39 +1027,16 @@ function installPagesClientAssetGlobals(options: {
   globalThis.__VINEXT_SSR_MANIFEST__ =
     Object.keys(ssrManifest).length > 0 ? ssrManifest : undefined;
 
-  const buildManifest = readClientBuildManifest(
-    path.join(options.clientDir, ".vite", "manifest.json"),
-  );
-  const clientEntryManifest = readClientEntryManifest(options.clientDir);
-  const entryOptions = {
+  const metadata = computeClientRuntimeMetadata({
     clientDir: options.clientDir,
-    assetsSubdir: options.assetsSubdir,
     assetBase: options.assetBase,
-    ...(buildManifest ? { buildManifest } : {}),
-  };
-  globalThis.__VINEXT_CLIENT_ENTRY__ =
-    options.clientEntryLookup === "pages-client-entry"
-      ? (findPagesClientEntryFileFromVinextManifest(clientEntryManifest, options.assetBase) ??
-        findPagesClientEntryFile(entryOptions))
-      : (findClientEntryFileFromVinextManifest(clientEntryManifest, options.assetBase) ??
-        findClientEntryFile(entryOptions));
+    assetPrefix: options.assetPrefix,
+    includeClientEntry: options.clientEntryLookup,
+  });
 
-  if (buildManifest) {
-    const lazyChunks = computeLazyChunks(buildManifest).map((file) =>
-      manifestFileWithBase(file, options.assetBase),
-    );
-    globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks.length > 0 ? lazyChunks : undefined;
-
-    const dynamicPreloads = dynamicImportPreloadsWithBase(
-      computeDynamicImportPreloads(buildManifest),
-      (file) => manifestFileWithBase(file, options.assetBase),
-    );
-    globalThis.__VINEXT_DYNAMIC_PRELOADS__ =
-      Object.keys(dynamicPreloads).length > 0 ? dynamicPreloads : undefined;
-  } else {
-    globalThis.__VINEXT_LAZY_CHUNKS__ = undefined;
-    globalThis.__VINEXT_DYNAMIC_PRELOADS__ = undefined;
-  }
+  globalThis.__VINEXT_CLIENT_ENTRY__ = metadata.clientEntryFile;
+  globalThis.__VINEXT_LAZY_CHUNKS__ = metadata.lazyChunks;
+  globalThis.__VINEXT_DYNAMIC_PRELOADS__ = metadata.dynamicPreloads;
 
   return ssrManifest;
 }
@@ -1170,7 +1109,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   if (appRouterHasPagesDir) {
     installPagesClientAssetGlobals({
       clientDir,
-      assetsSubdir: resolveAssetsDir(appRouterAssetPrefix),
+      assetPrefix: appRouterAssetPrefix,
       assetBase: appAssetBase,
       clientEntryLookup: "pages-client-entry",
     });
@@ -1496,11 +1435,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   // Cloudflare builds inject into the Worker entry at build time.
   const ssrManifest = installPagesClientAssetGlobals({
     clientDir,
-    assetsSubdir: resolveAssetsDir(assetPrefix),
+    assetPrefix,
     assetBase,
     clientEntryLookup: "any-client-entry",
   });
-  installClientBuildManifestGlobals(clientDir, assetBase, assetPrefix);
 
   // Build the static file metadata cache at startup (same as App Router).
   const staticCache = await StaticFileCache.create(clientDir);

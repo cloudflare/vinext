@@ -91,10 +91,6 @@ import {
 import { proxyExternalRequest } from "./config/config-matchers.js";
 import { detectPackageManager } from "./utils/project.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
-import {
-  manifestFileWithAssetPrefix,
-  manifestFileWithBase,
-} from "./utils/manifest-paths.js";
 import { hasBasePath } from "./utils/base-path.js";
 import { mergeRewriteQuery } from "./utils/query.js";
 import {
@@ -131,23 +127,7 @@ import {
   createLocalFontsPlugin,
 } from "./plugins/fonts.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
-import {
-  computeDynamicImportPreloads,
-  computeLazyChunks,
-  dynamicImportPreloadsWithBase,
-} from "./utils/lazy-chunks.js";
-import {
-  findClientEntryFile,
-  findPagesClientEntryFile,
-  readClientBuildManifest,
-} from "./utils/client-build-manifest.js";
-import {
-  findClientEntryFileFromVinextManifest,
-  findPagesClientEntryFileFromVinextManifest,
-  readClientEntryManifest,
-  type ClientEntryManifest,
-  VINEXT_CLIENT_ENTRY_MANIFEST,
-} from "./utils/client-entry-manifest.js";
+import { computeClientRuntimeMetadata } from "./utils/client-runtime-metadata.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import { buildSassPreprocessorOptions, createSassTildeImporter } from "./plugins/sass.js";
 import {
@@ -4684,44 +4664,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const clientDir = path.resolve(buildRoot, "dist", "client");
           const clientBase = envConfig.base ?? "/";
 
-          // Read build manifest and compute lazy chunks (only reachable via
-          // dynamic imports), plus per-next/dynamic preload files. This runs
-          // for BOTH App Router and Pages Router.
-          // App Router gets its app client bootstrap via the RSC plugin. This
-          // Pages client entry is still needed for mixed app+pages fallback
-          // routes rendered through the Pages Router entry.
-          let lazyChunksData: string[] | null = null;
-          let dynamicPreloadsData: Record<string, string[]> | null = null;
-          let clientEntryFile: string | null = null;
-          const clientEntryManifest = readClientEntryManifest(clientDir);
-          clientEntryFile =
-            (hasAppDir && hasPagesDir
-              ? findPagesClientEntryFileFromVinextManifest
-              : findClientEntryFileFromVinextManifest)(clientEntryManifest, clientBase) ?? null;
-          const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
-          const buildManifest = readClientBuildManifest(buildManifestPath);
-          if (buildManifest) {
-            if (!clientEntryFile) {
-              clientEntryFile =
-                (hasAppDir && hasPagesDir ? findPagesClientEntryFile : findClientEntryFile)({
-                  buildManifest,
-                  clientDir,
-                  assetsSubdir: resolveAssetsDir(nextConfig?.assetPrefix),
-                  assetBase: clientBase,
-                }) ?? null;
-            }
-            const lazy = computeLazyChunks(buildManifest).map((file) =>
-              manifestFileWithAssetPrefix(file, clientBase, nextConfig?.assetPrefix),
-            );
-            if (lazy.length > 0) lazyChunksData = lazy;
-            const dynamicPreloads = dynamicImportPreloadsWithBase(
-              computeDynamicImportPreloads(buildManifest),
-              (file) => manifestFileWithAssetPrefix(file, clientBase, nextConfig?.assetPrefix),
-            );
-            if (Object.keys(dynamicPreloads).length > 0) {
-              dynamicPreloadsData = dynamicPreloads;
-            }
-          }
+          // Compute runtime metadata from the client build manifest: lazy
+          // chunks, per-next/dynamic preload files, and (for Pages Router)
+          // the client entry file. This runs for BOTH App Router and Pages
+          // Router — clientEntryFile is only used by the Pages Router path
+          // below (App Router gets its client entry via the RSC plugin).
+          const runtimeMetadata = computeClientRuntimeMetadata({
+            clientDir,
+            assetBase: clientBase,
+            assetPrefix: nextConfig.assetPrefix,
+            includeClientEntry: !hasAppDir,
+          });
+          const lazyChunksData: string[] | null = runtimeMetadata.lazyChunks ?? null;
+          const dynamicPreloadsData: Record<string, string[]> | null =
+            runtimeMetadata.dynamicPreloads ?? null;
+          let clientEntryFile: string | null = runtimeMetadata.clientEntryFile ?? null;
 
           // Read SSR manifest for per-page CSS/JS injection
           let ssrManifestData: Record<string, string[]> | null = null;
@@ -4797,25 +4754,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
             const workerEntry = path.join(workerOutDir, "index.js");
             if (!fs.existsSync(workerEntry)) return;
-
-            // Fallback: scan the on-disk assets directory for the client entry
-            // chunk when the SSR manifest lookup didn't surface one. Pages Router
-            // uses "vinext-client-entry", App Router uses "vinext-app-browser-entry".
-            //
-            // When `assetPrefix` is configured, chunks live under
-            // `<prefix>/_next/static/` (path-prefix) or `_next/static/`
-            // (absolute-URL prefix) — NOT `assets/`. Resolve the actual
-            // subdirectory from the same helper that drives `build.assetsDir`
-            // and the prod-server lookup path, so this fallback works for every
-            // layout supported by the rest of the pipeline.
-            if (!clientEntryFile) {
-              clientEntryFile =
-                findClientEntryFile({
-                  clientDir,
-                  assetsSubdir: resolveAssetsDir(nextConfig?.assetPrefix),
-                  assetBase: clientBase,
-                }) ?? null;
-            }
 
             // Prepend globals to worker entry
             if (clientEntryFile || ssrManifestData || lazyChunksData || dynamicPreloadsData) {
