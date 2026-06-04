@@ -435,7 +435,7 @@ export function generateWranglerConfig(info: ProjectInfo): string {
   if (info.hasISR) {
     config.kv_namespaces = [
       {
-        binding: "VINEXT_CACHE",
+        binding: "VINEXT_KV_CACHE",
         id: "<your-kv-namespace-id>",
       },
     ];
@@ -452,7 +452,7 @@ import { setDataCacheHandler } from "vinext/shims/cache";
 `
     : "";
 
-  const isrEnvField = hasISR ? `\n  VINEXT_CACHE: KVNamespace;` : "";
+  const isrEnvField = hasISR ? `\n  VINEXT_KV_CACHE: KVNamespace;` : "";
 
   const isrSetup = hasISR
     ? `    // Wire up the KV-backed data cache (fetch / "use cache" / unstable_cache).
@@ -464,7 +464,7 @@ import { setDataCacheHandler } from "vinext/shims/cache";
     // \`ctx.cache\` present), vinext auto-switches page ISR to the edge-managed
     // CDN cache adapter — no import or registration needed. Call
     // setCdnCacheAdapter(...) from "vinext/shims/cdn-cache" to override.
-    setDataCacheHandler(new KVCacheHandler(env.VINEXT_CACHE));
+    setDataCacheHandler(new KVCacheHandler(env.VINEXT_KV_CACHE));
 `
     : "";
 

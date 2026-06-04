@@ -408,7 +408,7 @@ describe("generateWranglerConfig", () => {
     const parsed = JSON.parse(config);
 
     expect(parsed.kv_namespaces).toBeDefined();
-    expect(parsed.kv_namespaces[0].binding).toBe("VINEXT_CACHE");
+    expect(parsed.kv_namespaces[0].binding).toBe("VINEXT_KV_CACHE");
   });
 
   it("omits KV namespace when no ISR", () => {
@@ -484,15 +484,15 @@ describe("generateAppRouterWorkerEntry", () => {
     const content = generateAppRouterWorkerEntry(false);
     expect(content).not.toContain("KVCacheHandler");
     expect(content).not.toContain("setCacheHandler");
-    expect(content).not.toContain("VINEXT_CACHE");
+    expect(content).not.toContain("VINEXT_KV_CACHE");
   });
 
   it("includes KV wiring when hasISR is true", () => {
     const content = generateAppRouterWorkerEntry(true);
     expect(content).toContain('import { KVCacheHandler } from "vinext/cloudflare"');
     expect(content).toContain('import { setDataCacheHandler } from "vinext/shims/cache"');
-    expect(content).toContain("VINEXT_CACHE: KVNamespace");
-    expect(content).toContain("new KVCacheHandler(env.VINEXT_CACHE)");
+    expect(content).toContain("VINEXT_KV_CACHE: KVNamespace");
+    expect(content).toContain("new KVCacheHandler(env.VINEXT_KV_CACHE)");
     expect(content).toContain("setDataCacheHandler(");
   });
 });
@@ -2648,12 +2648,12 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     expect(config?.customDomain).toBeUndefined();
   });
 
-  it("extracts KV namespace ID for VINEXT_CACHE", () => {
+  it("extracts KV namespace ID for VINEXT_KV_CACHE", () => {
     writeFile(
       tmpDir,
       "wrangler.json",
       JSON.stringify({
-        kv_namespaces: [{ binding: "VINEXT_CACHE", id: "abc123" }],
+        kv_namespaces: [{ binding: "VINEXT_KV_CACHE", id: "abc123" }],
       }),
     );
     const config = parseWranglerConfig(tmpDir);

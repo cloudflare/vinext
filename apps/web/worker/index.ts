@@ -25,7 +25,7 @@ type Env = {
     };
   };
   DB: D1Database;
-  VINEXT_CACHE: KVNamespace;
+  VINEXT_KV_CACHE: KVNamespace;
   COMPAT_INGEST_SECRET?: string;
 };
 
@@ -36,7 +36,7 @@ type Env = {
 let cacheHandlerInstalled = false;
 function installCacheHandler(env: Env): void {
   if (cacheHandlerInstalled) return;
-  setCacheHandler(new KVCacheHandler(env.VINEXT_CACHE));
+  setCacheHandler(new KVCacheHandler(env.VINEXT_KV_CACHE));
   cacheHandlerInstalled = true;
 }
 

@@ -82,7 +82,7 @@ type WranglerConfig = {
 
 /**
  * Parse wrangler config (JSONC or TOML) to extract the fields TPR needs:
- * account_id, VINEXT_CACHE KV namespace ID, and custom domain.
+ * account_id, VINEXT_KV_CACHE KV namespace ID, and custom domain.
  */
 export function parseWranglerConfig(root: string): WranglerConfig | null {
   // Try JSONC / JSON first
@@ -190,11 +190,11 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
     result.accountId = config.account_id;
   }
 
-  // KV namespace ID for VINEXT_CACHE
+  // KV namespace ID for VINEXT_KV_CACHE
   if (Array.isArray(config.kv_namespaces)) {
     const vinextKV = config.kv_namespaces.find(
       (ns: Record<string, unknown>) =>
-        ns && typeof ns === "object" && ns.binding === "VINEXT_CACHE",
+        ns && typeof ns === "object" && ns.binding === "VINEXT_KV_CACHE",
     );
     if (vinextKV && typeof vinextKV.id === "string" && vinextKV.id !== "<your-kv-namespace-id>") {
       result.kvNamespaceId = vinextKV.id;
@@ -265,7 +265,7 @@ function extractFromTOML(content: string): WranglerConfig {
   const accountMatch = content.match(/^account_id\s*=\s*"([^"]+)"/m);
   if (accountMatch) result.accountId = accountMatch[1];
 
-  // KV namespace with binding = "VINEXT_CACHE"
+  // KV namespace with binding = "VINEXT_KV_CACHE"
   // Look for [[kv_namespaces]] blocks
   const kvBlocks = content.split(/\[\[kv_namespaces\]\]/);
   for (let i = 1; i < kvBlocks.length; i++) {
@@ -273,7 +273,7 @@ function extractFromTOML(content: string): WranglerConfig {
     const bindingMatch = block.match(/binding\s*=\s*"([^"]+)"/);
     const idMatch = block.match(/\bid\s*=\s*"([^"]+)"/);
     if (
-      bindingMatch?.[1] === "VINEXT_CACHE" &&
+      bindingMatch?.[1] === "VINEXT_KV_CACHE" &&
       idMatch?.[1] &&
       idMatch[1] !== "<your-kv-namespace-id>"
     ) {
@@ -807,7 +807,7 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
 
   // ── 4. Check for KV namespace ─────────────────────────────────
   if (!wranglerConfig.kvNamespaceId) {
-    return skip("no VINEXT_CACHE KV namespace configured");
+    return skip("no VINEXT_KV_CACHE KV namespace configured");
   }
 
   // ── 5. Resolve account ID ─────────────────────────────────────
