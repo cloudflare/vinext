@@ -70,10 +70,10 @@ describe("applyCdnResponseHeaders", () => {
     // Minimal edge adapter that splits headers and emits a tag header.
     const edge: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
-      async readPage() {
+      async get() {
         return null;
       },
-      async writePage() {},
+      async set() {},
       buildResponseHeaders(input: CdnCacheableHeaderInput) {
         return {
           "Cache-Control": "no-store",
@@ -81,7 +81,7 @@ describe("applyCdnResponseHeaders", () => {
           ...(input.tags?.length ? { "Cache-Tag": input.tags.join(",") } : {}),
         };
       },
-      async revalidate() {},
+      async revalidateTag() {},
     };
     setCdnCacheAdapter(edge);
 

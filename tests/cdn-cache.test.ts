@@ -4,9 +4,9 @@
  * Covers the page-level ISR serving-strategy split:
  *  - DefaultCdnCacheAdapter delegates storage to the data cache and reproduces
  *    the framework's existing header behavior (byte-for-byte).
- *  - A custom edge adapter can return null from readPage (origin renders fresh),
- *    no-op writePage, emit split Cache-Control + CDN-Cache-Control headers, skip
- *    in-process background regeneration, and purge via revalidate().
+ *  - A custom edge adapter can return null from get (origin renders fresh),
+ *    no-op set, emit split Cache-Control + CDN-Cache-Control headers, skip
+ *    in-process background regeneration, and purge via revalidateTag().
  *  - isrGet/isrSet route through the active CDN adapter.
  *  - revalidateTag/revalidatePath/updateTag invalidate the data cache AND ask
  *    the CDN adapter to purge.
@@ -71,15 +71,15 @@ describe("DefaultCdnCacheAdapter", () => {
     expect(new DefaultCdnCacheAdapter().ownsBackgroundRevalidation).toBe(true);
   });
 
-  it("delegates readPage/writePage to the active data cache handler", async () => {
+  it("delegates get/set to the active data cache handler", async () => {
     const get = vi.fn(async () => null);
     const set = vi.fn(async () => {});
     const handler: CacheHandler = { get, set, async revalidateTag() {} };
     setDataCacheHandler(handler);
 
     const adapter = new DefaultCdnCacheAdapter();
-    await adapter.writePage("k", buildPagesCacheValue("<p>x</p>", {}), { tags: ["t"] });
-    await adapter.readPage("k", { kind: "PAGES" });
+    await adapter.set("k", buildPagesCacheValue("<p>x</p>", {}), { tags: ["t"] });
+    await adapter.get("k", { kind: "PAGES" });
 
     expect(set).toHaveBeenCalledWith("k", expect.objectContaining({ kind: "PAGES" }), {
       tags: ["t"],
@@ -103,8 +103,8 @@ describe("DefaultCdnCacheAdapter", () => {
     expect(headers).toEqual({ "Cache-Control": "no-store, must-revalidate" });
   });
 
-  it("revalidate() is a no-op (data cache owns store invalidation)", async () => {
-    await expect(new DefaultCdnCacheAdapter().revalidate("tag")).resolves.toBeUndefined();
+  it("revalidateTag() is a no-op (data cache owns store invalidation)", async () => {
+    await expect(new DefaultCdnCacheAdapter().revalidateTag("tag")).resolves.toBeUndefined();
   });
 });
 
@@ -130,17 +130,17 @@ class EdgeCdnAdapter implements CdnCacheAdapter {
   readonly purges: string[] = [];
   writes = 0;
 
-  async readPage(): Promise<null> {
+  async get(): Promise<null> {
     return null; // origin renders fresh; the edge serves the cache
   }
-  async writePage(): Promise<void> {
+  async set(): Promise<void> {
     this.writes++; // intentionally does not persist anything
   }
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
     if (!input.cacheControl) return { "Cache-Control": "no-store" };
     return { "Cache-Control": "no-store", "CDN-Cache-Control": input.cacheControl };
   }
-  async revalidate(tags: string | string[]): Promise<void> {
+  async revalidateTag(tags: string | string[]): Promise<void> {
     for (const tag of Array.isArray(tags) ? tags : [tags]) this.purges.push(tag);
   }
 }
