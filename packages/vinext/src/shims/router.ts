@@ -461,7 +461,12 @@ export function setSSRContext(ctx: SSRContext | null): void {
 type PagesNavigationContextShape = {
   pathname: string;
   searchParams: URLSearchParams;
-  params: Record<string, string | string[]>;
+  params: Record<string, string | string[]> | null;
+};
+
+const PAGES_NAVIGATION_NOTIFY_KEY = Symbol.for("vinext.navigation.pagesNavigationNotify");
+type PagesNavigationNotifyGlobal = typeof globalThis & {
+  [PAGES_NAVIGATION_NOTIFY_KEY]?: () => void;
 };
 
 // Client-only cache for snapshot stability. useSyncExternalStore compares
@@ -476,13 +481,18 @@ function _buildClientPagesNavigationContext(
   routePattern: string,
   resolvedPath: string,
   searchString: string,
+  isReady: boolean,
 ): PagesNavigationContextShape {
-  const cacheKey = `${routePattern}|${resolvedPath}|${searchString}`;
+  const cacheKey = `${isReady ? "1" : "0"}|${routePattern}|${resolvedPath}|${searchString}`;
   if (_cachedClientPagesNavCtxKey === cacheKey && _cachedClientPagesNavCtx) {
     return _cachedClientPagesNavCtx;
   }
-  const searchParams = new URLSearchParams(searchString);
-  const params = routePattern ? (extractRouteParamsFromPath(routePattern, resolvedPath) ?? {}) : {};
+  const searchParams = isReady ? new URLSearchParams(searchString) : new URLSearchParams();
+  const params = isReady
+    ? routePattern
+      ? (extractRouteParamsFromPath(routePattern, resolvedPath) ?? {})
+      : {}
+    : null;
   const ctx: PagesNavigationContextShape = { pathname: resolvedPath, searchParams, params };
   _cachedClientPagesNavCtx = ctx;
   _cachedClientPagesNavCtxKey = cacheKey;
@@ -553,7 +563,12 @@ export function getPagesNavigationContext(): PagesNavigationContextShape | null 
   // useSyncExternalStore sees a stable snapshot between renders.
   const resolvedPath = stripBasePath(window.location.pathname, __basePath);
   const pattern = window.__NEXT_DATA__?.page ?? "";
-  return _buildClientPagesNavigationContext(pattern, resolvedPath, window.location.search);
+  return _buildClientPagesNavigationContext(
+    pattern,
+    resolvedPath,
+    window.location.search,
+    isPagesRouterReady(),
+  );
 }
 
 /**
@@ -652,6 +667,50 @@ function getPathnameAndQuery(): {
   // asPath uses the resolved browser path, not the route pattern
   const asPath = resolvedPath + window.location.search + window.location.hash;
   return { pathname, query, asPath };
+}
+
+function shouldDeferInitialPagesRouterReady(): boolean {
+  if (typeof window === "undefined") return false;
+  const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
+  if (!nextData) return false;
+
+  // Mirrors the readiness phase Next.js uses before PathParamsContext is
+  // populated in the Pages Router client. The full Next.js constructor also
+  // considers build metadata such as rewrites; vinext does not currently
+  // serialize that metadata, so keep this to the observable cases this runtime
+  // can identify from the matched route and visible URL.
+  if (
+    nextData.gssp === true ||
+    nextData.gip === true ||
+    nextData.isExperimentalCompile === true ||
+    (nextData.appGip === true && nextData.gsp !== true)
+  ) {
+    return false;
+  }
+
+  return extractRouteParamNames(nextData.page).length > 0 || window.location.search.length > 0;
+}
+
+let _pagesRouterReady =
+  typeof window === "undefined" ? true : !shouldDeferInitialPagesRouterReady();
+
+function isPagesRouterReady(): boolean {
+  return typeof window === "undefined" || _pagesRouterReady;
+}
+
+function markPagesRouterReady(): boolean {
+  if (typeof window === "undefined" || _pagesRouterReady) return false;
+  _pagesRouterReady = true;
+  return true;
+}
+
+function getRouterSnapshot(): ReturnType<typeof getPathnameAndQuery> & { isReady: boolean } {
+  return { ...getPathnameAndQuery(), isReady: isPagesRouterReady() };
+}
+
+function notifyNextNavigationPagesContext(): void {
+  const notify = (globalThis as PagesNavigationNotifyGlobal)[PAGES_NAVIGATION_NOTIFY_KEY];
+  notify?.();
 }
 
 /**
@@ -1395,6 +1454,7 @@ function buildRouterValue(
   pathname: string,
   query: Record<string, string | string[]>,
   asPath: string,
+  isReady: boolean,
   methods: {
     push: NextRouter["push"];
     replace: NextRouter["replace"];
@@ -1428,7 +1488,7 @@ function buildRouterValue(
     locales,
     defaultLocale,
     domainLocales,
-    isReady: true,
+    isReady,
     isPreview: false,
     isFallback:
       typeof window !== "undefined"
@@ -1453,6 +1513,7 @@ function stripHash(url: string): string {
 
 /** Notify in-page listeners (e.g. useRouter hooks) that navigation occurred. */
 function dispatchNavigateEvent(): void {
+  notifyNextNavigationPagesContext();
   window.dispatchEvent(new CustomEvent("vinext:navigate"));
 }
 
@@ -1709,7 +1770,7 @@ export function useRouter(): NextRouter {
 }
 
 function PagesRouterProvider({ children }: { children: ReactNode }): ReactElement {
-  const [{ pathname, query, asPath }, setState] = useState(getPathnameAndQuery);
+  const [{ pathname, query, asPath, isReady }, setState] = useState(getRouterSnapshot);
 
   // Popstate is handled by the Pages Router client entry via
   // installPagesRouterRuntime() so beforePopState() is consistently enforced
@@ -1718,15 +1779,24 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
   // vinext:navigate listener.
   useEffect(() => {
     const onNavigate = ((_e: CustomEvent) => {
-      setState(getPathnameAndQuery());
+      setState(getRouterSnapshot());
     }) as EventListener;
     window.addEventListener("vinext:navigate", onNavigate);
-    return () => window.removeEventListener("vinext:navigate", onNavigate);
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled || !markPagesRouterReady()) return;
+      setState(getRouterSnapshot());
+      notifyNextNavigationPagesContext();
+    });
+    return () => {
+      cancelled = true;
+      window.removeEventListener("vinext:navigate", onNavigate);
+    };
   }, []);
 
   const router = useMemo(
     (): NextRouter =>
-      buildRouterValue(pathname, query, asPath, {
+      buildRouterValue(pathname, query, asPath, isReady, {
         push: Router.push,
         replace: Router.replace,
         back: Router.back,
@@ -1734,7 +1804,7 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
         prefetch: Router.prefetch,
         beforePopState: Router.beforePopState,
       }),
-    [pathname, query, asPath],
+    [pathname, query, asPath, isReady],
   );
 
   const appRouter = useMemo(
@@ -2161,7 +2231,12 @@ const Router: typeof RouterMethods & Omit<NextRouter, keyof typeof RouterMethods
         return (window.__NEXT_DATA__ as VinextNextData | undefined)?.domainLocales;
       },
     },
-    isReady: { enumerable: true, value: true, writable: false },
+    isReady: {
+      enumerable: true,
+      get(): boolean {
+        return isPagesRouterReady();
+      },
+    },
     isPreview: { enumerable: true, value: false, writable: false },
     isFallback: {
       enumerable: true,

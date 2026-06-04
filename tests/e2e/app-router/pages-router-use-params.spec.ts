@@ -35,6 +35,7 @@ test.describe("issue #1466: Pages Router useParams under app+pages project", () 
     await waitForHydration(page);
 
     await expect(page.locator("#params")).toHaveText('{"foo":"foo"}');
+    await expect(page.locator("#params-change-count")).toHaveText("2");
     const initialChangeCount = await page.locator("#params-change-count").textContent();
 
     await page.click("#rerender-button");

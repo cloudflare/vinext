@@ -325,14 +325,16 @@ export function _registerStateAccessors(accessors: _StateAccessors): void {
 type PagesNavigationContext = {
   pathname: string;
   searchParams: URLSearchParams;
-  params: Record<string, string | string[]>;
+  params: Record<string, string | string[]> | null;
 };
 
 const PAGES_NAVIGATION_ACCESSOR_KEY = Symbol.for(
   "vinext.navigation.pagesNavigationContextAccessor",
 );
+const PAGES_NAVIGATION_NOTIFY_KEY = Symbol.for("vinext.navigation.pagesNavigationNotify");
 type _GlobalWithPagesAccessor = typeof globalThis & {
   [PAGES_NAVIGATION_ACCESSOR_KEY]?: () => PagesNavigationContext | null;
+  [PAGES_NAVIGATION_NOTIFY_KEY]?: () => void;
 };
 
 function _getPagesNavigationContext(): PagesNavigationContext | null {
@@ -1129,6 +1131,10 @@ function notifyNavigationListeners(): void {
   for (const fn of state.listeners) fn();
 }
 
+if (!isServer) {
+  (globalThis as _GlobalWithPagesAccessor)[PAGES_NAVIGATION_NOTIFY_KEY] = notifyNavigationListeners;
+}
+
 // Cached URLSearchParams, pathname, etc. for referential stability
 // useSyncExternalStore compares snapshots with Object.is — avoid creating
 // new instances on every render (infinite re-renders).
@@ -1247,6 +1253,49 @@ export function activateNavigationSnapshot(): void {
 // We cache the params object for referential stability — only create a new
 // object when the params actually change (shallow key/value comparison).
 const _EMPTY_PARAMS: Record<string, string | string[]> = {};
+
+function getRouteParamNamesFromPagesPattern(pattern: string): string[] {
+  const names: string[] = [];
+  for (const segment of pattern.split("/")) {
+    if (segment.startsWith("[[...") && segment.endsWith("]]")) {
+      names.push(segment.slice(5, -2));
+    } else if (segment.startsWith("[...") && segment.endsWith("]")) {
+      names.push(segment.slice(4, -1));
+    } else if (segment.startsWith("[") && segment.endsWith("]")) {
+      names.push(segment.slice(1, -1));
+    }
+  }
+  return names;
+}
+
+let _cachedPagesHydrationParamsKey: string | null = null;
+let _cachedPagesHydrationParams: Record<string, string | string[]> | null = null;
+
+function getPagesHydrationParamsFromNextData(): Record<string, string | string[]> | null {
+  if (isServer) return null;
+  const nextData = window.__NEXT_DATA__;
+  if (!nextData) return null;
+  const names = getRouteParamNamesFromPagesPattern(nextData.page);
+
+  const params: Record<string, string | string[]> = {};
+  if (names.length > 0) {
+    for (const name of names) {
+      const value = nextData.query[name];
+      if (typeof value === "string") {
+        params[name] = value;
+      } else if (Array.isArray(value)) {
+        params[name] = [...value];
+      }
+    }
+  }
+  const key = `${nextData.page}|${JSON.stringify(params)}`;
+  if (_cachedPagesHydrationParamsKey === key && _cachedPagesHydrationParams) {
+    return _cachedPagesHydrationParams;
+  }
+  _cachedPagesHydrationParamsKey = key;
+  _cachedPagesHydrationParams = params;
+  return params;
+}
 
 // ---------------------------------------------------------------------------
 // Client navigation render snapshot — provides pending URL values to hooks
@@ -1372,24 +1421,28 @@ export function clearPendingPathname(navId: number): void {
   }
 }
 
-function getClientParamsSnapshot(): Record<string, string | string[]> {
+function getClientParamsSnapshot(): Record<string, string | string[]> | null {
   const state = getClientNavigationState();
   const pagesCtx = _getPagesNavigationContext();
-  if (pagesCtx) return pagesCtx.params;
+  if (pagesCtx) {
+    if (pagesCtx.params) return pagesCtx.params;
+    if (state && Object.keys(state.clientParams).length > 0) return state.clientParams;
+    return getPagesHydrationParamsFromNextData();
+  }
   if (state && Object.keys(state.clientParams).length > 0) {
     return state.clientParams;
   }
-  return state?.clientParams ?? _EMPTY_PARAMS;
+  return getPagesHydrationParamsFromNextData() ?? state?.clientParams ?? _EMPTY_PARAMS;
 }
 
-function getServerParamsSnapshot(): Record<string, string | string[]> {
+function getServerParamsSnapshot(): Record<string, string | string[]> | null {
   const ctx = _getServerContext();
   if (ctx) return ctx.params;
   // No App Router navigation context — fall back to Pages Router state.
   // See `adaptForPathParams` in Next.js's pages-router adapter:
   // .nextjs-ref/packages/next/src/shared/lib/router/adapters.tsx
   const pagesCtx = _getPagesNavigationContext();
-  return pagesCtx?.params ?? _EMPTY_PARAMS;
+  return pagesCtx?.params ?? getPagesHydrationParamsFromNextData() ?? _EMPTY_PARAMS;
 }
 
 function subscribeToNavigation(cb: () => void): () => void {
