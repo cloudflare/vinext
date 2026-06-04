@@ -263,7 +263,7 @@ describe("Link App Router prefetch mode", () => {
     expect(resolveLinkPrefetchMode(true, true)).toBe("disabled");
   });
 
-  it("allows automatic full RSC prefetch only for known static App Router routes", () => {
+  it("allows automatic full RSC prefetch only for routes without loading-shell prefetches", () => {
     const originalWindow = globalThis.window;
     (globalThis as any).window = {
       location: {
@@ -274,6 +274,8 @@ describe("Link App Router prefetch mode", () => {
         { canPrefetchLoadingShell: false, patternParts: ["about"], isDynamic: false },
         { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
         { canPrefetchLoadingShell: true, patternParts: ["docs", ":slug+"], isDynamic: true },
+        { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
+        { canPrefetchLoadingShell: true, patternParts: ["settings"], isDynamic: false },
       ],
     };
 
@@ -281,6 +283,8 @@ describe("Link App Router prefetch mode", () => {
       expect(canAutoPrefetchFullAppRoute("/about")).toBe(true);
       expect(canAutoPrefetchFullAppRoute("/blog/hello-world")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/docs/a/b")).toBe(false);
+      expect(canAutoPrefetchFullAppRoute("/products/1")).toBe(true);
+      expect(canAutoPrefetchFullAppRoute("/settings")).toBe(true);
       expect(canAutoPrefetchFullAppRoute("/missing")).toBe(false);
     } finally {
       if (originalWindow === undefined) {
@@ -291,7 +295,7 @@ describe("Link App Router prefetch mode", () => {
     }
   });
 
-  it("allows automatic dynamic App Router prefetches only as loading-boundary learning requests", () => {
+  it("allows automatic dynamic App Router routes without loading shells to seed navigation cache", () => {
     const originalWindow = globalThis.window;
     (globalThis as any).window = {
       location: {
@@ -302,6 +306,8 @@ describe("Link App Router prefetch mode", () => {
         { canPrefetchLoadingShell: false, patternParts: ["about"], isDynamic: false },
         { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
         { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
+        { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
+        { canPrefetchLoadingShell: true, patternParts: ["settings"], isDynamic: false },
       ],
     };
 
@@ -314,9 +320,20 @@ describe("Link App Router prefetch mode", () => {
         cacheForNavigation: false,
         shouldPrefetch: true,
       });
+      expect(resolveAutoAppRoutePrefetch("/settings")).toEqual({
+        cacheForNavigation: true,
+        shouldPrefetch: true,
+      });
       expect(resolveAutoAppRoutePrefetch("/products/1")).toEqual({
-        cacheForNavigation: false,
-        shouldPrefetch: false,
+        cacheForNavigation: true,
+        shouldPrefetch: true,
+      });
+      // Ported from Next.js:
+      // test/e2e/app-dir/segment-cache/client-params/client-params.test.ts
+      // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/client-params/client-params.test.ts
+      expect(resolveAutoAppRoutePrefetch("/clothing/1")).toEqual({
+        cacheForNavigation: true,
+        shouldPrefetch: true,
       });
       expect(resolveAutoAppRoutePrefetch("/missing")).toEqual({
         cacheForNavigation: false,

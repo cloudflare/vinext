@@ -272,7 +272,7 @@ export function canAutoPrefetchFullAppRoute(href: string): boolean {
   const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
   if (!match) return false;
 
-  return !match.route.isDynamic;
+  return !match.route.isDynamic || !match.route.canPrefetchLoadingShell;
 }
 
 export function resolveAutoAppRoutePrefetch(href: string): {
@@ -299,8 +299,8 @@ export function resolveAutoAppRoutePrefetch(href: string): {
   }
 
   return {
-    cacheForNavigation: !match.route.isDynamic,
-    shouldPrefetch: !match.route.isDynamic || match.route.canPrefetchLoadingShell,
+    cacheForNavigation: !match.route.isDynamic || !match.route.canPrefetchLoadingShell,
+    shouldPrefetch: true,
   };
 }
 

@@ -51,6 +51,7 @@ const linkPrefetchRoutes = [
   },
   { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
   { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
+  { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
 ] satisfies VinextLinkPrefetchRoute[];
 
 function createTestNavigationRuntime(navigate: unknown) {
@@ -1267,20 +1268,38 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("does not auto-prefetch dynamic links without a loading shell boundary", async () => {
+  it("full-prefetches visible dynamic links without a loading shell boundary for client params", async () => {
     const observer = stubIntersectionObserver();
 
     const result = await renderIsolatedLink({
-      href: "/products/1",
+      href: "/clothing/1",
       nodeEnv: "production",
     });
 
     try {
       expect(observer.observe).toHaveBeenCalledWith(result.anchor);
       observer.dispatchIntersectingEntry(result.anchor);
-      await flushPrefetchTasks();
+      await waitForFetchCalls(result.fetch, 1);
 
-      expect(result.fetch).not.toHaveBeenCalled();
+      // Ported from Next.js:
+      // test/e2e/app-dir/segment-cache/client-params/client-params.test.ts
+      // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/client-params/client-params.test.ts
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/clothing/1",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        null,
+      );
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const entry = Array.from(getPrefetchCache().values())[0];
+      expect(entry?.cacheForNavigation).toBe(true);
+      expect(entry?.optimisticRouteShell).toBe(false);
     } finally {
       result.restoreNodeEnv();
     }
