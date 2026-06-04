@@ -184,13 +184,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Config-driven adapter factory (default export).
-//
-// Invoked once per isolate on the first request by the generated
-// `virtual:vinext-cache-adapters` registration.
-// ---------------------------------------------------------------------------
-
 const createCloudflareCdnCacheAdapter: CdnCacheAdapterFactory = () =>
   new CloudflareCdnCacheAdapter();
 

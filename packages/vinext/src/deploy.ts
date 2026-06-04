@@ -605,9 +605,7 @@ function stripBasePath(pathname: string, basePath: string): string {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    // Wire up cache adapters configured via the vinext() \`cache\` option, with
-    // the Worker \`env\` so binding-backed adapters (e.g. KV) resolve. Self-guards
-    // (runs once per isolate); a no-op when no adapters are configured.
+    // Pass the Worker \`env\` so binding-backed adapters (e.g. KV) resolve.
     registerConfiguredCacheAdapters(env);
     try {
       const url = new URL(request.url);

@@ -278,10 +278,10 @@ const __hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
 
-// Default to the in-memory data cache; a configured cache.data/cache.cdn
-// adapter overrides it on the first request via registerConfiguredCacheAdapters
-// (called from renderPage/handleApiRoute below, and with env from the worker
-// entry on Cloudflare). The registration self-guards, so the first call wins.
+// Default to the in-memory data cache; a configured cache.data/cache.cdn adapter
+// overrides it on the first request via registerConfiguredCacheAdapters (called
+// from renderPage/handleApiRoute below, and with env from the worker entry on
+// Cloudflare). The registration self-guards, so the first call wins.
 __configureMemoryCacheHandler({ cacheMaxMemorySize: vinextConfig.cacheMaxMemorySize });
 
 // Path to the user's pages/_app file (or null). Used to look up the

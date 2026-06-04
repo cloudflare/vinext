@@ -7,9 +7,8 @@
  * binding — e.g. a KV namespace — can read it, plus the JSON `options` from the
  * adapter descriptor (e.g. `{ binding: "MY_KV" }`).
  *
- * `env` is stable across requests, so adapters are instantiated once per
- * isolate. Adapters that need the per-request `ExecutionContext` (for
- * `waitUntil`) read it lazily via `getRequestExecutionContext()`.
+ * Adapters that need the per-request `ExecutionContext` (for `waitUntil`) read
+ * it lazily via `getRequestExecutionContext()`, since the factory runs only once.
  */
 
 import type { CacheHandler } from "vinext/shims/cache";

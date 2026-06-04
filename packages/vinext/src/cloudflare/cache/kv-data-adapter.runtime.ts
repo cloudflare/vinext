@@ -643,14 +643,7 @@ function safeBase64ToArrayBuffer(base64: string): ArrayBuffer | null {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Config-driven adapter factory (default export).
-//
-// Invoked once per isolate on the first request by the generated
-// `virtual:vinext-cache-adapters` registration. Resolves the KV namespace from
-// `env[binding]` (default `VINEXT_CACHE`) and builds a KVCacheHandler.
-// ---------------------------------------------------------------------------
-
 const createKvDataCacheAdapter: DataCacheAdapterFactory<KvDataAdapterOptions> = ({
   env,
   options,

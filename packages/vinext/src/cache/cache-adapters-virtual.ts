@@ -1,26 +1,18 @@
 /**
- * Code generation for the `virtual:vinext-cache-adapters` module.
+ * Code generation for the `virtual:vinext-cache-adapters` module, resolved by
+ * the vinext vite plugin from the user's `cache` config ({@link VinextCacheConfig}).
  *
- * The vinext vite plugin resolves this virtual module from the user's `cache`
- * config ({@link VinextCacheConfig}). The
- * generated module exports a single `registerConfiguredCacheAdapters(env)`
- * function that the server entries call on each request; it self-guards so the
- * adapters are instantiated only once per isolate, and is a no-op when nothing
- * is configured (so the import is always safe).
+ * The generated module exports `registerConfiguredCacheAdapters(env)`, which the
+ * server entries call on each request. It self-guards (adapters instantiate once
+ * per isolate) and is a no-op when nothing is configured. Registration is
+ * resilient: a factory that throws (e.g. a KV adapter on the Node.js server,
+ * where the binding can't exist) is logged and skipped rather than failing every
+ * request, so the same config can be registered from every runtime/router entry.
  *
- * Registration is resilient: a factory that throws (e.g. a Cloudflare KV
- * adapter on the Node.js server where the binding can't exist) is logged and
- * skipped rather than failing every request — the default handler stays in
- * place. This lets the same config be registered from every runtime/router
- * entry, not just one.
- *
- * The descriptor `options` (e.g. `{ binding: "MY_KV" }`) are inlined into the
- * generated module and forwarded to the adapter factory at runtime, so a
- * config-time builder like `kvDataAdapter({ binding })` never has to touch the
- * Workers runtime — instantiation is fully deferred to the first request.
- *
- * Keeping the codegen here (pure config in → string out) makes it unit-testable
- * without spinning up a full Vite build.
+ * Descriptor `options` are inlined into the generated module and forwarded to the
+ * factory at runtime, so a config-time builder like `kvDataAdapter({ binding })`
+ * never touches the Workers runtime — instantiation is deferred to the first
+ * request.
  */
 
 /**
@@ -104,9 +96,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
 
   lines.push(
     "",
-    "// Adapters are instantiated once per isolate; `env` is stable across",
-    "// requests, and adapters read the per-request ExecutionContext lazily. A",
-    "// factory that throws (e.g. a missing binding on an incompatible runtime)",
+    "// A factory that throws (e.g. a missing binding on an incompatible runtime)",
     "// is logged and skipped so the default handler stays in place.",
     "let __vinextCacheAdaptersRegistered = false;",
     "",

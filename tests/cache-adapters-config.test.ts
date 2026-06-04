@@ -52,7 +52,6 @@ describe("generateCacheAdaptersModule", () => {
     expect(code).toContain(
       "setDataCacheHandler(__vinextDataAdapterFactory({ env, options: undefined }));",
     );
-    // No CDN wiring.
     expect(code).not.toContain("__vinextCdnAdapterFactory");
     expect(code).not.toContain("setCdnCacheAdapter");
   });
@@ -86,7 +85,6 @@ describe("generateCacheAdaptersModule", () => {
     expect(code).toContain(`from "vinext/cloudflare/cache/kv-data-adapter";`);
     expect(code).toContain("setDataCacheHandler(__vinextDataAdapterFactory(");
     expect(code).toContain("setCdnCacheAdapter(__vinextCdnAdapterFactory(");
-    // Idempotency guard.
     expect(code).toContain("if (__vinextCacheAdaptersRegistered) return;");
     expect(code).toContain("__vinextCacheAdaptersRegistered = true;");
   });
