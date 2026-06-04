@@ -147,9 +147,8 @@ describe("config-driven cache adapter — local file by absolute path", () => {
     writeFixtureFile(
       root,
       "cache/my-data-adapter.ts",
-      `import type { DataCacheAdapterFactory } from "vinext/shims/cache-adapter";
-
-const createAdapter: DataCacheAdapterFactory = () => {
+      `// A custom adapter module: default-exports a factory ({ env, options }) => CacheHandler.
+const createAdapter = () => {
   const store = new Map();
   // The marker is a live property of the returned (escaping) handler, so it
   // survives tree-shaking/minification and proves this module was bundled.
@@ -158,7 +157,7 @@ const createAdapter: DataCacheAdapterFactory = () => {
     async get(key) { return store.get(key) ?? null; },
     async set(key, data) { store.set(key, data); },
     async revalidateTag() {},
-  } as any;
+  };
 };
 
 export default createAdapter;

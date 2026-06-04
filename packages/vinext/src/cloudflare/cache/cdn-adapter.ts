@@ -25,7 +25,6 @@
  */
 
 import { fileURLToPath } from "node:url";
-import type { CacheAdapterDescriptor } from "vinext/shims/cache-adapter";
 
 /** Options accepted by {@link cdnAdapter}. (None today — reserved for future use.) */
 export type CdnAdapterOptions = Record<string, never>;
@@ -35,7 +34,10 @@ export type CdnAdapterOptions = Record<string, never>;
  * absolute path to the runtime factory. Safe to call from vite.config — it
  * never instantiates the adapter.
  */
-export function cdnAdapter(options?: CdnAdapterOptions): CacheAdapterDescriptor<CdnAdapterOptions> {
+export function cdnAdapter(options?: CdnAdapterOptions): {
+  adapter: string;
+  options?: CdnAdapterOptions;
+} {
   return {
     adapter: fileURLToPath(import.meta.resolve("./cdn-adapter.runtime.js")),
     options,

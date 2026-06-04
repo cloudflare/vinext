@@ -10,8 +10,8 @@
  * `./cdn-adapter.ts` — that builder `require.resolve`s this file.
  */
 
-import type { CdnCacheAdapterFactory } from "vinext/shims/cache-adapter";
 import { CloudflareCdnCacheAdapter } from "../cloudflare-cdn-cache.js";
+import type { CdnCacheAdapterFactory } from "./adapter.js";
 
 const createCloudflareCdnCacheAdapter: CdnCacheAdapterFactory = () =>
   new CloudflareCdnCacheAdapter();

@@ -2,7 +2,7 @@
  * Code generation for the `virtual:vinext-cache-adapters` module.
  *
  * The vinext vite plugin resolves this virtual module from the user's `cache`
- * config ({@link VinextCacheConfig}, defined in `shims/cache-adapter.ts`). The
+ * config ({@link VinextCacheConfig}). The
  * generated module exports a single `registerConfiguredCacheAdapters(env)`
  * function that the server entries call on each request; it self-guards so the
  * adapters are instantiated only once per isolate, and is a no-op when nothing
@@ -23,7 +23,34 @@
  * without spinning up a full Vite build.
  */
 
-import type { VinextCacheConfig } from "vinext/shims/cache-adapter";
+/**
+ * A serializable pointer to a cache adapter module — the shape of each `cache`
+ * slot in the vinext() plugin config. Produced by an adapter builder (e.g.
+ * `kvDataAdapter(...)` from `vinext/cloudflare/cache/kv-data-adapter`) or written
+ * by hand. `options` must be JSON-serializable: it is inlined into the generated
+ * registration module and forwarded to the adapter factory at runtime.
+ */
+export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
+  /**
+   * Module specifier (or absolute path, e.g. from `require.resolve(...)`) whose
+   * default export is a cache adapter factory.
+   */
+  adapter: string;
+  /** JSON-serializable options forwarded to the factory at runtime. */
+  options?: O;
+};
+
+/**
+ * The `cache` option of the vinext() plugin: declaratively register cache
+ * handlers instead of calling `setDataCacheHandler()` / `setCdnCacheAdapter()`
+ * from a worker entry.
+ */
+export type VinextCacheConfig = {
+  /** Page-level ISR serving strategy (CDN cache adapter). */
+  cdn?: CacheAdapterDescriptor;
+  /** Data cache (fetch / `"use cache"` / `unstable_cache`) handler. */
+  data?: CacheAdapterDescriptor;
+};
 
 /** Public virtual module id imported by the server entries. */
 export const VIRTUAL_CACHE_ADAPTERS = "virtual:vinext-cache-adapters";

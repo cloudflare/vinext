@@ -11,8 +11,8 @@
  * directly.
  */
 
-import type { DataCacheAdapterFactory } from "vinext/shims/cache-adapter";
 import { KVCacheHandler } from "../kv-cache-handler.js";
+import type { DataCacheAdapterFactory } from "./adapter.js";
 import type { KvDataAdapterOptions } from "./kv-data-adapter.js";
 
 /** Default KV namespace binding name read from the Worker `env`. */

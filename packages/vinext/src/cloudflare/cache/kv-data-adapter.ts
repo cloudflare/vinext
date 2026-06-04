@@ -24,7 +24,6 @@
  */
 
 import { fileURLToPath } from "node:url";
-import type { CacheAdapterDescriptor } from "vinext/shims/cache-adapter";
 
 /** Options accepted by {@link kvDataAdapter}, forwarded to the runtime factory. */
 export type KvDataAdapterOptions = {
@@ -43,9 +42,10 @@ export type KvDataAdapterOptions = {
  * absolute path to the runtime factory. Safe to call from vite.config — it
  * never instantiates the KV handler or reads a binding.
  */
-export function kvDataAdapter(
-  options?: KvDataAdapterOptions,
-): CacheAdapterDescriptor<KvDataAdapterOptions> {
+export function kvDataAdapter(options?: KvDataAdapterOptions): {
+  adapter: string;
+  options?: KvDataAdapterOptions;
+} {
   if (options?.binding !== undefined && typeof options.binding !== "string") {
     throw new TypeError("[vinext] kvDataAdapter({ binding }) must be a string KV binding name.");
   }

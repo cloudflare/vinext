@@ -23,8 +23,8 @@ import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import {
   VIRTUAL_CACHE_ADAPTERS,
   generateCacheAdaptersModule,
+  type VinextCacheConfig,
 } from "./cache/cache-adapters-virtual.js";
-import type { VinextCacheConfig } from "vinext/shims/cache-adapter";
 import {
   generateBrowserEntry,
   isLinkPrefetchRoute,
@@ -709,18 +709,20 @@ export type VinextOptions = {
   precompress?: boolean;
   /**
    * Configure cache handlers declaratively, so you don't need a custom worker
-   * entry that calls `setDataCacheHandler()` / `setCdnCacheAdapter()`.
-   *
-   * Each slot points at an *adapter module* whose default export is a factory
-   * (see `vinext/shims/cache-adapter`). The plugin registers them automatically
-   * on the first request, passing the host `env` (Worker bindings) so adapters
-   * that need a binding — e.g. a KV namespace — can read it.
+   * entry that calls `setDataCacheHandler()` / `setCdnCacheAdapter()`. Each slot
+   * is a `{ adapter, options }` descriptor pointing at an adapter module whose
+   * default export is a factory; the plugin registers them automatically on the
+   * first request, passing the host `env` (Worker bindings) so adapters that
+   * need a binding — e.g. a KV namespace — can read it.
    *
    * @example
+   * import { cdnAdapter } from "vinext/cloudflare/cache/cdn-adapter";
+   * import { kvDataAdapter } from "vinext/cloudflare/cache/kv-data-adapter";
+   *
    * vinext({
    *   cache: {
-   *     cdn:  { adapter: require.resolve("vinext/cloudflare/cache/cdn-adapter") },
-   *     data: { adapter: require.resolve("vinext/cloudflare/cache/kv-data-adapter") },
+   *     cdn:  cdnAdapter(),
+   *     data: kvDataAdapter({ binding: "MY_KV" }),
    *   },
    * })
    */
