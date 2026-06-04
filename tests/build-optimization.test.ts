@@ -1571,6 +1571,47 @@ describe("next/dynamic preload metadata transform", () => {
 
     expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic_widget.tsx"] }`);
   });
+
+  it("transforms generic next/dynamic calls in TSX-shaped source after type stripping", async () => {
+    // Vite's built-in TS transform strips type annotations and JSX before
+    // the transform hook runs, so dynamic<Props>(args) becomes dynamic(args)
+    // and { loading: () => <div /> } becomes { loading: () => ... }.
+    // This test verifies the post-strip JS passes through parseAst correctly.
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const Widget = dynamic(`,
+        `  () => import("./dynamic-widget"),`,
+        `  { loading: () => null },`,
+        `);`,
+      ].join("\n"),
+      importer,
+      root,
+      async (specifier) =>
+        specifier === "./dynamic-widget" ? path.join(root, "app/dynamic-widget.tsx") : null,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+  });
+
+  it("preserves existing loadableGenerated metadata in object-form dynamic options", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const Widget = dynamic({`,
+      `  loader: () => import("./dynamic-widget"),`,
+      `  loadableGenerated: { modules: ["custom"] },`,
+      `});`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
+  });
 });
 
 describe("augmentSsrManifestFromBundle", () => {
