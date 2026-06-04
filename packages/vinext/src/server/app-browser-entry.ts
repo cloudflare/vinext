@@ -17,6 +17,7 @@ import {
   encodeReply,
   setServerCallback,
 } from "@vitejs/plugin-rsc/browser";
+import { flushSync } from "react-dom";
 import { hydrateRoot } from "react-dom/client";
 import "../client/instrumentation-client.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
@@ -298,6 +299,8 @@ let currentBfcacheVersion =
 let currentHistoryTraversalIndex: number | null =
   readHistoryStateTraversalIndex(window.history.state) ?? 0;
 let nextHistoryTraversalIndex: number = currentHistoryTraversalIndex;
+const historyStateSnapshots = new Map<number, AppRouterState>();
+const MAX_HISTORY_STATE_SNAPSHOTS = 50;
 
 function isCurrentBfcacheVersion(state: unknown): boolean {
   return isHistoryStateBfcacheVersionCurrent(state, currentBfcacheVersion);
@@ -410,6 +413,36 @@ function stripVinextScrollState(state: unknown): unknown {
 
 function commitTraversalIndexFromHistoryState(historyState: unknown): void {
   commitHistoryTraversalIndex(readHistoryStateTraversalIndex(historyState));
+}
+
+function rememberHistoryStateSnapshot(state: AppRouterState): void {
+  const index = currentHistoryTraversalIndex;
+  if (index === null) return;
+
+  historyStateSnapshots.delete(index);
+  historyStateSnapshots.set(index, state);
+  if (historyStateSnapshots.size <= MAX_HISTORY_STATE_SNAPSHOTS) return;
+
+  const oldestIndex = historyStateSnapshots.keys().next().value;
+  if (typeof oldestIndex === "number") {
+    historyStateSnapshots.delete(oldestIndex);
+  }
+}
+
+function restoreHistoryStateSnapshot(historyState: unknown): boolean {
+  const targetIndex = readHistoryStateTraversalIndex(historyState);
+  if (targetIndex === null) return false;
+
+  const snapshot = historyStateSnapshots.get(targetIndex);
+  if (!snapshot) return false;
+
+  commitHistoryTraversalIndex(targetIndex);
+  stageClientParams(snapshot.navigationSnapshot.params);
+  flushSync(() => {
+    browserNavigationController.restoreVisibleState(snapshot);
+  });
+  commitClientNavigationState();
+  return true;
 }
 
 function getBrowserRouterState(): AppRouterState {
@@ -1154,6 +1187,10 @@ function BrowserRoot({
       setMountedSlotsHeader(null);
     };
   }, [setTreeStateValue]);
+
+  useLayoutEffect(() => {
+    rememberHistoryStateSnapshot(treeState);
+  }, [treeState]);
 
   useLayoutEffect(() => {
     setMountedSlotsHeader(getMountedSlotIdsHeader(stateRef.current.elements));
@@ -2263,10 +2300,6 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     navigate: navigateRsc,
   });
 
-  if ("scrollRestoration" in history) {
-    history.scrollRestoration = "manual";
-  }
-
   // Note: This popstate handler runs for App Router (RSC navigation available).
   // It coordinates scroll restoration with the pending RSC navigation.
   // Pages Router scroll restoration is handled in shims/navigation.ts:1289 with
@@ -2305,6 +2338,9 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
       return;
     }
     handlePopstate(event);
+    if (restoreHistoryStateSnapshot(event.state)) {
+      restorePopstateScrollPosition(event.state);
+    }
   });
 
   if (import.meta.hot) {

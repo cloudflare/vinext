@@ -1027,6 +1027,24 @@ describe("app browser entry navigation scheduling", () => {
 
     expect(assertNoTransitionOverride).toBeTypeOf("function");
   });
+
+  it("restores visible history snapshots without rewinding visible commit versions", () => {
+    const currentState = createState({
+      routeId: "route:/scroll-restoration/other",
+      visibleCommitVersion: 7,
+    });
+    const snapshotState = createState({
+      routeId: "route:/scroll-restoration",
+      visibleCommitVersion: 2,
+    });
+    const { controller, stateRef } = createControllerHarness(currentState);
+
+    controller.restoreVisibleState(snapshotState);
+
+    expect(stateRef.current.routeId).toBe("route:/scroll-restoration");
+    expect(stateRef.current.visibleCommitVersion).toBe(8);
+    expect(stateRef.current.activeOperation).toBeNull();
+  });
 });
 
 describe("app browser entry state helpers", () => {

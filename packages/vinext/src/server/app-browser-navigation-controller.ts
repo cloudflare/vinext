@@ -86,6 +86,7 @@ type BrowserNavigationController = {
   ): () => void;
   beginPendingBrowserRouterState(): PendingBrowserRouterState;
   finalizeNavigation(navId: number, pending: PendingBrowserRouterState | null | undefined): void;
+  restoreVisibleState(state: AppRouterState): void;
   renderNavigationPayload(options: {
     actionType: "navigate" | "replace" | "traverse";
     createNavigationCommitEffect: BrowserNavigationCommitEffectFactory;
@@ -492,6 +493,15 @@ export function createAppBrowserNavigationController(
     setter(applyApprovedVisibleCommit(getBrowserRouterState(), commit));
   }
 
+  function restoreVisibleState(state: AppRouterState): void {
+    const currentState = getBrowserRouterState();
+    getBrowserRouterStateSetter()({
+      ...state,
+      activeOperation: null,
+      visibleCommitVersion: currentState.visibleCommitVersion + 1,
+    });
+  }
+
   function notifyDiscardedServerActionRevalidation(
     lifecycleOptions: SameUrlServerActionLifecycleOptions | undefined,
   ): void {
@@ -717,6 +727,7 @@ export function createAppBrowserNavigationController(
     attachBrowserRouterState,
     beginPendingBrowserRouterState,
     finalizeNavigation,
+    restoreVisibleState,
     renderNavigationPayload,
     commitSameUrlNavigatePayload,
     hmrReplaceTree,
