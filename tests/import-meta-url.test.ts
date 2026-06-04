@@ -90,7 +90,7 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result?.code).toContain(`"file:///ROOT/pages/index.tsx"`);
   });
 
-  it("injects server __filename and __dirname as top-level vars", () => {
+  it("injects server __filename and __dirname derived from the source URL", () => {
     // Ported from Next.js:
     // test/e2e/app-dir/proxy-nfc-traced/proxy-nfc-traced.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-nfc-traced/proxy-nfc-traced.test.ts
@@ -100,10 +100,14 @@ describe("vinext:import-meta-url plugin", () => {
       linkedRoot,
     );
 
+    // Values are baked path literals computed in the plugin from the module's
+    // canonical path, not derived at runtime.
     expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
     expect(result?.code).toContain(
       `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
     );
+    // The baked path is the real (not symlinked) path.
+    expect(result?.code).not.toContain("linked-app");
     // Original identifiers remain as variable references, not string literals
     expect(result?.code).toContain(`console.log(__filename, __dirname);`);
   });
@@ -368,6 +372,8 @@ describe("vinext:import-meta-url plugin", () => {
     );
 
     expect(result).not.toBeNull();
+    // Injection lands immediately after the directive, so "use server" stays a
+    // directive prologue entry.
     expect(result?.code).toMatch(/^"use server";\nvar __filename/);
   });
 

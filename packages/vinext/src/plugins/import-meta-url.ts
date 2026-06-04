@@ -359,180 +359,91 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
   return ranges;
 }
 
-type CjsGlobalValues = {
-  __dirname: string;
-  __filename: string;
-};
-
-// Instead of rewriting every free identifier use of __filename/__dirname,
-// we inject top-level `var` bindings and let JavaScript scope rules handle
-// params, nested locals, object shorthand, assignment behaviour, etc.
-// This is simpler and more correct than a custom free-identifier replacement
-// walker that must model lexical scope, var hoisting, destructuring,
-// shorthand properties, and TypeScript type-space/value-space separation.
+// Bake __filename/__dirname as top-level `var` literals computed in the plugin
+// from the module's canonical path, and let JavaScript scope rules handle
+// params, nested locals, object shorthand, assignment behaviour, etc. — simpler
+// and more correct than a free-identifier replacement walker that must model
+// lexical scope.
+//
+// Each name is injected independently, only when the source references it AND
+// there is no conflicting top-level binding of that name (a `var` colliding with
+// a top-level let/const/class/import would be a SyntaxError).
 function injectServerCjsGlobals(ast: unknown, code: string, canonicalId: string): string | null {
-  const values: CjsGlobalValues = {
-    __dirname: path.dirname(canonicalId),
-    __filename: canonicalId,
-  };
-
-  const namesToInject: string[] = [];
-  for (const name of ["__filename", "__dirname"] as const) {
-    if (code.includes(name) && !hasTopLevelBinding(ast, name)) {
-      namesToInject.push(name);
-    }
-  }
-
-  if (namesToInject.length === 0) return null;
-
-  const injections: string[] = [];
-  for (const name of namesToInject) {
-    injections.push(`var ${name} = ${JSON.stringify(values[name as keyof CjsGlobalValues])};`);
-  }
-  return injections.join("");
+  const values = { __filename: canonicalId, __dirname: path.dirname(canonicalId) } as const;
+  const parts = (["__filename", "__dirname"] as const)
+    .filter((name) => code.includes(name) && !hasTopLevelBinding(ast, name))
+    .map((name) => `var ${name} = ${JSON.stringify(values[name])};`);
+  return parts.length ? parts.join("") : null;
 }
 
+// Reports whether `name` is bound by a top-level declaration whose kind would
+// make an injected `var ${name}` a redeclaration SyntaxError (let/const/class/
+// import) or otherwise shadow our binding (function/var/destructuring). Walks
+// only the program body — nested bindings are correctly shadowed by JS scope.
 function hasTopLevelBinding(ast: unknown, name: string): boolean {
   if (!isNodeLike(ast) || ast.type !== "Program") return false;
-
-  for (const statement of nodeArray(ast.body)) {
-    if (!isNodeLike(statement)) continue;
-    if (hasBindingInStatement(statement, name)) return true;
-  }
-  return false;
+  return nodeArray(ast.body).some((statement) => declaresBinding(statement, name));
 }
 
-function hasBindingInStatement(statement: NodeLike, name: string): boolean {
-  const type = statement.type;
-  if (typeof type !== "string") return false;
-
-  switch (type) {
-    case "ImportDeclaration": {
-      // Type-only imports don't create runtime bindings; value imports do.
-      if (statement.importKind === "type") return false;
-      for (const specifier of nodeArray(statement.specifiers)) {
-        if (!isNodeLike(specifier)) continue;
-        if (specifier.importKind === "type") continue;
-        const bindingName = getBindingName(specifier);
-        if (bindingName === name) return true;
-      }
-      return false;
-    }
-    case "VariableDeclaration": {
-      // `declare const` / `declare let` don't create runtime bindings.
-      if (statement.declare === true) return false;
-      for (const declaration of nodeArray(statement.declarations)) {
-        if (!isNodeLike(declaration) || declaration.type !== "VariableDeclarator") continue;
-        if (hasBindingInPattern(declaration.id, name)) return true;
-      }
-      return false;
-    }
+function declaresBinding(node: unknown, name: string): boolean {
+  if (!isNodeLike(node)) return false;
+  switch (node.type) {
+    case "ImportDeclaration":
+      if (node.importKind === "type") return false;
+      return nodeArray(node.specifiers).some(
+        (s) => isNodeLike(s) && s.importKind !== "type" && bindsName(s.local, name),
+      );
+    case "VariableDeclaration":
+      if (node.declare === true) return false;
+      return nodeArray(node.declarations).some(
+        (d) => isNodeLike(d) && bindsName(d.id, name),
+      );
     case "FunctionDeclaration":
-      if (isIdentifierNamed(statement.id, name)) return true;
-      return false;
     case "ClassDeclaration":
-      if (isIdentifierNamed(statement.id, name)) return true;
-      return false;
-    case "ExportNamedDeclaration": {
-      if (statement.declaration && isNodeLike(statement.declaration)) {
-        if (hasBindingInStatement(statement.declaration, name)) return true;
-      }
-      return false;
-    }
-    case "ExportDefaultDeclaration": {
-      const decl = statement.declaration;
-      if (isNodeLike(decl)) {
-        if (decl.type === "FunctionDeclaration" && isIdentifierNamed(decl.id, name)) return true;
-        if (decl.type === "ClassDeclaration" && isIdentifierNamed(decl.id, name)) return true;
-      }
-      return false;
-    }
-    case "ForStatement": {
-      const init = statement.init;
-      if (isNodeLike(init) && init.type === "VariableDeclaration" && init.kind === "var") {
-        return hasBindingInStatement(init, name);
-      }
-      return false;
-    }
+    case "TSEnumDeclaration":
+    case "TSModuleDeclaration":
+    case "TSImportEqualsDeclaration":
+      return node.declare !== true && isIdentifierNamed(node.id, name);
+    case "ExportNamedDeclaration":
+    case "ExportDefaultDeclaration":
+      return declaresBinding(node.declaration, name);
+    case "ForStatement":
+      return declaresVarHead(node.init, name);
     case "ForInStatement":
-    case "ForOfStatement": {
-      const left = statement.left;
-      if (isNodeLike(left) && left.type === "VariableDeclaration" && left.kind === "var") {
-        return hasBindingInStatement(left, name);
-      }
-      return false;
-    }
-    // TypeScript runtime-binding declarations
-    case "TSEnumDeclaration": {
-      if (statement.declare === true) return false;
-      if (isIdentifierNamed(statement.id, name)) return true;
-      return false;
-    }
-    case "TSModuleDeclaration": {
-      if (statement.declare === true) return false;
-      if (isIdentifierNamed(statement.id, name)) return true;
-      return false;
-    }
-    case "TSImportEqualsDeclaration": {
-      if (isIdentifierNamed(statement.id, name)) return true;
-      return false;
-    }
+    case "ForOfStatement":
+      return declaresVarHead(node.left, name);
     default:
       return false;
   }
 }
 
-function hasBindingInPattern(value: unknown, name: string): boolean {
+function declaresVarHead(node: unknown, name: string): boolean {
+  return (
+    isNodeLike(node) &&
+    node.type === "VariableDeclaration" &&
+    node.kind === "var" &&
+    declaresBinding(node, name)
+  );
+}
+
+// Recursively checks a binding target (identifier or destructuring pattern).
+function bindsName(value: unknown, name: string): boolean {
   if (!isNodeLike(value)) return false;
-
   if (isIdentifierNamed(value, name)) return true;
-
-  const type = value.type;
-  if (typeof type !== "string") return false;
-
-  switch (type) {
+  switch (value.type) {
     case "RestElement":
-      return hasBindingInPattern(value.argument, name);
-
+      return bindsName(value.argument, name);
     case "AssignmentPattern":
-      return hasBindingInPattern(value.left, name);
-
+      return bindsName(value.left, name);
     case "ArrayPattern":
-      return nodeArray(value.elements).some((element) => hasBindingInPattern(element, name));
-
+      return nodeArray(value.elements).some((e) => bindsName(e, name));
     case "ObjectPattern":
-      return nodeArray(value.properties).some((property) => {
-        if (!isNodeLike(property)) return false;
-        if (property.type === "Property") {
-          return hasBindingInPattern(property.value, name);
-        }
-        return hasBindingInPattern(property.argument, name);
-      });
-
+      return nodeArray(value.properties).some((p) =>
+        isNodeLike(p) ? bindsName(p.type === "Property" ? p.value : p.argument, name) : false,
+      );
     default:
       return false;
   }
-}
-
-function getBindingName(value: unknown): string | undefined {
-  if (!isNodeLike(value)) return undefined;
-  if (value.type === "Identifier" && typeof value.name === "string") return value.name;
-  // ESTree import specifiers use `local` for the bound name.
-  if (
-    (value.type === "ImportDefaultSpecifier" ||
-      value.type === "ImportNamespaceSpecifier" ||
-      value.type === "ImportSpecifier") &&
-    isNodeLike(value.local) &&
-    value.local.type === "Identifier" &&
-    typeof value.local.name === "string"
-  ) {
-    return value.local.name;
-  }
-  // Fallback for other ESTree variants
-  if (isNodeLike(value.id) && value.id.type === "Identifier" && typeof value.id.name === "string") {
-    return value.id.name;
-  }
-  return undefined;
 }
 
 function isNodeLike(value: unknown): value is NodeLike {
