@@ -15,7 +15,10 @@ import {
   runWithUnifiedStateMutation,
 } from "vinext/shims/unified-request-context";
 import type { RenderRequestApiKind } from "./cache-proof.js";
-import type { ClientReuseManifestTraceFields } from "./client-reuse-manifest.js";
+import type {
+  ClientReuseManifestRejectionCode,
+  ClientReuseManifestTraceFields,
+} from "./client-reuse-manifest.js";
 
 export type AppLayoutParamAccessObservation = Readonly<{
   cacheLifeObserved: boolean;
@@ -46,19 +49,37 @@ export type AppLayoutParamAccessTracker = Readonly<{
   runLayoutProbe: (layoutId: string, probe: () => unknown) => unknown;
 }>;
 
+type StaticLayoutObservationSkipCode = Extract<
+  ClientReuseManifestRejectionCode,
+  `SKIP_LAYOUT_${string}`
+>;
+
+type StaticLayoutObservationSkipRule = readonly [
+  code: StaticLayoutObservationSkipCode,
+  matches: (observation: AppLayoutParamAccessObservation) => boolean,
+];
+
+// Ordered by diagnostic precedence. The first matching rule becomes the
+// observable skip rejection code, so insert new rules deliberately.
+const STATIC_LAYOUT_OBSERVATION_SKIP_RULES = [
+  [
+    "SKIP_LAYOUT_PARAMS_OBSERVATION_INCOMPLETE",
+    (observation) => observation.completeness !== "complete",
+  ],
+  ["SKIP_LAYOUT_PARAMS_PRESENT", (observation) => observation.paramScopeKeys.length > 0],
+  ["SKIP_LAYOUT_PARAMS_OBSERVED", (observation) => observation.observed],
+  ["SKIP_LAYOUT_DYNAMIC_USAGE_OBSERVED", (observation) => observation.dynamicUsageObserved],
+  ["SKIP_LAYOUT_REQUEST_API_OBSERVED", (observation) => observation.requestApis.length > 0],
+  ["SKIP_LAYOUT_REVALIDATE_PRESENT", (observation) => observation.finiteRevalidateSeconds !== null],
+  ["SKIP_LAYOUT_CACHE_LIFE_OBSERVED", (observation) => observation.cacheLifeObserved],
+  ["SKIP_LAYOUT_UNSTABLE_CACHE_OBSERVED", (observation) => observation.unstableCaches.length > 0],
+  ["SKIP_LAYOUT_CACHE_TAGS_OBSERVED", (observation) => observation.cacheTags.length > 0],
+  ["SKIP_LAYOUT_CACHEABLE_FETCHES_OBSERVED", (observation) => observation.cacheableFetchCount > 0],
+  ["SKIP_LAYOUT_DYNAMIC_FETCHES_OBSERVED", (observation) => observation.dynamicFetchCount > 0],
+] satisfies readonly StaticLayoutObservationSkipRule[];
+
 export type StaticLayoutObservationSkipRejection = Readonly<{
-  code:
-    | "SKIP_LAYOUT_CACHE_LIFE_OBSERVED"
-    | "SKIP_LAYOUT_CACHE_TAGS_OBSERVED"
-    | "SKIP_LAYOUT_CACHEABLE_FETCHES_OBSERVED"
-    | "SKIP_LAYOUT_DYNAMIC_FETCHES_OBSERVED"
-    | "SKIP_LAYOUT_DYNAMIC_USAGE_OBSERVED"
-    | "SKIP_LAYOUT_PARAMS_OBSERVED"
-    | "SKIP_LAYOUT_PARAMS_OBSERVATION_INCOMPLETE"
-    | "SKIP_LAYOUT_PARAMS_PRESENT"
-    | "SKIP_LAYOUT_REVALIDATE_PRESENT"
-    | "SKIP_LAYOUT_REQUEST_API_OBSERVED"
-    | "SKIP_LAYOUT_UNSTABLE_CACHE_OBSERVED";
+  code: StaticLayoutObservationSkipCode;
   fields: ClientReuseManifestTraceFields;
 }>;
 
@@ -86,50 +107,13 @@ function createStaticLayoutObservationTraceFields(
 export function getStaticLayoutObservationSkipRejection(
   observation: AppLayoutParamAccessObservation,
 ): StaticLayoutObservationSkipRejection | null {
-  const fields = createStaticLayoutObservationTraceFields(observation);
-
-  if (observation.completeness !== "complete") {
-    return { code: "SKIP_LAYOUT_PARAMS_OBSERVATION_INCOMPLETE", fields };
-  }
-
-  if (observation.paramScopeKeys.length > 0) {
-    return { code: "SKIP_LAYOUT_PARAMS_PRESENT", fields };
-  }
-
-  if (observation.observed) {
-    return { code: "SKIP_LAYOUT_PARAMS_OBSERVED", fields };
-  }
-
-  if (observation.dynamicUsageObserved) {
-    return { code: "SKIP_LAYOUT_DYNAMIC_USAGE_OBSERVED", fields };
-  }
-
-  if (observation.requestApis.length > 0) {
-    return { code: "SKIP_LAYOUT_REQUEST_API_OBSERVED", fields };
-  }
-
-  if (observation.finiteRevalidateSeconds !== null) {
-    return { code: "SKIP_LAYOUT_REVALIDATE_PRESENT", fields };
-  }
-
-  if (observation.cacheLifeObserved) {
-    return { code: "SKIP_LAYOUT_CACHE_LIFE_OBSERVED", fields };
-  }
-
-  if (observation.unstableCaches.length > 0) {
-    return { code: "SKIP_LAYOUT_UNSTABLE_CACHE_OBSERVED", fields };
-  }
-
-  if (observation.cacheTags.length > 0) {
-    return { code: "SKIP_LAYOUT_CACHE_TAGS_OBSERVED", fields };
-  }
-
-  if (observation.cacheableFetchCount > 0) {
-    return { code: "SKIP_LAYOUT_CACHEABLE_FETCHES_OBSERVED", fields };
-  }
-
-  if (observation.dynamicFetchCount > 0) {
-    return { code: "SKIP_LAYOUT_DYNAMIC_FETCHES_OBSERVED", fields };
+  for (const [code, matches] of STATIC_LAYOUT_OBSERVATION_SKIP_RULES) {
+    if (matches(observation)) {
+      return {
+        code,
+        fields: createStaticLayoutObservationTraceFields(observation),
+      };
+    }
   }
 
   return null;

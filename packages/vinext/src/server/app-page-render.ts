@@ -426,8 +426,9 @@ function createRenderLifecycleSkipDisposition(input: {
         // Static layout classification plus the per-layout observation gate
         // above are the authority for this synthetic cache proof. Before a
         // layout reaches this point, skip has already rejected param-scoped
-        // layouts, finite-revalidate segment configs, request API reads,
-        // cacheLife(), cache-tagged/cacheable fetches, and dynamic fetches.
+        // layouts, finite-revalidate segment configs, dynamic usage, request API
+        // reads, cacheLife(), unstable_cache(), cache-tagged/cacheable fetches,
+        // and dynamic fetches.
         candidateObservation: buildRenderObservation({
           boundaryOutcome: { kind: "success" },
           cacheability: "public",
