@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -90,7 +90,7 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result?.code).toContain(`"file:///ROOT/pages/index.tsx"`);
   });
 
-  it("rewrites server __filename and __dirname to source paths", () => {
+  it("injects server __filename and __dirname as top-level vars", () => {
     // Ported from Next.js:
     // test/e2e/app-dir/proxy-nfc-traced/proxy-nfc-traced.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-nfc-traced/proxy-nfc-traced.test.ts
@@ -100,11 +100,15 @@ describe("vinext:import-meta-url plugin", () => {
       linkedRoot,
     );
 
-    expect(result?.code).toContain(JSON.stringify(canonicalPagePath));
-    expect(result?.code).toContain(JSON.stringify(path.dirname(canonicalPagePath)));
+    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
+    expect(result?.code).toContain(
+      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
+    );
+    // Original identifiers remain as variable references, not string literals
+    expect(result?.code).toContain(`console.log(__filename, __dirname);`);
   });
 
-  it("does not rewrite locally bound __filename or __dirname", () => {
+  it("does not inject when __filename or __dirname are declared at top level", () => {
     const result = rewriteServerCjsGlobals(
       [
         `const __filename = "local-file";`,
@@ -122,7 +126,7 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result).toBeNull();
   });
 
-  it("does not rewrite globals shadowed by exported declarations", () => {
+  it("does not inject when exported declarations shadow the globals", () => {
     const result = rewriteServerCjsGlobals(
       [
         `console.log(__filename, __dirname);`,
@@ -138,7 +142,7 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result).toBeNull();
   });
 
-  it("does not rewrite globals shadowed later in declaration lists", () => {
+  it("does not inject names shadowed by top-level declarations, but injects unshadowed names", () => {
     const result = rewriteServerCjsGlobals(
       [
         `const file = __filename, __filename = "local-file";`,
@@ -150,10 +154,17 @@ describe("vinext:import-meta-url plugin", () => {
       linkedRoot,
     );
 
-    expect(result).toBeNull();
+    // __filename has a top-level const declaration, so it is not injected.
+    // __dirname has no top-level declaration (the for-loop let is nested),
+    // so it is injected and correctly shadowed by the nested let.
+    expect(result).not.toBeNull();
+    expect(result?.code).not.toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
+    expect(result?.code).toContain(
+      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
+    );
   });
 
-  it("does not rewrite globals shadowed by var declarations outside their block", () => {
+  it("injects when var declarations are nested (var hoisting naturally shadows the injected binding)", () => {
     const result = rewriteServerCjsGlobals(
       [
         `if (flag) {`,
@@ -171,20 +182,37 @@ describe("vinext:import-meta-url plugin", () => {
       linkedRoot,
     );
 
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    // Both should be injected because there are no top-level declarations
+    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
+    expect(result?.code).toContain(
+      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
+    );
+    // Original references preserved
+    expect(result?.code).toContain(`console.log(__filename);`);
+    expect(result?.code).toContain(`return __dirname;`);
   });
 
-  it("does not rewrite server CJS globals in assignment or update targets", () => {
+  it("does not inject when __filename or __dirname are in assignment/update targets", () => {
+    // With binding injection, top-level assignment or update expressions are
+    // fine — they mutate the injected variable. We only skip injection when
+    // there is an actual declaration that would conflict.
     const result = rewriteServerCjsGlobals(
       [`__filename = "local-file";`, `__dirname++;`].join("\n"),
       pagePath,
       linkedRoot,
     );
 
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
+    expect(result?.code).toContain(
+      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
+    );
+    expect(result?.code).toContain(`__filename = "local-file";`);
+    expect(result?.code).toContain(`__dirname++;`);
   });
 
-  it("does not rewrite class expression names inside class bodies", () => {
+  it("does not inject when class expression names shadow at top level", () => {
     const result = rewriteServerCjsGlobals(
       [
         `const FileClass = class __filename {`,
@@ -200,10 +228,19 @@ describe("vinext:import-meta-url plugin", () => {
       linkedRoot,
     );
 
-    expect(result).toBeNull();
+    // class expressions are not top-level declarations, so injection happens
+    expect(result).not.toBeNull();
+    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
+    expect(result?.code).toContain(
+      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
+    );
+    // Inside the class body, `__filename` refers to the class name binding,
+    // which shadows the injected var. This is correct JS semantics.
+    expect(result?.code).toContain(`return __filename;`);
+    expect(result?.code).toContain(`field = __dirname;`);
   });
 
-  it("rewrites server CJS globals in pattern defaults and computed keys", () => {
+  it("injects for pattern defaults and computed keys (free reads use injected var)", () => {
     const result = rewriteServerCjsGlobals(
       [
         `const { file = __filename, [__dirname]: dir } = source;`,
@@ -220,25 +257,56 @@ describe("vinext:import-meta-url plugin", () => {
       linkedRoot,
     );
 
-    expect(result?.code).toContain(`file = ${JSON.stringify(canonicalPagePath)}`);
-    expect(result?.code).toContain(`[${JSON.stringify(path.dirname(canonicalPagePath))}]: dir`);
-    expect(result?.code).toContain(`value = ${JSON.stringify(canonicalPagePath)}`);
-    expect(result?.code).toContain(`dir = ${JSON.stringify(path.dirname(canonicalPagePath))}`);
-    expect(result?.code).toContain(`catch ({ file = ${JSON.stringify(canonicalPagePath)} })`);
+    expect(result).not.toBeNull();
+    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
+    expect(result?.code).toContain(
+      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
+    );
+    // Original references preserved
+    expect(result?.code).toContain(`file = __filename`);
+    expect(result?.code).toContain(`[__dirname]: dir`);
+    expect(result?.code).toContain(`value = __filename`);
+    expect(result?.code).toContain(`dir = __dirname`);
+    expect(result?.code).toContain(`catch ({ file = __filename })`);
   });
 
-  it("rewrites object shorthand server CJS globals without changing property names", () => {
+  it("injects object shorthand server CJS globals without changing property names", () => {
     const result = rewriteServerCjsGlobals(
       `export const paths = { __filename, __dirname };\n`,
       pagePath,
       linkedRoot,
     );
 
-    expect(result?.code).toContain(`__filename: ${JSON.stringify(canonicalPagePath)}`);
-    expect(result?.code).toContain(`__dirname: ${JSON.stringify(path.dirname(canonicalPagePath))}`);
+    // With binding injection, `{ __filename, __dirname }` naturally expands to
+    // `{ __filename: <injected-value>, __dirname: <injected-value> }`
+    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
+    expect(result?.code).toContain(
+      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
+    );
+    expect(result?.code).toContain(`{ __filename, __dirname }`);
   });
 
-  it("does not rewrite server CJS globals in build output paths", () => {
+  it("does not inject when value imports shadow the globals", () => {
+    const result = rewriteServerCjsGlobals(
+      [`import { __filename } from "./types";`, `console.log(__filename);`].join("\n"),
+      pagePath,
+      linkedRoot,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("injects after TypeScript type-only constructs are erased", () => {
+    // In production, Vite transforms strip TypeScript before this plugin
+    // (enforce: "post") sees the code.  Both `import type` and `type` aliases
+    // are erased, so the plugin sees plain JS like this:
+    const result = rewriteServerCjsGlobals(`console.log(__filename);`, pagePath, linkedRoot);
+
+    expect(result).not.toBeNull();
+    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
+  });
+
+  it("does not inject server CJS globals in build output paths", () => {
     const result = rewriteServerCjsGlobals(
       `console.log(__filename);\n`,
       path.join(realRoot, "dist", "server", "index.js"),

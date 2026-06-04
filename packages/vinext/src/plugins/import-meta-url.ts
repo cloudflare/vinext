@@ -146,12 +146,9 @@ function rewriteCanonicalSourceIdentity(
   }
 
   if (environment === "server" && mayContainServerCjsGlobal(code)) {
-    const replacements = collectServerCjsGlobalReplacements(ast, {
-      __dirname: path.dirname(canonicalId),
-      __filename: canonicalId,
-    });
-    for (const replacement of replacements) {
-      output.overwrite(replacement.start, replacement.end, replacement.code);
+    const injected = injectServerCjsGlobals(ast, code, canonicalId);
+    if (injected) {
+      output.prepend(`${injected}\n`);
       changed = true;
     }
   }
@@ -192,6 +189,8 @@ function rewriteCanonicalImportMetaUrl(
 }
 
 function rewriteCanonicalServerCjsGlobals(code: string, canonicalId: string): RewriteResult | null {
+  if (!mayContainServerCjsGlobal(code)) return null;
+
   let ast: unknown;
   try {
     ast = parseAst(code);
@@ -199,16 +198,11 @@ function rewriteCanonicalServerCjsGlobals(code: string, canonicalId: string): Re
     return null;
   }
 
-  const replacements = collectServerCjsGlobalReplacements(ast, {
-    __dirname: path.dirname(canonicalId),
-    __filename: canonicalId,
-  });
-  if (replacements.length === 0) return null;
+  const injected = injectServerCjsGlobals(ast, code, canonicalId);
+  if (!injected) return null;
 
   const output = new MagicString(code);
-  for (const replacement of replacements) {
-    output.overwrite(replacement.start, replacement.end, replacement.code);
-  }
+  output.prepend(`${injected}\n`);
 
   return {
     code: output.toString(),
@@ -370,377 +364,129 @@ type CjsGlobalValues = {
   __filename: string;
 };
 
-type CjsGlobalReplacement = {
-  start: number;
-  end: number;
-  code: string;
-};
+// Instead of rewriting every free identifier use of __filename/__dirname,
+// we inject top-level `var` bindings and let JavaScript scope rules handle
+// params, nested locals, object shorthand, assignment behaviour, etc.
+// This is simpler and more correct than a custom free-identifier replacement
+// walker that must model lexical scope, var hoisting, destructuring,
+// shorthand properties, and TypeScript type-space/value-space separation.
+function injectServerCjsGlobals(ast: unknown, code: string, canonicalId: string): string | null {
+  const values: CjsGlobalValues = {
+    __dirname: path.dirname(canonicalId),
+    __filename: canonicalId,
+  };
 
-type ScopeKind = "block" | "function" | "program";
-
-type Scope = {
-  bindings: Set<string>;
-  kind: ScopeKind;
-  parent: Scope | null;
-};
-
-function collectServerCjsGlobalReplacements(
-  ast: unknown,
-  values: CjsGlobalValues,
-): CjsGlobalReplacement[] {
-  const replacements: CjsGlobalReplacement[] = [];
-  const rootScope = createScope(null, "program");
-
-  function visit(value: unknown, scope: Scope): void {
-    if (!isNodeLike(value)) return;
-
-    if (isCjsGlobalIdentifier(value) && !isBound(value.name, scope) && hasRange(value)) {
-      replacements.push({
-        start: value.start,
-        end: value.end,
-        code: JSON.stringify(values[value.name]),
-      });
-      return;
-    }
-
-    const type = value.type;
-    if (typeof type !== "string") return;
-
-    switch (type) {
-      case "Program":
-        visitStatementList(nodeArray(value.body), rootScope);
-        return;
-      case "BlockStatement":
-      case "StaticBlock": {
-        const blockScope = createScope(scope, "block");
-        visitStatementList(nodeArray(value.body), blockScope);
-        return;
-      }
-      case "VariableDeclaration": {
-        const bindingScope = variableDeclarationBindingScope(value, scope);
-        for (const declaration of nodeArray(value.declarations)) {
-          if (isNodeLike(declaration) && declaration.type === "VariableDeclarator") {
-            collectBindingsFromPattern(declaration.id, bindingScope);
-          }
-        }
-        for (const declaration of nodeArray(value.declarations)) {
-          visitVariableDeclarator(declaration, scope, bindingScope);
-        }
-        return;
-      }
-      case "FunctionDeclaration":
-        visitFunctionLike(value, scope, false);
-        return;
-      case "FunctionExpression":
-      case "ArrowFunctionExpression":
-        visitFunctionLike(value, scope, true);
-        return;
-      case "CatchClause": {
-        const catchScope = createScope(scope, "block");
-        collectBindingsFromPattern(value.param, catchScope);
-        visitPatternRuntimeExpressions(value.param, catchScope);
-        visit(value.body, catchScope);
-        return;
-      }
-      case "ClassDeclaration":
-        visit(value.superClass, scope);
-        visit(value.body, scope);
-        return;
-      case "ClassExpression": {
-        const classScope = createScope(scope, "block");
-        collectBindingsFromPattern(value.id, classScope);
-        visit(value.superClass, scope);
-        visit(value.body, classScope);
-        return;
-      }
-      case "ImportDeclaration":
-        return;
-      case "MemberExpression":
-      case "OptionalMemberExpression":
-        visit(value.object, scope);
-        if (value.computed === true) visit(value.property, scope);
-        return;
-      case "AssignmentExpression":
-        visitAssignmentTargetRuntimeExpressions(value.left, scope);
-        visit(value.right, scope);
-        return;
-      case "UpdateExpression":
-        visitAssignmentTargetRuntimeExpressions(value.argument, scope);
-        return;
-      case "Property":
-        visitProperty(value, scope);
-        return;
-      case "PropertyDefinition":
-      case "MethodDefinition":
-        if (value.computed === true) visit(value.key, scope);
-        visit(value.value, scope);
-        return;
-      case "LabeledStatement":
-        visit(value.body, scope);
-        return;
-      case "BreakStatement":
-      case "ContinueStatement":
-        return;
-      case "ExportNamedDeclaration":
-      case "ExportDefaultDeclaration":
-      case "ExportAllDeclaration":
-        visit(value.declaration, scope);
-        visit(value.source, scope);
-        return;
-      default:
-        break;
-    }
-
-    for (const [key, child] of Object.entries(value)) {
-      if (key === "type" || key === "start" || key === "end" || key === "loc") continue;
-      if (Array.isArray(child)) {
-        for (const item of child) visit(item, scope);
-      } else {
-        visit(child, scope);
-      }
+  const namesToInject: string[] = [];
+  for (const name of ["__filename", "__dirname"] as const) {
+    if (code.includes(name) && !hasTopLevelBinding(ast, name)) {
+      namesToInject.push(name);
     }
   }
 
-  function visitStatementList(statements: unknown[], scope: Scope): void {
-    collectStatementListBindings(statements, scope);
-    for (const statement of statements) {
-      visit(statement, scope);
-    }
+  if (namesToInject.length === 0) return null;
+
+  const injections: string[] = [];
+  for (const name of namesToInject) {
+    injections.push(`var ${name} = ${JSON.stringify(values[name as keyof CjsGlobalValues])};`);
   }
-
-  function visitVariableDeclarator(value: unknown, scope: Scope, bindingScope: Scope): void {
-    if (!isNodeLike(value) || value.type !== "VariableDeclarator") {
-      visit(value, scope);
-      return;
-    }
-    collectBindingsFromPattern(value.id, bindingScope);
-    visitPatternRuntimeExpressions(value.id, scope);
-    visit(value.init, scope);
-  }
-
-  function visitFunctionLike(value: NodeLike, outerScope: Scope, expression: boolean): void {
-    const functionScope = createScope(outerScope, "function");
-    if (!expression) collectBindingsFromPattern(value.id, outerScope);
-    collectBindingsFromPattern(value.id, functionScope);
-    for (const param of nodeArray(value.params)) {
-      collectBindingsFromPattern(param, functionScope);
-    }
-    for (const param of nodeArray(value.params)) {
-      visitPatternRuntimeExpressions(param, functionScope);
-    }
-    visit(value.body, functionScope);
-  }
-
-  function visitPatternRuntimeExpressions(value: unknown, scope: Scope): void {
-    if (!isNodeLike(value)) return;
-
-    const type = value.type;
-    if (typeof type !== "string") return;
-
-    switch (type) {
-      case "Identifier":
-        return;
-      case "RestElement":
-        visitPatternRuntimeExpressions(value.argument, scope);
-        return;
-      case "AssignmentPattern":
-        visitPatternRuntimeExpressions(value.left, scope);
-        visit(value.right, scope);
-        return;
-      case "ArrayPattern":
-        for (const element of nodeArray(value.elements)) {
-          visitPatternRuntimeExpressions(element, scope);
-        }
-        return;
-      case "ObjectPattern":
-        for (const property of nodeArray(value.properties)) {
-          if (!isNodeLike(property)) continue;
-          if (property.type === "Property") {
-            if (property.computed === true) visit(property.key, scope);
-            visitPatternRuntimeExpressions(property.value, scope);
-          } else {
-            visitPatternRuntimeExpressions(property.argument, scope);
-          }
-        }
-        return;
-      case "TSParameterProperty":
-        visitPatternRuntimeExpressions(value.parameter, scope);
-        return;
-      default:
-        return;
-    }
-  }
-
-  function visitAssignmentTargetRuntimeExpressions(value: unknown, scope: Scope): void {
-    if (!isNodeLike(value)) return;
-
-    const type = value.type;
-    if (typeof type !== "string") return;
-    if (type === "Identifier") return;
-
-    switch (type) {
-      case "ArrayPattern":
-      case "AssignmentPattern":
-      case "ObjectPattern":
-      case "RestElement":
-        visitPatternRuntimeExpressions(value, scope);
-        return;
-      default:
-        visit(value, scope);
-        return;
-    }
-  }
-
-  function visitProperty(value: NodeLike, scope: Scope): void {
-    if (value.computed === true) {
-      visit(value.key, scope);
-    }
-
-    if (
-      value.shorthand === true &&
-      isCjsGlobalIdentifier(value.key) &&
-      !isBound(value.key.name, scope)
-    ) {
-      if (hasRange(value.key)) {
-        replacements.push({
-          start: value.key.start,
-          end: value.key.end,
-          code: `${value.key.name}: ${JSON.stringify(values[value.key.name])}`,
-        });
-      }
-      return;
-    }
-
-    visit(value.value, scope);
-  }
-
-  visit(ast, rootScope);
-  return replacements;
+  return injections.join("");
 }
 
-function createScope(parent: Scope | null, kind: ScopeKind): Scope {
-  return { bindings: new Set(), kind, parent };
-}
+function hasTopLevelBinding(ast: unknown, name: string): boolean {
+  if (!isNodeLike(ast) || ast.type !== "Program") return false;
 
-function isBound(name: string, scope: Scope): boolean {
-  let current: Scope | null = scope;
-  while (current) {
-    if (current.bindings.has(name)) return true;
-    current = current.parent;
+  for (const statement of nodeArray(ast.body)) {
+    if (!isNodeLike(statement)) continue;
+    if (hasBindingInStatement(statement, name)) return true;
   }
   return false;
 }
 
-function collectStatementListBindings(statements: unknown[], scope: Scope): void {
-  for (const statement of statements) {
-    collectStatementBindings(statement, scope);
-  }
-}
-
-function collectStatementBindings(statement: unknown, scope: Scope): void {
-  if (!isNodeLike(statement)) return;
-
+function hasBindingInStatement(statement: NodeLike, name: string): boolean {
   const type = statement.type;
-  if (typeof type !== "string") return;
+  if (typeof type !== "string") return false;
 
   switch (type) {
-    case "VariableDeclaration": {
-      const bindingScope = variableDeclarationBindingScope(statement, scope);
-      for (const declaration of nodeArray(statement.declarations)) {
-        if (isNodeLike(declaration) && declaration.type === "VariableDeclarator") {
-          collectBindingsFromPattern(declaration.id, bindingScope);
-        }
+    case "ImportDeclaration": {
+      // Type-only imports don't create runtime bindings; value imports do.
+      if (statement.importKind === "type") return false;
+      for (const specifier of nodeArray(statement.specifiers)) {
+        if (!isNodeLike(specifier)) continue;
+        if (specifier.importKind === "type") continue;
+        const bindingName = getBindingName(specifier);
+        if (bindingName === name) return true;
       }
-      return;
+      return false;
+    }
+    case "VariableDeclaration": {
+      // `declare const` / `declare let` don't create runtime bindings.
+      if (statement.declare === true) return false;
+      for (const declaration of nodeArray(statement.declarations)) {
+        if (!isNodeLike(declaration) || declaration.type !== "VariableDeclarator") continue;
+        const bindingName = getBindingName(declaration.id);
+        if (bindingName === name) return true;
+      }
+      return false;
     }
     case "FunctionDeclaration":
+      if (isIdentifierNamed(statement.id, name)) return true;
+      return false;
     case "ClassDeclaration":
-      collectBindingsFromPattern(statement.id, scope);
-      return;
-    case "ImportDeclaration":
-      for (const specifier of nodeArray(statement.specifiers)) {
-        if (isNodeLike(specifier)) {
-          collectBindingsFromPattern(specifier.local, scope);
-        }
+      if (isIdentifierNamed(statement.id, name)) return true;
+      return false;
+    case "ExportNamedDeclaration": {
+      if (statement.declaration && isNodeLike(statement.declaration)) {
+        if (hasBindingInStatement(statement.declaration, name)) return true;
       }
-      return;
-    case "ExportNamedDeclaration":
-    case "ExportDefaultDeclaration":
-      collectStatementBindings(statement.declaration, scope);
-      return;
+      return false;
+    }
+    case "ExportDefaultDeclaration": {
+      const decl = statement.declaration;
+      if (isNodeLike(decl)) {
+        if (decl.type === "FunctionDeclaration" && isIdentifierNamed(decl.id, name)) return true;
+        if (decl.type === "ClassDeclaration" && isIdentifierNamed(decl.id, name)) return true;
+      }
+      return false;
+    }
+    // TypeScript runtime-binding declarations
+    case "TSEnumDeclaration": {
+      if (statement.declare === true) return false;
+      if (isIdentifierNamed(statement.id, name)) return true;
+      return false;
+    }
+    case "TSModuleDeclaration": {
+      if (statement.declare === true) return false;
+      if (isIdentifierNamed(statement.id, name)) return true;
+      return false;
+    }
+    case "TSImportEqualsDeclaration": {
+      if (isIdentifierNamed(statement.id, name)) return true;
+      return false;
+    }
     default:
-      return;
+      return false;
   }
 }
 
-function variableDeclarationBindingScope(value: NodeLike, scope: Scope): Scope {
-  return value.kind === "var" ? nearestVarScope(scope) : scope;
-}
-
-function nearestVarScope(scope: Scope): Scope {
-  let current: Scope | null = scope;
-  while (current) {
-    if (current.kind === "function" || current.kind === "program") return current;
-    current = current.parent;
+function getBindingName(value: unknown): string | undefined {
+  if (!isNodeLike(value)) return undefined;
+  if (value.type === "Identifier" && typeof value.name === "string") return value.name;
+  // ESTree import specifiers use `local` for the bound name.
+  if (
+    (value.type === "ImportDefaultSpecifier" ||
+      value.type === "ImportNamespaceSpecifier" ||
+      value.type === "ImportSpecifier") &&
+    isNodeLike(value.local) &&
+    value.local.type === "Identifier" &&
+    typeof value.local.name === "string"
+  ) {
+    return value.local.name;
   }
-  return scope;
-}
-
-function collectBindingsFromPattern(value: unknown, scope: Scope): void {
-  if (!isNodeLike(value)) return;
-
-  if (isCjsGlobalIdentifier(value)) {
-    scope.bindings.add(value.name);
-    return;
+  // Fallback for other ESTree variants
+  if (isNodeLike(value.id) && value.id.type === "Identifier" && typeof value.id.name === "string") {
+    return value.id.name;
   }
-
-  const type = value.type;
-  if (typeof type !== "string") return;
-
-  switch (type) {
-    case "Identifier":
-      return;
-    case "RestElement":
-      collectBindingsFromPattern(value.argument, scope);
-      return;
-    case "AssignmentPattern":
-      collectBindingsFromPattern(value.left, scope);
-      return;
-    case "ArrayPattern":
-      for (const element of nodeArray(value.elements)) {
-        collectBindingsFromPattern(element, scope);
-      }
-      return;
-    case "ObjectPattern":
-      for (const property of nodeArray(value.properties)) {
-        if (!isNodeLike(property)) continue;
-        if (property.type === "Property") {
-          collectBindingsFromPattern(property.value, scope);
-        } else {
-          collectBindingsFromPattern(property.argument, scope);
-        }
-      }
-      return;
-    case "TSParameterProperty":
-      collectBindingsFromPattern(value.parameter, scope);
-      return;
-    default:
-      return;
-  }
-}
-
-function isCjsGlobalIdentifier(
-  value: unknown,
-): value is NodeLike & { name: "__dirname" | "__filename" } {
-  return (
-    isNodeLike(value) &&
-    value.type === "Identifier" &&
-    (value.name === "__filename" || value.name === "__dirname")
-  );
-}
-
-function hasRange(value: NodeLike): value is NodeLike & { start: number; end: number } {
-  return typeof value.start === "number" && typeof value.end === "number";
+  return undefined;
 }
 
 function isNodeLike(value: unknown): value is NodeLike {
