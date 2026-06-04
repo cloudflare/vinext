@@ -55,6 +55,7 @@ import {
   runDocumentRenderPage,
 } from "./pages-document-initial-props.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
+import { loadPagesGetInitialProps } from "./pages-get-initial-props.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -1053,6 +1054,30 @@ export function createSSRHandler(
           }
         }
 
+        if (
+          typeof pageModule.getServerSideProps !== "function" &&
+          typeof pageModule.getStaticProps !== "function"
+        ) {
+          const initialProps = await loadPagesGetInitialProps(PageComponent, {
+            req,
+            res,
+            pathname: patternToNextFormat(route.pattern),
+            query,
+            asPath: url,
+            locale: locale ?? currentDefaultLocale,
+            locales: i18nConfig?.locales,
+            defaultLocale: currentDefaultLocale,
+          });
+
+          if (res.writableEnded) {
+            return;
+          }
+
+          if (initialProps) {
+            pageProps = { ...pageProps, ...initialProps };
+          }
+        }
+
         // ── _next/data JSON envelope short-circuit (dev) ──────────────
         // Client-side navigations fetch /_next/data/<buildId>/<page>.json and
         // expect { pageProps } as JSON. We have pageProps; skip the React
@@ -1434,7 +1459,7 @@ hydrate();
 async function renderErrorPage(
   server: ViteDevServer,
   runner: ModuleImporter,
-  _req: IncomingMessage,
+  req: IncomingMessage,
   res: ServerResponse,
   url: string,
   pagesDir: string,
@@ -1470,7 +1495,15 @@ async function renderErrorPage(
       }
 
       const createElement = React.createElement;
-      const errorProps = { statusCode };
+      const initialErrorProps = await loadPagesGetInitialProps(ErrorComponent, {
+        req,
+        res,
+        pathname: candidate === "_error" ? "/_error" : `/${candidate}`,
+        query: parseQuery(url),
+        asPath: url,
+      });
+      if (res.writableEnded) return;
+      const errorProps = { ...initialErrorProps, statusCode };
 
       // If the caller didn't supply wrapWithRouterContext, load it now.
       // runner.import() caches internally so the cost is negligible.

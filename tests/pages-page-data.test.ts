@@ -94,7 +94,7 @@ describe("pages page data", () => {
     expect(html).toContain('"__vinext":{"hasMiddleware":true}');
   });
 
-  it("returns an HTML 404 when getStaticPaths excludes a dynamic path", async () => {
+  it("returns a notFound signal when getStaticPaths excludes a dynamic HTML path", async () => {
     const result = await resolvePagesPageData(
       createOptions({
         pageModule: {
@@ -112,12 +112,50 @@ describe("pages page data", () => {
       }),
     );
 
-    expect(result.kind).toBe("response");
-    if (result.kind !== "response") {
-      throw new Error("expected response result");
-    }
-    expect(result.response.status).toBe(404);
-    await expect(result.response.text()).resolves.toContain("This page could not be found.");
+    expect(result).toEqual({ kind: "notFound" });
+  });
+
+  it("runs page getInitialProps with the original request URL and asPath", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        asPath: "/3",
+        createGsspReqRes() {
+          return {
+            req: { url: "/3" },
+            res: {
+              headersSent: false,
+              statusCode: 200,
+              getHeaders() {
+                return {};
+              },
+            },
+            responsePromise: Promise.resolve(new Response("short-circuit", { status: 202 })),
+          };
+        },
+        pageModule: {
+          default: Object.assign(
+            function Page() {
+              return null;
+            },
+            {
+              getInitialProps(context: { req?: { url?: string }; asPath?: string }) {
+                return {
+                  reqUrl: context.req?.url,
+                  asPath: context.asPath,
+                };
+              },
+            },
+          ),
+        },
+        routePattern: "/_error",
+        routeUrl: "/3",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { reqUrl: "/3", asPath: "/3" },
+    });
   });
 
   it("short-circuits getServerSideProps responses after res.end()", async () => {
