@@ -17,7 +17,7 @@ import {
 import { manifestFileWithAssetPrefix } from "./manifest-paths.js";
 import { resolveAssetsDir } from "./asset-prefix.js";
 
-export type ClientRuntimeMetadata = {
+type ClientRuntimeMetadata = {
   clientEntryFile?: string;
   lazyChunks?: string[];
   dynamicPreloads?: Record<string, string[]>;

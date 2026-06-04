@@ -1157,6 +1157,10 @@ importers:
 
   tests/fixtures/css-url-assets-pages: {}
 
+  tests/fixtures/css-url-assets-app: {}
+
+  tests/fixtures/css-url-assets-pages: {}
+
   tests/fixtures/ecosystem/better-auth:
     dependencies:
       '@opentelemetry/api':
