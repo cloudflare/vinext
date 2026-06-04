@@ -105,6 +105,9 @@ export function rewriteImportMetaUrl(
   );
 }
 
+// Test-only entry point. Mirrors the plugin's server eligibility checks and
+// then delegates to the same transform the plugin runs, so tests exercise the
+// production code path rather than a parallel implementation.
 export function rewriteServerCjsGlobals(
   code: string,
   id: string,
@@ -117,7 +120,7 @@ export function rewriteServerCjsGlobals(
   if (!isPathWithin(normalizedId, rootPaths.normalizedRoot)) return null;
   const relativePath = normalizePath(path.relative(rootPaths.canonicalRoot, canonicalId));
   if (isExcludedRelativePath(relativePath, rootPaths.excludedRelativePrefixes)) return null;
-  return rewriteCanonicalServerCjsGlobals(code, canonicalId);
+  return rewriteCanonicalSourceIdentity(code, canonicalId, rootPaths, "server");
 }
 
 function rewriteCanonicalSourceIdentity(
@@ -181,28 +184,6 @@ function rewriteCanonicalImportMetaUrl(
   for (const range of ranges) {
     output.overwrite(range.start, range.end, replacement);
   }
-
-  return {
-    code: output.toString(),
-    map: output.generateMap({ hires: "boundary" }),
-  };
-}
-
-function rewriteCanonicalServerCjsGlobals(code: string, canonicalId: string): RewriteResult | null {
-  if (!mayContainServerCjsGlobal(code)) return null;
-
-  let ast: unknown;
-  try {
-    ast = parseAst(code);
-  } catch {
-    return null;
-  }
-
-  const injected = injectServerCjsGlobals(ast, code, canonicalId);
-  if (!injected) return null;
-
-  const output = new MagicString(code);
-  output.appendLeft(findDirectivePrologueEnd(ast), `\n${injected}`);
 
   return {
     code: output.toString(),
@@ -385,25 +366,20 @@ function hasTopLevelBinding(ast: unknown, name: string): boolean {
   return nodeArray(ast.body).some((statement) => declaresBinding(statement, name));
 }
 
+// Vite's parseAst (rolldown/oxc) rejects TypeScript syntax, and this plugin
+// runs `enforce: "post"` after TS has been stripped, so only plain-JS binding
+// forms can ever reach here — no `import type`, `enum`, `namespace`, `declare`,
+// or `import =` nodes/fields to account for.
 function declaresBinding(node: unknown, name: string): boolean {
   if (!isNodeLike(node)) return false;
   switch (node.type) {
     case "ImportDeclaration":
-      if (node.importKind === "type") return false;
-      return nodeArray(node.specifiers).some(
-        (s) => isNodeLike(s) && s.importKind !== "type" && bindsName(s.local, name),
-      );
+      return nodeArray(node.specifiers).some((s) => isNodeLike(s) && bindsName(s.local, name));
     case "VariableDeclaration":
-      if (node.declare === true) return false;
-      return nodeArray(node.declarations).some(
-        (d) => isNodeLike(d) && bindsName(d.id, name),
-      );
+      return nodeArray(node.declarations).some((d) => isNodeLike(d) && bindsName(d.id, name));
     case "FunctionDeclaration":
     case "ClassDeclaration":
-    case "TSEnumDeclaration":
-    case "TSModuleDeclaration":
-    case "TSImportEqualsDeclaration":
-      return node.declare !== true && isIdentifierNamed(node.id, name);
+      return isIdentifierNamed(node.id, name);
     case "ExportNamedDeclaration":
     case "ExportDefaultDeclaration":
       return declaresBinding(node.declaration, name);
