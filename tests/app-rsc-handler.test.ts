@@ -3,6 +3,7 @@ import {
   computeRscCacheBustingSearchParam,
   createRscRequestHeaders,
   createRscRequestUrl,
+  VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
@@ -599,6 +600,34 @@ describe("createAppRscHandler", () => {
     );
     expect(middleware).not.toHaveBeenCalled();
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("hides internal RSC cache-busting params from middleware nextUrl", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/navigation/middleware.js
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/navigation/middleware.js
+    const middleware = vi.fn(
+      (_: { nextUrl: URL }) => new Response(null, { headers: { "x-middleware-next": "1" } }),
+    );
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+    const rscUrl = await createRscRequestUrl("/docs/about?tab=latest", headers);
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      middlewareModule: { default: middleware },
+    });
+
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(middleware).toHaveBeenCalledTimes(1);
+    const middlewareRequest = middleware.mock.calls[0]?.[0];
+    expect(middlewareRequest?.nextUrl.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)).toBe(
+      false,
+    );
+    expect(middlewareRequest?.nextUrl.search).toBe("?tab=latest");
+    expect(dispatchMatchedPage).toHaveBeenCalledTimes(1);
   });
 
   it("does not render RSC payloads at HTML URLs marked only by RSC headers", async () => {

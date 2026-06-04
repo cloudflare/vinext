@@ -40,6 +40,7 @@ import {
   resolveInvalidRscCacheBustingRequest,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
+  VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
 } from "./app-rsc-cache-busting.js";
 import { finalizeAppRscResponse } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
@@ -340,6 +341,15 @@ function applyConfigHeadersToMiddlewareRedirect(
   return response;
 }
 
+function requestWithoutRscCacheBustingSearchParam(request: Request): Request {
+  const url = new URL(request.url);
+  if (!url.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)) return request;
+
+  stripRscCacheBustingSearchParam(url);
+  const source = request.body ? request.clone() : request;
+  return new Request(url.toString(), source);
+}
+
 async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
   request: Request,
@@ -439,6 +449,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   });
   if (rscCacheBustingRedirect) return rscCacheBustingRedirect;
 
+  // Keep cache-busting validation on the real request above, then hide the
+  // internal `_rsc` transport query from userland middleware and post-middleware
+  // has/missing matching. This mirrors Next.js' navigation middleware fixture.
+  const userlandRequest = isRscRequest
+    ? requestWithoutRscCacheBustingSearchParam(request)
+    : request;
   const middlewareContext: AppRscMiddlewareContext = {
     headers: null,
     requestHeaders: null,
@@ -454,7 +470,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       isDataRequest,
       isProxy: options.isMiddlewareProxy,
       module: options.middlewareModule,
-      request,
+      request: userlandRequest,
       trailingSlash: options.trailingSlash,
     });
     if (middlewareResult.kind === "response") {
@@ -473,7 +489,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareContext.headers);
-  const postMiddlewareRequestContext = buildPostMwRequestContext(request);
+  const postMiddlewareRequestContext = buildPostMwRequestContext(userlandRequest);
 
   // Rewrites (beforeFiles, afterFiles, fallback) use `matchPathname` from
   // above to splice in the default locale before matching. Route matching

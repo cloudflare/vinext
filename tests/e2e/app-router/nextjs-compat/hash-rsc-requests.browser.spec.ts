@@ -109,6 +109,24 @@ export default function HashRscRequestsPage() {
 }
 `,
   );
+  await fs.writeFile(
+    path.join(fixtureRoot, "middleware.ts"),
+    `import { NextResponse, type NextRequest } from "next/server";
+
+const NEXT_RSC_UNION_QUERY = "_rsc";
+
+export function middleware(request: NextRequest) {
+  // Mirrors Next.js' navigation fixture: middleware should never observe the
+  // internal RSC cache-busting query in request.nextUrl.
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/navigation/middleware.js
+  if (request.nextUrl.searchParams.has(NEXT_RSC_UNION_QUERY)) {
+    return new Response("RSC query leaked to middleware", { status: 599 });
+  }
+
+  return NextResponse.next();
+}
+`,
+  );
 
   const vinextSource = path.resolve(process.cwd(), "packages/vinext/src/index.ts");
   await fs.writeFile(
