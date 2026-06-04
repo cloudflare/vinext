@@ -27,6 +27,7 @@ import {
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import { buildPageCacheTags } from "../packages/vinext/src/server/implicit-tags.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import {
@@ -45,6 +46,11 @@ import {
 // ─── isrCacheKey ────────────────────────────────────────────────────────
 
 describe("isrCacheKey", () => {
+  it("fnv1a64 uses fixed-width unambiguous output", () => {
+    const hash = fnv1a64("/" + "a".repeat(250));
+    expect(hash).toMatch(/^[0-9a-f]{16}$/);
+  });
+
   it("generates pages: prefix for Pages Router", () => {
     expect(isrCacheKey("pages", "/about")).toBe("pages:/about");
   });

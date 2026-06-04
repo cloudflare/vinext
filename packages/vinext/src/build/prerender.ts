@@ -54,6 +54,7 @@ import { startProdServer } from "../server/prod-server.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
+import { createAppPprFallbackShells } from "../server/app-ppr-fallback-shell.js";
 export { readPrerenderSecret } from "./server-manifest.js";
 
 function getErrorMessageWithStack(err: Error): string {
@@ -1154,6 +1155,7 @@ export async function prerenderApp({
             continue;
           }
 
+          const queuedRouteUrls = new Set<string>();
           for (const params of paramSets) {
             // Defensively guard against a generateStaticParams() that returns
             // entries with no params object. Next.js's app static-paths code
@@ -1167,6 +1169,7 @@ export async function prerenderApp({
               );
             }
             const urlPath = buildUrlFromParams(route.pattern, params);
+            queuedRouteUrls.add(urlPath);
             urlsToRender.push({
               urlPath,
               routePattern: route.pattern,
@@ -1174,6 +1177,24 @@ export async function prerenderApp({
               revalidate,
               isSpeculative: false,
             });
+
+            if (config.cacheComponents === true) {
+              for (const fallbackShell of createAppPprFallbackShells(route, params)) {
+                if (queuedRouteUrls.has(fallbackShell.pathname)) continue;
+                queuedRouteUrls.add(fallbackShell.pathname);
+                urlsToRender.push({
+                  urlPath: fallbackShell.pathname,
+                  routePattern: route.pattern,
+                  prerenderRouteParams: encodePrerenderRouteParams(
+                    route.pattern,
+                    fallbackShell.params,
+                    fallbackShell.fallbackParamNames,
+                  ),
+                  revalidate,
+                  isSpeculative: false,
+                });
+              }
+            }
           }
         } catch (e) {
           const err = e as Error;

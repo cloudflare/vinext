@@ -145,6 +145,26 @@ describe("Pages i18n domain routing (production)", () => {
     );
   });
 
+  it("keys Pages ISR entries by i18n domain context", async () => {
+    const fr = await requestNodeServerWithHost(prodPort, "/isr-about", "example.fr");
+    expect(fr.status).toBe(200);
+    expect(fr.headers["x-vinext-cache"]).toBe("MISS");
+    expect(fr.body).toContain('<p id="locale">fr</p>');
+    expect(fr.body).toContain('<p id="defaultLocale">fr</p>');
+
+    const en = await requestNodeServerWithHost(prodPort, "/isr-about", "example.com");
+    expect(en.status).toBe(200);
+    expect(en.headers["x-vinext-cache"]).toBe("MISS");
+    expect(en.body).toContain('<p id="locale">en</p>');
+    expect(en.body).toContain('<p id="defaultLocale">en</p>');
+    expect(en.body).not.toContain('<p id="locale">fr</p>');
+
+    const enHit = await requestNodeServerWithHost(prodPort, "/isr-about", "example.com");
+    expect(enHit.status).toBe(200);
+    expect(enHit.headers["x-vinext-cache"]).toBe("HIT");
+    expect(enHit.body).toContain('<p id="locale">en</p>');
+  });
+
   // Issue #1336 item 3: locale prefix must be stripped before API route matching.
   //
   // Ported from Next.js: test/e2e/middleware-redirects/test/index.test.ts

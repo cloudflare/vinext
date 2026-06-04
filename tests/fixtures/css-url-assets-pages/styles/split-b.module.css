@@ -1,0 +1,6 @@
+/* Other half of the split-chunk regression: references dark2.svg only — see
+ * split-a.module.css. dark2.svg is byte-identical to dark.svg, so a shared-
+ * cursor restore would collapse this onto dark.*.svg. */
+.splitB {
+  background-image: url("./dark2.svg");
+}

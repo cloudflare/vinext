@@ -9,8 +9,13 @@ import { setCacheStateHeaders } from "./cache-headers.js";
 import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { reportRequestError } from "./instrumentation.js";
-import { loadUserDocumentInitialProps } from "./pages-document-initial-props.js";
+import {
+  loadUserDocumentInitialProps,
+  type RenderPageEnhancers,
+  runDocumentRenderPage,
+} from "./pages-document-initial-props.js";
 import { readStreamAsText } from "../utils/text-stream.js";
+import { callDocumentGetInitialProps } from "./document-initial-head.js";
 
 type PagesFontPreload = {
   href: string;
@@ -38,6 +43,18 @@ type RenderPagesPageResponseOptions = {
   buildId: string | null;
   clearSsrContext: () => void;
   createPageElement: (pageProps: Record<string, unknown>) => ReactNode;
+  /**
+   * Build the page React tree with optional App/Component enhancers applied,
+   * supporting the Pages Router `_document.getInitialProps` contract:
+   *
+   *   ctx.renderPage({ enhanceApp, enhanceComponent })
+   *
+   * Used by CSS-in-JS libraries (styled-components, emotion) to wrap the
+   * App/Component tree so styles can be collected during SSR. When omitted,
+   * `renderPage` falls back to rendering the plain `createPageElement` tree
+   * (enhancers are ignored).
+   */
+  enhancePageElement?: ((opts: RenderPageEnhancers) => ReactNode) | undefined;
   DocumentComponent: ComponentType | null;
   flushPreloads?: (() => Promise<void> | void) | undefined;
   fontLinkHeader: string;
@@ -51,6 +68,7 @@ type RenderPagesPageResponseOptions = {
    * head. Undefined or empty disables emission.
    */
   clientTraceMetadata?: readonly string[] | undefined;
+  setDocumentInitialHead?: ((head: ReactNode[]) => void) | undefined;
   gsspRes: PagesGsspResponse | null;
   isrCacheKey: (router: string, pathname: string) => string;
   expireSeconds?: number;
@@ -162,10 +180,18 @@ async function buildPagesShellHtml(
     "assetTags" | "DocumentComponent" | "renderDocumentToString"
   > & {
     ssrHeadHTML: string;
+    /**
+     * Document props already resolved by `runDocumentRenderPage`. When set,
+     * `getInitialProps` was consumed by the renderPage path and must not be
+     * re-invoked via `loadUserDocumentInitialProps` (which would call it a
+     * second time). `null` means use the normal fast path.
+     */
+    resolvedDocProps?: Record<string, unknown> | null;
   },
 ): Promise<string> {
   if (options.DocumentComponent) {
-    const docProps = await loadUserDocumentInitialProps(options.DocumentComponent);
+    const docProps =
+      options.resolvedDocProps ?? (await loadUserDocumentInitialProps(options.DocumentComponent));
     const docElement = docProps
       ? React.createElement(options.DocumentComponent, docProps)
       : React.createElement(options.DocumentComponent);
@@ -184,10 +210,11 @@ async function buildPagesShellHtml(
     return html;
   }
 
+  // charset + viewport are emitted via getSSRHeadHTML() (next/head's
+  // defaultHead seeds them with data-next-head=""), matching Next.js's
+  // canonical ordering. Don't duplicate them here.
   return (
     "<!DOCTYPE html>\n<html>\n<head>\n" +
-    '  <meta charset="utf-8" />\n' +
-    '  <meta name="viewport" content="width=device-width, initial-scale=1" />\n' +
     `  ${fontHeadHTML}${options.ssrHeadHTML}\n` +
     `  ${options.assetTags}\n` +
     "</head>\n<body>\n" +
@@ -315,11 +342,6 @@ function applyGsspHeaders(
 export async function renderPagesPageResponse(
   options: RenderPagesPageResponseOptions,
 ): Promise<Response> {
-  const pageElement = withScriptNonce(
-    React.createElement(React.Fragment, null, options.createPageElement(options.pageProps)),
-    options.scriptNonce,
-  );
-
   options.resetSSRHead?.();
   await options.flushPreloads?.();
 
@@ -341,12 +363,71 @@ export async function renderPagesPageResponse(
     vinext: options.vinext,
   });
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
-  // Render the page FIRST so that <Head> and other SSR state collectors
-  // (e.g. styled-jsx, useServerInsertedHTML) are populated before we read
-  // them. This fixes a race condition where head styles were silently dropped
-  // because they were collected before the page had finished rendering.
-  // Mirrors Next.js fix: vercel/next.js@9853944
-  const bodyStream = await options.renderToReadableStream(pageElement);
+
+  // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
+  // via `ctx.renderPage({ enhanceApp, enhanceComponent })` (e.g. for
+  // styled-components / emotion style collection). When that contract is in
+  // use the body must be a single complete string before `_document` renders
+  // — Next.js does this in `loadDocumentInitialProps` and we mirror it here.
+  // The streaming path stays as the default for the common case where the
+  // user does not define `getInitialProps`. The contract (including
+  // `withScriptNonce` and `styles` rendering) lives in the shared helper so
+  // prod and dev stay in lockstep.
+  const documentRenderPage = await runDocumentRenderPage({
+    DocumentComponent: options.DocumentComponent,
+    enhancePageElement: options.enhancePageElement,
+    renderToReadableStream: options.renderToReadableStream,
+    // Render the collected `styles` fragment with the plain stream renderer
+    // rather than the full `<Document>` shell renderer — the styles tree is a
+    // standalone fragment, so it doesn't need the heavier document pipeline.
+    // Mirrors the dev path, which passes its `renderToStringAsync` wrapper.
+    renderStylesToString: async (element) =>
+      readStreamAsText(await options.renderToReadableStream(element)),
+    scriptNonce: options.scriptNonce,
+    context: {
+      pathname: options.routePattern,
+      query: options.params,
+      asPath: options.routeUrl,
+    },
+  });
+
+  let bodyStream: ReadableStream<Uint8Array>;
+  if (documentRenderPage.status === "rendered") {
+    bodyStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(documentRenderPage.bodyHtml));
+        controller.close();
+      },
+    });
+  } else {
+    // Render the page FIRST so that <Head> and other SSR state collectors
+    // (e.g. styled-jsx, useServerInsertedHTML) are populated before we read
+    // them. This fixes a race condition where head styles were silently dropped
+    // because they were collected before the page had finished rendering.
+    // Mirrors Next.js fix: vercel/next.js@9853944
+    //
+    // Built lazily here: when the renderPage contract produced the body
+    // (`rendered`), this element is never used, so there's no point
+    // constructing the tree on that path.
+    const pageElement = withScriptNonce(
+      React.createElement(React.Fragment, null, options.createPageElement(options.pageProps)),
+      options.scriptNonce,
+    );
+    bodyStream = await options.renderToReadableStream(pageElement);
+  }
+
+  // Fold any head tags returned by `_document.getInitialProps()` into the
+  // dedupe pipeline before getSSRHeadHTML serialises the final <head>. Mirrors
+  // Next.js's `_document` contract. `runDocumentRenderPage` already invokes
+  // `getInitialProps` for the renderPage contract (rendered/consumed), so reuse
+  // the head it surfaced rather than calling it a second time. Only the
+  // `skipped` path (no override, or no `enhancePageElement` wired) falls back to
+  // the standalone helper — which itself skips the unmodified default shim.
+  if (documentRenderPage.status === "skipped") {
+    await callDocumentGetInitialProps(options.DocumentComponent, options.setDocumentInitialHead);
+  } else {
+    options.setDocumentInitialHead?.(documentRenderPage.head);
+  }
 
   const headFromShim = options.getSSRHeadHTML?.() ?? "";
   // Trace meta tags from the active OpenTelemetry context. When the
@@ -354,12 +435,23 @@ export async function renderPagesPageResponse(
   // `getClientTraceMetadataHTML` returns "" and we forward the head HTML
   // verbatim — keeping the no-op path zero-overhead.
   const traceMetaHTML = getClientTraceMetadataHTML(options.clientTraceMetadata);
-  const ssrHeadHTML = traceMetaHTML ? `${headFromShim}\n  ${traceMetaHTML}` : headFromShim;
+  let ssrHeadHTML = headFromShim;
+  if (traceMetaHTML) ssrHeadHTML += `\n  ${traceMetaHTML}`;
+  // `styles` returned by `_document.getInitialProps()` (e.g. collected
+  // styled-components / emotion <style> tags) is already rendered to a string
+  // by the shared helper, ready to merge into the SSR head.
+  if (documentRenderPage.status === "rendered" && documentRenderPage.stylesHTML) {
+    ssrHeadHTML += `\n  ${documentRenderPage.stylesHTML}`;
+  }
   const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
     assetTags: options.assetTags,
     DocumentComponent: options.DocumentComponent,
     renderDocumentToString: options.renderDocumentToString,
     ssrHeadHTML,
+    // When the renderPage path already invoked getInitialProps (rendered or
+    // consumed), reuse its resolved props instead of calling it a second time.
+    // `skipped` means it was never invoked → fall through to the fast path.
+    resolvedDocProps: documentRenderPage.status === "skipped" ? null : documentRenderPage.docProps,
   });
 
   options.clearSsrContext();

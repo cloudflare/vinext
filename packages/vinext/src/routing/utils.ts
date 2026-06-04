@@ -181,3 +181,77 @@ export function decodeMatchedParams(params: Record<string, string | string[]>): 
     }
   }
 }
+
+/**
+ * Check whether a path segment is invisible in the URL (route groups, parallel
+ * slots, "."). Single source of truth shared by the route graph (Node) and
+ * browser-side bfcache identity logic. Lives in this browser-safe utils module
+ * so importing it does not drag node:path/node:fs into the client bundle.
+ */
+export function isInvisibleSegment(segment: string): boolean {
+  if (segment === ".") return true;
+  if (segment.startsWith("(") && segment.endsWith(")")) return true;
+  if (segment.startsWith("@")) return true;
+  return false;
+}
+
+/** Split a pathname into its non-empty segments without decoding. */
+export function splitPathSegments(pathname: string): string[] {
+  return pathname.split("/").filter(Boolean);
+}
+
+/**
+ * Catch-all filesystem segment, e.g. `[...slug]`. Browser-safe predicate shared
+ * with the route graph's segment parsing (dynamicParamNameFromSegment) so the
+ * bracket conventions live in one place. The length guard rejects empty names
+ * (`[...]`).
+ */
+function isCatchAllSegment(segment: string): boolean {
+  return segment.startsWith("[...") && segment.endsWith("]") && segment.length > 5;
+}
+
+/**
+ * Optional-catch-all filesystem segment, e.g. `[[...slug]]`. Unlike a catch-all,
+ * this matches zero or more URL segments.
+ */
+function isOptionalCatchAllSegment(segment: string): boolean {
+  return segment.startsWith("[[...") && segment.endsWith("]]") && segment.length > 7;
+}
+
+/**
+ * Count how many pathname segments a tree path's *visible* segments consume,
+ * given the total number of pathname segments available.
+ *
+ * This is the minimal pure slice of the canonical filesystem-segment →
+ * URL-segment mapping in `app-route-graph.ts` (`convertSegmentsToRouteParts`),
+ * extracted here so browser-side bfcache identity logic can share it without
+ * importing the Node-bound route graph module. `convertSegmentsToRouteParts`
+ * remains the source of truth for how each segment kind maps to a URL part.
+ *
+ * Each ordinary visible segment (static or `[x]`) consumes exactly one pathname
+ * segment. A catch-all (`[...x]`) is terminal and consumes every remaining
+ * pathname segment. An optional-catch-all (`[[...x]]`) is also terminal but may
+ * match zero segments, so it consumes only the remaining pathname segments
+ * (which is zero once preceding segments have already consumed the pathname) —
+ * never more than are actually present.
+ *
+ * @param visibleTreePathSegments URL-visible tree-path segments (callers must
+ *   pre-filter invisible segments via `isInvisibleSegment`).
+ * @param pathnameSegmentCount Total number of pathname segments available.
+ */
+export function countConsumedPathnameSegments(
+  visibleTreePathSegments: readonly string[],
+  pathnameSegmentCount: number,
+): number {
+  let consumed = 0;
+  for (const segment of visibleTreePathSegments) {
+    if (isCatchAllSegment(segment) || isOptionalCatchAllSegment(segment)) {
+      // Terminal: a (possibly optional) catch-all swallows whatever pathname
+      // segments remain. Clamping to the available count keeps an optional
+      // catch-all that matches zero URL segments from over-counting.
+      return Math.max(consumed, pathnameSegmentCount);
+    }
+    consumed += 1;
+  }
+  return consumed;
+}

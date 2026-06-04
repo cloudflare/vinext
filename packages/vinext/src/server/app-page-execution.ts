@@ -161,6 +161,11 @@ export type LayoutClassificationOptions = {
   debugClassification?: (layoutId: string, reason: ClassificationReason) => void;
   /** Maps layout index to its layout ID (e.g. "layout:/blog"). */
   getLayoutId: (layoutIndex: number) => string;
+  /**
+   * Returns whether the completed per-layout observation makes static reuse
+   * unsafe even if the older dynamic scope did not report dynamic usage.
+   */
+  isLayoutObservationDynamic?: (layoutId: string) => boolean;
   /** Runs a function with isolated dynamic usage tracking per layout. */
   runWithIsolatedDynamicScope: <T>(fn: () => T) => Promise<{ result: T; dynamicDetected: boolean }>;
 };
@@ -402,44 +407,64 @@ export async function probeAppPageLayouts(
       const buildTimeResult = cls?.buildTimeClassifications?.get(layoutIndex);
 
       if (cls && buildTimeResult) {
+        const layoutId = cls.getLayoutId(layoutIndex);
         // Build-time classified (Layer 1 or Layer 2): skip dynamic isolation,
-        // but still probe for special errors (redirects, not-found).
-        layoutFlags[cls.getLayoutId(layoutIndex)] = buildTimeResult === "static" ? "s" : "d";
-        if (cls.debugClassification) {
-          // `no-classifier` is the documented fallback for a layout that was
-          // build-time classified but whose reason payload is absent — either
-          // because the build was run without `VINEXT_DEBUG_CLASSIFICATION` or
-          // because no Layer 1/2 classifier attached a reason. This is the sole
-          // producer of the variant; see `layout-classification-types.ts`.
-          cls.debugClassification(
-            cls.getLayoutId(layoutIndex),
-            cls.buildTimeReasons?.get(layoutIndex) ?? { layer: "no-classifier" },
-          );
-        }
+        // but still probe for special errors (redirects, not-found). Record the
+        // build-time flag up front so it survives a short-circuit if the error
+        // probe returns a special-error response below.
+        layoutFlags[layoutId] = buildTimeResult === "static" ? "s" : "d";
         const errorResponse = await probeLayoutForErrors(options, layoutIndex);
         if (errorResponse) return errorResponse;
+        // Compute the final flag before reporting so the emitted debug reason
+        // always agrees with `layoutFlags[layoutId]`. A runtime observation can
+        // override a build-time `static` decision to dynamic; in that case we
+        // report a `runtime-probe` reason rather than the stale build-time one.
+        const observationDynamic = cls.isLayoutObservationDynamic?.(layoutId) === true;
+        const layoutDynamic = buildTimeResult === "dynamic" || observationDynamic;
+        layoutFlags[layoutId] = layoutDynamic ? "d" : "s";
+        if (cls.debugClassification) {
+          if (observationDynamic && buildTimeResult === "static") {
+            cls.debugClassification(layoutId, {
+              layer: "runtime-probe",
+              outcome: "dynamic",
+            });
+          } else {
+            // `no-classifier` is the documented fallback for a layout that was
+            // build-time classified but whose reason payload is absent — either
+            // because the build was run without `VINEXT_DEBUG_CLASSIFICATION` or
+            // because no Layer 1/2 classifier attached a reason. This is the sole
+            // producer of the variant; see `layout-classification-types.ts`.
+            cls.debugClassification(
+              layoutId,
+              cls.buildTimeReasons?.get(layoutIndex) ?? { layer: "no-classifier" },
+            );
+          }
+        }
         continue;
       }
 
       if (cls) {
+        const layoutId = cls.getLayoutId(layoutIndex);
         // Layer 3: probe with isolated dynamic scope to detect per-layout
         // dynamic API usage (headers(), cookies(), connection(), etc.)
         try {
           const { dynamicDetected } = await cls.runWithIsolatedDynamicScope(() =>
             options.probeLayoutAt(layoutIndex),
           );
-          layoutFlags[cls.getLayoutId(layoutIndex)] = dynamicDetected ? "d" : "s";
+          const observationDynamic = cls.isLayoutObservationDynamic?.(layoutId) === true;
+          const layoutDynamic = dynamicDetected || observationDynamic;
+          layoutFlags[layoutId] = layoutDynamic ? "d" : "s";
           if (cls.debugClassification) {
-            cls.debugClassification(cls.getLayoutId(layoutIndex), {
+            cls.debugClassification(layoutId, {
               layer: "runtime-probe",
-              outcome: dynamicDetected ? "dynamic" : "static",
+              outcome: layoutDynamic ? "dynamic" : "static",
             });
           }
         } catch (error) {
           // Probe failed — conservatively treat as dynamic.
-          layoutFlags[cls.getLayoutId(layoutIndex)] = "d";
+          layoutFlags[layoutId] = "d";
           if (cls.debugClassification) {
-            cls.debugClassification(cls.getLayoutId(layoutIndex), {
+            cls.debugClassification(layoutId, {
               layer: "runtime-probe",
               outcome: "dynamic",
               error: error instanceof Error ? error.message : String(error),

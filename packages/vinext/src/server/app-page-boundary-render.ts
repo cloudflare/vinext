@@ -325,7 +325,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
 
   const headElements: ReactNode[] = [
     createElement("meta", { charSet: "utf-8", key: "charset" }),
-    createElement("meta", { content: "noindex", key: "robots", name: "robots" }),
+    createElement("meta", { key: "robots", name: "robots", content: "noindex" }),
   ];
   if (metadata) {
     headElements.push(createElement(MetadataHead, { key: "metadata", metadata, pathname }));

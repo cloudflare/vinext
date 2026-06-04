@@ -545,7 +545,20 @@ export async function resolveModuleMetadata(
       searchParams === undefined
         ? { params: asyncParams }
         : { params: asyncParams, searchParams: makeThenableParams(searchParams) };
-    return await mod.generateMetadata(props, parent);
+    // Only pass the `parent` metadata when `generateMetadata` actually declares
+    // it (arity >= 2). Next.js omits the parent argument for `generateMetadata`
+    // functions that don't use it, which matters for `'use cache'` functions:
+    // the cache-key encoder (encodeReply) would otherwise try to serialize the
+    // resolved parent metadata, which can contain a non-serializable `URL`
+    // `metadataBase` and throws "URL objects are not supported".
+    // See Next.js resolve-metadata.ts (getResult / useCacheFunctionInfo.usedArgs[1]).
+    //
+    // Note: `fn.length` approximates Next.js's static usage analysis. It can
+    // diverge on default-parameter signatures — e.g. `(props, parent = x)`
+    // reports length 1, and `(props = {}, parent)` reports length 0 — but a
+    // default value on `generateMetadata`'s `parent` is unusual in practice.
+    const usesParent = mod.generateMetadata.length >= 2;
+    return await (usesParent ? mod.generateMetadata(props, parent) : mod.generateMetadata(props));
   }
   if (mod.metadata && typeof mod.metadata === "object") {
     return mod.metadata as Metadata;

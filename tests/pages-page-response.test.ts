@@ -419,4 +419,258 @@ describe("pages page response", () => {
     expect(common.renderIsrPassToStringAsync).not.toHaveBeenCalled();
     expect(common.isrSet).not.toHaveBeenCalled();
   });
+
+  // Regression test for #1468: custom `_document.getInitialProps` that wraps
+  // `ctx.renderPage({ enhanceApp, enhanceComponent })` (e.g. for
+  // styled-components, emotion) must run the enhancers around the page tree.
+  //
+  // Mirrors the contract in Next.js render.tsx (search `renderPage`) and the
+  // styled-components integration test in
+  // .nextjs-ref/test/development/basic/styled-components/pages/_document.js
+  it("invokes _document.getInitialProps with a renderPage that runs enhanceApp/enhanceComponent", async () => {
+    const common = createCommonOptions();
+    const calls: string[] = [];
+
+    // Custom Document.getInitialProps that wraps renderPage with enhancers,
+    // styled-components style.
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      renderPage: (opts?: {
+        enhanceApp?: (App: React.ComponentType<{ children?: React.ReactNode }>) => unknown;
+        enhanceComponent?: (Comp: React.ComponentType<unknown>) => unknown;
+      }) => Promise<{ html: string; head?: React.ReactNode[] }> | { html: string };
+    }) => {
+      calls.push("getInitialProps");
+      const result = await ctx.renderPage({
+        enhanceApp: (App) => {
+          calls.push("enhanceApp");
+          return (props: { children?: React.ReactNode }) =>
+            React.createElement(
+              "div",
+              { "data-enhanced-app": "true" },
+              React.createElement(App, props),
+            );
+        },
+        enhanceComponent: (Comp) => {
+          calls.push("enhanceComponent");
+          return Comp;
+        },
+      });
+      return { html: result.html, head: [] };
+    };
+
+    // The enhancePageElement option exposes App/Component separation to the
+    // SSR pipeline so the renderPage closure can rewrap them.
+    function App({ children }: { children?: React.ReactNode }) {
+      return React.createElement("section", { "data-app": "true" }, children);
+    }
+    function Page() {
+      return React.createElement("p", null, "page");
+    }
+    const enhancePageElement = vi.fn(
+      (opts: {
+        enhanceApp?: (App: React.ComponentType<{ children?: React.ReactNode }>) => unknown;
+        enhanceComponent?: (Comp: React.ComponentType<unknown>) => unknown;
+      }) => {
+        const FinalApp = opts.enhanceApp
+          ? (opts.enhanceApp(App) as React.ComponentType<{ children?: React.ReactNode }>)
+          : App;
+        const FinalComp = opts.enhanceComponent
+          ? (opts.enhanceComponent(Page) as React.ComponentType<unknown>)
+          : Page;
+        return React.createElement(FinalApp, null, React.createElement(FinalComp, null));
+      },
+    );
+
+    // Use the real React renderer so the enhanced element actually
+    // renders into the body — the default mock returns a fixed string.
+    const reactDomServer = await import("react-dom/server.edge");
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: MyDocument as unknown as React.ComponentType,
+      enhancePageElement,
+      renderToReadableStream: async (element: React.ReactNode) =>
+        await reactDomServer.renderToReadableStream(element as React.ReactElement),
+    });
+
+    const html = await response.text();
+    // Both enhancers ran during renderPage.
+    expect(calls).toContain("getInitialProps");
+    expect(calls).toContain("enhanceApp");
+    expect(calls).toContain("enhanceComponent");
+    // The enhanced tree appears in the body (renderPage returned its html).
+    expect(html).toContain('data-enhanced-app="true"');
+    expect(html).toContain('data-app="true"');
+    expect(html).toContain("<p>page</p>");
+    expect(enhancePageElement).toHaveBeenCalledTimes(1);
+  });
+
+  // Edge case: `getInitialProps` returns `styles` (the styled-components /
+  // emotion pattern collects style tags and returns them). They must be
+  // rendered to a string and merged into the document head.
+  it("renders styles returned from _document.getInitialProps into the head", async () => {
+    const common = createCommonOptions();
+
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+      renderPage: (opts?: any) => Promise<{ html: string }>;
+    }) => {
+      const result = await ctx.renderPage();
+      return {
+        html: result.html,
+        styles: React.createElement("style", { "data-collected": "true" }, ".x{color:red}"),
+      };
+    };
+
+    function Page() {
+      return React.createElement("p", null, "page");
+    }
+    const enhancePageElement = vi.fn(() => React.createElement(Page, null));
+
+    const reactDomServer = await import("react-dom/server.edge");
+    // Spy on renderDocumentToString so we can confirm styles are rendered via
+    // the shared helper. Falls back to the real renderer for the styles tree.
+    const renderDocumentToString = vi.fn(async (element: React.ReactNode) => {
+      const stream = await reactDomServer.renderToReadableStream(element as React.ReactElement);
+      const text = await new Response(stream).text();
+      // The document shell render still needs the NEXT placeholders.
+      if (!text.includes("data-collected")) {
+        return '<!DOCTYPE html><html><head></head><body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>';
+      }
+      return text;
+    });
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: MyDocument as unknown as React.ComponentType,
+      enhancePageElement,
+      renderDocumentToString,
+      renderToReadableStream: async (element: React.ReactNode) =>
+        await reactDomServer.renderToReadableStream(element as React.ReactElement),
+    });
+
+    const html = await response.text();
+    // The collected <style> tag landed in the head.
+    expect(html).toContain('data-collected="true"');
+    expect(html).toContain(".x{color:red}");
+    // The body still rendered.
+    expect(html).toContain("<p>page</p>");
+  });
+
+  // Edge case: a user `getInitialProps` that throws must not crash the render —
+  // the pipeline logs and falls back to the normal streaming page render.
+  it("falls back to streaming render when _document.getInitialProps throws", async () => {
+    const common = createCommonOptions();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async () => {
+      throw new Error("boom");
+    };
+
+    const enhancePageElement = vi.fn(() => React.createElement("p", null, "enhanced"));
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: MyDocument as unknown as React.ComponentType,
+      enhancePageElement,
+    });
+
+    const html = await response.text();
+    // Fell back to the default streaming render (the common mock body), not
+    // the enhanced renderPage output.
+    expect(html).toContain("live-body");
+    expect(html).not.toContain("enhanced");
+    // enhancePageElement is only reached inside renderPage, which never ran.
+    expect(enhancePageElement).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[vinext] _document.getInitialProps() threw:",
+      expect.any(Error),
+    );
+    errorSpy.mockRestore();
+  });
+
+  // Edge case: a user `getInitialProps` that never calls `renderPage` (it only
+  // returns head/styles) must fall back to the normal streaming render so the
+  // body content is still produced.
+  it("falls back to streaming render when getInitialProps never calls renderPage", async () => {
+    const common = createCommonOptions();
+
+    function MyDocument() {
+      return null;
+    }
+    // Returns props without ever invoking ctx.renderPage.
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async () => ({
+      custom: "value",
+    });
+
+    const enhancePageElement = vi.fn(() => React.createElement("p", null, "enhanced"));
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: MyDocument as unknown as React.ComponentType,
+      enhancePageElement,
+    });
+
+    const html = await response.text();
+    // Body came from the streaming fallback, not renderPage.
+    expect(html).toContain("live-body");
+    expect(html).not.toContain("enhanced");
+    expect(enhancePageElement).not.toHaveBeenCalled();
+  });
+
+  // Edge case: `renderPage` is called but the underlying stream render throws.
+  // The error propagates out of `getInitialProps`, is caught by the shared
+  // helper, and the pipeline falls back to the normal streaming render.
+  it("falls back to streaming render when renderPage's stream render throws", async () => {
+    const common = createCommonOptions();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+      renderPage: (opts?: any) => Promise<{ html: string }>;
+    }) => {
+      // Calling renderPage triggers renderToReadableStream, which throws below.
+      const result = await ctx.renderPage();
+      return { html: result.html };
+    };
+
+    const enhancePageElement = vi.fn(() => React.createElement("p", null, "enhanced"));
+
+    let renderCall = 0;
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: MyDocument as unknown as React.ComponentType,
+      enhancePageElement,
+      renderToReadableStream: vi.fn(async () => {
+        renderCall += 1;
+        // First call is renderPage's render (throw); a later fallback call must
+        // succeed so the page still renders.
+        if (renderCall === 1) throw new Error("stream render failed");
+        return createStream(["<div>live-body</div>"]);
+      }),
+    });
+
+    const html = await response.text();
+    // renderPage was reached (enhancePageElement ran) but the throw bubbled up
+    // and the pipeline fell back to the normal streaming render.
+    expect(enhancePageElement).toHaveBeenCalledTimes(1);
+    expect(html).toContain("live-body");
+    expect(html).not.toContain("enhanced");
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[vinext] _document.getInitialProps() threw:",
+      expect.any(Error),
+    );
+    errorSpy.mockRestore();
+  });
 });

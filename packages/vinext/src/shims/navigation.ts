@@ -13,9 +13,13 @@
 import * as React from "react";
 import { getNavigationRuntime, hasAppNavigationRuntime } from "../client/navigation-runtime.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
+import { INITIAL_BFCACHE_ID, PUBLIC_INITIAL_BFCACHE_ID } from "../server/app-bfcache-id.js";
 import { AppElementsWire } from "../server/app-elements.js";
 import { resolveManifestNavigationInterceptionContext } from "../server/app-browser-interception-context.js";
-import { createExternalHistoryStatePreservingMetadata } from "../server/app-history-state.js";
+import {
+  createExternalHistoryStatePreservingMetadata,
+  createHashOnlyHistoryStatePreservingNavigationMetadata,
+} from "../server/app-history-state.js";
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
@@ -34,7 +38,7 @@ import { stripBasePath } from "../utils/base-path.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { AppRouterContext } from "./internal/app-router-context.js";
-import { scrollToHashTarget } from "./hash-scroll.js";
+import { retryScrollTo, scrollToHashTarget } from "./hash-scroll.js";
 import {
   beginAppRouterScrollIntent,
   clearAppRouterScrollIntent,
@@ -52,6 +56,8 @@ import {
 // still line up if Vite loads this shim through multiple resolved module IDs.
 const _LAYOUT_SEGMENT_CTX_KEY = Symbol.for("vinext.layoutSegmentContext");
 const _SERVER_INSERTED_HTML_CTX_KEY = Symbol.for("vinext.serverInsertedHTMLContext");
+const _BFCACHE_ID_MAP_CTX_KEY = Symbol.for("vinext.bfcacheIdMapContext");
+const _BFCACHE_SEGMENT_ID_CTX_KEY = Symbol.for("vinext.bfcacheSegmentIdContext");
 
 /**
  * Map of parallel route key → child segments below the current layout.
@@ -68,6 +74,8 @@ type _LayoutSegmentGlobal = typeof globalThis & {
   [_SERVER_INSERTED_HTML_CTX_KEY]?: React.Context<
     ((callback: () => unknown) => void) | null
   > | null;
+  [_BFCACHE_ID_MAP_CTX_KEY]?: React.Context<Readonly<Record<string, string>> | null> | null;
+  [_BFCACHE_SEGMENT_ID_CTX_KEY]?: React.Context<string | null> | null;
 };
 
 // ─── ServerInsertedHTML context ────────────────────────────────────────────────
@@ -116,6 +124,32 @@ export function getLayoutSegmentContext(): React.Context<SegmentMap> | null {
   }
 
   return globalState[_LAYOUT_SEGMENT_CTX_KEY] ?? null;
+}
+
+export function getBfcacheIdMapContext(): React.Context<Readonly<
+  Record<string, string>
+> | null> | null {
+  if (typeof React.createContext !== "function") return null;
+
+  const globalState = globalThis as _LayoutSegmentGlobal;
+  if (!globalState[_BFCACHE_ID_MAP_CTX_KEY]) {
+    globalState[_BFCACHE_ID_MAP_CTX_KEY] = React.createContext<Readonly<
+      Record<string, string>
+    > | null>(null);
+  }
+
+  return globalState[_BFCACHE_ID_MAP_CTX_KEY] ?? null;
+}
+
+export function getBfcacheSegmentIdContext(): React.Context<string | null> | null {
+  if (typeof React.createContext !== "function") return null;
+
+  const globalState = globalThis as _LayoutSegmentGlobal;
+  if (!globalState[_BFCACHE_SEGMENT_ID_CTX_KEY]) {
+    globalState[_BFCACHE_SEGMENT_ID_CTX_KEY] = React.createContext<string | null>(null);
+  }
+
+  return globalState[_BFCACHE_SEGMENT_ID_CTX_KEY] ?? null;
 }
 
 /**
@@ -774,6 +808,39 @@ export function consumePrefetchResponse(
   return null;
 }
 
+/**
+ * Consume a prefetched response for navigation. Unlike the synchronous cache
+ * read above, this waits for an already-started prefetch snapshot before
+ * deciding whether to fetch again. That preserves the ownership invariant set
+ * up by prefetchRscResponse(): a pending cache entry means this URL already has
+ * one in-flight network request that navigation should share.
+ */
+type ConsumePrefetchResponseForNavigationOptions = {
+  shouldConsume?: () => boolean;
+};
+
+export async function consumePrefetchResponseForNavigation(
+  rscUrl: string,
+  interceptionContext: string | null = null,
+  mountedSlotsHeader: string | null = null,
+  options?: ConsumePrefetchResponseForNavigationOptions,
+): Promise<CachedRscResponse | null> {
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  const cache = getPrefetchCache();
+  const entry = cache.get(cacheKey);
+  if (!entry) return null;
+  if (entry.cacheForNavigation === false) return null;
+
+  if (entry.pending !== undefined) {
+    await entry.pending.catch(() => {});
+    if (cache.get(cacheKey) !== entry) return null;
+  }
+
+  if (options?.shouldConsume?.() === false) return null;
+
+  return consumePrefetchResponse(rscUrl, interceptionContext, mountedSlotsHeader);
+}
+
 // ---------------------------------------------------------------------------
 // Client navigation state — stored on a Symbol.for global to survive
 // multiple Vite module instances loading this file through different IDs.
@@ -1104,13 +1171,11 @@ export function clearPendingPathname(navId: number): void {
 
 function getClientParamsSnapshot(): Record<string, string | string[]> {
   const state = getClientNavigationState();
+  const pagesCtx = _getPagesNavigationContext();
+  if (pagesCtx) return pagesCtx.params;
   if (state && Object.keys(state.clientParams).length > 0) {
     return state.clientParams;
   }
-  // Fall back to the Pages Router compat shim if nothing has populated the
-  // App Router client params (Pages Router pages never call setClientParams).
-  const pagesCtx = _getPagesNavigationContext();
-  if (pagesCtx) return pagesCtx.params;
   return state?.clientParams ?? _EMPTY_PARAMS;
 }
 
@@ -1329,7 +1394,7 @@ export function replaceHistoryStateWithoutNotify(
  * Uses replaceHistoryStateWithoutNotify to avoid triggering the patched
  * history.replaceState interception (which would cause spurious re-renders).
  */
-function saveScrollPosition(): void {
+export function saveScrollPosition(): void {
   const state = window.history.state ?? {};
   replaceHistoryStateWithoutNotify(
     { ...state, __vinext_scrollX: window.scrollX, __vinext_scrollY: window.scrollY },
@@ -1344,10 +1409,11 @@ function commitHashOnlyHistoryState(href: string, mode: "push" | "replace", scro
     return;
   }
 
+  const historyState = createHashOnlyHistoryStatePreservingNavigationMetadata(window.history.state);
   if (mode === "replace") {
-    replaceHistoryStateWithoutNotify(null, "", href);
+    replaceHistoryStateWithoutNotify(historyState, "", href);
   } else {
-    pushHistoryStateWithoutNotify(null, "", href);
+    pushHistoryStateWithoutNotify(historyState, "", href);
   }
 }
 
@@ -1393,17 +1459,9 @@ function restoreScrollPosition(state: unknown): void {
       const pending: Promise<void> | null = window.__VINEXT_RSC_PENDING__ ?? null;
 
       if (pending) {
-        // Wait for the RSC navigation to finish rendering, then scroll.
-        void pending.then(() => {
-          requestAnimationFrame(() => {
-            window.scrollTo(x, y);
-          });
-        });
+        void pending.then(() => retryScrollTo(x, y));
       } else {
-        // No RSC navigation in flight (Pages Router or already settled).
-        requestAnimationFrame(() => {
-          window.scrollTo(x, y);
-        });
+        retryScrollTo(x, y);
       }
     });
   }
@@ -1423,12 +1481,20 @@ export async function navigateClientSide(
   if (isExternalUrl(href)) {
     const localPath = toSameOriginAppPath(href, __basePath);
     if (localPath == null) {
-      // Truly external: use full page navigation
+      notifyAppRouterTransitionStart(href, mode);
+
+      const externalNavigate = getNavigationRuntime()?.functions.navigateExternal;
+      if (externalNavigate) {
+        await externalNavigate(href, mode);
+        return;
+      }
+
       if (mode === "replace") {
         window.location.replace(href);
       } else {
         window.location.assign(href);
       }
+      await new Promise<void>(() => {});
       return;
     }
     normalizedHref = localPath;
@@ -1550,7 +1616,7 @@ function releaseScheduledAppRouterNavigationAfterCurrentTask(release: () => void
  * Internal callers in this file continue to use `_appRouter` for brevity.
  */
 const _appRouter = {
-  bfcacheId: "0",
+  bfcacheId: INITIAL_BFCACHE_ID,
   push(href: string, options?: { scroll?: boolean }): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
@@ -1669,6 +1735,33 @@ const _appRouter = {
   },
 };
 
+function formatPublicBfcacheId(value: string | null | undefined): string {
+  if (!value || value === INITIAL_BFCACHE_ID) return PUBLIC_INITIAL_BFCACHE_ID;
+  return value;
+}
+
+/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
+function readBfcacheIdFromContext(): string {
+  const segmentContext = getBfcacheSegmentIdContext();
+  const idMapContext = getBfcacheIdMapContext();
+  if (!segmentContext || !idMapContext || typeof React.useContext !== "function") {
+    return formatPublicBfcacheId(null);
+  }
+
+  try {
+    const segmentId = React.useContext(segmentContext);
+    const idMap = React.useContext(idMapContext);
+    return formatPublicBfcacheId(segmentId !== null ? idMap?.[segmentId] : null);
+  } catch (error) {
+    // Low-level tests and direct module calls can hit this outside render.
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[vinext] readBfcacheIdFromContext failed:", error);
+    }
+    return formatPublicBfcacheId(null);
+  }
+}
+/* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
+
 /**
  * Public App Router instance, exposed for the browser entry so it can wire
  * `window.next.router` to the same singleton returned from `useRouter()`.
@@ -1682,19 +1775,29 @@ export const appRouterInstance = _appRouter;
  * App Router's useRouter — returns push/replace/back/forward/refresh.
  * Different from Pages Router's useRouter (next/router).
  *
- * Returns a stable singleton: the same object reference on every call,
- * matching Next.js behavior so components using referential equality
- * (e.g. useMemo / useEffect deps, React.memo) don't re-render unnecessarily.
+ * Preserves the mounted AppRouterContext router as the authority for methods
+ * and layers the nearest segment's contextual `bfcacheId` on top.
  */
 export function useRouter() {
-  if (!AppRouterContext || typeof React.useContext !== "function") {
+  if (
+    !AppRouterContext ||
+    typeof React.useContext !== "function" ||
+    typeof React.useMemo !== "function"
+  ) {
     throw new Error("invariant expected app router to be mounted");
   }
   const router = React.useContext(AppRouterContext);
   if (router === null) {
     throw new Error("invariant expected app router to be mounted");
   }
-  return router;
+  const bfcacheId = readBfcacheIdFromContext();
+  return React.useMemo(
+    () => ({
+      ...router,
+      bfcacheId,
+    }),
+    [router, bfcacheId],
+  );
 }
 
 /**
@@ -2002,15 +2105,45 @@ type _RedirectErrorShape = Error & { digest: string };
  * `shims/error-boundary.tsx`.
  */
 export function isRedirectError(error: unknown): error is _RedirectErrorShape {
-  if (
-    !error ||
-    typeof error !== "object" ||
-    !("digest" in error) ||
-    typeof (error as { digest: unknown }).digest !== "string"
-  ) {
-    return false;
+  if (!error || typeof error !== "object") return false;
+  if (!("digest" in error)) return false;
+  if (typeof error.digest !== "string") return false;
+  return error.digest.startsWith("NEXT_REDIRECT;");
+}
+
+/**
+ * Parse a redirect error digest into its URL and type components.
+ *
+ * Supports two formats:
+ *   - vinext's 3-part: `NEXT_REDIRECT;{type};{encoded-url}`
+ *   - Next.js's 5-part: `NEXT_REDIRECT;{type};{url};{status};{isClient}`
+ *
+ * The URL segment is always percent-encoded on the write side
+ * (encodeURIComponent is used), so re-joining with ";" for the 5-part
+ * format is defensive — it correctly handles any unencoded ";" that
+ * might appear in an externally-sourced digest.
+ *
+ * Returns null for malformed digests that have an empty URL segment, or
+ * when the URL contains invalid percent-encoding.
+ */
+export function decodeRedirectError(
+  digest: string,
+): { url: string; type: "push" | "replace" } | null {
+  if (!digest.startsWith("NEXT_REDIRECT;")) return null;
+
+  const parts = digest.split(";");
+  const encodedTarget = parts.length >= 5 ? parts.slice(2, -2).join(";") : parts[2];
+  if (!encodedTarget) return null;
+
+  let url: string;
+  try {
+    url = decodeURIComponent(encodedTarget);
+  } catch {
+    return null;
   }
-  return (error as { digest: string }).digest.startsWith("NEXT_REDIRECT;");
+
+  const type: "push" | "replace" = parts[1] === "push" ? "push" : "replace";
+  return { url, type };
 }
 
 /**

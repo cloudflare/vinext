@@ -17,6 +17,8 @@ import {
 } from "../packages/vinext/src/server/artifact-compatibility.js";
 import type { LayoutClassificationOptions } from "../packages/vinext/src/server/app-page-execution.js";
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
+import { VINEXT_DYNAMIC_STALE_TIME_HEADER } from "../packages/vinext/src/server/headers.js";
+import type { ClientReuseManifestSkipDisposition } from "../packages/vinext/src/server/client-reuse-manifest.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 
 function captureRecord(value: ReactNode | AppOutgoingElements): Record<string, unknown> {
@@ -367,6 +369,52 @@ describe("app page render lifecycle", () => {
     });
     expect(JSON.stringify(cachedValue?.renderObservation)).not.toContain("secret");
     expect(consumeDynamicUsage).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cache RSC responses when skip transport omits layout records", async () => {
+    const common = createCommonOptions();
+    const isrDebug = vi.fn();
+    let capturedElement: Record<string, unknown> | null = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      element: {
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        "layout:/": "root-layout",
+        "page:/posts/post": "post-page",
+      },
+      isProduction: true,
+      isRscRequest: true,
+      isrDebug,
+      renderToReadableStream(element) {
+        capturedElement = captureRecord(element);
+        return createStream(["flight-data"]);
+      },
+      revalidateSeconds: 60,
+      skipDisposition: {
+        code: "SKIP_STATIC_LAYOUT_VERIFIED",
+        enabled: true,
+        mode: "skipStaticLayout",
+        skippedEntryIds: ["layout:/"],
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    await expect(response.text()).resolves.toBe("flight-data");
+
+    if (capturedElement === null) {
+      throw new Error("Expected renderToReadableStream to receive AppElements payload");
+    }
+    expect(Object.hasOwn(capturedElement, "layout:/")).toBe(false);
+    expect(capturedElement["page:/posts/post"]).toBe("post-page");
+    expect(common.waitUntilPromises).toHaveLength(0);
+    expect(common.isrSet).not.toHaveBeenCalled();
+    expect(isrDebug).toHaveBeenCalledWith(
+      "RSC cache write skipped (skip transport payload)",
+      "/posts/post",
+    );
   });
 
   it("does not wait for the full captured RSC payload before returning production RSC responses", async () => {
@@ -730,6 +778,79 @@ describe("app page render lifecycle", () => {
     expect(common.waitUntilPromises).toHaveLength(0);
     expect(common.isrSet).not.toHaveBeenCalled();
   });
+
+  it("emits the dynamic stale time header on RSC responses during dynamic renders", async () => {
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      dynamicStaleTimeSeconds: 60,
+      isRscRequest: true,
+    });
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("60");
+    await expect(response.text()).resolves.toBe("flight-data");
+  });
+
+  it("omits the dynamic stale time header during prerender (isPrerender=true)", async () => {
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      dynamicStaleTimeSeconds: 60,
+      isRscRequest: true,
+      isPrerender: true,
+    });
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
+    await expect(response.text()).resolves.toBe("flight-data");
+  });
+
+  it("omits the dynamic stale time header during force-static renders", async () => {
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      dynamicStaleTimeSeconds: 60,
+      isRscRequest: true,
+      isForceStatic: true,
+    });
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
+    await expect(response.text()).resolves.toBe("flight-data");
+  });
+
+  it("omits the dynamic stale time header on production ISR renders captured into the cache", async () => {
+    // Production ISR (revalidate > 0, not force-static, not a build prerender)
+    // satisfies shouldCaptureRscForCacheMetadata, so the render feeds the ISR
+    // cache. Like Next.js's !workStore.isStaticGeneration guard, the
+    // authoritative per-page stale time must not be emitted on such responses.
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      dynamicStaleTimeSeconds: 60,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: 60,
+    });
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
+    await expect(response.text()).resolves.toBe("flight-data");
+  });
+
+  it("omits the dynamic stale time header on production default-config renders that turn dynamic", async () => {
+    // Documents the known over-gating at the cache-capture boundary: a production
+    // default-config route (revalidateSeconds === null, not force-dynamic) that
+    // uses a late dynamic API is genuinely dynamic, but shouldCaptureRscForCacheMetadata
+    // is true (computed from config before the stream runs), so the header is omitted.
+    // Next.js would emit it here (!isStaticGeneration); the value is unknowable until
+    // after the headers are built, so the advisory hint is dropped on this NO_STORE
+    // response. See app-page-render.ts gating comment.
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeDynamicUsage: vi.fn(() => true),
+      dynamicStaleTimeSeconds: 60,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: null,
+    });
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
+    await expect(response.text()).resolves.toBe("flight-data");
+  });
 });
 
 describe("layoutFlags injection into RSC payload", () => {
@@ -738,6 +859,7 @@ describe("layoutFlags injection into RSC payload", () => {
     layoutCount?: number;
     probeLayoutAt?: (index: number) => unknown;
     classification?: LayoutClassificationOptions | null;
+    skipDisposition?: ClientReuseManifestSkipDisposition;
   }) {
     let capturedElement: Record<string, unknown> | null = null;
 
@@ -783,6 +905,7 @@ describe("layoutFlags injection into RSC payload", () => {
       runWithSuppressedHookWarning: <T>(probe: () => Promise<T>) => probe(),
       element: overrides.element ?? { "page:/test": "test-page" },
       classification: overrides.classification,
+      skipDisposition: overrides.skipDisposition,
     };
 
     return {
@@ -977,6 +1100,82 @@ describe("layoutFlags injection into RSC payload", () => {
       "layout:/": "s",
       "layout:/blog": "s",
     });
+  });
+
+  it("applies enabled static-layout skip transport after preserving all layout flags", async () => {
+    const { options, getCapturedElement } = createRscOptions({
+      element: {
+        "layout:/": "root-layout",
+        "layout:/blog": "blog-layout",
+        "page:/blog/post": "post-page",
+      },
+      layoutCount: 2,
+      probeLayoutAt: () => null,
+      classification: {
+        getLayoutId: (index: number) => (index === 0 ? "layout:/" : "layout:/blog"),
+        buildTimeClassifications: null,
+        async runWithIsolatedDynamicScope(fn) {
+          const result = await fn();
+          return { result, dynamicDetected: false };
+        },
+      },
+      skipDisposition: {
+        code: "SKIP_STATIC_LAYOUT_VERIFIED",
+        enabled: true,
+        mode: "skipStaticLayout",
+        skippedEntryIds: ["layout:/blog"],
+      },
+    });
+
+    await renderAppPageLifecycle(options);
+    expect(getCapturedElement()["layout:/"]).toBe("root-layout");
+    expect(Object.hasOwn(getCapturedElement(), "layout:/blog")).toBe(false);
+    expect(getCapturedElement()["page:/blog/post"]).toBe("post-page");
+    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({
+      "layout:/": "s",
+      "layout:/blog": "s",
+    });
+  });
+
+  it("does not apply skip transport while producing an HTML response", async () => {
+    const common = createCommonOptions();
+    let capturedElement: Record<string, unknown> | null = null;
+
+    await renderAppPageLifecycle({
+      ...common.options,
+      element: {
+        "layout:/": "root-layout",
+        "layout:/blog": "blog-layout",
+        "page:/blog/post": "post-page",
+      },
+      layoutCount: 2,
+      classification: {
+        getLayoutId: (index: number) => (index === 0 ? "layout:/" : "layout:/blog"),
+        buildTimeClassifications: null,
+        async runWithIsolatedDynamicScope(fn) {
+          const result = await fn();
+          return { result, dynamicDetected: false };
+        },
+      },
+      isRscRequest: false,
+      renderToReadableStream(element) {
+        capturedElement = captureRecord(element);
+        return createStream(["flight-data"]);
+      },
+      skipDisposition: {
+        code: "SKIP_STATIC_LAYOUT_VERIFIED",
+        enabled: true,
+        mode: "skipStaticLayout",
+        skippedEntryIds: ["layout:/blog"],
+      },
+    });
+
+    if (capturedElement === null) {
+      throw new Error("Expected renderToReadableStream to be called");
+    }
+    expect(capturedElement["layout:/"]).toBe("root-layout");
+    expect(capturedElement["layout:/blog"]).toBe("blog-layout");
+    expect(capturedElement["page:/blog/post"]).toBe("post-page");
   });
 
   it("wire payload layoutFlags uses only the shorthand 's'/'d' values, never tagged reasons", async () => {

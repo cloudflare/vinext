@@ -289,6 +289,20 @@ describe("App Router integration", () => {
     expect(html).toContain("</body></html>");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+  // (regression for #1532)
+  it("ends the streamed body with </body></html> and not after trailing scripts", async () => {
+    const res = await fetch(`${baseUrl}/about`);
+    const html = await res.text();
+
+    const suffix = "</body></html>";
+    expect(html.endsWith(suffix)).toBe(true);
+    // The suffix must not appear anywhere else in the document — trailing
+    // flight chunks and preinit scripts must land before the closing tags.
+    expect(html.slice(0, -suffix.length)).not.toContain(suffix);
+  });
+
   it("SSR renders 'use client' components with initial state", async () => {
     const res = await fetch(`${baseUrl}/interactive`);
     expect(res.status).toBe(200);
@@ -3388,7 +3402,7 @@ describe("App Router Static export", () => {
 
     // Explicit appDir enables static metadata asset export for App Router apps.
     expect(result.files).toContain("metadata-dynamic-static/-/apple-icon.png");
-  });
+  }, 60_000);
 
   it("pre-renders dynamic routes from generateStaticParams", async () => {
     // blog/[slug] has generateStaticParams returning hello-world and getting-started
@@ -4275,7 +4289,9 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("export default __createAppRscHandler({");
     expect(code).toContain("configRedirects: __configRedirects");
     expect(code).toContain("dispatchMatchedPage({");
+    expect(code).toContain("    clientReuseManifest,");
     expect(code).toContain("    rootParams,\n    request,");
+    expect(code).toContain("      clientReuseManifest,");
     expect(code).toContain("      rootParams,\n      probeLayoutAt");
     expect(code).toContain("dispatchMatchedRouteHandler({");
     expect(code).toContain("matchRoute,");

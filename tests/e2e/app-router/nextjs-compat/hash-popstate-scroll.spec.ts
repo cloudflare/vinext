@@ -195,6 +195,24 @@ test.describe("Next.js compat: hash popstate scroll", () => {
       .toBe(0);
   });
 
+  // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+  test("back navigation restores the saved scroll position before the next assertion frame", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/hash-popstate-scroll`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => window.scrollTo(0, 1200));
+    await expectScrollY(page, 1200);
+
+    await page.click("#plain-link");
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/hash-popstate-scroll/plain`);
+
+    await page.goBack();
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/hash-popstate-scroll`);
+    await expectScrollY(page, 1200);
+  });
+
   test("forward traversal decodes non-latin hash fragments", async ({ page }) => {
     await expectHashForwardTraversal(page, "#encoded-link", "#caf%C3%A9", '[id="café"]');
   });

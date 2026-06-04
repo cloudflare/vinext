@@ -49,7 +49,12 @@ import {
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
-import { loadUserDocumentInitialProps } from "./pages-document-initial-props.js";
+import {
+  loadUserDocumentInitialProps,
+  type RenderPageEnhancers,
+  runDocumentRenderPage,
+} from "./pages-document-initial-props.js";
+import { callDocumentGetInitialProps } from "./document-initial-head.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -77,6 +82,41 @@ async function renderIsrPassToStringAsync(element: React.ReactElement): Promise<
       ),
     ),
   );
+}
+
+/**
+ * Emit a `getServerSideProps` / `getStaticProps` `{ redirect }` result.
+ *
+ * For an HTML request we write a real HTTP redirect (`Location`). For a
+ * `_next/data` request we instead reply 200 with `__N_REDIRECT` /
+ * `__N_REDIRECT_STATUS` in pageProps so the client router re-dispatches a
+ * fresh client navigation (which supersedes the in-flight one) rather than
+ * the fetch transparently following an HTTP redirect to non-JSON HTML. This
+ * mirrors the production path in `pages-page-data.ts`
+ * (`buildPagesRedirectResponse`) and Next.js's `render.tsx` `__N_REDIRECT`
+ * handling. See AGENTS.md "dev and prod server parity".
+ */
+function writeGsspRedirect(
+  res: ServerResponse,
+  redirect: { destination: string; statusCode?: number; permanent?: boolean },
+  isDataReq: boolean,
+): void {
+  const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
+  // Sanitize destination to prevent open redirect via protocol-relative URLs.
+  // Also normalize backslashes — browsers treat \ as / in URL contexts.
+  let dest = redirect.destination;
+  if (!dest.startsWith("http://") && !dest.startsWith("https://")) {
+    dest = dest.replace(/^[\\/]+/, "/");
+  }
+
+  if (isDataReq) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ pageProps: { __N_REDIRECT: dest, __N_REDIRECT_STATUS: status } }));
+    return;
+  }
+
+  res.writeHead(status, { Location: dest });
+  res.end();
 }
 
 /** Body placeholder used to split the document shell for streaming. */
@@ -108,6 +148,31 @@ async function streamPageToResponse(
     extraHeaders?: Record<string, string | string[]>;
     /** Called after renderToReadableStream resolves (shell ready) to collect head HTML */
     getHeadHTML: () => string;
+    /**
+     * Build the React tree with optional App/Component enhancers applied.
+     * Used by the Pages Router `_document.getInitialProps` contract:
+     *
+     *   ctx.renderPage({ enhanceApp, enhanceComponent })
+     *
+     * When provided alongside a `DocumentComponent.getInitialProps`, the
+     * body is rendered to a string inside `renderPage` (mirroring Next.js's
+     * `loadDocumentInitialProps`) so CSS-in-JS libraries can collect styles.
+     * Must NOT apply `withScriptNonce` — the shared helper owns that.
+     */
+    enhancePageElement?: ((opts: RenderPageEnhancers) => React.ReactElement) | undefined;
+    /** Per-request CSP nonce forwarded to the shared renderPage helper. */
+    scriptNonce?: string | undefined;
+    /**
+     * Minimal `DocumentContext` fields (`pathname`/`query`/`asPath`) forwarded
+     * to `getInitialProps`. Mirrors the prod pipeline for parity.
+     */
+    documentContext?: Record<string, unknown> | undefined;
+    /**
+     * Optional: hand a list of `<head>` ReactNodes (returned by user
+     * `_document.getInitialProps()`) to the head shim so they're merged
+     * into `getSSRHeadHTML()`'s output. Called before `getHeadHTML()`.
+     */
+    setDocumentInitialHead?: (head: React.ReactNode[]) => void;
   },
 ): Promise<void> {
   const {
@@ -119,21 +184,78 @@ async function streamPageToResponse(
     statusCode = 200,
     extraHeaders,
     getHeadHTML,
+    enhancePageElement,
+    scriptNonce,
+    documentContext,
+    setDocumentInitialHead,
   } = options;
 
-  // Start the React body stream FIRST — the promise resolves when the
-  // shell is ready (synchronous content outside Suspense boundaries).
-  // This triggers the render which populates <Head> tags.
-  const bodyStream = await renderToReadableStream(element);
+  // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
+  // via `ctx.renderPage({ enhanceApp, enhanceComponent })` (e.g. styled-
+  // components / emotion style collection). When that contract is in use the
+  // body must be a single complete string before `_document` renders. The
+  // streaming path stays as the default for the common case. The contract
+  // (including `withScriptNonce` and `styles` rendering) lives in the shared
+  // helper so dev and prod stay in lockstep.
+  const documentRenderPage = await runDocumentRenderPage({
+    DocumentComponent,
+    enhancePageElement,
+    renderToReadableStream,
+    renderStylesToString: renderToStringAsync,
+    scriptNonce,
+    context: documentContext,
+  });
 
-  // Now that the shell has rendered, collect head HTML
-  const headHTML = getHeadHTML();
+  let bodyStream: ReadableStream<Uint8Array>;
+  if (documentRenderPage.status === "rendered") {
+    const synthesised = documentRenderPage.bodyHtml;
+    bodyStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(synthesised));
+        controller.close();
+      },
+    });
+  } else {
+    // Start the React body stream FIRST — the promise resolves when the
+    // shell is ready (synchronous content outside Suspense boundaries).
+    // This triggers the render which populates <Head> tags.
+    bodyStream = await renderToReadableStream(element);
+  }
+
+  // Fold any head tags returned by `_document.getInitialProps()` into the same
+  // dedupe pipeline as user `next/head` tags. Matches Next.js's `_document`
+  // contract. `runDocumentRenderPage` already invokes `getInitialProps` for the
+  // renderPage contract (rendered/consumed), so reuse the head it surfaced
+  // rather than calling it a second time. Only the `skipped` path (no override,
+  // or no `enhancePageElement` wired) falls back to the standalone helper, which
+  // itself skips the unmodified default from vinext's `next/document` shim —
+  // extending Document without overriding the method inherits the base
+  // implementation, and the default returns no head tags, so dispatching it on
+  // every render is wasted work.
+  if (documentRenderPage.status === "skipped") {
+    await callDocumentGetInitialProps(DocumentComponent, setDocumentInitialHead);
+  } else {
+    setDocumentInitialHead?.(documentRenderPage.head);
+  }
+
+  // Now that the shell has rendered (and any _document.getInitialProps
+  // has injected its tags), collect head HTML.
+  let headHTML = getHeadHTML();
+  if (documentRenderPage.status === "rendered" && documentRenderPage.stylesHTML) {
+    headHTML += `\n  ${documentRenderPage.stylesHTML}`;
+  }
 
   // Build the document shell with a placeholder for the body
   let shellTemplate: string;
 
   if (DocumentComponent) {
-    const docProps = await loadUserDocumentInitialProps(DocumentComponent);
+    // When the renderPage path already invoked getInitialProps (rendered or
+    // consumed), reuse its resolved props instead of calling it a second time.
+    // `skipped` means it was never invoked → fall through to the fast path.
+    const docProps =
+      documentRenderPage.status === "skipped"
+        ? await loadUserDocumentInitialProps(DocumentComponent)
+        : documentRenderPage.docProps;
     const docElement = docProps
       ? React.createElement(DocumentComponent, docProps)
       : React.createElement(DocumentComponent);
@@ -151,11 +273,12 @@ async function streamPageToResponse(
     }
     shellTemplate = docHtml;
   } else {
+    // charset + viewport are emitted via getSSRHeadHTML() (next/head's
+    // defaultHead seeds them with data-next-head=""), matching Next.js's
+    // canonical ordering. Don't duplicate them here.
     shellTemplate = `<!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
   ${fontHeadHTML}${headHTML}
 </head>
 <body>
@@ -323,6 +446,7 @@ export function createSSRHandler(
     let locale: string | undefined;
     let localeStrippedUrl = url;
     let currentDefaultLocale: string | undefined;
+    let currentDomainLocaleDomain: string | undefined;
     const domainLocales = i18nConfig?.domains;
 
     if (i18nConfig) {
@@ -337,6 +461,7 @@ export function createSSRHandler(
       locale = resolved.locale;
       localeStrippedUrl = resolved.url;
       currentDefaultLocale = resolved.domainLocale?.defaultLocale ?? i18nConfig.defaultLocale;
+      currentDomainLocaleDomain = resolved.domainLocale?.domain;
 
       if (resolved.redirectUrl) {
         res.writeHead(307, { Location: resolved.redirectUrl });
@@ -344,6 +469,20 @@ export function createSSRHandler(
         return;
       }
     }
+
+    const i18nCacheVariant = i18nConfig
+      ? currentDomainLocaleDomain
+        ? "domain:" + currentDomainLocaleDomain.toLowerCase()
+        : "locale:" + String(locale)
+      : null;
+    const pagesIsrCacheKey = i18nCacheVariant
+      ? (pathname: string) =>
+          isrCacheKey(
+            "pages",
+            pathname + "::i18n=" + encodeURIComponent(i18nCacheVariant),
+            process.env.__VINEXT_BUILD_ID,
+          )
+      : (pathname: string) => isrCacheKey("pages", pathname, process.env.__VINEXT_BUILD_ID);
 
     const match = matchRoute(localeStrippedUrl, routes);
 
@@ -582,18 +721,7 @@ export function createSSRHandler(
             pageProps = await Promise.resolve(result.props);
           }
           if (result && "redirect" in result) {
-            const { redirect } = result;
-            const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
-            // Sanitize destination to prevent open redirect via protocol-relative URLs.
-            // Also normalize backslashes — browsers treat \ as / in URL contexts.
-            let dest = redirect.destination;
-            if (!dest.startsWith("http://") && !dest.startsWith("https://")) {
-              dest = dest.replace(/^[\\/]+/, "/");
-            }
-            res.writeHead(status, {
-              Location: dest,
-            });
-            res.end();
+            writeGsspRedirect(res, result.redirect, isDataReq);
             return;
           }
           if (result && "notFound" in result && result.notFound) {
@@ -687,13 +815,7 @@ export function createSSRHandler(
 
         if (typeof pageModule.getStaticProps === "function" && !isFallbackRender) {
           // Check ISR cache before calling getStaticProps
-          const cacheKey = isrCacheKey(
-            "pages",
-            url.split("?")[0],
-            // __VINEXT_BUILD_ID is a compile-time define — undefined in dev,
-            // which is fine: dev doesn't need cross-deploy cache isolation.
-            process.env.__VINEXT_BUILD_ID,
-          );
+          const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
           const cached = await isrGet(cacheKey);
 
           if (
@@ -893,18 +1015,7 @@ export function createSSRHandler(
             pageProps = result.props;
           }
           if (result && "redirect" in result) {
-            const { redirect } = result;
-            const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
-            // Sanitize destination to prevent open redirect via protocol-relative URLs.
-            // Also normalize backslashes — browsers treat \ as / in URL contexts.
-            let dest = redirect.destination;
-            if (!dest.startsWith("http://") && !dest.startsWith("https://")) {
-              dest = dest.replace(/^[\\/]+/, "/");
-            }
-            res.writeHead(status, {
-              Location: dest,
-            });
-            res.end();
+            writeGsspRedirect(res, result.redirect, isDataReq);
             return;
           }
           if (result && "notFound" in result && result.notFound) {
@@ -1182,6 +1293,48 @@ hydrate();
           DocumentComponent,
           statusCode,
           extraHeaders,
+          // Forward the per-request nonce so the shared renderPage helper can
+          // apply `withScriptNonce` once (it owns that responsibility).
+          scriptNonce,
+          // Minimal DocumentContext for `getInitialProps`, matching prod parity.
+          documentContext: {
+            pathname: patternToNextFormat(route.pattern),
+            query,
+            asPath: url,
+          },
+          // Used by `_document.getInitialProps` -> `ctx.renderPage` to wrap
+          // App/Component with user enhancers (e.g. styled-components,
+          // emotion). The streaming path otherwise renders `element` as-is.
+          // Returns the bare enhanced tree — nonce is applied by the helper.
+          // `pageProps` is captured from the closure (mirrors the prod entry's
+          // `enhancePageElement`) — this closure is only ever invoked for this
+          // one request with this one `pageProps`, so there is nothing to thread
+          // through; the renderPage contract only varies the enhancers.
+          enhancePageElement: (renderPageOpts) => {
+            // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+            let FinalApp: any = AppComponent;
+            // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+            let FinalComp: any = PageComponent;
+            if (renderPageOpts && typeof renderPageOpts.enhanceApp === "function" && FinalApp) {
+              FinalApp = renderPageOpts.enhanceApp(FinalApp);
+            }
+            if (renderPageOpts && typeof renderPageOpts.enhanceComponent === "function") {
+              FinalComp = renderPageOpts.enhanceComponent(FinalComp);
+            }
+            let enhancedElement: React.ReactElement;
+            if (FinalApp) {
+              enhancedElement = createElement(FinalApp, {
+                Component: FinalComp,
+                pageProps,
+              });
+            } else {
+              enhancedElement = createElement(FinalComp, pageProps);
+            }
+            if (wrapWithRouterContext) {
+              enhancedElement = wrapWithRouterContext(enhancedElement);
+            }
+            return enhancedElement;
+          },
           // Collect head HTML AFTER the shell renders (inside streamPageToResponse,
           // after renderToReadableStream resolves). Head tags from Suspense
           // children arrive late — this matches Next.js behavior.
@@ -1195,6 +1348,10 @@ hydrate();
             const traceHTML = getClientTraceMetadataHTML(clientTraceMetadata);
             return traceHTML ? `${headHTML}\n  ${traceHTML}` : headHTML;
           },
+          setDocumentInitialHead:
+            typeof headShim.setDocumentInitialHead === "function"
+              ? headShim.setDocumentInitialHead
+              : undefined,
         });
         _renderEnd = now();
 
@@ -1220,13 +1377,7 @@ hydrate();
             withScriptNonce(isrElement, scriptNonce),
           );
           const isrHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
-          const cacheKey = isrCacheKey(
-            "pages",
-            url.split("?")[0],
-            // __VINEXT_BUILD_ID is a compile-time define — undefined in dev,
-            // which is fine: dev doesn't need cross-deploy cache isolation.
-            process.env.__VINEXT_BUILD_ID,
-          );
+          const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
           await isrSet(cacheKey, buildPagesCacheValue(isrHtml, pageProps), isrRevalidateSeconds);
           setRevalidateDuration(cacheKey, isrRevalidateSeconds);
         }

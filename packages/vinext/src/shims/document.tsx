@@ -22,15 +22,15 @@ export function Html({
 /**
  * Document Head - renders <head> with children.
  * The dev server injects meta tags, styles, etc.
+ *
+ * Note: charset and viewport are intentionally NOT hardcoded here. Those
+ * defaults are seeded by `next/head`'s `defaultHead()` and emitted alongside
+ * user `<Head>` tags via `getSSRHeadHTML()`, matching Next.js's canonical
+ * ordering (`<meta charset>` first, then `<meta viewport>`, then user tags,
+ * all with `data-next-head=""`). See `test/e2e/next-head/index.test.ts`.
  */
 export function Head({ children }: { children?: React.ReactNode }) {
-  return (
-    <head>
-      <meta charSet="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
-      {children}
-    </head>
-  );
+  return <head>{children}</head>;
 }
 
 /**

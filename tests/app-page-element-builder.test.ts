@@ -224,6 +224,7 @@ describe("buildPageElements", () => {
         state: "unmatched",
       },
       {
+        activeRouteId: "route:/dashboard",
         ownerLayoutId: "layout:/",
         slotId: "slot:team:/",
         state: "active",
@@ -274,6 +275,7 @@ describe("buildPageElements", () => {
 
     expect(record[APP_SLOT_BINDINGS_KEY]).toEqual([
       {
+        activeRouteId: "route:/photos/42",
         ownerLayoutId: "layout:/feed",
         slotId: "slot:modal:/feed",
         state: "active",

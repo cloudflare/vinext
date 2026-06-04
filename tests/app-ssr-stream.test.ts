@@ -339,6 +339,66 @@ describe("createTickBufferedTransform pre-head splice", () => {
     expect(out).not.toContain("<script>x</script>");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
+  // (regression for #1532)
+  describe("</body></html> suffix is the last thing in the stream", () => {
+    it("moves the </body></html> suffix to the end after trailing scripts and RSC chunks", async () => {
+      // Simulate React Fizz emitting the closing tags BEFORE flush appends
+      // trailing flight chunks / preinit scripts.
+      const rsc = {
+        flush: () => "",
+        finalize: async () => '<script id="trailing-rsc">rsc()</script>',
+        getRawBuffer: async () => new ArrayBuffer(0),
+      };
+      const transform = createTickBufferedTransform(rsc, "", "");
+      const source = createTextStream([
+        "<!DOCTYPE html><html><head></head><body><div>hi</div></body></html>",
+      ]);
+      const out = await new Response(source.pipeThrough(transform)).text();
+
+      const suffix = "</body></html>";
+      expect(out.endsWith(suffix)).toBe(true);
+      // Only one occurrence — the suffix must not appear in the middle.
+      expect(out.slice(0, -suffix.length)).not.toContain(suffix);
+      // Trailing scripts land before the suffix, not after it.
+      expect(out).toContain('<script id="trailing-rsc">rsc()</script></body></html>');
+    });
+
+    it("ensures the suffix is at the end even when injectHTML fallback fires", async () => {
+      // When `<head>` never appears, injectHTML falls back to end-of-stream
+      // emission. The closing tags must still come last.
+      const rsc = {
+        flush: () => "",
+        finalize: async () => "",
+        getRawBuffer: async () => new ArrayBuffer(0),
+      };
+      const transform = createTickBufferedTransform(rsc, "<meta data-injected='1'/>", "");
+      const source = createTextStream(["<!DOCTYPE html><html><body></body></html>"]);
+      const out = await new Response(source.pipeThrough(transform)).text();
+
+      const suffix = "</body></html>";
+      expect(out.endsWith(suffix)).toBe(true);
+      expect(out.slice(0, -suffix.length)).not.toContain(suffix);
+      expect(out).toContain("<meta data-injected='1'/>");
+    });
+
+    it("adds the suffix at the end even when the source stream omits it", async () => {
+      // Defense-in-depth: if React Fizz somehow ends without `</body></html>`,
+      // we still emit a well-formed document close.
+      const rsc = {
+        flush: () => "",
+        finalize: async () => "",
+        getRawBuffer: async () => new ArrayBuffer(0),
+      };
+      const transform = createTickBufferedTransform(rsc, "", "");
+      const source = createTextStream(["<!DOCTYPE html><html><head></head><body>oops"]);
+      const out = await new Response(source.pipeThrough(transform)).text();
+
+      expect(out.endsWith("</body></html>")).toBe(true);
+    });
+  });
+
   it("re-evaluates the insertion getter only when splice runs", async () => {
     // For the function-shaped getter we need to confirm we read it lazily —
     // once at splice time — so callers can pass a getter that snapshots state

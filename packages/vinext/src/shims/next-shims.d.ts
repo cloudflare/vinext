@@ -269,6 +269,12 @@ declare module "next/navigation" {
     interceptionContext?: string | null,
     mountedSlotsHeader?: string | null,
   ): CachedRscResponse | null;
+  export function consumePrefetchResponseForNavigation(
+    rscUrl: string,
+    interceptionContext?: string | null,
+    mountedSlotsHeader?: string | null,
+    options?: { shouldConsume?: () => boolean },
+  ): Promise<CachedRscResponse | null>;
 }
 
 declare module "next/image" {
@@ -674,6 +680,7 @@ declare module "next/cache" {
     | { kind: "IMAGE"; etag: string; buffer: ArrayBuffer; extension: string; revalidate?: number };
 
   export class MemoryCacheHandler implements CacheHandler {
+    constructor(options?: number | { cacheMaxMemorySize?: number; maxMemoryCacheSize?: number });
     get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
     set(
       key: string,
@@ -690,6 +697,10 @@ declare module "next/cache" {
   export function setCacheHandler(handler: CacheHandler): void;
   /** @deprecated Use getDataCacheHandler. */
   export function getCacheHandler(): CacheHandler;
+  export function configureMemoryCacheHandler(options?: {
+    cacheMaxMemorySize?: number;
+    maxMemoryCacheSize?: number;
+  }): void;
   export function revalidateTag(tag: string, profile?: string | { expire?: number }): Promise<void>;
   export function revalidatePath(path: string, type?: "page" | "layout"): Promise<void>;
   export function updateTag(tag: string): Promise<void>;

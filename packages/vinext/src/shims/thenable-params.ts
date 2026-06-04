@@ -62,7 +62,42 @@ function isWellKnownProperty(prop: PropertyKey): boolean {
 export type ThenableParams<T extends Record<string, unknown>> = Promise<T> &
   Omit<T, WellKnownProperty>;
 
-export function makeThenableParams<T extends Record<string, unknown>>(obj: T): ThenableParams<T> {
+export type ThenableParamsObserver = Readonly<{
+  observeParamAccess: (keys: readonly string[]) => void;
+}>;
+
+function observeParamKeys(
+  observer: ThenableParamsObserver | undefined,
+  keys: readonly string[],
+): void {
+  if (observer) {
+    observer.observeParamAccess(keys);
+  }
+}
+
+function observeAllParamKeys<T extends Record<string, unknown>>(
+  observer: ThenableParamsObserver | undefined,
+  plain: T,
+): void {
+  observeParamKeys(observer, Object.keys(plain));
+}
+
+function observeReadableParamKeys<T extends Record<string, unknown>>(
+  observer: ThenableParamsObserver | undefined,
+  plain: T,
+): void {
+  const keys = Object.keys(plain).filter((key) => !isWellKnownProperty(key));
+  observeParamKeys(observer, keys);
+}
+
+function isPromiseContinuation(prop: PropertyKey): boolean {
+  return prop === "then" || prop === "catch" || prop === "finally";
+}
+
+export function makeThenableParams<T extends Record<string, unknown>>(
+  obj: T,
+  observer?: ThenableParamsObserver,
+): ThenableParams<T> {
   const plain = { ...obj };
   const promise = Promise.resolve(plain);
 
@@ -72,6 +107,19 @@ export function makeThenableParams<T extends Record<string, unknown>>(obj: T): T
   // the boundary so the handler above stays fully type-checked.
   return new Proxy(promise, {
     get(target, prop, receiver) {
+      if (isPromiseContinuation(prop)) {
+        const value = Reflect.get(target, prop, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          observeAllParamKeys(observer, plain);
+          return Reflect.apply(value, target, args);
+        };
+      }
+
+      if (typeof prop === "string" && !isWellKnownProperty(prop)) {
+        observeParamKeys(observer, [prop]);
+      }
+
       if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
         return Reflect.get(plain, prop);
       }
@@ -80,6 +128,10 @@ export function makeThenableParams<T extends Record<string, unknown>>(obj: T): T
       return typeof value === "function" ? value.bind(target) : value;
     },
     getOwnPropertyDescriptor(target, prop) {
+      if (typeof prop === "string" && !isWellKnownProperty(prop)) {
+        observeParamKeys(observer, [prop]);
+      }
+
       if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
         return {
           configurable: true,
@@ -92,11 +144,16 @@ export function makeThenableParams<T extends Record<string, unknown>>(obj: T): T
       return Reflect.getOwnPropertyDescriptor(target, prop);
     },
     has(target, prop) {
+      if (typeof prop === "string" && !isWellKnownProperty(prop)) {
+        observeParamKeys(observer, [prop]);
+      }
+
       return (
         Reflect.has(target, prop) || (!isWellKnownProperty(prop) && hasParamProperty(plain, prop))
       );
     },
     ownKeys() {
+      observeReadableParamKeys(observer, plain);
       return Reflect.ownKeys(plain).filter((prop) => !isWellKnownProperty(prop));
     },
   }) as unknown as ThenableParams<T>;

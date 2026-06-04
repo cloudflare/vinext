@@ -161,6 +161,26 @@ describe("resolveAppPageSegmentConfig", () => {
     });
   });
 
+  it("uses the child route runtime when segment runtimes differ", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ runtime: "edge" }],
+        page: { runtime: "nodejs" },
+      }).runtime,
+    ).toBe("nodejs");
+  });
+
+  it("ignores unknown runtime values", () => {
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ runtime: "bun" }],
+        page: {},
+      }),
+    ).toEqual({
+      revalidateSeconds: null,
+    });
+  });
+
   it("keeps explicit dynamicParams false sticky across child segments", () => {
     expect(
       resolveAppPageSegmentConfig({
@@ -199,6 +219,37 @@ describe("resolveAppPageSegmentConfig", () => {
         page: { revalidate: 60 },
       }).revalidateSeconds,
     ).toBe(60);
+  });
+
+  it("reads unstable_dynamicStaleTime only from page modules", () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
+    // See also: packages/next/src/server/app-render/app-render.tsx#getDynamicStaleTime
+    expect(
+      resolveAppPageSegmentConfig({
+        layouts: [{ unstable_dynamicStaleTime: 5 }],
+        page: { unstable_dynamicStaleTime: 60 },
+      }),
+    ).toEqual({
+      dynamicStaleTimeSeconds: 60,
+      revalidateSeconds: null,
+    });
+  });
+
+  it("uses the shortest unstable_dynamicStaleTime across active page slots", () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
+    expect(
+      resolveAppPageSegmentConfig({
+        page: { unstable_dynamicStaleTime: 60 },
+        parallelPages: [
+          { unstable_dynamicStaleTime: 15 },
+          { unstable_dynamicStaleTime: 30 },
+          { unstable_dynamicStaleTime: "not-a-number" },
+        ],
+      }),
+    ).toEqual({
+      dynamicStaleTimeSeconds: 15,
+      revalidateSeconds: null,
+    });
   });
 
   it("resolves just the fetchCache mode for route-specific render scopes", () => {

@@ -362,6 +362,19 @@ function rewriteInlineCssStylesheetLinks(
 const HEAD_OPEN_RE = /<head\b[^>]*>/;
 
 /**
+ * Final closing tags of the streamed HTML document. We track this suffix
+ * separately so we can move it to the very end of the stream — trailing flight
+ * chunks and preinit scripts emitted by `rscEmbed.finalize()` are appended in
+ * `flush()`, which would otherwise land them after `</body></html>` and break
+ * any consumer that asserts the document terminates with a well-formed close.
+ *
+ * Ported from Next.js: packages/next/src/server/stream-utils/node-web-streams-helper.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/stream-utils/node-web-streams-helper.ts
+ * (see `createMoveSuffixStream` and `CLOSE_TAG`)
+ */
+const DOCUMENT_CLOSE_SUFFIX = "</body></html>";
+
+/**
  * Create the tick-buffered HTML transform that injects RSC scripts between
  * React Fizz flush cycles without corrupting split HTML chunks.
  *
@@ -402,6 +415,7 @@ export function createTickBufferedTransform(
   const insertsPerFlush = typeof injectHTML === "function";
   let injected = false;
   let preHeadInjected = false;
+  let suffixStripped = false;
   let buffered: string[] = [];
   let pendingHtml = "";
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -410,6 +424,22 @@ export function createTickBufferedTransform(
   // split-link boundary buffering and the inline-css link rewrite below.
   const hasInlineCssManifest =
     inlineCssManifest !== undefined && Object.keys(inlineCssManifest).length > 0;
+
+  /**
+   * Strip the first occurrence of `</body></html>` from `chunk` so it can be
+   * re-emitted at the very end of the stream. Returns the rewritten chunk and
+   * a flag indicating whether a suffix was found. If `suffixStripped` is
+   * already true (i.e. an earlier chunk contained the suffix), this is a
+   * no-op — additional matches in later chunks shouldn't happen in practice,
+   * but we leave them alone to avoid corrupting unexpected output.
+   */
+  const stripDocumentCloseSuffix = (chunk: string): string => {
+    if (suffixStripped) return chunk;
+    const index = chunk.indexOf(DOCUMENT_CLOSE_SUFFIX);
+    if (index === -1) return chunk;
+    suffixStripped = true;
+    return chunk.slice(0, index) + chunk.slice(index + DOCUMENT_CLOSE_SUFFIX.length);
+  };
   const readInsertion = (): string =>
     typeof injectHTML === "function" ? injectHTML() : injectHTML;
   const readPreHeadInsertion = (): string =>
@@ -502,7 +532,7 @@ export function createTickBufferedTransform(
       const headEnd = working.indexOf("</head>");
       if (headEnd !== -1) {
         const before = working.slice(0, headEnd);
-        const after = working.slice(headEnd);
+        const after = stripDocumentCloseSuffix(working.slice(headEnd));
         controller.enqueue(
           encoder.encode(before + readInlineCssPrependFallback() + readInsertion() + after),
         );
@@ -510,6 +540,7 @@ export function createTickBufferedTransform(
         return;
       }
     }
+    working = stripDocumentCloseSuffix(working);
     controller.enqueue(encoder.encode(working));
   };
 
@@ -560,6 +591,11 @@ export function createTickBufferedTransform(
       if (finalScripts) {
         controller.enqueue(encoder.encode(finalScripts));
       }
+
+      // Emit `</body></html>` last so the document always terminates with a
+      // well-formed close, after any trailing flight chunks / preinit scripts.
+      // Mirrors Next.js's `createMoveSuffixStream` behaviour (#1532).
+      controller.enqueue(encoder.encode(DOCUMENT_CLOSE_SUFFIX));
     },
   });
 }

@@ -122,6 +122,7 @@ export async function generateServerEntry(
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
     headers: nextConfig?.headers ?? [],
     expireTime: nextConfig?.expireTime,
+    cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
     i18n: nextConfig?.i18n ?? null,
     // Mirrors Next.js `experimental.disableOptimizedLoading` — when false
     // (the default), page scripts are emitted with `defer` in <head>. See
@@ -224,10 +225,10 @@ export async function runMiddleware(request) {
 import ${JSON.stringify(_serverGlobalsPath)};
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
-import { resetSSRHead, getSSRHeadHTML } from "next/head";
+import { resetSSRHead, getSSRHeadHTML, setDocumentInitialHead } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext, wrapWithRouterContext } from "next/router";
-import { _runWithCacheState } from "next/cache";
+import { _runWithCacheState, configureMemoryCacheHandler as __configureMemoryCacheHandler } from "next/cache";
 import { runWithPrivateCache } from "vinext/cache-runtime";
 import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -275,6 +276,8 @@ const __hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
+
+__configureMemoryCacheHandler({ cacheMaxMemorySize: vinextConfig.cacheMaxMemorySize });
 
 // Path to the user's pages/_app file (or null). Used to look up the
 // _app's CSS/JS chunks in the SSR manifest so any global styles imported
@@ -617,6 +620,14 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     ? (localeInfo.domainLocale ? localeInfo.domainLocale.defaultLocale : i18nConfig.defaultLocale)
     : undefined;
   const domainLocales = i18nConfig ? i18nConfig.domains : undefined;
+  const i18nCacheVariant = i18nConfig
+    ? (localeInfo.domainLocale
+      ? "domain:" + String(localeInfo.domainLocale.domain).toLowerCase()
+      : "locale:" + String(locale))
+    : null;
+  const pageIsrCacheKey = i18nCacheVariant
+    ? (router, pathname) => isrCacheKey(router, pathname + "::i18n=" + encodeURIComponent(i18nCacheVariant))
+    : isrCacheKey;
 
   if (localeInfo.redirectUrl) {
     return new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } });
@@ -769,7 +780,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
           defaultLocale: currentDefaultLocale,
           domainLocales: domainLocales,
         },
-        isrCacheKey,
+        isrCacheKey: pageIsrCacheKey,
         isrGet,
         isrSet,
         expireSeconds: vinextConfig.expireTime,
@@ -902,6 +913,30 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
           }
           return wrapWithRouterContext(currentElement);
         },
+        // Used by \`_document.getInitialProps\` -> \`ctx.renderPage\` to wrap
+        // App/Component with user-provided enhancers (e.g. styled-components,
+        // emotion). Falls back to identity when no enhancers are passed.
+        // \`pageProps\` is captured from the closure (unlike \`createPageElement\`
+        // which takes it as a param) — \`enhancePageElement\` is only ever invoked
+        // for this one request with this one \`pageProps\`, so there is no value to
+        // thread through; the renderPage contract only varies the enhancers.
+        enhancePageElement(renderPageOpts) {
+          var FinalApp = AppComponent;
+          var FinalComp = PageComponent;
+          if (renderPageOpts && typeof renderPageOpts.enhanceApp === "function" && FinalApp) {
+            FinalApp = renderPageOpts.enhanceApp(FinalApp);
+          }
+          if (renderPageOpts && typeof renderPageOpts.enhanceComponent === "function") {
+            FinalComp = renderPageOpts.enhanceComponent(FinalComp);
+          }
+          var enhancedElement;
+          if (FinalApp) {
+            enhancedElement = React.createElement(FinalApp, { Component: FinalComp, pageProps: pageProps });
+          } else {
+            enhancedElement = React.createElement(FinalComp, pageProps);
+          }
+          return wrapWithRouterContext(enhancedElement);
+        },
         DocumentComponent,
         flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
         fontLinkHeader: _fontLinkHeader,
@@ -926,7 +961,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         getSSRHeadHTML: typeof getSSRHeadHTML === "function" ? getSSRHeadHTML : undefined,
         clientTraceMetadata: vinextConfig.clientTraceMetadata,
         gsspRes,
-        isrCacheKey,
+        isrCacheKey: pageIsrCacheKey,
         expireSeconds: vinextConfig.expireTime,
         isrRevalidateSeconds,
         isrSet,
@@ -946,6 +981,8 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
           return renderToReadableStream(element);
         },
         resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,
+        setDocumentInitialHead:
+          typeof setDocumentInitialHead === "function" ? setDocumentInitialHead : undefined,
         routePattern,
         routeUrl,
         safeJsonStringify,

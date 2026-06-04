@@ -75,9 +75,15 @@ import {
 } from "./app-rsc-render-mode.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
+import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import type { ISRCacheEntry } from "./isr-cache.js";
+import {
+  createAppLayoutParamAccessTracker,
+  isAppLayoutObservationUnsafeForStaticReuse,
+  type AppLayoutParamAccessTracker,
+} from "./app-layout-param-observation.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
@@ -128,7 +134,19 @@ type AppPageDispatchInterceptOptions<TPage = unknown> = {
 
 type AppPageModule = {
   default?: unknown;
+  dynamic?: unknown;
+  revalidate?: unknown;
 };
+
+type LayoutSegmentConfigClassification = Readonly<{
+  kind: "dynamic" | "static";
+  reason: ClassificationReason;
+}>;
+
+type EffectiveLayoutClassifications = Readonly<{
+  buildTimeClassifications: ReadonlyMap<number, "static" | "dynamic"> | null;
+  buildTimeReasons: ReadonlyMap<number, ClassificationReason> | null | undefined;
+}>;
 
 type AppPageDispatchRoute = {
   __buildTimeClassifications?: LayoutClassificationOptions["buildTimeClassifications"];
@@ -174,13 +192,16 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     params: AppPageParams,
     opts: AppPageDispatchInterceptOptions | undefined,
     searchParams: URLSearchParams,
+    layoutParamAccess?: AppLayoutParamAccessTracker,
   ) => Promise<AppPageElement>;
+  clientReuseManifest?: ClientReuseManifestParseResult;
   cleanPathname: string;
   clearRequestContext: () => void;
   createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
   debugClassification?: (layoutId: string, reason: ClassificationReason) => void;
   draftModeSecret: string;
   dynamicConfig?: string;
+  dynamicStaleTimeSeconds?: number;
   dynamicParamsConfig?: boolean;
   fetchCache?: FetchCacheMode | null;
   findIntercept: (pathname: string) => AppPageDispatchIntercept | null;
@@ -218,7 +239,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   params: AppPageParams;
   staticParamsValidationParams?: AppPageParams;
   rootParams?: RootParams;
-  probeLayoutAt: (layoutIndex: number) => unknown;
+  probeLayoutAt: (layoutIndex: number, layoutParamAccess?: AppLayoutParamAccessTracker) => unknown;
   probePage: () => unknown;
   expireSeconds?: number;
   renderErrorBoundaryPage: (error: unknown) => Promise<Response | null>;
@@ -253,6 +274,87 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   }) => void;
   renderMode?: AppRscRenderMode;
 };
+
+/**
+ * Request-time counterpart to the build-time `classifyLayoutSegmentConfig`
+ * (`build/report.ts`). Both classify a layout by its `dynamic`/`revalidate`
+ * segment config and agree on the shared cases (the build-time version
+ * normalizes `revalidate = false` to `Infinity` upstream, so both treat it as
+ * static); keep them aligned when either changes.
+ *
+ * The meaningful difference is scope, not logic: this request-time pass reads
+ * the resolved module value, so it classifies layouts that were never captured
+ * at build time (e.g. dev mode). Its result is merged on top of the build-time
+ * classification map in `createEffectiveLayoutClassifications`, so such layouts
+ * are classified here where they previously were not.
+ */
+function classifyLayoutSegmentConfigFromModule(
+  layout: AppPageModule | null | undefined,
+): LayoutSegmentConfigClassification | null {
+  if (!layout) return null;
+
+  switch (layout.dynamic) {
+    case "force-dynamic":
+      return {
+        kind: "dynamic",
+        reason: { layer: "segment-config", key: "dynamic", value: "force-dynamic" },
+      };
+    case "force-static":
+    case "error":
+      return {
+        kind: "static",
+        reason: { layer: "segment-config", key: "dynamic", value: layout.dynamic },
+      };
+  }
+
+  if (layout.revalidate === false || layout.revalidate === Infinity) {
+    return {
+      kind: "static",
+      reason: { layer: "segment-config", key: "revalidate", value: Infinity },
+    };
+  }
+  if (layout.revalidate === 0) {
+    return {
+      kind: "dynamic",
+      reason: { layer: "segment-config", key: "revalidate", value: 0 },
+    };
+  }
+
+  return null;
+}
+
+function createEffectiveLayoutClassifications(
+  route: AppPageDispatchRoute,
+  includeReasons: boolean,
+): EffectiveLayoutClassifications {
+  const classifications = new Map(route.__buildTimeClassifications ?? []);
+  const reasons = includeReasons ? new Map(route.__buildTimeReasons ?? []) : null;
+
+  for (let index = 0; index < route.layouts.length; index++) {
+    const classification = classifyLayoutSegmentConfigFromModule(route.layouts[index]);
+    if (classification === null) continue;
+
+    // Precedence: when a layout's module segment config classifies, it is
+    // authoritative and overrides the build-time map for that layout — even if
+    // a Layer 1/2 build-time classifier marked it differently for a
+    // non-segment-config reason. Downstream consumers should treat this merged
+    // result, not `__buildTimeClassifications`, as the source of truth.
+    classifications.set(index, classification.kind);
+    reasons?.set(index, classification.reason);
+  }
+
+  return {
+    buildTimeClassifications: classifications.size > 0 ? classifications : null,
+    buildTimeReasons: reasons && reasons.size > 0 ? reasons : null,
+  };
+}
+
+function getEffectiveLayoutClassifications(
+  route: AppPageDispatchRoute,
+  debugClassification: DispatchAppPageOptions<AppPageDispatchRoute>["debugClassification"],
+): EffectiveLayoutClassifications {
+  return createEffectiveLayoutClassifications(route, debugClassification !== undefined);
+}
 
 function shouldReadAppPageCache(options: {
   isProgressiveActionRender: boolean;
@@ -368,6 +470,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
   const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
+  const layoutParamAccess = createAppLayoutParamAccessTracker();
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
   setCurrentFetchCacheMode(options.fetchCache ?? null);
@@ -596,13 +699,20 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     AppPageDispatchInterceptOptions,
     AppPageElement
   >({
-    buildPageElement(interceptRoute, interceptParams, interceptOpts, interceptSearchParams) {
+    buildPageElement(
+      interceptRoute,
+      interceptParams,
+      interceptOpts,
+      interceptSearchParams,
+      interceptLayoutParamAccess,
+    ) {
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
       return options.buildPageElement(
         interceptRoute,
         interceptParams,
         interceptOpts,
         interceptSearchParams,
+        interceptLayoutParamAccess,
       );
     },
     cleanPathname: options.cleanPathname,
@@ -617,6 +727,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return options.getSourceRoute(sourceRouteIndex);
     },
     isRscRequest: options.isRscRequest,
+    layoutParamAccess,
     renderInterceptResponse(sourceRoute, interceptElement) {
       const interceptOnError = options.createRscOnErrorHandler(
         options.cleanPathname,
@@ -658,6 +769,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         options.params,
         interceptResult.interceptOpts,
         options.searchParams,
+        layoutParamAccess,
       );
     },
     renderErrorBoundaryPage(buildError) {
@@ -671,6 +783,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   if (pageBuildResult.response) {
     return pageBuildResult.response;
   }
+
+  const layoutClassifications = getEffectiveLayoutClassifications(
+    route,
+    options.debugClassification,
+  );
 
   return renderAppPageLifecycle({
     basePath: options.basePath,
@@ -689,6 +806,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return options.createRscOnErrorHandler(pathname, routePath);
     },
     element: pageBuildResult.element,
+    clientReuseManifest: options.clientReuseManifest,
     getDraftModeCookieHeader,
     getFontLinks: options.getFontLinks,
     getFontPreloads: options.getFontPreloads,
@@ -729,6 +847,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     loadSsrHandler: options.loadSsrHandler,
     middlewareContext: options.middlewareContext,
     params: options.params,
+    layoutParamAccess,
     rootParams: options.rootParams,
     peekRenderObservationState() {
       return {
@@ -737,7 +856,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       };
     },
     probeLayoutAt(layoutIndex) {
-      return options.probeLayoutAt(layoutIndex);
+      return options.probeLayoutAt(layoutIndex, layoutParamAccess);
     },
     probePage() {
       return options.probePage();
@@ -749,9 +868,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           createAppPageTreePath([...route.routeSegments], treePosition),
         );
       },
-      buildTimeClassifications: route.__buildTimeClassifications,
-      buildTimeReasons: route.__buildTimeReasons,
+      buildTimeClassifications: layoutClassifications.buildTimeClassifications,
+      buildTimeReasons: layoutClassifications.buildTimeReasons,
       debugClassification: options.debugClassification,
+      isLayoutObservationDynamic(layoutId) {
+        return isAppLayoutObservationUnsafeForStaticReuse(
+          layoutParamAccess.getLayoutObservation(layoutId),
+        );
+      },
       async runWithIsolatedDynamicScope(fn) {
         const priorDynamic = consumeDynamicUsage();
         try {
@@ -764,6 +888,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         }
       },
     },
+    dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
     revalidateSeconds: currentRevalidateSeconds,
     mountedSlotsHeader: options.mountedSlotsHeader,
     renderMode: options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,

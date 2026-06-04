@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import {
+  APP_SKIPPED_LAYOUT_IDS_KEY,
   AppElementsWire,
   UNMATCHED_SLOT,
   type AppElementValue,
@@ -12,7 +13,7 @@ import {
 } from "../server/app-elements.js";
 import type { ArtifactCompatibilityEnvelope } from "../server/artifact-compatibility.js";
 import type { CacheEntryReuseProof } from "../server/cache-proof.js";
-import { notFound } from "./navigation.js";
+import { getBfcacheIdMapContext, getBfcacheSegmentIdContext, notFound } from "./navigation.js";
 
 const EMPTY_ELEMENTS: AppElements = Object.freeze({});
 const warnedMissingEntryIds = new Set<string>();
@@ -32,6 +33,8 @@ export const ChildrenContext = React.createContext<React.ReactNode>(null);
 export const ParallelSlotsContext = React.createContext<Readonly<
   Record<string, React.ReactNode>
 > | null>(null);
+const BfcacheIdMapContext = getBfcacheIdMapContext();
+const BfcacheSegmentIdContext = getBfcacheSegmentIdContext();
 
 type MergeElementsOptions = {
   clearAbsentSlots?: boolean;
@@ -73,6 +76,14 @@ function isSlotBindingListValue(value: unknown): value is readonly AppElementsSl
   return Array.isArray(value) && value.length > 0 && value.every(isSlotBindingValue);
 }
 
+function isSkippedLayoutIdsMetadataValue(id: string, value: unknown): value is readonly string[] {
+  return (
+    id === APP_SKIPPED_LAYOUT_IDS_KEY &&
+    Array.isArray(value) &&
+    value.every((entry) => typeof entry === "string")
+  );
+}
+
 function isInterceptionMetadataValue(value: unknown): value is AppElementsInterception {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   return (
@@ -95,18 +106,21 @@ function isCacheEntryReuseProofValue(value: unknown): value is CacheEntryReusePr
 }
 
 function isTransportMetadataValue(
+  id: string,
   value: AppElementValue | undefined,
 ): value is
   | LayoutFlags
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
   | AppElementsInterception
+  | readonly string[]
   | readonly AppElementsSlotBinding[] {
   return (
     isLayoutFlagsValue(value) ||
     isArtifactCompatibilityEnvelopeValue(value) ||
     isCacheEntryReuseProofValue(value) ||
     isInterceptionMetadataValue(value) ||
+    isSkippedLayoutIdsMetadataValue(id, value) ||
     isSlotBindingListValue(value)
   );
 }
@@ -117,6 +131,12 @@ function warnTransportMetadataEntry(id: string): void {
 
   warnedTransportMetadataEntryIds.add(id);
   console.warn("[vinext] Transport metadata value found under App Router render entry: " + id);
+}
+
+function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: string }) {
+  const SegmentContext = BfcacheSegmentIdContext;
+  if (!SegmentContext) return <>{content}</>;
+  return <SegmentContext.Provider value={id}>{content}</SegmentContext.Provider>;
 }
 
 export function mergeElements(
@@ -203,18 +223,27 @@ export function Slot({
   }
 
   const element = elements[id];
-  if (isTransportMetadataValue(element)) {
+  if (isTransportMetadataValue(id, element)) {
     warnTransportMetadataEntry(id);
     return null;
   }
   if (element === UNMATCHED_SLOT) {
     notFound();
   }
+  if (element === null) {
+    return null;
+  }
 
-  return (
+  const content = (
     <ParallelSlotsContext.Provider value={parallelSlots ?? null}>
       <ChildrenContext.Provider value={children ?? null}>{element}</ChildrenContext.Provider>
     </ParallelSlotsContext.Provider>
+  );
+
+  return BfcacheIdMapContext && BfcacheSegmentIdContext ? (
+    <BfcacheSlotBoundary id={id} content={content} />
+  ) : (
+    content
   );
 }
 

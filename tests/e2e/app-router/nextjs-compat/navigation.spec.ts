@@ -12,7 +12,11 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { waitForAppRouterHydration } from "../../helpers";
+import {
+  isAppRouterRscRequestForPath,
+  waitForAppRouterHydration,
+  waitForHydration,
+} from "../../helpers";
 
 const BASE = "http://localhost:4174";
 
@@ -37,6 +41,61 @@ test.describe("Next.js compat: navigation (browser)", () => {
       timeout: 10_000,
     });
     expect(page.url()).toContain("/nextjs-compat/nav-redirect-result");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+  test("client-side redirect() sentinel navigates and resets the boundary", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/nav-client-redirect-sentinel`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#trigger-redirect");
+    await expect(page.locator("#result-page")).toHaveText("Result Page", {
+      timeout: 10_000,
+    });
+    expect(page.url()).toContain("/nextjs-compat/nav-redirect-result");
+  });
+
+  test("client-side redirect() guard navigates once and does not loop", async ({ page }) => {
+    const loginRscRequests: string[] = [];
+    page.on("request", (request) => {
+      if (isAppRouterRscRequestForPath(request, "/nextjs-compat/nav-redirect-guard/login")) {
+        loginRscRequests.push(request.url());
+      }
+    });
+
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) {
+        throw new Error("window.next.router is not installed");
+      }
+      void router.push("/nextjs-compat/nav-redirect-guard");
+    });
+
+    await expect(page.locator("#redirect-guard-login")).toHaveText("Login Page", {
+      timeout: 10_000,
+    });
+    expect(new URL(page.url()).pathname).toBe("/nextjs-compat/nav-redirect-guard/login");
+    await page.waitForLoadState("networkidle");
+    expect(loginRscRequests).toHaveLength(1);
+  });
+
+  test("client-side navigation from App Router does not leak stale params into Pages Router", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/app-to-pages-params/alpha`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#go-to-pages-params");
+    await waitForHydration(page);
+
+    await expect(page.locator("#params")).toHaveText('{"foo":"foo"}', {
+      timeout: 10_000,
+    });
+    await expect(page.locator("#params-change-count")).toHaveText("1");
   });
 
   // Next.js: 'should trigger not-found in a server component'
@@ -65,6 +124,8 @@ test.describe("Next.js compat: navigation (browser)", () => {
       const text = await page.locator("body").textContent();
       expect(text).toContain("404");
     }).toPass({ timeout: 10_000 });
+
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex");
   });
 
   // Next.js: Link-based client-side navigation
@@ -166,5 +227,33 @@ test.describe("Next.js compat: navigation (browser)", () => {
       () => (window as any).__APP_RELATIVE_ONNAV_URL__ ?? null,
     );
     expect(reportedUrl).toBe("/nextjs-compat/nav-link-test?page=2");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+  test("router.push to an external URL keeps useTransition pending until unload", async ({
+    page,
+  }) => {
+    const storageKey = `external-${Date.now()}`;
+    await page.goto(`${BASE}/nextjs-compat/router-push-external-pending/${storageKey}`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#go");
+    await page.waitForURL("https://example.vercel.sh/stuff?abc=123", { timeout: 10_000 });
+
+    await page.goto(`${BASE}/nextjs-compat/router-push-external-pending/${storageKey}`);
+    await expect(page.locator("#storage")).toContainText(
+      `path-/nextjs-compat/router-push-external-pending/${storageKey}`,
+    );
+    const stored = JSON.parse((await page.locator("#storage").textContent()) ?? "{}");
+
+    expect(stored).toMatchObject({
+      [`path-/nextjs-compat/router-push-external-pending/${storageKey}`]: "true",
+      lastIsPending: "true",
+    });
+
+    if (stored["navigation-supported"] === "true") {
+      expect(stored["navigate-https://example.vercel.sh/stuff?abc=123"]).toBe("1");
+    }
   });
 });

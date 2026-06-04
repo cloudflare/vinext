@@ -55,22 +55,30 @@ describe("next/navigation shim", () => {
     );
   });
 
-  // Regression test: within the App Router provider, useRouter() must return
-  // the mounted router instance. Next.js returns a stable router reference from
-  // context, so components using the router in dependency arrays do not
-  // re-render unnecessarily.
-  // Ported from: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts
-  it("useRouter() returns the mounted AppRouterContext router", async () => {
+  // Regression test: within the App Router provider, useRouter() must preserve
+  // the mounted router instance as the source of method behavior and only layer
+  // contextual bfcacheId on top.
+  // Ported from: https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/navigation.ts
+  it("useRouter() preserves methods from the mounted AppRouterContext router", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const { useRouter, appRouterInstance } =
-      await import("../packages/vinext/src/shims/navigation.js");
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
     const { AppRouterContext } =
       await import("../packages/vinext/src/shims/internal/app-router-context.js");
-    const captured: unknown[] = [];
+    const customRefresh = vi.fn();
+    const customMethod = vi.fn(() => "custom");
+    const mountedRouter = {
+      ...navigation.appRouterInstance,
+      refresh: customRefresh,
+      customMethod,
+    };
+    const captured: any[] = [];
 
     function Probe() {
-      captured.push(useRouter(), useRouter());
+      const router = navigation.useRouter() as typeof mountedRouter;
+      captured.push(router);
+      router.refresh();
+      router.customMethod();
       return React.createElement("span", null, "ok");
     }
 
@@ -81,12 +89,18 @@ describe("next/navigation shim", () => {
     renderToStaticMarkup(
       React.createElement(
         AppRouterContext.Provider,
-        { value: appRouterInstance },
+        { value: mountedRouter },
         React.createElement(Probe),
       ),
     );
 
-    expect(captured).toEqual([appRouterInstance, appRouterInstance]);
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).not.toBe(mountedRouter);
+    expect(captured[0].refresh).toBe(customRefresh);
+    expect(captured[0].customMethod).toBe(customMethod);
+    expect(captured[0].bfcacheId).toBe("_b_0_");
+    expect(customRefresh).toHaveBeenCalledTimes(1);
+    expect(customMethod).toHaveBeenCalledTimes(1);
   });
 
   it("appRouterInstance singleton exposes the expected navigation methods", async () => {
@@ -104,6 +118,111 @@ describe("next/navigation shim", () => {
     const { appRouterInstance } = await import("../packages/vinext/src/shims/navigation.js");
     expect(typeof appRouterInstance.bfcacheId).toBe("string");
     expect(appRouterInstance.bfcacheId).toBe("0");
+  });
+
+  it("useRouter() reads bfcacheId from the nearest segment context", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const { AppRouterContext } =
+      await import("../packages/vinext/src/shims/internal/app-router-context.js");
+    const BfcacheIdMapContext = navigation.getBfcacheIdMapContext();
+    const BfcacheSegmentIdContext = navigation.getBfcacheSegmentIdContext();
+    if (!AppRouterContext || !BfcacheIdMapContext || !BfcacheSegmentIdContext) {
+      throw new Error("Expected bfcache contexts");
+    }
+
+    function Probe() {
+      return React.createElement("span", null, navigation.useRouter().bfcacheId);
+    }
+
+    expect(
+      renderToStaticMarkup(
+        React.createElement(
+          AppRouterContext.Provider,
+          { value: navigation.appRouterInstance },
+          React.createElement(
+            BfcacheIdMapContext.Provider,
+            { value: { "page:/x/1": "_b_7_" } },
+            React.createElement(
+              BfcacheSegmentIdContext.Provider,
+              { value: "page:/x/1" },
+              React.createElement(Probe),
+            ),
+          ),
+        ),
+      ),
+    ).toBe("<span>_b_7_</span>");
+  });
+
+  it("useRouter() treats an empty string segment id as a valid context key", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const { AppRouterContext } =
+      await import("../packages/vinext/src/shims/internal/app-router-context.js");
+    const BfcacheIdMapContext = navigation.getBfcacheIdMapContext();
+    const BfcacheSegmentIdContext = navigation.getBfcacheSegmentIdContext();
+    if (!AppRouterContext || !BfcacheIdMapContext || !BfcacheSegmentIdContext) {
+      throw new Error("Expected bfcache contexts");
+    }
+
+    function Probe() {
+      return React.createElement("span", null, navigation.useRouter().bfcacheId);
+    }
+
+    expect(
+      renderToStaticMarkup(
+        React.createElement(
+          AppRouterContext.Provider,
+          { value: navigation.appRouterInstance },
+          React.createElement(
+            BfcacheIdMapContext.Provider,
+            { value: { "": "_b_9_" } },
+            React.createElement(
+              BfcacheSegmentIdContext.Provider,
+              { value: "" },
+              React.createElement(Probe),
+            ),
+          ),
+        ),
+      ),
+    ).toBe("<span>_b_9_</span>");
+  });
+
+  it("useRouter() materializes the initial bfcacheId in Next-compatible format", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const { AppRouterContext } =
+      await import("../packages/vinext/src/shims/internal/app-router-context.js");
+    const BfcacheIdMapContext = navigation.getBfcacheIdMapContext();
+    const BfcacheSegmentIdContext = navigation.getBfcacheSegmentIdContext();
+    if (!AppRouterContext || !BfcacheIdMapContext || !BfcacheSegmentIdContext) {
+      throw new Error("Expected bfcache contexts");
+    }
+
+    function Probe() {
+      return React.createElement("span", null, navigation.useRouter().bfcacheId);
+    }
+
+    expect(
+      renderToStaticMarkup(
+        React.createElement(
+          AppRouterContext.Provider,
+          { value: navigation.appRouterInstance },
+          React.createElement(
+            BfcacheIdMapContext.Provider,
+            { value: { "page:/x/1": "0" } },
+            React.createElement(
+              BfcacheSegmentIdContext.Provider,
+              { value: "page:/x/1" },
+              React.createElement(Probe),
+            ),
+          ),
+        ),
+      ),
+    ).toBe("<span>_b_0_</span>");
   });
 
   // Next.js parity: refresh-reducer.ts invalidates the entire segment cache.
@@ -156,6 +275,101 @@ describe("next/navigation shim", () => {
       expect(calls.indexOf("clear")).toBeLessThan(calls.indexOf("navigate:refresh"));
     } finally {
       (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("hash-only app router navigation preserves bfcache metadata without copying scroll restoration", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousDocument = (globalThis as any).document;
+    let historyState: unknown = {
+      __vinext_bfcacheIds: { "page:/current": "_b_1_" },
+      __vinext_bfcacheVersion: 2,
+      __vinext_previousNextUrl: "/feed",
+      customState: "drop-me",
+    };
+    const location = {
+      href: "http://localhost/current",
+      origin: "http://localhost",
+      pathname: "/current",
+      search: "",
+      hash: "",
+      assign: vi.fn(),
+      replace: vi.fn(),
+    };
+    const applyUrl = (url: string | URL | null | undefined) => {
+      if (url == null) return;
+      const next = new URL(String(url), location.href);
+      location.href = next.href;
+      location.pathname = next.pathname;
+      location.search = next.search;
+      location.hash = next.hash;
+    };
+    const pushState = vi.fn((data: unknown, _unused: string, url?: string | URL | null) => {
+      historyState = data;
+      applyUrl(url);
+    });
+    const replaceState = vi.fn((data: unknown, _unused: string, url?: string | URL | null) => {
+      historyState = data;
+      applyUrl(url);
+    });
+
+    const win = {
+      location,
+      history: {
+        get state() {
+          return historyState;
+        },
+        pushState,
+        replaceState,
+      },
+      scrollX: 12,
+      scrollY: 345,
+      scrollTo: vi.fn(),
+      addEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+      __VINEXT_RSC_NAVIGATE__: vi.fn(),
+    };
+    const scrollIntoView = vi.fn();
+
+    (globalThis as any).window = win;
+    (globalThis as any).document = {
+      getElementById: vi.fn(() => ({ scrollIntoView })),
+      getElementsByName: vi.fn(() => []),
+    };
+
+    try {
+      vi.resetModules();
+      const { navigateClientSide } = await import("../packages/vinext/src/shims/navigation.js");
+
+      await navigateClientSide("#content", "push", true, true);
+
+      expect(replaceState).toHaveBeenCalledWith(
+        expect.objectContaining({ __vinext_scrollX: 12, __vinext_scrollY: 345 }),
+        "",
+        undefined,
+      );
+      expect(pushState).toHaveBeenCalledWith(
+        {
+          __vinext_bfcacheIds: { "page:/current": "_b_1_" },
+          __vinext_bfcacheVersion: 2,
+          __vinext_previousNextUrl: "/feed",
+        },
+        "",
+        "/current#content",
+      );
+      expect(scrollIntoView).toHaveBeenCalled();
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      if (previousDocument === undefined) {
+        delete (globalThis as any).document;
+      } else {
+        (globalThis as any).document = previousDocument;
+      }
       vi.resetModules();
     }
   });
@@ -1690,8 +1904,13 @@ describe("window.next debug global", () => {
       expect(fetchSpy).not.toHaveBeenCalled();
       // The visible URL is `as` (/redirect-1), even though the underlying
       // route is `url` (/). The server's redirect rule for /redirect-1
-      // must not fire on a shallow update.
-      expect(pushState).toHaveBeenCalledWith({}, "", "/redirect-1");
+      // must not fire on a shallow update. History state now follows the
+      // Next.js shape (`{ url, as, options, __N, key }`) instead of `{}`.
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/redirect-1",
+      );
     } finally {
       (globalThis as any).window = previousWindow;
       globalThis.fetch = originalFetch;
@@ -3675,6 +3894,61 @@ describe("next/cache shim", () => {
     }
   });
 
+  it("MemoryCacheHandler evicts least-recently-used entries when max size is exceeded", async () => {
+    const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+
+    const handler = new MemoryCacheHandler({ cacheMaxMemorySize: 250 });
+    const makeEntry = (body: string) => ({
+      kind: "PAGES" as const,
+      html: body,
+      pageData: {},
+      headers: undefined,
+      status: 200,
+    });
+
+    await handler.set("a", makeEntry("a".repeat(80)));
+    await handler.set("b", makeEntry("b".repeat(80)));
+
+    expect(await handler.get("a")).toBeNull();
+    expect(await handler.get("b")).not.toBeNull();
+  });
+
+  it("MemoryCacheHandler refreshes LRU order on get", async () => {
+    const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+
+    const handler = new MemoryCacheHandler({ cacheMaxMemorySize: 360 });
+    const makeEntry = (body: string) => ({
+      kind: "PAGES" as const,
+      html: body,
+      pageData: {},
+      headers: undefined,
+      status: 200,
+    });
+
+    await handler.set("a", makeEntry("a".repeat(80)));
+    await handler.set("b", makeEntry("b".repeat(80)));
+    expect(await handler.get("a")).not.toBeNull();
+    await handler.set("c", makeEntry("c".repeat(80)));
+
+    expect(await handler.get("a")).not.toBeNull();
+    expect(await handler.get("b")).toBeNull();
+    expect(await handler.get("c")).not.toBeNull();
+  });
+
+  it("MemoryCacheHandler with max size 0 disables storage", async () => {
+    const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+
+    const handler = new MemoryCacheHandler({ cacheMaxMemorySize: 0 });
+    await handler.set("disabled", {
+      kind: "FETCH",
+      data: { headers: {}, body: '"cached"', url: "test" },
+      tags: [],
+      revalidate: 3600,
+    });
+
+    expect(await handler.get("disabled")).toBeNull();
+  });
+
   it("MemoryCacheHandler respects tag invalidation", async () => {
     const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
 
@@ -4465,6 +4739,26 @@ describe('"use cache" runtime', () => {
     expect(r1).toEqual({ hello: "world" });
     expect(r2).toEqual({ hello: "world" });
     expect(callCount).toBe(1);
+  });
+
+  it("preserves the original function arity on the cached wrapper", async () => {
+    // The wrapper is declared as `(...args)` (arity 0). Callers like
+    // `resolveModuleMetadata` rely on `fn.length` to decide whether to pass
+    // optional arguments (e.g. the metadata `parent`), so the wrapper must
+    // expose the original arity rather than 0.
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const zero = registerCachedFunction(async () => ({}), "test:arity-0");
+    const one = registerCachedFunction(async (_a: unknown) => ({}), "test:arity-1");
+    const two = registerCachedFunction(async (_a: unknown, _b: unknown) => ({}), "test:arity-2");
+
+    expect(zero.length).toBe(0);
+    expect(one.length).toBe(1);
+    expect(two.length).toBe(2);
   });
 
   it("falls back to JSON when RSC module is unavailable (test environment)", async () => {
@@ -11537,7 +11831,11 @@ describe("Pages Router router helpers", () => {
         { shallow: true },
       );
 
-      expect(pushState).toHaveBeenCalledWith({}, "", "/search?tag=a&tag=b&q=x");
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/search?tag=a&tag=b&q=x",
+      );
     } finally {
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
@@ -11593,7 +11891,7 @@ describe("Pages Router router helpers", () => {
       );
 
       expect(pushState).toHaveBeenCalledWith(
-        {},
+        expect.objectContaining({ __N: true }),
         "",
         "/search?page=2&draft=false&empty=&missing=&tag=a&tag=b",
       );
@@ -12048,7 +12346,13 @@ describe("Pages Router concurrent navigation", () => {
       const result = await Router.push(target, undefined, { shallow: true });
 
       expect(result).toBe(true);
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", expectedBrowserUrl);
+      // History state now follows Next.js shape ({ url, as, options, __N, key });
+      // assert via partial match so test stays focused on URL normalization.
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        expectedBrowserUrl,
+      );
     } finally {
       if (previousTrailingSlash === undefined) {
         delete process.env.__VINEXT_TRAILING_SLASH;
@@ -12117,7 +12421,11 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).toHaveBeenCalledWith("/docs/404", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/docs/slug-2");
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/docs/slug-2",
+      );
       expect(win.location.pathname).toBe("/docs/slug-2");
       expect(win.__NEXT_DATA__.page).toBe("/404");
     } finally {
@@ -12164,7 +12472,11 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).toHaveBeenCalledWith("/docs/404", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/docs/slug-2");
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/docs/slug-2",
+      );
       expect(win.location.pathname).toBe("/docs/slug-2");
       expect(win.__NEXT_DATA__.page).toBe("/404");
     } finally {
@@ -12224,7 +12536,11 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).toHaveBeenCalledWith("/docs/fr/404", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/docs/fr/slug-2");
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/docs/fr/slug-2",
+      );
       expect(win.location.pathname).toBe("/docs/fr/slug-2");
       expect(win.__NEXT_DATA__.page).toBe("/404");
     } finally {
@@ -12284,7 +12600,11 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).toHaveBeenCalledWith("/docs/fr/404", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/docs/fr/slug-2");
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/docs/fr/slug-2",
+      );
       expect(win.location.pathname).toBe("/docs/fr/slug-2");
       expect(win.__NEXT_DATA__.page).toBe("/404");
     } finally {
@@ -12590,7 +12910,14 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).toHaveBeenCalledWith("/en", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/");
+      // Next.js-shaped history state (`{ url, as, options, __N, key }`) is now
+      // written on every router push; assert via partial match so this test
+      // stays focused on the locale-qualified fetch / browser-URL contract.
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true, options: expect.objectContaining({ locale: "en" }) }),
+        "",
+        "/",
+      );
       expect(win.location.href).toBe("http://localhost/");
       expect(win.__VINEXT_LOCALE__).toBe("en");
     } finally {
@@ -12604,10 +12931,12 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
-  it("treats a non-locale-prefixed current path as the default locale for root Link navigations", async () => {
-    // Ported from Next.js:
-    // test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-preferred-locale-detection/i18n-preferred-locale-detection.test.ts
+  it("keeps the active locale for root Link navigations from a non-locale-prefixed path", async () => {
+    // i18n sticky-locale (issue #1336): a default-locale path served under a
+    // non-default locale must keep reporting its active `__VINEXT_LOCALE__` so
+    // a subsequent client-side root navigation stays in that locale rather
+    // than snapping back to the configured default. See
+    // tests/pages-router-i18n-sticky-locale.test.ts for the broader contract.
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
     const { win } = createNavWindow();
@@ -12615,8 +12944,6 @@ describe("Pages Router concurrent navigation", () => {
     win.location.pathname = "/new";
     win.location.href = "http://localhost/new";
     Object.assign(win, {
-      // Simulate a stale/preferred locale signal that must not override the
-      // URL-derived Pages Router locale for an unprefixed path.
       __VINEXT_LOCALE__: "id",
       __VINEXT_LOCALES__: ["en", "id"],
       __VINEXT_DEFAULT_LOCALE__: "en",
@@ -12631,7 +12958,7 @@ describe("Pages Router concurrent navigation", () => {
             pageModuleUrl,
             {},
             {
-              locale: "en",
+              locale: "id",
               locales: ["en", "id"],
               defaultLocale: "en",
             },
@@ -12649,10 +12976,14 @@ describe("Pages Router concurrent navigation", () => {
       const result = await Router.push("/");
 
       expect(result).toBe(true);
-      expect(fetch).toHaveBeenCalledWith("/en", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/");
-      expect(win.location.href).toBe("http://localhost/");
-      expect(win.__VINEXT_LOCALE__).toBe("en");
+      expect(fetch).toHaveBeenCalledWith("/id", expect.any(Object));
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true, options: expect.objectContaining({ locale: "id" }) }),
+        "",
+        "/id",
+      );
+      expect(win.location.href).toBe("http://localhost/id");
+      expect(win.__VINEXT_LOCALE__).toBe("id");
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
@@ -12708,7 +13039,11 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).toHaveBeenCalledWith("/id", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/id");
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/id",
+      );
       expect(win.location.href).toBe("http://localhost/id");
       expect(win.__VINEXT_LOCALE__).toBe("id");
     } finally {
@@ -12833,7 +13168,12 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).toHaveBeenCalledWith("/fr/about", expect.any(Object));
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", "/fr/about");
+      // Next.js-shaped history state — assert partially.
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/fr/about",
+      );
       expect(win.location.href).toBe("http://localhost/fr/about");
       expect(win.__VINEXT_LOCALE__).toBe("fr");
     } finally {
@@ -13153,7 +13493,12 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(true);
       expect(fetch).not.toHaveBeenCalled();
-      expect(win.history.pushState).toHaveBeenCalledWith({}, "", expectedBrowserUrl);
+      // Hash-only push now records Next.js-shaped history state too.
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        expectedBrowserUrl,
+      );
       expect(hashEvents).toEqual([`start:${expectedEventUrl}`, `complete:${expectedEventUrl}`]);
       expect(routeEvents).toEqual([]);
     } finally {
@@ -17008,7 +17353,11 @@ describe("next/head SSR security", () => {
       React.createElement("iframe" as any, { src: "https://evil.com" }),
     ]);
 
-    expect(html).toBe("");
+    // After issue #1569, the default head (charset + viewport) is always
+    // emitted, so the output is never an empty string. The disallowed tag
+    // must still not appear.
+    expect(html).not.toContain("<iframe");
+    expect(html).not.toContain("evil.com");
     expect(consoleWarn).toHaveBeenCalledWith(
       expect.stringContaining("ignoring disallowed tag <iframe>"),
     );
@@ -17025,7 +17374,10 @@ describe("next/head SSR security", () => {
       React.createElement("form" as any, { action: "https://evil.com" }),
     ]);
 
-    expect(html).toBe("");
+    expect(html).not.toContain("<object");
+    expect(html).not.toContain("<embed");
+    expect(html).not.toContain("<form");
+    expect(html).not.toContain("evil.com");
     consoleWarn.mockRestore();
   });
 

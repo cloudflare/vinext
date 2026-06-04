@@ -206,7 +206,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "experimental.prefetchInlining": {
     status: "partial",
     detail:
-      "config recognized; vinext uses unified RSC navigation payloads so per-segment prefetch inlining is a no-op",
+      "config recognized; Link prefetch preserves pending/dedup semantics, but vinext does not implement per-segment cache storage",
   },
   "experimental.outputHashSalt": {
     status: "supported",
@@ -218,14 +218,26 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
       "not applicable; vinext uses Vite instead of SWC. A Vite-compatible polyfill solution may be explored in the future.",
   },
   "experimental.appShells": {
-    status: "unsupported",
+    status: "partial",
     detail:
-      "App Shell prefetching not yet implemented; requires cacheComponents and other co-flags vinext does not support",
+      "config recognized and validated; the flag is forwarded to client bundles via process.env.__NEXT_APP_SHELLS for feature gating, but actual App Shell prefetching behavior requires the segment-cache architecture which vinext does not yet implement (issue #1614)",
   },
   "experimental.inlineCss": {
     status: "supported",
     detail:
       "App Router production HTML inlines stylesheet links as <style> in <head>; next/font CSS is merged into the first inline style",
+  },
+  "experimental.varyParams": {
+    status: "partial",
+    detail: "config recognized; vinext does not implement root-param-aware cache keying",
+  },
+  "experimental.optimisticRouting": {
+    status: "partial",
+    detail: "config recognized; vinext does not implement optimistic client navigation",
+  },
+  "experimental.cachedNavigations": {
+    status: "partial",
+    detail: "config recognized; vinext does not implement navigation result caching",
   },
   "i18n.domains": {
     status: "partial",

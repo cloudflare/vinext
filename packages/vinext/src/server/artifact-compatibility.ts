@@ -18,6 +18,20 @@ export type ArtifactCompatibilityEnvelope = Readonly<{
   renderEpoch: string | null;
 }>;
 
+// Canonical ordered list of every field in ArtifactCompatibilityEnvelope.
+// Order is load-bearing — hash-producing consumers iterate this array to
+// guarantee deterministic ordering across runtimes.
+export const ARTIFACT_COMPATIBILITY_PROOF_FIELDS: readonly (keyof ArtifactCompatibilityEnvelope)[] =
+  [
+    "schemaVersion",
+    "graphVersion",
+    "deploymentVersion",
+    "appElementsSchemaVersion",
+    "rscPayloadSchemaVersion",
+    "rootBoundaryId",
+    "renderEpoch",
+  ];
+
 type ArtifactCompatibilityEnvelopeInput = Readonly<{
   graphVersion?: string | null;
   deploymentVersion?: string | null;
