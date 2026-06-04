@@ -20,14 +20,14 @@
  * descriptor — it never touches the Workers runtime. It `require.resolve`s the
  * sibling runtime factory (`./kv-data-adapter.runtime.js`) to an absolute path,
  * which the generated registration imports and invokes on the first request to
- * resolve `env[binding]` (default `VINEXT_CACHE`) and build the KV handler.
+ * resolve `env[binding]` (default `VINEXT_KV_CACHE`) and build the KV handler.
  */
 
 import { fileURLToPath } from "node:url";
 
 /** Options accepted by {@link kvDataAdapter}, forwarded to the runtime factory. */
 export type KvDataAdapterOptions = {
-  /** KV namespace binding name on the Worker `env`. @default "VINEXT_CACHE" */
+  /** KV namespace binding name on the Worker `env`. @default "VINEXT_KV_CACHE" */
   binding?: string;
   /** Namespace prefix for cache keys (isolates multiple apps in one namespace). */
   appPrefix?: string;

@@ -12,11 +12,11 @@
  *
  *   import { KVCacheHandler } from "vinext/cloudflare";
  *   import { setDataCacheHandler } from "vinext/shims/cache";
- *   setDataCacheHandler(new KVCacheHandler(env.VINEXT_CACHE));
+ *   setDataCacheHandler(new KVCacheHandler(env.VINEXT_KV_CACHE));
  *
  * Wrangler config (wrangler.jsonc):
  *
- *   { "kv_namespaces": [{ "binding": "VINEXT_CACHE", "id": "<your-kv-namespace-id>" }] }
+ *   { "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }] }
  */
 
 import { Buffer } from "node:buffer";
@@ -38,11 +38,10 @@ import {
   isUnknownRecord,
   readCacheControlNumberField,
 } from "../../utils/cache-control-metadata.js";
-import type { DataCacheAdapterFactory } from "./adapter.js";
 import type { KvDataAdapterOptions } from "./kv-data-adapter.js";
 
 /** Default KV namespace binding name read from the Worker `env`. */
-const DEFAULT_BINDING = "VINEXT_CACHE";
+const DEFAULT_BINDING = "VINEXT_KV_CACHE";
 
 // ---------------------------------------------------------------------------
 // Serialized cache value types — ArrayBuffer fields replaced with base64 strings
@@ -644,10 +643,13 @@ function safeBase64ToArrayBuffer(base64: string): ArrayBuffer | null {
 }
 
 // Config-driven adapter factory (default export).
-const createKvDataCacheAdapter: DataCacheAdapterFactory<KvDataAdapterOptions> = ({
+const createKvDataCacheAdapter = ({
   env,
   options,
-}) => {
+}: {
+  env?: Record<string, unknown>;
+  options?: KvDataAdapterOptions;
+}): CacheHandler => {
   const binding = options?.binding ?? DEFAULT_BINDING;
   const namespace = env?.[binding];
   if (!namespace) {

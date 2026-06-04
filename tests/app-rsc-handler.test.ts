@@ -77,6 +77,7 @@ function createHandler(overrides: Partial<HandlerOptions> = {}) {
     metadataRoutes: overrides.metadataRoutes ?? [],
     middlewareModule: overrides.middlewareModule ?? null,
     publicFiles: overrides.publicFiles ?? new Set<string>(),
+    registerCacheAdapters: () => {},
     renderNotFound: overrides.renderNotFound ?? (async () => null),
     renderPagesFallback: overrides.renderPagesFallback,
     rootParamNamesByPattern: overrides.rootParamNamesByPattern,

@@ -24,6 +24,7 @@ import rscHandler, {
   __basePath as __rscBasePath,
 } from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
+// @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import { resolveStaticAssetSignal } from "./worker-utils.js";
 import {

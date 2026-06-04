@@ -118,9 +118,9 @@ describe("kvDataAdapter builder", () => {
 describe("Cloudflare kv-data-adapter factory", () => {
   const namespace = { get: async () => null, put: async () => {}, delete: async () => {} };
 
-  it("returns a KVCacheHandler bound to the default VINEXT_CACHE namespace", () => {
+  it("returns a KVCacheHandler bound to the default VINEXT_KV_CACHE namespace", () => {
     const handler = createKvDataCacheAdapter({
-      env: { VINEXT_CACHE: namespace },
+      env: { VINEXT_KV_CACHE: namespace },
       options: undefined,
     });
     expect(handler).toBeInstanceOf(KVCacheHandler);
@@ -135,7 +135,9 @@ describe("Cloudflare kv-data-adapter factory", () => {
   });
 
   it("throws a helpful error when the configured binding is missing", () => {
-    expect(() => createKvDataCacheAdapter({ env: {}, options: undefined })).toThrow(/VINEXT_CACHE/);
+    expect(() => createKvDataCacheAdapter({ env: {}, options: undefined })).toThrow(
+      /VINEXT_KV_CACHE/,
+    );
     expect(() =>
       createKvDataCacheAdapter({ env: { OTHER: namespace }, options: { binding: "MY_KV" } }),
     ).toThrow(/`MY_KV` KV namespace binding/);
@@ -220,8 +222,8 @@ describe("cdnAdapter builder + factory", () => {
     expect(descriptor.options).toBeUndefined();
   });
 
-  it("factory returns a CloudflareCdnCacheAdapter regardless of env", () => {
-    const adapter = createCloudflareCdnCacheAdapter({ env: undefined, options: undefined });
+  it("factory returns a CloudflareCdnCacheAdapter", () => {
+    const adapter = createCloudflareCdnCacheAdapter();
     expect(adapter).toBeInstanceOf(CloudflareCdnCacheAdapter);
     // Edge adapter does not own in-process background regeneration.
     expect(adapter.ownsBackgroundRevalidation).toBe(false);

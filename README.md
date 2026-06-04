@@ -544,32 +544,34 @@ The `CacheHandler` interface matches Next.js 16's shape, so community adapters s
 
 #### Configuring cache adapters from `vite.config`
 
-Instead of wiring up cache handlers imperatively from a worker entry, you can declare them in the `vinext()` plugin config using the adapter builders:
+Instead of wiring up cache handlers imperatively from a worker entry, you can declare them in the `vinext()` plugin config as serializable adapter descriptors:
 
 ```ts
 import vinext from "vinext";
-import { cdnAdapter } from "vinext/cloudflare/cache/cdn-adapter";
-import { kvDataAdapter } from "vinext/cloudflare/cache/kv-data-adapter";
 
 export default defineConfig({
   plugins: [
     vinext({
       cache: {
-        // Page-level ISR served from the Cloudflare edge cache.
-        cdn: cdnAdapter(),
-        // Data cache (fetch / "use cache" / unstable_cache) backed by KV.
-        data: kvDataAdapter({ binding: "MY_KV" }), // defaults to "VINEXT_CACHE"
+        // Each slot is a { adapter, options } descriptor; `adapter` is a module
+        // whose default export is a factory: ({ env, options }) => CacheHandler.
+        data: {
+          adapter: require.resolve("./cache/my-kv-adapter.js"),
+          options: { binding: "MY_KV" },
+        },
       },
     }),
   ],
 });
 ```
 
-The builders run at config time and return a plain, serializable descriptor — **they never touch the Workers runtime**, so nothing throws at build or dev time when bindings aren't available. The actual adapter (and its `env` binding lookup) is instantiated lazily on the first request. The KV data adapter resolves `env[binding]` (a KV namespace binding in `wrangler.jsonc`); the edge CDN adapter expects the Workers Cache to be enabled.
+> The built-in Cloudflare adapters (`kvDataAdapter()` / `cdnAdapter()`) and their public import paths are still being finalized, so this iteration doesn't export them yet — point `adapter` at your own module for now. (The reference KV adapter's binding defaults to `VINEXT_KV_CACHE`.)
+
+The descriptor is a plain, serializable value — **it never touches the Workers runtime**, so nothing throws at build or dev time when bindings aren't available. The actual adapter (and its `env` binding lookup) is instantiated lazily on the first request. The KV data adapter resolves `env[binding]` (a KV namespace binding in `wrangler.jsonc`); the edge CDN adapter expects the Workers Cache to be enabled.
 
 Registration is wired into **every router and runtime** — App Router and Pages Router, on Cloudflare Workers as well as the Node.js server (`vinext start`) and dev. It self-guards (instantiated once per isolate) and is resilient: if an adapter can't initialize on a given runtime (e.g. a KV binding doesn't exist on the Node server), vinext logs a warning and falls back to the default handler instead of failing requests.
 
-Each slot is just a `{ adapter, options }` descriptor, so you can also point at any adapter module by path — `data: { adapter: require.resolve("./my-adapter.js"), options: { … } }`. To write your own, default-export a `DataCacheAdapterFactory` / `CdnCacheAdapterFactory` (see `vinext/shims/cache-adapter`); it receives `{ env, options }` at runtime.
+Each slot is just a `{ adapter, options }` descriptor, so you can also point at any adapter module by path — `data: { adapter: require.resolve("./my-adapter.js"), options: { … } }`. To write your own, default-export a factory function that receives `{ env, options }` at runtime and returns a data-cache `CacheHandler` (or a CDN adapter).
 
 ## What's NOT supported (and won't be)
 

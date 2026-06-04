@@ -41,7 +41,6 @@ import type {
 } from "vinext/shims/cdn-cache";
 import type { CacheHandlerValue, IncrementalCacheValue } from "vinext/shims/cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import type { CdnCacheAdapterFactory } from "./adapter.js";
 
 /** The request-context cache surface this adapter relies on (narrowed from `unknown`). */
 type WorkersCacheLike = {
@@ -185,7 +184,6 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
 }
 
 // Config-driven adapter factory (default export).
-const createCloudflareCdnCacheAdapter: CdnCacheAdapterFactory = () =>
-  new CloudflareCdnCacheAdapter();
+const createCloudflareCdnCacheAdapter = (): CdnCacheAdapter => new CloudflareCdnCacheAdapter();
 
 export default createCloudflareCdnCacheAdapter;
