@@ -21,6 +21,11 @@ import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import {
+  VIRTUAL_CACHE_ADAPTERS,
+  generateCacheAdaptersModule,
+  type VinextCacheConfig,
+} from "./cache/cache-adapters-virtual.js";
+import {
   generateBrowserEntry,
   isLinkPrefetchRoute,
   toLinkPrefetchRoute,
@@ -511,6 +516,10 @@ const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
 const RESOLVED_APP_BROWSER_ENTRY = "\0" + VIRTUAL_APP_BROWSER_ENTRY;
 const VIRTUAL_ROOT_PARAMS = "virtual:vinext-root-params";
 const RESOLVED_ROOT_PARAMS = "\0" + VIRTUAL_ROOT_PARAMS;
+// Virtual module that registers config-driven cache adapters (see
+// VinextOptions.cache). Imported by the server entries; resolves to a no-op
+// when no adapters are configured.
+const RESOLVED_CACHE_ADAPTERS = "\0" + VIRTUAL_CACHE_ADAPTERS;
 /** Virtual module for composed instrumentation-client bootstrap. */
 const VIRTUAL_INSTRUMENTATION_CLIENT = "private-next-instrumentation-client";
 const RESOLVED_INSTRUMENTATION_CLIENT = `\0${VIRTUAL_INSTRUMENTATION_CLIENT}.mjs`;
@@ -698,6 +707,24 @@ export type VinextOptions = {
    * @default false
    */
   precompress?: boolean;
+  /**
+   * Configure cache handlers declaratively, so you don't need a custom worker
+   * entry that calls `setDataCacheHandler()` / `setCdnCacheAdapter()`.
+   *
+   * Each slot points at an *adapter module* whose default export is a factory
+   * (see `vinext/shims/cache-adapter`). The plugin registers them automatically
+   * on the first request, passing the host `env` (Worker bindings) so adapters
+   * that need a binding — e.g. a KV namespace — can read it.
+   *
+   * @example
+   * vinext({
+   *   cache: {
+   *     cdn:  { adapter: require.resolve("vinext/cloudflare/cache/cdn-adapter") },
+   *     data: { adapter: require.resolve("vinext/cloudflare/cache/kv-data-adapter") },
+   *   },
+   * })
+   */
+  cache?: VinextCacheConfig;
   /**
    * Experimental vinext-only feature flags.
    */
@@ -2327,6 +2354,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (cleanId === "next/root-params" || cleanId === "next/root-params.js") {
             return RESOLVED_ROOT_PARAMS;
           }
+          if (
+            cleanId === VIRTUAL_CACHE_ADAPTERS ||
+            cleanId.endsWith("/" + VIRTUAL_CACHE_ADAPTERS) ||
+            cleanId.endsWith("\\" + VIRTUAL_CACHE_ADAPTERS)
+          ) {
+            return RESOLVED_CACHE_ADAPTERS;
+          }
           if (cleanId.startsWith(VIRTUAL_GOOGLE_FONTS + "?")) {
             return RESOLVED_VIRTUAL_GOOGLE_FONTS + cleanId.slice(VIRTUAL_GOOGLE_FONTS.length);
           }
@@ -2437,6 +2471,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ? await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher)
             : [];
           return generateRootParamsModule(routes.flatMap((route) => route.rootParamNames ?? []));
+        }
+        if (id === RESOLVED_CACHE_ADAPTERS) {
+          return generateCacheAdaptersModule(options.cache);
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
           return generateSsrEntry(hasPagesDir);

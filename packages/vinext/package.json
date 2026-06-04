@@ -41,6 +41,10 @@
       "types": "./dist/cloudflare/index.d.ts",
       "import": "./dist/cloudflare/index.js"
     },
+    "./cloudflare/cache/*": {
+      "types": "./dist/cloudflare/cache/*.d.ts",
+      "import": "./dist/cloudflare/cache/*.js"
+    },
     "./server/image-optimization": {
       "types": "./dist/server/image-optimization.d.ts",
       "import": "./dist/server/image-optimization.js"

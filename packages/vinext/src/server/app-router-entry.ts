@@ -24,6 +24,10 @@ import rscHandler, {
   __basePath as __rscBasePath,
 } from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
+// Registers any cache adapters configured via the `cache` option in the
+// vinext() plugin config (no-op when none are configured). Self-guards so the
+// adapters are instantiated only once per isolate.
+import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import { resolveStaticAssetSignal } from "./worker-utils.js";
 import {
   cloneRequestWithHeaders,
@@ -66,6 +70,10 @@ async function handleRequest(
   env: WorkerAssetEnv | undefined,
   ctx: ExecutionContextLike | undefined,
 ): Promise<Response> {
+  // Wire up config-driven cache adapters (cache.cdn / cache.data) before any
+  // rendering touches the cache. No-op + cheap after the first request.
+  registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
+
   const url = new URL(request.url);
 
   // Block protocol-relative URL open redirects (//evil.com/, /\evil.com/,

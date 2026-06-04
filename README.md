@@ -542,6 +542,29 @@ setCacheHandler(new MyCacheHandler()); // Redis, DynamoDB, etc.
 
 The `CacheHandler` interface matches Next.js 16's shape, so community adapters should be compatible.
 
+#### Configuring cache adapters from `vite.config`
+
+Instead of wiring up cache handlers imperatively from a worker entry, you can declare them in the `vinext()` plugin config. Each slot points at an _adapter module_ whose default export is a factory; vinext registers them automatically on the first request (passing the host `env` so adapters that need a binding — e.g. a KV namespace — can read it):
+
+```ts
+import vinext from "vinext";
+
+export default defineConfig({
+  plugins: [
+    vinext({
+      cache: {
+        // Page-level ISR served from the Cloudflare edge cache.
+        cdn: { adapter: require.resolve("vinext/cloudflare/cache/cdn-adapter") },
+        // Data cache (fetch / "use cache" / unstable_cache) backed by KV.
+        data: { adapter: require.resolve("vinext/cloudflare/cache/kv-data-adapter") },
+      },
+    }),
+  ],
+});
+```
+
+The KV data adapter expects a `VINEXT_CACHE` KV namespace binding in `wrangler.jsonc`; the edge CDN adapter expects the Workers Cache to be enabled. To write your own, default-export a `DataCacheAdapterFactory` / `CdnCacheAdapterFactory` (see `vinext/shims/cache-adapter`) from a module and point `adapter` at it.
+
 ## What's NOT supported (and won't be)
 
 These are intentional exclusions. For things that are missing today but on the roadmap, see [Known limitations](#known-limitations) below.
