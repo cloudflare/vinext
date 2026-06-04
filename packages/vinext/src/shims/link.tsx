@@ -374,13 +374,21 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
         if (prefetched.has(cacheKey)) {
-          if (autoPrefetch.cacheForNavigation) {
-            const existing = getPrefetchCache().get(cacheKey);
-            if (existing?.cacheForNavigation === false) {
-              existing.cacheForNavigation = true;
-            }
+          if (!autoPrefetch.cacheForNavigation) {
+            return;
           }
-          return;
+
+          const existing = getPrefetchCache().get(cacheKey);
+          if (existing?.cacheForNavigation === false) {
+            existing.cacheForNavigation = true;
+          }
+
+          if (hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader)) {
+            return;
+          }
+
+          // stale/orphaned exact entry was deleted by helper, or set was stale
+          prefetched.delete(cacheKey);
         }
         if (
           autoPrefetch.cacheForNavigation &&
