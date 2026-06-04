@@ -681,8 +681,6 @@ packages/vinext/
       middleware.ts        # middleware.ts / proxy.ts runner
       metadata-routes.ts  # File-based metadata route scanner
       instrumentation.ts  # instrumentation.ts support
-    cloudflare/
-      kv-cache-handler.ts # Cloudflare KV-backed CacheHandler for ISR
     shims/                # One file per next/* module (33 shims + 6 internal)
     build/
       static-export.ts    # output: 'export' support

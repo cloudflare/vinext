@@ -194,7 +194,8 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
   if (Array.isArray(config.kv_namespaces)) {
     const vinextKV = config.kv_namespaces.find(
       (ns: Record<string, unknown>) =>
-        ns && typeof ns === "object" && ns.binding === "VINEXT_KV_CACHE",
+        (ns && typeof ns === "object" && ns.binding === "VINEXT_KV_CACHE") ||
+        ns.binding === "VINEXT_CACHE",
     );
     if (vinextKV && typeof vinextKV.id === "string" && vinextKV.id !== "<your-kv-namespace-id>") {
       result.kvNamespaceId = vinextKV.id;
@@ -273,7 +274,7 @@ function extractFromTOML(content: string): WranglerConfig {
     const bindingMatch = block.match(/binding\s*=\s*"([^"]+)"/);
     const idMatch = block.match(/\bid\s*=\s*"([^"]+)"/);
     if (
-      bindingMatch?.[1] === "VINEXT_KV_CACHE" &&
+      (bindingMatch?.[1] === "VINEXT_KV_CACHE" || bindingMatch?.[1] === "VINEXT_CACHE") &&
       idMatch?.[1] &&
       idMatch[1] !== "<your-kv-namespace-id>"
     ) {
