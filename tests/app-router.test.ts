@@ -2,6 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import zlib from "node:zlib";
 import { createBuilder, createServer, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -42,6 +43,12 @@ function textContentByTestId(html: string, testId: string): string {
   }
 
   return decodeHtmlText(html.slice(contentStart + 1, contentEnd));
+}
+
+type BuiltAppHandler = (request: Request) => Promise<Response | string | null | undefined>;
+
+function isBuiltAppHandler(value: unknown): value is BuiltAppHandler {
+  return typeof value === "function";
 }
 
 async function withCountingFetchTarget<T>(
@@ -2283,6 +2290,83 @@ describe("App Router Production build", () => {
     // Asset manifest should be generated
     expect(fs.existsSync(path.join(outDir, "server", "__vite_rsc_assets_manifest.js"))).toBe(true);
   }, 30000);
+
+  it("builds proxy.ts that reads __filename before redirecting", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/proxy-nfc-traced/proxy-nfc-traced.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-nfc-traced/proxy-nfc-traced.test.ts
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-proxy-cjs-globals-"));
+
+    try {
+      fs.writeFileSync(path.join(tmpDir, "package.json"), `{"type":"module"}`);
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `export default function Page() {
+  return <p>hello world</p>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "proxy.ts"),
+        `import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
+
+export default function proxy(request: NextRequest) {
+  if (request.nextUrl.pathname === "/home") {
+    return NextResponse.redirect(new URL("/", request.url));
+  }
+  console.log(__filename);
+  return NextResponse.next();
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const built: { default?: unknown } = await import(
+        pathToFileURL(path.join(tmpDir, "dist", "server", "index.js")).href
+      );
+      expect(isBuiltAppHandler(built.default)).toBe(true);
+      if (!isBuiltAppHandler(built.default)) return;
+
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      try {
+        const redirectResponse = await built.default(new Request("http://localhost/home"));
+        expect(redirectResponse).toBeInstanceOf(Response);
+        if (!(redirectResponse instanceof Response)) return;
+        expect(redirectResponse.status).toBe(307);
+        expect(redirectResponse.headers.get("location")).toBe("/");
+
+        const rootResponse = await built.default(new Request("http://localhost/"));
+        expect(rootResponse).toBeInstanceOf(Response);
+        if (!(rootResponse instanceof Response)) return;
+        expect(await rootResponse.text()).toContain("hello world");
+      } finally {
+        logSpy.mockRestore();
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 120000);
 
   it("serves production build via preview server", async () => {
     const { preview } = await import("vite");
