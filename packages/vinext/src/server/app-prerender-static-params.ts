@@ -1,9 +1,14 @@
 import { pickRootParams, runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
 
 type GenerateStaticParamsFunction = (input: { params: RootParams }) => unknown;
+const MISSING_GENERATE_STATIC_PARAMS = Symbol.for("vinext.generateStaticParams.missing");
 
 function isGenerateStaticParamsFunction(value: unknown): value is GenerateStaticParamsFunction {
   return typeof value === "function";
+}
+
+function isMissingGenerateStaticParams(value: unknown): boolean {
+  return value === MISSING_GENERATE_STATIC_PARAMS;
 }
 
 function isRootParams(value: unknown): value is RootParams {
@@ -29,6 +34,7 @@ export function createAppPrerenderStaticParamsResolver(
       const picked = filterRootParams(input.params);
       return runWithRootParamsScope(picked, async () => {
         const result = await single(input);
+        if (isMissingGenerateStaticParams(result)) return null;
         if (!Array.isArray(result)) return [];
         for (const item of result) {
           if (!isRootParams(item)) return [];
@@ -40,9 +46,11 @@ export function createAppPrerenderStaticParamsResolver(
 
   return async ({ params }) => {
     let paramSets: RootParams[] = [params];
+    let resolvedAnySource = false;
 
     for (const generateStaticParams of generateStaticParamsFns) {
       const nextParamSets: RootParams[] = [];
+      let resolvedThisSource = false;
 
       for (const parentParams of paramSets) {
         const rootScope = filterRootParams(parentParams);
@@ -51,18 +59,40 @@ export function createAppPrerenderStaticParamsResolver(
           generateStaticParams({ params: parentParams }),
         );
 
+        if (isMissingGenerateStaticParams(result)) continue;
         if (!Array.isArray(result)) return [];
 
+        resolvedThisSource = true;
+        resolvedAnySource = true;
         for (const item of result) {
           if (!isRootParams(item)) return [];
           nextParamSets.push({ ...parentParams, ...item });
         }
       }
 
-      paramSets = nextParamSets;
+      if (resolvedThisSource) {
+        paramSets = nextParamSets;
+      }
     }
 
+    if (!resolvedAnySource) return null;
     return paramSets;
+  };
+}
+
+export function createLazyGenerateStaticParamsSource(
+  loadModule: () => Promise<unknown>,
+): (input: { params: RootParams }) => Promise<unknown> {
+  return async (input) => {
+    const mod = await loadModule();
+    if (mod === null || typeof mod !== "object") {
+      return MISSING_GENERATE_STATIC_PARAMS;
+    }
+    const generateStaticParams = Reflect.get(mod, "generateStaticParams");
+    if (!isGenerateStaticParamsFunction(generateStaticParams)) {
+      return MISSING_GENERATE_STATIC_PARAMS;
+    }
+    return generateStaticParams(input);
   };
 }
 

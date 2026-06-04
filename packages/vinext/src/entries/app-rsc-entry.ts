@@ -64,6 +64,10 @@ const appRscRouteMatchingPath = resolveEntryPath(
   "../server/app-rsc-route-matching.js",
   import.meta.url,
 );
+const appRouteModuleLoaderPath = resolveEntryPath(
+  "../server/app-route-module-loader.js",
+  import.meta.url,
+);
 const rscStreamHintsPath = resolveEntryPath("../server/rsc-stream-hints.js", import.meta.url);
 const isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 const thenableParamsShimPath = resolveEntryPath("../shims/thenable-params.js", import.meta.url);
@@ -299,6 +303,11 @@ import {
   createAppRscRouteMatcher as __createAppRscRouteMatcher,
 } from ${JSON.stringify(appRscRouteMatchingPath)};
 import {
+  createRouteModuleLoader as __createRouteModuleLoader,
+  loadRouteModules as __loadRouteModules,
+  loadRouteMatch as __loadRouteMatch,
+} from ${JSON.stringify(appRouteModuleLoaderPath)};
+import {
   appIsrHtmlKey as __isrHtmlKey,
   appIsrRscKey as __isrRscKey,
   appIsrRouteKey as __isrRouteKey,
@@ -324,7 +333,10 @@ import { suppressHookWarningAls } from ${JSON.stringify(appHookWarningSuppressio
 import { clearAppRequestContext as __clearRequestContext, setAppNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestContextPath)};
 
 __configureMemoryCacheHandler({ cacheMaxMemorySize: ${JSON.stringify(cacheMaxMemorySize)} });
-import { createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver } from ${JSON.stringify(appPrerenderStaticParamsPath)};
+import {
+  createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver,
+  createLazyGenerateStaticParamsSource as __createLazyGenerateStaticParamsSource,
+} from ${JSON.stringify(appPrerenderStaticParamsPath)};
 import { seedMemoryCacheFromPrerender as __seedMemoryCacheFromPrerender } from ${JSON.stringify(seedCachePath)};
 
 const __draftModeSecret = ${JSON.stringify(draftModeSecret)};
@@ -630,7 +642,7 @@ export default __createAppRscHandler({
       getFontStyles: _getSSRFontStyles,
       getNavigationContext: _getNavigationContext,
       getSourceRoute(sourceRouteIndex) {
-        return routes[sourceRouteIndex];
+        return __loadRouteModules(routes[sourceRouteIndex]);
       },
       hasGenerateStaticParams: __generateStaticParams.length > 0,
       hasPageDefaultExport: !!PageComponent,
@@ -769,7 +781,7 @@ export default __createAppRscHandler({
       setHeadersAccessPhase,
     });
   },
-  handleServerActionRequest({
+  async handleServerActionRequest({
     actionId,
     cleanPathname,
     contentType,
@@ -780,7 +792,7 @@ export default __createAppRscHandler({
     request,
     searchParams,
   }) {
-    const __actionMatch = matchRoute(cleanPathname);
+    const __actionMatch = await __loadRouteMatch(matchRoute(cleanPathname));
     const __actionIsEdgeRuntime = __actionMatch
       ? __isEdgeRuntime(__resolveAppPageSegmentConfig({ layouts: __actionMatch.route.layouts, page: __actionMatch.route.page }).runtime)
       : false;
@@ -841,12 +853,12 @@ export default __createAppRscHandler({
         return sourceRoute.params;
       },
       getSourceRoute(sourceRouteIndex) {
-        return routes[sourceRouteIndex];
+        return __loadRouteModules(routes[sourceRouteIndex]);
       },
       isRscRequest,
       loadServerAction,
       matchRoute(pathnameToMatch) {
-        return matchRoute(pathnameToMatch);
+        return __loadRouteMatch(matchRoute(pathnameToMatch));
       },
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,
       middlewareHeaders: middlewareContext.headers,
@@ -881,6 +893,7 @@ export default __createAppRscHandler({
   isMiddlewareProxy: ${JSON.stringify(middlewarePath ? isProxyFile(middlewarePath) : false)},
   ${hasPagesDir ? `loadPrerenderPagesRoutes: __loadPrerenderPagesRoutes,` : ""}
   makeThenableParams,
+  loadRouteModules: __loadRouteModules,
   matchRoute,
   metadataRoutes,
   middlewareModule: ${middlewarePath ? "middlewareModule" : "null"},

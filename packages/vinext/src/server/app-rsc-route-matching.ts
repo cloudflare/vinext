@@ -31,6 +31,7 @@ type AppRscInterceptForMatching = {
   sourceMatchPattern?: string;
   interceptLayouts: readonly unknown[];
   page: unknown;
+  __pageLoader?: (() => Promise<unknown>) | null;
   params: readonly string[];
 };
 
@@ -57,6 +58,7 @@ type AppRscInterceptLookupEntry = {
   sourceMatchPatternParts: string[] | null;
   interceptLayouts: readonly unknown[];
   page: unknown;
+  __pageLoader?: (() => Promise<unknown>) | null;
   params: readonly string[];
   slotId: string | null;
 };
@@ -173,6 +175,7 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           sourceMatchPatternParts,
           interceptLayouts: intercept.interceptLayouts,
           page: intercept.page,
+          __pageLoader: intercept.__pageLoader,
           params: intercept.params,
         });
       }

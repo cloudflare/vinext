@@ -131,9 +131,12 @@ type AppServerActionMatch<TRoute extends AppServerActionRoute> = {
   route: TRoute;
 };
 
+type Awaitable<T> = T | Promise<T>;
+
 type AppServerActionIntercept<TPage = unknown> = {
   matchedParams: AppPageParams;
   page: TPage;
+  __pageLoader?: (() => Promise<TPage>) | null;
   slotId?: string | null;
   slotKey: string;
   sourceRouteIndex: number;
@@ -223,11 +226,11 @@ export type HandleServerActionRscRequestOptions<
   getAndClearPendingCookies: () => string[];
   getDraftModeCookieHeader: () => string | null | undefined;
   getRouteParamNames: (route: TRoute) => readonly string[];
-  getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
+  getSourceRoute: (sourceRouteIndex: number) => Awaitable<TRoute | undefined>;
   isEdgeRuntime?: boolean;
   isRscRequest: boolean;
   loadServerAction: (actionId: string) => Promise<unknown>;
-  matchRoute: (pathname: string) => AppServerActionMatch<TRoute> | null;
+  matchRoute: (pathname: string) => Awaitable<AppServerActionMatch<TRoute> | null>;
   maxActionBodySize: number;
   middlewareHeaders: Headers | null;
   middlewareStatus: number | null | undefined;
@@ -1025,7 +1028,7 @@ export async function handleServerActionRscRequest<
       }
 
       const targetPathname = stripBasePath(redirectTarget.pathname, options.basePath ?? "");
-      const targetMatch = options.matchRoute(targetPathname);
+      const targetMatch = await options.matchRoute(targetPathname);
       if (!targetMatch || !canRenderActionRedirectTarget(targetMatch.route)) {
         options.clearRequestContext();
         return new Response(null, {
@@ -1033,7 +1036,7 @@ export async function handleServerActionRscRequest<
           headers: withoutRscBodyHeaders(redirectHeaders),
         });
       }
-      const currentMatch = options.matchRoute(options.cleanPathname);
+      const currentMatch = await options.matchRoute(options.cleanPathname);
 
       const redirectRenderRequest = createActionRedirectRenderRequest({
         pendingCookies: [
@@ -1138,12 +1141,12 @@ export async function handleServerActionRscRequest<
       );
     }
 
-    const match = options.matchRoute(options.cleanPathname);
+    const match = await options.matchRoute(options.cleanPathname);
     let element: TElement;
     let errorPattern = match ? match.route.pattern : options.cleanPathname;
     if (match) {
       const { route: actionRoute, params: actionParams } = match;
-      const actionRerenderTarget = resolveAppPageActionRerenderTarget({
+      const actionRerenderTarget = await resolveAppPageActionRerenderTarget({
         cleanPathname: options.cleanPathname,
         currentParams: actionParams,
         currentRoute: actionRoute,

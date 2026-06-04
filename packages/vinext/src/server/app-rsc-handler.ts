@@ -239,6 +239,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   ) => Promise<Response | null>;
   i18nConfig: NextI18nConfig | null;
   isMiddlewareProxy: boolean;
+  loadRouteModules?: (route: TRoute) => Promise<TRoute>;
   loadPrerenderPagesRoutes?: () => Promise<unknown>;
   makeThenableParams: MakeThenableParams;
   matchRoute: (pathname: string) => AppRscRouteMatch<TRoute> | null;
@@ -659,7 +660,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return notFoundResponse({ headers });
   }
 
-  const { route, params } = match;
+  const { route: matchedRoute, params } = match;
+  const route = options.loadRouteModules
+    ? await options.loadRouteModules(matchedRoute)
+    : matchedRoute;
   const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
   const prerenderRouteParams = prerenderRouteParamsPayloadMatchesRoute(
     prerenderRouteParamsPayload,

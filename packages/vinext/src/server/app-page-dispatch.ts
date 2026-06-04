@@ -117,6 +117,7 @@ type AppPageDispatchIntercept<TPage = unknown> = {
   interceptLayouts?: readonly AppPageModule[] | null;
   matchedParams: AppPageParams;
   page: TPage;
+  __pageLoader?: (() => Promise<TPage>) | null;
   slotId?: string | null;
   slotKey: string;
   sourceRouteIndex: number;
@@ -167,6 +168,7 @@ type AppPageDispatchRoute = {
   unauthorized?: AppPageModule | null;
   unauthorizeds?: readonly (AppPageModule | null | undefined)[];
 };
+type Awaitable<T> = T | Promise<T>;
 
 function resolveAppPageRouteBoundaryModule(
   route: AppPageDispatchRoute,
@@ -213,7 +215,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];
   getNavigationContext: () => unknown;
-  getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
+  getSourceRoute: (sourceRouteIndex: number) => Awaitable<TRoute | undefined>;
   hasGenerateStaticParams: boolean;
   hasPageDefaultExport: boolean;
   hasPageModule: boolean;
@@ -540,7 +542,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // fresh render; this seed only gets them into the cache read path.
       revalidateSeconds: currentRevalidateSeconds ?? 0,
       renderFreshPageForCache: async () => {
-        const revalidationTarget = resolveAppPageInterceptionRerenderTarget({
+        const revalidationTarget = await resolveAppPageInterceptionRerenderTarget({
           cleanPathname: options.cleanPathname,
           currentParams: options.params,
           currentRoute: route,

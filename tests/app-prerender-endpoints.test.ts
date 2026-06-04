@@ -85,6 +85,27 @@ describe("App prerender endpoint helpers", () => {
     expect(pageGenerateStaticParams).not.toHaveBeenCalled();
   });
 
+  it("treats lazy missing page generateStaticParams exports as absent", async () => {
+    const layoutGenerateStaticParams = vi.fn(() => [{ category: "docs" }]);
+    const missingPageGenerateStaticParams = vi.fn(() =>
+      Symbol.for("vinext.generateStaticParams.missing"),
+    );
+    const resolveStaticParams = createAppPrerenderStaticParamsResolver([
+      layoutGenerateStaticParams,
+      missingPageGenerateStaticParams,
+    ]);
+
+    await expect(resolveStaticParams?.({ params: {} })).resolves.toEqual([{ category: "docs" }]);
+    expect(missingPageGenerateStaticParams).toHaveBeenCalledWith({
+      params: { category: "docs" },
+    });
+
+    const resolveMissingOnly = createAppPrerenderStaticParamsResolver([
+      missingPageGenerateStaticParams,
+    ]);
+    await expect(resolveMissingOnly?.({ params: {} })).resolves.toBeNull();
+  });
+
   it("falls through for non-prerender requests", async () => {
     const response = await handleAppPrerenderEndpoint(new Request("http://localhost/blog/post"), {
       isPrerenderEnabled: () => true,

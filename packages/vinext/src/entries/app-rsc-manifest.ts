@@ -84,6 +84,7 @@ function rootRouteBoundaryPath(
 
 type ImportAllocator = {
   getImportVar(filePath: string): string;
+  getLazyImportVar(filePath: string): string;
   importMap: ReadonlyMap<string, string>;
   imports: string[];
 };
@@ -91,7 +92,9 @@ type ImportAllocator = {
 function createImportAllocator(): ImportAllocator {
   const imports: string[] = [];
   const importMap = new Map<string, string>();
+  const lazyImportMap = new Map<string, string>();
   let importIdx = 0;
+  let lazyImportIdx = 0;
 
   return {
     importMap,
@@ -106,12 +109,23 @@ function createImportAllocator(): ImportAllocator {
       importMap.set(filePath, varName);
       return varName;
     },
+    getLazyImportVar(filePath) {
+      const existing = lazyImportMap.get(filePath);
+      if (existing) return existing;
+
+      const varName = `lazy_mod_${lazyImportIdx++}`;
+      const absPath = normalizePathSeparators(filePath);
+      imports.push(
+        `const ${varName} = __createRouteModuleLoader(() => import(${JSON.stringify(absPath)}));`,
+      );
+      lazyImportMap.set(filePath, varName);
+      return varName;
+    },
   };
 }
 
 function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): void {
   for (const route of routes) {
-    if (route.pagePath) imports.getImportVar(route.pagePath);
     if (route.routePath) imports.getImportVar(route.routePath);
     for (const layout of route.layouts) imports.getImportVar(layout);
     for (const tmpl of route.templates) imports.getImportVar(tmpl);
@@ -152,7 +166,7 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       if (slot.loadingPath) imports.getImportVar(slot.loadingPath);
       if (slot.errorPath) imports.getImportVar(slot.errorPath);
       for (const ir of slot.interceptingRoutes) {
-        imports.getImportVar(ir.pagePath);
+        imports.getLazyImportVar(ir.pagePath);
         for (const layoutPath of ir.layoutPaths) {
           imports.getImportVar(layoutPath);
         }
@@ -187,7 +201,8 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
           targetPattern: ${JSON.stringify(ir.targetPattern)},
           sourceMatchPattern: ${JSON.stringify(ir.sourceMatchPattern)},
           interceptLayouts: [${ir.layoutPaths.map((layoutPath) => imports.getImportVar(layoutPath)).join(", ")}],
-          page: ${imports.getImportVar(ir.pagePath)},
+          __pageLoader: ${imports.getLazyImportVar(ir.pagePath)},
+          page: null,
           params: ${JSON.stringify(ir.params)},
         }`,
       );
@@ -212,9 +227,11 @@ ${interceptEntries.join(",\n")}
       ep ? imports.getImportVar(ep) : "null",
     );
     const errorVars = (route.errorPaths ?? []).map((ep) => imports.getImportVar(ep));
+    const pageLoaderVar = route.pagePath ? imports.getLazyImportVar(route.pagePath) : "null";
     return `  {
     __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
     __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(${routeIdx}) : null,
+    __pageLoader: ${pageLoaderVar},
     ids: ${JSON.stringify(route.ids ?? null)},
     pattern: ${JSON.stringify(route.pattern)},
     patternParts: ${JSON.stringify(route.patternParts)},
@@ -222,7 +239,7 @@ ${interceptEntries.join(",\n")}
     params: ${JSON.stringify(route.params)},
     staticSiblings: ${JSON.stringify(staticSiblings)},
     rootParamNames: ${JSON.stringify(route.rootParamNames ?? [])},
-    page: ${route.pagePath ? imports.getImportVar(route.pagePath) : "null"},
+    page: null,
     routeHandler: ${route.routePath ? imports.getImportVar(route.routePath) : "null"},
     layouts: [${layoutVars.join(", ")}],
     routeSegments: ${JSON.stringify(route.routeSegments)},
@@ -332,10 +349,11 @@ function buildGenerateStaticParamsEntries(
     }
 
     if (route.pagePath) {
+      const pageLoader = imports.getLazyImportVar(route.pagePath);
       appendStaticParamSource(
         sourcesByPattern,
         route.pattern,
-        `${imports.getImportVar(route.pagePath)}?.generateStaticParams`,
+        `__createLazyGenerateStaticParamsSource(${pageLoader})`,
       );
     }
   }
