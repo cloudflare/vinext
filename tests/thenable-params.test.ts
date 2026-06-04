@@ -178,4 +178,42 @@ describe("makeThenableParams", () => {
     expect(thrown).toBeDefined();
     expect(typeof (thrown as Promise<unknown>).then).toBe("function");
   });
+
+  it("awaiting params resolves known params without hanging during fallback-shell prerendering", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+
+    const params = runWithPprFallbackShellState(state, () =>
+      makeThenableParams({ locale: "en", slug: "[slug]" }),
+    );
+
+    const result = await params;
+    expect(result.locale).toBe("en");
+    expect(result.slug).toBe("[slug]");
+    state.abortController.abort();
+  });
+
+  it("does not mark dynamic boundary until a fallback param is actually accessed", () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+
+    runWithPprFallbackShellState(state, () => {
+      const params = makeThenableParams({ locale: "en", slug: "[slug]" });
+      expect(params.locale).toBe("en");
+      expect(state.hasDynamicBoundary).toBe(false);
+
+      try {
+        Reflect.get(params, "slug");
+      } catch {
+        /* expected suspension */
+      }
+      expect(state.hasDynamicBoundary).toBe(true);
+    });
+
+    state.abortController.abort();
+  });
 });

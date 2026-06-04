@@ -7,6 +7,7 @@ export type PprFallbackShellState = {
   fallbackParamNames: ReadonlySet<string>;
   hasDynamicBoundary: boolean;
   isAbortScheduled: boolean;
+  pendingAbortCleanup: (() => void) | null;
   pendingCacheReadyCleanup: (() => void) | null;
   pendingCacheTasks: number;
   phase: "warmup" | "final";
@@ -93,7 +94,8 @@ function scheduleAbortIfReady(state: PprFallbackShellState): void {
   }
 
   state.isAbortScheduled = true;
-  scheduleAfterTask(() => {
+  state.pendingAbortCleanup = scheduleAfterTask(() => {
+    state.pendingAbortCleanup = null;
     state.isAbortScheduled = false;
     if (
       state.phase === "final" &&
@@ -129,6 +131,7 @@ export function createPprFallbackShellState(
     fallbackParamNames: new Set(options.fallbackParamNames),
     hasDynamicBoundary: false,
     isAbortScheduled: false,
+    pendingAbortCleanup: null,
     pendingCacheReadyCleanup: null,
     pendingCacheTasks: 0,
     phase: "warmup",
@@ -209,6 +212,10 @@ export function waitForPprFallbackShellCacheReady(state: PprFallbackShellState):
 
 export function preparePprFallbackShellFinalRender(state: PprFallbackShellState): void {
   cancelPendingCacheReady(state);
+  if (state.pendingAbortCleanup !== null) {
+    state.pendingAbortCleanup();
+    state.pendingAbortCleanup = null;
+  }
   state.abortController = new AbortController();
   state.cacheReadyResolvers.length = 0;
   state.hasDynamicBoundary = false;

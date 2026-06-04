@@ -110,15 +110,20 @@ export function makeThenableParams<T extends Record<string, unknown>>(
     Object.keys(plain).some((key) => fallbackShellState.fallbackParamNames.has(key))
       ? fallbackShellState.fallbackParamNames
       : null;
-  const fallbackShellPromise = fallbackParamNames
-    ? createPprFallbackShellSuspensePromise<T>("`params`")
-    : null;
+  let fallbackShellPromise: Promise<T> | null = null;
+
+  function getFallbackShellPromise(): Promise<T> | null {
+    if (!fallbackShellPromise && fallbackParamNames) {
+      fallbackShellPromise = createPprFallbackShellSuspensePromise<T>("`params`");
+    }
+    return fallbackShellPromise;
+  }
 
   function isFallbackParam(prop: PropertyKey): boolean {
     return typeof prop === "string" && (fallbackParamNames?.has(prop) ?? false);
   }
 
-  const promise = fallbackShellPromise ?? Promise.resolve(plain);
+  const promise = Promise.resolve(plain);
 
   // The Proxy implements both Promise and plain-object behaviour so that
   // `await params` and `params.id` both work. TypeScript's Proxy type
@@ -140,8 +145,9 @@ export function makeThenableParams<T extends Record<string, unknown>>(
       }
 
       if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
-        if (fallbackShellPromise && isFallbackParam(prop)) {
-          throw fallbackShellPromise;
+        if (isFallbackParam(prop)) {
+          const p = getFallbackShellPromise();
+          if (p) throw p;
         }
         return Reflect.get(plain, prop);
       }
@@ -155,14 +161,17 @@ export function makeThenableParams<T extends Record<string, unknown>>(
       }
 
       if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
-        if (fallbackShellPromise && isFallbackParam(prop)) {
-          return {
-            configurable: true,
-            enumerable: true,
-            get() {
-              throw fallbackShellPromise;
-            },
-          };
+        if (isFallbackParam(prop)) {
+          const p = getFallbackShellPromise();
+          if (p) {
+            return {
+              configurable: true,
+              enumerable: true,
+              get() {
+                throw p;
+              },
+            };
+          }
         }
 
         return {
