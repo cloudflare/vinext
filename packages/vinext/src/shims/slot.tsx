@@ -207,6 +207,36 @@ function warnTransportMetadataEntry(id: string): void {
   console.warn("[vinext] Transport metadata value found under App Router render entry: " + id);
 }
 
+/**
+ * Provider stack shared by both BFCache render paths: the one-entry keyed reset
+ * and the Activity-backed retention list. Each retained entry re-provides the
+ * elements, state-key map, and segment id it was captured with, falling back to
+ * the live boundary values for entries that predate per-entry capture.
+ */
+function BfcacheEntryProviders({
+  entry,
+  fallbackElements,
+  fallbackSegmentId,
+  fallbackStateKeyMap,
+  SegmentContext,
+}: {
+  entry: BfcacheSlotEntry;
+  fallbackElements: AppElements;
+  fallbackSegmentId: string;
+  fallbackStateKeyMap: Readonly<Record<string, string>>;
+  SegmentContext: React.Context<string | null>;
+}) {
+  return (
+    <BfcacheStateKeyMapContext.Provider value={entry.stateKeyMap ?? fallbackStateKeyMap}>
+      <ElementsContext.Provider value={entry.elements ?? fallbackElements}>
+        <SegmentContext.Provider value={entry.segmentId ?? fallbackSegmentId}>
+          {entry.content}
+        </SegmentContext.Provider>
+      </ElementsContext.Provider>
+    </BfcacheStateKeyMapContext.Provider>
+  );
+}
+
 function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: string }) {
   const SegmentContext = BfcacheSegmentIdContext;
   const elements = React.useContext(ElementsContext);
@@ -256,19 +286,20 @@ function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: st
     ? entries.map((entry) => latestEntriesByStateKey.current.get(entry.stateKey) ?? entry)
     : orderedEntries;
 
+  // Without cacheComponents, a single keyed active entry remounts on state-key
+  // change, resetting client state for a fresh segment. The key lives on the
+  // wrapper so a new active stateKey remounts the whole provider subtree.
   if (!process.env.__NEXT_CACHE_COMPONENTS) {
     const activeEntry = renderEntries[0];
     return (
-      <BfcacheStateKeyMapContext.Provider
+      <BfcacheEntryProviders
         key={activeEntry.stateKey}
-        value={activeEntry.stateKeyMap ?? stateKeyMap}
-      >
-        <ElementsContext.Provider value={activeEntry.elements ?? elements}>
-          <SegmentContext.Provider value={activeEntry.segmentId ?? id}>
-            {activeEntry.content}
-          </SegmentContext.Provider>
-        </ElementsContext.Provider>
-      </BfcacheStateKeyMapContext.Provider>
+        entry={activeEntry}
+        fallbackElements={elements}
+        fallbackSegmentId={id}
+        fallbackStateKeyMap={stateKeyMap}
+        SegmentContext={SegmentContext}
+      />
     );
   }
 
@@ -279,13 +310,13 @@ function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: st
           key={entry.stateKey}
           mode={entry.stateKey === activeStateKey ? "visible" : "hidden"}
         >
-          <BfcacheStateKeyMapContext.Provider value={entry.stateKeyMap ?? stateKeyMap}>
-            <ElementsContext.Provider value={entry.elements ?? elements}>
-              <SegmentContext.Provider value={entry.segmentId ?? id}>
-                {entry.content}
-              </SegmentContext.Provider>
-            </ElementsContext.Provider>
-          </BfcacheStateKeyMapContext.Provider>
+          <BfcacheEntryProviders
+            entry={entry}
+            fallbackElements={elements}
+            fallbackSegmentId={id}
+            fallbackStateKeyMap={stateKeyMap}
+            SegmentContext={SegmentContext}
+          />
         </React.Activity>
       ))}
     </>
