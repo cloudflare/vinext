@@ -441,7 +441,7 @@ function insertSecondOptionsArgument(
   const firstArgEnd = getNumber(firstArg, "end");
   if (callEnd === null || firstArgEnd === null) return false;
 
-  const closeParen = callEnd - 1;
+  const closeParen = callEnd - 1; // AST `end` is exclusive (past the closing paren)
   const betweenFirstArgAndClose = code.slice(firstArgEnd, closeParen);
   if (betweenFirstArgAndClose.includes(",")) {
     output.overwrite(firstArgEnd, closeParen, `, ${optionsLiteral}`);
@@ -533,7 +533,7 @@ export async function transformNextDynamicPreloadMetadata(
   root: string,
   resolveDynamicImport: ResolveDynamicImport,
 ): Promise<TransformResult | null> {
-  if (!code.includes("next/dynamic") || !code.includes("import(")) return null;
+  if (!code.includes("next/dynamic")) return null;
 
   let ast: unknown;
   try {
@@ -549,6 +549,8 @@ export async function transformNextDynamicPreloadMetadata(
   let changed = false;
   const pending: Promise<void>[] = [];
 
+  // Mutations are safe: microtask callbacks from Promise.all run sequentially
+  // on the JS microtask queue, so no two .then() callbacks overlap.
   visitDynamicCalls(ast, dynamicLocals, (node) => {
     const args = getArray(node, "arguments");
     const specifiers = collectImportSpecifiers(dynamicLoaderNode(args[0]));

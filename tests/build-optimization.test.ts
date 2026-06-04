@@ -1556,6 +1556,23 @@ describe("next/dynamic preload metadata transform", () => {
     expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
     expect(result?.code).not.toContain("app/ignored.tsx");
   });
+
+  it("transforms dynamic imports with whitespace between import and paren", async () => {
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const Widget = dynamic(() => import ("./dynamic_widget"), { loading: Loading });`,
+      ].join("\n"),
+      importer,
+      root,
+      async (specifier) =>
+        specifier === "./dynamic_widget"
+          ? path.join(root, "app/dynamic_widget.tsx")
+          : null,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic_widget.tsx"] }`);
+  });
 });
 
 describe("augmentSsrManifestFromBundle", () => {

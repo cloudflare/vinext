@@ -146,7 +146,6 @@ function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
         React.createElement("link", {
           key: href,
           rel: "stylesheet",
-          as: "style",
           href,
           nonce,
           precedence: "dynamic",
