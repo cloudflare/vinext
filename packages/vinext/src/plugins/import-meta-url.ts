@@ -149,7 +149,7 @@ function rewriteCanonicalSourceIdentity(
   }
 
   if (environment === "server" && mayContainServerCjsGlobal(code)) {
-    const injected = injectServerCjsGlobals(ast, code, canonicalId);
+    const injected = injectServerCjsGlobals(ast, canonicalId);
     if (injected) {
       output.appendLeft(findDirectivePrologueEnd(ast), `\n${injected}`);
       changed = true;
@@ -346,15 +346,68 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
 // and more correct than a free-identifier replacement walker that must model
 // lexical scope.
 //
-// Each name is injected independently, only when the source references it AND
-// there is no conflicting top-level binding of that name (a `var` colliding with
-// a top-level let/const/class/import would be a SyntaxError).
-function injectServerCjsGlobals(ast: unknown, code: string, canonicalId: string): string | null {
+// Each name is injected independently, only when the source genuinely reads it
+// (not just a member-access/key/lookalike mention) AND there is no conflicting
+// top-level binding of that name (a `var` colliding with a top-level
+// let/const/class/import would be a SyntaxError).
+function injectServerCjsGlobals(ast: unknown, canonicalId: string): string | null {
   const values = { __filename: canonicalId, __dirname: path.dirname(canonicalId) } as const;
   const parts = (["__filename", "__dirname"] as const)
-    .filter((name) => code.includes(name) && !hasTopLevelBinding(ast, name))
+    .filter((name) => hasReadReference(ast, name) && !hasTopLevelBinding(ast, name))
     .map((name) => `var ${name} = ${JSON.stringify(values[name])};`);
   return parts.length ? parts.join("") : null;
+}
+
+// Reports whether `name` appears as a genuine read reference anywhere in the
+// module — an Identifier in value position. Excludes positions that name the
+// identifier without reading the binding: non-computed member properties
+// (`obj.__filename`), non-computed object/class keys (`{ __filename: 1 }`,
+// `class { __filename() {} }`), and lookalikes (`__filenameFoo`). Object
+// shorthand values, computed keys/members, default values, and assignment/update
+// targets all count as reads.
+//
+// This is a syntactic read check, not full scope resolution: it does not prove
+// the read is *free* (unbound), so a name read only within a scope that also
+// binds it may still be reported. That is harmless — collision safety is handled
+// by hasTopLevelBinding, and an over-report at worst injects an unused `var`.
+function hasReadReference(ast: unknown, name: string): boolean {
+  let found = false;
+  function visit(value: unknown): void {
+    if (found || !isNodeLike(value)) return;
+    switch (value.type) {
+      case "Identifier":
+        if (value.name === name) found = true;
+        return;
+      case "MemberExpression":
+        // `obj[x]` reads x; `obj.x` does not.
+        visit(value.object);
+        if (value.computed) visit(value.property);
+        return;
+      case "Property":
+        // `{ [x]: v }` reads x; the key in `{ x: v }` / `{ x }` does not. The
+        // value (or the shorthand identifier, stored as value) is always a read.
+        if (value.computed) visit(value.key);
+        visit(value.value);
+        return;
+      case "MethodDefinition":
+      case "PropertyDefinition":
+        // Class member: the name is a read only when computed.
+        if (value.computed) visit(value.key);
+        visit(value.value);
+        return;
+      default:
+        for (const [key, child] of Object.entries(value)) {
+          if (key === "type" || key === "start" || key === "end" || key === "loc") continue;
+          if (Array.isArray(child)) {
+            for (const item of child) visit(item);
+          } else {
+            visit(child);
+          }
+        }
+    }
+  }
+  visit(ast);
+  return found;
 }
 
 // Reports whether `name` is bound by a top-level declaration whose kind would

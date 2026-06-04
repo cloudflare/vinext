@@ -397,4 +397,57 @@ describe("vinext:import-meta-url plugin", () => {
 
     expect(result).toBeNull();
   });
+
+  it("does not inject for non-computed member access (obj.__filename is not a read)", () => {
+    const result = rewriteServerCjsGlobals(`obj.__filename;\nobj.__dirname;\n`, pagePath, linkedRoot);
+
+    expect(result).toBeNull();
+  });
+
+  it("does not inject for lookalike identifiers (__filenameFoo)", () => {
+    const result = rewriteServerCjsGlobals(
+      [`const __filenameFoo = 1;`, `console.log(__filenameFoo);`].join("\n"),
+      pagePath,
+      linkedRoot,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not inject for non-computed object literal keys", () => {
+    const result = rewriteServerCjsGlobals(
+      `const meta = { __filename: 1, __dirname: 2 };\n`,
+      pagePath,
+      linkedRoot,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not inject for non-computed class member names", () => {
+    const result = rewriteServerCjsGlobals(
+      `class C {\n  __filename() {}\n  __dirname = 1;\n}\n`,
+      pagePath,
+      linkedRoot,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("injects for computed member reads (obj[__filename])", () => {
+    const result = rewriteServerCjsGlobals(`console.log(obj[__filename]);\n`, pagePath, linkedRoot);
+
+    expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
+  });
+
+  it("injects a name with a real read even when the other only appears as a member", () => {
+    const result = rewriteServerCjsGlobals(`obj.__filename;\nconsole.log(__dirname);\n`, pagePath, linkedRoot);
+
+    // __dirname is read freely → injected; __filename only appears as a member
+    // property → not injected.
+    expect(result?.code).toContain(
+      `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
+    );
+    expect(result?.code).not.toContain(`var __filename =`);
+  });
 });
