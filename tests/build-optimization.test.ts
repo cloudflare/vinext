@@ -1566,9 +1566,7 @@ describe("next/dynamic preload metadata transform", () => {
       importer,
       root,
       async (specifier) =>
-        specifier === "./dynamic_widget"
-          ? path.join(root, "app/dynamic_widget.tsx")
-          : null,
+        specifier === "./dynamic_widget" ? path.join(root, "app/dynamic_widget.tsx") : null,
     );
 
     expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic_widget.tsx"] }`);

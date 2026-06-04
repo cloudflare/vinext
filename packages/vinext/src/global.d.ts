@@ -250,7 +250,7 @@ declare global {
    * Per-module preload files for rendered `next/dynamic()` boundaries.
    * Keys are root-relative module IDs injected by vinext's dynamic metadata
    * transform. Values are JS/CSS files from Vite's build manifest, with any
-   * configured base path already applied.
+   * configured base path / asset prefix already applied.
    */
   // oxlint-disable-next-line no-var
   var __VINEXT_DYNAMIC_PRELOADS__: Record<string, string[]> | undefined;
