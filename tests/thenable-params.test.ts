@@ -179,11 +179,12 @@ describe("makeThenableParams", () => {
     expect(typeof (thrown as Promise<unknown>).then).toBe("function");
   });
 
-  it("awaiting params resolves known params without hanging during fallback-shell prerendering", async () => {
+  it("awaited params object suspends on fallback param access", async () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: ["slug"],
       routePattern: "/:locale/blog/:slug",
     });
+    let thrown: unknown;
 
     const params = runWithPprFallbackShellState(state, () =>
       makeThenableParams({ locale: "en", slug: "[slug]" }),
@@ -191,7 +192,21 @@ describe("makeThenableParams", () => {
 
     const result = await params;
     expect(result.locale).toBe("en");
-    expect(result.slug).toBe("[slug]");
+
+    // Access the resolved object inside the fallback-shell context so that
+    // getFallbackShellPromise can reach the ALS state for side-effects.
+    runWithPprFallbackShellState(state, () => {
+      try {
+        Reflect.get(result, "slug");
+      } catch (error) {
+        thrown = error;
+      }
+    });
+
+    expect(thrown).toBeDefined();
+    expect(typeof (thrown as Promise<unknown>).then).toBe("function");
+    expect(state.hasDynamicBoundary).toBe(true);
+
     state.abortController.abort();
   });
 
@@ -212,6 +227,21 @@ describe("makeThenableParams", () => {
         /* expected suspension */
       }
       expect(state.hasDynamicBoundary).toBe(true);
+    });
+
+    state.abortController.abort();
+  });
+
+  it("Object.keys(params) does not mark dynamic boundary before fallback param access", () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+
+    runWithPprFallbackShellState(state, () => {
+      const params = makeThenableParams({ locale: "en", slug: "[slug]" });
+      Object.keys(params);
+      expect(state.hasDynamicBoundary).toBe(false);
     });
 
     state.abortController.abort();

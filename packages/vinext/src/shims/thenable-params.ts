@@ -99,6 +99,86 @@ function isPromiseContinuation(prop: PropertyKey): boolean {
   return prop === "then" || prop === "catch" || prop === "finally";
 }
 
+/**
+ * Create a non-Promise params object that preserves fallback-key suspension.
+ * This is the value `await params` resolves to during fallback-shell
+ * prerendering. Known params are readable synchronously; fallback params
+ * suspend (throw a hanging promise) only when actually accessed.
+ */
+function createResolvedParamsProxy<T extends Record<string, unknown>>(
+  plain: T,
+  fallbackParamNames: ReadonlySet<string> | null,
+  observer: ThenableParamsObserver | undefined,
+  getFallbackShellPromise: () => Promise<T> | null,
+): T {
+  if (!fallbackParamNames || fallbackParamNames.size === 0) {
+    return plain;
+  }
+
+  function isFallbackParam(prop: PropertyKey): boolean {
+    return typeof prop === "string" && fallbackParamNames !== null && fallbackParamNames.has(prop);
+  }
+
+  return new Proxy(plain, {
+    get(_target, prop, _receiver) {
+      if (typeof prop === "string" && !isWellKnownProperty(prop)) {
+        observeParamKeys(observer, [prop]);
+      }
+
+      if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
+        if (isFallbackParam(prop)) {
+          const p = getFallbackShellPromise();
+          if (p) throw p;
+        }
+        return Reflect.get(plain, prop);
+      }
+
+      return Reflect.get(plain, prop);
+    },
+    getOwnPropertyDescriptor(_target, prop) {
+      if (typeof prop === "string" && !isWellKnownProperty(prop)) {
+        observeParamKeys(observer, [prop]);
+      }
+
+      if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
+        if (isFallbackParam(prop)) {
+          return {
+            configurable: true,
+            enumerable: true,
+            get() {
+              const p = getFallbackShellPromise();
+              if (p) throw p;
+              return Reflect.get(plain, prop);
+            },
+          };
+        }
+
+        return {
+          configurable: true,
+          enumerable: true,
+          value: Reflect.get(plain, prop),
+          writable: true,
+        };
+      }
+
+      return Reflect.getOwnPropertyDescriptor(plain, prop);
+    },
+    has(_target, prop) {
+      if (typeof prop === "string" && !isWellKnownProperty(prop)) {
+        observeParamKeys(observer, [prop]);
+      }
+
+      return (
+        Reflect.has(plain, prop) || (!isWellKnownProperty(prop) && hasParamProperty(plain, prop))
+      );
+    },
+    ownKeys() {
+      observeReadableParamKeys(observer, plain);
+      return Reflect.ownKeys(plain).filter((prop) => !isWellKnownProperty(prop));
+    },
+  }) as unknown as T;
+}
+
 export function makeThenableParams<T extends Record<string, unknown>>(
   obj: T,
   observer?: ThenableParamsObserver,
@@ -123,7 +203,14 @@ export function makeThenableParams<T extends Record<string, unknown>>(
     return typeof prop === "string" && (fallbackParamNames?.has(prop) ?? false);
   }
 
-  const promise = Promise.resolve(plain);
+  const resolvedParams = createResolvedParamsProxy(
+    plain,
+    fallbackParamNames,
+    observer,
+    getFallbackShellPromise,
+  );
+
+  const promise = Promise.resolve(resolvedParams);
 
   // The Proxy implements both Promise and plain-object behaviour so that
   // `await params` and `params.id` both work. TypeScript's Proxy type
@@ -162,16 +249,15 @@ export function makeThenableParams<T extends Record<string, unknown>>(
 
       if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
         if (isFallbackParam(prop)) {
-          const p = getFallbackShellPromise();
-          if (p) {
-            return {
-              configurable: true,
-              enumerable: true,
-              get() {
-                throw p;
-              },
-            };
-          }
+          return {
+            configurable: true,
+            enumerable: true,
+            get() {
+              const p = getFallbackShellPromise();
+              if (p) throw p;
+              return Reflect.get(plain, prop);
+            },
+          };
         }
 
         return {
