@@ -907,16 +907,16 @@ importers:
         version: 6.0.1(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.26(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.6(react@19.2.6))(react-server-dom-webpack@19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react@19.2.7)
       react:
         specifier: 'catalog:'
-        version: 19.2.6
+        version: 19.2.7
       react-dom:
         specifier: 'catalog:'
-        version: 19.2.6(react@19.2.6)
+        version: 19.2.7(react@19.2.7)
       react-server-dom-webpack:
         specifier: 'catalog:'
-        version: 19.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+        version: 19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       vinext:
         specifier: workspace:*
         version: link:../../packages/vinext
@@ -1103,6 +1103,10 @@ importers:
       vite-plus:
         specifier: 'catalog:'
         version: 0.1.22(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@vitest/coverage-istanbul@4.1.6)(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3)
+
+  tests/fixtures/css-url-assets-app: {}
+
+  tests/fixtures/css-url-assets-pages: {}
 
   tests/fixtures/ecosystem/better-auth:
     dependencies:
