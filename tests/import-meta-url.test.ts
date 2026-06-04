@@ -360,6 +360,28 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result).toBeNull();
   });
 
+  it("inserts bindings after directive prologue so use server remains a directive", () => {
+    const result = rewriteServerCjsGlobals(
+      `"use server";\nconsole.log(__filename);\n`,
+      pagePath,
+      linkedRoot,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.code).toMatch(/^"use server";\nvar __filename/);
+  });
+
+  it("inserts bindings after directive prologue so use strict remains a directive", () => {
+    const result = rewriteServerCjsGlobals(
+      `"use strict";\nconsole.log(__dirname);\n`,
+      pagePath,
+      linkedRoot,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.code).toMatch(/^"use strict";\nvar __dirname/);
+  });
+
   it("does not inject server CJS globals in build output paths", () => {
     const result = rewriteServerCjsGlobals(
       `console.log(__filename);\n`,

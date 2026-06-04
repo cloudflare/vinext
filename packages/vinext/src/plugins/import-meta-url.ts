@@ -148,7 +148,7 @@ function rewriteCanonicalSourceIdentity(
   if (environment === "server" && mayContainServerCjsGlobal(code)) {
     const injected = injectServerCjsGlobals(ast, code, canonicalId);
     if (injected) {
-      output.prepend(`${injected}\n`);
+      output.appendLeft(findDirectivePrologueEnd(ast), `\n${injected}`);
       changed = true;
     }
   }
@@ -202,7 +202,7 @@ function rewriteCanonicalServerCjsGlobals(code: string, canonicalId: string): Re
   if (!injected) return null;
 
   const output = new MagicString(code);
-  output.prepend(`${injected}\n`);
+  output.appendLeft(findDirectivePrologueEnd(ast), `\n${injected}`);
 
   return {
     code: output.toString(),
@@ -594,6 +594,27 @@ function isChainExpressionWrappingImportMetaUrl(
 // `new window.URL(...)`. Matches Vite's own asset-detection scope.
 function isNewUrlExpression(value: NodeLike): boolean {
   return value.type === "NewExpression" && isIdentifierNamed(value.callee, "URL");
+}
+
+function findDirectivePrologueEnd(ast: unknown): number {
+  if (!isNodeLike(ast) || ast.type !== "Program") return 0;
+
+  let end = 0;
+  for (const statement of nodeArray(ast.body)) {
+    if (
+      !isNodeLike(statement) ||
+      statement.type !== "ExpressionStatement" ||
+      !isNodeLike(statement.expression) ||
+      statement.expression.type !== "Literal" ||
+      typeof statement.expression.value !== "string" ||
+      typeof statement.end !== "number"
+    ) {
+      break;
+    }
+    end = statement.end;
+  }
+
+  return end;
 }
 
 function nodeArray(value: unknown): unknown[] {
