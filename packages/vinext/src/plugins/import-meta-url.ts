@@ -423,8 +423,7 @@ function hasBindingInStatement(statement: NodeLike, name: string): boolean {
       if (statement.declare === true) return false;
       for (const declaration of nodeArray(statement.declarations)) {
         if (!isNodeLike(declaration) || declaration.type !== "VariableDeclarator") continue;
-        const bindingName = getBindingName(declaration.id);
-        if (bindingName === name) return true;
+        if (hasBindingInPattern(declaration.id, name)) return true;
       }
       return false;
     }
@@ -448,6 +447,21 @@ function hasBindingInStatement(statement: NodeLike, name: string): boolean {
       }
       return false;
     }
+    case "ForStatement": {
+      const init = statement.init;
+      if (isNodeLike(init) && init.type === "VariableDeclaration" && init.kind === "var") {
+        return hasBindingInStatement(init, name);
+      }
+      return false;
+    }
+    case "ForInStatement":
+    case "ForOfStatement": {
+      const left = statement.left;
+      if (isNodeLike(left) && left.type === "VariableDeclaration" && left.kind === "var") {
+        return hasBindingInStatement(left, name);
+      }
+      return false;
+    }
     // TypeScript runtime-binding declarations
     case "TSEnumDeclaration": {
       if (statement.declare === true) return false;
@@ -463,6 +477,38 @@ function hasBindingInStatement(statement: NodeLike, name: string): boolean {
       if (isIdentifierNamed(statement.id, name)) return true;
       return false;
     }
+    default:
+      return false;
+  }
+}
+
+function hasBindingInPattern(value: unknown, name: string): boolean {
+  if (!isNodeLike(value)) return false;
+
+  if (isIdentifierNamed(value, name)) return true;
+
+  const type = value.type;
+  if (typeof type !== "string") return false;
+
+  switch (type) {
+    case "RestElement":
+      return hasBindingInPattern(value.argument, name);
+
+    case "AssignmentPattern":
+      return hasBindingInPattern(value.left, name);
+
+    case "ArrayPattern":
+      return nodeArray(value.elements).some((element) => hasBindingInPattern(element, name));
+
+    case "ObjectPattern":
+      return nodeArray(value.properties).some((property) => {
+        if (!isNodeLike(property)) return false;
+        if (property.type === "Property") {
+          return hasBindingInPattern(property.value, name);
+        }
+        return hasBindingInPattern(property.argument, name);
+      });
+
     default:
       return false;
   }

@@ -306,6 +306,60 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
   });
 
+  it("does not inject when destructuring declarations shadow the globals", () => {
+    const result = rewriteServerCjsGlobals(
+      [`const { __filename } = source;`, `console.log(__filename);`].join("\n"),
+      pagePath,
+      linkedRoot,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not inject when nested destructuring patterns shadow the globals", () => {
+    const result = rewriteServerCjsGlobals(
+      [
+        `const { file: __filename } = source;`,
+        `const [__dirname] = parts;`,
+        `const { nested: { __dirname } } = source;`,
+      ].join("\n"),
+      pagePath,
+      linkedRoot,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not inject when top-level for (var ...) declarations shadow the globals", () => {
+    const result = rewriteServerCjsGlobals(
+      [`for (var __filename = "local"; false;) {}`, `console.log(__filename);`].join("\n"),
+      pagePath,
+      linkedRoot,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not inject when top-level for-in (var ...) declarations shadow the globals", () => {
+    const result = rewriteServerCjsGlobals(
+      [`for (var __dirname in obj) {}`, `console.log(__dirname);`].join("\n"),
+      pagePath,
+      linkedRoot,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not inject when top-level for-of (var ...) declarations shadow the globals", () => {
+    const result = rewriteServerCjsGlobals(
+      [`for (var __filename of list) {}`, `console.log(__filename);`].join("\n"),
+      pagePath,
+      linkedRoot,
+    );
+
+    expect(result).toBeNull();
+  });
+
   it("does not inject server CJS globals in build output paths", () => {
     const result = rewriteServerCjsGlobals(
       `console.log(__filename);\n`,
