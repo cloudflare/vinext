@@ -8,45 +8,51 @@
  * per isolate). When no cache adapters are configured the function is a no-op,
  * so the import is always safe regardless of config.
  *
- * Keeping the codegen here (pure string in → string out) makes it unit-testable
+ * The descriptor `options` (e.g. `{ binding: "MY_KV" }`) are inlined into the
+ * generated module and forwarded to the adapter factory at runtime, so a
+ * config-time builder like `kvDataAdapter({ binding })` never has to touch the
+ * Workers runtime — instantiation is fully deferred to the first request.
+ *
+ * Keeping the codegen here (pure config in → string out) makes it unit-testable
  * without spinning up a full Vite build.
  */
 
-/** A single adapter slot — points at a module that default-exports a factory. */
-export type VinextCacheAdapterConfig = {
-  /**
-   * Module specifier (or absolute path, e.g. from `require.resolve(...)`) whose
-   * default export is a cache adapter factory. See `shims/cache-adapter.ts` for
-   * the `DataCacheAdapterFactory` / `CdnCacheAdapterFactory` contract.
-   */
-  adapter: string;
-};
+import type { CacheAdapterDescriptor, VinextCacheConfig } from "vinext/shims/cache-adapter";
 
-/**
- * Configure cache handlers declaratively from the vite plugin config instead of
- * calling `setDataCacheHandler()` / `setCdnCacheAdapter()` from a worker entry.
- */
-export type VinextCacheConfig = {
-  /** Page-level ISR serving strategy (CDN cache adapter). */
-  cdn?: VinextCacheAdapterConfig;
-  /** Data cache (fetch / `"use cache"` / `unstable_cache`) handler. */
-  data?: VinextCacheAdapterConfig;
-};
+export type { CacheAdapterDescriptor, VinextCacheConfig };
+/** @deprecated Use {@link CacheAdapterDescriptor}. */
+export type VinextCacheAdapterConfig = CacheAdapterDescriptor;
 
 /** Public virtual module id imported by the server entries. */
 export const VIRTUAL_CACHE_ADAPTERS = "virtual:vinext-cache-adapters";
+
+/**
+ * Serialize descriptor options into a JS expression for inlining. Plain JSON is
+ * a valid JS literal; `undefined` when there are no options. Throws a clear
+ * config-time error (not a runtime one) if options are not serializable.
+ */
+function inlineOptions(adapter: string, options: Record<string, unknown> | undefined): string {
+  if (options === undefined) return "undefined";
+  try {
+    return JSON.stringify(options);
+  } catch (cause) {
+    throw new Error(`[vinext] cache adapter "${adapter}" options must be JSON-serializable.`, {
+      cause,
+    });
+  }
+}
 
 /**
  * Generate the source of the `virtual:vinext-cache-adapters` module for the
  * given config. Always exports `registerConfiguredCacheAdapters(env)`.
  */
 export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
-  const dataAdapter = cache?.data?.adapter;
-  const cdnAdapter = cache?.cdn?.adapter;
+  const data = cache?.data;
+  const cdn = cache?.cdn;
 
   // Nothing configured → a no-op so the unconditional import in the server
   // entries stays valid and tree-shakes to almost nothing.
-  if (!dataAdapter && !cdnAdapter) {
+  if (!data?.adapter && !cdn?.adapter) {
     return [
       "// vinext: no cache.cdn/cache.data adapter configured — registration is a no-op.",
       "export function registerConfiguredCacheAdapters() {}",
@@ -58,12 +64,12 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
     "// vinext: generated from the `cache` option in your vinext() plugin config.",
   ];
 
-  if (dataAdapter) {
-    lines.push(`import __vinextDataAdapterFactory from ${JSON.stringify(dataAdapter)};`);
+  if (data?.adapter) {
+    lines.push(`import __vinextDataAdapterFactory from ${JSON.stringify(data.adapter)};`);
     lines.push(`import { setDataCacheHandler } from "vinext/shims/cache";`);
   }
-  if (cdnAdapter) {
-    lines.push(`import __vinextCdnAdapterFactory from ${JSON.stringify(cdnAdapter)};`);
+  if (cdn?.adapter) {
+    lines.push(`import __vinextCdnAdapterFactory from ${JSON.stringify(cdn.adapter)};`);
     lines.push(`import { setCdnCacheAdapter } from "vinext/shims/cdn-cache";`);
   }
 
@@ -76,13 +82,22 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
     "export function registerConfiguredCacheAdapters(env) {",
     "  if (__vinextCacheAdaptersRegistered) return;",
     "  __vinextCacheAdaptersRegistered = true;",
-    "  const __context = { env };",
   );
-  if (dataAdapter) {
-    lines.push("  setDataCacheHandler(__vinextDataAdapterFactory(__context));");
+  if (data?.adapter) {
+    lines.push(
+      `  setDataCacheHandler(__vinextDataAdapterFactory({ env, options: ${inlineOptions(
+        data.adapter,
+        data.options,
+      )} }));`,
+    );
   }
-  if (cdnAdapter) {
-    lines.push("  setCdnCacheAdapter(__vinextCdnAdapterFactory(__context));");
+  if (cdn?.adapter) {
+    lines.push(
+      `  setCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: ${inlineOptions(
+        cdn.adapter,
+        cdn.options,
+      )} }));`,
+    );
   }
   lines.push("}", "");
 
