@@ -71,7 +71,7 @@ export async function loadPagesGetInitialProps(
   const getInitialProps = getInitialPropsFn(component);
   if (!getInitialProps) return null;
 
-  const result = await Promise.resolve(getInitialProps(context));
+  const result = await Promise.resolve(getInitialProps.call(component, context));
   if (isResponseSent(context.res)) {
     return isPropsObject(result) ? result : {};
   }

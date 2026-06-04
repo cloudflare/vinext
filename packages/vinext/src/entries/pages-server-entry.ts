@@ -613,6 +613,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
   // returns the plain "Internal Server Error" text response instead of trying
   // to render an error page again. Fixes #1458.
   const isInternalErrorRender = !!(options && options.__isInternalErrorRender);
+  const err = options && options.err;
   const localeInfo = i18nConfig
     ? resolvePagesI18nRequest(
         url,
@@ -745,6 +746,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       } catch (e) { /* font preloads not available */ }
       const pageDataResult = await __resolvePagesPageData({
         isDataReq,
+        err,
         applyRequestContexts() {
           if (typeof setSSRContext === "function") {
             setSSRContext({
@@ -1043,6 +1045,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
               renderErrorPageOnMiss: false,
               __isInternalErrorRender: true,
               __forcedRoute: errorRoute,
+              err: e instanceof Error ? e : new Error(String(e)),
             });
           } catch (errorPageErr) {
             console.error("[vinext] Error page render failed:", errorPageErr);

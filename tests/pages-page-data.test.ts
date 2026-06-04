@@ -158,6 +158,130 @@ describe("pages page data", () => {
     });
   });
 
+  it("preserves getInitialProps this binding via component receiver", async () => {
+    const Page = Object.assign(
+      function Page() {
+        return null;
+      },
+      {
+        value: "ok",
+        getInitialProps(this: { value: string }) {
+          return { value: this.value };
+        },
+      },
+    );
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        createGsspReqRes() {
+          return {
+            req: {},
+            res: {
+              headersSent: false,
+              statusCode: 200,
+              getHeaders() {
+                return {};
+              },
+            },
+            responsePromise: Promise.resolve(new Response("short-circuit", { status: 202 })),
+          };
+        },
+        pageModule: {
+          default: Page,
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { value: "ok" },
+    });
+  });
+
+  it("returns a notFound signal when getServerSideProps returns notFound", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getServerSideProps() {
+            return { notFound: true };
+          },
+        },
+      }),
+    );
+
+    expect(result).toEqual({ kind: "notFound" });
+  });
+
+  it("returns JSON 404 envelope for data requests when getStaticPaths excludes a path", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: false,
+              paths: [{ params: { slug: "hello-world" } }],
+            };
+          },
+        },
+        params: { slug: "missing" },
+        query: { slug: "missing" },
+        route: { isDynamic: true },
+        routeUrl: "/posts/missing",
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") {
+      throw new Error("expected response result");
+    }
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("content-type")).toBe("application/json");
+    await expect(result.response.text()).resolves.toBe("{}");
+  });
+
+  it("returns JSON 404 envelope for data requests when getStaticProps returns notFound", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        pageModule: {
+          async getStaticProps() {
+            return { notFound: true };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") {
+      throw new Error("expected response result");
+    }
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("content-type")).toBe("application/json");
+    await expect(result.response.text()).resolves.toBe("{}");
+  });
+
+  it("returns JSON 404 envelope for data requests when getServerSideProps returns notFound", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        pageModule: {
+          async getServerSideProps() {
+            return { notFound: true };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") {
+      throw new Error("expected response result");
+    }
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("content-type")).toBe("application/json");
+    await expect(result.response.text()).resolves.toBe("{}");
+  });
+
   it("short-circuits getServerSideProps responses after res.end()", async () => {
     const responsePromise = Promise.resolve(
       new Response('{"ok":true}', {

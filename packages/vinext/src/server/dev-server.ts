@@ -1069,7 +1069,7 @@ export function createSSRHandler(
             defaultLocale: currentDefaultLocale,
           });
 
-          if (res.writableEnded) {
+          if (res.headersSent || res.writableEnded) {
             return;
           }
 
@@ -1433,7 +1433,18 @@ hydrate();
         });
         // Try to render custom 500 error page
         try {
-          await renderErrorPage(server, runner, req, res, url, pagesDir, 500, undefined, matcher);
+          await renderErrorPage(
+            server,
+            runner,
+            req,
+            res,
+            url,
+            pagesDir,
+            500,
+            undefined,
+            matcher,
+            e instanceof Error ? e : new Error(String(e)),
+          );
         } catch (fallbackErr) {
           // If error page itself fails, fall back to plain text.
           // This is a dev-only code path (prod uses prod-server.ts), so
@@ -1466,6 +1477,7 @@ async function renderErrorPage(
   statusCode: number,
   wrapWithRouterContext?: ((el: React.ReactElement) => React.ReactElement) | null,
   fileMatcher?: ValidFileMatcher,
+  err?: Error,
 ): Promise<void> {
   const matcher = fileMatcher ?? createValidFileMatcher();
   // Try specific status page first, then _error, then fallback
@@ -1498,11 +1510,12 @@ async function renderErrorPage(
       const initialErrorProps = await loadPagesGetInitialProps(ErrorComponent, {
         req,
         res,
+        err,
         pathname: candidate === "_error" ? "/_error" : `/${candidate}`,
         query: parseQuery(url),
         asPath: url,
       });
-      if (res.writableEnded) return;
+      if (res.headersSent || res.writableEnded) return;
       const errorProps = { ...initialErrorProps, statusCode };
 
       // If the caller didn't supply wrapWithRouterContext, load it now.

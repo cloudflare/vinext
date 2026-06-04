@@ -124,6 +124,7 @@ export type ResolvePagesPageDataOptions = {
    * `isNextDataRequest` checks in `packages/next/src/server/base-server.ts`.
    */
   isDataReq?: boolean;
+  err?: unknown;
   createGsspReqRes: () => PagesGsspContextResponse;
   createPageElement: (pageProps: Record<string, unknown>) => ReactNode;
   fontLinkHeader: string;
@@ -684,6 +685,7 @@ export async function resolvePagesPageData(
     const initialProps = await loadPagesGetInitialProps(options.pageModule.default, {
       req,
       res,
+      err: options.err,
       pathname: options.routePattern,
       query: options.query,
       asPath: options.asPath ?? options.routeUrl,
