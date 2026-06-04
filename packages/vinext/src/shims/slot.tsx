@@ -47,6 +47,7 @@ export type BfcacheSlotEntry = {
   elements?: AppElements;
   segmentId?: string;
   stateKey: string;
+  stateKeyMap?: Readonly<Record<string, string>>;
 };
 
 type MergeElementsOptions = {
@@ -74,10 +75,12 @@ export function updateBfcacheSlotEntries(
   maxEntries: number = getBfcacheSlotEntryLimit(),
   segmentId?: string,
   elements?: AppElements,
+  stateKeyMap?: Readonly<Record<string, string>>,
 ): BfcacheSlotEntry[] {
   const activeEntry: BfcacheSlotEntry = { content, stateKey: activeStateKey };
   if (segmentId !== undefined) activeEntry.segmentId = segmentId;
   if (elements !== undefined) activeEntry.elements = elements;
+  if (stateKeyMap !== undefined) activeEntry.stateKeyMap = stateKeyMap;
 
   const nextEntries: BfcacheSlotEntry[] = [activeEntry];
   const entryLimit = normalizeBfcacheSlotEntryLimit(maxEntries);
@@ -218,6 +221,7 @@ function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: st
       getBfcacheSlotEntryLimit(),
       id,
       elements,
+      stateKeyMap,
     ),
   );
   if (!SegmentContext) return <>{content}</>;
@@ -230,6 +234,7 @@ function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: st
     elements,
     segmentId: id,
     stateKey: activeStateKey,
+    stateKeyMap,
   });
 
   const orderedEntries = updateBfcacheSlotEntries(
@@ -239,6 +244,7 @@ function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: st
     getBfcacheSlotEntryLimit(),
     id,
     elements,
+    stateKeyMap,
   ).map((entry) => latestEntriesByStateKey.current.get(entry.stateKey) ?? entry);
 
   if (!haveSameBfcacheSlotEntryOrder(entries, orderedEntries)) {
@@ -253,11 +259,16 @@ function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: st
   if (!process.env.__NEXT_CACHE_COMPONENTS) {
     const activeEntry = renderEntries[0];
     return (
-      <ElementsContext.Provider key={activeEntry.stateKey} value={activeEntry.elements ?? elements}>
-        <SegmentContext.Provider value={activeEntry.segmentId ?? id}>
-          {activeEntry.content}
-        </SegmentContext.Provider>
-      </ElementsContext.Provider>
+      <BfcacheStateKeyMapContext.Provider
+        key={activeEntry.stateKey}
+        value={activeEntry.stateKeyMap ?? stateKeyMap}
+      >
+        <ElementsContext.Provider value={activeEntry.elements ?? elements}>
+          <SegmentContext.Provider value={activeEntry.segmentId ?? id}>
+            {activeEntry.content}
+          </SegmentContext.Provider>
+        </ElementsContext.Provider>
+      </BfcacheStateKeyMapContext.Provider>
     );
   }
 
@@ -268,11 +279,13 @@ function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: st
           key={entry.stateKey}
           mode={entry.stateKey === activeStateKey ? "visible" : "hidden"}
         >
-          <ElementsContext.Provider value={entry.elements ?? elements}>
-            <SegmentContext.Provider value={entry.segmentId ?? id}>
-              {entry.content}
-            </SegmentContext.Provider>
-          </ElementsContext.Provider>
+          <BfcacheStateKeyMapContext.Provider value={entry.stateKeyMap ?? stateKeyMap}>
+            <ElementsContext.Provider value={entry.elements ?? elements}>
+              <SegmentContext.Provider value={entry.segmentId ?? id}>
+                {entry.content}
+              </SegmentContext.Provider>
+            </ElementsContext.Provider>
+          </BfcacheStateKeyMapContext.Provider>
         </React.Activity>
       ))}
     </>

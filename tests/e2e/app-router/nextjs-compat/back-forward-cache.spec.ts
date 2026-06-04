@@ -4,6 +4,7 @@ import { waitForAppRouterHydration } from "../../helpers";
 
 const BASE = "http://localhost:4174";
 const ROUTE = "/nextjs-compat/back-forward-cache/page";
+const NESTED_ROUTE = "/nextjs-compat/back-forward-cache/nested";
 
 function counter(page: Page, n: number) {
   return page.locator(`#counter-display-${n}:visible`).first();
@@ -29,6 +30,30 @@ async function clickUntilCount(page: Page, n: number, target: number) {
   for (let count = 1; count <= target; count++) {
     await button.click();
     await expect(counter(page, n)).toHaveText(`Count: ${count}`);
+  }
+}
+
+function nestedCounter(page: Page, id: string) {
+  return page.locator(`#counter-${id}:visible`).first();
+}
+
+function nestedIncrementButton(page: Page, id: string) {
+  return page.locator(`#increment-${id}:visible`).first();
+}
+
+async function clickNestedLink(page: Page, section: string, id: string) {
+  const href = `${NESTED_ROUTE}/${section}/item/${id}`;
+  await page.locator(`a[href="${href}"]:visible`).first().click();
+  await expect(page.locator("h3:visible").first()).toHaveText(`Item ${id} in section ${section}`);
+}
+
+async function clickNestedUntilCount(page: Page, id: string, target: number) {
+  const button = nestedIncrementButton(page, id);
+  await expect(button).toBeVisible();
+
+  for (let count = 1; count <= target; count++) {
+    await button.click();
+    await expect(nestedCounter(page, id)).toHaveText(`Count: ${count}`);
   }
 }
 
@@ -114,5 +139,43 @@ test.describe("Next.js compat: back/forward cache", () => {
 
     await clickPageLink(page, 1);
     await expect(counter(page, 1)).toHaveText("Count: 2");
+  });
+
+  test("preserves nested layout and page state across segment navigations", async ({ page }) => {
+    await page.goto(`${BASE}${NESTED_ROUTE}/a/item/1`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("h2:visible").first()).toHaveText("Section a");
+    await expect(page.locator("h3:visible").first()).toHaveText("Item 1 in section a");
+
+    // Section layout counter = 2, page counter = 5
+    await clickNestedUntilCount(page, "section-a", 2);
+    await clickNestedUntilCount(page, "page-a-1", 5);
+
+    // Navigate to /b/item/2
+    await clickNestedLink(page, "b", "2");
+    await expect(page.locator("h2:visible").first()).toHaveText("Section b");
+    await expect(page.locator("h3:visible").first()).toHaveText("Item 2 in section b");
+
+    // Section layout counter = 7, page counter = 9
+    await clickNestedUntilCount(page, "section-b", 7);
+    await clickNestedUntilCount(page, "page-b-2", 9);
+
+    // Navigate back to /a/item/1
+    await clickNestedLink(page, "a", "1");
+    await expect(page.locator("h2:visible").first()).toHaveText("Section a");
+    await expect(page.locator("h3:visible").first()).toHaveText("Item 1 in section a");
+
+    // Both layout and page counters must be preserved from the first visit
+    await expect(nestedCounter(page, "section-a")).toHaveText("Count: 2");
+    await expect(nestedCounter(page, "page-a-1")).toHaveText("Count: 5");
+
+    // Navigate back to /b/item/2
+    await clickNestedLink(page, "b", "2");
+    await expect(page.locator("h2:visible").first()).toHaveText("Section b");
+    await expect(page.locator("h3:visible").first()).toHaveText("Item 2 in section b");
+
+    // Both layout and page counters must be preserved from the second visit
+    await expect(nestedCounter(page, "section-b")).toHaveText("Count: 7");
+    await expect(nestedCounter(page, "page-b-2")).toHaveText("Count: 9");
   });
 });
