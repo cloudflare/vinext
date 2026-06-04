@@ -131,7 +131,11 @@ import {
 } from "./plugins/fonts.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import { computeLazyChunks } from "./utils/lazy-chunks.js";
-import { findClientEntryFile, readClientBuildManifest } from "./utils/client-build-manifest.js";
+import {
+  findClientEntryFile,
+  findPagesClientEntryFile,
+  readClientBuildManifest,
+} from "./utils/client-build-manifest.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import { buildSassPreprocessorOptions } from "./plugins/sass.js";
 import {
@@ -1994,6 +1998,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             instrumentationClientPath,
           ].flatMap((entry) => (entry ? [toRelativeFileEntry(root, entry)] : []));
           const optimizeEntries = [...new Set([...appEntries, ...explicitInstrumentationEntries])];
+          const appClientInput: Record<string, string> = { index: VIRTUAL_APP_BROWSER_ENTRY };
+          if (hasPagesDir) {
+            appClientInput["vinext-client-entry"] = VIRTUAL_CLIENT_ENTRY;
+          }
 
           viteConfig.environments = {
             rsc: {
@@ -2117,19 +2125,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ],
               },
               build: {
-                // When targeting Cloudflare Workers, enable manifest generation
-                // so the vinext:cloudflare-build closeBundle hook can read the
-                // client build manifest, compute lazy chunks (only reachable
-                // via dynamic imports), and inject __VINEXT_LAZY_CHUNKS__ into
-                // the worker entry. Without this, all chunks are modulepreloaded
-                // on every page — defeating code-splitting for React.lazy() and
-                // next/dynamic boundaries.
-                ...(hasCloudflarePlugin ? { manifest: true } : {}),
+                // When targeting Cloudflare Workers or mixing app/ with pages/,
+                // enable manifest generation so production runtimes can read the
+                // client build manifest. Cloudflare uses it for lazy chunks; the
+                // hybrid Node/App fallback uses it to find the Pages client entry.
+                ...(hasCloudflarePlugin || hasPagesDir ? { manifest: true } : {}),
+                ...(hasPagesDir ? { ssrManifest: true } : {}),
                 // Client-scoped so RSC/SSR keep their normal asset handling
                 // unless the user configured Vite globally.
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions(viteMajorVersion, {
-                  input: { index: VIRTUAL_APP_BROWSER_ENTRY },
+                  input: appClientInput,
                   output: getClientOutputConfigForVite(viteMajorVersion, clientAssetsDir),
                   treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
                 }),
@@ -4491,9 +4497,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     //
     // Pages Router: injects __VINEXT_CLIENT_ENTRY__, __VINEXT_SSR_MANIFEST__,
     //   and __VINEXT_LAZY_CHUNKS__ into the worker entry (found via wrangler.json).
-    // App Router: the RSC plugin handles __VINEXT_CLIENT_ENTRY__ via
+    // App Router: the RSC plugin handles App hydration via
     //   loadBootstrapScriptContent(), but we still inject __VINEXT_LAZY_CHUNKS__
     //   and __VINEXT_SSR_MANIFEST__ into the worker entry at dist/server/index.js.
+    //   Mixed app+pages builds also inject __VINEXT_CLIENT_ENTRY__ for Pages
+    //   Router fallback routes.
     // Both: generates _headers file for immutable asset caching.
     {
       name: "vinext:cloudflare-build",
@@ -4518,15 +4526,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           // Read build manifest and compute lazy chunks (only reachable via
           // dynamic imports). This runs for BOTH App Router and Pages Router.
-          // clientEntryFile is only used by the Pages Router path below —
-          // App Router gets its client entry via the RSC plugin instead.
+          // App Router gets its app client bootstrap via the RSC plugin. This
+          // Pages client entry is still needed for mixed app+pages fallback
+          // routes rendered through the Pages Router entry.
           let lazyChunksData: string[] | null = null;
           let clientEntryFile: string | null = null;
           const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
           const buildManifest = readClientBuildManifest(buildManifestPath);
           if (buildManifest) {
             clientEntryFile =
-              findClientEntryFile({
+              (hasAppDir && hasPagesDir ? findPagesClientEntryFile : findClientEntryFile)({
                 buildManifest,
                 clientDir,
                 assetsSubdir: resolveAssetsDir(nextConfig?.assetPrefix),
@@ -4548,14 +4557,31 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
 
           if (hasAppDir) {
-            // App Router: the RSC plugin handles __VINEXT_CLIENT_ENTRY__
-            // via loadBootstrapScriptContent(), but we still need to inject
-            // __VINEXT_LAZY_CHUNKS__ and __VINEXT_SSR_MANIFEST__ into the
-            // worker entry at dist/server/index.js.
+            // App Router: the RSC plugin handles the App client bootstrap via
+            // loadBootstrapScriptContent(). In mixed app+pages builds, Pages
+            // fallback routes still render through the Pages entry and need
+            // the Pages client entry global.
             const workerEntry = path.resolve(distDir, "server", "index.js");
-            if (fs.existsSync(workerEntry) && (lazyChunksData || ssrManifestData)) {
+            if (!clientEntryFile && hasPagesDir) {
+              clientEntryFile =
+                findPagesClientEntryFile({
+                  clientDir,
+                  assetsSubdir: resolveAssetsDir(nextConfig?.assetPrefix),
+                  assetBase: clientBase,
+                }) ?? null;
+            }
+
+            if (
+              fs.existsSync(workerEntry) &&
+              (lazyChunksData || ssrManifestData || (hasPagesDir && clientEntryFile))
+            ) {
               let code = fs.readFileSync(workerEntry, "utf-8");
               const globals: string[] = [];
+              if (hasPagesDir && clientEntryFile) {
+                globals.push(
+                  `globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`,
+                );
+              }
               if (ssrManifestData) {
                 globals.push(
                   `globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`,
