@@ -100,10 +100,13 @@ function isPromiseContinuation(prop: PropertyKey): boolean {
 }
 
 /**
- * Create a non-Promise params object that preserves fallback-key suspension.
+ * Build a proxy around `plain` that preserves fallback-key suspension.
  * This is the value `await params` resolves to during fallback-shell
  * prerendering. Known params are readable synchronously; fallback params
  * suspend (throw a hanging promise) only when actually accessed.
+ *
+ * The handler is typed as `ProxyHandler<T>` and no cast is needed because
+ * the target is already `plain: T`.
  */
 function createResolvedParamsProxy<T extends Record<string, unknown>>(
   plain: T,
@@ -119,7 +122,7 @@ function createResolvedParamsProxy<T extends Record<string, unknown>>(
     return typeof prop === "string" && fallbackParamNames !== null && fallbackParamNames.has(prop);
   }
 
-  return new Proxy(plain, {
+  const handler: ProxyHandler<T> = {
     get(_target, prop, _receiver) {
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {
         observeParamKeys(observer, [prop]);
@@ -148,7 +151,6 @@ function createResolvedParamsProxy<T extends Record<string, unknown>>(
             get() {
               const p = getFallbackShellPromise();
               if (p) throw p;
-              return Reflect.get(plain, prop);
             },
           };
         }
@@ -176,7 +178,21 @@ function createResolvedParamsProxy<T extends Record<string, unknown>>(
       observeReadableParamKeys(observer, plain);
       return Reflect.ownKeys(plain).filter((prop) => !isWellKnownProperty(prop));
     },
-  }) as unknown as T;
+  };
+
+  return new Proxy(plain, handler);
+}
+
+/**
+ * Wrap a `Promise<T>` with a proxy that also exposes param properties for
+ * synchronous access. TypeScript cannot prove this hybrid shape statically,
+ * so the single `as ThenableParams<T>` cast is isolated here.
+ */
+function createThenableParamsProxy<T extends Record<string, unknown>>(
+  promise: Promise<T>,
+  handler: ProxyHandler<Promise<T>>,
+): ThenableParams<T> {
+  return new Proxy(promise, handler) as ThenableParams<T>;
 }
 
 export function makeThenableParams<T extends Record<string, unknown>>(
@@ -199,10 +215,6 @@ export function makeThenableParams<T extends Record<string, unknown>>(
     return fallbackShellPromise;
   }
 
-  function isFallbackParam(prop: PropertyKey): boolean {
-    return typeof prop === "string" && (fallbackParamNames?.has(prop) ?? false);
-  }
-
   const resolvedParams = createResolvedParamsProxy(
     plain,
     fallbackParamNames,
@@ -212,17 +224,22 @@ export function makeThenableParams<T extends Record<string, unknown>>(
 
   const promise = Promise.resolve(resolvedParams);
 
-  // The Proxy implements both Promise and plain-object behaviour so that
-  // `await params` and `params.id` both work. TypeScript's Proxy type
-  // cannot express this intersection precisely — the cast is isolated to
-  // the boundary so the handler above stays fully type-checked.
-  return new Proxy(promise, {
+  function isFallbackParam(prop: PropertyKey): boolean {
+    return typeof prop === "string" && (fallbackParamNames?.has(prop) ?? false);
+  }
+
+  const handler: ProxyHandler<Promise<T>> = {
     get(target, prop, receiver) {
       if (isPromiseContinuation(prop)) {
         const value = Reflect.get(target, prop, receiver);
         if (typeof value !== "function") return value;
         return (...args: unknown[]) => {
-          observeAllParamKeys(observer, plain);
+          // Only observe all keys when NOT in fallback-shell mode.
+          // In fallback-shell mode, let the resolved params proxy report
+          // actual property access lazily.
+          if (!fallbackParamNames) {
+            observeAllParamKeys(observer, plain);
+          }
           return Reflect.apply(value, target, args);
         };
       }
@@ -255,7 +272,6 @@ export function makeThenableParams<T extends Record<string, unknown>>(
             get() {
               const p = getFallbackShellPromise();
               if (p) throw p;
-              return Reflect.get(plain, prop);
             },
           };
         }
@@ -283,5 +299,7 @@ export function makeThenableParams<T extends Record<string, unknown>>(
       observeReadableParamKeys(observer, plain);
       return Reflect.ownKeys(plain).filter((prop) => !isWellKnownProperty(prop));
     },
-  }) as unknown as ThenableParams<T>;
+  };
+
+  return createThenableParamsProxy(promise, handler);
 }

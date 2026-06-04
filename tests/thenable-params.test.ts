@@ -184,29 +184,38 @@ describe("makeThenableParams", () => {
       fallbackParamNames: ["slug"],
       routePattern: "/:locale/blog/:slug",
     });
-    let thrown: unknown;
 
-    const params = runWithPprFallbackShellState(state, () =>
-      makeThenableParams({ locale: "en", slug: "[slug]" }),
-    );
+    await runWithPprFallbackShellState(state, async () => {
+      const params = makeThenableParams({ locale: "en", slug: "[slug]" });
 
-    const result = await params;
-    expect(result.locale).toBe("en");
+      const result = await params;
+      expect(result.locale).toBe("en");
 
-    // Access the resolved object inside the fallback-shell context so that
-    // getFallbackShellPromise can reach the ALS state for side-effects.
-    runWithPprFallbackShellState(state, () => {
-      try {
-        Reflect.get(result, "slug");
-      } catch (error) {
-        thrown = error;
-      }
+      expect(() => Reflect.get(result, "slug")).toThrow();
+      expect(state.hasDynamicBoundary).toBe(true);
     });
 
-    expect(thrown).toBeDefined();
-    expect(typeof (thrown as Promise<unknown>).then).toBe("function");
-    expect(state.hasDynamicBoundary).toBe(true);
+    state.abortController.abort();
+  });
 
+  it("awaiting params during fallback-shell prerender observes only accessed known params", async () => {
+    const observedKeys: string[][] = [];
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+
+    await runWithPprFallbackShellState(state, async () => {
+      const params = makeThenableParams(
+        { locale: "en", slug: "[slug]" },
+        { observeParamAccess: (keys) => observedKeys.push([...keys]) },
+      );
+
+      const resolved = await params;
+      expect(resolved.locale).toBe("en");
+    });
+
+    expect(observedKeys).toEqual([["locale"]]);
     state.abortController.abort();
   });
 
