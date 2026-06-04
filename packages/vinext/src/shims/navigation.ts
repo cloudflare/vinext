@@ -570,6 +570,13 @@ function isPrefetchCacheEntryCompatibleWithMountedSlots(
   entry: PrefetchCacheEntry,
   mountedSlotsHeader: string | null,
 ): boolean {
+  // The two clauses are load-bearing, not redundant. `resolvePrefetch...Header`
+  // prefers the entry's pinned request-time slot context (falling back to the
+  // snapshot header only when unset), while the second clause matches the
+  // server-declared snapshot header. They diverge only when the entry pins a
+  // request-time context that disagrees with the response (the
+  // `prefetchRscResponse` case); accepting either preserves the "request-time OR
+  // server-declared slot context" reuse semantics.
   if (resolvePrefetchCacheEntryMountedSlotsHeader(entry) === mountedSlotsHeader) {
     return true;
   }
@@ -985,6 +992,10 @@ export function consumePrefetchResponse(
     if (resolvePrefetchCacheEntryExpiresAt(entry) <= Date.now()) {
       return null;
     }
+    // Only synthesize `expiresAt` onto the returned snapshot when the entry (or
+    // its snapshot) already carried one. Entries that never had an explicit
+    // expiry must round-trip unchanged so callers/tests can assert the raw
+    // snapshot — don't collapse this into an unconditional spread.
     if (entry.expiresAt !== undefined || entry.snapshot.expiresAt !== undefined) {
       return {
         ...entry.snapshot,
