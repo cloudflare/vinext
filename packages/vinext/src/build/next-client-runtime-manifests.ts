@@ -2,10 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { NextRewrite, ResolvedNextConfig } from "../config/next-config.js";
 
-type ClientRuntimeRewrite = {
-  source: string;
+type ClientRuntimeRewrite = Omit<NextRewrite, "destination"> & {
   destination?: string;
-  has?: NextRewrite["has"];
 };
 
 type ClientRuntimeRewrites = {
@@ -27,14 +25,13 @@ type EmitNextClientRuntimeManifestsOptions = {
 };
 
 function normalizeRewriteForClientManifest(rewrite: NextRewrite): ClientRuntimeRewrite {
-  const result: ClientRuntimeRewrite = { source: rewrite.source };
-  if (rewrite.destination.startsWith("/")) {
-    result.destination = rewrite.destination;
+  const { destination, ...rest } = rewrite;
+
+  if (destination.startsWith("/")) {
+    return { ...rest, destination };
   }
-  if (rewrite.has) {
-    result.has = rewrite.has;
-  }
-  return result;
+
+  return rest;
 }
 
 function normalizeRewritesForClientManifest(
