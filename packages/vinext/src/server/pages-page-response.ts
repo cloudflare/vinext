@@ -3,7 +3,8 @@ import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { CachedPagesValue } from "vinext/shims/cache";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { buildRevalidateCacheControl } from "./cache-control.js";
+import { applyCdnResponseHeaders, buildRevalidateCacheControl } from "./cache-control.js";
+import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
@@ -507,10 +508,18 @@ export async function renderPagesPageResponse(
   if (options.scriptNonce) {
     responseHeaders.set("Cache-Control", "no-store, must-revalidate");
   } else if (options.isrRevalidateSeconds) {
-    responseHeaders.set(
-      "Cache-Control",
-      buildRevalidateCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
-    );
+    // Fresh ISR (MISS) response: route through the CDN adapter so edge adapters
+    // emit CDN-Cache-Control + a path-based Cache-Tag (matching revalidatePath,
+    // which Pages Router invalidation uses) while the default emits Cache-Control.
+    const isrPathname = options.routeUrl.split("?")[0];
+    const stem = isrPathname.endsWith("/") ? isrPathname.slice(0, -1) : isrPathname;
+    applyCdnResponseHeaders(responseHeaders, {
+      cacheControl: buildRevalidateCacheControl(
+        options.isrRevalidateSeconds,
+        options.expireSeconds,
+      ),
+      tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
+    });
     setCacheStateHeaders(responseHeaders, "MISS");
   } else if (options.gsspRes && !userSetCacheControl) {
     // Default for getServerSideProps responses, matching Next.js

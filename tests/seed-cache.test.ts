@@ -13,6 +13,7 @@ import {
   MemoryCacheHandler,
   setCacheHandler,
   getCacheHandler,
+  revalidatePath,
   type CacheHandler,
   type CacheHandlerValue,
   type IncrementalCacheValue,
@@ -287,16 +288,25 @@ describe("seedMemoryCacheFromPrerender", () => {
 
     await seedMemoryCacheFromPrerender(serverDir);
 
+    // Path-derived implicit tags are attached so revalidatePath('/isr') can
+    // invalidate seeded entries — see #1486.
+    const expectedTags = [
+      "/isr",
+      "_N_T_/isr",
+      "_N_T_/layout",
+      "_N_T_/isr/layout",
+      "_N_T_/isr/page",
+    ];
     expect(contexts).toEqual([
-      { cacheControl: { revalidate: 60, expire: 300 }, revalidate: 60 },
-      { cacheControl: { revalidate: 60, expire: 300 }, revalidate: 60 },
+      { cacheControl: { revalidate: 60, expire: 300 }, revalidate: 60, tags: expectedTags },
+      { cacheControl: { revalidate: 60, expire: 300 }, revalidate: 60, tags: expectedTags },
     ]);
   });
 
   it("can write through an injected app page cache writer", async () => {
     const writes: {
       key: string;
-      metadata: { expireSeconds?: number; revalidateSeconds?: number };
+      metadata: { expireSeconds?: number; revalidateSeconds?: number; tags?: string[] };
       valueKind: string;
     }[] = [];
 
@@ -319,15 +329,24 @@ describe("seedMemoryCacheFromPrerender", () => {
     });
 
     const baseKey = isrCacheKey("app", "/isr", "seed-injected-writer-test");
+    // Path-derived implicit tags so revalidatePath('/isr') can invalidate
+    // these entries — see #1486.
+    const expectedTags = [
+      "/isr",
+      "_N_T_/isr",
+      "_N_T_/layout",
+      "_N_T_/isr/layout",
+      "_N_T_/isr/page",
+    ];
     expect(writes).toEqual([
       {
         key: baseKey + ":html",
-        metadata: { expireSeconds: 300, revalidateSeconds: 60 },
+        metadata: { expireSeconds: 300, revalidateSeconds: 60, tags: expectedTags },
         valueKind: "APP_PAGE",
       },
       {
         key: baseKey + ":rsc",
-        metadata: { expireSeconds: 300, revalidateSeconds: 60 },
+        metadata: { expireSeconds: 300, revalidateSeconds: 60, tags: expectedTags },
         valueKind: "APP_PAGE",
       },
     ]);
@@ -382,6 +401,39 @@ describe("seedMemoryCacheFromPrerender", () => {
     const baseKey = isrCacheKey("app", "/static", buildId);
     expect(getRevalidateDuration(baseKey + ":html")).toBeUndefined();
     expect(getRevalidateDuration(baseKey + ":rsc")).toBeUndefined();
+  });
+
+  // ── revalidatePath invalidation of seeded entries (#1486) ─────────────────
+
+  it("revalidatePath invalidates seeded HTML and RSC entries", async () => {
+    const buildId = "revalidate-seeded-test";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [{ route: "/posts", status: "rendered", revalidate: 60, router: "app" }],
+      },
+      {
+        "posts.html": "<html>Posts (seeded)</html>",
+        "posts.rsc": "RSC posts seeded",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const baseKey = isrCacheKey("app", "/posts", buildId);
+    const htmlKey = baseKey + ":html";
+    const rscKey = baseKey + ":rsc";
+
+    // Sanity: both seeded entries are present before revalidation.
+    expect(await getCacheHandler().get(htmlKey)).not.toBeNull();
+    expect(await getCacheHandler().get(rscKey)).not.toBeNull();
+
+    // revalidatePath should invalidate both seeded artifacts.
+    await revalidatePath("/posts");
+
+    expect(await getCacheHandler().get(htmlKey)).toBeNull();
+    expect(await getCacheHandler().get(rscKey)).toBeNull();
   });
 
   // ── Static routes (revalidate: false) ─────────────────────────────────────

@@ -138,14 +138,16 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
 
     // Honour `export const config = { api: { bodyParser: ... } }` on the
     // route module. When the handler opts out (`bodyParser: false`) we must
-    // not consume the stream — leave `req.body` as the raw Web
-    // `ReadableStream<Uint8Array>` so user code (e.g. a Stripe/GitHub
-    // webhook) can read the raw bytes for HMAC verification.
+    // not consume the stream — `req.body` stays `undefined` and the raw
+    // bytes are exposed via the async-iterator on `req` itself, matching
+    // Next.js's Node `IncomingMessage` contract. User code (e.g. a Stripe/
+    // GitHub webhook) drains them with `for await (const chunk of req)`.
+    // See issue #1479.
     const bodyParserConfig = resolveBodyParserConfig(route.module.config);
 
     const body = bodyParserConfig.enabled
       ? await parsePagesApiBody(options.request, bodyParserConfig.sizeLimit)
-      : (options.request.body ?? undefined);
+      : undefined;
 
     const { req, res, responsePromise } = createPagesReqRes({
       body,

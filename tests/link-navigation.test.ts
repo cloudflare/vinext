@@ -1232,6 +1232,48 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("re-prefetches a visible Link when the exact cache entry has gone stale", async () => {
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+    });
+
+    try {
+      // First visibility → initial prefetch
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+
+      // Manually expire the cached entry
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const cache = getPrefetchCache();
+      const now = 1_000_000;
+      for (const [, entry] of cache) {
+        entry.expiresAt = now - 1;
+      }
+
+      vi.spyOn(Date, "now").mockReturnValue(now);
+
+      // Ping visible links again; the stale exact entry should be deleted and re-fetched
+      pingVisibleLinksFromRuntime();
+      await waitForFetchCalls(result.fetch, 2);
+
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[1],
+        "/viewport-prefetch-target",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("prefetches visible dynamic links in automatic production mode without seeding navigation cache", async () => {
     const observer = stubIntersectionObserver();
 

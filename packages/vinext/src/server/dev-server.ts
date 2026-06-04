@@ -84,6 +84,41 @@ async function renderIsrPassToStringAsync(element: React.ReactElement): Promise<
   );
 }
 
+/**
+ * Emit a `getServerSideProps` / `getStaticProps` `{ redirect }` result.
+ *
+ * For an HTML request we write a real HTTP redirect (`Location`). For a
+ * `_next/data` request we instead reply 200 with `__N_REDIRECT` /
+ * `__N_REDIRECT_STATUS` in pageProps so the client router re-dispatches a
+ * fresh client navigation (which supersedes the in-flight one) rather than
+ * the fetch transparently following an HTTP redirect to non-JSON HTML. This
+ * mirrors the production path in `pages-page-data.ts`
+ * (`buildPagesRedirectResponse`) and Next.js's `render.tsx` `__N_REDIRECT`
+ * handling. See AGENTS.md "dev and prod server parity".
+ */
+function writeGsspRedirect(
+  res: ServerResponse,
+  redirect: { destination: string; statusCode?: number; permanent?: boolean },
+  isDataReq: boolean,
+): void {
+  const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
+  // Sanitize destination to prevent open redirect via protocol-relative URLs.
+  // Also normalize backslashes — browsers treat \ as / in URL contexts.
+  let dest = redirect.destination;
+  if (!dest.startsWith("http://") && !dest.startsWith("https://")) {
+    dest = dest.replace(/^[\\/]+/, "/");
+  }
+
+  if (isDataReq) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ pageProps: { __N_REDIRECT: dest, __N_REDIRECT_STATUS: status } }));
+    return;
+  }
+
+  res.writeHead(status, { Location: dest });
+  res.end();
+}
+
 /** Body placeholder used to split the document shell for streaming. */
 const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
 
@@ -686,18 +721,7 @@ export function createSSRHandler(
             pageProps = await Promise.resolve(result.props);
           }
           if (result && "redirect" in result) {
-            const { redirect } = result;
-            const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
-            // Sanitize destination to prevent open redirect via protocol-relative URLs.
-            // Also normalize backslashes — browsers treat \ as / in URL contexts.
-            let dest = redirect.destination;
-            if (!dest.startsWith("http://") && !dest.startsWith("https://")) {
-              dest = dest.replace(/^[\\/]+/, "/");
-            }
-            res.writeHead(status, {
-              Location: dest,
-            });
-            res.end();
+            writeGsspRedirect(res, result.redirect, isDataReq);
             return;
           }
           if (result && "notFound" in result && result.notFound) {
@@ -991,18 +1015,7 @@ export function createSSRHandler(
             pageProps = result.props;
           }
           if (result && "redirect" in result) {
-            const { redirect } = result;
-            const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
-            // Sanitize destination to prevent open redirect via protocol-relative URLs.
-            // Also normalize backslashes — browsers treat \ as / in URL contexts.
-            let dest = redirect.destination;
-            if (!dest.startsWith("http://") && !dest.startsWith("https://")) {
-              dest = dest.replace(/^[\\/]+/, "/");
-            }
-            res.writeHead(status, {
-              Location: dest,
-            });
-            res.end();
+            writeGsspRedirect(res, result.redirect, isDataReq);
             return;
           }
           if (result && "notFound" in result && result.notFound) {

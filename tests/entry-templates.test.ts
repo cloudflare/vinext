@@ -11,6 +11,7 @@ import { describe, it, expect } from "vite-plus/test";
 import { generateBrowserEntry } from "../packages/vinext/src/entries/app-browser-entry.js";
 import { buildAppRscManifestCode } from "../packages/vinext/src/entries/app-rsc-manifest.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import { generateClientEntry } from "../packages/vinext/src/entries/pages-client-entry.js";
 import { generateServerEntry } from "../packages/vinext/src/entries/pages-server-entry.js";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { buildAppRouteGraph } from "../packages/vinext/src/routing/app-route-graph.js";
@@ -843,6 +844,80 @@ describe("Pages Router entry template", () => {
       expect(globalsImportIndex).toBeGreaterThanOrEqual(0);
       expect(firstUserImportIndex).toBeGreaterThanOrEqual(0);
       expect(globalsImportIndex).toBeLessThan(firstUserImportIndex);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Refs #1474: Pages Router client entry must import the user's
+  // `instrumentation-client.ts` (at the project root) as a side-effect import
+  // before calling `hydrateRoot()`. Mirrors Next.js's `page-bootstrap.ts`
+  // which side-effect-imports `require-instrumentation-client` ahead of
+  // `initialize` / `hydrate` (see
+  // .nextjs-ref/packages/next/src/client/page-bootstrap.ts line 1).
+  //
+  // Ported from Next.js: test/e2e/instrumentation-client-hook/instrumentation-client-hook.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/instrumentation-client-hook/instrumentation-client-hook.test.ts
+  it("imports the user's instrumentation-client.ts before calling hydrateRoot()", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    const instrumentationClientPath = path.join(tmpDir, "instrumentation-client.ts");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        instrumentationClientPath,
+        "(window as any).__INSTRUMENTATION_CLIENT_EXECUTED_AT = performance.now();",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        { instrumentationClientPath },
+      );
+
+      // The user's `instrumentation-client.ts` must be imported as a
+      // side-effect import (no `from`, no `as`) so its top-level statements
+      // execute when the client entry module is evaluated.
+      const userImportIndex = code.indexOf(`import ${JSON.stringify(instrumentationClientPath)}`);
+      const hydrateRootIndex = code.indexOf("hydrateRoot(");
+
+      expect(userImportIndex).toBeGreaterThanOrEqual(0);
+      expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+      expect(userImportIndex).toBeLessThan(hydrateRootIndex);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("omits the user instrumentation-client import when no file is present", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-empty-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        { instrumentationClientPath: null },
+      );
+
+      // Sanity check: the entry still wires up hydration and the hooks alias.
+      expect(code).toContain("hydrateRoot(");
+      expect(code).toContain("vinext/instrumentation-client");
+      // No spurious bare imports referring to a non-existent project file.
+      expect(code).not.toMatch(/import "[^"]*instrumentation-client\.ts"/);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

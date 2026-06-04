@@ -831,18 +831,29 @@ describe("app page render lifecycle", () => {
     await expect(response.text()).resolves.toBe("flight-data");
   });
 
-  it("omits the dynamic stale time header on production default-config renders that turn dynamic", async () => {
-    // Documents the known over-gating at the cache-capture boundary: a production
-    // default-config route (revalidateSeconds === null, not force-dynamic) that
-    // uses a late dynamic API is genuinely dynamic, but shouldCaptureRscForCacheMetadata
-    // is true (computed from config before the stream runs), so the header is omitted.
-    // Next.js would emit it here (!isStaticGeneration); the value is unknowable until
-    // after the headers are built, so the advisory hint is dropped on this NO_STORE
-    // response. See app-page-render.ts gating comment.
+  it("emits the dynamic stale time header on dynamic production default-config RSC responses", async () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
+    // The upstream fixture pages export unstable_dynamicStaleTime and call
+    // connection(), so the per-page value is authoritative only once the render
+    // is known to be dynamic.
     const common = createCommonOptions();
     const response = await renderAppPageLifecycle({
       ...common.options,
       consumeDynamicUsage: vi.fn(() => true),
+      dynamicStaleTimeSeconds: 60,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: null,
+    });
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("60");
+    await expect(response.text()).resolves.toBe("flight-data");
+  });
+
+  it("omits the dynamic stale time header on static production default-config RSC responses", async () => {
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeDynamicUsage: vi.fn(() => false),
       dynamicStaleTimeSeconds: 60,
       isProduction: true,
       isRscRequest: true,

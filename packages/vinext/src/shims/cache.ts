@@ -29,6 +29,7 @@ import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
 import { readCacheControlNumberField } from "../utils/cache-control-metadata.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
+import { getCdnCacheAdapter } from "./cdn-cache.js";
 import type { RenderObservation } from "../server/cache-proof.js";
 
 // ---------------------------------------------------------------------------
@@ -463,21 +464,38 @@ export function configureMemoryCacheHandler(options?: MemoryCacheHandlerOptions)
 }
 
 /**
- * Set a custom CacheHandler. Call this during server startup to
- * plug in Cloudflare KV, Redis, DynamoDB, or any other backend.
+ * Set the **data cache** handler. This backs all data-cache concerns —
+ * `fetch` caching, `"use cache"`, `unstable_cache` — and is also the default
+ * underlying store for page-level ISR (via the default CDN cache adapter).
  *
- * The handler must implement the CacheHandler interface (same shape
- * as Next.js 16's CacheHandler class).
+ * Call this during server startup to plug in Cloudflare KV, Redis, DynamoDB,
+ * or any other backend. The handler must implement the CacheHandler interface
+ * (same shape as Next.js 16's CacheHandler class).
  */
-export function setCacheHandler(handler: CacheHandler): void {
+export function setDataCacheHandler(handler: CacheHandler): void {
   _gHandler[_HANDLER_KEY] = handler;
 }
 
 /**
- * Get the active CacheHandler (for internal use or testing).
+ * Get the active data cache handler (for internal use or testing).
+ */
+export function getDataCacheHandler(): CacheHandler {
+  return _getActiveHandler();
+}
+
+/**
+ * @deprecated Prefer {@link setDataCacheHandler}. Retained as a backwards-compatible
+ * alias — `setCacheHandler` has always configured the data cache handler.
+ */
+export function setCacheHandler(handler: CacheHandler): void {
+  setDataCacheHandler(handler);
+}
+
+/**
+ * @deprecated Prefer {@link getDataCacheHandler}.
  */
 export function getCacheHandler(): CacheHandler {
-  return _getActiveHandler();
+  return getDataCacheHandler();
 }
 
 // ---------------------------------------------------------------------------
@@ -518,7 +536,24 @@ export async function revalidateTag(
   if (!profile || !durations || durations.expire === 0) {
     markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   }
-  await _getActiveHandler().revalidateTag(encodeCacheTag(tag), durations);
+  await _invalidateEncodedTag(encodeCacheTag(tag), durations);
+}
+
+/**
+ * Invalidate one already-encoded tag across both cache layers.
+ *
+ * Ordering is intentional and load-bearing: invalidate the data cache store
+ * FIRST (covers fetch data, `"use cache"`, and page entries stored there by the
+ * default CDN adapter), THEN ask the CDN adapter to purge its edge (a no-op for
+ * the default adapter). Purging the edge before the store is invalidated would
+ * let the edge re-fetch and re-cache stale data.
+ */
+async function _invalidateEncodedTag(
+  encoded: string,
+  durations?: { expire?: number },
+): Promise<void> {
+  await _getActiveHandler().revalidateTag(encoded, durations);
+  await getCdnCacheAdapter().revalidateTag(encoded, durations);
 }
 
 /**
@@ -541,7 +576,7 @@ export async function revalidatePath(path: string, type?: "page" | "layout"): Pr
   // Strip trailing slash so root "/" becomes "" — avoids double-slash in _N_T_//layout
   const stem = path.endsWith("/") ? path.slice(0, -1) : path;
   const tag = type ? `_N_T_${stem}/${type}` : `_N_T_${stem || "/"}`;
-  await _getActiveHandler().revalidateTag(encodeCacheTag(tag));
+  await _invalidateEncodedTag(encodeCacheTag(tag));
 }
 
 /**
@@ -579,7 +614,7 @@ export async function updateTag(tag: string): Promise<void> {
   }
   markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   // Expire the tag immediately (same as revalidateTag without SWR)
-  await _getActiveHandler().revalidateTag(encodeCacheTag(tag));
+  await _invalidateEncodedTag(encodeCacheTag(tag));
 }
 
 /**

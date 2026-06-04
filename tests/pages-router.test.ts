@@ -549,6 +549,55 @@ describe("Pages Router integration", () => {
     expect(html).toContain("app-wrapper");
   });
 
+  // Regression for #1465: a getServerSideProps `{ redirect }` on an HTML
+  // request emits a real HTTP redirect (so a hard navigation lands on the
+  // destination).
+  it("getServerSideProps returning redirect emits an HTTP redirect on HTML requests", async () => {
+    const res = await fetch(`${baseUrl}/gssp-redirect`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/gssp-redirect-target");
+  });
+
+  // Regression for #1465: a getServerSideProps `{ redirect }` on a `_next/data`
+  // request must NOT emit an HTTP redirect (fetch would follow it to non-JSON
+  // HTML). Instead Next.js returns a 200 JSON envelope carrying `__N_REDIRECT`
+  // / `__N_REDIRECT_STATUS` in pageProps, which the client router uses to
+  // re-dispatch a fresh navigation (superseding the in-flight one). See
+  // packages/next/src/server/render.tsx (`__N_REDIRECT`).
+  it("getServerSideProps redirect returns __N_REDIRECT JSON on _next/data requests", async () => {
+    // The dev `_next/data` endpoint matches the build id
+    // `nextConfig.buildId ?? __VINEXT_BUILD_ID ?? "development"`; this fixture's
+    // next.config.mjs sets `generateBuildId: () => "test-build-id"` (see
+    // index.ts `_next/data` normalization).
+    const res = await fetch(`${baseUrl}/_next/data/test-build-id/gssp-redirect.json`, {
+      headers: { Accept: "application/json", "x-nextjs-data": "1" },
+      redirect: "manual",
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(res.headers.get("location")).toBeNull();
+
+    const body = (await res.json()) as { pageProps?: Record<string, unknown> };
+    expect(body.pageProps?.__N_REDIRECT).toBe("/gssp-redirect-target");
+    expect(body.pageProps?.__N_REDIRECT_STATUS).toBe(307);
+  });
+
+  // The data envelope must carry an EXTERNAL redirect destination verbatim so
+  // the client router hard-navigates to the right place (the client must not
+  // fall back to the originating page URL — that would loop). See
+  // handleDataRedirect() in shims/router.ts.
+  it("preserves an external destination in __N_REDIRECT on _next/data requests", async () => {
+    const res = await fetch(`${baseUrl}/_next/data/test-build-id/gssp-redirect-external.json`, {
+      headers: { Accept: "application/json", "x-nextjs-data": "1" },
+      redirect: "manual",
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pageProps?: Record<string, unknown> };
+    expect(body.pageProps?.__N_REDIRECT).toBe("https://example.com/landing");
+  });
+
   // Regression for #1458: when getServerSideProps throws, dev (and prod) must
   // render the user's custom pages/500.tsx with status 500 rather than the
   // plain "Internal Server Error" text. Mirrors Next.js test/e2e/getserversideprops

@@ -1,5 +1,52 @@
 import type { UserConfig } from "vite";
 
+type ClientAssetFileNameInfo = {
+  readonly name?: string;
+  readonly names?: readonly string[];
+  readonly originalFileName?: string;
+  readonly originalFileNames?: readonly string[];
+};
+
+// Next.js emits CSS under `static/css/` and CSS url() dependencies (images,
+// fonts, …) under `static/media/`, both with an 8-char content hash. Mirror
+// that layout so migrated apps keep stable, Next-shaped asset URLs.
+const NEXT_CLIENT_CSS_ASSET_FILE_NAMES = "css/[name].[hash:8][extname]";
+const NEXT_CLIENT_STATIC_MEDIA_FILE_NAMES = "media/[name].[hash:8][extname]";
+
+function joinAssetFileNamePattern(assetsDir: string, pattern: string): string {
+  // Strip trailing slashes without a regex (avoids a needless ReDoS lint flag;
+  // `assetsDir` is build-time config, but a plain loop is clearer and linear).
+  let end = assetsDir.length;
+  while (end > 0 && assetsDir[end - 1] === "/") end -= 1;
+  const normalized = assetsDir.slice(0, end);
+  return normalized ? `${normalized}/${pattern}` : pattern;
+}
+
+/**
+ * Routes client assets into Next-compatible subtrees: `.css` sources go to
+ * `<assetsDir>/css/`, everything else to `<assetsDir>/media/`. Returned as a
+ * function so it can inspect every source-name candidate Rolldown records for
+ * an asset (a single output asset can carry several `originalFileNames`).
+ */
+export function createClientAssetFileNames(assetsDir: string) {
+  const cssAssetFileNames = joinAssetFileNamePattern(assetsDir, NEXT_CLIENT_CSS_ASSET_FILE_NAMES);
+  const mediaAssetFileNames = joinAssetFileNamePattern(
+    assetsDir,
+    NEXT_CLIENT_STATIC_MEDIA_FILE_NAMES,
+  );
+
+  return function getClientAssetFileNames(assetInfo: ClientAssetFileNameInfo): string {
+    const candidates = [
+      ...(assetInfo.names ?? []),
+      assetInfo.name,
+      ...(assetInfo.originalFileNames ?? []),
+      assetInfo.originalFileName,
+    ];
+    const isCss = candidates.some((name) => name?.toLowerCase().endsWith(".css"));
+    return isCss ? cssAssetFileNames : mediaAssetFileNames;
+  };
+}
+
 /**
  * Extract the npm package name from a module ID (file path).
  * Returns null if not in node_modules.
@@ -85,8 +132,12 @@ export function createClientManualChunks(shimsDir: string) {
  * compression efficiency — small files restart the compression dictionary,
  * adding ~5-15% wire overhead vs fewer larger chunks.
  */
-export function createClientOutputConfig(clientManualChunks: (id: string) => string | undefined) {
+export function createClientOutputConfig(
+  clientManualChunks: (id: string) => string | undefined,
+  assetsDir: string,
+) {
   return {
+    assetFileNames: createClientAssetFileNames(assetsDir),
     manualChunks: clientManualChunks,
     experimentalMinChunkSize: 10_000,
   };

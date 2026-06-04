@@ -1,0 +1,93 @@
+import { describe, expect, it } from "vite-plus/test";
+import {
+  MAX_TRAVERSAL_CACHE_TTL,
+  VISITED_RESPONSE_CACHE_TTL,
+  createVisitedResponseCacheEntry,
+  isVisitedResponseCacheEntryFresh,
+} from "../packages/vinext/src/server/app-visited-response-cache.js";
+import type { CachedRscResponse } from "../packages/vinext/src/shims/navigation.js";
+
+function createCachedResponse(overrides: Partial<CachedRscResponse> = {}): CachedRscResponse {
+  return {
+    buffer: new TextEncoder().encode("flight").buffer,
+    contentType: "text/x-component",
+    paramsHeader: null,
+    url: "/dynamic.rsc",
+    ...overrides,
+  };
+}
+
+describe("visited response cache freshness", () => {
+  it("uses per-response dynamic stale time for regular navigations", () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
+    const now = 1_000_000;
+    const entry = createVisitedResponseCacheEntry({
+      now,
+      params: {},
+      response: createCachedResponse({ dynamicStaleTimeSeconds: 10 }),
+    });
+
+    expect(entry.expiresAt).toBe(now + 10_000);
+    expect(
+      isVisitedResponseCacheEntryFresh(entry, {
+        navigationKind: "navigate",
+        now: now + 9_999,
+      }),
+    ).toBe(true);
+    expect(
+      isVisitedResponseCacheEntryFresh(entry, {
+        navigationKind: "navigate",
+        now: now + 10_000,
+      }),
+    ).toBe(false);
+  });
+
+  it("falls back to the default visited response TTL without server metadata", () => {
+    const now = 1_000_000;
+    const entry = createVisitedResponseCacheEntry({
+      now,
+      params: {},
+      response: createCachedResponse(),
+    });
+
+    expect(entry.expiresAt).toBe(now + VISITED_RESPONSE_CACHE_TTL);
+  });
+
+  it("keeps traversal restores independent from dynamic stale expiry", () => {
+    const now = 1_000_000;
+    const entry = createVisitedResponseCacheEntry({
+      now,
+      params: {},
+      response: createCachedResponse({ dynamicStaleTimeSeconds: 10 }),
+    });
+
+    expect(
+      isVisitedResponseCacheEntryFresh(entry, {
+        navigationKind: "traverse",
+        now: now + 20_000,
+      }),
+    ).toBe(true);
+    expect(
+      isVisitedResponseCacheEntryFresh(entry, {
+        navigationKind: "traverse",
+        now: now + MAX_TRAVERSAL_CACHE_TTL,
+      }),
+    ).toBe(false);
+  });
+
+  it("never reuses visited responses for refresh navigations", () => {
+    const now = 1_000_000;
+    const entry = createVisitedResponseCacheEntry({
+      now,
+      params: {},
+      response: createCachedResponse({ dynamicStaleTimeSeconds: 60 }),
+    });
+
+    expect(
+      isVisitedResponseCacheEntryFresh(entry, {
+        navigationKind: "refresh",
+        now,
+      }),
+    ).toBe(false);
+  });
+});

@@ -651,26 +651,20 @@ export async function renderAppPageLifecycle(
     if (shouldBypassRscCacheForSkipTransport) {
       options.isrDebug?.("RSC cache write skipped (skip transport payload)", options.cleanPathname);
     }
+    const shouldEmitDynamicStaleTime =
+      options.dynamicStaleTimeSeconds !== undefined &&
+      options.isPrerender !== true &&
+      !options.isForceStatic &&
+      (dynamicUsedDuringBuild || !shouldCaptureRscForCacheMetadata);
     const rscResponse = buildAppPageRscResponse(rscForResponse, {
       // Only emit on dynamic renders — Next.js gates on !workStore.isStaticGeneration (line 2223).
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L2223-L2229
       // shouldCaptureRscForCacheMetadata is the runtime analog of isStaticGeneration: a render
       // written to the ISR cache (incl. production ISR, where isPrerender is false at runtime)
       // must not emit the authoritative per-page stale time.
-      //
-      // Known over-gating: shouldCaptureRscForCacheMetadata is computed from config
-      // alone (line 387), before the RSC stream is consumed, so it cannot see late
-      // dynamic-API usage (cookies()/headers()). A production default-config route
-      // (revalidateSeconds === null, not force-dynamic) that becomes dynamic at
-      // render time is !isStaticGeneration in Next.js (header emitted), but here the
-      // header is omitted even though the cache write is later skipped via two-phase
-      // dynamic detection (consumeDynamicUsage in scheduleAppPageRscCacheWrite). The
-      // exact value is unknowable at this point since the stream has not yet run, so
-      // we accept dropping the (advisory) stale-time hint on those NO_STORE responses.
-      dynamicStaleTimeSeconds:
-        options.isPrerender === true || options.isForceStatic || shouldCaptureRscForCacheMetadata
-          ? undefined
-          : options.dynamicStaleTimeSeconds,
+      dynamicStaleTimeSeconds: shouldEmitDynamicStaleTime
+        ? options.dynamicStaleTimeSeconds
+        : undefined,
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareContext: options.middlewareContext,
       mountedSlotsHeader: options.mountedSlotsHeader,

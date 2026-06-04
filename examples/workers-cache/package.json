@@ -1,0 +1,25 @@
+{
+  "name": "workers-cache",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vinext dev",
+    "build": "vinext build",
+    "preview": "vinext build && wrangler dev"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "vite": "catalog:",
+    "vinext": "workspace:*",
+    "@vitejs/plugin-rsc": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "@cloudflare/vite-plugin": "catalog:",
+    "wrangler": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

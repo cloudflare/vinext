@@ -33,6 +33,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { CachedAppPageValue } from "vinext/shims/cache";
 import { isrCacheKey, isrSetPrerenderedAppPage } from "./isr-cache.js";
+import { buildAppPageCacheTags } from "./app-page-cache.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { normalizePath } from "./normalize-path.js";
@@ -57,6 +58,11 @@ type PrerenderManifestRoute = {
 type PrerenderCacheSeedMetadata = {
   expireSeconds?: number;
   revalidateSeconds?: number;
+  /**
+   * Path-derived implicit tags (`/foo`, `_N_T_/foo`, `_N_T_/foo/page`, ...)
+   * required for `revalidatePath()` to invalidate the seeded entry. See #1486.
+   */
+  tags?: string[];
 };
 
 type PrerenderCacheSeedOptions = {
@@ -118,6 +124,11 @@ export async function seedMemoryCacheFromPrerender(
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
     const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
 
+    // Path-derived implicit tags so revalidatePath()/revalidateTag() can
+    // invalidate seeded entries. Without this the seeded entry has no tags
+    // and tag-based invalidation can never reach it (#1486).
+    const tags = buildAppPageCacheTags(cachePathname, []);
+
     if (
       await seedHtml(
         writeAppPageEntry,
@@ -127,6 +138,7 @@ export async function seedMemoryCacheFromPrerender(
         trailingSlash,
         revalidateSeconds,
         expireSeconds,
+        tags,
       )
     ) {
       await seedRsc(
@@ -136,6 +148,7 @@ export async function seedMemoryCacheFromPrerender(
         artifactPathname,
         revalidateSeconds,
         expireSeconds,
+        tags,
       );
       seeded++;
     }
@@ -168,6 +181,7 @@ async function seedHtml(
   trailingSlash: boolean,
   revalidateSeconds: number | undefined,
   expireSeconds: number | undefined,
+  tags: string[] | undefined,
 ): Promise<boolean> {
   const relPath = getOutputPath(pathname, trailingSlash);
   const fullPath = path.join(prerenderDir, relPath);
@@ -182,7 +196,7 @@ async function seedHtml(
     status: undefined,
   };
 
-  await writeAppPageEntry(key, htmlValue, { expireSeconds, revalidateSeconds });
+  await writeAppPageEntry(key, htmlValue, { expireSeconds, revalidateSeconds, tags });
 
   return true;
 }
@@ -198,6 +212,7 @@ async function seedRsc(
   pathname: string,
   revalidateSeconds: number | undefined,
   expireSeconds: number | undefined,
+  tags: string[] | undefined,
 ): Promise<void> {
   const relPath = getRscOutputPath(pathname);
   const fullPath = path.join(prerenderDir, relPath);
@@ -216,5 +231,5 @@ async function seedRsc(
     status: undefined,
   };
 
-  await writeAppPageEntry(key, rscValue, { expireSeconds, revalidateSeconds });
+  await writeAppPageEntry(key, rscValue, { expireSeconds, revalidateSeconds, tags });
 }

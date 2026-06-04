@@ -4,7 +4,7 @@ import {
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
 } from "./app-rsc-cache-busting.js";
-import { buildCachedRevalidateCacheControl } from "./cache-control.js";
+import { applyCdnResponseHeaders, buildCachedRevalidateCacheControl } from "./cache-control.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -147,7 +147,21 @@ type ScheduleAppPageRscCacheWriteOptions = {
   waitUntil?: (promise: Promise<void>) => void;
 };
 
-const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
+/**
+ * Apply the CDN cache adapter's headers to a freshly-streamed response whose
+ * dynamic-ness is not yet proven.
+ *
+ * The cacheable `Cache-Control` value computed by the response policy is already
+ * present on `headers`; the default adapter replaces it with `no-store` (so the
+ * page is served from the origin store on later requests), while an edge adapter
+ * may instead emit `CDN-Cache-Control`/`Cache-Tag` so the CDN performs SWR and
+ * can be purged by tag. `tags` are the page's render tags (canonicalised).
+ */
+function applyPendingDynamicCdnHeaders(headers: Headers, tags?: readonly string[]): void {
+  const cacheable = headers.get("Cache-Control") ?? "";
+  applyCdnResponseHeaders(headers, { cacheControl: cacheable, pendingDynamicCheck: true, tags });
+  setCacheStateHeaders(headers, "MISS");
+}
 
 function recordAppPageCacheOutcome(
   recordCacheOutcome: AppPageCacheOutcomeRecorder | undefined,
@@ -201,10 +215,12 @@ function buildAppPageCachedHeaders(options: {
   mountedSlotsHeader?: string | null;
 }): Headers {
   const headers = new Headers({
-    "Cache-Control": options.cacheControl,
     "Content-Type": options.contentType,
     Vary: VINEXT_RSC_VARY_HEADER,
   });
+  // Page artifacts served from the origin store get their cache headers from the
+  // CDN adapter (default: a single Cache-Control identical to the prior behavior).
+  applyCdnResponseHeaders(headers, { cacheControl: options.cacheControl });
   setCacheStateHeaders(headers, options.cacheState);
   applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 
@@ -509,8 +525,9 @@ export function finalizeAppPageHtmlCacheResponse(
     // HTML Server Components can access request APIs while the stream is being
     // consumed. Until that late dynamic check finishes, downstream shared caches
     // must not cache a response whose ISR policy was known before streaming.
-    clientHeaders.set("Cache-Control", NO_STORE_CACHE_CONTROL);
-    setCacheStateHeaders(clientHeaders, "MISS");
+    // The CDN adapter decides exactly which headers to emit (default: no-store;
+    // edge adapters: no-store for the browser + CDN-Cache-Control/Cache-Tag for the edge).
+    applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags());
   }
 
   const cachePromise = (async () => {
@@ -607,9 +624,9 @@ export function finalizeAppPageRscCacheResponse(
   const clientHeaders = new Headers(response.headers);
   // RSC payloads are also streamed lazily. Until the captured stream proves no
   // late request API was used, the client-facing MISS response must not enter a
-  // shared cache when the ISR policy was known before streaming.
-  clientHeaders.set("Cache-Control", NO_STORE_CACHE_CONTROL);
-  setCacheStateHeaders(clientHeaders, "MISS");
+  // shared cache when the ISR policy was known before streaming. The CDN adapter
+  // decides the exact headers (default: no-store; edge: no-store + CDN-Cache-Control/Cache-Tag).
+  applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags());
 
   return new Response(response.body, {
     status: response.status,

@@ -1,5 +1,6 @@
 import type { CachedRouteValue, CacheControlMetadata } from "vinext/shims/cache";
 import {
+  applyCdnResponseHeaders,
   buildCachedRevalidateCacheControl,
   NEVER_CACHE_CONTROL,
   STATIC_CACHE_CONTROL,
@@ -119,10 +120,16 @@ export function buildRouteHandlerCachedResponse(
     options.cacheControl === undefined
       ? undefined
       : (options.cacheControl.expire ?? options.expireSeconds);
-  headers.set(
-    "Cache-Control",
-    buildRouteHandlerCacheControl(options.cacheState, revalidateSeconds, expireSeconds),
-  );
+  // HIT/STALE served from the origin store: route the cache header through the
+  // CDN adapter (default: identical single Cache-Control). Edge adapters never
+  // reach this path because their get() returns null.
+  applyCdnResponseHeaders(headers, {
+    cacheControl: buildRouteHandlerCacheControl(
+      options.cacheState,
+      revalidateSeconds,
+      expireSeconds,
+    ),
+  });
 
   return new Response(options.isHead ? null : cachedValue.body, {
     status: cachedValue.status,
@@ -134,11 +141,14 @@ export function applyRouteHandlerRevalidateHeader(
   response: Response,
   revalidateSeconds: number,
   expireSeconds?: number,
+  tags?: readonly string[],
 ): void {
-  response.headers.set(
-    "cache-control",
-    buildRouteHandlerCacheControl("HIT", revalidateSeconds, expireSeconds),
-  );
+  // Fresh (MISS) response: route through the CDN adapter so edge adapters emit
+  // CDN-Cache-Control + Cache-Tag while the default emits a single Cache-Control.
+  applyCdnResponseHeaders(response.headers, {
+    cacheControl: buildRouteHandlerCacheControl("HIT", revalidateSeconds, expireSeconds),
+    tags,
+  });
 }
 
 export function markRouteHandlerCacheMiss(response: Response): void {

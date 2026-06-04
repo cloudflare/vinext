@@ -339,6 +339,56 @@ describe("apiRouter - route discovery", () => {
       expect(routes).toEqual([]);
     });
   });
+
+  // Regression for #1542: pages whose path *starts with* `/api-…` (e.g.
+  // `/api-docs/[...slug]`, `/api-info`) must be classified as PAGE routes,
+  // not API routes. Next.js only treats files under `pages/api/` (with the
+  // trailing slash) as API routes — substring matches against `api-` are a
+  // false positive. The upstream Next.js fixture at
+  // `.nextjs-ref/test/e2e/prerender/pages/api-docs/[...slug].js` is the
+  // canonical case.
+  it("does not treat pages/api-docs/* as API routes (issue #1542)", async () => {
+    await withTempDir("vinext-issue-1542-api-docs-", async (tmpDir) => {
+      const pagesDir = path.join(tmpDir, "pages");
+      await mkdir(path.join(pagesDir, "api-docs"), { recursive: true });
+      await writeFile(path.join(pagesDir, "api-docs", "[...slug].tsx"), EMPTY_PAGE);
+      await mkdir(path.join(pagesDir, "api-info"), { recursive: true });
+      await writeFile(path.join(pagesDir, "api-info", "index.tsx"), EMPTY_PAGE);
+      // A real API route co-exists so we also verify the positive case.
+      await mkdir(path.join(pagesDir, "api"), { recursive: true });
+      await writeFile(path.join(pagesDir, "api", "hello.ts"), EMPTY_ROUTE);
+
+      invalidateRouteCache(pagesDir);
+
+      const pages = await pagesRouter(pagesDir);
+      const apis = await apiRouter(pagesDir);
+
+      const pagePatterns = pages.map((r) => r.pattern);
+      const apiPatterns = apis.map((r) => r.pattern);
+
+      // `/api-docs/[...slug]` and `/api-info` are pages, not API routes.
+      expect(pagePatterns).toContain("/api-docs/:slug+");
+      expect(pagePatterns).toContain("/api-info");
+      expect(apiPatterns).not.toContain("/api-docs/:slug+");
+      expect(apiPatterns).not.toContain("/api-info");
+
+      // The real API route is still discovered correctly.
+      expect(apiPatterns).toContain("/api/hello");
+      expect(pagePatterns).not.toContain("/api/hello");
+
+      // matchRoute against the page table resolves the `/api-…` URLs to
+      // their page files. A regression would either yield null (no match)
+      // or match against the API trie instead.
+      const matchedDocs = matchRoute("/api-docs/first", pages);
+      expect(matchedDocs).not.toBeNull();
+      expect(matchedDocs!.route.pattern).toBe("/api-docs/:slug+");
+      expect(matchedDocs!.route.filePath).toBe(path.join(pagesDir, "api-docs", "[...slug].tsx"));
+
+      const matchedInfo = matchRoute("/api-info", pages);
+      expect(matchedInfo).not.toBeNull();
+      expect(matchedInfo!.route.pattern).toBe("/api-info");
+    });
+  });
 });
 
 // ---------------------------------------------------------------

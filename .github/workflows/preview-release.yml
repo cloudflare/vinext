@@ -3,8 +3,7 @@ name: Preview Release
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  pull_request: # run on PRs against any base branch, not just main
 
 permissions: {}
 

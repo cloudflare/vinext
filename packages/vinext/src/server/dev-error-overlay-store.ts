@@ -5,6 +5,7 @@
 export type Source = "uncaught" | "caught" | "window-error" | "unhandledrejection";
 
 export type ReportedError = {
+  id: number;
   source: Source;
   message: string;
   stack: string | undefined;
@@ -24,6 +25,7 @@ const MAX_DEV_OVERLAY_ERRORS = 50;
 
 let snapshot: OverlayState = { errors: [], index: 0, minimized: false };
 const listeners = new Set<() => void>();
+let nextErrorId = 1;
 
 function emit(): void {
   for (const fn of listeners) fn();
@@ -40,17 +42,28 @@ export function getOverlaySnapshot(): OverlayState {
   return snapshot;
 }
 
-export function reportToOverlay(error: ReportedError): void {
+export function reportToOverlay(error: Omit<ReportedError, "id">): number {
   // Any new error pops the dialog open, regardless of source or current
   // state. The developer can minimize once they've taken stock; subsequent
   // failures will re-expand.
-  const next = [...snapshot.errors, error];
+  const id = nextErrorId++;
+  const next = [...snapshot.errors, { ...error, id }];
   const dropped = next.length > MAX_DEV_OVERLAY_ERRORS ? next.length - MAX_DEV_OVERLAY_ERRORS : 0;
   const errors = dropped > 0 ? next.slice(dropped) : next;
   snapshot = {
     errors,
     index: errors.length - 1,
     minimized: false,
+  };
+  emit();
+  return id;
+}
+
+export function updateOverlayErrorStack(id: number, stack: string | undefined): void {
+  if (!snapshot.errors.some((error) => error.id === id)) return;
+  snapshot = {
+    ...snapshot,
+    errors: snapshot.errors.map((error) => (error.id === id ? { ...error, stack } : error)),
   };
   emit();
 }

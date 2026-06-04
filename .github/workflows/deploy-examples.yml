@@ -3,8 +3,7 @@ name: Deploy Examples
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  pull_request: # run on PRs against any base branch, not just main
 
 concurrency:
   group: deploy-${{ github.event_name }}-${{ github.ref }}
@@ -52,6 +51,10 @@ jobs:
           - name: hackernews
             project: hackernews
             working_directory: examples/hackernews
+            wrangler_config: dist/server/wrangler.json
+          - name: workers-cache
+            project: workers-cache
+            working_directory: examples/workers-cache
             wrangler_config: dist/server/wrangler.json
           - name: web
             project: vinext-web
@@ -139,6 +142,7 @@ jobs:
               { name: 'nextra-docs-template', project: 'nextra-docs-template' },
               { name: 'benchmarks', project: 'benchmarks' },
               { name: 'hackernews', project: 'hackernews', original: 'https://next-react-server-components.vercel.app' },
+              { name: 'workers-cache', project: 'workers-cache' },
               { name: 'web', project: 'vinext-web' },
             ];
 

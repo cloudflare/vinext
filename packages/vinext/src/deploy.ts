@@ -448,17 +448,23 @@ export function generateWranglerConfig(info: ProjectInfo): string {
 export function generateAppRouterWorkerEntry(hasISR = false): string {
   const isrImports = hasISR
     ? `import { KVCacheHandler } from "vinext/cloudflare";
-import { setCacheHandler } from "vinext/shims/cache";
+import { setDataCacheHandler } from "vinext/shims/cache";
 `
     : "";
 
   const isrEnvField = hasISR ? `\n  VINEXT_CACHE: KVNamespace;` : "";
 
   const isrSetup = hasISR
-    ? `    // Wire up KV-backed ISR cache. The vinext RSC entry automatically
-    // registers ctx in ALS so background KV puts use waitUntil — without
-    // this every request would return MISS.
-    setCacheHandler(new KVCacheHandler(env.VINEXT_CACHE));
+    ? `    // Wire up the KV-backed data cache (fetch / "use cache" / unstable_cache).
+    // The vinext RSC entry automatically registers ctx in ALS so background KV
+    // puts use waitUntil — without this every request would return MISS.
+    //
+    // Page-level ISR: by default it is stored here too (origin-managed). When the
+    // Cloudflare Workers Cache is enabled (\`[cache] enabled = true\` in wrangler +
+    // \`ctx.cache\` present), vinext auto-switches page ISR to the edge-managed
+    // CDN cache adapter — no import or registration needed. Call
+    // setCdnCacheAdapter(...) from "vinext/shims/cdn-cache" to override.
+    setDataCacheHandler(new KVCacheHandler(env.VINEXT_CACHE));
 `
     : "";
 
