@@ -42,8 +42,8 @@ import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
-import { createInitialBfcacheIdMap } from "./app-browser-state.js";
-import { ElementsContext, Slot } from "vinext/shims/slot";
+import { createBfcacheSegmentStateKeyMap, createInitialBfcacheIdMap } from "./app-browser-state.js";
+import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
@@ -322,6 +322,16 @@ export async function handleSsr(
             { value: elements },
             createReactElement(Slot, { id: metadata.routeId }),
           );
+          const stateKeyTree = createReactElement(
+            BfcacheStateKeyMapContext.Provider,
+            {
+              value: createBfcacheSegmentStateKeyMap({
+                elements,
+                pathname: navContext?.pathname ?? "/",
+              }),
+            },
+            routeTree,
+          );
           // During SSR we only provide the id *map*, seeded entirely with the
           // INITIAL_BFCACHE_ID sentinel. BfcacheSlotBoundary may still publish a
           // BfcacheSegmentIdContext value here, but every map entry is the "0"
@@ -332,9 +342,9 @@ export async function handleSsr(
             ? createReactElement(
                 BfcacheIdMapContext.Provider,
                 { value: createInitialBfcacheIdMap(elements) },
-                routeTree,
+                stateKeyTree,
               )
-            : routeTree;
+            : stateKeyTree;
         }
 
         const flightRootElement = createReactElement(VinextFlightRoot);

@@ -126,6 +126,7 @@ export type PendingNavigationCommit = {
 export type AppNavigationPayloadOrigin = Readonly<
   { origin: "fresh" } | { origin: "visited-cache" }
 >;
+type BfcacheStateKeyMap = Readonly<Record<string, string>>;
 
 export const FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN: AppNavigationPayloadOrigin = {
   origin: "fresh",
@@ -290,6 +291,24 @@ export function createInitialBfcacheIdMap(elements: AppElements): BfcacheIdMap {
     ids[id] = INITIAL_BFCACHE_ID;
   }
   return ids;
+}
+
+export function createBfcacheSegmentStateKeyMap(options: {
+  elements: AppElements;
+  pathname: string;
+}): BfcacheStateKeyMap {
+  const metadata = readAppElementsMetadata(options.elements);
+  const stateKeys: Record<string, string> = {};
+  for (const id of collectBfcacheSegmentIds(options.elements, metadata)) {
+    const stateKey = createBfcacheSegmentIdentity(id, {
+      metadata,
+      pathname: options.pathname,
+    });
+    if (stateKey !== null) {
+      stateKeys[id] = stateKey;
+    }
+  }
+  return stateKeys;
 }
 
 export function createNextBfcacheIdMap(options: {

@@ -2,12 +2,10 @@
  * Next.js Compat E2E: useRouter().bfcacheId
  * Ported from: https://github.com/vercel/next.js/blob/56d95137fd6d84f4bc1e5ef2bb31e0136d5fad9c/test/e2e/app-dir/use-router-bfcache-id/use-router-bfcache-id.test.ts
  *
- * Next.js also covers Activity-backed form-state preservation on browser back.
- * Vinext does not implement React Activity yet, so form-state-on-back
- * assertions are intentionally omitted here; these tests focus on bfcacheId
- * identity semantics. Same-segment DOM state preservation (e.g. input values
- * surviving search-param navigation) is tested where it works today without
- * Activity.
+ * Activity-backed form-state preservation is covered separately in
+ * back-forward-cache.spec.ts. These tests focus on bfcacheId identity
+ * semantics and routes where userland keys forms by bfcacheId to force
+ * fresh-entry reset.
  */
 
 import { test, expect } from "@playwright/test";
@@ -217,7 +215,7 @@ test.describe("Next.js compat: useRouter().bfcacheId", () => {
     expect(photo42BfcacheId).toMatch(/^_b_\d+_$/);
     await visibleTestId(page, "photo-modal-input").fill("photo-42-state");
 
-    await page.locator("#modal-photo-43-link").click();
+    await page.locator("#modal-photo-43-link:visible").first().click();
     await expect(visibleTestId(page, "photo-modal")).toContainText("Viewing photo 43");
     const photo43BfcacheId = await visibleTestId(page, "photo-modal-bfcache-id").textContent();
     expect(photo43BfcacheId).toMatch(/^_b_\d+_$/);

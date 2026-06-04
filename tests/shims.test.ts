@@ -27,6 +27,41 @@ describe("vinext next data client helpers", () => {
   });
 });
 
+describe("slot BFCache entry state", () => {
+  it("keeps the three most recent state-key entries", async () => {
+    const { updateBfcacheSlotEntries } = await import("../packages/vinext/src/shims/slot.js");
+
+    let entries = updateBfcacheSlotEntries([], "one", "one", 3);
+    entries = updateBfcacheSlotEntries(entries, "two", "two", 3);
+    entries = updateBfcacheSlotEntries(entries, "three", "three", 3);
+    entries = updateBfcacheSlotEntries(entries, "four", "four", 3);
+
+    expect(entries.map((entry) => entry.stateKey)).toEqual(["four", "three", "two"]);
+  });
+
+  it("moves an existing entry to the front without evicting another entry", async () => {
+    const { updateBfcacheSlotEntries } = await import("../packages/vinext/src/shims/slot.js");
+
+    let entries = updateBfcacheSlotEntries([], "one", "one", 3);
+    entries = updateBfcacheSlotEntries(entries, "two", "two", 3);
+    entries = updateBfcacheSlotEntries(entries, "three", "three", 3);
+    entries = updateBfcacheSlotEntries(entries, "one", "one-updated", 3);
+
+    expect(entries.map((entry) => entry.stateKey)).toEqual(["one", "three", "two"]);
+    expect(entries[0].content).toBe("one-updated");
+  });
+
+  it("updates the active entry content when the state key is already current", async () => {
+    const { updateBfcacheSlotEntries } = await import("../packages/vinext/src/shims/slot.js");
+
+    let entries = updateBfcacheSlotEntries([], "one", "one", 3);
+    entries = updateBfcacheSlotEntries(entries, "one", "one-updated", 3);
+
+    expect(entries.map((entry) => entry.stateKey)).toEqual(["one"]);
+    expect(entries[0].content).toBe("one-updated");
+  });
+});
+
 describe("next/navigation shim", () => {
   it("exports usePathname, useSearchParams, useParams, useRouter", async () => {
     const nav = await import("../packages/vinext/src/shims/navigation.js");

@@ -67,6 +67,7 @@ import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
 import {
   createHistoryStateWithNavigationMetadata,
   createHistoryStateWithPreviousNextUrl,
+  createBfcacheSegmentStateKeyMap,
   createInitialBfcacheIdMap,
   createNextBfcacheIdMap,
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
@@ -4504,6 +4505,22 @@ describe("app browser entry bfcacheId helpers", () => {
       [groupLayoutId]: "0",
       [pageX1Id]: "0",
     });
+  });
+
+  it("derives page segment state keys from pathname, not history bfcache ids", () => {
+    const dynamicPageId = AppElementsWire.encodePageId("/page/[n]", null);
+    const pageOneKeys = createBfcacheSegmentStateKeyMap({
+      elements: createBfcacheElements(dynamicPageId),
+      pathname: "/page/1",
+    });
+    const pageTwoKeys = createBfcacheSegmentStateKeyMap({
+      elements: createBfcacheElements(dynamicPageId),
+      pathname: "/page/2",
+    });
+
+    expect(pageOneKeys[dynamicPageId]).toBe(`${dynamicPageId}@/page/1`);
+    expect(pageTwoKeys[dynamicPageId]).toBe(`${dynamicPageId}@/page/2`);
+    expect(pageOneKeys[dynamicPageId]).not.toBe(pageTwoKeys[dynamicPageId]);
   });
 
   it("does not seed hydration bfcache ids from previously minted ids", () => {

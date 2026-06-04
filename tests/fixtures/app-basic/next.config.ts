@@ -11,6 +11,10 @@
 import type { NextConfig } from "vinext";
 
 const nextConfig: NextConfig = {
+  // App Router E2E coverage includes Next.js 16 cacheComponents behavior such
+  // as Activity-backed BFCache preservation.
+  cacheComponents: true,
+
   // Default is false — trailing slashes are stripped (redirects /about/ → /about)
   // trailingSlash: false,
 
