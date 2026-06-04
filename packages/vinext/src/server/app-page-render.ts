@@ -306,6 +306,10 @@ function rejectUnsafeStaticLayoutObservation(
   entry: ClientReuseManifestEntry,
   layoutParamAccess: AppLayoutParamAccessTracker | undefined,
 ): ReturnType<typeof crossCheckClientReuseManifestEntryWithCache> | null {
+  // getLayoutObservation always returns an observation (defaults to
+  // completeness:"unknown" for missing/unknown layouts), so the optional-chain
+  // is the only path that produces a falsy value — this guards the missing-
+  // tracker case, not a missing observation.
   const observation = layoutParamAccess?.getLayoutObservation(entry.id);
   if (!observation) {
     return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_PARAMS_OBSERVATION_INCOMPLETE");
