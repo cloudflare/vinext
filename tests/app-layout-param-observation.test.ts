@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   createAppLayoutParamAccessTracker,
+  getStaticLayoutObservationSkipRejection,
   isAppLayoutObservationUnsafeForStaticReuse,
+  type AppLayoutParamAccessObservation,
 } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
   cacheLife,
@@ -19,6 +21,26 @@ import {
   markDynamicUsage,
   markRenderRequestApiUsage,
 } from "../packages/vinext/src/shims/headers.js";
+
+function createObservation(
+  overrides: Partial<AppLayoutParamAccessObservation> = {},
+): AppLayoutParamAccessObservation {
+  return {
+    cacheLifeObserved: false,
+    cacheTags: [],
+    cacheableFetchCount: 0,
+    completeness: "complete",
+    dynamicFetchCount: 0,
+    dynamicUsageObserved: false,
+    finiteRevalidateSeconds: null,
+    keys: [],
+    observed: false,
+    paramScopeKeys: [],
+    requestApis: [],
+    unstableCaches: [],
+    ...overrides,
+  };
+}
 
 describe("app layout param observation", () => {
   it("folds a probe-scoped markDynamicUsage() into the observation as unsafe for static reuse", () => {
@@ -46,6 +68,88 @@ describe("app layout param observation", () => {
     const staticObservation = tracker.getLayoutObservation("layout:/static");
     expect(staticObservation.dynamicUsageObserved).toBe(false);
     expect(isAppLayoutObservationUnsafeForStaticReuse(staticObservation)).toBe(false);
+  });
+
+  it("returns a distinct skip rejection for each unsafe observation shape", () => {
+    const unsafeCases = [
+      {
+        code: "SKIP_LAYOUT_PARAMS_OBSERVATION_INCOMPLETE",
+        name: "incomplete probe",
+        observation: createObservation({ completeness: "unknown" }),
+      },
+      {
+        code: "SKIP_LAYOUT_PARAMS_PRESENT",
+        name: "param scope keys",
+        observation: createObservation({ paramScopeKeys: ["slug"] }),
+      },
+      {
+        code: "SKIP_LAYOUT_PARAMS_OBSERVED",
+        name: "observed params",
+        observation: createObservation({ keys: ["slug"], observed: true }),
+      },
+      {
+        code: "SKIP_LAYOUT_DYNAMIC_USAGE_OBSERVED",
+        name: "dynamic usage",
+        observation: createObservation({ dynamicUsageObserved: true }),
+      },
+      {
+        code: "SKIP_LAYOUT_REQUEST_API_OBSERVED",
+        name: "request APIs",
+        observation: createObservation({ requestApis: ["headers"] }),
+      },
+      {
+        code: "SKIP_LAYOUT_REVALIDATE_PRESENT",
+        name: "finite revalidate",
+        observation: createObservation({ finiteRevalidateSeconds: 60 }),
+      },
+      {
+        code: "SKIP_LAYOUT_CACHE_LIFE_OBSERVED",
+        name: "cacheLife",
+        observation: createObservation({ cacheLifeObserved: true }),
+      },
+      {
+        code: "SKIP_LAYOUT_UNSTABLE_CACHE_OBSERVED",
+        name: "unstable_cache",
+        observation: createObservation({
+          unstableCaches: [
+            {
+              keyHash: "abc123",
+              kind: "unstable_cache",
+              revalidate: 60,
+              tagCount: 1,
+              tagHash: "tag123",
+            },
+          ],
+        }),
+      },
+      {
+        code: "SKIP_LAYOUT_CACHE_TAGS_OBSERVED",
+        name: "cache tags",
+        observation: createObservation({ cacheTags: ["tag:dashboard"] }),
+      },
+      {
+        code: "SKIP_LAYOUT_CACHEABLE_FETCHES_OBSERVED",
+        name: "cacheable fetches",
+        observation: createObservation({ cacheableFetchCount: 1 }),
+      },
+      {
+        code: "SKIP_LAYOUT_DYNAMIC_FETCHES_OBSERVED",
+        name: "dynamic fetches",
+        observation: createObservation({ dynamicFetchCount: 1 }),
+      },
+    ] as const;
+
+    for (const testCase of unsafeCases) {
+      const rejection = getStaticLayoutObservationSkipRejection(testCase.observation);
+      expect(rejection?.code, testCase.name).toBe(testCase.code);
+      expect(rejection?.fields.dynamicUsageObserved, testCase.name).toBe(
+        testCase.observation.dynamicUsageObserved,
+      );
+    }
+
+    const safeObservation = createObservation();
+    expect(getStaticLayoutObservationSkipRejection(safeObservation)).toBeNull();
+    expect(isAppLayoutObservationUnsafeForStaticReuse(safeObservation)).toBe(false);
   });
 
   it("isolates fetch and cacheLife observations to the current layout probe", async () => {

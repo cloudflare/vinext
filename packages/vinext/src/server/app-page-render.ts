@@ -54,6 +54,7 @@ import type {
   ClientReuseManifestEntry,
   ClientReuseManifestParseResult,
   ClientReuseManifestSkipDisposition,
+  ClientReuseManifestTraceFields,
 } from "./client-reuse-manifest.js";
 import { NO_STORE_CACHE_CONTROL } from "./cache-control.js";
 import {
@@ -71,9 +72,10 @@ import {
   type AppPageRenderObservationState,
 } from "./app-page-render-observation.js";
 import type {
-  AppLayoutParamAccessObservation,
   AppLayoutParamAccessTracker,
+  StaticLayoutObservationSkipRejection,
 } from "./app-layout-param-observation.js";
+import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-observation.js";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -286,47 +288,15 @@ function createRenderAndSendSkipDisposition(): ClientReuseManifestSkipDispositio
 
 function rejectStaticLayoutObservation(
   entry: ClientReuseManifestEntry,
-  code:
-    | "SKIP_LAYOUT_CACHE_LIFE_OBSERVED"
-    | "SKIP_LAYOUT_CACHE_TAGS_OBSERVED"
-    | "SKIP_LAYOUT_CACHEABLE_FETCHES_OBSERVED"
-    | "SKIP_LAYOUT_DYNAMIC_FETCHES_OBSERVED"
-    | "SKIP_LAYOUT_PARAMS_OBSERVED"
-    | "SKIP_LAYOUT_PARAMS_OBSERVATION_INCOMPLETE"
-    | "SKIP_LAYOUT_PARAMS_PRESENT"
-    | "SKIP_LAYOUT_REVALIDATE_PRESENT"
-    | "SKIP_LAYOUT_REQUEST_API_OBSERVED"
-    | "SKIP_LAYOUT_UNSTABLE_CACHE_OBSERVED",
-  observation?: AppLayoutParamAccessObservation,
+  code: StaticLayoutObservationSkipRejection["code"],
+  fields: ClientReuseManifestTraceFields = {},
 ): ReturnType<typeof crossCheckClientReuseManifestEntryWithCache> {
   return {
     kind: "rejected",
     rejection: {
       code,
       entryId: entry.id,
-      fields: observation
-        ? {
-            cacheLifeObserved: observation.cacheLifeObserved,
-            cacheTags: observation.cacheTags,
-            cacheableFetchCount: observation.cacheableFetchCount,
-            dynamicFetchCount: observation.dynamicFetchCount,
-            finiteRevalidateSeconds: observation.finiteRevalidateSeconds,
-            observedParamKeys: observation.keys,
-            paramScopeKeys: observation.paramScopeKeys,
-            requestApis: observation.requestApis,
-            unstableCacheCount: observation.unstableCaches.length,
-            unstableCacheKeyHashes: observation.unstableCaches.map((cache) => cache.keyHash),
-            unstableCacheRevalidates: observation.unstableCaches.map((cache) =>
-              String(cache.revalidate),
-            ),
-            unstableCacheTagCounts: observation.unstableCaches.map((cache) =>
-              String(cache.tagCount),
-            ),
-            unstableCacheTagHashes: observation.unstableCaches.map(
-              (cache) => cache.tagHash ?? "none",
-            ),
-          }
-        : {},
+      fields,
     },
     skipDisposition: createRenderAndSendSkipDisposition(),
   };
@@ -337,51 +307,16 @@ function rejectUnsafeStaticLayoutObservation(
   layoutParamAccess: AppLayoutParamAccessTracker | undefined,
 ): ReturnType<typeof crossCheckClientReuseManifestEntryWithCache> | null {
   const observation = layoutParamAccess?.getLayoutObservation(entry.id);
-  if (!observation || observation.completeness !== "complete") {
+  if (!observation) {
     return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_PARAMS_OBSERVATION_INCOMPLETE");
   }
 
-  if (observation.paramScopeKeys.length > 0) {
-    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_PARAMS_PRESENT", observation);
-  }
-
-  if (observation.observed) {
-    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_PARAMS_OBSERVED", observation);
-  }
-
-  if (observation.requestApis.length > 0) {
-    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_REQUEST_API_OBSERVED", observation);
-  }
-
-  if (observation.finiteRevalidateSeconds !== null) {
-    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_REVALIDATE_PRESENT", observation);
-  }
-
-  if (observation.cacheLifeObserved) {
-    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_CACHE_LIFE_OBSERVED", observation);
-  }
-
-  if (observation.unstableCaches.length > 0) {
-    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_UNSTABLE_CACHE_OBSERVED", observation);
-  }
-
-  if (observation.cacheTags.length > 0) {
-    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_CACHE_TAGS_OBSERVED", observation);
-  }
-
-  if (observation.cacheableFetchCount > 0) {
+  const observationRejection = getStaticLayoutObservationSkipRejection(observation);
+  if (observationRejection) {
     return rejectStaticLayoutObservation(
       entry,
-      "SKIP_LAYOUT_CACHEABLE_FETCHES_OBSERVED",
-      observation,
-    );
-  }
-
-  if (observation.dynamicFetchCount > 0) {
-    return rejectStaticLayoutObservation(
-      entry,
-      "SKIP_LAYOUT_DYNAMIC_FETCHES_OBSERVED",
-      observation,
+      observationRejection.code,
+      observationRejection.fields,
     );
   }
 
