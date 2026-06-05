@@ -641,6 +641,31 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "experimental.ppr")).toBeUndefined();
   });
 
+  it("detects a nested option that only appears in a later same-named block", () => {
+    // The block scan inspects every matching parent block, not just the first,
+    // so a child living in a second `experimental: {}` is still found.
+    writeFile(
+      "next.config.js",
+      `const a = { experimental: { inlineCss: true } };
+      module.exports = { experimental: { ppr: true } };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+  });
+
+  it("detects a nested option under a quoted parent key", () => {
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        "experimental": { ppr: true },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+  });
+
   it.each([
     ["experimental.ppr", "experimental", "ppr: true"],
     ["experimental.typedRoutes", "experimental", "typedRoutes: true"],

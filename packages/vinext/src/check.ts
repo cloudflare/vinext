@@ -355,26 +355,36 @@ function escapeRegExp(s: string): string {
 }
 
 /**
- * Return the body (the text between the matching braces) of the first
- * `name: { … }` / `name = { … }` block in `content`, or null if there is none.
+ * Return the bodies (text between the matching braces) of every
+ * `name: { … }` / `name = { … }` block in `content`. Quoted parent keys
+ * (`"name": { … }`) are matched too. Returns an empty array if there are none.
+ *
+ * All matching blocks are returned, not just the first, so a child key that only
+ * appears in a later same-named block (e.g. two `experimental: {}` objects) is
+ * still found.
  *
  * Expects `content` to already be run through {@link stripCommentsAndStrings},
  * so naive `{`/`}` counting is safe — braces inside comments or string values
  * cannot throw off the balance. Used to scope nested dot-notation child lookups
  * to their parent block instead of matching the child anywhere in the file.
  */
-function extractBlockBody(content: string, name: string): string | null {
-  const opener = new RegExp(String.raw`\b${escapeRegExp(name)}\s*[:=]\s*\{`);
-  const m = opener.exec(content);
-  if (!m) return null;
-  const start = m.index + m[0].length; // first char after the opening `{`
-  let depth = 1;
-  for (let i = start; i < content.length; i++) {
-    const c = content[i];
-    if (c === "{") depth++;
-    else if (c === "}" && --depth === 0) return content.slice(start, i);
+function extractBlockBodies(content: string, name: string): string[] {
+  const opener = new RegExp(String.raw`\b${escapeRegExp(name)}["']?\s*[:=]\s*\{`, "g");
+  const bodies: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = opener.exec(content)) !== null) {
+    const start = m.index + m[0].length; // first char after the opening `{`
+    let depth = 1;
+    let i = start;
+    for (; i < content.length; i++) {
+      const c = content[i];
+      if (c === "{") depth++;
+      else if (c === "}" && --depth === 0) break;
+    }
+    bodies.push(content.slice(start, i));
+    opener.lastIndex = i; // resume scanning after this block
   }
-  return content.slice(start); // unterminated block — return the rest
+  return bodies;
 }
 
 // The CJS globals we flag, so the identifier-match check has no magic offsets.
@@ -931,10 +941,10 @@ export function analyzeConfig(root: string): CheckItem[] {
   for (const key of Object.keys(CONFIG_SUPPORT)) {
     if (!key.includes(".")) continue;
     const dot = key.indexOf(".");
-    const body = extractBlockBody(content, key.slice(0, dot));
-    if (body === null) continue;
+    const bodies = extractBlockBodies(content, key.slice(0, dot));
+    if (bodies.length === 0) continue;
     const childRef = new RegExp(String.raw`\b${escapeRegExp(key.slice(dot + 1))}\b`);
-    if (childRef.test(body)) {
+    if (bodies.some((body) => childRef.test(body))) {
       items.push({ name: key, ...CONFIG_SUPPORT[key]! });
     }
   }
