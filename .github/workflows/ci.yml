@@ -320,24 +320,64 @@ jobs:
           exit 1
 
   e2e:
-    name: E2E (${{ matrix.project }})
+    name: E2E (${{ matrix.label }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        project:
-          - pages-router
-          - app-router
-          - app-router-chrome-browser-specific
-          - app-router-webkit-browser-specific
-          - cloudflare-pages-router
-          - pages-router-prod
-          - cloudflare-workers
-          - cloudflare-dev
-          - cloudflare-pages-router-dev
-          - static-export
-          - app-with-src
-          - standalone-output
+        include:
+          - project: pages-router
+            label: pages-router
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-router
+            label: app-router 1/2
+            shardIndex: 1
+            shardTotal: 2
+          - project: app-router
+            label: app-router 2/2
+            shardIndex: 2
+            shardTotal: 2
+          - project: app-router-chrome-browser-specific
+            label: app-router-chrome-browser-specific
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-router-webkit-browser-specific
+            label: app-router-webkit-browser-specific
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-pages-router
+            label: cloudflare-pages-router
+            shardIndex: 1
+            shardTotal: 1
+          - project: pages-router-prod
+            label: pages-router-prod
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-workers
+            label: cloudflare-workers
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-dev
+            label: cloudflare-dev
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-pages-router-dev
+            label: cloudflare-pages-router-dev
+            shardIndex: 1
+            shardTotal: 1
+          - project: static-export
+            label: static-export
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-with-src
+            label: app-with-src
+            shardIndex: 1
+            shardTotal: 1
+          - project: standalone-output
+            label: standalone-output
+            shardIndex: 1
+            shardTotal: 1
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -407,7 +447,7 @@ jobs:
           sudo find /var/cache/apt/archives -maxdepth 1 -name '*.deb' -exec cp -n {} ~/.cache/apt-archives/ \;
           sudo chown -R "$(id -u):$(id -g)" ~/.cache/apt-archives
 
-      - run: vp run test:e2e
+      - run: vp exec playwright test --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
         env:
           CI: true
           PLAYWRIGHT_PROJECT: ${{ matrix.project }}
@@ -415,7 +455,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: playwright-report-${{ matrix.project }}
+          name: playwright-report-${{ matrix.project }}-${{ matrix.shardIndex }}-${{ matrix.shardTotal }}
           path: playwright-report/
           retention-days: 7
 
