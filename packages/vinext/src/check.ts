@@ -333,6 +333,125 @@ function findSourceFiles(
   return results;
 }
 
+function isIdentChar(c: string): boolean {
+  return (
+    (c >= "a" && c <= "z") ||
+    (c >= "A" && c <= "Z") ||
+    (c >= "0" && c <= "9") ||
+    c === "_" ||
+    c === "$"
+  );
+}
+
+/**
+ * Report whether `content` makes a free use of the CommonJS globals `__dirname` or
+ * `__filename` in real code — i.e. not inside a string literal, comment, or plain
+ * template literal. Identifiers inside a template expression (`` `${__dirname}` ``)
+ * DO count, since that is real code.
+ *
+ * This is a hand-written single-pass scanner rather than a regex on purpose. The
+ * previous implementation used an alternation regex whose string-body sub-pattern
+ * `(?:[^"\\]|\\.)*` is a star over an alternation group; V8 cannot compile that into
+ * a tight loop, so it pushes one backtrack frame per character and overflows the
+ * regex stack ("Maximum call stack size exceeded") on very large files — e.g. a
+ * multi-megabyte minified bundle or a long/unterminated string literal. This scanner
+ * runs in O(n) time and O(template-nesting) stack, so it cannot blow up on large input.
+ */
+export function hasFreeCjsGlobal(content: string): boolean {
+  const n = content.length;
+  // Context stack. A "code" frame can be the top level or the body of a `${ … }`
+  // template expression (isExpr); its `depth` counts nested `{ }` so we know which
+  // `}` closes the expression. A "template" frame is the inside of a backtick string.
+  const stack: Array<{ kind: "code" | "template"; depth: number; isExpr: boolean }> = [
+    { kind: "code", depth: 0, isExpr: false },
+  ];
+  let i = 0;
+  while (i < n) {
+    const top = stack[stack.length - 1];
+    const ch = content[i];
+
+    if (top.kind === "template") {
+      if (ch === "\\") {
+        i += 2; // escape — skip the next char
+        continue;
+      }
+      if (ch === "`") {
+        stack.pop();
+        i++;
+        continue;
+      }
+      if (ch === "$" && content[i + 1] === "{") {
+        stack.push({ kind: "code", depth: 0, isExpr: true });
+        i += 2;
+        continue;
+      }
+      i++;
+      continue;
+    }
+
+    // code context
+    if (ch === "/" && content[i + 1] === "/") {
+      i += 2;
+      while (i < n && content[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && content[i + 1] === "*") {
+      i += 2;
+      while (i < n && !(content[i] === "*" && content[i + 1] === "/")) i++;
+      i += 2; // consume the closing */
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      // Plain string literal — strings cannot span newlines in JS/TS, so stop at a
+      // newline too (bounds the damage from a stray/unterminated quote).
+      i++;
+      while (i < n) {
+        const c = content[i];
+        if (c === "\\") {
+          i += 2;
+          continue;
+        }
+        if (c === ch || c === "\n") break;
+        i++;
+      }
+      i++; // consume closing quote (or the newline / EOF stopping char)
+      continue;
+    }
+    if (ch === "`") {
+      stack.push({ kind: "template", depth: 0, isExpr: false });
+      i++;
+      continue;
+    }
+    if (ch === "{") {
+      top.depth++;
+      i++;
+      continue;
+    }
+    if (ch === "}") {
+      if (top.isExpr && top.depth === 0) {
+        stack.pop(); // close the ${ … } and return to the template
+      } else if (top.depth > 0) {
+        top.depth--;
+      }
+      i++;
+      continue;
+    }
+    if (ch === "_") {
+      const prev = i > 0 ? content[i - 1] : "";
+      if (!isIdentChar(prev)) {
+        if (content.startsWith("__dirname", i) && !isIdentChar(content[i + 9] ?? "")) {
+          return true;
+        }
+        if (content.startsWith("__filename", i) && !isIdentChar(content[i + 10] ?? "")) {
+          return true;
+        }
+      }
+    }
+    i++;
+  }
+  return false;
+}
+
 /**
  * Scan source files for `import ... from 'next/...'` statements.
  */
@@ -629,17 +748,11 @@ export function checkConventions(root: string): CheckItem[] {
   //   - ViewTransition import from react
   //   - free uses of __dirname / __filename (CJS globals, not available in ESM)
   //
-  // For __dirname/__filename we use a single-pass alternation regex that skips over
-  // string literals, template literals, and comments before testing for the identifier,
-  // so tokens inside those contexts are never matched.
+  // For __dirname/__filename we use hasFreeCjsGlobal(), a single-pass scanner that
+  // skips string literals, template literals, and comments before testing for the
+  // identifier, so tokens inside those contexts are never matched.
   const allSourceFiles = findSourceFiles(root);
   const viewTransitionRegex = /import\s+\{[^}]*\bViewTransition\b[^}]*\}\s+from\s+['"]react['"]/;
-  // Single-pass regex: skip tokens that can contain identifier-like text, expose everything else
-  // to the identifier capture branch. Template literals are skipped segment-by-segment between
-  // `${` boundaries — the `${...}` body itself is NOT consumed, so `__dirname` inside template
-  // expressions (e.g. `${__dirname}/views`) is correctly exposed to the identifier branch.
-  const cjsGlobalScanRegex =
-    /\/\/[^\n]*|\/\*[\s\S]*?\*\/|`(?:[^`\\$]|\\.|\$(?!\{))*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b(__dirname|__filename)\b/g;
   const viewTransitionFiles: string[] = [];
   const cjsGlobalFiles: string[] = [];
   for (const file of allSourceFiles) {
@@ -650,13 +763,8 @@ export function checkConventions(root: string): CheckItem[] {
       viewTransitionFiles.push(rel);
     }
 
-    cjsGlobalScanRegex.lastIndex = 0;
-    let m;
-    while ((m = cjsGlobalScanRegex.exec(content)) !== null) {
-      if (m[1]) {
-        cjsGlobalFiles.push(rel);
-        break;
-      }
+    if (hasFreeCjsGlobal(content)) {
+      cjsGlobalFiles.push(rel);
     }
   }
   // Emit items for the combined scan results
@@ -675,21 +783,24 @@ export function checkConventions(root: string): CheckItem[] {
     const configPath = path.join(root, configFile);
     if (fs.existsSync(configPath)) {
       const content = fs.readFileSync(configPath, "utf-8");
-      // Detect string-form plugins: plugins: ["..."] or plugins: ['...']
-      const stringPluginRegex = /plugins\s*:\s*\[[\s\S]*?(['"][^'"]+['"])[\s\S]*?\]/;
-      const match = stringPluginRegex.exec(content);
-      if (match) {
-        // Check it's not require() or import() form — just bare string literals in the array
-        const pluginsBlock = match[0];
-        // If plugins array contains string literals not wrapped in require()
-        if (/plugins\s*:\s*\[[\s\n]*['"]/.test(pluginsBlock)) {
-          items.push({
-            name: `PostCSS string-form plugins (${configFile})`,
-            status: "partial",
-            detail:
-              "string-form PostCSS plugins need resolution — vinext handles this automatically",
-          });
-        }
+      // Detect string-form plugins where the first array element is a bare string
+      // literal: `plugins: ["..."]` or `plugins: ['...']` (as opposed to the
+      // require()/import() form, which starts with an identifier, not a quote).
+      //
+      // The quote is anchored directly to the opening `[` (only whitespace between)
+      // rather than scanning the array for a closing `]`. The previous form,
+      // /plugins\s*:\s*\[[\s\S]*?(['"][^'"]+['"])[\s\S]*?\]/, had two lazy `[\s\S]*?`
+      // quantifiers around a capture group; on a large config without a closing `]`
+      // it backtracked quadratically, hanging the process and overflowing the regex
+      // stack. This anchored form is linear-time and matches exactly the same configs.
+      const stringPluginRegex = /plugins\s*:\s*\[\s*['"]/;
+      if (stringPluginRegex.test(content)) {
+        items.push({
+          name: `PostCSS string-form plugins (${configFile})`,
+          status: "partial",
+          detail:
+            "string-form PostCSS plugins need resolution — vinext handles this automatically",
+        });
       }
       break; // Only check the first config file found
     }
