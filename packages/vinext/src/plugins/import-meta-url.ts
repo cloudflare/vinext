@@ -615,7 +615,15 @@ function isNewUrlExpression(value: NodeLike): boolean {
 function findDirectivePrologueEnd(ast: unknown): number {
   if (!isNodeLike(ast) || ast.type !== "Program") return 0;
 
+  // A shebang (`#!...`) lives outside ast.body but must stay the first bytes of
+  // the file, so the injection floor starts after it. Inserting at offset 0
+  // would move the shebang off line 1 and produce invalid output.
   let end = 0;
+  const hashbang = ast.hashbang;
+  if (isNodeLike(hashbang) && typeof hashbang.end === "number") {
+    end = hashbang.end;
+  }
+
   for (const statement of nodeArray(ast.body)) {
     if (
       !isNodeLike(statement) ||

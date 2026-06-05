@@ -427,6 +427,19 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result?.code).toMatch(/^"use strict";\nvar __dirname/);
   });
 
+  it("injects after a shebang so the #! line stays first", () => {
+    const result = rewriteServerCjsGlobals(
+      `#!/usr/bin/env node\nconsole.log(__filename);\n`,
+      pagePath,
+      linkedRoot,
+    );
+
+    expect(result).not.toBeNull();
+    // The shebang must remain the first bytes of the file; the injected var
+    // goes after it, not at offset 0 (which would corrupt the shebang).
+    expect(result?.code).toMatch(/^#!\/usr\/bin\/env node\nvar __filename/);
+  });
+
   it("does not inject server CJS globals in build output paths", () => {
     const result = rewriteServerCjsGlobals(
       `console.log(__filename);\n`,
