@@ -135,7 +135,10 @@ describe("executeMiddleware propagates trailingSlash to NextURL", () => {
     expect(new URL(result.redirectUrl!, "http://localhost").pathname).toBe("/somewhere");
   });
 
-  it("plain URL redirect to file path is not normalized (e.g. /file.css stays /file.css)", async () => {
+  it("plain URL redirect to file path gets trailing slash added when trailingSlash: true", async () => {
+    // Next.js uses formatNextPathnameInfo (plain add/strip, no file-extension
+    // exemption) for middleware redirect Locations. /file.css should become
+    // /file.css/ just like any other non-root path.
     const result = await executeMiddleware({
       isProxy: false,
       module: {
@@ -147,6 +150,27 @@ describe("executeMiddleware propagates trailingSlash to NextURL", () => {
 
     expect(result.continue).toBe(false);
     expect(result.redirectUrl).not.toBeUndefined();
-    expect(new URL(result.redirectUrl!, "http://localhost").pathname).toBe("/file.css");
+    expect(new URL(result.redirectUrl!, "http://localhost").pathname).toBe("/file.css/");
+  });
+
+  it("NextURL redirect to file path gets trailing slash added (same result as plain URL)", async () => {
+    // Lock in consistency: a NextURL-based redirect to /file.css should produce
+    // the same Location as a plain-URL redirect to /file.css.
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        middleware: (request: { nextUrl: { clone(): unknown } }) => {
+          const url = (request.nextUrl as unknown as URL & { clone(): URL }).clone();
+          url.pathname = "/file.css";
+          return NextResponse.redirect(url as unknown as URL);
+        },
+      },
+      request: new Request("http://localhost/src"),
+      trailingSlash: true,
+    });
+
+    expect(result.continue).toBe(false);
+    expect(result.redirectUrl).not.toBeUndefined();
+    expect(new URL(result.redirectUrl!, "http://localhost").pathname).toBe("/file.css/");
   });
 });

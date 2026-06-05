@@ -15,7 +15,7 @@ import {
 } from "./headers.js";
 import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
-import { normalizeTrailingSlashPathname, processMiddlewareHeaders } from "./request-pipeline.js";
+import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
 
 export type MiddlewareModule = Record<string, unknown>;
@@ -297,7 +297,18 @@ export async function executeMiddleware(
         try {
           const loc = new URL(relativeLocation, options.request.url);
           if (loc.origin === new URL(options.request.url).origin) {
-            const normalized = normalizeTrailingSlashPathname(loc.pathname, options.trailingSlash);
+            // Use the same plain add/strip rule as NextURL._applyTrailingSlash /
+            // Next.js's formatNextPathnameInfo — no exemptions for /api, file
+            // extensions, etc. Only root is exempt.
+            const p = loc.pathname;
+            let normalized: string | null = null;
+            if (p !== "" && p !== "/") {
+              if (options.trailingSlash) {
+                normalized = p.endsWith("/") ? null : p + "/";
+              } else {
+                normalized = p.endsWith("/") ? p.slice(0, -1) : null;
+              }
+            }
             if (normalized !== null) {
               normalizedLocation = normalized + loc.search + loc.hash;
             }
