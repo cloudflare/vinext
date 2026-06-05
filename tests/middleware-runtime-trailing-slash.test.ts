@@ -97,4 +97,61 @@ describe("executeMiddleware propagates trailingSlash to NextURL", () => {
     expect(loc.pathname).toBe("/dest/");
     expect(loc.searchParams.get("foo")).toBe("bar");
   });
+
+  // ---------------------------------------------------------------------------
+  // Plain `new URL(...)` redirects — these bypass NextURL._applyTrailingSlash
+  // so the fix in middleware-runtime.ts must apply normalizeTrailingSlashPathname
+  // after relativizeLocation().
+  // ---------------------------------------------------------------------------
+
+  it("plain URL redirect gets trailing slash added when trailingSlash: true", async () => {
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        middleware: (request: Request) => {
+          return NextResponse.redirect(new URL("/somewhere", request.url));
+        },
+      },
+      request: new Request("http://localhost/src"),
+      trailingSlash: true,
+    });
+
+    expect(result.continue).toBe(false);
+    expect(result.redirectUrl).not.toBeUndefined();
+    expect(new URL(result.redirectUrl!, "http://localhost").pathname).toBe("/somewhere/");
+  });
+
+  it("plain URL redirect gets trailing slash removed when trailingSlash: false", async () => {
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        middleware: (request: Request) => {
+          return NextResponse.redirect(new URL("/somewhere/", request.url));
+        },
+      },
+      request: new Request("http://localhost/src"),
+      trailingSlash: false,
+    });
+
+    expect(result.continue).toBe(false);
+    expect(result.redirectUrl).not.toBeUndefined();
+    expect(new URL(result.redirectUrl!, "http://localhost").pathname).toBe("/somewhere");
+  });
+
+  it("plain URL redirect to file path is not normalized (e.g. /file.css stays /file.css)", async () => {
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        middleware: (request: Request) => {
+          return NextResponse.redirect(new URL("/file.css", request.url));
+        },
+      },
+      request: new Request("http://localhost/src"),
+      trailingSlash: true,
+    });
+
+    expect(result.continue).toBe(false);
+    expect(result.redirectUrl).not.toBeUndefined();
+    expect(new URL(result.redirectUrl!, "http://localhost").pathname).toBe("/file.css");
+  });
 });
