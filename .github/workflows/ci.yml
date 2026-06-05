@@ -120,6 +120,13 @@ jobs:
         run: vp pm pack --pack-destination "${{ runner.temp }}"
         working-directory: packages/vinext
 
+      - name: Pack @vinext/cloudflare for local install
+        # vinext depends on @vinext/cloudflare, which isn't published to npm yet.
+        # Pack it locally so the scaffolded project can resolve it offline (see
+        # the override step below).
+        run: vp pm pack --pack-destination "${{ runner.temp }}"
+        working-directory: packages/cloudflare
+
       - name: Scaffold a fresh create-next-app project
         run: vp dlx create-next-app@16.2.7 "${{ runner.temp }}/cna-test" --yes
 
@@ -160,6 +167,30 @@ jobs:
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
           echo "Pinned packageManager to $PKG_MGR"
+
+      - name: Override @vinext/cloudflare to the local tarball
+        working-directory: ${{ runner.temp }}/cna-test
+        shell: bash
+        # vinext's tarball declares a dependency on @vinext/cloudflare, which is
+        # not on npm yet. Point pnpm's resolution at the locally-packed tarball
+        # so installing (and running) the local vinext works without registry
+        # access to the new package.
+        run: |
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const tmp = process.env.RUNNER_TEMP;
+            const tgz = fs.readdirSync(tmp).find((f) => /^vinext-cloudflare-.*\.tgz$/.test(f));
+            if (!tgz) throw new Error("@vinext/cloudflare tarball not found in " + tmp);
+            const spec = "file:" + path.join(tmp, tgz).split(path.sep).join("/");
+            const f = "pnpm-workspace.yaml";
+            let y = fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "";
+            y = y.trimEnd() + "\n\noverrides:\n  \"@vinext/cloudflare\": \"" + spec + "\"\n";
+            fs.writeFileSync(f, y);
+            console.log("Added override @vinext/cloudflare ->", spec);
+          '
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
 
       - name: Install vinext from local tarball
         working-directory: ${{ runner.temp }}/cna-test
