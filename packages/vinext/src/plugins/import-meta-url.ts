@@ -90,6 +90,8 @@ export function createImportMetaUrlPlugin(options: { getRoot: () => string | und
   };
 }
 
+// Test-only entry point. Delegates to the same transform the plugin runs so
+// tests exercise the production code path rather than a parallel implementation.
 export function rewriteImportMetaUrl(
   code: string,
   id: string,
@@ -97,12 +99,7 @@ export function rewriteImportMetaUrl(
   environment: ImportMetaUrlEnvironment,
 ): RewriteResult | null {
   if (!mayContainImportMetaUrl(code)) return null;
-  return rewriteCanonicalImportMetaUrl(
-    code,
-    canonicalizePath(id),
-    createRootPaths(root),
-    environment,
-  );
+  return rewriteCanonicalSourceIdentity(code, canonicalizePath(id), createRootPaths(root), environment);
 }
 
 // Test-only entry point. Mirrors the plugin's server eligibility checks and
@@ -157,34 +154,6 @@ function rewriteCanonicalSourceIdentity(
   }
 
   if (!changed) return null;
-  return {
-    code: output.toString(),
-    map: output.generateMap({ hires: "boundary" }),
-  };
-}
-
-function rewriteCanonicalImportMetaUrl(
-  code: string,
-  canonicalId: string,
-  rootPaths: RootPaths,
-  environment: ImportMetaUrlEnvironment,
-): RewriteResult | null {
-  let ast: unknown;
-  try {
-    ast = parseAst(code);
-  } catch {
-    return null;
-  }
-
-  const ranges = collectImportMetaUrlRanges(ast);
-  if (ranges.length === 0) return null;
-
-  const replacement = JSON.stringify(importMetaUrlValue(canonicalId, rootPaths, environment));
-  const output = new MagicString(code);
-  for (const range of ranges) {
-    output.overwrite(range.start, range.end, replacement);
-  }
-
   return {
     code: output.toString(),
     map: output.generateMap({ hires: "boundary" }),
