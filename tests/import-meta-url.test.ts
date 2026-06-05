@@ -481,6 +481,26 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result).toBeNull();
   });
 
+  it("does not inject for node_modules modules", () => {
+    const result = rewriteServerCjsGlobals(
+      `console.log(__filename);\n`,
+      path.join(realRoot, "node_modules", "pkg", "index.js"),
+      linkedRoot,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not inject for non-script extensions", () => {
+    const result = rewriteServerCjsGlobals(
+      `console.log(__filename);\n`,
+      path.join(realRoot, "pages", "data.json"),
+      linkedRoot,
+    );
+
+    expect(result).toBeNull();
+  });
+
   it("does not inject for non-computed member access (obj.__filename is not a read)", () => {
     const result = rewriteServerCjsGlobals(
       `obj.__filename;\nobj.__dirname;\n`,

@@ -115,11 +115,11 @@ export function rewriteServerCjsGlobals(
 ): RewriteResult | null {
   if (!mayContainServerCjsGlobal(code)) return null;
   const rootPaths = createRootPaths(root);
-  const canonicalId = canonicalizePath(id);
-  const normalizedId = normalizePath(canonicalId);
-  if (!isPathWithin(normalizedId, rootPaths.normalizedRoot)) return null;
-  const relativePath = normalizePath(path.relative(rootPaths.canonicalRoot, canonicalId));
-  if (isExcludedRelativePath(relativePath, rootPaths.excludedRelativePrefixes)) return null;
+  // Use the same eligibility gate the plugin runs (node_modules, extension,
+  // within-root, build-output exclusion) instead of a hand-rolled subset, so
+  // the tests exercise the production boundary rather than a parallel one.
+  const canonicalId = transformableModuleCanonicalId(id, rootPaths);
+  if (!canonicalId) return null;
   return rewriteCanonicalSourceIdentity(code, canonicalId, rootPaths, "server");
 }
 
