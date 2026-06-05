@@ -32,7 +32,7 @@ jobs:
             bash -n "$f" || { echo "Syntax error in $f"; exit 1; }
           done
       - name: Verify integration shard manifest
-        run: node scripts/ci-integration-shard.mjs --check
+        run: node scripts/ci-integration-shard.mjs --check --shard-total=6
 
   test-unit:
     name: Vitest (unit ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
