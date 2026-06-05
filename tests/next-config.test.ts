@@ -243,8 +243,9 @@ describe("loadNextConfig with CJS globals in next.config.ts", () => {
     );
 
     const config = await loadNextConfig(tmpDir);
-    expect(typeof config?.env?.DIR).toBe("string");
-    expect((config?.env?.DIR as string).length).toBeGreaterThan(0);
+    const dir = config?.env?.DIR;
+    expect(typeof dir).toBe("string");
+    expect((dir as string).length).toBeGreaterThan(0);
   });
 
   it("does not inject __filename when user already declares it (no duplicate declaration)", async () => {
@@ -257,8 +258,9 @@ describe("loadNextConfig with CJS globals in next.config.ts", () => {
     );
 
     const config = await loadNextConfig(tmpDir);
-    expect(typeof config?.env?.FILE).toBe("string");
-    expect((config?.env?.FILE as string).endsWith("next.config.ts")).toBe(true);
+    const file = config?.env?.FILE;
+    expect(typeof file).toBe("string");
+    expect((file as string).endsWith("next.config.ts")).toBe(true);
   });
 
   it("loads a pure-ESM next.config.ts without injecting CJS shims", async () => {

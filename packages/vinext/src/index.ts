@@ -3757,8 +3757,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       transform(code: string, id: string) {
         if (!id.includes("/node_modules/")) return null;
         if (id.includes("?")) return null;
-        // Only inject into server-side environments (SSR / RSC), not client.
-        if (this.environment?.name === "client") return null;
+        // Only inject into Node.js server environments (ssr / rsc).
+        // Cloudflare Workers environments have non-file import.meta.url values
+        // (e.g. "worker:index.js") that would cause `new URL(import.meta.url)`
+        // to throw. The client environment uses its own CJS interop.
+        const envName = this.environment?.name;
+        if (envName !== "ssr" && envName !== "rsc") return null;
         if (!referencesCjsGlobals(code)) return null;
 
         const hasOwnDirname = /\b(?:const|let|var)\s+__dirname\b/.test(code);
