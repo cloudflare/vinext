@@ -1331,8 +1331,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // See: https://github.com/vercel/next.js/pull/93997
         defines["process.env.__NEXT_APP_SHELLS"] = JSON.stringify(nextConfig.appShells);
         // Cache Components — Next.js gates segment Activity BFCache retention
-        // on this build-time flag. The active segment is still keyed without
-        // the flag; enabling it controls the three-entry inactive tree cache.
+        // on this build-time flag. Without the flag the active segment renders
+        // in place (unkeyed); enabling it turns on the three-entry inactive
+        // Activity tree cache.
         // See: packages/next/src/client/components/layout-router.tsx
         defines["process.env.__NEXT_CACHE_COMPONENTS"] = JSON.stringify(nextConfig.cacheComponents);
 
