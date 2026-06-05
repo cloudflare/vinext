@@ -33,14 +33,19 @@ jobs:
           done
 
   test-unit:
-    name: Vitest (unit)
+    name: Vitest (unit ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shardIndex: [1, 2]
+        shardTotal: [2]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - run: vp test run --project unit
+      - run: vp test run --project unit --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
 
   test-integration:
     name: Vitest (integration ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
