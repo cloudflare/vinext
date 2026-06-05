@@ -333,6 +333,10 @@ function findSourceFiles(
   return results;
 }
 
+function isIdentStart(c: string): boolean {
+  return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c === "_" || c === "$";
+}
+
 function isIdentChar(c: string): boolean {
   return (
     (c >= "a" && c <= "z") ||
@@ -343,11 +347,34 @@ function isIdentChar(c: string): boolean {
   );
 }
 
+// The CJS globals we flag, so the identifier-match check has no magic offsets.
+const CJS_GLOBALS = new Set(["__dirname", "__filename"]);
+
+// Keywords after which a `/` begins a regex literal rather than a division operator.
+// Anything else that ends an expression (identifier, number, `)`, `]`, string,
+// template, regex) is a "value" and makes `/` division.
+const REGEX_PRECEDING_KEYWORDS = new Set([
+  "return",
+  "typeof",
+  "instanceof",
+  "in",
+  "of",
+  "new",
+  "delete",
+  "void",
+  "do",
+  "else",
+  "yield",
+  "await",
+  "case",
+  "throw",
+]);
+
 /**
  * Report whether `content` makes a free use of the CommonJS globals `__dirname` or
- * `__filename` in real code — i.e. not inside a string literal, comment, or plain
- * template literal. Identifiers inside a template expression (`` `${__dirname}` ``)
- * DO count, since that is real code.
+ * `__filename` in real code — i.e. not inside a string literal, comment, regex
+ * literal, or plain template literal. Identifiers inside a template expression
+ * (`` `${__dirname}` ``) DO count, since that is real code.
  *
  * This is a hand-written single-pass scanner rather than a regex on purpose. The
  * previous implementation used an alternation regex whose string-body sub-pattern
@@ -356,15 +383,26 @@ function isIdentChar(c: string): boolean {
  * regex stack ("Maximum call stack size exceeded") on very large files — e.g. a
  * multi-megabyte minified bundle or a long/unterminated string literal. This scanner
  * runs in O(n) time and O(template-nesting) stack, so it cannot blow up on large input.
+ *
+ * It is a lexer-grade scanner, not a parser: it tracks just enough state (string /
+ * template / comment / regex contexts, and whether a `/` is in expression position)
+ * to avoid mistaking quotes inside one context for the start of another. It does not
+ * attempt full JS semantics (e.g. `}` is treated as regex-allowing), which is fine for
+ * an advisory check.
  */
 export function hasFreeCjsGlobal(content: string): boolean {
   const n = content.length;
   // Context stack. A "code" frame can be the top level or the body of a `${ … }`
   // template expression (isExpr); its `depth` counts nested `{ }` so we know which
-  // `}` closes the expression. A "template" frame is the inside of a backtick string.
-  const stack: Array<{ kind: "code" | "template"; depth: number; isExpr: boolean }> = [
-    { kind: "code", depth: 0, isExpr: false },
-  ];
+  // `}` closes the expression. `prevType` tracks whether a `/` here starts a regex
+  // literal ("op") or is division ("value"). A "template" frame is inside backticks.
+  type Frame = {
+    kind: "code" | "template";
+    depth: number;
+    isExpr: boolean;
+    prevType: "value" | "op";
+  };
+  const stack: Frame[] = [{ kind: "code", depth: 0, isExpr: false, prevType: "op" }];
   let i = 0;
   while (i < n) {
     const top = stack[stack.length - 1];
@@ -377,11 +415,14 @@ export function hasFreeCjsGlobal(content: string): boolean {
       }
       if (ch === "`") {
         stack.pop();
+        // The template literal we just closed is a value in its enclosing code.
+        const outer = stack[stack.length - 1];
+        if (outer) outer.prevType = "value";
         i++;
         continue;
       }
       if (ch === "$" && content[i + 1] === "{") {
-        stack.push({ kind: "code", depth: 0, isExpr: true });
+        stack.push({ kind: "code", depth: 0, isExpr: true, prevType: "op" });
         i += 2;
         continue;
       }
@@ -389,7 +430,7 @@ export function hasFreeCjsGlobal(content: string): boolean {
       continue;
     }
 
-    // code context
+    // ── code context ──
     if (ch === "/" && content[i + 1] === "/") {
       i += 2;
       while (i < n && content[i] !== "\n") i++;
@@ -401,9 +442,39 @@ export function hasFreeCjsGlobal(content: string): boolean {
       i += 2; // consume the closing */
       continue;
     }
+    if (ch === "/") {
+      if (top.prevType === "op") {
+        // Regex literal. Skip its body, honouring escapes and `[…]` char classes
+        // (a `/` inside a class does not terminate the literal), then any flags.
+        i++;
+        let inClass = false;
+        while (i < n) {
+          const c = content[i];
+          if (c === "\\") {
+            i += 2;
+            continue;
+          }
+          if (c === "\n") break; // regex literals cannot span lines — bail out
+          if (c === "[") inClass = true;
+          else if (c === "]") inClass = false;
+          else if (c === "/" && !inClass) {
+            i++;
+            break;
+          }
+          i++;
+        }
+        while (i < n && isIdentChar(content[i])) i++; // flags
+        top.prevType = "value";
+        continue;
+      }
+      top.prevType = "op"; // division operator
+      i++;
+      continue;
+    }
     if (ch === '"' || ch === "'") {
-      // Plain string literal — strings cannot span newlines in JS/TS, so stop at a
-      // newline too (bounds the damage from a stray/unterminated quote).
+      // Plain string literal. A `\` escapes the next char (so a line-continuation
+      // `\<newline>` is consumed); an unescaped newline ends the scan, bounding the
+      // damage from a stray/unterminated quote.
       i++;
       while (i < n) {
         const c = content[i];
@@ -415,37 +486,52 @@ export function hasFreeCjsGlobal(content: string): boolean {
         i++;
       }
       i++; // consume closing quote (or the newline / EOF stopping char)
+      top.prevType = "value";
       continue;
     }
     if (ch === "`") {
-      stack.push({ kind: "template", depth: 0, isExpr: false });
+      stack.push({ kind: "template", depth: 0, isExpr: false, prevType: "op" });
       i++;
       continue;
     }
     if (ch === "{") {
       top.depth++;
+      top.prevType = "op";
       i++;
       continue;
     }
     if (ch === "}") {
       if (top.isExpr && top.depth === 0) {
         stack.pop(); // close the ${ … } and return to the template
-      } else if (top.depth > 0) {
-        top.depth--;
+      } else {
+        if (top.depth > 0) top.depth--;
+        top.prevType = "op";
       }
       i++;
       continue;
     }
-    if (ch === "_") {
-      const prev = i > 0 ? content[i - 1] : "";
-      if (!isIdentChar(prev)) {
-        if (content.startsWith("__dirname", i) && !isIdentChar(content[i + 9] ?? "")) {
-          return true;
-        }
-        if (content.startsWith("__filename", i) && !isIdentChar(content[i + 10] ?? "")) {
-          return true;
-        }
-      }
+    if (isIdentStart(ch)) {
+      const start = i;
+      i++;
+      while (i < n && isIdentChar(content[i])) i++;
+      const ident = content.slice(start, i);
+      if (CJS_GLOBALS.has(ident)) return true;
+      top.prevType = REGEX_PRECEDING_KEYWORDS.has(ident) ? "op" : "value";
+      continue;
+    }
+    if (ch >= "0" && ch <= "9") {
+      i++;
+      while (i < n && (isIdentChar(content[i]) || content[i] === ".")) i++;
+      top.prevType = "value";
+      continue;
+    }
+    // Other punctuation. `)` and `]` close a value (so `/` after them is division);
+    // every other operator/punctuator leaves `/` in regex position. Whitespace does
+    // not change the preceding-token type.
+    if (ch === ")" || ch === "]") {
+      top.prevType = "value";
+    } else if (ch !== " " && ch !== "\t" && ch !== "\n" && ch !== "\r") {
+      top.prevType = "op";
     }
     i++;
   }

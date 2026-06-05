@@ -1048,6 +1048,26 @@ describe("hasFreeCjsGlobal", () => {
     expect(hasFreeCjsGlobal(`const __dirnameSuffix = 1;`)).toBe(false);
   });
 
+  it("does not let a regex literal hide a later __dirname", () => {
+    // A stray quote/backtick inside a regex literal must not hijack string/template
+    // state and swallow real code that follows it.
+    expect(hasFreeCjsGlobal(`const r = /'/; const d = __dirname;`)).toBe(true);
+    expect(hasFreeCjsGlobal("const r = /`/;\nconst d = __dirname;")).toBe(true);
+    expect(hasFreeCjsGlobal("const r = /['\"`]/; const d = __filename;")).toBe(true);
+    // `/` after a `return` keyword is a regex; the `__dirname` after still counts.
+    expect(hasFreeCjsGlobal(`function f() { return /'/; }\nconst d = __dirname;`)).toBe(true);
+  });
+
+  it("does not treat division as a regex literal", () => {
+    // `/` after a value is division, not a regex — the second operand still scans.
+    expect(hasFreeCjsGlobal(`const x = a / b; const d = __dirname;`)).toBe(true);
+    expect(hasFreeCjsGlobal(`const x = total / __dirname.length;`)).toBe(true);
+  });
+
+  it("ignores __dirname inside a regex literal", () => {
+    expect(hasFreeCjsGlobal(`const r = /__dirname/; const x = 1;`)).toBe(false);
+  });
+
   // Regression: the old alternation regex's `(?:[^"\\]|\\.)*` string-body loop
   // overflowed V8's regex stack ("Maximum call stack size exceeded") on very large
   // files. These inputs reproduce that; the scanner must return in linear time.
