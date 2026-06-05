@@ -346,139 +346,181 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
 // and more correct than a free-identifier replacement walker that must model
 // lexical scope.
 //
-// Each name is injected independently, only when the source genuinely reads it
-// (not just a member-access/key/lookalike mention) AND there is no conflicting
-// top-level binding of that name (a `var` colliding with a top-level
-// let/const/class/import would be a SyntaxError).
+// The injection rule in one place: a CJS global is injected iff the module
+// reads it (not just a member-access/key/lookalike mention) AND there is no
+// conflicting top-level binding of that name (a `var` colliding with a
+// top-level let/const/class/import would be a SyntaxError).
+const CJS_GLOBALS = ["__filename", "__dirname"] as const;
+type CjsGlobalName = (typeof CJS_GLOBALS)[number];
+
+function isCjsGlobalName(name: unknown): name is CjsGlobalName {
+  return name === "__filename" || name === "__dirname";
+}
+
 function injectServerCjsGlobals(ast: unknown, canonicalId: string): string | null {
   const values = { __filename: canonicalId, __dirname: path.dirname(canonicalId) } as const;
-  const parts = (["__filename", "__dirname"] as const)
-    .filter((name) => hasReadReference(ast, name) && !hasTopLevelBinding(ast, name))
-    .map((name) => `var ${name} = ${JSON.stringify(values[name])};`);
+  const analysis = analyzeServerCjsGlobals(ast);
+  const parts = CJS_GLOBALS.filter(
+    (name) => analysis.reads.has(name) && !analysis.topLevelBindings.has(name),
+  ).map((name) => `var ${name} = ${JSON.stringify(values[name])};`);
   return parts.length ? parts.join("") : null;
 }
 
-// Reports whether `name` appears as a genuine read reference anywhere in the
-// module — an Identifier in value position. Excludes positions that name the
-// identifier without reading the binding: non-computed member properties
-// (`obj.__filename`), non-computed object/class keys (`{ __filename: 1 }`,
-// `class { __filename() {} }`), and lookalikes (`__filenameFoo`). Object
-// shorthand values, computed keys/members, default values, and assignment/update
-// targets all count as reads.
+type ServerCjsAnalysis = {
+  reads: Set<CjsGlobalName>;
+  topLevelBindings: Set<CjsGlobalName>;
+};
+
+// One analysis pass produces both facts about the module:
+//   - reads: CJS globals referenced as a value (Identifier in read position)
+//   - topLevelBindings: CJS globals bound by a top-level declaration
+// Top-level binding detection walks only Program.body — nested bindings are
+// correctly shadowed by JS scope and do not need to be tracked.
 //
-// This is a syntactic read check, not full scope resolution: it does not prove
-// the read is *free* (unbound), so a name read only within a scope that also
-// binds it may still be reported. That is harmless — collision safety is handled
-// by hasTopLevelBinding, and an over-report at worst injects an unused `var`.
-function hasReadReference(ast: unknown, name: string): boolean {
-  let found = false;
-  function visit(value: unknown): void {
-    if (found || !isNodeLike(value)) return;
-    const type = value.type;
-    if (typeof type !== "string") return;
-    switch (type) {
+// Vite's parseAst (rolldown/oxc) rejects TypeScript syntax, and this plugin
+// runs `enforce: "post"` after TS has been stripped, so only plain-JS binding
+// forms can ever reach here — no `import type`, `enum`, `namespace`,
+// `declare`, or `import =` nodes/fields to account for.
+function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
+  const reads = new Set<CjsGlobalName>();
+  const topLevelBindings = new Set<CjsGlobalName>();
+
+  // Recursively walks a binding pattern (destructuring target, var
+  // declarator id, function/class name, import specifier local). Each name
+  // found is recorded as a top-level binding.
+  function recordBinding(pattern: unknown): void {
+    if (!isNodeLike(pattern)) return;
+    const t = pattern.type;
+    if (typeof t !== "string") return;
+    switch (t) {
       case "Identifier":
-        if (value.name === name) found = true;
+        if (isCjsGlobalName(pattern.name)) topLevelBindings.add(pattern.name);
+        return;
+      case "RestElement":
+        recordBinding(pattern.argument);
+        return;
+      case "AssignmentPattern":
+        recordBinding(pattern.left);
+        return;
+      case "ArrayPattern":
+        for (const element of nodeArray(pattern.elements)) recordBinding(element);
+        return;
+      case "ObjectPattern":
+        for (const property of nodeArray(pattern.properties)) {
+          if (!isNodeLike(property)) continue;
+          recordBinding(property.type === "Property" ? property.value : property.argument);
+        }
+        return;
+    }
+  }
+
+  // Records top-level bindings declared by a single top-level statement. Only
+  // walks the shape of the declaration itself — initializers and bodies are
+  // left to the read walker, except for `var` heads inside for-loop init/left
+  // which are the only binding form that lives outside a `VariableDeclaration`.
+  function recordTopLevelBindingsFromStatement(statement: NodeLike): void {
+    const t = statement.type;
+    if (typeof t !== "string") return;
+    switch (t) {
+      case "ImportDeclaration":
+        for (const specifier of nodeArray(statement.specifiers)) {
+          if (!isNodeLike(specifier)) continue;
+          recordBinding(specifier.local);
+        }
+        return;
+      case "VariableDeclaration":
+        for (const declarator of nodeArray(statement.declarations)) {
+          if (!isNodeLike(declarator) || declarator.type !== "VariableDeclarator") continue;
+          recordBinding(declarator.id);
+        }
+        return;
+      case "FunctionDeclaration":
+      case "ClassDeclaration":
+        recordBinding(statement.id);
+        return;
+      case "ExportNamedDeclaration":
+      case "ExportDefaultDeclaration":
+        if (isNodeLike(statement.declaration)) {
+          recordTopLevelBindingsFromStatement(statement.declaration);
+        }
+        return;
+      case "ForStatement":
+        if (
+          isNodeLike(statement.init) &&
+          statement.init.type === "VariableDeclaration" &&
+          statement.init.kind === "var"
+        ) {
+          recordTopLevelBindingsFromStatement(statement.init);
+        }
+        return;
+      case "ForInStatement":
+      case "ForOfStatement":
+        if (
+          isNodeLike(statement.left) &&
+          statement.left.type === "VariableDeclaration" &&
+          statement.left.kind === "var"
+        ) {
+          recordTopLevelBindingsFromStatement(statement.left);
+        }
+        return;
+    }
+  }
+
+  // Records CJS global names that appear as a value-position read. Excludes
+  // positions that name the identifier without reading the binding: non-
+  // computed member properties (`obj.__filename`), non-computed object/class
+  // keys (`{ __filename: 1 }`, `class { __filename() {} }`), and lookalikes
+  // (`__filenameFoo`). Object shorthand values, computed keys/members,
+  // default values, and assignment/update targets all count as reads.
+  //
+  // This is a syntactic read check, not full scope resolution: it does not
+  // prove the read is *free* (unbound), so a name read only within a scope
+  // that also binds it may still be reported. That is harmless — collision
+  // safety is handled by the binding set, and an over-report at worst injects
+  // an unused `var`.
+  function recordReads(value: unknown): void {
+    if (!isNodeLike(value)) return;
+    const t = value.type;
+    if (typeof t !== "string") return;
+    switch (t) {
+      case "Identifier":
+        if (isCjsGlobalName(value.name)) reads.add(value.name);
         return;
       case "MemberExpression":
-        // `obj[x]` reads x; `obj.x` does not.
-        visit(value.object);
-        if (value.computed) visit(value.property);
+        recordReads(value.object);
+        if (value.computed) recordReads(value.property);
         return;
       case "Property":
-        // `{ [x]: v }` reads x; the key in `{ x: v }` / `{ x }` does not. The
-        // value (or the shorthand identifier, stored as value) is always a read.
-        if (value.computed) visit(value.key);
-        visit(value.value);
+        if (value.computed) recordReads(value.key);
+        recordReads(value.value);
         return;
       case "MethodDefinition":
       case "PropertyDefinition":
-        // Class member: the name is a read only when computed.
-        if (value.computed) visit(value.key);
-        visit(value.value);
+        if (value.computed) recordReads(value.key);
+        recordReads(value.value);
         return;
       default:
         for (const [key, child] of Object.entries(value)) {
           if (key === "type" || key === "start" || key === "end" || key === "loc") continue;
           if (Array.isArray(child)) {
-            for (const item of child) visit(item);
+            for (const item of child) recordReads(item);
           } else {
-            visit(child);
+            recordReads(child);
           }
         }
     }
   }
-  visit(ast);
-  return found;
-}
 
-// Reports whether `name` is bound by a top-level declaration whose kind would
-// make an injected `var ${name}` a redeclaration SyntaxError (let/const/class/
-// import) or otherwise shadow our binding (function/var/destructuring). Walks
-// only the program body — nested bindings are correctly shadowed by JS scope.
-function hasTopLevelBinding(ast: unknown, name: string): boolean {
-  if (!isNodeLike(ast) || ast.type !== "Program") return false;
-  return nodeArray(ast.body).some((statement) => declaresBinding(statement, name));
-}
-
-// Vite's parseAst (rolldown/oxc) rejects TypeScript syntax, and this plugin
-// runs `enforce: "post"` after TS has been stripped, so only plain-JS binding
-// forms can ever reach here — no `import type`, `enum`, `namespace`, `declare`,
-// or `import =` nodes/fields to account for.
-function declaresBinding(node: unknown, name: string): boolean {
-  if (!isNodeLike(node)) return false;
-  const type = node.type;
-  if (typeof type !== "string") return false;
-  switch (type) {
-    case "ImportDeclaration":
-      return nodeArray(node.specifiers).some((s) => isNodeLike(s) && bindsName(s.local, name));
-    case "VariableDeclaration":
-      return nodeArray(node.declarations).some((d) => isNodeLike(d) && bindsName(d.id, name));
-    case "FunctionDeclaration":
-    case "ClassDeclaration":
-      return isIdentifierNamed(node.id, name);
-    case "ExportNamedDeclaration":
-    case "ExportDefaultDeclaration":
-      return declaresBinding(node.declaration, name);
-    case "ForStatement":
-      return declaresVarHead(node.init, name);
-    case "ForInStatement":
-    case "ForOfStatement":
-      return declaresVarHead(node.left, name);
-    default:
-      return false;
+  // Bindings are only top-level when declared in Program.body. Reads are
+  // collected from the whole module.
+  if (isNodeLike(ast) && ast.type === "Program") {
+    for (const statement of nodeArray(ast.body)) {
+      if (isNodeLike(statement)) recordTopLevelBindingsFromStatement(statement);
+    }
   }
-}
+  recordReads(ast);
 
-function declaresVarHead(node: unknown, name: string): boolean {
-  return (
-    isNodeLike(node) &&
-    node.type === "VariableDeclaration" &&
-    node.kind === "var" &&
-    declaresBinding(node, name)
-  );
-}
-
-// Recursively checks a binding target (identifier or destructuring pattern).
-function bindsName(value: unknown, name: string): boolean {
-  if (!isNodeLike(value)) return false;
-  if (isIdentifierNamed(value, name)) return true;
-  const type = value.type;
-  if (typeof type !== "string") return false;
-  switch (type) {
-    case "RestElement":
-      return bindsName(value.argument, name);
-    case "AssignmentPattern":
-      return bindsName(value.left, name);
-    case "ArrayPattern":
-      return nodeArray(value.elements).some((e) => bindsName(e, name));
-    case "ObjectPattern":
-      return nodeArray(value.properties).some((p) =>
-        isNodeLike(p) ? bindsName(p.type === "Property" ? p.value : p.argument, name) : false,
-      );
-    default:
-      return false;
-  }
+  return { reads, topLevelBindings };
 }
 
 function isNodeLike(value: unknown): value is NodeLike {
