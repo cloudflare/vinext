@@ -798,8 +798,7 @@ export function checkConventions(root: string): CheckItem[] {
         items.push({
           name: `PostCSS string-form plugins (${configFile})`,
           status: "partial",
-          detail:
-            "string-form PostCSS plugins need resolution — vinext handles this automatically",
+          detail: "string-form PostCSS plugins need resolution — vinext handles this automatically",
         });
       }
       break; // Only check the first config file found
