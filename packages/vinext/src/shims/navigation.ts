@@ -23,10 +23,15 @@ import {
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
+  stripRscCacheBustingSearchParam,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "../server/app-rsc-cache-busting.js";
-import { VINEXT_MOUNTED_SLOTS_HEADER, VINEXT_PARAMS_HEADER } from "../server/headers.js";
+import {
+  VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_PARAMS_HEADER,
+} from "../server/headers.js";
 import {
   isAbsoluteOrProtocolRelativeUrl,
   isHashOnlyBrowserUrlChange,
@@ -402,6 +407,8 @@ export type CachedRscResponse = {
   compatibilityIdHeader?: string | null;
   buffer: ArrayBuffer;
   contentType: string;
+  dynamicStaleTimeSeconds?: number;
+  expiresAt?: number;
   mountedSlotsHeader?: string | null;
   paramsHeader: string | null;
   url: string;
@@ -414,7 +421,9 @@ export type PrefetchOptions = {
 
 export type PrefetchCacheEntry = {
   cacheForNavigation?: boolean;
+  expiresAt?: number;
   invalidationTimer?: ReturnType<typeof setTimeout>;
+  mountedSlotsHeader?: string | null;
   onInvalidateCallbacks?: Set<() => void>;
   optimisticRouteShell?: boolean;
   outcome: "pending" | "cache-seeded";
@@ -480,6 +489,159 @@ export function getPrefetchedUrls(): Set<string> {
   return window.__VINEXT_RSC_PREFETCHED_URLS__;
 }
 
+function isDynamicStaleTimeSeconds(value: unknown): value is number {
+  return (
+    typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 0
+  );
+}
+
+function isCacheExpiresAt(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function parseDynamicStaleTimeSeconds(value: string | null): number | undefined {
+  if (value === null || value === "") return undefined;
+  const seconds = Number(value);
+  return isDynamicStaleTimeSeconds(seconds) ? seconds : undefined;
+}
+
+export function resolveCachedRscResponseTtlMs(
+  cached: Pick<CachedRscResponse, "dynamicStaleTimeSeconds">,
+  fallbackTtlMs: number,
+): number {
+  const seconds = cached.dynamicStaleTimeSeconds;
+  if (!isDynamicStaleTimeSeconds(seconds)) {
+    return fallbackTtlMs;
+  }
+  return seconds * 1000;
+}
+
+export function resolveCachedRscResponseExpiresAt(
+  timestamp: number,
+  cached: Pick<CachedRscResponse, "dynamicStaleTimeSeconds" | "expiresAt">,
+  fallbackTtlMs: number,
+): number {
+  if (isCacheExpiresAt(cached.expiresAt)) {
+    return cached.expiresAt;
+  }
+  return timestamp + resolveCachedRscResponseTtlMs(cached, fallbackTtlMs);
+}
+
+function resolvePrefetchCacheEntryExpiresAt(entry: PrefetchCacheEntry): number {
+  if (entry.expiresAt !== undefined) return entry.expiresAt;
+  if (entry.snapshot) {
+    return resolveCachedRscResponseExpiresAt(entry.timestamp, entry.snapshot, PREFETCH_CACHE_TTL);
+  }
+  return entry.timestamp + PREFETCH_CACHE_TTL;
+}
+
+export function resolvePrefetchCacheEntryMountedSlotsHeader(
+  entry: PrefetchCacheEntry,
+): string | null {
+  if (entry.mountedSlotsHeader !== undefined) return entry.mountedSlotsHeader;
+  return entry.snapshot?.mountedSlotsHeader ?? null;
+}
+
+function normalizeRscCacheLookupUrl(rscUrl: string): string | null {
+  try {
+    const url = new URL(rscUrl, "http://vinext.local");
+    stripRscCacheBustingSearchParam(url);
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return null;
+  }
+}
+
+function parsePrefetchCacheKey(cacheKey: string): {
+  interceptionContext: string | null;
+  rscUrl: string;
+} {
+  const separatorIndex = cacheKey.indexOf("\0");
+  if (separatorIndex === -1) {
+    return { interceptionContext: null, rscUrl: cacheKey };
+  }
+  return {
+    interceptionContext: cacheKey.slice(separatorIndex + 1),
+    rscUrl: cacheKey.slice(0, separatorIndex),
+  };
+}
+
+function isPrefetchCacheEntryCompatibleWithMountedSlots(
+  entry: PrefetchCacheEntry,
+  mountedSlotsHeader: string | null,
+): boolean {
+  // The two clauses are load-bearing, not redundant. `resolvePrefetch...Header`
+  // prefers the entry's pinned request-time slot context (falling back to the
+  // snapshot header only when unset), while the second clause matches the
+  // server-declared snapshot header. They diverge only when the entry pins a
+  // request-time context that disagrees with the response (the
+  // `prefetchRscResponse` case); accepting either preserves the "request-time OR
+  // server-declared slot context" reuse semantics.
+  if (resolvePrefetchCacheEntryMountedSlotsHeader(entry) === mountedSlotsHeader) {
+    return true;
+  }
+  return (entry.snapshot?.mountedSlotsHeader ?? null) === mountedSlotsHeader;
+}
+
+function findPrefetchCacheEntryForNavigation(
+  rscUrl: string,
+  interceptionContext: string | null,
+  mountedSlotsHeader: string | null,
+): { cacheKey: string; entry: PrefetchCacheEntry } | null {
+  const exactCacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  const cache = getPrefetchCache();
+  const exactEntry = cache.get(exactCacheKey);
+  if (
+    exactEntry &&
+    exactEntry.cacheForNavigation !== false &&
+    isPrefetchCacheEntryCompatibleWithMountedSlots(exactEntry, mountedSlotsHeader)
+  ) {
+    return { cacheKey: exactCacheKey, entry: exactEntry };
+  }
+
+  const normalizedTarget = normalizeRscCacheLookupUrl(rscUrl);
+  if (normalizedTarget === null) return null;
+
+  for (const [cacheKey, entry] of cache) {
+    if (cacheKey === exactCacheKey) continue;
+    if (entry.cacheForNavigation === false) continue;
+
+    const source = parsePrefetchCacheKey(cacheKey);
+    if (source.interceptionContext !== interceptionContext) continue;
+    if (normalizeRscCacheLookupUrl(source.rscUrl) !== normalizedTarget) continue;
+    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
+
+    return { cacheKey, entry };
+  }
+
+  return null;
+}
+
+export function hasPrefetchCacheEntryForNavigation(
+  rscUrl: string,
+  interceptionContext: string | null = null,
+  mountedSlotsHeader: string | null = null,
+): boolean {
+  const match = findPrefetchCacheEntryForNavigation(
+    rscUrl,
+    interceptionContext,
+    mountedSlotsHeader,
+  );
+  if (match === null) return false;
+
+  if (match.entry.pending !== undefined) return true;
+  if (resolvePrefetchCacheEntryExpiresAt(match.entry) > Date.now()) return true;
+
+  deletePrefetchCacheEntry(
+    getPrefetchCache(),
+    getPrefetchedUrls(),
+    match.cacheKey,
+    match.entry,
+    true,
+  );
+  return false;
+}
+
 /**
  * Evict prefetch cache entries if at capacity.
  * First sweeps expired entries, then falls back to FIFO eviction.
@@ -492,7 +654,7 @@ function evictPrefetchCacheIfNeeded(): void {
   const prefetched = getPrefetchedUrls();
 
   for (const [key, entry] of cache) {
-    if (now - entry.timestamp >= PREFETCH_CACHE_TTL) {
+    if (resolvePrefetchCacheEntryExpiresAt(entry) <= now) {
       deletePrefetchCacheEntry(cache, prefetched, key, entry, true);
     }
   }
@@ -567,8 +729,7 @@ function schedulePrefetchInvalidation(cacheKey: string, entry: PrefetchCacheEntr
   if (entry.onInvalidateCallbacks === undefined || entry.onInvalidateCallbacks.size === 0) return;
 
   clearPrefetchInvalidation(entry);
-  const elapsed = Date.now() - entry.timestamp;
-  const delay = Math.max(0, PREFETCH_CACHE_TTL - elapsed);
+  const delay = Math.max(0, resolvePrefetchCacheEntryExpiresAt(entry) - Date.now());
   entry.invalidationTimer = setTimeout(() => {
     invalidatePrefetchCacheEntry(cacheKey);
   }, delay);
@@ -635,13 +796,20 @@ export function storePrefetchResponse(
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   evictPrefetchCacheIfNeeded();
   const entry: PrefetchCacheEntry = {
+    mountedSlotsHeader: null,
     outcome: "pending",
     timestamp: Date.now(),
   };
   addPrefetchInvalidationCallback(entry, options?.onInvalidate);
   entry.pending = snapshotRscResponse(response)
     .then((snapshot) => {
+      entry.mountedSlotsHeader = snapshot.mountedSlotsHeader ?? null;
       entry.snapshot = snapshot;
+      entry.expiresAt = resolveCachedRscResponseExpiresAt(
+        entry.timestamp,
+        snapshot,
+        PREFETCH_CACHE_TTL,
+      );
     })
     .catch(() => {
       deletePrefetchCacheEntry(getPrefetchCache(), getPrefetchedUrls(), cacheKey, entry, false);
@@ -661,10 +829,14 @@ export function createCachedRscResponseSnapshot(
   buffer: ArrayBuffer,
   responseUrl: string | null = null,
 ): CachedRscResponse {
+  const dynamicStaleTimeSeconds = parseDynamicStaleTimeSeconds(
+    response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER),
+  );
   return {
     compatibilityIdHeader: response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
     buffer,
     contentType: response.headers.get("content-type") ?? VINEXT_RSC_CONTENT_TYPE,
+    ...(dynamicStaleTimeSeconds !== undefined ? { dynamicStaleTimeSeconds } : {}),
     mountedSlotsHeader: response.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
     paramsHeader: response.headers.get(VINEXT_PARAMS_HEADER),
     url: responseUrl ?? response.url,
@@ -702,6 +874,9 @@ export function restoreRscResponse(cached: CachedRscResponse, copy = true): Resp
   if (cached.compatibilityIdHeader != null) {
     headers.set(VINEXT_RSC_COMPATIBILITY_ID_HEADER, cached.compatibilityIdHeader);
   }
+  if (isDynamicStaleTimeSeconds(cached.dynamicStaleTimeSeconds)) {
+    headers.set(VINEXT_DYNAMIC_STALE_TIME_HEADER, String(cached.dynamicStaleTimeSeconds));
+  }
   if (cached.paramsHeader != null) {
     headers.set(VINEXT_PARAMS_HEADER, cached.paramsHeader);
   }
@@ -734,6 +909,7 @@ export function prefetchRscResponse(
 
   const entry: PrefetchCacheEntry = {
     cacheForNavigation: behavior.cacheForNavigation ?? true,
+    mountedSlotsHeader,
     optimisticRouteShell: behavior.optimisticRouteShell === true,
     outcome: "pending",
     timestamp: now,
@@ -743,12 +919,12 @@ export function prefetchRscResponse(
   entry.pending = fetchPromise
     .then(async (response) => {
       if (response.ok) {
-        entry.snapshot = {
-          ...(await snapshotRscResponse(response)),
-          // Prefetch compatibility is defined by the slot context at fetch
-          // time, not by whatever header a reused response happens to carry.
-          mountedSlotsHeader,
-        };
+        entry.snapshot = await snapshotRscResponse(response);
+        entry.expiresAt = resolveCachedRscResponseExpiresAt(
+          entry.timestamp,
+          entry.snapshot,
+          PREFETCH_CACHE_TTL,
+        );
       } else {
         deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, false);
       }
@@ -781,10 +957,24 @@ export function consumePrefetchResponse(
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
 ): CachedRscResponse | null {
-  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
-  const entry = cache.get(cacheKey);
-  if (!entry) return null;
+  const exactCacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  const exactEntry = cache.get(exactCacheKey);
+  if (
+    exactEntry &&
+    exactEntry.cacheForNavigation !== false &&
+    !isPrefetchCacheEntryCompatibleWithMountedSlots(exactEntry, mountedSlotsHeader)
+  ) {
+    deletePrefetchCacheEntry(cache, getPrefetchedUrls(), exactCacheKey, exactEntry, false);
+  }
+
+  const match = findPrefetchCacheEntryForNavigation(
+    rscUrl,
+    interceptionContext,
+    mountedSlotsHeader,
+  );
+  if (!match) return null;
+  const { cacheKey, entry } = match;
 
   // Skip in-flight snapshots and error-path residue where pending cleared
   // without a successful transition to a cache-seeded entry.
@@ -794,13 +984,23 @@ export function consumePrefetchResponse(
   deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, false);
 
   if (entry.snapshot) {
-    if ((entry.snapshot.mountedSlotsHeader ?? null) !== mountedSlotsHeader) {
+    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) {
       // Entry was already removed above. Slot mismatch means the prefetch
       // used stale slot context and cannot be safely reused.
       return null;
     }
-    if (Date.now() - entry.timestamp >= PREFETCH_CACHE_TTL) {
+    if (resolvePrefetchCacheEntryExpiresAt(entry) <= Date.now()) {
       return null;
+    }
+    // Only synthesize `expiresAt` onto the returned snapshot when the entry (or
+    // its snapshot) already carried one. Entries that never had an explicit
+    // expiry must round-trip unchanged so callers/tests can assert the raw
+    // snapshot — don't collapse this into an unconditional spread.
+    if (entry.expiresAt !== undefined || entry.snapshot.expiresAt !== undefined) {
+      return {
+        ...entry.snapshot,
+        expiresAt: resolvePrefetchCacheEntryExpiresAt(entry),
+      };
     }
     return entry.snapshot;
   }
@@ -825,11 +1025,14 @@ export async function consumePrefetchResponseForNavigation(
   mountedSlotsHeader: string | null = null,
   options?: ConsumePrefetchResponseForNavigationOptions,
 ): Promise<CachedRscResponse | null> {
-  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
-  const entry = cache.get(cacheKey);
-  if (!entry) return null;
-  if (entry.cacheForNavigation === false) return null;
+  const match = findPrefetchCacheEntryForNavigation(
+    rscUrl,
+    interceptionContext,
+    mountedSlotsHeader,
+  );
+  if (!match) return null;
+  const { cacheKey, entry } = match;
 
   if (entry.pending !== undefined) {
     await entry.pending.catch(() => {});
@@ -1361,7 +1564,6 @@ export function commitClientNavigationState(
 
   if (shouldNotify) {
     notifyNavigationListeners();
-    getNavigationRuntime()?.functions.pingVisibleLinks?.();
   }
 }
 

@@ -1195,6 +1195,18 @@ const nextData = window.__NEXT_DATA__;
 const { pageProps } = nextData.props;
 
 async function hydrate() {
+  let hydrateRootOptions;
+  if (import.meta.env.DEV) {
+    const overlay = await import("vinext/dev-error-overlay");
+    overlay.installDevErrorOverlay();
+    overlay.installViteHmrErrorHandler(import.meta.hot);
+    overlay.reportInitialDevServerErrors();
+    hydrateRootOptions = {
+      onCaughtError: overlay.devOnCaughtError,
+      onUncaughtError: overlay.devOnUncaughtError,
+    };
+  }
+
   const pageModule = await import("${pageModuleUrl}");
   const PageComponent = pageModule.default;
   let element;
@@ -1211,7 +1223,7 @@ async function hydrate() {
   `
   }
   element = wrapWithRouterContext(element);
-  const root = hydrateRoot(document.getElementById("__next"), element);
+  const root = hydrateRoot(document.getElementById("__next"), element, hydrateRootOptions);
   window.__VINEXT_ROOT__ = root;
   installPagesRouterRuntime();
   const hydratedAt = performance.now();

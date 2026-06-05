@@ -36,6 +36,8 @@ export type AppPageSsrHandler = {
       capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
       /** When true, wait for the full React tree before emitting bytes. */
       waitForAllReady?: boolean;
+      /** Dev-only: original server error to surface in the browser overlay. */
+      initialDevServerError?: unknown;
     },
   ) => Promise<ReadableStream<Uint8Array>>;
 };
@@ -62,6 +64,8 @@ type RenderAppPageHtmlStreamOptions = {
   capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
   /** When true, wait for the full React tree before emitting bytes. */
   waitForAllReady?: boolean;
+  /** Dev-only: original server error to surface in the browser overlay. */
+  initialDevServerError?: unknown;
 };
 
 type RenderAppPageHtmlResponseOptions = {
@@ -122,6 +126,7 @@ export async function renderAppPageHtmlStream(
     sideStream: options.sideStream,
     capturedRscDataRef: options.capturedRscDataRef,
     waitForAllReady: options.waitForAllReady,
+    initialDevServerError: options.initialDevServerError,
   };
 
   return options.ssrHandler.handleSsr(

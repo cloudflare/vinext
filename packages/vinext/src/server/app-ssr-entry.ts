@@ -39,6 +39,7 @@ import {
 } from "./app-ssr-stream.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
+import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
 import { createInitialBfcacheIdMap } from "./app-browser-state.js";
@@ -264,6 +265,8 @@ export async function handleSsr(
      */
     clientTraceMetadata?: readonly string[];
     rootParams?: RootParams;
+    /** Dev-only: original server error to surface in the browser overlay. */
+    initialDevServerError?: unknown;
     /** When true, wait for the full React tree (including Suspense boundaries)
      *  to resolve before returning the HTML stream. Used for static prerender
      *  and ISR cache writes to avoid caching fallback content. */
@@ -468,6 +471,10 @@ export async function handleSsr(
         const getInsertedHTML = (): string => {
           const insertedHTML = renderInsertedHtml(renderServerInsertedHTML());
           const errorMetaHTML = errorMetaRenderer.flush();
+          const initialDevServerErrorHTML = createInitialDevServerErrorScript(
+            options?.initialDevServerError,
+            options?.scriptNonce,
+          );
           if (didInjectHeadHTML) return insertedHTML + errorMetaHTML;
 
           didInjectHeadHTML = true;
@@ -475,7 +482,7 @@ export async function handleSsr(
             navContext,
             bootstrapModuleUrl,
             options?.formState ?? null,
-            insertedHTML + errorMetaHTML + getTraceMetaHTML(),
+            insertedHTML + errorMetaHTML + getTraceMetaHTML() + initialDevServerErrorHTML,
             fontHTML,
             options?.scriptNonce,
           );

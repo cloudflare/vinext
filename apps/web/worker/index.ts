@@ -5,8 +5,6 @@
  * For apps without image optimization, you can use vinext/server/app-router-entry
  * directly in wrangler.jsonc: "main": "vinext/server/app-router-entry"
  */
-import { KVCacheHandler } from "vinext/cloudflare";
-import { setCacheHandler } from "vinext/shims/cache";
 import {
   handleImageOptimization,
   DEFAULT_DEVICE_SIZES,
@@ -25,20 +23,9 @@ type Env = {
     };
   };
   DB: D1Database;
-  VINEXT_CACHE: KVNamespace;
+  VINEXT_KV_CACHE: KVNamespace;
   COMPAT_INGEST_SECRET?: string;
 };
-
-// Install the KV-backed CacheHandler once per isolate. vinext's ISR layer
-// reads from this handler on every request, so `export const revalidate = N`
-// on a page caches the rendered RSC/HTML output in KV for `N` seconds before
-// triggering a background regeneration (stale-while-revalidate).
-let cacheHandlerInstalled = false;
-function installCacheHandler(env: Env): void {
-  if (cacheHandlerInstalled) return;
-  setCacheHandler(new KVCacheHandler(env.VINEXT_CACHE));
-  cacheHandlerInstalled = true;
-}
 
 type ExecutionContext = {
   waitUntil(promise: Promise<unknown>): void;
@@ -53,8 +40,6 @@ type ExecutionContext = {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    installCacheHandler(env);
-
     const url = new URL(request.url);
 
     // Image optimization via Cloudflare Images binding.

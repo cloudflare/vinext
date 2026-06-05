@@ -10,7 +10,7 @@
   "preview_urls": true,
   "assets": {
     "not_found_handling": "none",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
   },
   "observability": {
     "enabled": true,
@@ -23,19 +23,8 @@
       "enabled": true,
     },
   },
-  // Enable the platform-managed HTTP cache layer. With this on, the
-  // runtime caches responses based on the `Cache-Control` headers vinext
-  // already emits for ISR routes and exposes `ctx.cache.purge({ tags })`
-  // on the request context. vinext detects `ctx.cache` at runtime — no
-  // Cloudflare-specific import is needed — and fans `revalidateTag()` /
-  // `revalidatePath()` out to it alongside the inner CacheHandler.
   "cache": {
-    "enabled": true
+    "enabled": true,
   },
-  // Auto-detection of the Workers Cache (`ctx.cache`) for page-level ISR is
-  // OFF by default (it needs deployment skew protection to be safe). This demo
-  // opts in via the env flag so the edge-managed CDN adapter is selected.
-  "vars": {
-    "VINEXT_CDN_CACHE_AUTO_DETECT": "1"
-  }
+  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "b38f84f642aa4bd4ba17a37bb516f0b5" }],
 }

@@ -35,6 +35,7 @@ import {
   pushHistoryStateWithoutNotify,
   replaceClientParamsWithoutNotify,
   replaceHistoryStateWithoutNotify,
+  resolvePrefetchCacheEntryMountedSlotsHeader,
   restoreRscResponse,
   saveScrollPosition,
   setClientParams,
@@ -106,11 +107,11 @@ import {
   createHistoryStateWithNavigationMetadata,
   createInitialBfcacheIdMap,
   isHistoryStateBfcacheVersionCurrent,
+  isCacheRestorableAppPayloadMetadata,
   readHistoryStateBfcacheIds,
   readHistoryStateBfcacheVersion,
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
-  isCacheRestorableAppPayloadMetadata,
   resolveHistoryTraversalIntent,
   resolveInterceptionContextFromPreviousNextUrl,
   resolveServerActionRequestState,
@@ -119,6 +120,11 @@ import {
   type HistoryTraversalIntent,
   type OperationLane,
 } from "./app-browser-state.js";
+import {
+  createVisitedResponseCacheEntry,
+  isVisitedResponseCacheEntryFresh,
+  type VisitedResponseCacheEntry,
+} from "./app-visited-response-cache.js";
 import { createPopstateRestoreHandler } from "./app-browser-popstate.js";
 import { DevRecoveryBoundary, RedirectBoundary } from "vinext/shims/error-boundary";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
@@ -132,6 +138,8 @@ import {
   devOnUncaughtError,
   dismissOverlay,
   installDevErrorOverlay,
+  installViteHmrErrorHandler,
+  reportInitialDevServerErrors,
 } from "./dev-error-overlay.js";
 import { DANGEROUS_URL_BLOCK_MESSAGE, isDangerousScheme } from "vinext/shims/url-safety";
 import { throwOnServerActionNotFound } from "./server-action-not-found.js";
@@ -200,15 +208,7 @@ function toOperationLane(kind: NavigationKind): OperationLane {
   }
 }
 
-type VisitedResponseCacheEntry = {
-  params: Record<string, string | string[]>;
-  expiresAt: number;
-  response: CachedRscResponse;
-};
-
 const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
-const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
-const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
 const CLIENT_RSC_COMPATIBILITY_ID = getVinextRscCompatibilityId();
 const optimisticRouteTemplates = new Map<string, OptimisticRouteTemplate>();
 const optimisticRouteTemplateSources = new Set<string>();
@@ -285,6 +285,8 @@ let browserRouterStateHasEverCommitted = false;
 let pendingNavigationRecoveryHref: string | null = null;
 const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
 const unresolvedMpaNavigation = new Promise<never>(() => {});
+const RSC_HMR_SETTLE_DELAY_MS = 150;
+let latestRscHmrUpdateId = 0;
 const initialHistoryBfcacheVersion = readHistoryStateBfcacheVersion(window.history.state);
 // A new browser document does not retain Next's in-memory BFCache entries.
 // Treat bfcache ids persisted by an older document as stale so a hard reload
@@ -297,6 +299,16 @@ let nextHistoryTraversalIndex: number = currentHistoryTraversalIndex;
 
 function isCurrentBfcacheVersion(state: unknown): boolean {
   return isHistoryStateBfcacheVersionCurrent(state, currentBfcacheVersion);
+}
+
+// Vite can notify the browser about an RSC HMR update before the dev server's
+// request runner has swapped to the invalidated module graph. Give the
+// invalidated graph a short settle window so HMR sees the same payload a
+// direct refresh would see.
+function waitForRscHmrSettle(delayMs = RSC_HMR_SETTLE_DELAY_MS): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, delayMs);
+  });
 }
 
 function readCurrentBfcacheVersionHistoryIds(
@@ -476,8 +488,9 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
 }): Promise<boolean> {
   const source = parsePrefetchCacheKey(options.cacheKey);
   if (source.interceptionContext !== options.interceptionContext) return false;
-  if ((options.entry.snapshot.mountedSlotsHeader ?? null) !== options.mountedSlotsHeader)
+  if (resolvePrefetchCacheEntryMountedSlotsHeader(options.entry) !== options.mountedSlotsHeader) {
     return false;
+  }
   if (options.interceptionContext !== null) return false;
 
   const elements = await decodeAppElementsPromise(
@@ -841,31 +854,31 @@ function getVisitedResponse(
     return null;
   }
 
-  if (navigationKind === "refresh") {
-    return null;
-  }
-
-  if (navigationKind === "traverse") {
-    const createdAt = cached.expiresAt - VISITED_RESPONSE_CACHE_TTL;
-    if (Date.now() - createdAt >= MAX_TRAVERSAL_CACHE_TTL) {
-      visitedResponseCache.delete(cacheKey);
-      return null;
-    }
-    // LRU: promote to most-recently-used (delete + re-insert moves to end of Map)
-    visitedResponseCache.delete(cacheKey);
-    visitedResponseCache.set(cacheKey, cached);
-    return cached;
-  }
-
-  if (cached.expiresAt > Date.now()) {
+  // `isVisitedResponseCacheEntryFresh` is the single source of truth for
+  // freshness and returns `false` for `navigationKind === "refresh"`, so a
+  // refresh falls through to the miss path below.
+  if (
+    isVisitedResponseCacheEntryFresh(cached, {
+      navigationKind,
+      now: Date.now(),
+    })
+  ) {
     // LRU: promote to most-recently-used
     visitedResponseCache.delete(cacheKey);
     visitedResponseCache.set(cacheKey, cached);
     return cached;
   }
 
+  // Stale (or refresh) entries are evicted on read. A refresh intentionally
+  // drops any prior snapshot here — the navigation re-fetches and re-stores a
+  // fresh one, so leaving the old entry around would only risk a later
+  // non-refresh navigation reusing a snapshot the user explicitly refreshed.
   visitedResponseCache.delete(cacheKey);
   return null;
+}
+
+function deleteVisitedResponse(rscUrl: string, interceptionContext: string | null): void {
+  visitedResponseCache.delete(AppElementsWire.encodeCacheKey(rscUrl, interceptionContext));
 }
 
 function storeVisitedResponseSnapshot(
@@ -878,11 +891,14 @@ function storeVisitedResponseSnapshot(
   visitedResponseCache.delete(cacheKey);
   evictVisitedResponseCacheIfNeeded();
   const now = Date.now();
-  visitedResponseCache.set(cacheKey, {
-    params,
-    expiresAt: now + VISITED_RESPONSE_CACHE_TTL,
-    response: snapshot,
-  });
+  visitedResponseCache.set(
+    cacheKey,
+    createVisitedResponseCacheEntry({
+      now,
+      params,
+      response: snapshot,
+    }),
+  );
 }
 
 type NavigationRequestState = {
@@ -1055,7 +1071,7 @@ function BrowserRoot({
   >(() => ({
     activeOperation: null,
     // Intentional Next.js parity: a hard reload starts a new browser
-    // document without the prior in-memory CacheNode/Activity tree. Hydrate
+    // document without the prior in-memory router state. Hydrate
     // the new document on the zero sentinel and rely on the document-scoped
     // bfcache version gate to reject stale ids persisted by previous
     // documents.
@@ -1078,7 +1094,6 @@ function BrowserRoot({
     throw unresolvedMpaNavigation;
   }
   const treeState = isRouterStatePromise(treeStateValue) ? use(treeStateValue) : treeStateValue;
-
   // Keep the latest router state in a ref so external callers (navigate(),
   // server actions, HMR) always read the current state. Safe: those readers
   // run from events/effects, never from React render itself.
@@ -1623,6 +1638,12 @@ function registerServerActionCallback(): void {
 async function main(): Promise<void> {
   registerServerActionCallback();
 
+  if (import.meta.env.DEV) {
+    installDevErrorOverlay();
+    installViteHmrErrorHandler(import.meta.hot);
+    reportInitialDevServerErrors();
+  }
+
   const rscStream = await readInitialRscStream();
   // null signals that readInitialRscStream aborted hydration — either because
   // a reload is in flight (first-attempt recovery) or the endpoint is
@@ -1634,10 +1655,6 @@ async function main(): Promise<void> {
 }
 
 function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
-  if (import.meta.env.DEV) {
-    installDevErrorOverlay();
-  }
-
   const root = decodeAppElementsPromise(createFromReadableStream<AppWireElements>(rscStream));
   const initialNavigationSnapshot = createClientNavigationRenderSnapshot(
     window.location.href,
@@ -1725,7 +1742,6 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             activeTraversalIntent?.historyState ?? window.history.state,
           )
         : null;
-
     try {
       const shouldUsePendingRouterState = programmaticTransition;
       if (shouldUsePendingRouterState && hasBrowserRouterState()) {
@@ -1843,7 +1859,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             ),
           );
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
-          await renderNavigationPayload(
+          const cachedRenderOutcome = await renderNavigationPayload(
             cachedPayload,
             cachedNavigationSnapshot,
             currentHref,
@@ -1859,6 +1875,10 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             scrollIntent,
             restoredBfcacheIds,
           );
+          if (cachedRenderOutcome === "no-commit") {
+            deleteVisitedResponse(rscUrl, requestInterceptionContext);
+            continue;
+          }
           return;
         }
 
@@ -1866,6 +1886,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // and prefetch compatibility decisions.
 
         let navResponse: Response | undefined;
+        let navResponseExpiresAt: number | undefined;
         let navResponseUrl: string | null = null;
         if (navigationKind !== "refresh") {
           const prefetchedResponse = await consumePrefetchResponseForNavigation(
@@ -1879,6 +1900,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
           if (prefetchedResponse) {
             navResponse = restoreRscResponse(prefetchedResponse, false);
+            navResponseExpiresAt = prefetchedResponse.expiresAt;
             navResponseUrl = prefetchedResponse.url;
           }
         }
@@ -2095,9 +2117,10 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // here would block the commit until the page's slowest server
         // promise resolved, hiding the loading state entirely.
         //
-        // The cache branch is read in the background so the visited-
-        // response snapshot lands as soon as the full stream completes,
-        // without holding up React's commit.
+        // The cache branch is read alongside React's branch, but persistence is
+        // best-effort after a successful visible commit. A failed snapshot must
+        // degrade future back/forward reuse, not recover by reloading the page
+        // the user already reached.
         const navBody = navResponse.body;
         if (!navBody) {
           // Already validated above (`!navResponse.body` triggers a hard
@@ -2144,25 +2167,31 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // If we stored it before and renderNavigationPayload threw, a future
         // back/forward navigation could replay a snapshot from a navigation that
         // never actually rendered successfully.
-        const resolvedElements = await rscPayload;
-        const metadata = AppElementsWire.readMetadata(resolvedElements);
-        if (!isCacheRestorableAppPayloadMetadata(metadata)) {
-          void cacheBufferPromise.catch(() => {});
-          return;
+        try {
+          const renderedElements = await rscPayload;
+          const metadata = AppElementsWire.readMetadata(renderedElements);
+          if (!isCacheRestorableAppPayloadMetadata(metadata)) {
+            void cacheBufferPromise.catch(() => {});
+            return;
+          }
+          const cacheBuffer = await cacheBufferPromise;
+          storeVisitedResponseSnapshot(
+            rscUrl,
+            resolveVisitedResponseInterceptionContext(
+              requestInterceptionContext,
+              metadata.interceptionContext,
+            ),
+            {
+              ...createCachedRscResponseSnapshot(navResponse, cacheBuffer, navResponseUrl),
+              ...(navResponseExpiresAt !== undefined ? { expiresAt: navResponseExpiresAt } : {}),
+              mountedSlotsHeader: getMountedSlotIdsHeader(renderedElements),
+            },
+            navParams,
+          );
+        } catch {
+          // The visible navigation already committed. A cache snapshot failure
+          // only affects future reuse; it must not reload the page.
         }
-        void cacheBufferPromise
-          .then((cacheBuffer) => {
-            storeVisitedResponseSnapshot(
-              rscUrl,
-              resolveVisitedResponseInterceptionContext(
-                requestInterceptionContext,
-                metadata.interceptionContext,
-              ),
-              createCachedRscResponseSnapshot(navResponse, cacheBuffer, navResponseUrl),
-              navParams,
-            );
-          })
-          .catch(() => {});
         return;
       }
     } catch (error) {
@@ -2239,68 +2268,87 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
   });
 
   if (import.meta.hot) {
-    const handleRscUpdate = async (): Promise<void> => {
-      try {
-        // If BrowserRoot has been mounted before but isn't now, a render
-        // error tore down the tree (e.g. a server route threw). HMR can't
-        // dispatch into a missing setter, and waitForBrowserRouterStateReady
-        // would block forever — the tree won't remount until the page reloads.
-        // Trigger that reload so the user's fix actually lands without a
-        // manual refresh. Cleared after a successful mount, so this only
-        // fires once per teardown.
-        if (
-          browserRouterStateHasEverCommitted &&
-          !browserNavigationController.hasBrowserRouterState()
-        ) {
-          window.location.reload();
-          return;
-        }
-        // HMR can also fire before BrowserRoot's layout effect publishes
-        // the browser router state (e.g. saving a file while the initial RSC
-        // stream is still suspended). Wait for readiness, then re-check the
-        // mounted state — readiness can race with cleanup, which nulls it again.
-        // Skip silently when the tree is not currently mounted; the next
-        // HMR push or full reload will reconcile.
-        await waitForBrowserRouterStateReady();
-        if (!browserNavigationController.hasBrowserRouterState()) {
-          return;
-        }
-        clearClientNavigationCaches();
-        const navigationSnapshot = createClientNavigationRenderSnapshot(
-          window.location.href,
-          latestClientParams,
-        );
-        // Clear stale errors from the dev overlay before dispatching the
-        // fresh tree. If the new tree renders cleanly, the overlay stays
-        // empty; if it throws again, devOnCaughtError/devOnUncaughtError
-        // re-populates it. Without this, an old "DropZone is not defined"
-        // error would linger after the developer fixed the bug.
-        dismissOverlay();
-        // Interception context on HMR re-renders is intentionally deferred:
-        // preserving intercepted modal state across HMR reloads is out of scope
-        // for the previousNextUrl mechanism.
-        const hmrHeaders = createRscRequestHeaders();
-        await browserNavigationController.hmrReplaceTree(
-          decodeAppElementsPromise(
-            createFromFetch<AppWireElements>(
-              fetch(
-                await createRscRequestUrl(
-                  window.location.pathname + window.location.search,
-                  hmrHeaders,
-                ),
-                { headers: hmrHeaders },
+    const applyRscHmrUpdate = async (updateId: number): Promise<void> => {
+      if (updateId !== latestRscHmrUpdateId) return;
+
+      // Root layout errors can leave the browser on a document-level error
+      // shell. A normal RSC tree replacement can't reliably reconstruct the
+      // original document from there, so let the next HMR update reload the
+      // current URL. If the edit fixed the error the page comes back clean; if
+      // not, initial dev server errors re-populate the overlay.
+      if (document.documentElement.id === "__next_error__") {
+        window.location.reload();
+        return;
+      }
+
+      // If BrowserRoot has been mounted before but isn't now, a render
+      // error tore down the tree (e.g. a server route threw). HMR can't
+      // dispatch into a missing setter, and waitForBrowserRouterStateReady
+      // would block forever — the tree won't remount until the page reloads.
+      // Trigger that reload so the user's fix actually lands without a
+      // manual refresh. Cleared after a successful mount, so this only
+      // fires once per teardown.
+      if (
+        browserRouterStateHasEverCommitted &&
+        !browserNavigationController.hasBrowserRouterState()
+      ) {
+        window.location.reload();
+        return;
+      }
+      // HMR can also fire before BrowserRoot's layout effect publishes
+      // the browser router state (e.g. saving a file while the initial RSC
+      // stream is still suspended). Wait for readiness, then re-check the
+      // mounted state — readiness can race with cleanup, which nulls it again.
+      // Skip silently when the tree is not currently mounted; the next
+      // HMR push or full reload will reconcile.
+      await waitForBrowserRouterStateReady();
+      if (updateId !== latestRscHmrUpdateId) return;
+      if (!browserNavigationController.hasBrowserRouterState()) {
+        return;
+      }
+      clearClientNavigationCaches();
+      const navigationSnapshot = createClientNavigationRenderSnapshot(
+        window.location.href,
+        latestClientParams,
+      );
+      // Clear stale errors from the dev overlay before dispatching the
+      // fresh tree. If the new tree renders cleanly, the overlay stays
+      // empty; if it throws again, devOnCaughtError/devOnUncaughtError
+      // re-populates it. Without this, an old "DropZone is not defined"
+      // error would linger after the developer fixed the bug.
+      dismissOverlay();
+      // Interception context on HMR re-renders is intentionally deferred:
+      // preserving intercepted modal state across HMR reloads is out of scope
+      // for the previousNextUrl mechanism.
+      const hmrHeaders = createRscRequestHeaders();
+      await browserNavigationController.hmrReplaceTree(
+        decodeAppElementsPromise(
+          createFromFetch<AppWireElements>(
+            fetch(
+              await createRscRequestUrl(
+                window.location.pathname + window.location.search,
+                hmrHeaders,
               ),
+              { headers: hmrHeaders },
             ),
           ),
-          navigationSnapshot,
-        );
+        ),
+        navigationSnapshot,
+      );
+    };
+
+    const handleRscUpdate = async (updateId: number): Promise<void> => {
+      try {
+        await waitForRscHmrSettle();
+        await applyRscHmrUpdate(updateId);
       } catch (error) {
         console.error("[vinext] RSC HMR error:", error);
       }
     };
 
     import.meta.hot.on("rsc:update", () => {
-      void handleRscUpdate();
+      const updateId = ++latestRscHmrUpdateId;
+      void handleRscUpdate(updateId);
     });
   }
 }
