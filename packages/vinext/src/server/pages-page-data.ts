@@ -11,7 +11,11 @@ import {
   type PagesGsspResponse,
   type PagesI18nRenderContext,
 } from "./pages-page-response.js";
-import { isResponseSent, loadPagesGetInitialProps } from "./pages-get-initial-props.js";
+import {
+  hasPagesGetInitialProps,
+  isResponseSent,
+  loadPagesGetInitialProps,
+} from "./pages-get-initial-props.js";
 import { buildNextDataJsonResponse } from "./pages-data-route.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 
@@ -679,7 +683,8 @@ export async function resolvePagesPageData(
 
   if (
     typeof options.pageModule.getServerSideProps !== "function" &&
-    typeof options.pageModule.getStaticProps !== "function"
+    typeof options.pageModule.getStaticProps !== "function" &&
+    hasPagesGetInitialProps(options.pageModule.default)
   ) {
     const { req, res, responsePromise } = options.createGsspReqRes();
     const initialProps = await loadPagesGetInitialProps(options.pageModule.default, {
