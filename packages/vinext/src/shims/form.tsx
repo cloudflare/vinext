@@ -28,6 +28,7 @@ import {
   type ForwardedRef,
 } from "react";
 import { hasAppNavigationRuntime } from "../client/navigation-runtime.js";
+import { useMergedRef } from "./use-merged-ref.js";
 import {
   getPrefetchedUrls,
   hasPrefetchCacheEntryForNavigation,
@@ -241,27 +242,27 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     }
   }
 
+  // Dev-mode validation, ported verbatim from Next.js app-dir/form.tsx.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/app-dir/form.tsx
+  const isNavigatingForm = typeof action === "string";
   if (process.env.NODE_ENV !== "production") {
-    // Warn for invalid prefetch value (matches Next.js app-dir/form.tsx).
-    if (prefetch !== null && prefetch !== false) {
-      console.error(
-        `<Form> received an invalid value for \`prefetch\`: ${JSON.stringify(prefetch)}. ` +
-          `Expected \`null\` (default) or \`false\`.`,
-      );
+    // Validate `prefetch`: must be `false` or `null` (undefined is the absence
+    // of the prop and is allowed). Read the raw prop so the default doesn't mask it.
+    if (!(props.prefetch === undefined || props.prefetch === false || props.prefetch === null)) {
+      console.error("The `prefetch` prop of <Form> must be `false` or `null`");
     }
-    // Warn when replace/scroll/prefetch are passed with a function action —
-    // they have no effect in that case (matches Next.js app-dir/form.tsx).
-    if (typeof action === "function") {
-      const irrelevant = (["replace", "scroll", "prefetch"] as const).filter(
-        (k) => props[k] !== undefined,
+    // `prefetch` with a function action has no effect.
+    if (props.prefetch !== undefined && !isNavigatingForm) {
+      console.error("Passing `prefetch` to a <Form> whose `action` is a function has no effect.");
+    }
+    // `replace`/`scroll` with a function action have no effect.
+    if (!isNavigatingForm && (props.replace !== undefined || props.scroll !== undefined)) {
+      console.error(
+        "Passing `replace` or `scroll` to a <Form> whose `action` is a function has no effect.\n" +
+          "See the relevant docs to learn how to control this behavior for navigations triggered from actions:\n" +
+          "  `redirect()`       - https://nextjs.org/docs/app/api-reference/functions/redirect#parameters\n" +
+          "  `router.replace()` - https://nextjs.org/docs/app/api-reference/functions/use-router#userouter\n",
       );
-      if (irrelevant.length > 0) {
-        console.error(
-          `<Form> received ${irrelevant.map((k) => `\`${k}\``).join(", ")} ` +
-            `${irrelevant.length === 1 ? "prop" : "props"} with a function \`action\`. ` +
-            `These props have no effect when \`action\` is a function.`,
-        );
-      }
     }
   }
 
@@ -269,15 +270,12 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
   // These are placed before any conditional return.
 
   // Merge the forwarded ref with our internal ref for viewport prefetching.
+  // Reuse the shared `useMergedRef` helper (same one Next.js's form uses).
   const formRef = useRef<HTMLFormElement | null>(null);
-  const setRefs = useCallback(
-    (node: HTMLFormElement | null) => {
-      formRef.current = node;
-      if (typeof ref === "function") ref(node);
-      else if (ref) (ref as React.MutableRefObject<HTMLFormElement | null>).current = node;
-    },
-    [ref],
-  );
+  const setFormRef = useCallback((node: HTMLFormElement | null) => {
+    formRef.current = node;
+  }, []);
+  const setRefs = useMergedRef(setFormRef, ref ?? null);
 
   // Compute actionHref unconditionally (empty string for function actions — unused).
   const actionHref = typeof action === "string" ? withBasePath(action, __basePath) : "";
@@ -289,6 +287,9 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
   useEffect(() => {
     if (typeof action !== "string") return;
     if (prefetch === false || process.env.NODE_ENV !== "production") return;
+    // Don't prefetch actions the submit path refuses to navigate to (external
+    // origins, dangerous schemes, protocol-relative). Matches the submit-path gate.
+    if (!isSafeAction(action)) return;
     if (!hasAppNavigationRuntime()) return;
     const node = formRef.current;
     if (!node) return;
