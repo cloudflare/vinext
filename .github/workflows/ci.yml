@@ -80,9 +80,25 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
       # Coverage is gated to push-to-main runs to keep PR feedback fast.
       # Istanbul instrumentation adds ~10–25% to each shard's wall-clock.
-      - run: vp test run --project integration ${{ github.event_name == 'push' && '--coverage' || '' }} --reporter=blob --outputFile.blob=.vitest-reports/blob-${{ matrix.shardIndex }}-${{ matrix.shardTotal }}.json ${{ steps.shard.outputs.files }}
+      #
+      # SHARD_FILES holds the planner's emitted file list (paths discovered from
+      # `vp test list`). It is passed via env and left unquoted on purpose so the
+      # shell word-splits it into separate file arguments. Routing it through env
+      # instead of expanding ${{ steps.shard.outputs.files }} inline keeps a
+      # filename from a fork PR from being interpolated into the script text
+      # (template injection). The shell treats it as data, never as code.
+      - name: Run integration shard
+        run: |
+          vp test run --project integration $COVERAGE \
+            --reporter=blob \
+            --outputFile.blob=".vitest-reports/blob-${SHARD_INDEX}-${SHARD_TOTAL}.json" \
+            $SHARD_FILES
         env:
           CI: true
+          SHARD_FILES: ${{ steps.shard.outputs.files }}
+          COVERAGE: ${{ github.event_name == 'push' && '--coverage' || '' }}
+          SHARD_INDEX: ${{ matrix.shardIndex }}
+          SHARD_TOTAL: ${{ matrix.shardTotal }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
         with:
