@@ -329,7 +329,15 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
               if (prefetched.has(rscUrl)) return;
               if (hasPrefetchCacheEntryForNavigation(rscUrl, null, null)) return;
               prefetched.add(rscUrl);
-              const fetchPromise = fetch(rscUrl, { headers, credentials: "include" });
+              const fetchPromise = fetch(rscUrl, {
+                headers,
+                credentials: "include",
+                // Match link.tsx: deprioritize the background prefetch and tag it
+                // as a prefetch so it surfaces correctly in devtools / `Sec-Purpose`.
+                priority: "low",
+                // @ts-expect-error — purpose is a valid fetch option in some browsers
+                purpose: "prefetch",
+              });
               prefetchRscResponse(rscUrl, fetchPromise, null, null, undefined, {
                 cacheForNavigation: true,
                 optimisticRouteShell: false,
