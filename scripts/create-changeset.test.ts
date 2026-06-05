@@ -4,6 +4,7 @@ import {
   affectedPackages,
   compareVersions,
   decideGeneration,
+  latestTagVersionFromTags,
   maxBump,
   parseBumpFromSubject,
   renderChangeset,
@@ -136,6 +137,39 @@ describe("decideGeneration (THE CORRECTNESS RULE)", () => {
   it("generates when package.json somehow lags the tag (not a skip case)", () => {
     // Only strictly-greater package version triggers the publish guard.
     expect(decideGeneration("0.0.5", "0.0.55").action).toBe("generate");
+  });
+});
+
+describe("latestTagVersionFromTags (release range source)", () => {
+  const tags = [
+    "v0.0.54",
+    "v0.0.55",
+    "vinext@0.0.55",
+    "@vinext/cloudflare@1.0.0",
+    "@vinext/cloudflare@1.1.0",
+    "some-other-tag",
+  ];
+
+  it("picks the highest scoped tag for a package with the `<name>@<version>` scheme", () => {
+    expect(latestTagVersionFromTags(tags, "@vinext/cloudflare")).toBe("1.1.0");
+  });
+
+  it("falls back to the legacy global `v<version>` tag for the root package", () => {
+    // vinext has both schemes here; scoped/global versions agree, highest wins.
+    expect(latestTagVersionFromTags(tags, "vinext")).toBe("0.0.55");
+  });
+
+  it("falls back to the latest legacy global `v` tag for a never-scoped new package", () => {
+    // The #1759 case: a brand-new package (no `<name>@<version>` tag of its own)
+    // still resolves a real range from the latest global `v` tag, instead of the
+    // non-existent `v<pkg.version>` ref that produced an empty changelog.
+    expect(latestTagVersionFromTags(tags, "@vinext/brand-new")).toBe("0.0.55");
+  });
+
+  it("returns null when there is no scoped or global tag at all (firstCommit fallback)", () => {
+    // No matching tag → null, so releaseRangeStart falls back to firstCommit().
+    expect(latestTagVersionFromTags([], "@vinext/cloudflare")).toBeNull();
+    expect(latestTagVersionFromTags(["some-other-tag"], "@vinext/cloudflare")).toBeNull();
   });
 });
 

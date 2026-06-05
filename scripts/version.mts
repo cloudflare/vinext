@@ -27,7 +27,7 @@ import {
   collectReleaseCommits,
   conventionalParts,
   discoverPublishablePackages,
-  tagRefFor,
+  releaseRangeStart,
 } from "./create-changeset.mts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -228,7 +228,11 @@ function main(): void {
       continue;
     }
 
-    const from = tagRefFor(name, before[name]);
+    // Resolve the range from the latest *existing* tag (or first commit when the
+    // package has never been released), matching the changeset generator. Using
+    // before[name] would derive a ref like `v0.0.1` that need not exist — for a
+    // brand-new package that throws and yields an empty changelog (see #1759).
+    const from = releaseRangeStart(name);
     const body = groupedChangelogBody(collectReleaseCommits(from, name, packages));
     const contributors = repository ? resolveContributors(from, repository) : [];
 

@@ -191,16 +191,12 @@ export function discoverPublishablePackages(root: string = REPO_ROOT): Record<st
 }
 
 /**
- * Latest release tag version for a package. Accepts both the legacy global
- * `v<version>` and changesets' `<name>@<version>` scheme; picks the highest.
+ * Pick the highest release-tag version for a package out of a tag list. Accepts
+ * both the legacy global `v<version>` and changesets' `<name>@<version>` scheme;
+ * returns null when no tag matches — e.g. a brand-new, never-released package.
+ * Pure (no git), so the tag-selection / no-tag behaviour is unit-testable.
  */
-function latestTagVersion(pkgName: string): string | null {
-  let tags: string[] = [];
-  try {
-    tags = git(["tag", "-l"]).split("\n").filter(Boolean);
-  } catch {
-    return null;
-  }
+export function latestTagVersionFromTags(tags: string[], pkgName: string): string | null {
   const scopedPrefix = `${pkgName}@`;
   const versions = tags
     .map((tag) =>
@@ -213,6 +209,20 @@ function latestTagVersion(pkgName: string): string | null {
     .filter((v): v is string => v != null)
     .sort(compareVersions);
   return versions.at(-1) ?? null;
+}
+
+/**
+ * Latest release tag version for a package, read from `git tag -l`. Returns null
+ * when git fails or the package has no matching tag.
+ */
+function latestTagVersion(pkgName: string): string | null {
+  let tags: string[] = [];
+  try {
+    tags = git(["tag", "-l"]).split("\n").filter(Boolean);
+  } catch {
+    return null;
+  }
+  return latestTagVersionFromTags(tags, pkgName);
 }
 
 /** Git ref to diff from: prefer the scoped tag, else the global `v<version>`. */
