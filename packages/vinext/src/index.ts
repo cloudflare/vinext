@@ -4301,8 +4301,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const clientDir = outputOptions.dir;
           if (!clientDir) return;
 
-          const isClientBuild =
-            this.environment?.name === "client" || path.basename(clientDir) === "client";
+          const isClientBuild = this.environment?.name === "client";
           if (!isClientBuild) return;
 
           emitNextClientRuntimeManifests({

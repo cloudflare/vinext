@@ -170,6 +170,6 @@ describe("client build manifest helpers", () => {
     expect(content).toContain('"source":"/external"');
     expect(content).not.toContain("https://example.com/external");
     expect(content).toContain('"sortedPages":[]');
-    expect(content).toContain('"missing":[{"type":"cookie","key":"seen"}]');
+    expect(content).not.toContain('"missing"');
   });
 });

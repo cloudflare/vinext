@@ -149,6 +149,10 @@ describe("App Router invalid `_next/static/*` 404", () => {
       const res = await fetch(`${baseUrl}/base/_next/static/${buildId}/_buildManifest.js`);
       expect(res.status).toBe(200);
       expect(await res.text()).toContain("__BUILD_MANIFEST");
+
+      const ssgRes = await fetch(`${baseUrl}/base/_next/static/${buildId}/_ssgManifest.js`);
+      expect(ssgRes.status).toBe(200);
+      expect(await ssgRes.text()).toContain("__SSG_MANIFEST");
     } finally {
       server.close();
     }
