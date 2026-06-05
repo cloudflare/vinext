@@ -32,6 +32,7 @@ import {
   getDataCacheHandler,
   type CachedFetchValue,
   type CacheControlMetadata,
+  type CacheHandlerValue,
 } from "./cache-handler.js";
 import {
   cacheLifeProfiles,
@@ -39,6 +40,7 @@ import {
   _registerCacheContextAccessor,
   type CacheLifeConfig,
 } from "./cache-request-state.js";
+import { fnv1a64 } from "../utils/hash.js";
 import { VINEXT_RSC_MARKER_HEADER } from "../server/headers.js";
 import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
@@ -205,9 +207,52 @@ function getUseCacheKeySeed(): string | undefined {
   return getUseCacheDeploymentIdDefine() || getUseCacheBuildIdDefine();
 }
 
-function buildUseCacheKey(id: string, keySeed: string | undefined, argsKey?: string): string {
+/**
+ * Cloudflare KV rejects keys whose UTF-8 length exceeds 512 bytes with a 414.
+ * Budget below that so the handler's own `<appPrefix>:cache:` prefix
+ * (kv-cache-handler.ts) still fits. Keys at or under this length are kept
+ * verbatim for debuggability; longer keys hash their oversized parts.
+ */
+const USE_CACHE_KEY_MAX_BYTES = 480;
+const USE_CACHE_KEY_ENCODER = new TextEncoder();
+
+function cacheKeyByteLength(key: string): number {
+  return USE_CACHE_KEY_ENCODER.encode(key).length;
+}
+
+/**
+ * Build the shared-cache key for a "use cache" function from its build-scoped
+ * identity and serialized arguments.
+ *
+ * Long arguments (e.g. a dynamic catch-all route's slug, which flows into the
+ * key via `encodeReply`) can push the key past Cloudflare KV's 512-byte limit.
+ * An unguarded over-length key makes `handler.get` throw a 414, which — thrown
+ * before the wrapped render reaches `notFound()`/`redirect()` — masks those
+ * control-flow signals and surfaces as a generic 200 error boundary instead of
+ * a 404. We therefore hash the oversized parts, mirroring the ISR cache's guard
+ * in `isr-cache.ts` (`buildCacheKey`): the readable function-scoped prefix is
+ * preserved whenever it fits so distinct cached functions never collide, and
+ * only the part that overflows is replaced by an `fnv1a64` digest. fnv1a64
+ * collisions are astronomically unlikely; the ISR cache already accepts the
+ * same tradeoff.
+ *
+ * Exported for testing.
+ */
+export function buildUseCacheKey(
+  id: string,
+  keySeed: string | undefined,
+  argsKey?: string,
+): string {
   const scopedId = keySeed ? `build:${encodeURIComponent(keySeed)}:${id}` : id;
-  return argsKey === undefined ? `use-cache:${scopedId}` : `use-cache:${scopedId}:${argsKey}`;
+  const key = argsKey === undefined ? `use-cache:${scopedId}` : `use-cache:${scopedId}:${argsKey}`;
+  if (cacheKeyByteLength(key) <= USE_CACHE_KEY_MAX_BYTES) return key;
+
+  const scopedPart =
+    cacheKeyByteLength(`use-cache:${scopedId}`) <= USE_CACHE_KEY_MAX_BYTES
+      ? scopedId
+      : `__hash:${fnv1a64(scopedId)}`;
+  const argsPart = argsKey === undefined ? "" : `:__hash:${fnv1a64(argsKey)}`;
+  return `use-cache:${scopedPart}${argsPart}`;
 }
 
 const NOT_LOADED = Symbol("not-loaded");
@@ -529,7 +574,17 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // The soft tags are path-derived implicit tags set by the enclosing route
       // handler or page dispatch — see setCurrentFetchSoftTags in fetch-cache.ts.
       const softTags = getCurrentFetchSoftTags();
-      const existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
+      // A handler failure (e.g. a transient KV error, or a key the store
+      // rejects) must not surface as a render error: fall through to fresh
+      // execution so control-flow signals like notFound()/redirect() thrown by
+      // `fn` still propagate with their digest intact instead of being masked
+      // by the handler's own exception.
+      let existing: CacheHandlerValue | null = null;
+      try {
+        existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
+      } catch (error) {
+        console.error("[vinext] use cache: handler.get failed; treating as a cache miss:", error);
+      }
       if (existing?.value && existing.value.kind === "FETCH" && existing.cacheState !== "stale") {
         try {
           // Surface the cached entry's tags to the surrounding request so the
