@@ -28,7 +28,12 @@ import {
   type ForwardedRef,
 } from "react";
 import { hasAppNavigationRuntime } from "../client/navigation-runtime.js";
-import { navigateClientSide, prefetchRscResponse } from "./navigation.js";
+import {
+  getPrefetchedUrls,
+  hasPrefetchCacheEntryForNavigation,
+  navigateClientSide,
+  prefetchRscResponse,
+} from "./navigation.js";
 import { isDangerousScheme } from "./url-safety.js";
 import { toSameOriginPath, withBasePath } from "./url-utils.js";
 import { createRscRequestHeaders, createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
@@ -209,7 +214,7 @@ type FormProps = {
    * - `null` (default): prefetch automatically (production only)
    * - `false`: disable prefetching
    *
-   * In pages dir, prefetch is not supported and passing this prop emits a warning.
+   * In pages dir, prefetch is not supported and the prop has no effect.
    */
   prefetch?: false | null;
 } & Omit<FormHTMLAttributes<HTMLFormElement>, DisallowedFormPropKey>;
@@ -233,6 +238,30 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
         );
       }
       delete cleanRest[key];
+    }
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    // Warn for invalid prefetch value (matches Next.js app-dir/form.tsx).
+    if (prefetch !== null && prefetch !== false) {
+      console.error(
+        `<Form> received an invalid value for \`prefetch\`: ${JSON.stringify(prefetch)}. ` +
+          `Expected \`null\` (default) or \`false\`.`,
+      );
+    }
+    // Warn when replace/scroll/prefetch are passed with a function action —
+    // they have no effect in that case (matches Next.js app-dir/form.tsx).
+    if (typeof action === "function") {
+      const irrelevant = (["replace", "scroll", "prefetch"] as const).filter(
+        (k) => props[k] !== undefined,
+      );
+      if (irrelevant.length > 0) {
+        console.error(
+          `<Form> received ${irrelevant.map((k) => `\`${k}\``).join(", ")} ` +
+            `${irrelevant.length === 1 ? "prop" : "props"} with a function \`action\`. ` +
+            `These props have no effect when \`action\` is a function.`,
+        );
+      }
     }
   }
 
@@ -272,6 +301,13 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
             void (async () => {
               const headers = createRscRequestHeaders();
               const rscUrl = await createRscRequestUrl(actionHref, headers);
+              // Dedup: skip if already in-flight or a fresh cache entry exists,
+              // matching the gate link.tsx applies to avoid double-fetching a
+              // payload that a nearby <Link> already prefetched.
+              const prefetched = getPrefetchedUrls();
+              if (prefetched.has(rscUrl)) return;
+              if (hasPrefetchCacheEntryForNavigation(rscUrl, null, null)) return;
+              prefetched.add(rscUrl);
               const fetchPromise = fetch(rscUrl, { headers, credentials: "include" });
               prefetchRscResponse(rscUrl, fetchPromise, null, null, undefined, {
                 cacheForNavigation: true,
