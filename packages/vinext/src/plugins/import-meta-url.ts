@@ -99,7 +99,12 @@ export function rewriteImportMetaUrl(
   environment: ImportMetaUrlEnvironment,
 ): RewriteResult | null {
   if (!mayContainImportMetaUrl(code)) return null;
-  return rewriteCanonicalSourceIdentity(code, canonicalizePath(id), createRootPaths(root), environment);
+  return rewriteCanonicalSourceIdentity(
+    code,
+    canonicalizePath(id),
+    createRootPaths(root),
+    environment,
+  );
 }
 
 // Test-only entry point. Mirrors the plugin's server eligibility checks and
