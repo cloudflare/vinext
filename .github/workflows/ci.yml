@@ -48,8 +48,85 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shardIndex: [1, 2, 3, 4, 5]
-        shardTotal: [5]
+        # Weighted from historical CI file durations so each serial shard has
+        # roughly the same wall-clock work. Native Vitest sharding is file-based
+        # but balances by file/test distribution, which can group expensive
+        # fixture-build files into one slow shard.
+        include:
+          - shardIndex: 1
+            shardTotal: 5
+            files: >-
+              tests/ecosystem.test.ts
+              tests/app-router-dev-server.test.ts
+              tests/nextjs-compat/app-rendering.test.ts
+              tests/cjs.test.ts
+              tests/nextjs-compat/request-apis.test.ts
+              tests/app-router-next-config-dev.test.ts
+              tests/nextjs-compat/revalidate.test.ts
+              tests/nextjs-compat/metadata-suspense.test.ts
+              tests/kv-cache-handler.test.ts
+              tests/pages-i18n-prod.test.ts
+              tests/postcss-resolve.test.ts
+              tests/entry-templates.test.ts
+          - shardIndex: 2
+            shardTotal: 5
+            files: >-
+              tests/favicon-short-circuit.test.ts
+              tests/nextjs-compat/global-error.test.ts
+              tests/image-optimization-parity.test.ts
+              tests/nextjs-compat/app-routes.test.ts
+              tests/node-modules-css.test.ts
+              tests/nextjs-compat/navigation.test.ts
+              tests/app-router-middleware-next-request.test.ts
+              tests/nextjs-compat/action-headers.test.ts
+              tests/nextjs-compat/global-not-found.test.ts
+              tests/app-router-external-rewrite.test.ts
+              tests/vite-hmr-websocket.test.ts
+              tests/nextjs-compat/basepath.test.ts
+              tests/app-router-client-preloading.test.ts
+              tests/app-router-isr-codegen.test.ts
+              tests/app-router-rsc-flight-hint.test.ts
+          - shardIndex: 3
+            shardTotal: 5
+            files: >-
+              tests/pages-router.test.ts
+              tests/app-router-static-export.test.ts
+              tests/app-router-rsc-plugin.test.ts
+              tests/nextjs-compat/metadata.test.ts
+              tests/nextjs-compat/rsc-basic.test.ts
+              tests/nextjs-compat/set-cookies.test.ts
+              tests/nextjs-compat/draft-mode.test.ts
+              tests/app-router-origin-check.test.ts
+              tests/app-router-malformed-url.test.ts
+          - shardIndex: 4
+            shardTotal: 5
+            files: >-
+              tests/prerender.test.ts
+              tests/static-export.test.ts
+              tests/nextjs-compat/streaming.test.ts
+              tests/nextjs-compat/not-found.test.ts
+              tests/nextjs-compat/hooks.test.ts
+              tests/nextjs-compat/layout-segments.test.ts
+              tests/nextjs-compat/app-css.test.ts
+              tests/nextjs-compat/rsc-context-lazy-stream.test.ts
+              tests/nextjs-compat/script-nonce.test.ts
+          - shardIndex: 5
+            shardTotal: 5
+            files: >-
+              tests/app-router-production-server.test.ts
+              tests/features.test.ts
+              tests/app-router-production-build.test.ts
+              tests/app-router-metadata-routes.test.ts
+              tests/nextjs-compat/dynamic.test.ts
+              tests/nextjs-compat/use-client-page-pathname.test.ts
+              tests/nextjs-compat/script-preload.test.ts
+              tests/nextjs-compat/prefetch.test.ts
+              tests/pages-router-concurrency.test.ts
+              tests/app-router-font-google-prod.test.ts
+              tests/app-router-next-config-codegen.test.ts
+              tests/app-router-worker-entry.test.ts
+              tests/nextjs-compat/als-isolation.test.ts
+              tests/api-handler.test.ts
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -59,7 +136,7 @@ jobs:
         run: vp run build
       # Coverage is gated to push-to-main runs to keep PR feedback fast.
       # Istanbul instrumentation adds ~10–25% to each shard's wall-clock.
-      - run: vp test run --project integration ${{ github.event_name == 'push' && '--coverage' || '' }} --reporter=blob --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+      - run: vp test run --project integration ${{ github.event_name == 'push' && '--coverage' || '' }} --reporter=blob --outputFile.blob=.vitest-reports/blob-${{ matrix.shardIndex }}-${{ matrix.shardTotal }}.json ${{ matrix.files }}
         env:
           CI: true
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
