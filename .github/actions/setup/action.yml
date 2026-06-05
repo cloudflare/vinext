@@ -19,7 +19,7 @@ runs:
   using: composite
   steps:
     - name: Setup Vite+
-      uses: voidzero-dev/setup-vp@b4d143e0e2de7151ab45dbc4b52b553025d123f2 # v1
+      uses: voidzero-dev/setup-vp@2dec1e33f4ab2c6d5bce1b0c4607961bb1a3f7a1 # v1
       with:
         node-version: ${{ inputs.node-version }}
         cache: ${{ inputs.cache }}
