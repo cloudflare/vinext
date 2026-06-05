@@ -10,12 +10,17 @@
  *   # Aggregate them into the manifest (p75 per file):
  *   node scripts/ci-integration-timings-refresh.mjs /tmp/blobs --run=<run-id> --write
  *
- * Pass --run once per source run so the manifest records its provenance.
+ * Pass --run once per source run so the manifest records its provenance. The
+ * blobs must back that claim: every discovered file must have exactly one
+ * sample per --run (a file runs in one shard per run), so the manifest cannot
+ * claim stronger provenance than the directory provides. --allow-partial
+ * relaxes this to "at least one sample per file" for re-run-failed-shard cases.
+ *
  * Without --write it prints a dry-run summary and exits non-zero if the
  * manifest would change, so it can double as a freshness check.
  *
  * Usage:
- *   node scripts/ci-integration-timings-refresh.mjs <blob-dir> --run=<id> [--run=<id>...] [--shard-total=N] [--write]
+ *   node scripts/ci-integration-timings-refresh.mjs <blob-dir> --run=<id> [--run=<id>...] [--shard-total=N] [--allow-partial] [--write]
  */
 
 import { execSync } from "node:child_process";
@@ -36,6 +41,7 @@ function die(...msg) {
 const args = process.argv.slice(2);
 const blobDir = args.find((a) => !a.startsWith("--"));
 const write = args.includes("--write");
+const allowPartial = args.includes("--allow-partial");
 const runIds = args
   .filter((a) => a.startsWith("--run="))
   .map((a) => a.slice("--run=".length))
@@ -78,13 +84,39 @@ function discoverIntegrationFiles() {
 const { samples, blobCount } = await aggregateBlobDir(blobDir);
 const discovered = discoverIntegrationFiles();
 
-const uncovered = discovered.filter((f) => !samples.has(f));
-if (uncovered.length > 0) {
-  console.error(
-    `The provided blobs do not cover ${uncovered.length} discovered integration file(s):`,
-  );
-  for (const f of uncovered) console.error(`  ${f}`);
-  die("Download a complete successful CI run (all shards) so every file has timing data.");
+// Provenance must not overclaim. A test file runs in exactly one shard per
+// run, so one complete run yields exactly one sample per file. Require
+// samples === runIds.length for every discovered file: too few means a claimed
+// run's blobs are missing, too many means the directory holds blobs beyond the
+// claimed runs. Either way the manifest would record stronger provenance than
+// the blobs provide. --allow-partial relaxes this to "at least one sample" for
+// the re-run-failed-shard case, while still recording the true per-file count.
+const expectedPerFile = runIds.length;
+const coverage = discovered.map((f) => ({ file: f, samples: samples.get(f)?.length ?? 0 }));
+
+if (allowPartial) {
+  const uncovered = coverage.filter((c) => c.samples === 0);
+  if (uncovered.length > 0) {
+    console.error(`No samples for ${uncovered.length} discovered file(s):`);
+    for (const c of uncovered) console.error(`  ${c.file}`);
+    die("Every discovered file needs at least one sample to compute a weight.");
+  }
+} else {
+  const mismatched = coverage.filter((c) => c.samples !== expectedPerFile);
+  if (mismatched.length > 0) {
+    console.error(
+      `Provenance mismatch: ${mismatched.length} discovered file(s) do not have exactly ` +
+        `${expectedPerFile} sample(s), one per claimed --run. The blob directory does not back ` +
+        `the claimed provenance of ${runIds.length} run(s).`,
+    );
+    for (const c of mismatched.slice(0, 20)) {
+      console.error(`  ${String(c.samples).padStart(2)} / ${expectedPerFile}  ${c.file}`);
+    }
+    if (mismatched.length > 20) console.error(`  ... and ${mismatched.length - 20} more`);
+    die(
+      "Provide complete blobs for every --run (all shards), or pass --allow-partial to override.",
+    );
+  }
 }
 
 // Drop measured files that are no longer discovered (renamed/removed tests).
