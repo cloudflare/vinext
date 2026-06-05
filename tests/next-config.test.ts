@@ -228,6 +228,41 @@ describe("loadNextConfig with CJS globals in next.config.ts", () => {
     expect(config?.env?.VIA).toBe("module.exports");
   });
 
+  it("does not inject __dirname when user already declares it (no duplicate declaration)", async () => {
+    // Regression test for https://github.com/cloudflare/vinext/issues/1345:
+    // if the injector blindly prepends `const __dirname = ...` onto a file
+    // that already contains `const __dirname = dirname(fileURLToPath(...))`,
+    // Rolldown rejects the file with a duplicate-declaration parse error.
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { dirname } from "node:path";\n` +
+        `import { fileURLToPath } from "node:url";\n` +
+        `const __dirname = dirname(fileURLToPath(import.meta.url));\n` +
+        `export default { env: { DIR: __dirname } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    const dir = config?.env?.DIR;
+    expect(typeof dir).toBe("string");
+    expect((dir as string).length).toBeGreaterThan(0);
+  });
+
+  it("does not inject __filename when user already declares it (no duplicate declaration)", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { fileURLToPath } from "node:url";\n` +
+        `const __filename = fileURLToPath(import.meta.url);\n` +
+        `export default { env: { FILE: __filename } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    const file = config?.env?.FILE;
+    expect(typeof file).toBe("string");
+    expect((file as string).endsWith("next.config.ts")).toBe(true);
+  });
+
   it("loads a pure-ESM next.config.ts without injecting CJS shims", async () => {
     // No __filename / __dirname / require / module / exports references —
     // the injector transform should short-circuit. We only assert
