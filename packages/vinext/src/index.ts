@@ -1335,7 +1335,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // in place (unkeyed); enabling it turns on the three-entry inactive
         // Activity tree cache.
         // See: packages/next/src/client/components/layout-router.tsx
-        defines["process.env.__NEXT_CACHE_COMPONENTS"] = JSON.stringify(nextConfig.cacheComponents);
+        defines["process.env.__NEXT_CACHE_COMPONENTS"] = JSON.stringify(
+          nextConfig.cacheComponents ?? false,
+        );
 
         // User-defined compile-time constants from `compiler.define` in
         // next.config. Applied to BOTH client and server bundles via Vite's

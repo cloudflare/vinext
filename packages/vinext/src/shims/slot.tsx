@@ -50,6 +50,12 @@ export type BfcacheSlotEntry = {
   stateKeyMap?: Readonly<Record<string, string>>;
 };
 
+function isCacheComponentsEnabled(): boolean {
+  // Vite's define replacement turns this process.env access into a boolean
+  // literal in built app code even though TypeScript types process.env as string.
+  return (process.env.__NEXT_CACHE_COMPONENTS as unknown) === true;
+}
+
 type MergeElementsOptions = {
   clearAbsentSlots?: boolean;
   preserveAbsentSlots?: boolean;
@@ -58,7 +64,7 @@ type MergeElementsOptions = {
 };
 
 function getBfcacheSlotEntryLimit(): number {
-  return process.env.__NEXT_CACHE_COMPONENTS
+  return isCacheComponentsEnabled()
     ? MAX_BFCACHE_SLOT_ENTRIES_WITH_CACHE_COMPONENTS
     : MAX_BFCACHE_SLOT_ENTRIES_WITHOUT_CACHE_COMPONENTS;
 }
@@ -246,44 +252,29 @@ function useBfcacheSlotEntries(activeEntry: BfcacheSlotEntry): BfcacheSlotEntry[
     .filter((entry): entry is BfcacheSlotEntry => entry !== undefined);
 }
 
-function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: string }) {
-  const SegmentContext = BfcacheSegmentIdContext;
-  const elements = React.useContext(ElementsContext);
-  const stateKeyMap = React.useContext(BfcacheStateKeyMapContext);
-  const activeStateKey = stateKeyMap[id];
+function BfcacheActivitySlotBoundary({
+  activeStateKey,
+  content,
+  elements,
+  id,
+  SegmentContext,
+  stateKeyMap,
+}: {
+  activeStateKey: string;
+  content: React.ReactNode;
+  elements: AppElements;
+  id: string;
+  SegmentContext: React.Context<string | null>;
+  stateKeyMap: Readonly<Record<string, string>>;
+}) {
   const latestActiveEntry: BfcacheSlotEntry = {
     content,
     elements,
     segmentId: id,
-    stateKey: activeStateKey ?? id,
+    stateKey: activeStateKey,
     stateKeyMap,
   };
   const renderEntries = useBfcacheSlotEntries(latestActiveEntry);
-  if (!SegmentContext) return <>{content}</>;
-  if (activeStateKey === undefined) {
-    return <SegmentContext.Provider value={id}>{content}</SegmentContext.Provider>;
-  }
-
-  // Without cacheComponents there is no Activity retention, so this boundary must
-  // reconcile in place exactly like the baseline router. The segment stateKey
-  // tracks the pathname (see createBfcacheSegmentIdentity), so keying the active
-  // entry by it would remount every slot whose identity moves with the URL —
-  // shared layouts and interception source slots included — discarding client
-  // state that survives a normal navigation. Reset for genuinely fresh entries is
-  // driven by userland bfcacheId keying, not by remounting the slot subtree, so
-  // the active entry renders unkeyed here.
-  if (!process.env.__NEXT_CACHE_COMPONENTS) {
-    const activeEntry = renderEntries[0];
-    return (
-      <BfcacheEntryProviders
-        entry={activeEntry}
-        fallbackElements={elements}
-        fallbackSegmentId={id}
-        fallbackStateKeyMap={stateKeyMap}
-        SegmentContext={SegmentContext}
-      />
-    );
-  }
 
   return (
     <>
@@ -302,6 +293,40 @@ function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: st
         </React.Activity>
       ))}
     </>
+  );
+}
+
+function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: string }) {
+  const SegmentContext = BfcacheSegmentIdContext;
+  const elements = React.useContext(ElementsContext);
+  const stateKeyMap = React.useContext(BfcacheStateKeyMapContext);
+  const activeStateKey = stateKeyMap[id];
+  if (!SegmentContext) return <>{content}</>;
+  if (activeStateKey === undefined) {
+    return <SegmentContext.Provider value={id}>{content}</SegmentContext.Provider>;
+  }
+
+  // Without cacheComponents there is no Activity retention, so this boundary must
+  // reconcile in place exactly like the baseline router. The segment stateKey
+  // tracks the pathname (see createBfcacheSegmentIdentity), so keying the active
+  // entry by it would remount every slot whose identity moves with the URL —
+  // shared layouts and interception source slots included — discarding client
+  // state that survives a normal navigation. Reset for genuinely fresh entries is
+  // driven by userland bfcacheId keying, not by remounting the slot subtree, so
+  // the active entry renders unkeyed here.
+  if (!isCacheComponentsEnabled()) {
+    return <SegmentContext.Provider value={id}>{content}</SegmentContext.Provider>;
+  }
+
+  return (
+    <BfcacheActivitySlotBoundary
+      activeStateKey={activeStateKey}
+      content={content}
+      elements={elements}
+      id={id}
+      SegmentContext={SegmentContext}
+      stateKeyMap={stateKeyMap}
+    />
   );
 }
 
