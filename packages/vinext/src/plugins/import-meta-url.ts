@@ -376,10 +376,6 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
   const reads = new Set<CjsGlobalName>();
   const moduleBindings = new Set<CjsGlobalName>();
 
-  function isAnalysisComplete(): boolean {
-    return reads.size === CJS_GLOBALS.length && moduleBindings.size === CJS_GLOBALS.length;
-  }
-
   // Recursively walks a binding pattern. Each name found is a module binding.
   function recordBinding(pattern: unknown): void {
     if (!isNodeLike(pattern)) return;
@@ -411,7 +407,6 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
   // handled by the recursive walk below so nested blocks and loops use the
   // same rule.
   function recordDirectTopLevelBindings(statement: NodeLike): void {
-    if (isAnalysisComplete()) return;
     const t = statement.type;
     if (typeof t !== "string") return;
     switch (t) {
@@ -441,16 +436,15 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
     }
   }
 
-  // Walks statement trees and records `var` bindings that stay in module
-  // scope. Function and class bodies are boundaries: their `var`s are local.
+  // Walk only syntax whose `var` declarations remain module-scoped. Function
+  // and class bodies are scope boundaries.
   function recordModuleScopedVarBindings(node: unknown): void {
-    if (isAnalysisComplete() || !isNodeLike(node)) return;
+    if (!isNodeLike(node)) return;
     const t = node.type;
     if (typeof t !== "string") return;
     switch (t) {
       case "Program":
         for (const statement of nodeArray(node.body)) {
-          if (isAnalysisComplete()) return;
           if (!isNodeLike(statement)) continue;
           recordDirectTopLevelBindings(statement);
           recordModuleScopedVarBindings(statement);
@@ -463,82 +457,51 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
           recordBinding(declarator.id);
         }
         return;
-      case "BlockStatement":
-        for (const statement of nodeArray(node.body)) {
-          if (isAnalysisComplete()) return;
-          if (isNodeLike(statement)) recordModuleScopedVarBindings(statement);
-        }
-        return;
-      case "IfStatement":
-        recordModuleScopedVarBindings(node.consequent);
-        if (isAnalysisComplete()) return;
-        recordModuleScopedVarBindings(node.alternate);
-        return;
-      case "SwitchStatement":
-        for (const switchCase of nodeArray(node.cases)) {
-          if (isAnalysisComplete()) return;
-          if (isNodeLike(switchCase)) recordModuleScopedVarBindings(switchCase);
-        }
-        return;
-      case "SwitchCase":
-        for (const statement of nodeArray(node.consequent)) {
-          if (isAnalysisComplete()) return;
-          if (isNodeLike(statement)) recordModuleScopedVarBindings(statement);
-        }
-        return;
-      case "TryStatement":
-        recordModuleScopedVarBindings(node.block);
-        if (isAnalysisComplete()) return;
-        recordModuleScopedVarBindings(node.handler);
-        if (isAnalysisComplete()) return;
-        recordModuleScopedVarBindings(node.finalizer);
-        return;
-      case "CatchClause":
-        recordModuleScopedVarBindings(node.body);
-        return;
-      case "LabeledStatement":
-        recordModuleScopedVarBindings(node.body);
-        return;
-      case "ForStatement":
-        if (
-          isNodeLike(node.init) &&
-          node.init.type === "VariableDeclaration" &&
-          node.init.kind === "var"
-        ) {
-          recordModuleScopedVarBindings(node.init);
-        }
-        if (isAnalysisComplete()) return;
-        recordModuleScopedVarBindings(node.body);
-        return;
-      case "ForInStatement":
-      case "ForOfStatement":
-        if (
-          isNodeLike(node.left) &&
-          node.left.type === "VariableDeclaration" &&
-          node.left.kind === "var"
-        ) {
-          recordModuleScopedVarBindings(node.left);
-        }
-        if (isAnalysisComplete()) return;
-        recordModuleScopedVarBindings(node.body);
-        return;
-      case "WhileStatement":
-      case "DoWhileStatement":
-      case "WithStatement":
-        recordModuleScopedVarBindings(node.body);
-        return;
-      case "ExportNamedDeclaration":
-      case "ExportDefaultDeclaration":
-        if (isNodeLike(node.declaration)) {
-          recordModuleScopedVarBindings(node.declaration);
-        }
-        return;
       case "FunctionDeclaration":
       case "FunctionExpression":
       case "ArrowFunctionExpression":
       case "ClassDeclaration":
       case "ClassExpression":
         return;
+      default:
+        for (const child of moduleScopeChildren(node)) {
+          recordModuleScopedVarBindings(child);
+        }
+    }
+  }
+
+  function moduleScopeChildren(node: NodeLike): unknown[] {
+    const t = node.type;
+    if (typeof t !== "string") return [];
+    switch (t) {
+      case "BlockStatement":
+        return nodeArray(node.body);
+      case "IfStatement":
+        return [node.consequent, node.alternate];
+      case "SwitchStatement":
+        return nodeArray(node.cases);
+      case "SwitchCase":
+        return nodeArray(node.consequent);
+      case "TryStatement":
+        return [node.block, node.handler, node.finalizer];
+      case "CatchClause":
+        return [node.body];
+      case "LabeledStatement":
+        return [node.body];
+      case "ForStatement":
+        return [node.init, node.body];
+      case "ForInStatement":
+      case "ForOfStatement":
+        return [node.left, node.body];
+      case "WhileStatement":
+      case "DoWhileStatement":
+      case "WithStatement":
+        return [node.body];
+      case "ExportNamedDeclaration":
+      case "ExportDefaultDeclaration":
+        return [node.declaration];
+      default:
+        return [];
     }
   }
 
@@ -548,7 +511,7 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
   // over-report names that are already bound locally, and the module binding
   // set decides whether injection is safe.
   function recordReads(value: unknown): void {
-    if (isAnalysisComplete() || !isNodeLike(value)) return;
+    if (!isNodeLike(value)) return;
     const t = value.type;
     if (typeof t !== "string") return;
     switch (t) {
@@ -570,7 +533,6 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
         return;
       default:
         for (const [key, child] of Object.entries(value)) {
-          if (isAnalysisComplete()) return;
           if (key === "type" || key === "start" || key === "end" || key === "loc") continue;
           if (Array.isArray(child)) {
             for (const item of child) recordReads(item);
