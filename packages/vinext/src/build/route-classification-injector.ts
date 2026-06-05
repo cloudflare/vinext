@@ -19,7 +19,7 @@ import {
  * those stubs with build-time decisions once the final RSC module graph exists.
  */
 
-export type RouteClassificationChunk = {
+type RouteClassificationChunk = {
   code: string;
   fileName: string;
 };
