@@ -16,7 +16,6 @@
     "allowImportingTsExtensions": true,
     "paths": {
       "vinext/shims/*": ["./packages/vinext/src/shims/*"],
-      "@vinext/cloudflare": ["./packages/cloudflare/src/index.ts"],
       "@vinext/cloudflare/cache/*": ["./packages/cloudflare/src/cache/*"]
     }
   },

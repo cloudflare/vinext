@@ -10,7 +10,7 @@
  * Configure it from vite.config via the {@link kvDataAdapter} builder in
  * `./kv-data-adapter.ts` (which `require.resolve`s this file), or imperatively:
  *
- *   import { KVCacheHandler } from "@vinext/cloudflare";
+ *   import { KVCacheHandler } from "@vinext/cloudflare/cache/kv-data-adapter.runtime";
  *   import { setDataCacheHandler } from "vinext/shims/cache";
  *   setDataCacheHandler(new KVCacheHandler(env.VINEXT_KV_CACHE));
  *

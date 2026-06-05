@@ -3,11 +3,15 @@ import { defineConfig } from "vite-plus";
 import { randomUUID } from "node:crypto";
 
 const SHIMS_SRC = path.resolve(import.meta.dirname, "packages/vinext/src/shims");
-// Resolve the @vinext/cloudflare cache adapters to source in tests, mirroring
-// the `vinext/shims` alias above. This keeps the vinext <-> @vinext/cloudflare
-// dependency edge resolving to source so tests don't require a prior build.
-const CF_CACHE_SRC = path.resolve(import.meta.dirname, "packages/cloudflare/src/cache");
 const MSW_SETUP = path.resolve(import.meta.dirname, "tests/_msw/setup.ts");
+
+// Resolve own-workspace sources directly in tests so the vinext <->
+// @vinext/cloudflare dependency edge points at source (single module instance,
+// no prior build required). Shared by both test projects below.
+const WORKSPACE_SRC_ALIAS = {
+  "vinext/shims": SHIMS_SRC,
+  "@vinext/cloudflare/cache": path.resolve(import.meta.dirname, "packages/cloudflare/src/cache"),
+};
 
 export default defineConfig({
   staged: {
@@ -129,7 +133,7 @@ export default defineConfig({
     projects: [
       {
         resolve: {
-          alias: { "vinext/shims": SHIMS_SRC, "@vinext/cloudflare/cache": CF_CACHE_SRC },
+          alias: WORKSPACE_SRC_ALIAS,
         },
         test: {
           name: "unit",
@@ -169,7 +173,7 @@ export default defineConfig({
       },
       {
         resolve: {
-          alias: { "vinext/shims": SHIMS_SRC, "@vinext/cloudflare/cache": CF_CACHE_SRC },
+          alias: WORKSPACE_SRC_ALIAS,
         },
         test: {
           name: "integration",

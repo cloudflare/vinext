@@ -271,15 +271,6 @@ vinext deploy --experimental-tpr --tpr-window 48    # Use 48h of analytics
 
 Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and `CLOUDFLARE_API_TOKEN` with Zone.Analytics read permission.
 
-For production caching (ISR), use the built-in Cloudflare KV cache handler:
-
-```ts
-import { KVCacheHandler } from "@vinext/cloudflare";
-import { setCacheHandler } from "next/cache";
-
-setCacheHandler(new KVCacheHandler(env.MY_KV_NAMESPACE));
-```
-
 #### Custom Vite configuration
 
 If you need to customize the Vite config, create a `vite.config.ts`. vinext will merge its config with yours. This is required for Cloudflare Workers deployment with the App Router (RSC needs explicit plugin configuration):

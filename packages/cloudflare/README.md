@@ -7,7 +7,7 @@ ISR and the `"use cache"` data cache when deploying to Cloudflare Workers:
 
 - **`kvDataAdapter()`** (`@vinext/cloudflare/cache/kv-data-adapter`) — backs the
   data cache (`fetch`, `"use cache"`, `unstable_cache`) with a Workers KV
-  namespace. Exposes `KVCacheHandler` for imperative use.
+  namespace.
 - **`cdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — backs
   full-route, edge-managed page-level ISR with the Workers Cache API.
 
@@ -30,13 +30,4 @@ export default defineConfig({
     cloudflare(),
   ],
 });
-```
-
-Or wire a handler imperatively from a worker entry:
-
-```ts
-import { KVCacheHandler } from "@vinext/cloudflare";
-import { setDataCacheHandler } from "vinext/shims/cache";
-
-setDataCacheHandler(new KVCacheHandler(env.VINEXT_KV_CACHE));
 ```
