@@ -197,7 +197,7 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result?.code).toContain(`return __dirname;`);
   });
 
-  it("does not inject when __filename or __dirname are in assignment/update targets", () => {
+  it("injects when only top-level assignment/update expressions reference the globals", () => {
     // With binding injection, top-level assignment or update expressions are
     // fine — they mutate the injected variable. We only skip injection when
     // there is an actual declaration that would conflict.
