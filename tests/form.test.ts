@@ -471,6 +471,45 @@ describe("Form client GET interception", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
+  it("bails silently for React server-action submitters ($ACTION_ID_ / $ACTION_REF_)", async () => {
+    // Ported from Next.js app-dir/form.tsx: server-action submitters are detected
+    // via their encoded `name` and must not be intercepted for GET navigation.
+    const { navigate } = installClientGlobals({ supportsSubmitter: true });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { onSubmit } = renderClientForm({ action: "/search" });
+    const submitter = new FakeButtonElement({
+      attributes: { name: "$ACTION_ID_abc123", formmethod: "POST" },
+    });
+    const event = createSubmitEvent({ entries: [["q", "react"]], submitter });
+
+    await onSubmit(event);
+
+    // Bails silently — no unsupported-attribute warning, no navigation, no preventDefault.
+    expect(error).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('bails for React client-action submitters (formAction="javascript:...")', async () => {
+    // Ported from Next.js form-shared.tsx hasReactClientActionAttributes: client
+    // actions encode as `formAction="javascript:..."` and can't be navigated to.
+    const { navigate } = installClientGlobals({ supportsSubmitter: true });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { onSubmit } = renderClientForm({ action: "/search" });
+    const submitter = new FakeButtonElement({
+      attributes: { formaction: "javascript:void(0)" },
+    });
+    const event = createSubmitEvent({ entries: [["q", "react"]], submitter });
+
+    await onSubmit(event);
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it("respects onSubmit calling preventDefault — no client-side navigation", async () => {
     // Mirrors Next.js's `with-onsubmit-preventdefault` test:
     // .nextjs-ref/test/e2e/next-form/default/shared-tests.util.ts:235

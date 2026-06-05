@@ -96,6 +96,21 @@ function getSubmitter(nativeEvent: unknown): FormSubmitter | null {
   return null;
 }
 
+// A submitter encoding a React Server Action has a `name` like `$ACTION_ID_...`
+// or `$ACTION_REF_...`. Such submissions must not be intercepted for GET
+// navigation. Ported verbatim from Next.js app-dir/form.tsx.
+function hasReactServerActionAttributes(submitter: FormSubmitter): boolean {
+  const name = submitter.getAttribute("name");
+  return Boolean(name && (name.startsWith("$ACTION_ID_") || name.startsWith("$ACTION_REF_")));
+}
+
+// A submitter encoding a React Client Action has `formAction="javascript:..."`.
+// We can't prefetch/navigate to that, so bail. Ported from Next.js form-shared.tsx.
+function hasReactClientActionAttributes(submitter: FormSubmitter): boolean {
+  const action = submitter.getAttribute("formAction");
+  return Boolean(action && /\s*javascript:/i.test(action));
+}
+
 function getEffectiveMethod(
   submitter: FormSubmitter | null,
   formMethod: FormHTMLAttributes<HTMLFormElement>["method"],
@@ -257,7 +272,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
       if (process.env.NODE_ENV !== "production") {
         console.error(
           `<Form> does not support changing \`${key}\`. ` +
-            (typeof action === "string"
+            (isNavigatingForm
               ? `If you'd like to use it to perform a mutation, consider making \`action\` a function instead.\n` +
                 `Learn more: https://nextjs.org/docs/app/building-your-application/data-fetching/server-actions-and-mutations`
               : ""),
@@ -355,8 +370,20 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     }
 
     const submitter = getSubmitter(e.nativeEvent);
-    if (submitter && hasUnsupportedSubmitterAttributes(submitter)) {
-      return;
+    if (submitter) {
+      // The way server actions are encoded (e.g. `formMethod="post"`) causes
+      // unnecessary dev-mode warnings from `hasUnsupportedSubmitterAttributes`;
+      // we'd bail out anyway, so do it silently. (Matches Next.js form.tsx.)
+      if (process.env.NODE_ENV !== "production" && hasReactServerActionAttributes(submitter)) {
+        return;
+      }
+      if (hasUnsupportedSubmitterAttributes(submitter)) {
+        return;
+      }
+      // Client actions encode as `formAction="javascript:..."` — can't navigate to that.
+      if (hasReactClientActionAttributes(submitter)) {
+        return;
+      }
     }
 
     // Only intercept GET forms for client-side navigation
