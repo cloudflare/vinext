@@ -378,6 +378,9 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     return () => {
       observer.unobserve(node);
     };
+    // `actionHref` is derived purely from `action` (+ the module-constant
+    // `__basePath`), so it's technically redundant alongside `action` here, but
+    // exhaustive-deps requires it to be listed since the effect references it.
   }, [action, prefetch, actionHref]);
 
   // If action is a function (server action), pass it directly to React.
