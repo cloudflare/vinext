@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
+import type { NavigationContext } from "vinext/shims/navigation";
 import type { CachedAppPageValue } from "vinext/shims/cache";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
@@ -114,7 +115,7 @@ type RenderAppPageLifecycleOptions = {
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];
-  getNavigationContext: () => unknown;
+  getNavigationContext: () => NavigationContext | null;
   getPageTags: () => string[];
   getRequestCacheLife: () => AppPageRequestCacheLife | null;
   peekRequestCacheLife?: () => AppPageRequestCacheLife | null;

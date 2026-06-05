@@ -1,5 +1,6 @@
 import React, { type ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
+import type { NavigationContext } from "vinext/shims/navigation";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
 import {
   _consumeRequestScopedCacheLife,
@@ -212,7 +213,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];
-  getNavigationContext: () => unknown;
+  getNavigationContext: () => NavigationContext | null;
   getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
   hasGenerateStaticParams: boolean;
   hasPageDefaultExport: boolean;

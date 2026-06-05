@@ -246,6 +246,8 @@ function buildHeadInjectionHtml(
 
 function requireNavigationContext(navContext: NavigationContext | null): NavigationContext {
   if (!navContext) {
+    // Real request rendering must pass the RSC handler's navigation context;
+    // fallback boundary renderers synthesize one when request scope is gone.
     throw new Error("App SSR requires navigation context for BFCache state keys");
   }
   return navContext;

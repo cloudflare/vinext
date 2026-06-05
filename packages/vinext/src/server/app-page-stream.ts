@@ -1,5 +1,6 @@
 import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { ReactFormState } from "react-dom/client";
+import type { NavigationContext } from "vinext/shims/navigation";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
@@ -20,7 +21,7 @@ type CreateAppPageFontDataOptions = {
 export type AppPageSsrHandler = {
   handleSsr: (
     rscStream: ReadableStream<Uint8Array>,
-    navigationContext: unknown,
+    navigationContext: NavigationContext | null,
     fontData: AppPageFontData,
     options?: {
       formState?: ReactFormState | null;
@@ -45,7 +46,7 @@ export type AppPageSsrHandler = {
 type RenderAppPageHtmlStreamOptions = {
   fontData: AppPageFontData;
   formState?: ReactFormState | null;
-  navigationContext: unknown;
+  navigationContext: NavigationContext | null;
   rscStream: ReadableStream<Uint8Array>;
   scriptNonce?: string;
   basePath?: string;

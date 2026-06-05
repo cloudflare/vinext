@@ -243,6 +243,13 @@ function useBfcacheSlotEntries(activeEntry: BfcacheSlotEntry): BfcacheSlotEntry[
 
   pruneBfcacheSlotEntrySnapshots(snapshotsByStateKey.current, renderOrder);
 
+  if (
+    process.env.NODE_ENV !== "production" &&
+    !snapshotsByStateKey.current.has(activeEntry.stateKey)
+  ) {
+    throw new Error("BFCache Activity slot is missing the active entry snapshot");
+  }
+
   if (orderChanged) {
     setEntryOrder(nextOrder);
   }

@@ -50,11 +50,15 @@ describe("app page stream helpers", () => {
 
     const htmlStream = await renderAppPageHtmlStream({
       fontData,
-      navigationContext: { pathname: "/test" },
+      navigationContext: { pathname: "/test", searchParams: new URLSearchParams(), params: {} },
       rscStream: createStream(["flight"]),
       ssrHandler: {
         async handleSsr(_rscStream, navigationContext, receivedFontData) {
-          expect(navigationContext).toEqual({ pathname: "/test" });
+          expect(navigationContext).toEqual({
+            pathname: "/test",
+            searchParams: new URLSearchParams(),
+            params: {},
+          });
           expect(receivedFontData).toEqual(fontData);
           return createStream(["<html>ok</html>"]);
         },

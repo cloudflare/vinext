@@ -148,7 +148,11 @@ function createCommonOptions() {
         return [];
       },
       getNavigationContext() {
-        return { pathname: "/posts/post" };
+        return {
+          pathname: "/posts/post",
+          searchParams: new URLSearchParams(),
+          params: { slug: "post" },
+        };
       },
       getPageTags() {
         return ["_N_T_/posts/post"];
