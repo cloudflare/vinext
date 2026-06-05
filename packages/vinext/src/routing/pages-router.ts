@@ -5,6 +5,7 @@ import {
   scanWithExtensions,
   type ValidFileMatcher,
 } from "./file-matcher.js";
+import { normalizePathSeparators } from "../utils/path.js";
 import { validateRoutePatterns } from "./route-validation.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "./route-matching.js";
 
@@ -93,6 +94,14 @@ async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Prom
   return routes;
 }
 
+function splitFileRoutePath(filePath: string): string[] {
+  return normalizePathSeparators(filePath).split("/").filter(Boolean);
+}
+
+function joinRouteFilePath(root: string, filePath: string): string {
+  return normalizePathSeparators(path.join(root, ...splitFileRoutePath(filePath)));
+}
+
 /**
  * Convert a file path relative to pages/ into a Route.
  */
@@ -102,7 +111,7 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
   if (withoutExt === file) return null;
 
   // Convert to URL segments
-  const segments = withoutExt.split(path.sep);
+  const segments = splitFileRoutePath(withoutExt);
 
   // Handle index files: pages/index.tsx -> /
   const lastSegment = segments[segments.length - 1];
@@ -170,7 +179,7 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
   return {
     pattern: pattern === "/" ? "/" : pattern,
     patternParts: urlSegments.filter(Boolean),
-    filePath: path.join(pagesDir, file),
+    filePath: joinRouteFilePath(pagesDir, file),
     isDynamic,
     params,
   };

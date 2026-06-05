@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { glob } from "node:fs/promises";
+import { normalizePathSeparators } from "../utils/path.js";
 
 const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
 
@@ -139,6 +140,6 @@ export async function* scanWithExtensions(
     cwd,
     ...(exclude ? { exclude } : {}),
   })) {
-    yield file;
+    yield normalizePathSeparators(file);
   }
 }

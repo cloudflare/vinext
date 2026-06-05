@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { compareRoutes, decodeRouteSegment, isInvisibleSegment } from "./utils.js";
 import { scanWithExtensions, type ValidFileMatcher } from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
+import { normalizePathSeparators } from "../utils/path.js";
 
 export type InterceptingRoute = {
   /** The interception convention: "." | ".." | "../.." | "..." */
@@ -970,10 +971,18 @@ function validatePageRouteConflicts(routes: readonly AppRoute[], appDir: string)
   }
 }
 
+function splitFileRoutePath(filePath: string): string[] {
+  return normalizePathSeparators(filePath).split("/").filter(Boolean);
+}
+
+function joinRouteFilePath(root: string, filePath: string): string {
+  return normalizePathSeparators(path.join(root, ...splitFileRoutePath(filePath)));
+}
+
 function formatAppFilePath(filePath: string, appDir: string): string {
-  const relativePath = path.relative(appDir, filePath).replace(/\\/g, "/");
+  const relativePath = normalizePathSeparators(path.relative(appDir, filePath));
   const parsedPath = path.parse(relativePath);
-  const withoutExtension = path.join(parsedPath.dir, parsedPath.name).replace(/\\/g, "/");
+  const withoutExtension = normalizePathSeparators(path.join(parsedPath.dir, parsedPath.name));
   return withoutExtension.startsWith("/") ? withoutExtension : `/${withoutExtension}`;
 }
 
@@ -1058,7 +1067,7 @@ function discoverSlotSubRoutes(
 
       const subPages = findSlotSubPages(slotDir, matcher);
       for (const { relativePath, pagePath } of subPages) {
-        const subSegments = relativePath.split(path.sep);
+        const subSegments = splitFileRoutePath(relativePath);
         const convertedSubRoute = convertSegmentsToRouteParts(subSegments);
         if (!convertedSubRoute) continue;
 
@@ -1223,7 +1232,7 @@ function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPa
       const subDir = path.join(dir, entry.name);
       const page = findFile(subDir, "page", matcher);
       if (page) {
-        const relativePath = path.relative(slotDir, subDir);
+        const relativePath = normalizePathSeparators(path.relative(slotDir, subDir));
         results.push({ relativePath, pagePath: page });
       }
       // Continue scanning deeper for nested sub-pages
@@ -1245,8 +1254,9 @@ function fileToAppRoute(
   type: "page" | "route",
   matcher: ValidFileMatcher,
 ): AppRouteGraphRoute | null {
+  const normalizedFile = normalizePathSeparators(file);
   // Remove the filename (page.tsx or route.ts)
-  let dir = path.dirname(file);
+  let dir = path.posix.dirname(normalizedFile);
 
   // `@children` is transparent in routing: `app/foo/@children/page.tsx`
   // provides the children prop for `/foo` and registers a real page route
@@ -1265,8 +1275,8 @@ function fileToAppRoute(
     dir,
     appDir,
     matcher,
-    type === "page" ? path.join(appDir, file) : null,
-    type === "route" ? path.join(appDir, file) : null,
+    type === "page" ? joinRouteFilePath(appDir, normalizedFile) : null,
+    type === "route" ? joinRouteFilePath(appDir, normalizedFile) : null,
   );
 }
 
@@ -1277,7 +1287,7 @@ function directoryToAppRoute(
   pagePath: string | null,
   routePath: string | null,
 ): AppRouteGraphRoute | null {
-  const segments = dir === "." ? [] : dir.split(path.sep);
+  const segments = dir === "." ? [] : splitFileRoutePath(dir);
 
   const params: string[] = [];
   let isDynamic = false;
@@ -1466,7 +1476,7 @@ function computeLayoutTreePositions(appDir: string, layouts: string[]): number[]
     const layoutDir = path.dirname(layoutPath);
     if (layoutDir === appDir) return 0;
     const relative = path.relative(appDir, layoutDir);
-    return relative.split(path.sep).length;
+    return splitFileRoutePath(relative).length;
   });
 }
 
@@ -1781,7 +1791,7 @@ function findMirroredSlotPage(
   };
   let best: Candidate | null = null;
   for (const { relativePath, pagePath } of findSlotSubPages(slotDir, matcher)) {
-    const slotSegments = relativePath.split(path.sep);
+    const slotSegments = splitFileRoutePath(relativePath);
     const slotUrl = convertSegmentsToRouteParts(slotSegments);
     if (!slotUrl) continue;
     if (!patternsCompatible(slotUrl.urlSegments, routeUrl.urlSegments)) continue;
@@ -1909,15 +1919,12 @@ function discoverParallelSlots(
     // Only include slots that have at least a page, default, or intercepting route
     if (!pagePath && !defaultPath && interceptingRoutes.length === 0) continue;
 
-    const ownerSegments = path
-      .relative(appDir, dir)
-      .split(path.sep)
-      .filter((segment) => segment.length > 0);
+    const ownerSegments = splitFileRoutePath(path.relative(appDir, dir));
     const ownerTreePath = createAppRouteGraphTreePath(ownerSegments, ownerSegments.length);
 
     slots.push({
       id: createAppRouteGraphSlotId(slotName, ownerTreePath),
-      key: `${slotName}@${path.relative(appDir, slotDir).replace(/\\/g, "/")}`,
+      key: `${slotName}@${normalizePathSeparators(path.relative(appDir, slotDir))}`,
       name: slotName,
       ownerDir: slotDir,
       ownerTreePath,
@@ -2143,7 +2150,7 @@ function collectInterceptingPages(
  * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/interception-routes.ts
  */
 function computeInterceptSourceMatchPattern(interceptParentDir: string, appDir: string): string {
-  const segments = path.relative(appDir, interceptParentDir).split(path.sep).filter(Boolean);
+  const segments = splitFileRoutePath(path.relative(appDir, interceptParentDir));
   const converted = convertSegmentsToRouteParts(segments);
   const urlSegments = converted
     ? converted.urlSegments
@@ -2180,7 +2187,7 @@ function computeInterceptTarget(
   // Determine the base segments for target resolution.
   // We work on route segments (not filesystem paths) so that route groups
   // and parallel slots are properly skipped when climbing.
-  const routeSegments = path.relative(appDir, routeDir).split(path.sep).filter(Boolean);
+  const routeSegments = splitFileRoutePath(path.relative(appDir, routeDir));
 
   let baseParts: string[];
   switch (convention) {
@@ -2203,7 +2210,7 @@ function computeInterceptTarget(
           routeSegments,
           convention,
           interceptSegment,
-          path.relative(interceptRoot, currentDir).split(path.sep).filter(Boolean),
+          splitFileRoutePath(path.relative(interceptRoot, currentDir)),
         );
         if (convention === "..") {
           throw new Error(
@@ -2225,7 +2232,7 @@ function computeInterceptTarget(
   }
 
   // Add the intercept segment and any nested path segments
-  const nestedParts = path.relative(interceptRoot, currentDir).split(path.sep).filter(Boolean);
+  const nestedParts = splitFileRoutePath(path.relative(interceptRoot, currentDir));
   const allSegments = [...baseParts, interceptSegment, ...nestedParts];
 
   const convertedTarget = convertSegmentsToRouteParts(allSegments);
@@ -2276,7 +2283,7 @@ function markerForInterceptionConvention(convention: string): string {
 function findFile(dir: string, name: string, matcher: ValidFileMatcher): string | null {
   for (const ext of matcher.dottedExtensions) {
     const filePath = path.join(dir, name + ext);
-    if (fs.existsSync(filePath)) return filePath;
+    if (fs.existsSync(filePath)) return normalizePathSeparators(filePath);
   }
   return null;
 }
