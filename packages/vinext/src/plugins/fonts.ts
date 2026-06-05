@@ -1120,21 +1120,32 @@ export function createLocalFontsPlugin(): Plugin {
     enforce: "pre",
 
     transform: {
+      // NOTE: node_modules is intentionally NOT excluded here. npm packages
+      // commonly wrap `next/font/local` and ship the font files alongside the
+      // module (e.g. `geist/dist/mono.js` calls
+      // `localFont({ src: "./fonts/geist-mono/GeistMono-Variable.woff2" })`).
+      // Those relative `src` paths are resolved against the package's own
+      // directory and must be promoted to Vite asset imports just like a user's
+      // source files, otherwise the runtime `@font-face` references the raw
+      // relative path and the font 404s. Next.js's font loader runs on these
+      // package files too, so vinext must as well. The `code` filter plus the
+      // default-import check below keep this from touching unrelated modules.
       filter: {
         id: {
           include: /\.(tsx?|jsx?|mjs)$/,
-          exclude: /node_modules/,
         },
         code: "next/font/local",
       },
       handler(code, id) {
         // Defensive guards — duplicate filter logic
-        if (id.includes("node_modules")) return null;
         if (id.startsWith("\0")) return null;
         if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
         if (!code.includes("next/font/local")) return null;
         // Skip vinext's own font-local shim — it contains example paths
-        // in comments that would be incorrectly rewritten.
+        // in comments that would be incorrectly rewritten. When vinext is
+        // installed as a dependency this lives under
+        // `node_modules/vinext/.../shims/font-local.*`, so the guard must run
+        // even though node_modules is no longer excluded above.
         if (id.includes("font-local")) return null;
 
         // Verify there's actually a default import from next/font/local and

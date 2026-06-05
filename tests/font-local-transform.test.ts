@@ -37,11 +37,40 @@ describe("vinext:local-fonts plugin", () => {
     expect(result).toBeNull();
   });
 
-  it("returns null for node_modules files", () => {
+  it("transforms node_modules packages that wrap next/font/local", () => {
+    // Regression: npm packages like `geist` ship their own font files and call
+    // localFont() with paths relative to the package's dist/ directory. The
+    // transform previously excluded node_modules, so the raw relative path
+    // (e.g. "./fonts/geist-mono/GeistMono-Variable.woff2") leaked into the
+    // runtime @font-face src and 404'd. Next.js's font loader runs on these
+    // package files, so vinext must too.
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `export const GeistMono = localFont({`,
+      `  src: './fonts/geist-mono/GeistMono-Variable.woff2',`,
+      `  variable: '--font-geist-mono',`,
+      `});`,
+    ].join("\n");
+    const result = transform.call(plugin, code, "/proj/node_modules/geist/dist/mono.js");
+    expect(result).not.toBeNull();
+    expectImported(result.code, "./fonts/geist-mono/GeistMono-Variable.woff2");
+    expect(result.code).toContain(`_vinext: { font: { family: "GeistMono" } }`);
+  });
+
+  it("still skips vinext's own font-local shim inside node_modules", () => {
+    // When vinext is installed as a dependency the shim lives under
+    // node_modules/vinext/.../shims/font-local.js. It must never be rewritten
+    // (it contains example paths in comments).
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = `import localFont from 'next/font/local';\nconst f = localFont({ src: './font.woff2' });`;
-    const result = transform.call(plugin, code, "node_modules/some-pkg/index.ts");
+    const result = transform.call(
+      plugin,
+      code,
+      "/proj/node_modules/vinext/dist/shims/font-local.js",
+    );
     expect(result).toBeNull();
   });
 
