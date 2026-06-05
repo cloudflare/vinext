@@ -1,8 +1,8 @@
 {
   "version": 2,
   "suite": "integration",
-  "shardTotal": 6,
-  "generatedAt": "2026-06-05T17:14:55.113Z",
+  "shardTotal": 5,
+  "generatedAt": "2026-06-05T17:36:03.772Z",
   "generatedFrom": {
     "runs": [
       {

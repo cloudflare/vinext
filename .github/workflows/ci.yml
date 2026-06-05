@@ -32,7 +32,7 @@ jobs:
             bash -n "$f" || { echo "Syntax error in $f"; exit 1; }
           done
       - name: Verify integration shard manifest
-        run: node scripts/ci-integration-shard.mjs --check --shard-total=6
+        run: node scripts/ci-integration-shard.mjs --check --shard-total=5
 
   test-unit:
     name: Vitest (unit ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
@@ -61,8 +61,10 @@ jobs:
         #   gh run download <run-id> -p 'blob-report-*' -D /tmp/blobs
         #   node scripts/ci-integration-timings-refresh.mjs /tmp/blobs --run=<run-id> --write
         # Revisit the count with: node scripts/ci-integration-shard.mjs --recommend --target-ms=<competing-bottleneck>
-        shardIndex: [1, 2, 3, 4, 5, 6]
-        shardTotal: [6]
+        # EXPERIMENT: temporarily at 5 shards to measure the latency/cost knee
+        # against the 6-shard provenance run. Revert to 6 after benchmarking.
+        shardIndex: [1, 2, 3, 4, 5]
+        shardTotal: [5]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
