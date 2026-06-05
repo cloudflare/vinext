@@ -29,7 +29,7 @@
     "vite-plus": "catalog:"
   },
   "peerDependencies": {
-    "vinext": "workspace:*"
+    "vinext": ">=0.0.0"
   },
   "engines": {
     "node": ">=22"
