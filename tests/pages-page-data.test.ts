@@ -323,6 +323,95 @@ describe("pages page data", () => {
     await expect(result.response.text()).resolves.toBe('{"ok":true}');
   });
 
+  it("short-circuits getServerSideProps responses when only writableEnded is set", async () => {
+    const responsePromise = Promise.resolve(
+      new Response('{"ok":true}', {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        createGsspReqRes() {
+          const res = {
+            headersSent: false,
+            writableEnded: true,
+            statusCode: 202,
+            getHeaders() {
+              return { "content-type": "application/json" };
+            },
+          };
+          return {
+            req: { method: "GET" },
+            res,
+            responsePromise,
+          };
+        },
+        pageModule: {
+          async getServerSideProps() {
+            return {};
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") {
+      throw new Error("expected response result");
+    }
+    expect(result.response.status).toBe(202);
+    await expect(result.response.text()).resolves.toBe('{"ok":true}');
+  });
+
+  it("short-circuits getInitialProps responses when only writableEnded is set", async () => {
+    const responsePromise = Promise.resolve(
+      new Response('{"ok":true}', {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        createGsspReqRes() {
+          const res = {
+            headersSent: false,
+            writableEnded: true,
+            statusCode: 202,
+            getHeaders() {
+              return { "content-type": "application/json" };
+            },
+          };
+          return {
+            req: {},
+            res,
+            responsePromise,
+          };
+        },
+        pageModule: {
+          default: Object.assign(
+            function Page() {
+              return null;
+            },
+            {
+              getInitialProps() {
+                return {};
+              },
+            },
+          ),
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") {
+      throw new Error("expected response result");
+    }
+    expect(result.response.status).toBe(202);
+    await expect(result.response.text()).resolves.toBe('{"ok":true}');
+  });
+
   it("serves stale ISR entries immediately and regenerates them through typed helpers", async () => {
     let regenPromise: Promise<void> | null = null;
     const applyRequestContexts = vi.fn();
@@ -773,5 +862,25 @@ describe("pages page data", () => {
     );
 
     expect(received).toBeNull();
+  });
+
+  it("isResponseSent detects both headersSent and writableEnded", async () => {
+    const { isResponseSent } =
+      await import("../packages/vinext/src/server/pages-get-initial-props.js");
+
+    expect(isResponseSent({ headersSent: true })).toBe(true);
+    expect(isResponseSent({ writableEnded: true })).toBe(true);
+    expect(isResponseSent({ headersSent: true, writableEnded: true })).toBe(true);
+    expect(isResponseSent({ headersSent: false })).toBe(false);
+    expect(isResponseSent({ writableEnded: false })).toBe(false);
+    expect(isResponseSent({})).toBe(false);
+    expect(isResponseSent(undefined)).toBe(false);
+    expect(isResponseSent(null)).toBe(false);
+    // The prod PagesReqResResponse type only declares headersSent; the helper
+    // must not throw or treat the absent writableEnded as truthy.
+    const prodShaped: { headersSent: boolean } = { headersSent: false };
+    expect(isResponseSent(prodShaped)).toBe(false);
+    prodShaped.headersSent = true;
+    expect(isResponseSent(prodShaped)).toBe(true);
   });
 });

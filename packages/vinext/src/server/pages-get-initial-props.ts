@@ -40,7 +40,7 @@ function getInitialPropsFn(component: unknown): PagesGetInitialProps | null {
   return isPagesGetInitialProps(getInitialProps) ? getInitialProps : null;
 }
 
-function isResponseSent(res: unknown): boolean {
+export function isResponseSent(res: unknown): boolean {
   return (
     getObjectProperty(res, "headersSent") === true ||
     getObjectProperty(res, "writableEnded") === true

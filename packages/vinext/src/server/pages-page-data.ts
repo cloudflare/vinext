@@ -11,7 +11,7 @@ import {
   type PagesGsspResponse,
   type PagesI18nRenderContext,
 } from "./pages-page-response.js";
-import { loadPagesGetInitialProps } from "./pages-get-initial-props.js";
+import { isResponseSent, loadPagesGetInitialProps } from "./pages-get-initial-props.js";
 import { buildNextDataJsonResponse } from "./pages-data-route.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 
@@ -484,7 +484,7 @@ export async function resolvePagesPageData(
       defaultLocale: options.i18n.defaultLocale,
     });
 
-    if (res.headersSent) {
+    if (isResponseSent(res)) {
       return {
         kind: "response",
         response: await responsePromise,
@@ -694,7 +694,7 @@ export async function resolvePagesPageData(
       defaultLocale: options.i18n.defaultLocale,
     });
 
-    if (res.headersSent) {
+    if (isResponseSent(res)) {
       return {
         kind: "response",
         response: await responsePromise,
