@@ -699,6 +699,8 @@ function cjsGlobalsInjectorPlugin(configPath: string): {
       const filenameLiteral = JSON.stringify(normalizedTarget);
       const dirnameLiteral = JSON.stringify(dirname);
       const requireBaseLiteral = JSON.stringify(path.join(dirname, "package.json"));
+      const hasOwnDirname = /\b(?:const|let|var)\s+__dirname\b/.test(code);
+      const hasOwnFilename = /\b(?:const|let|var)\s+__filename\b/.test(code);
 
       // Only wire up the wrapper `module` object — and the corresponding
       // named export read by unwrapConfig — when the source statically looks
@@ -717,8 +719,8 @@ function cjsGlobalsInjectorPlugin(configPath: string): {
       // any global lookups the source would otherwise perform.
       const preamble =
         `import { createRequire as __vinextCreateRequire } from "node:module";\n` +
-        `const __filename = ${filenameLiteral};\n` +
-        `const __dirname = ${dirnameLiteral};\n` +
+        (hasOwnFilename ? "" : `const __filename = ${filenameLiteral};\n`) +
+        (hasOwnDirname ? "" : `const __dirname = ${dirnameLiteral};\n`) +
         `const require = __vinextCreateRequire(${requireBaseLiteral});\n` +
         moduleLines;
 
