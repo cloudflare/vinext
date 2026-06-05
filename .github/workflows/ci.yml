@@ -62,79 +62,79 @@ jobs:
             shardTotal: 6
             files: >-
               tests/ecosystem.test.ts
-              tests/nextjs-compat/app-rendering.test.ts
-              tests/nextjs-compat/dynamic.test.ts
-              tests/cjs.test.ts
-              tests/nextjs-compat/request-apis.test.ts
-              tests/nextjs-compat/metadata-suspense.test.ts
-              tests/app-router-malformed-url.test.ts
+              tests/nextjs-compat/hooks.test.ts
+              tests/nextjs-compat/not-found.test.ts
+              tests/nextjs-compat/rsc-context-lazy-stream.test.ts
+              tests/nextjs-compat/use-client-page-pathname.test.ts
+              tests/nextjs-compat/layout-segments.test.ts
+              tests/nextjs-compat/set-cookies.test.ts
           - shardIndex: 2
             shardTotal: 6
             files: >-
               tests/favicon-short-circuit.test.ts
               tests/nextjs-compat/streaming.test.ts
-              tests/nextjs-compat/hooks.test.ts
-              tests/nextjs-compat/layout-segments.test.ts
+              tests/nextjs-compat/metadata.test.ts
+              tests/app-router-next-config-dev.test.ts
+              tests/nextjs-compat/prefetch.test.ts
               tests/nextjs-compat/rsc-basic.test.ts
-              tests/nextjs-compat/set-cookies.test.ts
-              tests/nextjs-compat/script-nonce.test.ts
+              tests/pages-router-concurrency.test.ts
+              tests/nextjs-compat/global-not-found.test.ts
+              tests/vite-hmr-websocket.test.ts
+              tests/api-handler.test.ts
           - shardIndex: 3
             shardTotal: 6
             files: >-
-              tests/pages-router.test.ts
+              tests/app-router-production-server.test.ts
               tests/app-router-rsc-plugin.test.ts
               tests/app-router-production-build.test.ts
-              tests/app-router-middleware-next-request.test.ts
-              tests/nextjs-compat/use-client-page-pathname.test.ts
-              tests/nextjs-compat/app-routes.test.ts
-              tests/nextjs-compat/script-preload.test.ts
-              tests/kv-cache-handler.test.ts
-              tests/vite-hmr-websocket.test.ts
-              tests/app-router-worker-entry.test.ts
-              tests/api-handler.test.ts
+              tests/nextjs-compat/dynamic.test.ts
+              tests/app-router-origin-check.test.ts
+              tests/app-router-metadata-routes.test.ts
+              tests/nextjs-compat/metadata-suspense.test.ts
+              tests/app-router-font-google-prod.test.ts
+              tests/app-router-external-rewrite.test.ts
+              tests/app-router-rsc-flight-hint.test.ts
           - shardIndex: 4
+            shardTotal: 6
+            files: >-
+              tests/pages-router.test.ts
+              tests/nextjs-compat/global-error.test.ts
+              tests/image-optimization-parity.test.ts
+              tests/nextjs-compat/navigation.test.ts
+              tests/cjs.test.ts
+              tests/node-modules-css.test.ts
+              tests/nextjs-compat/action-headers.test.ts
+              tests/pages-i18n-prod.test.ts
+              tests/postcss-resolve.test.ts
+              tests/app-router-next-config-codegen.test.ts
+              tests/app-router-worker-entry.test.ts
+              tests/nextjs-compat/basepath.test.ts
+              tests/nextjs-compat/als-isolation.test.ts
+              tests/entry-templates.test.ts
+          - shardIndex: 5
             shardTotal: 6
             files: >-
               tests/prerender.test.ts
               tests/app-router-static-export.test.ts
-              tests/nextjs-compat/metadata.test.ts
-              tests/app-router-next-config-dev.test.ts
-              tests/nextjs-compat/prefetch.test.ts
-              tests/nextjs-compat/draft-mode.test.ts
-              tests/nextjs-compat/rsc-context-lazy-stream.test.ts
-              tests/app-router-font-google-prod.test.ts
-              tests/postcss-resolve.test.ts
-              tests/nextjs-compat/basepath.test.ts
-              tests/app-router-client-preloading.test.ts
-              tests/app-router-isr-codegen.test.ts
-              tests/app-router-rsc-flight-hint.test.ts
-          - shardIndex: 5
-            shardTotal: 6
-            files: >-
-              tests/app-router-production-server.test.ts
-              tests/nextjs-compat/global-error.test.ts
-              tests/image-optimization-parity.test.ts
-              tests/nextjs-compat/not-found.test.ts
+              tests/nextjs-compat/app-rendering.test.ts
               tests/nextjs-compat/app-css.test.ts
-              tests/app-router-origin-check.test.ts
-              tests/nextjs-compat/navigation.test.ts
-              tests/nextjs-compat/global-not-found.test.ts
-              tests/app-router-next-config-codegen.test.ts
-              tests/nextjs-compat/als-isolation.test.ts
-              tests/entry-templates.test.ts
+              tests/app-router-middleware-next-request.test.ts
+              tests/nextjs-compat/request-apis.test.ts
+              tests/app-router-malformed-url.test.ts
+              tests/kv-cache-handler.test.ts
+              tests/app-router-isr-codegen.test.ts
+              tests/app-router-client-preloading.test.ts
           - shardIndex: 6
             shardTotal: 6
             files: >-
               tests/features.test.ts
               tests/static-export.test.ts
               tests/app-router-dev-server.test.ts
-              tests/node-modules-css.test.ts
+              tests/nextjs-compat/app-routes.test.ts
+              tests/nextjs-compat/script-preload.test.ts
+              tests/nextjs-compat/draft-mode.test.ts
               tests/nextjs-compat/revalidate.test.ts
-              tests/nextjs-compat/action-headers.test.ts
-              tests/app-router-metadata-routes.test.ts
-              tests/pages-router-concurrency.test.ts
-              tests/pages-i18n-prod.test.ts
-              tests/app-router-external-rewrite.test.ts
+              tests/nextjs-compat/script-nonce.test.ts
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
