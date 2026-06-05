@@ -22,9 +22,15 @@ export function getCurrentBrowserLocale({
   );
   if (pathnameLocale) return pathnameLocale;
 
+  // Prefer the actually-active locale (set by SSR for the rendered page) over
+  // the configured default. This matters for the i18n-sticky-locale flow
+  // (issue #1336): a default-locale path served under a non-default locale —
+  // e.g. `id` rendered at `/about` with no `/id` prefix — must still report
+  // its active locale so Router.push can stamp it into history state. Falling
+  // back to the default would erase that stickiness on every client nav.
   return (
     detectDomainLocale(domainLocales, hostname ?? undefined)?.defaultLocale ??
-    window.__VINEXT_DEFAULT_LOCALE__ ??
-    window.__VINEXT_LOCALE__
+    window.__VINEXT_LOCALE__ ??
+    window.__VINEXT_DEFAULT_LOCALE__
   );
 }

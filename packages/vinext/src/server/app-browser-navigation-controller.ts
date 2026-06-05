@@ -42,6 +42,7 @@ export type NavigationPayloadOutcome = "committed" | "no-commit" | "hard-navigat
 type HardNavigationMode = "assign" | "replace";
 
 type BrowserNavigationCommitEffectFactory = (options: {
+  bfcacheIds: Readonly<Record<string, string>>;
   href: string;
   historyUpdateMode: HistoryUpdateMode | undefined;
   navId: number;
@@ -65,7 +66,10 @@ type BrowserNavigationControllerDeps = {
   commitClientNavigationState?: typeof commitClientNavigationState;
   performHardNavigation?: (href: string, mode?: HardNavigationMode) => boolean;
   getRouteManifest?: () => RouteManifest | null;
-  syncHistoryStatePreviousNextUrl?: (previousNextUrl: string | null) => void;
+  syncHistoryStatePreviousNextUrl?: (
+    previousNextUrl: string | null,
+    bfcacheIds?: Readonly<Record<string, string>> | null,
+  ) => void;
 };
 
 type BrowserNavigationController = {
@@ -94,6 +98,7 @@ type BrowserNavigationController = {
     pendingRouterState: PendingBrowserRouterState | null;
     previousNextUrl: string | null;
     scrollIntent?: AppRouterScrollIntent | null;
+    restoredBfcacheIds?: Readonly<Record<string, string>> | null;
     targetHistoryIndex?: number | null;
     targetHref: string;
     navId: number;
@@ -508,6 +513,7 @@ export function createAppBrowserNavigationController(
     pendingRouterState: PendingBrowserRouterState | null;
     previousNextUrl: string | null;
     scrollIntent?: AppRouterScrollIntent | null;
+    restoredBfcacheIds?: Readonly<Record<string, string>> | null;
     targetHistoryIndex?: number | null;
     targetHref: string;
     navId: number;
@@ -530,6 +536,7 @@ export function createAppBrowserNavigationController(
         payloadOrigin: options.payloadOrigin,
         previousNextUrl: options.previousNextUrl,
         renderId,
+        restoredBfcacheIds: options.restoredBfcacheIds,
         type: options.actionType,
       });
 
@@ -565,6 +572,7 @@ export function createAppBrowserNavigationController(
       queuePrePaintNavigationEffect(
         renderId,
         options.createNavigationCommitEffect({
+          bfcacheIds: approvedCommit.action.bfcacheIds,
           href: options.targetHref,
           historyUpdateMode: options.historyUpdateMode,
           navId: options.navId,
@@ -654,7 +662,10 @@ export function createAppBrowserNavigationController(
 
       if (latestApproval.approvedCommit) {
         dispatchSynchronousVisibleCommit(latestApproval.approvedCommit);
-        syncHistoryStatePreviousNextUrl(latestApproval.approvedCommit.previousNextUrl);
+        syncHistoryStatePreviousNextUrl(
+          latestApproval.approvedCommit.previousNextUrl,
+          latestApproval.approvedCommit.action.bfcacheIds,
+        );
       } else {
         notifyDiscardedServerActionRevalidation(lifecycleOptions);
       }

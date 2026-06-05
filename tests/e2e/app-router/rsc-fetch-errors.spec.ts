@@ -6,14 +6,14 @@
  * rather than trying to parse the HTML error body as an RSC stream.
  *
  * Without the fix:
- *   - fetch(url.rsc) returns 404 HTML
+ *   - fetch(RSC payload URL) returns 404 HTML
  *   - createFromFetch throws a cryptic stream-parse error
  *   - The catch block logs "[vinext] RSC navigation error: ..." and hard-navs
  *     to the same URL again, which can loop
  *
  * With the fix:
  *   - !response.ok is detected immediately after fetch
- *   - Client hard-navigates directly to the destination URL (no .rsc suffix)
+ *   - Client hard-navigates directly to the destination URL (no internal RSC suffix)
  *   - No stream-parse error is logged
  *
  * Ported behavior from Next.js fetch-server-response.ts:211:
@@ -22,7 +22,7 @@
  *   }
  */
 import { test, expect } from "@playwright/test";
-import { waitForAppRouterHydration } from "../helpers";
+import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 
@@ -46,9 +46,7 @@ function isRscStreamParseError(msg: string): boolean {
 }
 
 test.describe("RSC fetch non-ok response handling", () => {
-  test("client navigation to a non-existent route hard-navs to the non-.rsc URL", async ({
-    page,
-  }) => {
+  test("client navigation to a non-existent route hard-navs to the route URL", async ({ page }) => {
     const consoleErrors: string[] = [];
     page.on("console", (msg) => {
       if (msg.type() === "error") {
@@ -66,7 +64,7 @@ test.describe("RSC fetch non-ok response handling", () => {
     });
     await Promise.all([navigationPromise, page.getByTestId("missing-route-link").click()]);
 
-    // The browser must land on the non-.rsc URL — never on the .rsc variant.
+    // The browser must land on the route URL, never on an internal RSC URL.
     expect(page.url()).toBe(`${BASE}/this-route-does-not-exist`);
 
     // The bug this PR fixes surfaces as one of a small set of RSC-stream
@@ -82,14 +80,18 @@ test.describe("RSC fetch non-ok response handling", () => {
   }) => {
     const targetPath = "/rsc-fetch-error-target";
 
-    // Intercept the .rsc request for a dedicated unlinked fixture page and
+    // Intercept the RSC request for a dedicated unlinked fixture page and
     // return a 500 error. Using an unlinked target keeps the hit count tied to
     // the explicit navigation below instead of racing home-page Link prefetch.
-    // intercept persists across navigations and reloads on this page, so if
+    // The intercept persists across navigations and reloads on this page, so if
     // the fix is incomplete and a reload loop develops, the intercept hit
     // count will grow without bound.
     let targetRscHits = 0;
-    await page.route(/\/rsc-fetch-error-target\.rsc(\?|$)/, (route) => {
+    await page.route(/\/rsc-fetch-error-target(\.rsc)?(\?|$)/, (route) => {
+      if (!isAppRouterRscRequestForPath(route.request(), targetPath)) {
+        return route.continue();
+      }
+
       targetRscHits += 1;
       return route.fulfill({
         status: 500,
@@ -142,7 +144,7 @@ test.describe("RSC fetch non-ok response handling", () => {
     expect(page.url()).toBe(`${BASE}${targetPath}`);
     // Pin the embedded-RSC assumption: after the hard-nav lands on the target,
     // hydration must come from the HTML-embedded RSC branch and issue no
-    // further .rsc fetches. If a future change makes the embed path
+    // further RSC fetches. If a future change makes the embed path
     // conditional and falls back to a fetch, this count would grow and the
     // test would flag it rather than silently relying on networkidle timing.
     expect(targetRscHits).toBe(hitsBeforeNetworkIdle);
@@ -165,7 +167,7 @@ test.describe("RSC fetch non-ok response handling", () => {
     const targetPath = "/rsc-fetch-error-target";
 
     // Chain: client nav to /rsc-fetch-redirect-src → fetch
-    // /rsc-fetch-redirect-src.rsc → real server redirect to
+    // /rsc-fetch-redirect-src?_rsc → real server redirect to
     // /rsc-fetch-error-target.rsc → 500. The hard-nav target must be
     // /rsc-fetch-error-target (the post-redirect URL), not
     // /rsc-fetch-redirect-src (the original request).
@@ -194,12 +196,14 @@ test.describe("RSC fetch non-ok response handling", () => {
 
     const sourceRedirectPromise = page.waitForResponse(
       (response) =>
-        new URL(response.url()).pathname === `${sourcePath}.rsc` && response.status() === 307,
+        isAppRouterRscRequestForPath(response.request(), sourcePath) && response.status() === 307,
       { timeout: 10_000 },
     );
     const targetErrorPromise = page.waitForResponse(
       (response) =>
-        new URL(response.url()).pathname === `${targetPath}.rsc` && response.status() === 500,
+        (isAppRouterRscRequestForPath(response.request(), targetPath) ||
+          new URL(response.url()).pathname === `${targetPath}.rsc`) &&
+        response.status() === 500,
       { timeout: 10_000 },
     );
     const navigationPromise = page.waitForURL(`${BASE}${targetPath}`, { timeout: 10_000 });

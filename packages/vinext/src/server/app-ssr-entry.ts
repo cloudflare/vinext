@@ -12,6 +12,7 @@ import {
   ServerInsertedHTMLContext,
   appRouterInstance,
   clearServerInsertedHTML,
+  getBfcacheIdMapContext,
   renderServerInsertedHTML,
   setNavigationContext,
   useServerInsertedHTML,
@@ -38,8 +39,10 @@ import {
 } from "./app-ssr-stream.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
+import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
+import { createInitialBfcacheIdMap } from "./app-browser-state.js";
 import { ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
@@ -69,6 +72,7 @@ const clientReferencePreloader = createClientReferencePreloader({
     }
   },
 });
+const BfcacheIdMapContext = getBfcacheIdMapContext();
 
 function ssrErrorDigest(input: string): string {
   let hash = 5381;
@@ -261,6 +265,8 @@ export async function handleSsr(
      */
     clientTraceMetadata?: readonly string[];
     rootParams?: RootParams;
+    /** Dev-only: original server error to surface in the browser overlay. */
+    initialDevServerError?: unknown;
     /** When true, wait for the full React tree (including Suspense boundaries)
      *  to resolve before returning the HTML stream. Used for static prerender
      *  and ISR cache writes to avoid caching fallback content. */
@@ -311,11 +317,24 @@ export async function handleSsr(
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);
           const metadata = AppElementsWire.readMetadata(elements);
-          return createReactElement(
+          const routeTree = createReactElement(
             ElementsContext.Provider,
             { value: elements },
             createReactElement(Slot, { id: metadata.routeId }),
           );
+          // During SSR we only provide the id *map*, seeded entirely with the
+          // INITIAL_BFCACHE_ID sentinel. BfcacheSlotBoundary may still publish a
+          // BfcacheSegmentIdContext value here, but every map entry is the "0"
+          // sentinel, so formatPublicBfcacheId resolves useRouter().bfcacheId to
+          // the public hydration sentinel ("_b_0_") regardless until the client
+          // context takes over. Per-segment minted ids are browser-only.
+          return BfcacheIdMapContext
+            ? createReactElement(
+                BfcacheIdMapContext.Provider,
+                { value: createInitialBfcacheIdMap(elements) },
+                routeTree,
+              )
+            : routeTree;
         }
 
         const flightRootElement = createReactElement(VinextFlightRoot);
@@ -452,6 +471,10 @@ export async function handleSsr(
         const getInsertedHTML = (): string => {
           const insertedHTML = renderInsertedHtml(renderServerInsertedHTML());
           const errorMetaHTML = errorMetaRenderer.flush();
+          const initialDevServerErrorHTML = createInitialDevServerErrorScript(
+            options?.initialDevServerError,
+            options?.scriptNonce,
+          );
           if (didInjectHeadHTML) return insertedHTML + errorMetaHTML;
 
           didInjectHeadHTML = true;
@@ -459,7 +482,7 @@ export async function handleSsr(
             navContext,
             bootstrapModuleUrl,
             options?.formState ?? null,
-            insertedHTML + errorMetaHTML + getTraceMetaHTML(),
+            insertedHTML + errorMetaHTML + getTraceMetaHTML() + initialDevServerErrorHTML,
             fontHTML,
             options?.scriptNonce,
           );

@@ -15,5 +15,5 @@ export function fnv1a64(input: string): string {
     h2 ^= input.charCodeAt(i);
     h2 = (h2 * 0x01000193) >>> 0;
   }
-  return h1.toString(36) + h2.toString(36);
+  return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0");
 }

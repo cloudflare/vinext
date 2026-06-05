@@ -30,3 +30,22 @@ export function scrollToHashTargetOnNextFrame(hash: string): void {
     scrollToHashTarget(hash);
   });
 }
+
+export function retryScrollTo(
+  x: number,
+  y: number,
+  opts?: { shouldContinue?: () => boolean },
+): void {
+  const shouldContinue = opts?.shouldContinue ?? (() => true);
+  let attempts = 0;
+  const restore = () => {
+    if (!shouldContinue()) return;
+    window.scrollTo(x, y);
+    if (!shouldContinue() || Math.abs(window.scrollY - y) <= 1 || attempts >= 60) {
+      return;
+    }
+    attempts += 1;
+    requestAnimationFrame(restore);
+  };
+  restore();
+}

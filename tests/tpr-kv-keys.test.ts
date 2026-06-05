@@ -76,7 +76,15 @@ describe("TPR KV key format", () => {
     expect(parsed.value.html).toBe("<html>/test</html>");
     expect(parsed.value.headers).toEqual({ "content-type": "text/html" });
     expect(parsed.value.status).toBe(200);
-    expect(parsed.tags).toEqual([]);
+    // Path-derived implicit tags so revalidatePath('/test') can invalidate
+    // TPR-seeded entries — see #1486.
+    expect(parsed.tags).toEqual([
+      "/test",
+      "_N_T_/test",
+      "_N_T_/layout",
+      "_N_T_/test/layout",
+      "_N_T_/test/page",
+    ]);
     expect(parsed.lastModified).toBeTypeOf("number");
   });
 });

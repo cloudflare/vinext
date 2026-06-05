@@ -11,6 +11,7 @@ import { describe, it, expect } from "vite-plus/test";
 import { generateBrowserEntry } from "../packages/vinext/src/entries/app-browser-entry.js";
 import { buildAppRscManifestCode } from "../packages/vinext/src/entries/app-rsc-manifest.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import { generateClientEntry } from "../packages/vinext/src/entries/pages-client-entry.js";
 import { generateServerEntry } from "../packages/vinext/src/entries/pages-server-entry.js";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { buildAppRouteGraph } from "../packages/vinext/src/routing/app-route-graph.js";
@@ -363,6 +364,45 @@ describe("App Router generated manifest construction", () => {
     expect(manifest.generateStaticParamsEntries).toEqual([
       '  "/dashboard/:id": __createAppPrerenderStaticParamsResolver([mod_5?.generateStaticParams], ["id"]),',
     ]);
+  });
+
+  it("derives route-miss root boundaries when the app has no root page", () => {
+    const routes = [
+      {
+        pattern: "/server",
+        patternParts: ["server"],
+        pagePath: "/tmp/test/app/server/page.tsx",
+        routePath: null,
+        layouts: ["/tmp/test/app/layout.tsx"],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [null],
+        notFoundPath: "/tmp/test/app/not-found.tsx",
+        notFoundPaths: ["/tmp/test/app/not-found.tsx"],
+        forbiddenPath: null,
+        forbiddenPaths: ["/tmp/test/app/forbidden.tsx"],
+        unauthorizedPath: null,
+        unauthorizedPaths: ["/tmp/test/app/unauthorized.tsx"],
+        routeSegments: ["server"],
+        templateTreePositions: [],
+        layoutTreePositions: [0],
+        isDynamic: false,
+        params: [],
+      },
+    ] satisfies AppRoute[];
+
+    const manifest = buildAppRscManifestCode({
+      routes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+    });
+
+    expect(manifest.rootLayoutVars).toEqual(["mod_1"]);
+    expect(manifest.rootNotFoundVar).toBe("mod_2");
+    expect(manifest.rootForbiddenVar).toBe("mod_3");
+    expect(manifest.rootUnauthorizedVar).toBe("mod_4");
   });
 
   it("exposes layout-level generateStaticParams to App Router prerender", () => {
@@ -722,6 +762,16 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });
 
+  it("generateRscEntry passes page-slot dynamic stale time config into App page dispatch", () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain(
+      "parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page)",
+    );
+    expect(code).toContain("dynamicStaleTimeSeconds: __segmentConfig.dynamicStaleTimeSeconds");
+  });
+
   it("generateRscEntry threads globalNotFoundPath from config into the fallback renderer", () => {
     // The generated entry's createAppFallbackRenderer call must receive a
     // loader so route-miss 404s can render app/global-not-found.tsx standalone.
@@ -794,6 +844,115 @@ describe("Pages Router entry template", () => {
       expect(globalsImportIndex).toBeGreaterThanOrEqual(0);
       expect(firstUserImportIndex).toBeGreaterThanOrEqual(0);
       expect(globalsImportIndex).toBeLessThan(firstUserImportIndex);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Refs #1474: Pages Router client entry must import the user's
+  // `instrumentation-client.ts` (at the project root) as a side-effect import
+  // before calling `hydrateRoot()`. Mirrors Next.js's `page-bootstrap.ts`
+  // which side-effect-imports `require-instrumentation-client` ahead of
+  // `initialize` / `hydrate` (see
+  // .nextjs-ref/packages/next/src/client/page-bootstrap.ts line 1).
+  //
+  // Ported from Next.js: test/e2e/instrumentation-client-hook/instrumentation-client-hook.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/instrumentation-client-hook/instrumentation-client-hook.test.ts
+  it("imports the user's instrumentation-client.ts before calling hydrateRoot()", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    const instrumentationClientPath = path.join(tmpDir, "instrumentation-client.ts");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        instrumentationClientPath,
+        "(window as any).__INSTRUMENTATION_CLIENT_EXECUTED_AT = performance.now();",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        { instrumentationClientPath },
+      );
+
+      // The user's `instrumentation-client.ts` must be imported as a
+      // side-effect import (no `from`, no `as`) so its top-level statements
+      // execute when the client entry module is evaluated.
+      const userImportIndex = code.indexOf(`import ${JSON.stringify(instrumentationClientPath)}`);
+      const hydrateRootIndex = code.indexOf("hydrateRoot(");
+
+      expect(userImportIndex).toBeGreaterThanOrEqual(0);
+      expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+      expect(userImportIndex).toBeLessThan(hydrateRootIndex);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("omits the user instrumentation-client import when no file is present", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-empty-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        { instrumentationClientPath: null },
+      );
+
+      // Sanity check: the entry still wires up hydration and the hooks alias.
+      expect(code).toContain("hydrateRoot(");
+      expect(code).toContain("vinext/instrumentation-client");
+      // No spurious bare imports referring to a non-existent project file.
+      expect(code).not.toMatch(/import "[^"]*instrumentation-client\.ts"/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("installs the dev error overlay before loading Pages Router modules", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-overlay-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+      );
+
+      const overlayImportIndex = code.indexOf('await import("vinext/dev-error-overlay")');
+      const pageLoadIndex = code.indexOf("const pageModule = await loader()");
+      const hydrateRootIndex = code.indexOf("hydrateRoot(container, element, hydrateRootOptions)");
+
+      expect(overlayImportIndex).toBeGreaterThanOrEqual(0);
+      expect(pageLoadIndex).toBeGreaterThanOrEqual(0);
+      expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+      expect(code).toContain("overlay.installDevErrorOverlay()");
+      expect(code).toContain("overlay.installViteHmrErrorHandler(import.meta.hot)");
+      expect(code).toContain("overlay.reportInitialDevServerErrors()");
+      expect(code).toContain("onCaughtError: overlay.devOnCaughtError");
+      expect(code).toContain("onUncaughtError: overlay.devOnUncaughtError");
+      expect(overlayImportIndex).toBeLessThan(pageLoadIndex);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

@@ -7,7 +7,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { compareRoutes, decodeRouteSegment } from "./utils.js";
+import { compareRoutes, decodeRouteSegment, isInvisibleSegment } from "./utils.js";
 import { scanWithExtensions, type ValidFileMatcher } from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
 
@@ -2152,18 +2152,10 @@ function computeInterceptSourceMatchPattern(interceptParentDir: string, appDir: 
   return "/" + urlSegments.join("/");
 }
 
-/**
- * Check whether a path segment is invisible in the URL (route groups, parallel slots, ".").
- *
- * Used by computeInterceptTarget, convertSegmentsToRouteParts, and
- * hasRemainingVisibleSegments — keep this the single source of truth.
- */
-export function isInvisibleSegment(segment: string): boolean {
-  if (segment === ".") return true;
-  if (segment.startsWith("(") && segment.endsWith(")")) return true;
-  if (segment.startsWith("@")) return true;
-  return false;
-}
+// `isInvisibleSegment` (route groups, parallel slots, ".") is defined in the
+// browser-safe ./utils module and re-exported here so existing import sites
+// keep working without pulling node:path/node:fs into client bundles.
+export { isInvisibleSegment };
 
 /**
  * Compute the target URL pattern for an intercepting route.

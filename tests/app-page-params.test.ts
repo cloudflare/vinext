@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
-import { resolveAppPageSegmentParams } from "../packages/vinext/src/server/app-page-params.js";
+import {
+  resolveAppPageSegmentParamScopeKeys,
+  resolveAppPageSegmentParams,
+} from "../packages/vinext/src/server/app-page-params.js";
 
 describe("app page params helpers", () => {
   it("passes only params that apply to each layout", () => {
@@ -43,5 +46,12 @@ describe("app page params helpers", () => {
     ).toEqual({
       params: ["something", "another"],
     });
+  });
+
+  it("keeps optional catch-all names in structural layout param scope", () => {
+    const routeSegments = ["docs", "[[...slug]]"];
+
+    expect(resolveAppPageSegmentParams(routeSegments, 2, { slug: [] })).toEqual({});
+    expect(resolveAppPageSegmentParamScopeKeys(routeSegments, 2)).toEqual(["slug"]);
   });
 });

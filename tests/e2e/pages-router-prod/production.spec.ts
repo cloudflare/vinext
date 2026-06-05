@@ -60,27 +60,47 @@ test.describe("Pages Router Production Build", () => {
     expect(content).toContain("hello-world");
   });
 
-  // NOTE: Pages Router production build doesn't inject client <script> tags (no hydration).
-  // This test verifies that the asset directory itself is served correctly for when
-  // production client hydration is implemented.
+  test("import.meta.url uses source file URLs on the server and browser", async ({
+    page,
+    request,
+  }) => {
+    // Ported from Next.js: test/e2e/import-meta/import-meta.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/import-meta/import-meta.test.ts
+    const response = await request.get(`${BASE}/import-meta`);
+    expect(response.status()).toBe(200);
+    const html = await response.text();
+    const match = html.match(/<div id="test-data">([^<]*)<\/div>/);
+    expect(match).not.toBeNull();
+
+    const serverData = JSON.parse(decodeHtmlText(match![1])) as { url: string };
+    expect(serverData.url).toMatch(/^file:\/\/\//);
+    expect(serverData.url).toMatch(/\/pages\/import-meta\.tsx$/);
+    expect(serverData.url).not.toContain("/dist/server/entry.js");
+
+    await page.goto(`${BASE}/import-meta`, { waitUntil: "networkidle" });
+    await expect(page.locator("#test-data")).toHaveText(
+      JSON.stringify({ url: "file:///ROOT/pages/import-meta.tsx" }),
+    );
+  });
+
   test("static asset directory serves JS files", async ({ request }) => {
     // The production build outputs client bundles to dist/client/_next/static/
-    // (Next.js's canonical layout). Even though HTML doesn't reference them
-    // (no hydration), verify the asset server works for direct requests.
+    // (Next.js's canonical layout). Verify asset URLs emitted into HTML are
+    // served correctly by the production static handler.
     const response = await request.get(`${BASE}/`);
     expect(response.status()).toBe(200);
     const html = await response.text();
 
-    // Check if any script tags exist — if so, verify they're served correctly
+    // Check the emitted client entry is served correctly.
     const jsMatch = html.match(/src="(\/_next\/static\/[^"]+\.js)"/);
-    if (jsMatch) {
-      const jsRes = await request.get(`${BASE}${jsMatch[1]}`);
-      expect(jsRes.status()).toBe(200);
-      expect(jsRes.headers()["content-type"]).toContain("javascript");
-      expect(jsRes.headers()["cache-control"]).toContain("immutable");
-    }
-    // When no script tags are present (no hydration), this test just
-    // verifies the HTML page itself is served correctly.
+    expect(jsMatch).not.toBeNull();
+    const jsPath = jsMatch?.[1];
+    if (!jsPath) throw new Error("Expected production HTML to include a client JS asset");
+
+    const jsRes = await request.get(`${BASE}${jsPath}`);
+    expect(jsRes.status()).toBe(200);
+    expect(jsRes.headers()["content-type"]).toContain("javascript");
+    expect(jsRes.headers()["cache-control"]).toContain("immutable");
   });
 
   test("large responses include compression headers", async ({ request }) => {
@@ -116,3 +136,7 @@ test.describe("Pages Router Production Build", () => {
     expect(html).toContain("viewport");
   });
 });
+
+function decodeHtmlText(text: string): string {
+  return text.replaceAll("&amp;", "&").replaceAll("&quot;", '"');
+}

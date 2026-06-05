@@ -53,6 +53,7 @@ import type { MiddlewareModule } from "./middleware-runtime.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import {
   cloneRequestWithHeaders,
   filterInternalHeaders,
@@ -92,7 +93,26 @@ type AppRscRouteMatch<TRoute> = {
   route: TRoute;
 };
 
+function applyMiddlewareContextToResponse(
+  response: Response,
+  middlewareContext: AppRscMiddlewareContext,
+): Response {
+  if (!middlewareContext.headers && middlewareContext.status == null) {
+    return response;
+  }
+
+  const headers = new Headers(response.headers);
+  mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+
+  return new Response(response.body, {
+    status: middlewareContext.status ?? response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 type DispatchMatchedPageOptions<TRoute> = {
+  clientReuseManifest: ClientReuseManifestParseResult;
   cleanPathname: string;
   formState: ReactFormState | null;
   actionError?: unknown;
@@ -211,6 +231,13 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     options: DispatchMatchedRouteHandlerOptions<TRoute>,
   ) => Promise<Response>;
   ensureInstrumentation?: () => Promise<void>;
+  /**
+   * Register cache adapters configured via the vinext() `cache` option. Wired
+   * from the generated RSC entry (which can import `virtual:vinext-cache-adapters`)
+   * so config-driven cache handlers apply to App Router on EVERY runtime — the
+   * Node server and dev included, not just the Cloudflare worker entry.
+   */
+  registerCacheAdapters: (env?: Record<string, unknown>) => void;
   handleProgressiveActionRequest: (
     options: HandleProgressiveActionRequestOptions,
   ) => Promise<Response | ProgressiveActionFormStateResult | null>;
@@ -336,8 +363,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const normalized = normalizeRscRequest(request, options.basePath);
   if (normalized instanceof Response) return normalized;
 
-  const { url, isRscRequest, interceptionContextHeader, mountedSlotsHeader, renderMode } =
-    normalized;
+  const {
+    url,
+    isRscRequest,
+    interceptionContextHeader,
+    mountedSlotsHeader,
+    renderMode,
+    clientReuseManifest,
+  } = normalized;
   let { pathname, cleanPathname } = normalized;
   // Canonical (external) pathname the user requested. Middleware rewrites and
   // next.config.js rewrites mutate `cleanPathname` so internal route matching
@@ -478,7 +511,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     cleanPathname,
     makeThenableParams: options.makeThenableParams,
   });
-  if (metadataRouteResponse) return metadataRouteResponse;
+  if (metadataRouteResponse) {
+    return applyMiddlewareContextToResponse(metadataRouteResponse, middlewareContext);
+  }
 
   const publicFileResponse = resolvePublicFileRoute({
     cleanPathname,
@@ -668,6 +703,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const pageResponse = await options.dispatchMatchedPage({
+    clientReuseManifest,
     cleanPathname,
     formState,
     actionError,
@@ -753,6 +789,11 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
 ): (request: Request, ctx: unknown) => Promise<Response> {
   return async function appRscHandler(rawRequest, ctx) {
+    // Register config-driven cache adapters before anything touches the cache.
+    // On the Cloudflare worker the entry already registered them with `env` (this
+    // guarded call is a no-op); on Node/dev this is where they get wired, with no
+    // bindings available.
+    options.registerCacheAdapters();
     await options.ensureInstrumentation?.();
 
     // Strip forged internal headers at the App Router request boundary.

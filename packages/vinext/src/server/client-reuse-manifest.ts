@@ -95,14 +95,11 @@ export type ClientReuseManifestRejectionCode =
   | "SKIP_CACHE_PROOF_REJECTED"
   | "SKIP_CACHE_REUSE_CLASS_UNSUPPORTED"
   | "SKIP_CACHE_VARIANT_MISMATCH"
-  // Forward declarations — emitted by the render-observation tracker in a
-  // later slice.  The planner never produces them, but the rejection code
-  // union must carry them so the tracker's entry rejection is assignable to
-  // ClientReuseManifestRejectionCode without a cast.
   | "SKIP_LAYOUT_CACHE_LIFE_OBSERVED"
   | "SKIP_LAYOUT_CACHE_TAGS_OBSERVED"
   | "SKIP_LAYOUT_CACHEABLE_FETCHES_OBSERVED"
   | "SKIP_LAYOUT_DYNAMIC_FETCHES_OBSERVED"
+  | "SKIP_LAYOUT_DYNAMIC_USAGE_OBSERVED"
   | "SKIP_LAYOUT_PARAMS_OBSERVED"
   | "SKIP_LAYOUT_PARAMS_OBSERVATION_INCOMPLETE"
   | "SKIP_LAYOUT_PARAMS_PRESENT"
@@ -230,7 +227,7 @@ function createCanonicalWireEntries(
 }
 
 // Manifest byte budgets are enforced over UTF-8 encoded header values.
-function countUtf8Bytes(input: string): number {
+export function countUtf8Bytes(input: string): number {
   return textEncoder.encode(input).length;
 }
 

@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "workers-cache",
+  // Workers Cache requires a recent compatibility date — bumping closer to
+  // release should be done once miniflare ships a newer workerd. See
+  // https://developers.cloudflare.com/workers/cache/
+  "compatibility_date": "2026-04-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./worker/index.ts",
+  "preview_urls": true,
+  "assets": {
+    "not_found_handling": "none",
+    "binding": "ASSETS",
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true,
+    },
+    "traces": {
+      "enabled": true,
+    },
+  },
+  "cache": {
+    "enabled": true,
+  },
+  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "b38f84f642aa4bd4ba17a37bb516f0b5" }],
+}

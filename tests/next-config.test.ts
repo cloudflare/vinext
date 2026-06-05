@@ -368,12 +368,38 @@ describe("loadNextConfig with tsconfig path aliases", () => {
   // Ported from Next.js: test/e2e/app-dir/next-config-ts/import-alias-paths-only/
   //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-config-ts/import-alias-paths-only/
   // and import-alias-paths-with-baseurl/.
-  // Next.js's transpile-config.ts reads compilerOptions.paths from tsconfig.json
-  // and passes them to SWC so that next.config.ts can import via tsconfig
-  // aliases. vinext mirrors this by passing tsconfig paths to Vite as
-  // resolve.alias when calling runnerImport.
+  // Next.js's transpile-config.ts reads compilerOptions.paths/baseUrl from
+  // tsconfig.json and passes them to SWC so that next.config.ts can import via
+  // tsconfig aliases and baseUrl bare specifiers. vinext mirrors this with
+  // Vite resolver settings when calling runnerImport.
 
   let tmpDir: string;
+
+  function writePackage(
+    name: string,
+    packageJson: Record<string, string>,
+    files: Record<string, string>,
+  ): void {
+    const packageDir = path.join(tmpDir, "node_modules", name);
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name, version: "1.0.0", ...packageJson }),
+    );
+    for (const [filename, source] of Object.entries(files)) {
+      fs.writeFileSync(path.join(packageDir, filename), source);
+    }
+  }
+
+  function writeBarePackage(name: string, source: string): void {
+    writePackage(
+      name,
+      { type: "module", exports: "./index.js" },
+      {
+        "index.js": source,
+      },
+    );
+  }
 
   afterEach(() => {
     if (tmpDir) {
@@ -458,6 +484,232 @@ describe("loadNextConfig with tsconfig path aliases", () => {
 
     const config = await loadNextConfig(tmpDir);
     expect(config?.env?.BAZ).toBe("baz");
+  });
+
+  it("follows extended tsconfig baseUrl when resolving bare imports", async () => {
+    // Ported from Next.js: test/e2e/app-dir/next-config-ts/tsconfig-extends/
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-config-ts/tsconfig-extends/next-config-ts-tsconfig-extends-cjs.test.ts
+    tmpDir = makeTempDir();
+
+    fs.mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "src", "foo.ts"), `export const foo = "foo";\n`);
+    fs.writeFileSync(path.join(tmpDir, "bar.ts"), `export const bar = "bar";\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({
+        type: "module",
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.base.json"),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+          paths: {
+            "@/*": ["./src/*"],
+          },
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        extends: "./tsconfig.base.json",
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { foo } from "@/foo";\n` +
+        `import { bar } from "bar";\n` +
+        `export default { env: { VALUE: foo + bar } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.VALUE).toBe("foobar");
+  });
+
+  it("prefers an installed package over a baseUrl-local file of the same name", async () => {
+    // When a bare import matches both an installed package and a baseUrl-local
+    // file, the installed package wins. vinext keeps installed packages
+    // externalized so that CJS config plugins (e.g. @next/mdx) that call
+    // `require`/`require.resolve` at runtime keep working; the trade-off is
+    // that a baseUrl-local file does not shadow a package of the same name.
+    // (Pure TypeScript baseUrl semantics would prefer the local file, but that
+    // requires de-externalizing every package, which breaks CJS plugins.)
+    tmpDir = makeTempDir();
+
+    fs.writeFileSync(path.join(tmpDir, "bar.ts"), `export const bar = "local";\n`);
+    writeBarePackage("bar", `export const bar = "package";\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { bar } from "bar";\nexport default { env: { BAR: bar } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.BAR).toBe("package");
+  });
+
+  it("loads a CJS config plugin that calls require.resolve at runtime", async () => {
+    // Regression for @next/mdx-style plugins: next.config.ts imports a CJS
+    // package whose factory calls `require.resolve(...)` when invoked. Keeping
+    // installed packages externalized (rather than forcing them through the
+    // module runner) ensures `require` is defined. Reproduces the
+    // app-router-playground deploy failure: "require is not defined".
+    tmpDir = makeTempDir();
+
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+    writePackage(
+      "fake-mdx",
+      { type: "commonjs", main: "index.js" },
+      {
+        "index.js":
+          `module.exports = (opts = {}) => (config = {}) => ({\n` +
+          `  ...config,\n` +
+          `  loaderPath: require.resolve("./loader.js"),\n` +
+          `});\n`,
+        "loader.js": `module.exports = "loader";\n`,
+      },
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { baseUrl: "." } }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import withMDX from "fake-mdx";\n` + `export default withMDX({})({ env: { OK: "yes" } });\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.OK).toBe("yes");
+  });
+
+  it("falls through to packages when baseUrl has no local match", async () => {
+    tmpDir = makeTempDir();
+
+    writeBarePackage("bar", `export const bar = "package";\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { bar } from "bar";\nexport default { env: { BAR: bar } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.BAR).toBe("package");
+  });
+
+  it("does not apply tsconfig baseUrl package shadowing to next.config.mjs", async () => {
+    tmpDir = makeTempDir();
+
+    fs.writeFileSync(path.join(tmpDir, "bar.ts"), `export const bar = "local";\n`);
+    writeBarePackage("bar", `export const bar = "package";\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `import { bar } from "bar";\nexport default { env: { BAR: bar } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.BAR).toBe("package");
+  });
+
+  it("does not apply the app baseUrl to package dependency imports", async () => {
+    tmpDir = makeTempDir();
+
+    fs.writeFileSync(path.join(tmpDir, "shared.ts"), `export const shared = "app";\n`);
+    writeBarePackage(
+      "fake-plugin",
+      `import { shared } from "shared";\nexport const pluginValue = shared;\n`,
+    );
+    writeBarePackage("shared", `export const shared = "package";\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { pluginValue } from "fake-plugin";\n` +
+        `export default { env: { VALUE: pluginValue } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.VALUE).toBe("package");
+  });
+
+  it("imports ESM and CommonJS packages from next.config.ts", async () => {
+    // Ported from Next.js: test/e2e/app-dir/next-config-ts/import-from-node-modules/
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-config-ts/import-from-node-modules/next.config.ts
+    tmpDir = makeTempDir();
+
+    writePackage(
+      "cjs",
+      { type: "commonjs", main: "index.cjs" },
+      {
+        "index.cjs": `module.exports = "cjs";\n`,
+      },
+    );
+    writePackage(
+      "mjs",
+      { type: "commonjs", main: "index.mjs" },
+      {
+        "index.mjs": `export default "mjs";\n`,
+      },
+    );
+    writePackage(
+      "js-cjs",
+      { type: "commonjs", main: "index.js" },
+      {
+        "index.js": `module.exports = "jsCJS";\n`,
+      },
+    );
+    writePackage(
+      "js-esm",
+      { type: "module", main: "index.js" },
+      {
+        "index.js": `export default "jsESM";\n`,
+      },
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import cjs from "cjs";\n` +
+        `import mjs from "mjs";\n` +
+        `import jsCJS from "js-cjs";\n` +
+        `import jsESM from "js-esm";\n` +
+        `export default { env: { cjs, mjs, jsCJS, jsESM } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env).toMatchObject({
+      cjs: "cjs",
+      mjs: "mjs",
+      jsCJS: "jsCJS",
+      jsESM: "jsESM",
+    });
   });
 
   it("loads config without tsconfig.json (no aliases needed)", async () => {
@@ -822,7 +1074,9 @@ describe("resolveNextConfig serverActionsBodySizeLimit", () => {
     });
     expect(resolved.serverActionsBodySizeLimit).toBe(5242880);
   });
+});
 
+describe("resolveNextConfig disableOptimizedLoading", () => {
   // Regression for #1519: `experimental.disableOptimizedLoading` defaults to
   // `false` and is read into the resolved config. The default drives the
   // `defer`-in-head behaviour for Pages Router scripts in production.
@@ -836,6 +1090,23 @@ describe("resolveNextConfig serverActionsBodySizeLimit", () => {
       experimental: { disableOptimizedLoading: true },
     });
     expect(resolved.disableOptimizedLoading).toBe(true);
+  });
+});
+
+describe("resolveNextConfig prefetchInlining", () => {
+  it("reads experimental.prefetchInlining from next.config", async () => {
+    const disabled = await resolveNextConfig({});
+    expect(disabled.prefetchInlining).toBe(false);
+
+    const enabledByBoolean = await resolveNextConfig({
+      experimental: { prefetchInlining: true },
+    });
+    expect(enabledByBoolean.prefetchInlining).toBe(true);
+
+    const enabledByThresholds = await resolveNextConfig({
+      experimental: { prefetchInlining: { maxSize: Infinity, maxBundleSize: Infinity } },
+    });
+    expect(enabledByThresholds.prefetchInlining).toBe(true);
   });
 });
 
@@ -1165,6 +1436,7 @@ describe("detectNextIntlConfig", () => {
       output: "",
       pageExtensions: ["tsx", "ts", "jsx", "js"],
       cacheComponents: false,
+      prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: [],
@@ -1183,6 +1455,7 @@ describe("detectNextIntlConfig", () => {
       cacheMaxMemorySize: undefined,
       hashSalt: "",
       enablePrerenderSourceMaps: true,
+      appShells: false,
       expireTime: 31_536_000,
       buildId: "test-build-id",
       deploymentId: undefined,
@@ -1842,5 +2115,68 @@ describe("resolveNextConfig staleTimes (#1490)", () => {
       experimental: { staleTimes: { dynamic: -5, static: -1 } },
     });
     expect(resolved.staleTimes).toEqual({ dynamic: 0, static: 300 });
+  });
+});
+
+describe("resolveNextConfig appShells", () => {
+  it("defaults appShells to false when not set", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.appShells).toBe(false);
+  });
+
+  it("defaults appShells to false for null config", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.appShells).toBe(false);
+  });
+
+  it("reads appShells: true from experimental config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { appShells: true },
+    });
+    expect(resolved.appShells).toBe(true);
+  });
+
+  it("reads appShells: false from experimental config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { appShells: false },
+    });
+    expect(resolved.appShells).toBe(false);
+  });
+
+  it("warns when appShells is enabled without required co-flags", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const resolved = await resolveNextConfig({
+      experimental: { appShells: true },
+    });
+    expect(resolved.appShells).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "experimental.appShells is enabled but requires the following co-flags",
+      ),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("cacheComponents"));
+    warnSpy.mockRestore();
+  });
+
+  it("does not warn when appShells is enabled with all required co-flags", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const resolved = await resolveNextConfig({
+      cacheComponents: true,
+      experimental: {
+        appShells: true,
+        prefetchInlining: true,
+        varyParams: true,
+        optimisticRouting: true,
+        cachedNavigations: true,
+      },
+    });
+    expect(resolved.appShells).toBe(true);
+    // The warning should NOT contain the appShells co-flags message
+    const appShellsWarnings = warnSpy.mock.calls.filter(
+      (call) =>
+        typeof call[0] === "string" && call[0].includes("experimental.appShells is enabled"),
+    );
+    expect(appShellsWarnings).toHaveLength(0);
+    warnSpy.mockRestore();
   });
 });

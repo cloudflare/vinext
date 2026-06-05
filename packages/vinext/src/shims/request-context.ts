@@ -33,13 +33,18 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * Minimal ExecutionContext interface matching the Cloudflare Workers runtime.
- * Using a structural interface so this file has no runtime dependency on
- * Cloudflare types packages.
+ * Minimal structural ExecutionContext interface, kept free of any host-runtime
+ * dependency.
  */
 export type ExecutionContextLike = {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException?(): void;
+  /**
+   * Optional host-provided cache handle that some runtimes expose on the
+   * execution context. Typed as `unknown` to keep this module runtime-agnostic;
+   * CDN cache adapters that know the concrete shape narrow it themselves.
+   */
+  cache?: unknown;
 };
 
 // ---------------------------------------------------------------------------

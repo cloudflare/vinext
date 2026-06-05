@@ -21,6 +21,11 @@ import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import {
+  VIRTUAL_CACHE_ADAPTERS,
+  generateCacheAdaptersModule,
+  type VinextCacheConfig,
+} from "./cache/cache-adapters-virtual.js";
+import {
   generateBrowserEntry,
   isLinkPrefetchRoute,
   toLinkPrefetchRoute,
@@ -74,6 +79,7 @@ import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "vinext/shims/c
 import { precompressAssets } from "./build/precompress.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
+import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
 import {
   isExternalUrl,
   proxyExternalRequest,
@@ -87,7 +93,7 @@ import {
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-request-headers.js";
 import { detectPackageManager } from "./utils/project.js";
-import { manifestFileWithBase, manifestFilesWithBase } from "./utils/manifest-paths.js";
+import { manifestFilesWithBase } from "./utils/manifest-paths.js";
 import { hasBasePath } from "./utils/base-path.js";
 import { mergeRewriteQuery } from "./utils/query.js";
 import {
@@ -124,16 +130,22 @@ import {
 } from "./plugins/fonts.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import { computeLazyChunks } from "./utils/lazy-chunks.js";
+import { findClientEntryFile, readClientBuildManifest } from "./utils/client-build-manifest.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import { buildSassPreprocessorOptions } from "./plugins/sass.js";
 import {
   createClientManualChunks,
   createClientOutputConfig,
   createClientCodeSplittingConfig,
+  createClientAssetFileNames,
   getClientTreeshakeConfigForVite,
   getBuildBundlerOptions,
   withBuildBundlerOptions,
 } from "./build/client-build-config.js";
+import {
+  markCssUrlAssetReferences,
+  restoreDedupedCssAssetReferences,
+} from "./build/css-url-assets.js";
 import {
   augmentSsrManifestFromBundle,
   tryRealpathSync,
@@ -142,8 +154,10 @@ import {
 } from "./build/ssr-manifest.js";
 import { stripServerExports } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
+import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
+import { getViteMajorVersion } from "./utils/vite-version.js";
 import tsconfigPaths from "vite-tsconfig-paths";
 import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
 import MagicString from "magic-string";
@@ -168,6 +182,93 @@ function createRscCompatibilityId(nextConfig: ResolvedNextConfig): string {
 }
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
+
+// Detect a module-level `"use server"` directive (a Server Actions module).
+// Directives form the leading prologue of string-literal ExpressionStatements,
+// so we only scan until the first non-directive statement.
+function hasModuleLevelUseServerDirective(body: ReturnType<typeof parseAst>["body"]): boolean {
+  for (const node of body) {
+    if (node.type !== "ExpressionStatement") break;
+    const directive = (node as ASTNode & { directive?: unknown }).directive;
+    const expression = (node as ASTNode & { expression?: { type?: string; value?: unknown } })
+      .expression;
+    const value =
+      typeof directive === "string"
+        ? directive
+        : expression?.type === "Literal"
+          ? expression.value
+          : undefined;
+    if (value === "use server") return true;
+    // Keep scanning through other directives (e.g. "use strict"); a
+    // non-string-literal statement ends the directive prologue.
+    if (typeof value !== "string") break;
+  }
+  return false;
+}
+
+function hasServerOnlyMarkerImport(code: string): boolean {
+  if (!code.includes("server-only")) return false;
+
+  let ast: ReturnType<typeof parseAst>;
+  try {
+    ast = parseAst(code);
+  } catch {
+    return false;
+  }
+
+  // Server Actions modules (`"use server"`) live in the server/action layer,
+  // not the client layer. Next.js allows them to `import "server-only"` even
+  // though the client bundle holds references used to invoke the actions
+  // (see test/e2e/app-dir/actions/app/client/actions.js, which does exactly
+  // this). Treating them as client-reachable here is a false positive that
+  // breaks the entire client build, so exempt them while still rejecting
+  // genuine client modules below.
+  if (hasModuleLevelUseServerDirective(ast.body)) return false;
+
+  function walk(node: ASTNode | ASTNode[] | null | undefined): boolean {
+    if (!node) return false;
+    if (Array.isArray(node)) return node.some((child) => walk(child));
+    if (typeof node !== "object") return false;
+
+    if (node.type === "ImportDeclaration") {
+      const source = (node as ASTNode & { source?: { value?: unknown } }).source?.value;
+      if (source === "server-only") return true;
+    }
+
+    if (node.type === "CallExpression") {
+      const call = node as ASTNode & {
+        callee?: { type?: string; name?: string };
+        arguments?: Array<{ type?: string; value?: unknown }>;
+      };
+      if (
+        call.callee?.type === "Identifier" &&
+        call.callee.name === "require" &&
+        call.arguments?.[0]?.type === "Literal" &&
+        call.arguments[0].value === "server-only"
+      ) {
+        return true;
+      }
+    }
+
+    for (const key of Object.keys(node)) {
+      if (key === "type" || key === "start" || key === "end" || key === "loc" || key === "parent") {
+        continue;
+      }
+      const value = (node as unknown as Record<string, unknown>)[key];
+      if (Array.isArray(value)) {
+        if (value.some((child) => child && typeof child === "object" && walk(child as ASTNode))) {
+          return true;
+        }
+      } else if (value && typeof value === "object" && "type" in value) {
+        if (walk(value as ASTNode)) return true;
+      }
+    }
+
+    return false;
+  }
+
+  return walk(ast.body);
+}
 
 const __dirname = import.meta.dirname;
 type VitePluginReactModule = typeof import("@vitejs/plugin-react");
@@ -355,40 +456,6 @@ function loadTsconfigPathAliases(
 }
 
 /**
- * Detect Vite major version at runtime by resolving from cwd.
- * The plugin may be installed in a workspace root with Vite 7 but used
- * by a project that has Vite 8 — so we resolve from cwd, not from
- * the plugin's own location.
- */
-function getViteMajorVersion(): number {
-  try {
-    const require = createRequire(path.join(process.cwd(), "package.json"));
-    const vitePkg = require("vite/package.json");
-
-    const viteMajor = parseInt(vitePkg?.version, 10);
-    if (vitePkg?.name === "vite" && Number.isFinite(viteMajor)) {
-      return viteMajor;
-    }
-
-    const bundledViteMajor = parseInt(vitePkg?.bundledVersions?.vite, 10);
-    if (Number.isFinite(bundledViteMajor)) {
-      return bundledViteMajor;
-    }
-
-    // npm aliases like `vite: npm:@voidzero-dev/vite-plus-core@...` expose the
-    // aliased package.json, whose own version is not Vite's version.
-    console.warn(
-      `[vinext] Could not determine Vite major version from ${vitePkg?.name ?? "vite/package.json"}; assuming Vite 7`,
-    );
-    return 7;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[vinext] Failed to resolve vite/package.json (${message}); assuming Vite 7`);
-    return 7;
-  }
-}
-
-/**
  * Read the vinext package version once at plugin load. Surfaced via
  * `process.env.__NEXT_VERSION` define so `window.next.version` lands a
  * real string instead of the `"vinext"` fallback. Resolved relative to
@@ -450,6 +517,8 @@ const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
 const RESOLVED_APP_BROWSER_ENTRY = "\0" + VIRTUAL_APP_BROWSER_ENTRY;
 const VIRTUAL_ROOT_PARAMS = "virtual:vinext-root-params";
 const RESOLVED_ROOT_PARAMS = "\0" + VIRTUAL_ROOT_PARAMS;
+/** Virtual module that registers config-driven cache adapters (see VinextOptions.cache). */
+const RESOLVED_CACHE_ADAPTERS = "\0" + VIRTUAL_CACHE_ADAPTERS;
 /** Virtual module for composed instrumentation-client bootstrap. */
 const VIRTUAL_INSTRUMENTATION_CLIENT = "private-next-instrumentation-client";
 const RESOLVED_INSTRUMENTATION_CLIENT = `\0${VIRTUAL_INSTRUMENTATION_CLIENT}.mjs`;
@@ -552,11 +621,15 @@ const _reactServerShims = new Map<string, string>([
 ]);
 
 const clientManualChunks = createClientManualChunks(_shimsDir);
-const clientOutputConfig = createClientOutputConfig(clientManualChunks);
 const clientCodeSplittingConfig = createClientCodeSplittingConfig(clientManualChunks);
 
-function getClientOutputConfigForVite(viteMajorVersion: number) {
-  return viteMajorVersion >= 8 ? { codeSplitting: clientCodeSplittingConfig } : clientOutputConfig;
+function getClientOutputConfigForVite(viteMajorVersion: number, assetsDir: string) {
+  return viteMajorVersion >= 8
+    ? {
+        assetFileNames: createClientAssetFileNames(assetsDir),
+        codeSplitting: clientCodeSplittingConfig,
+      }
+    : createClientOutputConfig(clientManualChunks, assetsDir);
 }
 
 export type VinextOptions = {
@@ -634,6 +707,26 @@ export type VinextOptions = {
    */
   precompress?: boolean;
   /**
+   * Configure cache handlers declaratively, so you don't need a custom worker
+   * entry that calls `setDataCacheHandler()` / `setCdnCacheAdapter()`. Each slot
+   * is a `{ adapter, options }` descriptor pointing at an adapter module whose
+   * default export is a factory; the plugin registers them automatically on the
+   * first request, passing the host `env` (Worker bindings) so adapters that
+   * need a binding — e.g. a KV namespace — can read it.
+   *
+   * @example
+   * import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+   * import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+   *
+   * vinext({
+   *   cache: {
+   *     cdn:  cdnAdapter(),
+   *     data: kvDataAdapter({ binding: "MY_KV" }),
+   *   },
+   * })
+   */
+  cache?: VinextCacheConfig;
+  /**
    * Experimental vinext-only feature flags.
    */
   experimental?: {
@@ -670,6 +763,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let instrumentationPath: string | null = null;
   let instrumentationClientPath: string | null = null;
   let clientInjectModule: string | null = null;
+  // Resolved in the `config` hook from the user's `build.assetsInlineLimit`
+  // (default 0 = always emit files, matching Next's `asset/resource`). Read by
+  // the per-environment build config and the `configEnvironment` defaults
+  // plugin. `config` runs before `configEnvironment`/build, and the `= 0`
+  // initializer guards any unexpected hook ordering.
+  let clientAssetsInlineLimit: NonNullable<UserConfig["build"]>["assetsInlineLimit"] = 0;
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
@@ -734,7 +833,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           .filter(isLinkPrefetchRoute)
           .map(toLinkPrefetchRoute)
       : [];
-    return _generateClientEntry(pagesDir, nextConfig, fileMatcher, { appPrefetchRoutes });
+    return _generateClientEntry(pagesDir, nextConfig, fileMatcher, {
+      appPrefetchRoutes,
+      instrumentationClientPath,
+    });
   }
 
   async function writeRouteTypes(): Promise<void> {
@@ -1142,6 +1244,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME"] = JSON.stringify(
           String(nextConfig.staleTimes.static),
         );
+        defines["process.env.__VINEXT_PREFETCH_INLINING"] = JSON.stringify(
+          nextConfig.prefetchInlining ? "true" : "false",
+        );
         // Expose trailingSlash to client-side code so <Link> can render hrefs
         // in the canonical form and avoid an unnecessary 308 redirect bounce.
         defines["process.env.__VINEXT_TRAILING_SLASH"] = JSON.stringify(
@@ -1216,9 +1321,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // because vinext is the runtime — there is no underlying Next.js
         // version to surface.
         defines["process.env.__NEXT_VERSION"] = JSON.stringify(getVinextVersion());
-        // App Shells — always false; plumbing-only flag, not yet implemented.
+        // App Shells — plumbing-only flag. The value is read from
+        // `experimental.appShells` in next.config. Actual App Shell prefetching
+        // behavior requires the segment-cache architecture, which vinext does not
+        // yet implement (see issue #1614). Setting this to `true` only makes the
+        // build-time define available for client-side feature gating; it does not
+        // enable functional App Shell prefetching.
         // See: https://github.com/vercel/next.js/pull/93997
-        defines["process.env.__NEXT_APP_SHELLS"] = JSON.stringify(false);
+        defines["process.env.__NEXT_APP_SHELLS"] = JSON.stringify(nextConfig.appShells);
 
         // User-defined compile-time constants from `compiler.define` in
         // next.config. Applied to BOTH client and server bundles via Vite's
@@ -1359,6 +1469,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               "client",
               "instrumentation-client",
             ),
+            "vinext/dev-error-overlay": path.resolve(__dirname, "server", "dev-error-overlay"),
             "vinext/html": path.resolve(__dirname, "server", "html"),
             ...(clientInjectModule === null
               ? {
@@ -1454,6 +1565,25 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // (on the client env), not globally — otherwise it leaks into RSC/SSR
         // environments where it can cause asset resolution issues.
         const isMultiEnv = hasAppDir || hasCloudflarePlugin || hasNitroPlugin;
+        const hasBuildInput = getBuildBundlerOptions(config.build)?.input !== undefined;
+        // True when a dedicated client build environment exists to carry the
+        // client-only `assetsInlineLimit` default; otherwise we apply it at the
+        // top level (single-build client output) so RSC/SSR stay untouched.
+        const shouldInjectPlainPagesEnvironments =
+          !hasAppDir && !hasCloudflarePlugin && !isSSR && !hasBuildInput;
+        const hasClientBuildEnvironment =
+          hasAppDir || hasCloudflarePlugin || hasNitroPlugin || shouldInjectPlainPagesEnvironments;
+        const clientAssetsDir = resolveAssetsDir(nextConfig.assetPrefix ?? "");
+        // Next emits CSS url() deps as files, not inlined data URLs. A user's
+        // explicit `build.assetsInlineLimit` always wins.
+        clientAssetsInlineLimit = config.build?.assetsInlineLimit ?? 0;
+        const devHmrConfig =
+          config.server?.hmr === false
+            ? false
+            : {
+                ...(typeof config.server?.hmr === "object" ? config.server.hmr : {}),
+                overlay: false,
+              };
 
         const viteConfig: UserConfig = {
           // Disable Vite's default HTML serving - we handle all routing
@@ -1534,7 +1664,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // and any static file server can resolve
             // `<assetPrefix?>/_next/static/...` requests directly, and
             // misses naturally fall through as plain-text 404s.
-            assetsDir: resolveAssetsDir(nextConfig.assetPrefix ?? ""),
+            assetsDir: clientAssetsDir,
+            // Single-build client output has no client environment to carry the
+            // default, so apply it at the top level. Multi-env builds set it on
+            // `environments.client.build` below to avoid changing RSC/SSR asset
+            // handling.
+            ...(!isSSR && !hasClientBuildEnvironment
+              ? { assetsInlineLimit: clientAssetsInlineLimit }
+              : {}),
             ...withBuildBundlerOptions(viteMajorVersion, {
               // Suppress "Module level directives cause errors when bundled"
               // warnings for "use client" / "use server" directives. Our shims
@@ -1608,7 +1745,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // manualChunks is set per-environment on the client env below
               // to avoid leaking into RSC/SSR environments.
               ...(!isSSR && !isMultiEnv
-                ? { output: getClientOutputConfigForVite(viteMajorVersion) }
+                ? { output: getClientOutputConfigForVite(viteMajorVersion, clientAssetsDir) }
                 : {}),
             }),
           },
@@ -1624,6 +1761,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               preflightContinue: true,
               origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/,
             },
+            hmr: devHmrConfig,
           },
           // Configure SSR transform behaviour for Node targets.
           // - `external`: React packages are loaded natively by Node (CJS)
@@ -1986,9 +2124,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // on every page — defeating code-splitting for React.lazy() and
                 // next/dynamic boundaries.
                 ...(hasCloudflarePlugin ? { manifest: true } : {}),
+                // Client-scoped so RSC/SSR keep their normal asset handling
+                // unless the user configured Vite globally.
+                assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_APP_BROWSER_ENTRY },
-                  output: getClientOutputConfigForVite(viteMajorVersion),
+                  output: getClientOutputConfigForVite(viteMajorVersion, clientAssetsDir),
                   treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
                 }),
               },
@@ -2007,15 +2148,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               build: {
                 manifest: true,
                 ssrManifest: true,
+                assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_CLIENT_ENTRY },
-                  output: getClientOutputConfigForVite(viteMajorVersion),
+                  output: getClientOutputConfigForVite(viteMajorVersion, clientAssetsDir),
                   treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
                 }),
               },
             },
           };
-        } else if (!isSSR && !getBuildBundlerOptions(config.build)?.input) {
+        } else if (shouldInjectPlainPagesEnvironments) {
           // Plain Pages Router (Node): define client + ssr environments so
           // createBuilder + buildApp() produces both dist/client and
           // dist/server/entry.js. Without this, buildApp() only sees the
@@ -2033,9 +2175,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 outDir: "dist/client",
                 manifest: true,
                 ssrManifest: true,
+                assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_CLIENT_ENTRY },
-                  output: getClientOutputConfigForVite(viteMajorVersion),
+                  output: getClientOutputConfigForVite(viteMajorVersion, clientAssetsDir),
                   treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
                 }),
               },
@@ -2221,6 +2364,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (cleanId === "next/root-params" || cleanId === "next/root-params.js") {
             return RESOLVED_ROOT_PARAMS;
           }
+          if (
+            cleanId === VIRTUAL_CACHE_ADAPTERS ||
+            cleanId.endsWith("/" + VIRTUAL_CACHE_ADAPTERS) ||
+            cleanId.endsWith("\\" + VIRTUAL_CACHE_ADAPTERS)
+          ) {
+            return RESOLVED_CACHE_ADAPTERS;
+          }
           if (cleanId.startsWith(VIRTUAL_GOOGLE_FONTS + "?")) {
             return RESOLVED_VIRTUAL_GOOGLE_FONTS + cleanId.slice(VIRTUAL_GOOGLE_FONTS.length);
           }
@@ -2315,6 +2465,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               clientTraceMetadata: nextConfig?.clientTraceMetadata,
               assetPrefix: nextConfig?.assetPrefix,
               expireTime: nextConfig?.expireTime,
+              cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
               inlineCss: nextConfig?.inlineCss,
               i18n: nextConfig?.i18n,
               hasPagesDir,
@@ -2330,6 +2481,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ? await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher)
             : [];
           return generateRootParamsModule(routes.flatMap((route) => route.rootParamNames ?? []));
+        }
+        if (id === RESOLVED_CACHE_ADAPTERS) {
+          return generateCacheAdaptersModule(options.cache);
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
           return generateSsrEntry(hasPagesDir);
@@ -2426,6 +2580,44 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // prevents a stale manifest from leaking into a subsequent generateBundle
         // call if the load hook is not re-triggered (e.g., in non-standard rebuild paths).
         rscClassificationManifest = null;
+      },
+    },
+    // CSS url() asset parity with Next.js. Build-only and client-scoped: dev CSS
+    // is untouched, and server environments keep Vite's default asset handling.
+    {
+      name: "vinext:css-url-assets-mark",
+      enforce: "pre",
+      apply: "build",
+
+      transform(code, id) {
+        if (this.environment?.name !== "client") return null;
+        const marked = markCssUrlAssetReferences(code, id);
+        if (marked === null) return null;
+        // No source map: the marker is transient — it's stripped before final
+        // output (generateBundle), so emitted CSS positions are unchanged, and
+        // a map over the intermediate marked text carries no useful information.
+        return { code: marked, map: null };
+      },
+    },
+    {
+      name: "vinext:client-css-url-assets-defaults",
+      apply: "build",
+
+      configEnvironment(name) {
+        if (name !== "client") return null;
+        return { build: { assetsInlineLimit: clientAssetsInlineLimit } };
+      },
+    },
+    {
+      name: "vinext:css-url-assets-restore",
+      enforce: "post",
+      apply: "build",
+
+      generateBundle(_options, bundle) {
+        if (this.environment?.name !== "client") return;
+        restoreDedupedCssAssetReferences(bundle, (asset) => {
+          this.emitFile({ type: "asset", fileName: asset.fileName, source: asset.source });
+        });
       },
     },
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
@@ -2711,6 +2903,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           next();
         });
+
+        installDevStackSourcemapMiddleware(server);
 
         // Return a function to register middleware AFTER Vite's built-in middleware
         return () => {
@@ -3504,6 +3698,30 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         };
       },
     },
+    // Match Next.js's server-only boundary for browser/client graphs. The
+    // marker is valid in App Router Server Components and middleware/server
+    // targets, but importing it from client-reachable code (including Pages
+    // Router browser bundles) must fail instead of silently resolving to the
+    // empty shim.
+    //
+    // Ported behavior from Next.js:
+    // test/development/acceptance/server-component-compiler-errors-in-pages.test.ts
+    // packages/next/src/build/webpack-config.ts (server-only/client-only layers)
+    {
+      name: "vinext:validate-server-only-client-imports",
+      transform: {
+        filter: { id: /\.(tsx?|jsx?|mjs)$/, code: "server-only" },
+        handler(code, id) {
+          if (this.environment?.name !== "client") return null;
+          if (id.startsWith("\0")) return null;
+          if (!hasServerOnlyMarkerImport(code)) return null;
+
+          throw new Error(
+            `You're importing a module that depends on "server-only". This API is only available in Server Components in the App Router, but this module is reachable from a client bundle.`,
+          );
+        },
+      },
+    },
     // Strip server-only data-fetching exports (getServerSideProps, getStaticProps,
     // getStaticPaths) from page modules in the client bundle. These functions
     // often import server-only modules (database drivers, fs, etc.) that would
@@ -3925,6 +4143,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
+    createImportMetaUrlPlugin({
+      getRoot: () => root,
+    }),
     // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
     // see src/plugins/og-assets.ts
     createOgInlineFetchAssetsPlugin(),
@@ -4278,21 +4499,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           let lazyChunksData: string[] | null = null;
           let clientEntryFile: string | null = null;
           const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
-          if (fs.existsSync(buildManifestPath)) {
-            try {
-              const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
-              // oxlint-disable-next-line typescript/no-explicit-any
-              for (const [, value] of Object.entries(buildManifest) as [string, any][]) {
-                if (value && value.isEntry && value.file) {
-                  clientEntryFile = manifestFileWithBase(value.file, clientBase);
-                  break;
-                }
-              }
-              const lazy = manifestFilesWithBase(computeLazyChunks(buildManifest), clientBase);
-              if (lazy.length > 0) lazyChunksData = lazy;
-            } catch {
-              /* ignore parse errors */
-            }
+          const buildManifest = readClientBuildManifest(buildManifestPath);
+          if (buildManifest) {
+            clientEntryFile =
+              findClientEntryFile({
+                buildManifest,
+                clientDir,
+                assetsSubdir: resolveAssetsDir(nextConfig?.assetPrefix),
+                assetBase: clientBase,
+              }) ?? null;
+            const lazy = manifestFilesWithBase(computeLazyChunks(buildManifest), clientBase);
+            if (lazy.length > 0) lazyChunksData = lazy;
           }
 
           // Read SSR manifest for per-page CSS/JS injection
@@ -4359,18 +4576,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // and the prod-server lookup path, so this fallback works for every
             // layout supported by the rest of the pipeline.
             if (!clientEntryFile) {
-              const assetsSubdir = resolveAssetsDir(nextConfig?.assetPrefix);
-              const assetsDir = path.join(clientDir, assetsSubdir);
-              if (fs.existsSync(assetsDir)) {
-                const files = fs.readdirSync(assetsDir);
-                const entry = files.find(
-                  (f: string) =>
-                    (f.includes("vinext-client-entry") || f.includes("vinext-app-browser-entry")) &&
-                    f.endsWith(".js"),
-                );
-                if (entry)
-                  clientEntryFile = manifestFileWithBase(`${assetsSubdir}/${entry}`, clientBase);
-              }
+              clientEntryFile =
+                findClientEntryFile({
+                  clientDir,
+                  assetsSubdir: resolveAssetsDir(nextConfig?.assetPrefix),
+                  assetBase: clientBase,
+                }) ?? null;
             }
 
             // Prepend globals to worker entry

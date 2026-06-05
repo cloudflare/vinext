@@ -46,6 +46,9 @@ export const VINEXT_PARAMS_HEADER = "X-Vinext-Params";
 /** Deduplicated, sorted list of mounted layout slots for cache keying. */
 export const VINEXT_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
 
+/** Per-page dynamic stale time in seconds for App Router RSC responses. */
+export const VINEXT_DYNAMIC_STALE_TIME_HEADER = "X-Vinext-Dynamic-Stale-Time";
+
 /** Route interception context for parallel/intercepting routes. */
 export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context";
 

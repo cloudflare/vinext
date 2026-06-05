@@ -2,6 +2,7 @@ import type { AppPageSpecialError } from "./app-page-execution.js";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { getAppPageSegmentParamName } from "./app-page-params.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type GenerateStaticParams = (args: { params: AppPageParams }) => unknown;
@@ -106,6 +107,7 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
     params: AppPageParams,
     interceptOpts: TInterceptOpts | undefined,
     searchParams: URLSearchParams,
+    layoutParamAccess?: AppLayoutParamAccessTracker,
   ) => Promise<TElement>;
   cleanPathname: string;
   currentRoute: TRoute;
@@ -113,6 +115,7 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
   getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
   isRscRequest: boolean;
+  layoutParamAccess?: AppLayoutParamAccessTracker;
   renderInterceptResponse: (route: TRoute, element: TElement) => Promise<Response> | Response;
   searchParams: URLSearchParams;
   setNavigationContext: (context: {
@@ -408,6 +411,7 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
       ),
       options.toInterceptOpts(interceptState.intercept),
       options.searchParams,
+      options.layoutParamAccess,
     );
 
     return {

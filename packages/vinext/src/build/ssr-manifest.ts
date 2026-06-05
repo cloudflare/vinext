@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { normalizeManifestFile, manifestFileWithBase } from "../utils/manifest-paths.js";
+import { collapseDuplicateBase, manifestFileWithBase } from "../utils/manifest-paths.js";
 
 export type BundleBackfillChunk = {
   type: "chunk";
@@ -92,7 +92,7 @@ export function augmentSsrManifestFromBundle(
     const normalizedKey = normalizeManifestModuleId(key, root);
     if (!nextManifest[normalizedKey]) nextManifest[normalizedKey] = new Set<string>();
     for (const file of files) {
-      nextManifest[normalizedKey].add(normalizeManifestFile(file));
+      nextManifest[normalizedKey].add(collapseDuplicateBase(file, base));
     }
   }
 

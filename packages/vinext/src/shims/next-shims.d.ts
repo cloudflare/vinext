@@ -228,13 +228,17 @@ declare module "next/navigation" {
     compatibilityIdHeader?: string | null;
     buffer: ArrayBuffer;
     contentType: string;
+    dynamicStaleTimeSeconds?: number;
+    expiresAt?: number;
     mountedSlotsHeader?: string | null;
     paramsHeader: string | null;
     url: string;
   };
   export type PrefetchCacheEntry = {
     cacheForNavigation?: boolean;
+    expiresAt?: number;
     invalidationTimer?: ReturnType<typeof setTimeout>;
+    mountedSlotsHeader?: string | null;
     onInvalidateCallbacks?: Set<() => void>;
     optimisticRouteShell?: boolean;
     outcome: "pending" | "cache-seeded";
@@ -248,6 +252,14 @@ declare module "next/navigation" {
   export function getPrefetchCache(): Map<string, PrefetchCacheEntry>;
   export function getPrefetchedUrls(): Set<string>;
   export function invalidatePrefetchCache(): void;
+  export function resolvePrefetchCacheEntryMountedSlotsHeader(
+    entry: PrefetchCacheEntry,
+  ): string | null;
+  export function hasPrefetchCacheEntryForNavigation(
+    rscUrl: string,
+    interceptionContext?: string | null,
+    mountedSlotsHeader?: string | null,
+  ): boolean;
   export function storePrefetchResponse(
     rscUrl: string,
     response: Response,
@@ -269,6 +281,12 @@ declare module "next/navigation" {
     interceptionContext?: string | null,
     mountedSlotsHeader?: string | null,
   ): CachedRscResponse | null;
+  export function consumePrefetchResponseForNavigation(
+    rscUrl: string,
+    interceptionContext?: string | null,
+    mountedSlotsHeader?: string | null,
+    options?: { shouldConsume?: () => boolean },
+  ): Promise<CachedRscResponse | null>;
 }
 
 declare module "next/image" {
@@ -674,6 +692,7 @@ declare module "next/cache" {
     | { kind: "IMAGE"; etag: string; buffer: ArrayBuffer; extension: string; revalidate?: number };
 
   export class MemoryCacheHandler implements CacheHandler {
+    constructor(options?: number | { cacheMaxMemorySize?: number; maxMemoryCacheSize?: number });
     get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
     set(
       key: string,
@@ -684,8 +703,16 @@ declare module "next/cache" {
     resetRequestCache(): void;
   }
 
+  export function setDataCacheHandler(handler: CacheHandler): void;
+  export function getDataCacheHandler(): CacheHandler;
+  /** @deprecated Use setDataCacheHandler. */
   export function setCacheHandler(handler: CacheHandler): void;
+  /** @deprecated Use getDataCacheHandler. */
   export function getCacheHandler(): CacheHandler;
+  export function configureMemoryCacheHandler(options?: {
+    cacheMaxMemorySize?: number;
+    maxMemoryCacheSize?: number;
+  }): void;
   export function revalidateTag(tag: string, profile?: string | { expire?: number }): Promise<void>;
   export function revalidatePath(path: string, type?: "page" | "layout"): Promise<void>;
   export function updateTag(tag: string): Promise<void>;

@@ -29,7 +29,7 @@
  */
 
 import {
-  getCacheHandler,
+  getDataCacheHandler,
   cacheLifeProfiles,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
@@ -491,7 +491,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     }
 
     // Shared cache ("use cache" / "use cache: remote")
-    const handler = getCacheHandler();
+    const handler = getDataCacheHandler();
 
     // Check cache — deserialize via RSC stream when available, JSON otherwise
     const existing = await handler.get(cacheKey, { kind: "FETCH" });
@@ -570,6 +570,16 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 
     return result;
   };
+
+  // Preserve the original function's arity on the wrapper. The wrapper is
+  // declared as `(...args)` (arity 0), which hides the original signature.
+  // Callers like `resolveModuleMetadata` rely on `fn.length` to decide whether
+  // to pass optional arguments (e.g. the `parent` metadata) — matching Next.js,
+  // which omits the `parent` argument when a cached `generateMetadata` does not
+  // declare/use it, so non-serializable parent values (like a `URL`
+  // `metadataBase`) never reach the cache-key encoder.
+  // Function `length` is always `configurable: true` per spec, so this is safe.
+  Object.defineProperty(cachedFn, "length", { value: fn.length, configurable: true });
 
   return cachedFn;
 }

@@ -15,7 +15,8 @@ import { normalizePageExtensions } from "../routing/file-matcher.js";
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
-import { loadTsconfigPathAliasesForRoot } from "./tsconfig-paths.js";
+import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
+import { getViteMajorVersion } from "../utils/vite-version.js";
 
 /**
  * Parse a body size limit value (string or number) into bytes.
@@ -321,6 +322,12 @@ export type ResolvedNextConfig = {
   pageExtensions: string[];
   instrumentationClientInject: string[];
   cacheComponents: boolean;
+  /**
+   * Whether `experimental.prefetchInlining` is configured. Next.js uses this
+   * with the Segment Cache to fetch the route tree before the bundled inlined
+   * segment payload.
+   */
+  prefetchInlining: boolean;
   redirects: NextRedirect[];
   rewrites: {
     beforeFiles: NextRewrite[];
@@ -356,6 +363,13 @@ export type ResolvedNextConfig = {
   serverExternalPackages: string[];
   /** Enable sourcemaps for prerender error stack traces. Defaults to true. */
   enablePrerenderSourceMaps: boolean;
+  /**
+   * Enable App Shell prefetching (from experimental.appShells).
+   * Plumbing-only in vinext — the flag is accepted and forwarded to the client
+   * bundle via `process.env.__NEXT_APP_SHELLS`, but actual App Shell behavior
+   * requires the segment-cache architecture which is not yet implemented.
+   */
+  appShells: boolean;
   /** Resolved build ID (from generateBuildId, or a random UUID if not provided). */
   buildId: string;
   /** Resolved deployment ID from next.config.js or NEXT_DEPLOYMENT_ID. */
@@ -799,13 +813,27 @@ export async function loadNextConfig(
   if (!configPath) return null;
 
   const filename = path.basename(configPath);
+  const isTypeScriptConfig = /\.[cm]?ts$/.test(configPath);
 
   // Mirror Next.js: read `compilerOptions.paths` from the project's
   // tsconfig.json so aliased imports inside next.config.ts (e.g.
   // `import { foo } from '@/foo'`) resolve at config-load time. Next.js
-  // passes these to SWC; we pass them to Vite's resolver as `resolve.alias`.
+  // passes `paths` and `baseUrl` to SWC; we thread both into Vite's resolver.
   // See packages/next/src/build/next-config-ts/transpile-config.ts.
-  const tsconfigAliases = loadTsconfigPathAliasesForRoot(root);
+  const tsconfigResolution = loadTsconfigResolutionForRoot(root);
+  const tsconfigBaseUrl = isTypeScriptConfig ? tsconfigResolution.baseUrl : null;
+
+  // Vite 8 (Rolldown) resolves tsconfig `baseUrl` bare imports natively via
+  // `resolve.tsconfigPaths` (oxc-resolver). Vite 7 has no equivalent option,
+  // so baseUrl-based imports in `next.config.ts` are a documented Vite 7/8
+  // capability gap (see docs). `paths` aliases still work on both via
+  // `resolve.alias`. Mirrors the Vite-major gate used in index.ts.
+  //
+  // Note: installed packages stay externalized (so CJS config plugins like
+  // `@next/mdx` that call `require`/`require.resolve` at runtime keep working).
+  // baseUrl resolves bare imports that have no installed package of the same
+  // name; it does not shadow an installed package with a baseUrl-local file.
+  const useNativeTsconfigPaths = !!tsconfigBaseUrl && getViteMajorVersion() >= 8;
 
   // Symlink-resolved config path, used by the `commonjs()` filter below to
   // exclude the config file itself. macOS uses /private/var symlinks, so
@@ -820,7 +848,16 @@ export async function loadNextConfig(
       logLevel: "error",
       clearScreen: false,
       resolve: {
-        alias: tsconfigAliases,
+        alias: tsconfigResolution.aliases,
+        // On Vite 8, use native tsconfig resolution (oxc-resolver
+        // `tsconfig: 'auto'`), which mirrors Next.js's SWC `paths` + `baseUrl`
+        // handling: it follows `extends` and resolves baseUrl-local bare imports
+        // via per-importer tsconfig discovery. Installed packages stay
+        // externalized, so a baseUrl-local file does not shadow a package of the
+        // same name. Vite 7 has no native equivalent, so baseUrl bare imports in
+        // next.config.ts are unsupported there (documented gap); `resolve.alias`
+        // still covers `paths` aliases on both.
+        ...(useNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
         // Include `.cjs` and `.cts` so `vite-plugin-commonjs` recognises
         // those extensions (the plugin keys off `config.resolve.extensions`,
         // which on Vite defaults to `[.mjs, .js, .mts, .ts, .jsx, .tsx,
@@ -849,7 +886,7 @@ export async function loadNextConfig(
       // same source produces an `Identifier 'module' has already been
       // declared` syntax error.
       plugins: [
-        ...(/\.[cm]?ts$/.test(configPath) ? [cjsGlobalsInjectorPlugin(configPath)] : []),
+        ...(isTypeScriptConfig ? [cjsGlobalsInjectorPlugin(configPath)] : []),
         commonjs({
           filter: (id: string) => {
             const idPath = id.startsWith("file://") ? fileURLToPath(id) : id.split("?")[0];
@@ -1108,6 +1145,7 @@ export async function resolveNextConfig(
       output: "",
       pageExtensions: normalizePageExtensions(),
       cacheComponents: false,
+      prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: [],
@@ -1126,6 +1164,7 @@ export async function resolveNextConfig(
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
       enablePrerenderSourceMaps: true,
+      appShells: false,
       hashSalt: process.env.NEXT_HASH_SALT ?? "",
       buildId,
       deploymentId,
@@ -1229,6 +1268,41 @@ export async function resolveNextConfig(
     ? rawOptimize.filter((x): x is string => typeof x === "string")
     : [];
   const inlineCss = experimental?.inlineCss === true;
+  const prefetchInlining =
+    experimental?.prefetchInlining === true || isUnknownRecord(experimental?.prefetchInlining);
+
+  // Validate experimental.appShells co-flags. Next.js requires all of the
+  // following to be enabled when appShells is true:
+  //   cacheComponents, prefetchInlining, varyParams, optimisticRouting, cachedNavigations
+  // vinext does not yet implement varyParams, optimisticRouting, or cachedNavigations,
+  // so we warn when appShells is enabled and explain which co-flags are missing.
+  const appShells = experimental?.appShells === true;
+  if (appShells) {
+    const missingCoFlags: string[] = [];
+    if (!config.cacheComponents) {
+      missingCoFlags.push("cacheComponents");
+    }
+    if (experimental?.prefetchInlining !== true) {
+      missingCoFlags.push("experimental.prefetchInlining");
+    }
+    if (experimental?.varyParams !== true) {
+      missingCoFlags.push("experimental.varyParams");
+    }
+    if (experimental?.optimisticRouting !== true) {
+      missingCoFlags.push("experimental.optimisticRouting");
+    }
+    if (experimental?.cachedNavigations !== true) {
+      missingCoFlags.push("experimental.cachedNavigations");
+    }
+    if (missingCoFlags.length > 0) {
+      // Next.js throws here; vinext warns because the feature is plumbing-only.
+      console.warn(
+        `[vinext] experimental.appShells is enabled but requires the following co-flags which are not yet supported or not enabled: ${missingCoFlags.join(", ")}. ` +
+          "App Shell prefetching behavior is not implemented in vinext (see issue #1614). " +
+          "The flag will be accepted for config compatibility but has no functional effect.",
+      );
+    }
+  }
 
   // Resolve serverExternalPackages — support the current top-level key and the
   // legacy experimental.serverComponentsExternalPackages name that Next.js still
@@ -1342,6 +1416,7 @@ export async function resolveNextConfig(
         )
       : [],
     cacheComponents: config.cacheComponents ?? false,
+    prefetchInlining,
     redirects,
     rewrites,
     headers,
@@ -1360,6 +1435,7 @@ export async function resolveNextConfig(
     cacheHandler,
     cacheMaxMemorySize,
     enablePrerenderSourceMaps: config.enablePrerenderSourceMaps ?? true,
+    appShells,
     hashSalt,
     buildId,
     deploymentId,

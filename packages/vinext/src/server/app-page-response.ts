@@ -4,6 +4,7 @@ import {
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
 import {
+  VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_TIMING_HEADER,
@@ -58,6 +59,7 @@ type AppPageHtmlResponsePolicy = {
 } & AppPageResponsePolicy;
 
 type BuildAppPageRscResponseOptions = {
+  dynamicStaleTimeSeconds?: number;
   isEdgeRuntime?: boolean;
   middlewareContext: AppPageMiddlewareContext;
   mountedSlotsHeader?: string | null;
@@ -91,6 +93,16 @@ function applyTimingHeader(headers: Headers, timing?: AppPageResponseTiming): vo
       : -1;
 
   headers.set(VINEXT_TIMING_HEADER, `${handlerStart},${compileMs},${renderMs}`);
+}
+
+function applyDynamicStaleTimeHeader(headers: Headers, dynamicStaleTimeSeconds?: number): void {
+  if (
+    dynamicStaleTimeSeconds !== undefined &&
+    Number.isInteger(dynamicStaleTimeSeconds) &&
+    dynamicStaleTimeSeconds >= 0
+  ) {
+    headers.set(VINEXT_DYNAMIC_STALE_TIME_HEADER, String(dynamicStaleTimeSeconds));
+  }
 }
 
 export function resolveAppPageRscResponsePolicy(
@@ -256,6 +268,7 @@ export function buildAppPageRscResponse(
   if (options.mountedSlotsHeader) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
+  applyDynamicStaleTimeHeader(headers, options.dynamicStaleTimeSeconds);
   if (options.policy.cacheControl) {
     headers.set("Cache-Control", options.policy.cacheControl);
   }

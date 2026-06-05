@@ -361,6 +361,78 @@ describe("app page head resolution", () => {
     });
   });
 
+  // Regression: a `generateMetadata` that does not declare the `parent`
+  // argument must NOT receive it. Matches Next.js, which omits the parent
+  // argument for cached `generateMetadata` functions that don't use it
+  // (resolve-metadata.ts `getResult` / `useCacheFunctionInfo.usedArgs[1]`).
+  // Passing the parent into a `'use cache'` function feeds it to the cache-key
+  // encoder (encodeReply), which throws on non-serializable values such as a
+  // `URL` `metadataBase` ("URL objects are not supported").
+  it("omits the parent argument for generateMetadata that does not declare it", async () => {
+    const receivedArgCounts: number[] = [];
+    const rootLayout = {
+      metadata: {
+        metadataBase: new URL("https://example.com"),
+        title: "Root",
+      },
+    };
+    const page = {
+      // Arity 0 — declares no `parent` parameter.
+      generateMetadata: async function () {
+        receivedArgCounts.push(arguments.length);
+        return { title: "Page" };
+      },
+    };
+
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [rootLayout],
+      layoutTreePositions: [0],
+      metadataRoutes: [],
+      pageModule: page,
+      params: {},
+      routePath: "/",
+      routeSegments: [],
+    });
+
+    // Only `props` was passed (no parent).
+    expect(receivedArgCounts).toEqual([1]);
+    // metadataBase from the root layout still flows into the resolved metadata.
+    expect(result.metadata?.metadataBase).toBeInstanceOf(URL);
+    expect(String(result.metadata?.metadataBase)).toBe("https://example.com/");
+    expect(result.metadata?.title).toBe("Page");
+  });
+
+  it("still passes the parent argument to generateMetadata that declares it", async () => {
+    const receivedArgCounts: number[] = [];
+    const rootLayout = {
+      metadata: {
+        metadataBase: new URL("https://example.com"),
+        description: "Root description",
+      },
+    };
+    const page = {
+      // Arity 2 — declares `parent`, so it must receive it.
+      generateMetadata: async function (_props: unknown, parent: Promise<Record<string, unknown>>) {
+        receivedArgCounts.push(arguments.length);
+        const parentMetadata = await parent;
+        return { title: String(parentMetadata.description) };
+      },
+    };
+
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [rootLayout],
+      layoutTreePositions: [0],
+      metadataRoutes: [],
+      pageModule: page,
+      params: {},
+      routePath: "/",
+      routeSegments: [],
+    });
+
+    expect(receivedArgCounts).toEqual([2]);
+    expect(result.metadata?.title).toBe("Root description");
+  });
+
   it("keeps primary page title handling independent from active parallel route metadata", async () => {
     const rootLayout = {
       metadata: {

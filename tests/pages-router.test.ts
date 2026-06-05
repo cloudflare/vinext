@@ -549,6 +549,55 @@ describe("Pages Router integration", () => {
     expect(html).toContain("app-wrapper");
   });
 
+  // Regression for #1465: a getServerSideProps `{ redirect }` on an HTML
+  // request emits a real HTTP redirect (so a hard navigation lands on the
+  // destination).
+  it("getServerSideProps returning redirect emits an HTTP redirect on HTML requests", async () => {
+    const res = await fetch(`${baseUrl}/gssp-redirect`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/gssp-redirect-target");
+  });
+
+  // Regression for #1465: a getServerSideProps `{ redirect }` on a `_next/data`
+  // request must NOT emit an HTTP redirect (fetch would follow it to non-JSON
+  // HTML). Instead Next.js returns a 200 JSON envelope carrying `__N_REDIRECT`
+  // / `__N_REDIRECT_STATUS` in pageProps, which the client router uses to
+  // re-dispatch a fresh navigation (superseding the in-flight one). See
+  // packages/next/src/server/render.tsx (`__N_REDIRECT`).
+  it("getServerSideProps redirect returns __N_REDIRECT JSON on _next/data requests", async () => {
+    // The dev `_next/data` endpoint matches the build id
+    // `nextConfig.buildId ?? __VINEXT_BUILD_ID ?? "development"`; this fixture's
+    // next.config.mjs sets `generateBuildId: () => "test-build-id"` (see
+    // index.ts `_next/data` normalization).
+    const res = await fetch(`${baseUrl}/_next/data/test-build-id/gssp-redirect.json`, {
+      headers: { Accept: "application/json", "x-nextjs-data": "1" },
+      redirect: "manual",
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(res.headers.get("location")).toBeNull();
+
+    const body = (await res.json()) as { pageProps?: Record<string, unknown> };
+    expect(body.pageProps?.__N_REDIRECT).toBe("/gssp-redirect-target");
+    expect(body.pageProps?.__N_REDIRECT_STATUS).toBe(307);
+  });
+
+  // The data envelope must carry an EXTERNAL redirect destination verbatim so
+  // the client router hard-navigates to the right place (the client must not
+  // fall back to the originating page URL — that would loop). See
+  // handleDataRedirect() in shims/router.ts.
+  it("preserves an external destination in __N_REDIRECT on _next/data requests", async () => {
+    const res = await fetch(`${baseUrl}/_next/data/test-build-id/gssp-redirect-external.json`, {
+      headers: { Accept: "application/json", "x-nextjs-data": "1" },
+      redirect: "manual",
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pageProps?: Record<string, unknown> };
+    expect(body.pageProps?.__N_REDIRECT).toBe("https://example.com/landing");
+  });
+
   // Regression for #1458: when getServerSideProps throws, dev (and prod) must
   // render the user's custom pages/500.tsx with status 500 rather than the
   // plain "Internal Server Error" text. Mirrors Next.js test/e2e/getserversideprops
@@ -695,6 +744,26 @@ describe("Pages Router integration", () => {
     const res = await fetch(`${baseUrl}/`);
     const html = await res.text();
     expect(html).toContain("@vite/client");
+  });
+
+  it("installs the vinext dev error overlay in the hydration script", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    const html = await res.text();
+    const hydrationProxyPath = html.match(
+      /<script type="module" src="([^"]*html-proxy[^"]*)"><\/script>/,
+    )?.[1];
+    expect(hydrationProxyPath).toBeDefined();
+
+    const hydrationProxy = await fetch(new URL(hydrationProxyPath!, baseUrl)).then((response) =>
+      response.text(),
+    );
+    expect(hydrationProxy).toContain("dev-error-overlay");
+    expect(hydrationProxy).toContain("overlay.installDevErrorOverlay()");
+    expect(hydrationProxy).toContain("overlay.installViteHmrErrorHandler(import.meta.hot)");
+    expect(hydrationProxy).toContain("overlay.reportInitialDevServerErrors()");
+    expect(hydrationProxy).toContain(
+      'hydrateRoot(document.getElementById("__next"), element, hydrateRootOptions)',
+    );
   });
 
   it("wraps pages with custom _app.tsx", async () => {
@@ -5254,7 +5323,6 @@ export default function Custom404() {
     );
 
     await buildPagesFixtureToOutDir(tmpRoot, outDir);
-
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
     prodServer = unwrapStartedProdServer(
       await startProdServer({
@@ -5320,6 +5388,109 @@ export default function Custom404() {
     expect(res.status).toBe(404);
     const html = await res.text();
     expect(html).toContain(`<h1 id="content-404">hi y&#x27;all</h1>`);
+  });
+});
+
+// Ported from Next.js: test/e2e/import-meta/import-meta.test.ts
+// https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/import-meta/import-meta.test.ts
+describe("Pages Router import.meta.url in production", () => {
+  let tmpRoot: string;
+  let outDir: string;
+  let prodServer: import("node:http").Server;
+  let prodUrl: string;
+
+  function decodeHtmlText(text: string): string {
+    return text.replace(/&amp;/g, "&").replace(/&quot;/g, '"');
+  }
+
+  function collectJavaScriptFiles(dir: string): string[] {
+    const files: string[] = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...collectJavaScriptFiles(fullPath));
+      } else if (entry.isFile() && entry.name.endsWith(".js")) {
+        files.push(fullPath);
+      }
+    }
+    return files;
+  }
+
+  beforeAll(async () => {
+    tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-import-meta-url-"));
+    outDir = path.join(tmpRoot, "dist");
+
+    await fsp.symlink(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(tmpRoot, "node_modules"),
+      "junction",
+    );
+    await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+    await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpRoot, "pages", "_app.tsx"),
+      `export default function MyApp({ Component, pageProps }: any) {
+  return <Component {...pageProps} />;
+}
+`,
+    );
+    await fsp.writeFile(
+      path.join(tmpRoot, "pages", "index.tsx"),
+      `export default function Page() {
+  const data = { url: import.meta.url };
+  return <div id="test-data">{JSON.stringify(data)}</div>;
+}
+`,
+    );
+
+    await buildPagesFixtureToOutDir(tmpRoot, outDir);
+    const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+    await runPrerender({
+      root: tmpRoot,
+      pagesBundlePath: path.join(outDir, "server", "entry.js"),
+      concurrency: 1,
+    });
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    prodServer = unwrapStartedProdServer(
+      await startProdServer({
+        port: 0,
+        host: "127.0.0.1",
+        outDir,
+      }),
+    );
+    const addr = prodServer.address() as { port: number };
+    prodUrl = `http://127.0.0.1:${addr.port}`;
+  }, 120000);
+
+  afterAll(async () => {
+    if (prodServer) {
+      await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+    }
+    if (tmpRoot) {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the page module file URL during server rendering", async () => {
+    const res = await fetch(`${prodUrl}/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const match = html.match(/<div id="test-data">([^<]*)<\/div>/);
+    expect(match).not.toBeNull();
+    const data = JSON.parse(decodeHtmlText(match![1])) as { url: string };
+
+    expect(data.url).toMatch(/^file:\/\/\//);
+    expect(data.url).toMatch(/\/pages\/index\.tsx$/);
+    expect(data.url).not.toContain("/dist/server/entry.js");
+  });
+
+  it("normalizes the page module file URL in the client page chunk", () => {
+    const jsFiles = collectJavaScriptFiles(path.join(outDir, "client"));
+    const clientCode = jsFiles.map((file) => fs.readFileSync(file, "utf8")).join("\n");
+
+    expect(clientCode).toContain("file:///ROOT/pages/index.tsx");
+    expect(clientCode).not.toContain("/dist/server/entry.js");
   });
 });
 

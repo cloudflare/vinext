@@ -10,13 +10,14 @@ import {
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_URL_HEADER,
   RSC_HEADER,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "./headers.js";
 
 /**
- * RSC cache-busting hashes cover the headers that make a `.rsc` payload vary.
+ * RSC cache-busting hashes cover the headers that make an RSC payload vary.
  * Client-side variant headers must survive transit through CDNs and reverse
  * proxies; stripping them changes the server hash and turns stale URLs into
  * repeated canonicalization redirects.
@@ -44,6 +45,7 @@ const CACHE_BUSTING_DIGEST_BYTES = 12;
 const textEncoder = new TextEncoder();
 
 type CreateRscRequestHeadersOptions = {
+  clientReuseManifestHeader?: string | null;
   interceptionContext?: string | null;
   mountedSlotsHeader?: string | null;
   renderMode?: AppRscRenderMode;
@@ -274,6 +276,13 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
 
+  if (
+    options.clientReuseManifestHeader !== undefined &&
+    options.clientReuseManifestHeader !== null
+  ) {
+    headers.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, options.clientReuseManifestHeader);
+  }
+
   const renderMode = options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION;
   if (renderMode !== APP_RSC_RENDER_MODE_NAVIGATION) {
     headers.set(VINEXT_RSC_RENDER_MODE_HEADER, renderMode);
@@ -285,18 +294,20 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
 function toRscRequestPath(href: string): string {
   const hashIndex = href.indexOf("#");
   const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
-  const queryIndex = beforeHash.indexOf("?");
-  const pathname = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
-  const query = queryIndex === -1 ? "" : beforeHash.slice(queryIndex);
-  const normalizedPath =
-    pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
-  return `${normalizedPath}.rsc${query}`;
+  return beforeHash;
 }
 
 export async function createRscRequestUrl(href: string, headers: Headers): Promise<string> {
   const url = new URL(toRscRequestPath(href), "http://vinext.local");
   const hash = await computeRscCacheBustingSearchParam(headers);
   setRscCacheBustingSearchParam(url, hash);
+  return `${url.pathname}${url.search}`;
+}
+
+export function createServerActionRequestUrl(href: string): string {
+  const hashIndex = href.indexOf("#");
+  const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
+  const url = new URL(beforeHash, "http://vinext.local");
   return `${url.pathname}${url.search}`;
 }
 

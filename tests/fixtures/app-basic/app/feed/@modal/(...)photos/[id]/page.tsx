@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getPhotoLikes } from "./actions";
+import { PhotoModalBfcacheProbe } from "./bfcache-probe";
 import { LikeButton } from "./like-button";
 import { PhotoModalRefreshButton } from "./refresh-button";
 
@@ -15,6 +16,7 @@ export default async function PhotoModal({ params }: { params: { id: string } })
       <Link href="/photos/43" id="modal-photo-43-link">
         Next Photo
       </Link>
+      <PhotoModalBfcacheProbe />
       <PhotoModalRefreshButton />
       <LikeButton id={params.id} initialLikes={initialLikes} />
     </div>

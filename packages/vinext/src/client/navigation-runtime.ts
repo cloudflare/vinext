@@ -44,6 +44,10 @@ export type NavigationRuntimeFunctions = {
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
     scroll: boolean,
   ) => void;
+  navigateExternal?: (
+    href: string,
+    historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
+  ) => Promise<void>;
   navigate?: NavigationRuntimeNavigate;
   pingVisibleLinks?: () => void;
 };
@@ -96,6 +100,7 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
   return (
     isOptionalRuntimeFunction(Reflect.get(value, "clearNavigationCaches")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "commitHashNavigation")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigate")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks"))
   );

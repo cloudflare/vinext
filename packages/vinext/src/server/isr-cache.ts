@@ -14,12 +14,12 @@
  */
 
 import {
-  getCacheHandler,
   type CacheHandlerValue,
   type IncrementalCacheValue,
   type CachedPagesValue,
   type CachedAppPageValue,
 } from "vinext/shims/cache";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { fnv1a64 } from "../utils/hash.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { reportRequestError, type OnRequestErrorContext } from "./instrumentation.js";
@@ -46,8 +46,9 @@ export type ISRCacheEntry = {
  * or null for cache misses.
  */
 export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
-  const handler = getCacheHandler();
-  const result = await handler.get(key);
+  // Page-level reads go through the CDN cache adapter. The default adapter
+  // reads the data cache; an edge adapter may return null so the CDN serves.
+  const result = await getCdnCacheAdapter().get(key);
   if (!result || !result.value) return null;
   // Built-in handlers hard-delete expired entries and return null, but custom
   // CacheHandler implementations may surface expiry explicitly.
@@ -69,8 +70,7 @@ export async function isrSet(
   tags?: string[],
   expireSeconds?: number,
 ): Promise<void> {
-  const handler = getCacheHandler();
-  await handler.set(key, data, {
+  await getCdnCacheAdapter().set(key, data, {
     cacheControl:
       expireSeconds === undefined
         ? { revalidate: revalidateSeconds }
@@ -85,25 +85,40 @@ export async function isrSet(
 export async function isrSetPrerenderedAppPage(
   key: string,
   data: CachedAppPageValue,
-  metadata: { expireSeconds?: number; revalidateSeconds?: number },
+  metadata: {
+    expireSeconds?: number;
+    revalidateSeconds?: number;
+    /**
+     * Implicit/path tags to attach to the seeded entry. Required so that
+     * `revalidatePath()` (and `revalidateTag()`) can invalidate prerender-seeded
+     * cache entries — without tags the entry is unreachable by tag-based
+     * invalidation and remains stale until natural `revalidateAt` expiry.
+     * See cloudflare/vinext#1486.
+     */
+    tags?: string[];
+  },
 ): Promise<void> {
-  const handler = getCacheHandler();
   const revalidateSeconds = metadata.revalidateSeconds;
+  const tags = metadata.tags;
   if (process.env.NEXT_PRIVATE_DEBUG_CACHE) {
     console.debug("[vinext] ISR: seed", key);
   }
-  await handler.set(
-    key,
-    data,
-    revalidateSeconds === undefined
-      ? {}
-      : metadata.expireSeconds === undefined
-        ? { cacheControl: { revalidate: revalidateSeconds }, revalidate: revalidateSeconds }
-        : {
-            cacheControl: { revalidate: revalidateSeconds, expire: metadata.expireSeconds },
-            revalidate: revalidateSeconds,
-          },
-  );
+  // Route page-level seeding through the CDN cache adapter (default adapter
+  // writes the data cache; edge adapters no-op). Merge in main's tag support
+  // (cloudflare/vinext#1486) so prerender-seeded entries are reachable by
+  // revalidatePath()/revalidateTag().
+  const ctx: Record<string, unknown> = {};
+  if (revalidateSeconds !== undefined) {
+    ctx.revalidate = revalidateSeconds;
+    ctx.cacheControl =
+      metadata.expireSeconds === undefined
+        ? { revalidate: revalidateSeconds }
+        : { revalidate: revalidateSeconds, expire: metadata.expireSeconds };
+  }
+  if (tags && tags.length > 0) {
+    ctx.tags = tags;
+  }
+  await getCdnCacheAdapter().set(key, data, ctx);
 
   if (revalidateSeconds !== undefined) {
     setRevalidateDuration(key, revalidateSeconds);
@@ -146,6 +161,9 @@ export function triggerBackgroundRegeneration(
     routeType: OnRequestErrorContext["routeType"];
   },
 ): void {
+  // Edge-managed CDN adapters revalidate by re-requesting the origin, so the
+  // origin must not also run in-process regeneration.
+  if (!getCdnCacheAdapter().ownsBackgroundRevalidation) return;
   if (pendingRegenerations.has(key)) return;
 
   const promise = renderFn()
