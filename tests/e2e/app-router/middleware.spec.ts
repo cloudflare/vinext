@@ -7,6 +7,7 @@
  * Tests: ON-11 in TRACKING.md
  */
 import { test, expect } from "@playwright/test";
+import { randomUUID } from "node:crypto";
 
 const BASE = "http://localhost:4174";
 
@@ -85,12 +86,6 @@ test.describe("Middleware Block (OpenNext compat)", () => {
 });
 
 test.describe("Middleware execution count", () => {
-  test.beforeEach(async ({ request }) => {
-    // Reset the invocation counter before each test.
-    const res = await request.delete(`${BASE}/api/instrumentation-test`);
-    expect(res.status()).toBe(200);
-  });
-
   // Regression test: in a hybrid app+pages fixture the connect handler
   // forwards middleware results to the RSC entry via x-vinext-mw-ctx so that
   // middleware only executes once per request. Without this, middleware runs
@@ -98,12 +93,22 @@ test.describe("Middleware execution count", () => {
   test("middleware runs exactly once per App Router request in hybrid app+pages fixture", async ({
     request,
   }) => {
+    // Scope counting to a unique id so concurrent workers hitting other
+    // middleware-matched routes (/, /about, …) can't inflate the shared
+    // global counter. A double-run would still be observed under this id
+    // because both the SSR and RSC invocations see the same request header.
+    const testId = randomUUID();
+
     // /about is an App Router route that is in the middleware matcher.
-    const res = await request.get(`${BASE}/about`);
+    const res = await request.get(`${BASE}/about`, {
+      headers: { "x-mw-test-id": testId },
+    });
     expect(res.status()).toBe(200);
     expect(res.headers()["x-mw-ran"]).toBe("true");
 
-    const stateRes = await request.get(`${BASE}/api/instrumentation-test`);
+    const stateRes = await request.get(
+      `${BASE}/api/instrumentation-test?id=${encodeURIComponent(testId)}`,
+    );
     const data = await stateRes.json();
 
     expect(data.middlewareInvocationCount).toBe(1);

@@ -86,6 +86,7 @@ export function resetInstrumentationState(): void {
  */
 const MW_COUNT_KEY = "__vinext_mw_count__";
 const MW_PATHS_KEY = "__vinext_mw_paths__";
+const MW_BY_ID_KEY = "__vinext_mw_by_id__";
 
 function _mwCount(): number {
   return (globalThis as any)[MW_COUNT_KEY] ?? 0;
@@ -95,6 +96,24 @@ function _mwPaths(): string[] {
     (globalThis as any)[MW_PATHS_KEY] = [];
   }
   return (globalThis as any)[MW_PATHS_KEY] as string[];
+}
+
+/**
+ * Per-test-id invocation buckets.
+ *
+ * The global counter above is shared across every request the dev server
+ * handles, so concurrent e2e workers hitting any middleware-matched route
+ * (/, /about, …) inflate it. Tests that need an isolated count pass a unique
+ * `x-mw-test-id` header; middleware records under that id and the API route
+ * reads it back, so the assertion only sees this request's invocations.
+ * Double-execution (SSR connect handler + RSC entry) still bumps the same id
+ * because both runs observe the original request header.
+ */
+function _mwById(): Map<string, { count: number; paths: string[] }> {
+  if (!(globalThis as any)[MW_BY_ID_KEY]) {
+    (globalThis as any)[MW_BY_ID_KEY] = new Map<string, { count: number; paths: string[] }>();
+  }
+  return (globalThis as any)[MW_BY_ID_KEY] as Map<string, { count: number; paths: string[] }>;
 }
 
 /** Get the total number of middleware invocations recorded across all environments. */
@@ -107,8 +126,25 @@ export function getMiddlewareInvokedPaths(): string[] {
   return [..._mwPaths()];
 }
 
-/** Record a middleware invocation. */
-export function recordMiddlewareInvocation(pathname: string): void {
+/** Get the invocation count recorded under a specific test id. */
+export function getMiddlewareInvocationCountById(id: string): number {
+  return _mwById().get(id)?.count ?? 0;
+}
+
+/** Get the ordered pathnames recorded under a specific test id. */
+export function getMiddlewareInvokedPathsById(id: string): string[] {
+  return [...(_mwById().get(id)?.paths ?? [])];
+}
+
+/** Record a middleware invocation, optionally scoped to a unique test id. */
+export function recordMiddlewareInvocation(pathname: string, id?: string): void {
   (globalThis as any)[MW_COUNT_KEY] = _mwCount() + 1;
   _mwPaths().push(pathname);
+  if (id) {
+    const map = _mwById();
+    const entry = map.get(id) ?? { count: 0, paths: [] };
+    entry.count += 1;
+    entry.paths.push(pathname);
+    map.set(id, entry);
+  }
 }

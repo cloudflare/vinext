@@ -21,7 +21,9 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // In a hybrid app+pages fixture the Vite connect handler runs middleware
   // via ssrLoadModule (SSR env) and then the RSC entry runs it again inline
   // (RSC env). A single request should produce exactly one invocation.
-  recordMiddlewareInvocation(pathname);
+  // The optional x-mw-test-id scopes the count to a single test so concurrent
+  // e2e workers hitting other matched routes can't inflate it.
+  recordMiddlewareInvocation(pathname, request.headers.get("x-mw-test-id") ?? undefined);
 
   // Test NextRequest.cookies - this would fail with TypeError if request is plain Request
   const sessionToken = request.cookies.get("session");

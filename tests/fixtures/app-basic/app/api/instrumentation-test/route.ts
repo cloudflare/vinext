@@ -10,21 +10,29 @@
  *   Resets the captured state so tests can start from a clean slate.
  */
 
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import {
   getRegisterCalled,
   getCapturedErrors,
   resetInstrumentationState,
   getMiddlewareInvocationCount,
   getMiddlewareInvokedPaths,
+  getMiddlewareInvocationCountById,
+  getMiddlewareInvokedPathsById,
 } from "../../../instrumentation-state";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  // When an `id` is supplied, report only the invocations recorded under that
+  // unique test id — isolating the assertion from concurrent e2e traffic that
+  // shares the global counter.
+  const id = request.nextUrl.searchParams.get("id");
   return NextResponse.json({
     registerCalled: getRegisterCalled(),
     errors: getCapturedErrors(),
-    middlewareInvocationCount: getMiddlewareInvocationCount(),
-    middlewareInvokedPaths: getMiddlewareInvokedPaths(),
+    middlewareInvocationCount: id
+      ? getMiddlewareInvocationCountById(id)
+      : getMiddlewareInvocationCount(),
+    middlewareInvokedPaths: id ? getMiddlewareInvokedPathsById(id) : getMiddlewareInvokedPaths(),
   });
 }
 
