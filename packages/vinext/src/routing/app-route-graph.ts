@@ -2184,9 +2184,18 @@ function computeInterceptTarget(
 
   let baseParts: string[];
   switch (convention) {
-    case ".":
-      baseParts = routeSegments;
+    case ".": {
+      const interceptParentDir = path.dirname(interceptRoot);
+      const interceptParentSegments = path
+        .relative(appDir, interceptParentDir)
+        .split(path.sep)
+        .filter(Boolean);
+      const convertedParent = convertSegmentsToRouteParts(interceptParentSegments);
+      baseParts = convertedParent
+        ? convertedParent.urlSegments
+        : interceptParentSegments.filter((s) => !isInvisibleSegment(s));
       break;
+    }
     case "..":
     case "../..": {
       const levelsToClimb = convention === ".." ? 1 : 2;

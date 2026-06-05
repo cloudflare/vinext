@@ -1082,6 +1082,38 @@ describe("App Router route graph builder", () => {
       });
     });
 
+    it("computes target with subdirectory prefix for (.) slot nested in a slot subdirectory", async () => {
+      // Regression test for issue #1364 Part A.
+      // When the (.) marker lives inside a subdirectory of the @slot dir, baseParts
+      // must include the visible segments between appDir and the marker's parent dir,
+      // not just the routeDir-relative segments (which omit the subdirectory).
+      //
+      // Layout:
+      //   app/@modal/sub/(.)target/[id]/page.tsx
+      //   routeDir = app/ (root), but marker parent is app/@modal/sub
+      //   expected targetPattern = /sub/target/:id  (not /:id)
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "sub/target/[id]/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@modal/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@modal/sub/(.)target/[id]/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const intercepts = collectIntercepts(graph.routes);
+
+        // sourceMatchPattern derives from interceptParentDir (app/@modal/sub),
+        // stripping the invisible @modal → remaining visible segment "sub" → "/sub".
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/sub/target/:id",
+            sourceMatchPattern: "/sub",
+            convention: ".",
+          }),
+        );
+      });
+    });
+
     it("computes `/feed` for (..) slot nested under a static segment", async () => {
       // Mirrors the (..) marker scoped to a parallel slot: source pathname
       // must match the slot's owner directory (`/feed`), and the target
