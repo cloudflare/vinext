@@ -348,13 +348,16 @@ test.describe("Dev error overlay", () => {
       await expect(page.getByTestId("vinext-dev-error-stack-container")).toBeHidden();
       await expect(page.locator("vite-error-overlay")).toHaveCount(0);
 
-      const waitForCleanRsc = page.waitForResponse(
-        (response) => isAppRouterRscRequestForPath(response.request(), "/dev-overlay-hmr-toggle"),
-        { timeout: 10_000 },
-      );
+      // A build error tears down the RSC tree, so recovery lands via a full
+      // document reload (app-browser-entry's applyRscHmrUpdate reloads the
+      // route) rather than an in-place RSC refetch. Waiting for an RSC response
+      // races that reload and flakes — assert the user-visible recovered state
+      // instead, which holds whether recovery reloads or refetches.
       await writeFile(SERVER_HMR_TOGGLE_FILE, SERVER_HMR_TOGGLE_CLEAN);
-      await waitForCleanRsc;
       await expect(page.getByTestId("vinext-dev-error-overlay")).toBeHidden({ timeout: 10_000 });
+      await expect(page.getByTestId("server-hmr-toggle")).toHaveText("server hmr clean", {
+        timeout: 10_000,
+      });
     });
 
     test("layout server component HMR updates the overlay when a throw is toggled", async ({
