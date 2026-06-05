@@ -136,12 +136,17 @@ function rewriteCanonicalSourceIdentity(
   const output = new MagicString(code);
   let changed = false;
 
-  const importMetaRanges = collectImportMetaUrlRanges(ast);
-  if (importMetaRanges.length > 0) {
-    const replacement = JSON.stringify(importMetaUrlValue(canonicalId, rootPaths, environment));
-    for (const range of importMetaRanges) {
-      output.overwrite(range.start, range.end, replacement);
-      changed = true;
+  // Skip the import.meta.url AST walk for modules that don't contain the token
+  // (the widened CJS-global gate admits many such modules). A range can only
+  // exist when the substring is present, so this is behavior-preserving.
+  if (mayContainImportMetaUrl(code)) {
+    const importMetaRanges = collectImportMetaUrlRanges(ast);
+    if (importMetaRanges.length > 0) {
+      const replacement = JSON.stringify(importMetaUrlValue(canonicalId, rootPaths, environment));
+      for (const range of importMetaRanges) {
+        output.overwrite(range.start, range.end, replacement);
+        changed = true;
+      }
     }
   }
 
