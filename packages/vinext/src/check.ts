@@ -334,6 +334,18 @@ function findSourceFiles(
 }
 
 /**
+ * Detect whether a project-root-relative source path is the user
+ * `middleware.*` or `proxy.*` file that vinext's middleware-cjs-globals
+ * plugin shims `__filename` / `__dirname` into. Mirrors the locations
+ * scanned by `findMiddlewareFile` in server/middleware.ts (project root and
+ * `src/`).
+ */
+function isShimmedMiddlewareFile(relPath: string): boolean {
+  const normalized = relPath.split(path.sep).join("/");
+  return /^(?:src\/)?(?:middleware|proxy)\.[cm]?[jt]sx?$/.test(normalized);
+}
+
+/**
  * Scan source files for `import ... from 'next/...'` statements.
  */
 export function scanImports(root: string): CheckItem[] {
@@ -648,6 +660,15 @@ export function checkConventions(root: string): CheckItem[] {
 
     if (viewTransitionRegex.test(content)) {
       viewTransitionFiles.push(rel);
+    }
+
+    // Skip the `middleware.{ts,tsx,js,jsx}` / `proxy.{ts,tsx,js,jsx}` file at
+    // the project root (or under src/) — vinext's middleware-cjs-globals
+    // plugin injects `__filename` / `__dirname` shims for those modules to
+    // match Next.js webpack template behaviour, so a reference there is
+    // benign. See plugins/middleware-cjs-globals.ts. Issue: #1546.
+    if (isShimmedMiddlewareFile(rel)) {
+      continue;
     }
 
     cjsGlobalScanRegex.lastIndex = 0;

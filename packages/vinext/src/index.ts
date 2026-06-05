@@ -110,6 +110,7 @@ import {
   generateInstrumentationClientInjectModule,
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
 } from "./client/instrumentation-client-inject.js";
+import { createMiddlewareCjsGlobalsPlugin } from "./plugins/middleware-cjs-globals.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
@@ -1094,6 +1095,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       getCanonicalMiddlewarePath: () =>
         middlewarePath ? (tryRealpathSync(middlewarePath) ?? middlewarePath) : null,
       serverOnlyShimPath: resolveShimModulePath(shimsDir, "server-only"),
+    }),
+    // Inject `__filename` / `__dirname` shims into the user proxy/middleware
+    // module so references to those CommonJS globals do not throw a
+    // `ReferenceError` at runtime. Mirrors what Next.js's webpack template
+    // does for `middleware.ts` / `proxy.ts`. Without this, the upstream
+    // `proxy-nfc-traced` fixture crashes on any request that hits its
+    // `console.log(__filename)` fall-through branch, and vinext returns a
+    // 500 with an empty body. See plugins/middleware-cjs-globals.ts.
+    createMiddlewareCjsGlobalsPlugin({
+      getMiddlewarePath: () => middlewarePath,
     }),
     // Resolve `data:text/css[+module],...` imports into virtual CSS files so
     // Vite's CSS pipeline (LightningCSS, CSS modules) processes them instead
