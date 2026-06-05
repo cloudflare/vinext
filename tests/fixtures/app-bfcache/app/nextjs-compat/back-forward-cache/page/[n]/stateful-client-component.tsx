@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 export function StatefulClientComponent({ n }: { n: string }) {
   const [count, setCount] = useState(0);
   const searchParams = useSearchParams();
+  const { bfcacheId } = useRouter();
 
   return (
     <div>
@@ -14,6 +15,7 @@ export function StatefulClientComponent({ n }: { n: string }) {
           Increment
         </button>
         <span id={`counter-display-${n}`}>Count: {count}</span>
+        <span data-testid="leaf-bfcache-id">{bfcacheId}</span>
       </div>
       <div>
         <input id={`uncontrolled-input-${n}`} type="text" />
