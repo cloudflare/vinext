@@ -279,6 +279,9 @@ function BfcacheActivitySlotBoundary({
   return (
     <>
       {renderEntries.map((entry) => (
+        // Hidden Activity entries keep their DOM mounted, so duplicate userland
+        // ids can exist under cacheComponents. Consumers should query by visible
+        // scope when that distinction matters.
         <React.Activity
           key={entry.stateKey}
           mode={entry.stateKey === activeStateKey ? "visible" : "hidden"}

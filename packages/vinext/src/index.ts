@@ -1334,6 +1334,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // on this build-time flag. Without the flag the active segment renders
         // in place (unkeyed); enabling it turns on the three-entry inactive
         // Activity tree cache.
+        // Deliberately string-shaped: `process.env` consumers compare against
+        // "true", so do not simplify this to a boolean define.
         // See: packages/next/src/client/components/layout-router.tsx
         defines["process.env.__NEXT_CACHE_COMPONENTS"] = JSON.stringify(
           String(nextConfig.cacheComponents ?? false),
