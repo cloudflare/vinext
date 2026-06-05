@@ -296,8 +296,14 @@ export function createInitialBfcacheIdMap(elements: AppElements): BfcacheIdMap {
 function normalizeBfcachePathname(pathname: string): string {
   // Decode and strip trailing slash so SSR and client produce byte-identical
   // Activity keys regardless of encoding or trailing-slash normalization
-  // differences between the two pathname sources.
-  const decoded = decodeURIComponent(pathname);
+  // differences between the two pathname sources. Malformed percent escapes
+  // should not crash BFCache state-key creation; fall back to the raw pathname.
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    decoded = pathname;
+  }
   return decoded.length > 1 ? decoded.replace(/\/$/, "") : decoded;
 }
 

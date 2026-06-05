@@ -4523,6 +4523,16 @@ describe("app browser entry bfcacheId helpers", () => {
     expect(pageOneKeys[dynamicPageId]).not.toBe(pageTwoKeys[dynamicPageId]);
   });
 
+  it("falls back to raw pathname for malformed encoded state-key paths", () => {
+    const dynamicPageId = AppElementsWire.encodePageId("/page/[n]", null);
+    const keys = createBfcacheSegmentStateKeyMap({
+      elements: createBfcacheElements(dynamicPageId),
+      pathname: "/page/%",
+    });
+
+    expect(keys[dynamicPageId]).toBe(`${dynamicPageId}@/page/%`);
+  });
+
   it("does not seed hydration bfcache ids from previously minted ids", () => {
     // Next generates the public "_b_0_" hydration sentinel from an internal
     // zero cache node on both SSR and initial client hydration. Minted ids
