@@ -2610,6 +2610,39 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
     },
     {
+      // Minify server-side build environments (rsc/ssr and the Cloudflare
+      // worker env) by default. Vite only minifies the `client` environment
+      // out of the box — `build.minify` defaults to `false` for every other
+      // environment — so the deployed worker (dist/server/index.js) and the
+      // SSR renderer (dist/server/ssr/index.js) ship full of readable
+      // identifiers, comments, and whitespace. That bloats raw size (workerd
+      // cold-start parse CPU) and gzip size (counted against the Cloudflare
+      // Workers size limit).
+      //
+      // This is a TRUE DEFAULT that yields to user configuration, NOT a hard
+      // override. `apply: "build"` already scopes it to production builds
+      // (never dev/preview). We then read the *incoming* per-environment
+      // config: Vite seeds each non-client environment's `build` from the
+      // top-level `config.build` before running configEnvironment (see
+      // getDefaultEnvironmentOptions), so `config.build?.minify` here reflects
+      // any explicit setting from the user (top-level OR
+      // `environments.<name>.build.minify`) or an earlier plugin (e.g.
+      // @cloudflare/vite-plugin). If anyone already chose a value — including
+      // `false` — we leave it alone; we only fill in the default when it is
+      // still unset. `minify: true` lets the rolldown/oxc toolchain pick its
+      // native minifier rather than pinning a specific one.
+      name: "vinext:server-minify-defaults",
+      apply: "build",
+
+      configEnvironment(name, config) {
+        // The client env is already minified by Vite's defaults.
+        if (name === "client") return null;
+        // Respect any explicit user/plugin minify choice (including `false`).
+        if (config.build?.minify !== undefined) return null;
+        return { build: { minify: true } };
+      },
+    },
+    {
       name: "vinext:css-url-assets-restore",
       enforce: "post",
       apply: "build",
