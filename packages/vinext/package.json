@@ -82,12 +82,9 @@
   "dependencies": {
     "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
-    "image-size": "catalog:",
-    "ipaddr.js": "catalog:",
     "magic-string": "catalog:",
     "vite-plugin-commonjs": "catalog:",
-    "vite-tsconfig-paths": "catalog:",
-    "web-vitals": "catalog:"
+    "vite-tsconfig-paths": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
@@ -95,9 +92,12 @@
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
+    "image-size": "catalog:",
+    "ipaddr.js": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "vite": "catalog:",
-    "vite-plus": "catalog:"
+    "vite-plus": "catalog:",
+    "web-vitals": "catalog:"
   },
   "peerDependencies": {
     "@mdx-js/rollup": "^3.0.0",

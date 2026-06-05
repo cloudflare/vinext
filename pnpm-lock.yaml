@@ -942,12 +942,6 @@ importers:
       '@vercel/og':
         specifier: 'catalog:'
         version: 0.8.6
-      image-size:
-        specifier: 'catalog:'
-        version: 2.0.2
-      ipaddr.js:
-        specifier: 'catalog:'
-        version: 2.4.0
       magic-string:
         specifier: 'catalog:'
         version: 0.30.21
@@ -960,9 +954,6 @@ importers:
       vite-tsconfig-paths:
         specifier: 'catalog:'
         version: 6.1.1(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(typescript@5.9.3)
-      web-vitals:
-        specifier: 'catalog:'
-        version: 4.2.4
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -979,12 +970,21 @@ importers:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
         version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react@19.2.7)
+      image-size:
+        specifier: 'catalog:'
+        version: 2.0.2
+      ipaddr.js:
+        specifier: 'catalog:'
+        version: 2.4.0
       react-server-dom-webpack:
         specifier: 'catalog:'
         version: 19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       vite-plus:
         specifier: 'catalog:'
         version: 0.1.22(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@vitest/coverage-istanbul@4.1.6)(@voidzero-dev/vite-plus-core@0.1.22(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3)
+      web-vitals:
+        specifier: 'catalog:'
+        version: 4.2.4
 
   tests/fixtures/app-basic:
     dependencies:
