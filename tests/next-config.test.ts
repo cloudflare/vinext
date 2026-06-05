@@ -245,7 +245,10 @@ describe("loadNextConfig with CJS globals in next.config.ts", () => {
     const config = await loadNextConfig(tmpDir);
     const dir = config?.env?.DIR;
     expect(typeof dir).toBe("string");
-    expect((dir as string).length).toBeGreaterThan(0);
+    // Prove the user's own declaration won rather than the injected shim: the
+    // resolved value must point at the config's own directory. realpathSync on
+    // both sides normalizes the macOS /var -> /private/var symlink.
+    expect(fs.realpathSync(dir as string)).toBe(fs.realpathSync(tmpDir));
   });
 
   it("does not inject __filename when user already declares it (no duplicate declaration)", async () => {
@@ -261,6 +264,21 @@ describe("loadNextConfig with CJS globals in next.config.ts", () => {
     const file = config?.env?.FILE;
     expect(typeof file).toBe("string");
     expect((file as string).endsWith("next.config.ts")).toBe(true);
+  });
+
+  it("does not inject require when user already declares it (no duplicate declaration)", async () => {
+    // The createRequire polyfill commonly appears alongside the __dirname one,
+    // and hits the same duplicate-`const` Rolldown crash if injected blindly.
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { createRequire } from "node:module";\n` +
+        `const require = createRequire(import.meta.url);\n` +
+        `export default { env: { HAS_REQUIRE: typeof require } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.HAS_REQUIRE).toBe("function");
   });
 
   it("loads a pure-ESM next.config.ts without injecting CJS shims", async () => {
