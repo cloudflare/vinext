@@ -84,6 +84,10 @@ export default {
       ],
       project: ["src/**/*.{ts,tsx}"],
     },
+    "packages/cloudflare": {
+      entry: [...entriesFromPackageJson("packages/cloudflare/package.json")],
+      project: ["src/**/*.{ts,tsx}"],
+    },
   },
   ignoreWorkspaces: ["examples/**", "tests/fixtures/**", "benchmarks/**"],
   ignoreDependencies: [

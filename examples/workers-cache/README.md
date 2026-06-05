@@ -12,8 +12,8 @@ vinext ships two Cloudflare cache adapters you declare in `vite.config.ts`:
 Both are wired up in [`vite.config.ts`](./vite.config.ts):
 
 ```ts
-import { cdnAdapter } from "vinext/cloudflare/cache/cdn-adapter";
-import { kvDataAdapter } from "vinext/cloudflare/cache/kv-data-adapter";
+import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 
 vinext({
   cache: {

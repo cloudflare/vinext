@@ -1,0 +1,56 @@
+{
+  "name": "@vinext/cloudflare",
+  "version": "0.0.5",
+  "description": "Cloudflare cache adapters for vinext (KV data cache + edge CDN cache).",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cloudflare/vinext.git",
+    "directory": "packages/cloudflare"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./cache/kv-data-adapter": {
+      "types": "./dist/cache/kv-data-adapter.d.ts",
+      "import": "./dist/cache/kv-data-adapter.js"
+    },
+    "./cache/kv-data-adapter.runtime": {
+      "types": "./dist/cache/kv-data-adapter.runtime.d.ts",
+      "import": "./dist/cache/kv-data-adapter.runtime.js"
+    },
+    "./cache/cdn-adapter": {
+      "types": "./dist/cache/cdn-adapter.d.ts",
+      "import": "./dist/cache/cdn-adapter.js"
+    },
+    "./cache/cdn-adapter.runtime": {
+      "types": "./dist/cache/cdn-adapter.runtime.d.ts",
+      "import": "./dist/cache/cdn-adapter.runtime.js"
+    }
+  },
+  "scripts": {
+    "build": "vp pack",
+    "prepack": "vp run build",
+    "dev": "vp pack --watch"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "vinext": "workspace:*",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "peerDependencies": {
+    "vinext": "workspace:*"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

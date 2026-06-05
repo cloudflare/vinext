@@ -21,14 +21,14 @@ import { generateServerEntry } from "../packages/vinext/src/entries/pages-server
 import { generatePagesRouterWorkerEntry } from "../packages/vinext/src/deploy.js";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
-import { kvDataAdapter } from "../packages/vinext/src/cloudflare/cache/kv-data-adapter.js";
-import { cdnAdapter } from "../packages/vinext/src/cloudflare/cache/cdn-adapter.js";
+import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter.js";
+import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
 import createKvDataCacheAdapter, {
   KVCacheHandler,
-} from "../packages/vinext/src/cloudflare/cache/kv-data-adapter.runtime.js";
+} from "../packages/cloudflare/src/cache/kv-data-adapter.runtime.js";
 import createCloudflareCdnCacheAdapter, {
   CloudflareCdnCacheAdapter,
-} from "../packages/vinext/src/cloudflare/cache/cdn-adapter.runtime.js";
+} from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 
 describe("generateCacheAdaptersModule", () => {
   it("exposes the public virtual module id", () => {
@@ -69,7 +69,7 @@ describe("generateCacheAdaptersModule", () => {
 
   it("inlines descriptor options and forwards them to the factory", () => {
     const code = generateCacheAdaptersModule({
-      data: { adapter: "vinext/cloudflare/cache/kv-data-adapter", options: { binding: "MY_KV" } },
+      data: { adapter: "@vinext/cloudflare/cache/kv-data-adapter", options: { binding: "MY_KV" } },
     });
     expect(code).toContain(
       `setDataCacheHandler(__vinextDataAdapterFactory({ env, options: {"binding":"MY_KV"} }));`,
@@ -78,11 +78,11 @@ describe("generateCacheAdaptersModule", () => {
 
   it("wires both adapters and guards against double registration", () => {
     const code = generateCacheAdaptersModule({
-      cdn: { adapter: "vinext/cloudflare/cache/cdn-adapter" },
-      data: { adapter: "vinext/cloudflare/cache/kv-data-adapter" },
+      cdn: { adapter: "@vinext/cloudflare/cache/cdn-adapter" },
+      data: { adapter: "@vinext/cloudflare/cache/kv-data-adapter" },
     });
-    expect(code).toContain(`from "vinext/cloudflare/cache/cdn-adapter";`);
-    expect(code).toContain(`from "vinext/cloudflare/cache/kv-data-adapter";`);
+    expect(code).toContain(`from "@vinext/cloudflare/cache/cdn-adapter";`);
+    expect(code).toContain(`from "@vinext/cloudflare/cache/kv-data-adapter";`);
     expect(code).toContain("setDataCacheHandler(__vinextDataAdapterFactory(");
     expect(code).toContain("setCdnCacheAdapter(__vinextCdnAdapterFactory(");
     expect(code).toContain("if (__vinextCacheAdaptersRegistered) return;");

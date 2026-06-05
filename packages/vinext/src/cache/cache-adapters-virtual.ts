@@ -18,7 +18,7 @@
 /**
  * A serializable pointer to a cache adapter module — the shape of each `cache`
  * slot in the vinext() plugin config. Produced by an adapter builder (e.g.
- * `kvDataAdapter(...)` from `vinext/cloudflare/cache/kv-data-adapter`) or written
+ * `kvDataAdapter(...)` from `@vinext/cloudflare/cache/kv-data-adapter`) or written
  * by hand. `options` must be JSON-serializable: it is inlined into the generated
  * registration module and forwarded to the adapter factory at runtime.
  */

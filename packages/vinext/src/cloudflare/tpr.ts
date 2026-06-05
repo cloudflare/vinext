@@ -26,7 +26,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { VINEXT_REVALIDATE_HEADER } from "../server/headers.js";
 import { isrCacheKey } from "../server/isr-cache.js";
 import { buildAppPageCacheTags } from "../server/app-page-cache.js";
-import { ENTRY_PREFIX } from "./cache/kv-data-adapter.runtime.js";
+import { ENTRY_PREFIX } from "@vinext/cloudflare/cache/kv-data-adapter.runtime";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

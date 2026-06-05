@@ -274,7 +274,7 @@ Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and
 For production caching (ISR), use the built-in Cloudflare KV cache handler:
 
 ```ts
-import { KVCacheHandler } from "vinext/cloudflare";
+import { KVCacheHandler } from "@vinext/cloudflare";
 import { setCacheHandler } from "next/cache";
 
 setCacheHandler(new KVCacheHandler(env.MY_KV_NAMESPACE));
@@ -537,16 +537,16 @@ The cache is pluggable. The default `MemoryCacheHandler` works out of the box. S
 
 #### Configuring cache adapters from `vite.config`
 
-Instead of wiring up cache handlers imperatively from a worker entry, you can declare them in the `vinext()` plugin config. vinext ships two Cloudflare adapters for this:
+Instead of wiring up cache handlers imperatively from a worker entry, you can declare them in the `vinext()` plugin config. The `@vinext/cloudflare` package ships two Cloudflare adapters for this:
 
-- **`kvDataAdapter()`** (`vinext/cloudflare/cache/kv-data-adapter`) — backs the `"use cache"` data cache with a Workers KV namespace.
-- **`cdnAdapter()`** (`vinext/cloudflare/cache/cdn-adapter`) — backs full-route CDN caching with the Workers Cache API.
+- **`kvDataAdapter()`** (`@vinext/cloudflare/cache/kv-data-adapter`) — backs the `"use cache"` data cache with a Workers KV namespace.
+- **`cdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — backs full-route CDN caching with the Workers Cache API.
 
 ```ts
 import { defineConfig } from "vite";
 import vinext from "vinext";
-import { cdnAdapter } from "vinext/cloudflare/cache/cdn-adapter";
-import { kvDataAdapter } from "vinext/cloudflare/cache/kv-data-adapter";
+import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 
 export default defineConfig({
   plugins: [

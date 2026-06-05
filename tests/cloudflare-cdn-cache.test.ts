@@ -9,7 +9,7 @@
  *    VINEXT_CDN_CACHE_AUTO_DETECT flag is set and ctx.cache exists.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
-import { CloudflareCdnCacheAdapter } from "../packages/vinext/src/cloudflare/cache/cdn-adapter.runtime.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import {
   getCdnCacheAdapter,
   setCdnCacheAdapter,

@@ -1306,8 +1306,8 @@ export function formatMissingCacheAdapterError(options: { configFile?: string })
     `[vinext] This app uses ISR / caching but no cache adapter is configured in ${configRef}.\n\n` +
     `  Production deployments need a persistent cache backend. Declare one on the\n` +
     `  vinext() plugin in ${configRef}:\n\n` +
-    `    import { cdnAdapter } from "vinext/cloudflare/cache/cdn-adapter";\n` +
-    `    import { kvDataAdapter } from "vinext/cloudflare/cache/kv-data-adapter";\n\n` +
+    `    import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";\n` +
+    `    import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";\n\n` +
     `    export default defineConfig({\n` +
     `      plugins: [\n` +
     `        vinext({\n` +

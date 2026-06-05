@@ -503,7 +503,7 @@ describe("viteConfigHasCacheAdapter", () => {
     writeFile(
       tmpDir,
       "vite.config.ts",
-      `import { kvDataAdapter } from "vinext/cloudflare/cache/kv-data-adapter";
+      `import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
        export default { plugins: [vinext({ cache: { data: kvDataAdapter() } })] };`,
     );
     expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);

@@ -3,6 +3,10 @@ import { defineConfig } from "vite-plus";
 import { randomUUID } from "node:crypto";
 
 const SHIMS_SRC = path.resolve(import.meta.dirname, "packages/vinext/src/shims");
+// Resolve the @vinext/cloudflare cache adapters to source in tests, mirroring
+// the `vinext/shims` alias above. This keeps the vinext <-> @vinext/cloudflare
+// dependency edge resolving to source so tests don't require a prior build.
+const CF_CACHE_SRC = path.resolve(import.meta.dirname, "packages/cloudflare/src/cache");
 const MSW_SETUP = path.resolve(import.meta.dirname, "tests/_msw/setup.ts");
 
 export default defineConfig({
@@ -125,7 +129,7 @@ export default defineConfig({
     projects: [
       {
         resolve: {
-          alias: { "vinext/shims": SHIMS_SRC },
+          alias: { "vinext/shims": SHIMS_SRC, "@vinext/cloudflare/cache": CF_CACHE_SRC },
         },
         test: {
           name: "unit",
@@ -165,7 +169,7 @@ export default defineConfig({
       },
       {
         resolve: {
-          alias: { "vinext/shims": SHIMS_SRC },
+          alias: { "vinext/shims": SHIMS_SRC, "@vinext/cloudflare/cache": CF_CACHE_SRC },
         },
         test: {
           name: "integration",
