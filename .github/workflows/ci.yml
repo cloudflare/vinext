@@ -32,7 +32,7 @@ jobs:
             bash -n "$f" || { echo "Syntax error in $f"; exit 1; }
           done
       - name: Verify integration shard manifest
-        run: node scripts/ci-integration-shard.mjs --check --shard-total=8
+        run: node scripts/ci-integration-shard.mjs --check --shard-total=10
 
   test-unit:
     name: Vitest (unit ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
@@ -61,10 +61,14 @@ jobs:
         #   gh run download <run-id> -p 'blob-report-*' -D /tmp/blobs
         #   node scripts/ci-integration-timings-refresh.mjs /tmp/blobs --run=<run-id> --write
         # Revisit the count with: node scripts/ci-integration-shard.mjs --recommend --target-ms=<competing-bottleneck>
-        # EXPERIMENT: pushed to 8 shards while benchmarking pure wall-clock on a
-        # public repo (free runner minutes). Settle on a final count afterward.
-        shardIndex: [1, 2, 3, 4, 5, 6, 7, 8]
-        shardTotal: [8]
+        # 10 shards: the wall-clock floor for integration on this public repo
+        # (free runner minutes). Beyond 10, the slowest integration shard plus
+        # the serial report tail drops below the create-next-app (windows) job,
+        # so more shards stop moving the overall wall. See PR "Wall-clock vs
+        # shard count". Lowering it further means changing those two jobs, not
+        # this count.
+        shardIndex: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        shardTotal: [10]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
