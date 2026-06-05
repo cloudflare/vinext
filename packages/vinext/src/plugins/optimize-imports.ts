@@ -18,6 +18,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
+import { getAstName } from "./ast-utils.js";
 
 /**
  * Read a file's contents, returning null on any error.
@@ -29,14 +30,6 @@ async function readFileSafe(filepath: string): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-/** Extract the string name from an Identifier ({name}) or Literal ({value}) AST node.
- * Returns null for unexpected node shapes so callers can degrade gracefully rather than crash. */
-function astName(node: { name?: string; value?: string | boolean | number | null }): string | null {
-  if (node.name !== undefined) return node.name;
-  if (typeof node.value === "string") return node.value;
-  return null;
 }
 
 /** Nested conditional exports value (string path or nested conditions). */
@@ -408,7 +401,7 @@ async function buildExportMapFromFile(
               break;
             case "ImportSpecifier":
               if (spec.imported) {
-                const name = astName(spec.imported);
+                const name = getAstName(spec.imported);
                 if (name !== null) {
                   importBindings.set(spec.local.name, {
                     source,
@@ -448,7 +441,7 @@ async function buildExportMapFromFile(
 
         if (node.exported) {
           // export * as Name from "sub-pkg" — namespace re-export
-          const name = astName(node.exported);
+          const name = getAstName(node.exported);
           if (name !== null) {
             exportMap.set(name, { source: normalizeSource(rawSource), isNamespace: true });
           }
@@ -514,8 +507,8 @@ async function buildExportMapFromFile(
           // export { A, B } from "sub-pkg"
           for (const spec of node.specifiers ?? []) {
             if (spec.exported) {
-              const exported = astName(spec.exported);
-              const local = astName(spec.local);
+              const exported = getAstName(spec.exported);
+              const local = getAstName(spec.local);
               if (exported !== null) {
                 exportMap.set(exported, {
                   source,
@@ -529,8 +522,8 @@ async function buildExportMapFromFile(
           // export { X } — look up X in importBindings
           for (const spec of node.specifiers) {
             if (!spec.exported) continue;
-            const exported = astName(spec.exported);
-            const local = astName(spec.local);
+            const exported = getAstName(spec.exported);
+            const local = getAstName(spec.local);
             if (exported === null || local === null) continue;
             const binding = importBindings.get(local);
             if (binding) {
@@ -825,7 +818,7 @@ export function createOptimizeImportsPlugin(
                   allResolved = false;
                   break;
                 }
-                const imported = astName(spec.imported);
+                const imported = getAstName(spec.imported);
                 if (imported === null) {
                   // Malformed AST node — degrade gracefully by skipping the import
                   allResolved = false;
@@ -856,7 +849,7 @@ export function createOptimizeImportsPlugin(
             if (allResolved === false) {
               for (const spec of node.specifiers ?? []) {
                 if (spec.type === "ImportSpecifier" && spec.imported) {
-                  const imported = astName(spec.imported);
+                  const imported = getAstName(spec.imported);
                   if (imported !== null && !exportMap.has(imported)) {
                     console.debug(
                       `[vinext:optimize-imports] skipping "${importSource}": could not resolve specifier "${imported}" in barrel export map`,

@@ -16,13 +16,16 @@ import MagicString from "magic-string";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { tryRealpathSync } from "../build/ssr-manifest.js";
-
-type NodeLike = {
-  type?: string;
-  start?: number;
-  end?: number;
-  [key: string]: unknown;
-};
+import {
+  collectBindingNames,
+  forEachAstChild,
+  hasRange,
+  isAstRecord,
+  isIdentifierNamed,
+  nodeArray,
+  type AstRange,
+  type AstRecord,
+} from "./ast-utils.js";
 
 type ImportMetaUrlEnvironment = "client" | "server";
 
@@ -278,7 +281,7 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
   const ranges: Array<{ start: number; end: number }> = [];
 
   function visit(value: unknown): void {
-    if (!isNodeLike(value)) return;
+    if (!isAstRecord(value)) return;
 
     if (isImportMetaUrlNode(value)) {
       ranges.push({ start: value.start, end: value.end });
@@ -301,14 +304,7 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
       return;
     }
 
-    for (const [key, child] of Object.entries(value)) {
-      if (key === "type" || key === "start" || key === "end" || key === "loc") continue;
-      if (Array.isArray(child)) {
-        for (const item of child) visit(item);
-      } else {
-        visit(child);
-      }
-    }
+    forEachAstChild(value, visit);
   }
 
   visit(ast);
@@ -357,48 +353,29 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
 
   // Recursively walks a binding pattern. Each name found is a module binding.
   function recordBinding(pattern: unknown): void {
-    if (!isNodeLike(pattern)) return;
-    const t = pattern.type;
-    if (typeof t !== "string") return;
-    switch (t) {
-      case "Identifier":
-        if (isCjsGlobalName(pattern.name)) moduleBindings.add(pattern.name);
-        return;
-      case "RestElement":
-        recordBinding(pattern.argument);
-        return;
-      case "AssignmentPattern":
-        recordBinding(pattern.left);
-        return;
-      case "ArrayPattern":
-        for (const element of nodeArray(pattern.elements)) recordBinding(element);
-        return;
-      case "ObjectPattern":
-        for (const property of nodeArray(pattern.properties)) {
-          if (!isNodeLike(property)) continue;
-          recordBinding(property.type === "Property" ? property.value : property.argument);
-        }
-        return;
+    const names = new Set<string>();
+    collectBindingNames(pattern, names);
+    for (const name of names) {
+      if (isCjsGlobalName(name)) moduleBindings.add(name);
     }
   }
 
   // Records bindings declared directly by a top-level statement. `var` is
   // handled by the recursive walk below so nested blocks and loops use the
   // same rule.
-  function recordDirectTopLevelBindings(statement: NodeLike): void {
+  function recordDirectTopLevelBindings(statement: AstRecord): void {
     const t = statement.type;
-    if (typeof t !== "string") return;
     switch (t) {
       case "ImportDeclaration":
         for (const specifier of nodeArray(statement.specifiers)) {
-          if (!isNodeLike(specifier)) continue;
+          if (!isAstRecord(specifier)) continue;
           recordBinding(specifier.local);
         }
         return;
       case "VariableDeclaration":
         if (statement.kind === "var") return;
         for (const declarator of nodeArray(statement.declarations)) {
-          if (!isNodeLike(declarator) || declarator.type !== "VariableDeclarator") continue;
+          if (!isAstRecord(declarator) || declarator.type !== "VariableDeclarator") continue;
           recordBinding(declarator.id);
         }
         return;
@@ -408,7 +385,7 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
         return;
       case "ExportNamedDeclaration":
       case "ExportDefaultDeclaration":
-        if (isNodeLike(statement.declaration)) {
+        if (isAstRecord(statement.declaration)) {
           recordDirectTopLevelBindings(statement.declaration);
         }
         return;
@@ -418,13 +395,12 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
   // Walk only syntax whose `var` declarations remain module-scoped. Function
   // and class bodies are scope boundaries.
   function recordModuleScopedVarBindings(node: unknown): void {
-    if (!isNodeLike(node)) return;
+    if (!isAstRecord(node)) return;
     const t = node.type;
-    if (typeof t !== "string") return;
     switch (t) {
       case "Program":
         for (const statement of nodeArray(node.body)) {
-          if (!isNodeLike(statement)) continue;
+          if (!isAstRecord(statement)) continue;
           recordDirectTopLevelBindings(statement);
           recordModuleScopedVarBindings(statement);
         }
@@ -432,7 +408,7 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
       case "VariableDeclaration":
         if (node.kind !== "var") return;
         for (const declarator of nodeArray(node.declarations)) {
-          if (!isNodeLike(declarator) || declarator.type !== "VariableDeclarator") continue;
+          if (!isAstRecord(declarator) || declarator.type !== "VariableDeclarator") continue;
           recordBinding(declarator.id);
         }
         return;
@@ -449,9 +425,8 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
     }
   }
 
-  function moduleScopeChildren(node: NodeLike): unknown[] {
+  function moduleScopeChildren(node: AstRecord): unknown[] {
     const t = node.type;
-    if (typeof t !== "string") return [];
     switch (t) {
       case "BlockStatement":
         return nodeArray(node.body);
@@ -490,9 +465,8 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
   // over-report names that are already bound locally, and the module binding
   // set decides whether injection is safe.
   function recordReads(value: unknown): void {
-    if (!isNodeLike(value)) return;
+    if (!isAstRecord(value)) return;
     const t = value.type;
-    if (typeof t !== "string") return;
     switch (t) {
       case "Identifier":
         if (isCjsGlobalName(value.name)) reads.add(value.name);
@@ -524,27 +498,20 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
         // `export { local as exported }` — only `local` references a binding,
         // and only when there is no `source` (a re-export points at the source
         // module, not a local). `exported` is always just a name.
-        if (isNodeLike(value.declaration)) {
+        if (isAstRecord(value.declaration)) {
           recordReads(value.declaration);
         } else if (!value.source) {
           for (const specifier of nodeArray(value.specifiers)) {
-            if (isNodeLike(specifier)) recordReads(specifier.local);
+            if (isAstRecord(specifier)) recordReads(specifier.local);
           }
         }
         return;
       default:
-        for (const [key, child] of Object.entries(value)) {
-          if (key === "type" || key === "start" || key === "end" || key === "loc") continue;
-          if (Array.isArray(child)) {
-            for (const item of child) recordReads(item);
-          } else {
-            recordReads(child);
-          }
-        }
+        forEachAstChild(value, recordReads);
     }
   }
 
-  if (isNodeLike(ast) && ast.type === "Program") {
+  if (isAstRecord(ast) && ast.type === "Program") {
     recordModuleScopedVarBindings(ast);
   }
   recordReads(ast);
@@ -552,29 +519,20 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
   return { reads, moduleBindings };
 }
 
-function isNodeLike(value: unknown): value is NodeLike {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function isIdentifierNamed(value: unknown, name: string): boolean {
-  return isNodeLike(value) && value.type === "Identifier" && value.name === name;
-}
-
 function isImportMetaNode(value: unknown): boolean {
   return (
-    isNodeLike(value) &&
+    isAstRecord(value) &&
     value.type === "MetaProperty" &&
     isIdentifierNamed(value.meta, "import") &&
     isIdentifierNamed(value.property, "meta")
   );
 }
 
-function isImportMetaUrlNode(value: unknown): value is NodeLike & { start: number; end: number } {
+function isImportMetaUrlNode(value: unknown): value is AstRange {
   return (
-    isNodeLike(value) &&
+    isAstRecord(value) &&
     value.type === "MemberExpression" &&
-    typeof value.start === "number" &&
-    typeof value.end === "number" &&
+    hasRange(value) &&
     isImportMetaNode(value.object) &&
     isIdentifierNamed(value.property, "url")
   );
@@ -583,53 +541,50 @@ function isImportMetaUrlNode(value: unknown): value is NodeLike & { start: numbe
 // Accepts both import.meta.url (MemberExpression) and import.meta?.url
 // (ChainExpression wrapping a MemberExpression) so that the new URL() skip
 // correctly handles optional-chained base arguments.
-function isImportMetaUrlOrChainedNode(
-  value: unknown,
-): value is NodeLike & { start: number; end: number } {
+function isImportMetaUrlOrChainedNode(value: unknown): value is AstRange {
   if (isImportMetaUrlNode(value)) return true;
   return (
-    isNodeLike(value) && value.type === "ChainExpression" && isImportMetaUrlNode(value.expression)
+    isAstRecord(value) && value.type === "ChainExpression" && isImportMetaUrlNode(value.expression)
   );
 }
 
 // Catches the ChainExpression wrapper so we record the outer node range
 // and avoid descending into the inner MemberExpression (which happens
 // to share the same start/end, but this is more explicit).
-function isChainExpressionWrappingImportMetaUrl(
-  value: unknown,
-): value is NodeLike & { start: number; end: number } {
+function isChainExpressionWrappingImportMetaUrl(value: unknown): value is AstRange {
   return (
-    isNodeLike(value) &&
+    isAstRecord(value) &&
     value.type === "ChainExpression" &&
-    typeof value.start === "number" &&
-    typeof value.end === "number" &&
+    hasRange(value) &&
     isImportMetaUrlNode(value.expression)
   );
 }
 
 // Only matches bare `new URL(...)`, not `new globalThis.URL(...)` or
 // `new window.URL(...)`. Matches Vite's own asset-detection scope.
-function isNewUrlExpression(value: NodeLike): boolean {
+function isNewUrlExpression(value: AstRecord): boolean {
   return value.type === "NewExpression" && isIdentifierNamed(value.callee, "URL");
 }
 
 function findDirectivePrologueEnd(ast: unknown): number {
-  if (!isNodeLike(ast) || ast.type !== "Program") return 0;
+  if (!isAstRecord(ast) || ast.type !== "Program") return 0;
 
   // A shebang (`#!...`) lives outside ast.body but must stay the first bytes of
   // the file, so the injection floor starts after it. Inserting at offset 0
   // would move the shebang off line 1 and produce invalid output.
   let end = 0;
   const hashbang = ast.hashbang;
-  if (isNodeLike(hashbang) && typeof hashbang.end === "number") {
-    end = hashbang.end;
+  const hashbangEnd =
+    typeof hashbang === "object" && hashbang !== null ? Reflect.get(hashbang, "end") : null;
+  if (typeof hashbangEnd === "number") {
+    end = hashbangEnd;
   }
 
   for (const statement of nodeArray(ast.body)) {
     if (
-      !isNodeLike(statement) ||
+      !isAstRecord(statement) ||
       statement.type !== "ExpressionStatement" ||
-      !isNodeLike(statement.expression) ||
+      !isAstRecord(statement.expression) ||
       statement.expression.type !== "Literal" ||
       typeof statement.expression.value !== "string" ||
       typeof statement.end !== "number"
@@ -640,8 +595,4 @@ function findDirectivePrologueEnd(ast: unknown): number {
   }
 
   return end;
-}
-
-function nodeArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
 }
