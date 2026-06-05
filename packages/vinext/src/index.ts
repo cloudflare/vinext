@@ -3874,22 +3874,49 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (id.startsWith("\0")) return null;
           if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
 
-          const imageImportRe = new RegExp(
-            `import\\s+(\\w+)\\s+from\\s+['"]([^'"]+\\.(${IMAGE_EXTS}))['"];?`,
-            "g",
-          );
-          if (!imageImportRe.test(code)) return null;
+          // The `code` filter above (a regex) only decides whether to invoke
+          // this handler; it can fire on text inside comments, strings, or
+          // template literals. Scanning must therefore be AST-based so we only
+          // rewrite real `import X from '...'` declarations, not text that
+          // merely looks like one. Regex-based scanning generated phantom
+          // variables for commented-out imports, crashing SSR with
+          // `__vinext_img_url_X is not defined`.
+          const imageExtRe = new RegExp(`\\.(${IMAGE_EXTS})$`);
 
-          imageImportRe.lastIndex = 0;
+          let ast: ReturnType<typeof parseAst>;
+          try {
+            ast = parseAst(code);
+          } catch {
+            // Unparseable input (e.g. unsupported syntax) — leave untouched.
+            return null;
+          }
 
           const s = new MagicString(code);
           let hasChanges = false;
 
-          let match;
-          while ((match = imageImportRe.exec(code)) !== null) {
-            const [fullMatch, varName, importPath] = match;
-            const matchStart = match.index;
-            const matchEnd = matchStart + fullMatch.length;
+          for (const node of ast.body) {
+            if (node.type !== "ImportDeclaration") continue;
+
+            const importNode = node as ASTNode & {
+              start: number;
+              end: number;
+              source?: { value?: unknown };
+              specifiers?: Array<{ type?: string; local?: { name?: string } }>;
+            };
+
+            const importPath = importNode.source?.value;
+            if (typeof importPath !== "string") continue;
+            if (!imageExtRe.test(importPath)) continue;
+
+            // Only handle a single default import (`import X from '...'`),
+            // matching the original behavior. Skip named/namespace imports and
+            // side-effect-only imports (`import '...'`).
+            const specifiers = importNode.specifiers ?? [];
+            if (specifiers.length !== 1) continue;
+            const specifier = specifiers[0];
+            if (specifier.type !== "ImportDefaultSpecifier") continue;
+            const varName = specifier.local?.name;
+            if (!varName) continue;
 
             // Resolve the absolute path of the image
             const dir = path.dirname(id);
@@ -3908,7 +3935,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               `import ${metaVar} from ${JSON.stringify(absImagePath + "?vinext-meta")};\n` +
               `const ${varName} = { src: ${urlVar}, width: ${metaVar}.width, height: ${metaVar}.height };`;
 
-            s.overwrite(matchStart, matchEnd, replacement);
+            s.overwrite(importNode.start, importNode.end, replacement);
             hasChanges = true;
           }
 

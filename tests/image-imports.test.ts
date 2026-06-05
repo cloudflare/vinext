@@ -206,4 +206,71 @@ describe("vinext:image-imports — transform", () => {
     expect(result).not.toBeNull();
     expectImageBinding(result.code, "hero", "test-4x3.png");
   });
+
+  // Regression: a regex-based scanner matched `import X from '...img'` text
+  // anywhere it appeared, including inside comments — even when a real image
+  // existed at that path. This generated `const X = { src: __vinext_img_url_X }`
+  // referencing an undefined `__vinext_img_url_X`, crashing SSR (dev + prod 500).
+  // The scan must be AST-based and only rewrite real ImportDeclaration nodes.
+  it("ignores a commented-out image import (line comment)", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import hero from './test-4x3.png';`,
+      `// import ghost from './test-8x6.jpg';`,
+      `console.log(hero);`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, fakeId);
+    expect(result).not.toBeNull();
+    // The real import is rewritten.
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+    // The commented-out import must not produce any synthesized variables.
+    expect(result.code).not.toContain("__vinext_img_url_ghost");
+    expect(result.code).not.toContain("__vinext_img_meta_ghost");
+    expect(result.code).not.toMatch(/const\s+ghost\s*=/);
+    // The comment is preserved verbatim.
+    expect(result.code).toContain(`// import ghost from './test-8x6.jpg';`);
+  });
+
+  it("ignores a commented-out image import (block comment)", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import hero from './test-4x3.png';`,
+      `/* import ghost from './test-8x6.jpg'; */`,
+      `console.log(hero);`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, fakeId);
+    expect(result).not.toBeNull();
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+    expect(result.code).not.toContain("__vinext_img_url_ghost");
+    expect(result.code).not.toMatch(/const\s+ghost\s*=/);
+  });
+
+  it("ignores image-import text inside a string literal", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import hero from './test-4x3.png';`,
+      `const example = "import ghost from './test-8x6.jpg';";`,
+      `console.log(hero, example);`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, fakeId);
+    expect(result).not.toBeNull();
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+    expect(result.code).not.toContain("__vinext_img_url_ghost");
+    expect(result.code).not.toMatch(/const\s+ghost\s*=/);
+  });
+
+  it("does not transform named or namespace image imports", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    // These are not the `import X from '...'` default form, so they're left as-is.
+    const code = [
+      `import * as ns from './test-4x3.png';`,
+      `import { foo } from './test-8x6.jpg';`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, fakeId);
+    expect(result).toBeNull();
+  });
 });
