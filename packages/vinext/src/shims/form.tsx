@@ -30,6 +30,8 @@ import {
 import { hasAppNavigationRuntime } from "../client/navigation-runtime.js";
 import { useMergedRef } from "./use-merged-ref.js";
 import {
+  getMountedSlotsHeader,
+  getPrefetchInterceptionContext,
   getPrefetchedUrls,
   hasPrefetchCacheEntryForNavigation,
   navigateClientSide,
@@ -38,6 +40,8 @@ import {
 import { isDangerousScheme } from "./url-safety.js";
 import { toSameOriginPath, withBasePath } from "./url-utils.js";
 import { createRscRequestHeaders, createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
+import { AppElementsWire } from "../server/app-elements.js";
+import { VINEXT_MOUNTED_SLOTS_HEADER } from "../server/headers.js";
 
 // Mirrors `__NEXT_ROUTER_BASEPATH` exposure in `next/link` / `next/router`.
 // `addBasePath` is only applied to the form-level `action` prop. A submitter's
@@ -320,15 +324,29 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
         for (const entry of entries) {
           if (entry.isIntersecting || entry.intersectionRatio > 0) {
             void (async () => {
-              const headers = createRscRequestHeaders();
+              // Mirror the Link/router prefetch computation so the cache key the
+              // navigation later looks up matches what we prefetch here. Without
+              // this, intercepted routes or pages with mounted parallel slots
+              // would key under a different context and miss the cached payload.
+              // (See link.tsx:373-389 and navigation.ts:1909-1916.)
+              const interceptionContext = getPrefetchInterceptionContext(actionHref);
+              const mountedSlotsHeader = getMountedSlotsHeader();
+              const headers = createRscRequestHeaders({ interceptionContext });
+              if (mountedSlotsHeader) {
+                headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+              }
               const rscUrl = await createRscRequestUrl(actionHref, headers);
+              const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
               // Dedup: skip if already in-flight or a fresh cache entry exists,
               // matching the gate link.tsx applies to avoid double-fetching a
               // payload that a nearby <Link> already prefetched.
               const prefetched = getPrefetchedUrls();
-              if (prefetched.has(rscUrl)) return;
-              if (hasPrefetchCacheEntryForNavigation(rscUrl, null, null)) return;
-              prefetched.add(rscUrl);
+              if (prefetched.has(cacheKey)) return;
+              if (
+                hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader)
+              )
+                return;
+              prefetched.add(cacheKey);
               const fetchPromise = fetch(rscUrl, {
                 headers,
                 credentials: "include",
@@ -338,10 +356,17 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
                 // @ts-expect-error — purpose is a valid fetch option in some browsers
                 purpose: "prefetch",
               });
-              prefetchRscResponse(rscUrl, fetchPromise, null, null, undefined, {
-                cacheForNavigation: true,
-                optimisticRouteShell: false,
-              });
+              prefetchRscResponse(
+                rscUrl,
+                fetchPromise,
+                interceptionContext,
+                mountedSlotsHeader,
+                undefined,
+                {
+                  cacheForNavigation: true,
+                  optimisticRouteShell: false,
+                },
+              );
             })();
             observer.unobserve(node);
           }
