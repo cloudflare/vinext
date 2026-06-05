@@ -212,7 +212,7 @@ function buildModulePreloadHtml(bootstrapModuleUrl?: string, nonce?: string): st
 }
 
 function buildHeadInjectionHtml(
-  navContext: NavigationContext | null,
+  navContext: NavigationContext,
   bootstrapModuleUrl: string | undefined,
   formState: ReactFormState | null,
   insertedHTML: string,
@@ -220,11 +220,11 @@ function buildHeadInjectionHtml(
   scriptNonce?: string,
 ): string {
   const navPayload = {
-    pathname: navContext?.pathname ?? "/",
-    searchParams: navContext?.searchParams ? [...navContext.searchParams.entries()] : [],
+    pathname: navContext.pathname,
+    searchParams: [...navContext.searchParams.entries()],
   };
   const rscMetadataScript = createInlineScriptTag(
-    createNavigationRuntimeRscMetadataScript(navContext?.params ?? {}, navPayload),
+    createNavigationRuntimeRscMetadataScript(navContext.params, navPayload),
     scriptNonce,
   );
   const formStateScript =
@@ -242,6 +242,13 @@ function buildHeadInjectionHtml(
     insertedHTML +
     fontHTML
   );
+}
+
+function requireNavigationContext(navContext: NavigationContext | null): NavigationContext {
+  if (!navContext) {
+    throw new Error("App SSR requires navigation context for BFCache state keys");
+  }
+  return navContext;
 }
 
 export async function handleSsr(
@@ -274,11 +281,11 @@ export async function handleSsr(
   },
 ): Promise<ReadableStream<Uint8Array>> {
   return runWithNavigationContext(async () => {
+    const ssrNavigationContext = requireNavigationContext(navContext);
+
     await clientReferencePreloader.preload();
 
-    if (navContext) {
-      setNavigationContext(navContext);
-    }
+    setNavigationContext(ssrNavigationContext);
 
     clearServerInsertedHTML();
 
@@ -329,7 +336,7 @@ export async function handleSsr(
                 elements,
                 // Must match the client navigation snapshot pathname byte-for-byte;
                 // Activity keys are derived from this value during hydration.
-                pathname: navContext?.pathname ?? "/",
+                pathname: ssrNavigationContext.pathname,
               }),
             },
             routeTree,
@@ -491,7 +498,7 @@ export async function handleSsr(
 
           didInjectHeadHTML = true;
           return buildHeadInjectionHtml(
-            navContext,
+            ssrNavigationContext,
             bootstrapModuleUrl,
             options?.formState ?? null,
             insertedHTML + errorMetaHTML + getTraceMetaHTML() + initialDevServerErrorHTML,

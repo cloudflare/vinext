@@ -200,10 +200,10 @@ function warnTransportMetadataEntry(id: string): void {
 }
 
 /**
- * Provider stack shared by both BFCache render paths: the one-entry keyed reset
- * and the Activity-backed retention list. Each retained entry re-provides the
- * elements, state-key map, and segment id it was captured with, falling back to
- * the live boundary values for entries that predate per-entry capture.
+ * Provider stack for Activity-retained BFCache entries. Each retained entry
+ * re-provides the elements, state-key map, and segment id it was captured with,
+ * falling back to the live boundary values for entries that predate per-entry
+ * capture.
  */
 function BfcacheEntryProviders({
   entry,
@@ -234,18 +234,18 @@ function useBfcacheSlotEntries(activeEntry: BfcacheSlotEntry): BfcacheSlotEntry[
   const [entryOrder, setEntryOrder] = React.useState<string[]>(() => [activeEntry.stateKey]);
 
   // Render can be restarted or discarded; snapshots are render-tolerant because
-  // the active key is overwritten on every render and pruned to committed order.
+  // the active key is overwritten on every render and pruned to render order.
   snapshotsByStateKey.current.set(activeEntry.stateKey, activeEntry);
 
   const nextOrder = updateBfcacheSlotEntryOrder(entryOrder, activeEntry.stateKey);
   const orderChanged = !haveSameBfcacheSlotEntryOrder(entryOrder, nextOrder);
+  const renderOrder = orderChanged ? nextOrder : entryOrder;
+
+  pruneBfcacheSlotEntrySnapshots(snapshotsByStateKey.current, renderOrder);
 
   if (orderChanged) {
-    pruneBfcacheSlotEntrySnapshots(snapshotsByStateKey.current, nextOrder);
     setEntryOrder(nextOrder);
   }
-
-  const renderOrder = orderChanged ? nextOrder : entryOrder;
 
   return renderOrder
     .map((stateKey) => snapshotsByStateKey.current.get(stateKey))
