@@ -1068,6 +1068,23 @@ describe("hasFreeCjsGlobal", () => {
     expect(hasFreeCjsGlobal(`const r = /__dirname/; const x = 1;`)).toBe(false);
   });
 
+  it("does not misread division after } or postfix ++/-- as a regex literal", () => {
+    // Division after a postfix `++`/`--` or a `}` must not be parsed as a regex
+    // literal (which would swallow the rest of the line and hide the __dirname).
+    expect(hasFreeCjsGlobal("i++ / 2; const d = __dirname;")).toBe(true);
+    expect(hasFreeCjsGlobal("i-- / 2; const d = __dirname;")).toBe(true);
+    expect(hasFreeCjsGlobal("const x = {a:1} / 2; const d = __dirname;")).toBe(true);
+    expect(hasFreeCjsGlobal("i++ / __dirname / b; z;")).toBe(true);
+    expect(hasFreeCjsGlobal("const half = list.pop() ? a-- / 2 : 0; const root = __dirname;")).toBe(
+      true,
+    );
+  });
+
+  it("still parses a real regex after a prefix ++ or keyword", () => {
+    // Prefix `++i` keeps operator position; the regex that follows is still a regex.
+    expect(hasFreeCjsGlobal("if (++i) { return /'/; }\nconst d = __dirname;")).toBe(true);
+  });
+
   // Regression: the old alternation regex's `(?:[^"\\]|\\.)*` string-body loop
   // overflowed V8's regex stack ("Maximum call stack size exceeded") on very large
   // files. These inputs reproduce that; the scanner must return in linear time.

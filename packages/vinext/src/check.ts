@@ -386,9 +386,11 @@ const REGEX_PRECEDING_KEYWORDS = new Set([
  *
  * It is a lexer-grade scanner, not a parser: it tracks just enough state (string /
  * template / comment / regex contexts, and whether a `/` is in expression position)
- * to avoid mistaking quotes inside one context for the start of another. It does not
- * attempt full JS semantics (e.g. `}` is treated as regex-allowing), which is fine for
- * an advisory check.
+ * to avoid mistaking quotes inside one context for the start of another. Where the
+ * division-vs-regex distinction is ambiguous it biases toward division, because a
+ * misread division is harmless (it never consumes a following identifier) whereas a
+ * misread regex would swallow the rest of the line and could hide a later __dirname.
+ * This is fine for an advisory check.
  */
 export function hasFreeCjsGlobal(content: string): boolean {
   const n = content.length;
@@ -505,7 +507,11 @@ export function hasFreeCjsGlobal(content: string): boolean {
         stack.pop(); // close the ${ … } and return to the template
       } else {
         if (top.depth > 0) top.depth--;
-        top.prevType = "op";
+        // Treat `}` as value-producing so a following `/` is division (the common
+        // `{ … } / x` object-literal case). A block `}` followed by a regex is rarer,
+        // and misreading that regex as division is harmless here — division never
+        // consumes a following identifier, so it cannot hide a later __dirname.
+        top.prevType = "value";
       }
       i++;
       continue;
@@ -523,6 +529,14 @@ export function hasFreeCjsGlobal(content: string): boolean {
       i++;
       while (i < n && (isIdentChar(content[i]) || content[i] === ".")) i++;
       top.prevType = "value";
+      continue;
+    }
+    // `++` / `--` does not change expression position: postfix (after a value) keeps
+    // the value, prefix (after an operator) keeps the operator. So consume it as a
+    // unit and leave prevType alone — otherwise `i++ / 2` would misread the division
+    // as a regex literal and swallow the rest of the line.
+    if ((ch === "+" && content[i + 1] === "+") || (ch === "-" && content[i + 1] === "-")) {
+      i += 2;
       continue;
     }
     // Other punctuation. `)` and `]` close a value (so `/` after them is division);
