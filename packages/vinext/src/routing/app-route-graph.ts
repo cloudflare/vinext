@@ -2186,14 +2186,11 @@ function computeInterceptTarget(
   switch (convention) {
     case ".": {
       const interceptParentDir = path.dirname(interceptRoot);
-      const interceptParentSegments = path
-        .relative(appDir, interceptParentDir)
-        .split(path.sep)
-        .filter(Boolean);
-      const convertedParent = convertSegmentsToRouteParts(interceptParentSegments);
-      baseParts = convertedParent
-        ? convertedParent.urlSegments
-        : interceptParentSegments.filter((s) => !isInvisibleSegment(s));
+      // Use raw filesystem segments here. Invisible segments (@slot, route
+      // groups) and dynamic [param] syntax are resolved by the single
+      // convertSegmentsToRouteParts call below; feeding already-converted
+      // segments would drop dynamic ancestor params on the second pass.
+      baseParts = path.relative(appDir, interceptParentDir).split(path.sep).filter(Boolean);
       break;
     }
     case "..":

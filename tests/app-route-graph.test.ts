@@ -1043,6 +1043,7 @@ describe("App Router route graph builder", () => {
         targetPattern: string;
         sourceMatchPattern: string;
         convention: string;
+        params: string[];
       }> = [];
       for (const route of routes) {
         for (const slot of route.parallelSlots) {
@@ -1053,6 +1054,7 @@ describe("App Router route graph builder", () => {
               targetPattern: ir.targetPattern,
               sourceMatchPattern: ir.sourceMatchPattern,
               convention: ir.convention,
+              params: ir.params,
             });
           }
         }
@@ -1108,6 +1110,31 @@ describe("App Router route graph builder", () => {
           expect.objectContaining({
             targetPattern: "/sub/target/:id",
             sourceMatchPattern: "/sub",
+            convention: ".",
+          }),
+        );
+      });
+    });
+
+    it("includes dynamic ancestor params for (.) slot with a dynamic ancestor segment", async () => {
+      // Regression for the double-conversion bug: raw filesystem segments must be
+      // passed as baseParts so that [locale] is not converted to :locale before
+      // the final convertSegmentsToRouteParts call (which would then treat :locale
+      // as static and drop it from params).
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "[locale]/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "[locale]/photos/[id]/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "[locale]/@modal/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "[locale]/@modal/(.)photos/[id]/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const intercepts = collectIntercepts(graph.routes);
+
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/:locale/photos/:id",
+            params: ["locale", "id"],
             convention: ".",
           }),
         );
