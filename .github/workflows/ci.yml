@@ -55,9 +55,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Shard count is driven by scripts/ci-integration-timings.json.
-        # Rebalance by updating that manifest with fresh CI timing data,
-        # not by editing this matrix.
+        # Shard count mirrors scripts/ci-integration-timings.json (shardTotal);
+        # the Check job fails on drift between this matrix and the manifest.
+        # Rebalance weights by regenerating the manifest from real CI blobs:
+        #   gh run download <run-id> -p 'blob-report-*' -D /tmp/blobs
+        #   node scripts/ci-integration-timings-refresh.mjs /tmp/blobs --run=<run-id> --write
+        # Revisit the count with: node scripts/ci-integration-shard.mjs --recommend --target-ms=<competing-bottleneck>
         shardIndex: [1, 2, 3, 4, 5, 6]
         shardTotal: [6]
     steps:
