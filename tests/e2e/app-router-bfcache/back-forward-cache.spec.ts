@@ -148,16 +148,12 @@ test.describe("Next.js compat: back/forward cache", () => {
     await waitForAppRouterHydration(page);
     await expectPage(page, 1);
 
-    const firstId = await page
-      .locator(`[data-testid="leaf-bfcache-id"]:visible`)
-      .textContent();
+    const firstId = await page.locator(`[data-testid="leaf-bfcache-id"]:visible`).textContent();
 
     await clickUntilCount(page, 1, 2);
 
     await clickPageLink(page, 2);
-    const secondId = await page
-      .locator(`[data-testid="leaf-bfcache-id"]:visible`)
-      .textContent();
+    const secondId = await page.locator(`[data-testid="leaf-bfcache-id"]:visible`).textContent();
     expect(secondId).not.toBe(firstId);
 
     await clickPageLink(page, 1);
@@ -166,9 +162,7 @@ test.describe("Next.js compat: back/forward cache", () => {
     await expect(counter(page, 1)).toHaveText("Count: 2");
 
     // But a fresh link navigation still gets fresh history-entry identity.
-    const returnedId = await page
-      .locator(`[data-testid="leaf-bfcache-id"]:visible`)
-      .textContent();
+    const returnedId = await page.locator(`[data-testid="leaf-bfcache-id"]:visible`).textContent();
     expect(returnedId).toMatch(/^_b_\d+_$/);
     expect(returnedId).not.toBe(firstId);
   });
