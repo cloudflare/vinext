@@ -4,10 +4,15 @@
  * These tests build a real App Router fixture through the full Vite pipeline,
  * then extract the generated __VINEXT_CLASS dispatch function from the emitted
  * RSC chunk and evaluate it. They verify that Fix 2 (wiring the build-time
- * classifier into the plugin's generateBundle hook) actually produces a
+ * classifier into the plugin's renderChunk hook) actually produces a
  * populated dispatch table at the end of the build pipeline — previously every
  * route fell back to the Layer 3 runtime probe because the plugin never ran
  * the classifier.
+ *
+ * A sibling suite at the bottom builds the SAME fixture with vinext's default
+ * server minification LEFT ON (the production path) and asserts on
+ * minify-robust signals, so a revert of the patch to a post-minify hook is
+ * caught even though identifier-name introspection is impossible under minify.
  */
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -35,7 +40,7 @@ async function writeFile(file: string, source: string): Promise<void> {
  * Extracts the __VINEXT_CLASS function body from the RSC chunk source and
  * evaluates it to a callable dispatch function. Throws if the stub is still
  * the untouched `return null` form — the caller is expected to have patched
- * it via the plugin's generateBundle hook.
+ * it via the plugin's renderChunk hook.
  */
 function extractDispatch(chunkSource: string): Dispatch {
   const stubRe = /function\s+__VINEXT_CLASS\s*\(routeIdx\)\s*\{\s*return null;?\s*\}/;
@@ -88,9 +93,14 @@ function extractRouteIndexByPattern(chunkSource: string): Map<string, number> {
   return result;
 }
 
-async function buildMinimalFixture({
+type BuiltFixtureRaw = {
+  chunkSource: string;
+};
+
+async function buildMinimalFixtureRaw({
   debug = false,
-}: { debug?: boolean } = {}): Promise<BuiltFixture> {
+  minify = false,
+}: { debug?: boolean; minify?: boolean } = {}): Promise<BuiltFixtureRaw> {
   const workspaceRoot = path.resolve(import.meta.dirname, "..");
   const workspaceNodeModules = path.join(workspaceRoot, "node_modules");
 
@@ -165,30 +175,37 @@ export default function ForceStaticLayout({ children }) {
     pathToFileURL(path.join(workspaceRoot, "packages/vinext/src/index.ts")).href
   );
   const { createBuilder } = await import("vite");
+  // When `minify` is false we override vinext's default server minification
+  // (vinext:server-minify-defaults), which renames the `__VINEXT_CLASS`
+  // function and mangles its `routeIdx` parameter. The production patch
+  // survives minification — it runs in renderChunk before the minifier — but
+  // the dispatch-logic suites below extract and *evaluate* the patched body by
+  // matching the readable `function __VINEXT_CLASS(routeIdx) { ... }` shape
+  // (see extractDispatch), which only exists in unminified output. Keeping
+  // those suites unminified makes the regex introspection deterministic.
+  //
+  // The `minify: true` path leaves vinext's production default in place. That
+  // path can't be introspected by identifier name (everything is mangled), so
+  // its suite asserts on minify-robust signals instead — string literals the
+  // patch injects, which minification preserves. minify is a user-overridable
+  // default, so toggling it per-build here is sound.
+  const minifyOverride = minify ? undefined : { build: { minify: false as const } };
   const builder = await createBuilder({
     root: tmpDir,
     configFile: false,
     plugins: [vinext({ appDir: tmpDir, rscOutDir, ssrOutDir, clientOutDir })],
     logLevel: "silent",
-    // vinext minifies server environments by default (vinext:server-minify-defaults),
-    // which renames the `__VINEXT_CLASS` function and mangles its `routeIdx`
-    // parameter. The production patch survives this — it runs in renderChunk
-    // before minification — but these tests extract and *evaluate* the patched
-    // dispatch body from the emitted chunk by matching the readable
-    // `function __VINEXT_CLASS(routeIdx) { ... }` shape (see extractDispatch).
-    // Disabling minify keeps the emitted identifiers readable so the regex
-    // introspection stays deterministic. This is a test-only concern: minify is
-    // a user-overridable default (see the `config.build?.minify !== undefined`
-    // guard in vinext:server-minify-defaults), so opting out here is sound.
-    build: { minify: false },
-    environments: {
-      rsc: { build: { minify: false } },
-      ssr: { build: { minify: false } },
-    },
+    ...minifyOverride,
+    environments: minify
+      ? {}
+      : {
+          rsc: { build: { minify: false } },
+          ssr: { build: { minify: false } },
+        },
   });
 
   // The plugin reads `VINEXT_DEBUG_CLASSIFICATION` directly from `process.env`
-  // in its `generateBundle` hook. Save, override, and restore around the build
+  // in its `renderChunk` hook. Save, override, and restore around the build
   // so these tests are hermetic: asserting "stub stays null" works even when
   // a developer has the flag set in their local shell, and the debug-on suite
   // below can force the patched path without polluting the sibling suite.
@@ -220,6 +237,18 @@ export default function ForceStaticLayout({ children }) {
   }
   const chunkSource = await fsp.readFile(path.join(chunkDir, chunkFile), "utf8");
 
+  return { chunkSource };
+}
+
+/**
+ * Unminified build helper. Adds the identifier-name-based introspection
+ * (`extractDispatch` / `extractRouteIndexByPattern`) the dispatch-logic suites
+ * rely on, which only works when `__VINEXT_CLASS` / `routeIdx` survive verbatim.
+ */
+async function buildMinimalFixture({
+  debug = false,
+}: { debug?: boolean } = {}): Promise<BuiltFixture> {
+  const { chunkSource } = await buildMinimalFixtureRaw({ debug, minify: false });
   return {
     chunkSource,
     dispatch: extractDispatch(chunkSource),
@@ -385,5 +414,71 @@ describe("build-time classification integration (debug on)", () => {
     expect(rootReason).toBeDefined();
     expect(rootReason!.layer).toBe("module-graph");
     expect(rootReason!.result).toBe("static");
+  });
+});
+
+/**
+ * Production-default coverage: builds the SAME fixture with vinext's default
+ * server minification LEFT ON. Under minify, `__VINEXT_CLASS` / `routeIdx` are
+ * mangled, so identifier-name introspection is impossible — these assertions
+ * instead key off minify-robust signals that only exist when the patch actually
+ * applied:
+ *
+ *   - The dispatch result value literals `"static"` / `"dynamic"` (string
+ *     literal contents are never mangled). The untouched stub returns null
+ *     unconditionally and contains neither, so their presence proves the
+ *     `__VINEXT_CLASS` switch was injected.
+ *   - In a DEBUG build, the reason `layer` literals (`"module-graph"`,
+ *     `"segment-config"`, `"no-classifier"`) injected by the reasons
+ *     replacement. These appear ONLY after the reasons stub is patched.
+ *   - The classification function is no longer an unconditional `return null`
+ *     stub.
+ *
+ * This is the regression guard the prior `minify: false`-only tests lost: the
+ * OLD buggy code patched in `generateBundle` (post-minify), so under minify the
+ * stub regex never matched and these literals would be ABSENT. A revert to a
+ * post-minify hook makes this suite FAIL. (Verified manually by temporarily
+ * moving the injector hook past minification — the assertions below failed.)
+ */
+describe("build-time classification integration (production default — minify on)", () => {
+  let chunkSource: string;
+  let debugChunkSource: string;
+
+  beforeAll(async () => {
+    // Sequential, not Promise.all: the debug toggle mutates process.env around
+    // the build, so concurrent builds would race on that shared global.
+    ({ chunkSource } = await buildMinimalFixtureRaw({ minify: true }));
+    ({ chunkSource: debugChunkSource } = await buildMinimalFixtureRaw({
+      minify: true,
+      debug: true,
+    }));
+  }, 120_000);
+
+  it("injects the dispatch switch into __VINEXT_CLASS under minification", () => {
+    // Minification rewrites every string literal to backtick form and mangles
+    // all identifiers, so we cannot find the function by name or by quote style.
+    // The injected dispatch body has a stable STRUCTURE that the minifier
+    // preserves: `switch (routeIdx) { case N: return new Map([[idx, "kind"]]);
+    // ... }`. The untouched stub is just `return null`, which has no switch and
+    // no `new Map([[`. Assert that structural shape — pairing a numeric `case`
+    // label with a `new Map([[<digit>,` dispatch entry — is present. This is the
+    // signal that vanishes if the patch reverts to a post-minify hook (the
+    // original bug): under minify the mangled stub regex never matches, the
+    // switch is never injected, and this shape is absent.
+    expect(chunkSource).toMatch(/case \d+:\s*return new Map\(\[\[\d+,/);
+  });
+
+  it("injects module-graph reason literals into the dispatch table under minification (debug)", () => {
+    // `module-graph` as a `layer` value is emitted ONLY by the patched reasons
+    // dispatch table (buildReasonsReplacement.serializeReasonExpression). Unlike
+    // `segment-config` / `no-classifier`, which also appear in bundled runtime
+    // source (app-page-dispatch.ts / app-page-execution.ts) and therefore
+    // survive even an unpatched build, `module-graph` never appears at runtime —
+    // it is purely a build-time injection. Its presence is conclusive proof the
+    // reasons table was patched in before minification. Quote-agnostic match:
+    // the minifier emits it backtick-quoted.
+    expect(debugChunkSource).toMatch(/["'`]module-graph["'`]/);
+    // And the populated switch dispatch shape, same as the non-debug build.
+    expect(debugChunkSource).toMatch(/case \d+:\s*return new Map\(\[\[\d+,/);
   });
 });

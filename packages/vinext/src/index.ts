@@ -774,14 +774,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const draftModeSecret = randomUUID();
 
   // Build-time layout classification manifest, captured in the RSC virtual
-  // module's load hook and consumed in generateBundle to patch the generated
+  // module's load hook and consumed in renderChunk to patch the generated
   // `__VINEXT_CLASS` stub with a real dispatch table.
   let rscClassificationManifest: RouteClassificationManifest | null = null;
 
   // Resolve shim paths - works both from source (.ts) and built (.js)
   const shimsDir = path.resolve(__dirname, "shims");
 
-  // Shared with the Layer 2 generateBundle hook below. Rolldown stores module
+  // Shared with the Layer 2 renderChunk hook below. Rolldown stores module
   // IDs as canonicalized filesystem paths (fs.realpathSync.native), so we must
   // canonicalize anything we hand to the classifier and anything we ask the
   // module graph for. The shim files exist in the vinext package before plugin
@@ -2531,6 +2531,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Cheap pre-filter: skip chunks that don't mention the stub at all
           // (e.g. the scan-phase chunk and every non-entry chunk).
           if (!code.includes("__VINEXT_CLASS")) return null;
+
+          // Patching per-chunk (rather than scanning the whole bundle in
+          // generateBundle) assumes the stub body and its per-route call sites
+          // are emitted into the same chunk. That holds with current codegen:
+          // both live in the single RSC entry module, so they never split
+          // across chunks. If a future codegen change hoisted the call sites
+          // into a separate chunk, this hook would patch the stub but leave the
+          // callers referencing the original — revisit the hook scope then.
 
           const enableClassificationDebug = Boolean(process.env.VINEXT_DEBUG_CLASSIFICATION);
 

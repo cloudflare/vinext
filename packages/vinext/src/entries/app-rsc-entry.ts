@@ -382,7 +382,7 @@ ${
     : ""
 }
 
-// Build-time layout classification dispatch. Replaced in generateBundle
+// Build-time layout classification dispatch. Replaced in renderChunk
 // with a switch statement that returns a pre-computed per-layout
 // Map<layoutIndex, "static" | "dynamic"> for each route. Until the
 // plugin patches this stub, every route falls back to the Layer 3
@@ -394,7 +394,7 @@ function __VINEXT_CLASS(routeIdx) {
 // Build-time layout classification reasons dispatch. Sibling of
 // __VINEXT_CLASS, returning a per-route Map<layoutIndex, ClassificationReason>
 // that feeds the debug channel when VINEXT_DEBUG_CLASSIFICATION is active.
-// Replaced in generateBundle with a real dispatch table; the stub returns
+// Replaced in renderChunk with a real dispatch table; the stub returns
 // null so the hot path never allocates reason maps when debug is off.
 function __VINEXT_CLASS_REASONS(routeIdx) {
   return null;

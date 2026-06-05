@@ -148,20 +148,6 @@ async function buildCloudflareAppFixture(root: string) {
       cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
     ],
     logLevel: "silent",
-    // vinext minifies server environments by default
-    // (vinext:server-minify-defaults). Minification reshapes chunk boundaries,
-    // which can concatenate compiled-MDX frontmatter into whichever chunk this
-    // test reads — defeating the `not.toContain('title: "Second Post"')`
-    // introspection even though the alias transform and frontmatter handling are
-    // correct. These assertions verify build-time *source shape* (aliases
-    // rewritten, frontmatter not leaked verbatim), so they must run against
-    // unminified output. minify is a user-overridable default, so opting out
-    // here is sound.
-    build: { minify: false },
-    environments: {
-      rsc: { build: { minify: false } },
-      ssr: { build: { minify: false } },
-    },
   });
   await builder.buildApp();
 }
@@ -321,9 +307,25 @@ date: "2025-08-20"
     await buildCloudflareAppFixture(root);
 
     const buildOutput = readTextFilesRecursive(path.join(root, "dist"));
+    // Runs against the PRODUCTION DEFAULT (server minification ON).
     expect(buildOutput).not.toContain('import.meta.glob("@/content/posts/**/*.mdx"');
     expect(buildOutput).not.toContain("@/content/posts/");
-    expect(buildOutput).not.toContain('title: "Second Post"');
+    // Issue #659 was a build-time *parse failure*: the MDX frontmatter `---`
+    // fence broke compilation, so the module never produced runnable JSX. The
+    // regression guard is therefore "the MDX compiled to JSX". The fixture
+    // configures no remark-frontmatter plugin, so MDX legitimately renders the
+    // `---` block as an `<hr>` + heading text — that rendered text (including
+    // `title: "Second Post"`) is EXPECTED content, present identically in
+    // minified and unminified output, and is NOT a leak. (The old
+    // `not.toContain('title: "Second Post"')` check only ever passed by accident:
+    // unminified JS escaped the inner quotes as `title: \"Second Post\"`, so the
+    // bare substring never matched. Minification emits the same string inside a
+    // backtick template without escaping, exposing that the assertion was a
+    // quote-style artifact rather than a real signal — hence its removal.)
+    //
+    // The real leak we still guard against is the RAW YAML frontmatter surviving
+    // verbatim as a top-of-module `---` fence (the unparsed #659 shape).
     expect(buildOutput).toContain("text-red-500");
+    expect(buildOutput).not.toMatch(/^---\s*$[\s\S]*?title:/m);
   }, 60_000);
 });

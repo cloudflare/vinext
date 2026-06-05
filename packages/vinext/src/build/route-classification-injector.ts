@@ -81,7 +81,7 @@ function findClassificationChunk(
         .map((chunk) => chunk.fileName)
         .join(
           ", ",
-        )} but no chunk contains the stub body. The generator and generateBundle have drifted.`,
+        )} but no chunk contains the stub body. The generator and the classification injector have drifted.`,
     );
   }
 
@@ -147,7 +147,7 @@ export function planRouteClassificationInjection(
 
   if (options.enableDebugReasons && !REASONS_STUB_RE.test(target.code)) {
     throw new Error(
-      "vinext: build-time classification — __VINEXT_CLASS_REASONS stub is missing alongside __VINEXT_CLASS. The generator and generateBundle have drifted.",
+      "vinext: build-time classification — __VINEXT_CLASS_REASONS stub is missing alongside __VINEXT_CLASS. The generator and the classification injector have drifted.",
     );
   }
 
