@@ -44,6 +44,7 @@ import {
   loadNextConfig,
   resolveNextConfigInput,
   resolveNextConfig,
+  referencesCjsGlobals,
   type NextConfig,
   type NextConfigInput,
   type ResolvedNextConfig,
@@ -3741,6 +3742,38 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (!result) return null;
           return { code: result, map: null };
         },
+      },
+    },
+    // Inject __dirname/__filename shims into node_modules files that reference
+    // these CJS globals in SSR/RSC environments. Node 21.2+ exposes
+    // `import.meta.dirname` / `import.meta.filename`; we fall back to the
+    // URL-based equivalent for older versions.
+    //
+    // We skip the client environment because client bundles are processed by
+    // Rolldown/esbuild which handles CJS interop separately. We also guard
+    // against re-injecting when the file already declares the identifier.
+    {
+      name: "vinext:cjs-globals-node-modules",
+      transform(code: string, id: string) {
+        if (!id.includes("/node_modules/")) return null;
+        if (id.includes("?")) return null;
+        // Only inject into server-side environments (SSR / RSC), not client.
+        if (this.environment?.name === "client") return null;
+        if (!referencesCjsGlobals(code)) return null;
+
+        const hasOwnDirname = /\b(?:const|let|var)\s+__dirname\b/.test(code);
+        const hasOwnFilename = /\b(?:const|let|var)\s+__filename\b/.test(code);
+        if (hasOwnDirname && hasOwnFilename) return null;
+
+        const lines =
+          (hasOwnFilename
+            ? ""
+            : `const __filename = import.meta.filename ?? new URL(import.meta.url).pathname;\n`) +
+          (hasOwnDirname
+            ? ""
+            : `const __dirname = import.meta.dirname ?? new URL(".", import.meta.url).pathname;\n`);
+
+        return { code: lines + code, map: null };
       },
     },
     // Strip console.* calls from the client bundle when compiler.removeConsole

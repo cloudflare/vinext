@@ -700,6 +700,14 @@ function cjsGlobalsInjectorPlugin(configPath: string): {
       const dirnameLiteral = JSON.stringify(dirname);
       const requireBaseLiteral = JSON.stringify(path.join(dirname, "package.json"));
 
+      // Skip injecting a shim for identifiers the user already declared.
+      // Without this guard, a config that writes its own ESM polyfill:
+      //   const __dirname = dirname(fileURLToPath(import.meta.url))
+      // would get a duplicate `const __dirname` declaration and Rolldown
+      // would reject the file with a parse error.
+      const hasOwnDirname = /\b(?:const|let|var)\s+__dirname\b/.test(code);
+      const hasOwnFilename = /\b(?:const|let|var)\s+__filename\b/.test(code);
+
       // Only wire up the wrapper `module` object — and the corresponding
       // named export read by unwrapConfig — when the source statically looks
       // like it assigns to module.exports. Pure-ESM configs avoid the extra
@@ -717,8 +725,8 @@ function cjsGlobalsInjectorPlugin(configPath: string): {
       // any global lookups the source would otherwise perform.
       const preamble =
         `import { createRequire as __vinextCreateRequire } from "node:module";\n` +
-        `const __filename = ${filenameLiteral};\n` +
-        `const __dirname = ${dirnameLiteral};\n` +
+        (hasOwnFilename ? "" : `const __filename = ${filenameLiteral};\n`) +
+        (hasOwnDirname ? "" : `const __dirname = ${dirnameLiteral};\n`) +
         `const require = __vinextCreateRequire(${requireBaseLiteral});\n` +
         moduleLines;
 
