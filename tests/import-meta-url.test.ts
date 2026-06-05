@@ -100,15 +100,11 @@ describe("vinext:import-meta-url plugin", () => {
       linkedRoot,
     );
 
-    // Values are baked path literals computed in the plugin from the module's
-    // canonical path, not derived at runtime.
     expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
     expect(result?.code).toContain(
       `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
     );
-    // The baked path is the real (not symlinked) path.
     expect(result?.code).not.toContain("linked-app");
-    // Original identifiers remain as variable references, not string literals
     expect(result?.code).toContain(`console.log(__filename, __dirname);`);
   });
 
@@ -168,33 +164,76 @@ describe("vinext:import-meta-url plugin", () => {
     );
   });
 
-  it("injects when var declarations are nested (var hoisting naturally shadows the injected binding)", () => {
-    const result = rewriteServerCjsGlobals(
+  it.each([
+    [
+      "an if statement",
+      [`if (flag) {`, `  var __filename = "local-file";`, `}`, `console.log(__filename);`].join(
+        "\n",
+      ),
+    ],
+    [
+      "a block statement",
+      [`{`, `  var __dirname = "local-dir";`, `}`, `console.log(__dirname);`].join("\n"),
+    ],
+    [
+      "a switch statement",
       [
-        `if (flag) {`,
-        `  var __filename = "local-file";`,
+        `switch (value) {`,
+        `  case 1:`,
+        `    var __filename = "local-file";`,
+        `    break;`,
         `}`,
         `console.log(__filename);`,
-        `function read() {`,
-        `  if (flag) {`,
-        `    var __dirname = "local-dir";`,
-        `  }`,
+      ].join("\n"),
+    ],
+    [
+      "a try/finally statement",
+      [`try {`, `  var __dirname = "local-dir";`, `} finally {}`, `console.log(__dirname);`].join(
+        "\n",
+      ),
+    ],
+    [
+      "a labelled statement",
+      [`label: var __filename = "local-file";`, `console.log(__filename);`].join("\n"),
+    ],
+    [
+      "a loop body",
+      [
+        `for (const item of items) {`,
+        `  var __dirname = "local-dir";`,
+        `}`,
+        `console.log(__dirname);`,
+      ].join("\n"),
+    ],
+  ])("does not inject when %s contains a module-scoped var", (_caseName, source) => {
+    const result = rewriteServerCjsGlobals(source, pagePath, linkedRoot);
+
+    expect(result).toBeNull();
+  });
+
+  it("injects when the only var declarations live inside functions", () => {
+    const result = rewriteServerCjsGlobals(
+      [
+        `function readFile() {`,
+        `  var __filename = "local-file";`,
+        `  return __filename;`,
+        `}`,
+        `function readDir() {`,
+        `  var __dirname = "local-dir";`,
         `  return __dirname;`,
         `}`,
+        `console.log(__filename, __dirname);`,
       ].join("\n"),
       pagePath,
       linkedRoot,
     );
 
     expect(result).not.toBeNull();
-    // Both should be injected because there are no top-level declarations
     expect(result?.code).toContain(`var __filename = ${JSON.stringify(canonicalPagePath)};`);
     expect(result?.code).toContain(
       `var __dirname = ${JSON.stringify(path.dirname(canonicalPagePath))};`,
     );
-    // Original references preserved
-    expect(result?.code).toContain(`console.log(__filename);`);
-    expect(result?.code).toContain(`return __dirname;`);
+    expect(result?.code).toContain(`console.log(__filename, __dirname);`);
   });
 
   it("injects when only top-level assignment/update expressions reference the globals", () => {

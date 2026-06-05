@@ -13,9 +13,9 @@
 // Both are edge cases that are unlikely in real Next.js apps.
 import { normalizePath, parseAst, type Plugin } from "vite";
 import MagicString from "magic-string";
-import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { tryRealpathSync } from "../build/ssr-manifest.js";
 
 type NodeLike = {
   type?: string;
@@ -292,11 +292,7 @@ function importMetaUrlValue(
 }
 
 function canonicalizePath(value: string): string {
-  try {
-    return fs.realpathSync.native(value);
-  } catch {
-    return path.resolve(value);
-  }
+  return tryRealpathSync(value) ?? path.resolve(value);
 }
 
 function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: number }> {
@@ -346,55 +342,52 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
 // and more correct than a free-identifier replacement walker that must model
 // lexical scope.
 //
-// The injection rule in one place: a CJS global is injected iff the module
-// reads it (not just a member-access/key/lookalike mention) AND there is no
-// conflicting top-level binding of that name (a `var` colliding with a
-// top-level let/const/class/import would be a SyntaxError).
-const CJS_GLOBALS = ["__filename", "__dirname"] as const;
-type CjsGlobalName = (typeof CJS_GLOBALS)[number];
+// The injection rule in one place: inject when the module reads the name and
+// nothing in module scope already binds it.
+type CjsGlobalName = "__filename" | "__dirname";
+const CJS_GLOBALS: readonly CjsGlobalName[] = ["__filename", "__dirname"];
 
 function isCjsGlobalName(name: unknown): name is CjsGlobalName {
   return name === "__filename" || name === "__dirname";
 }
 
 function injectServerCjsGlobals(ast: unknown, canonicalId: string): string | null {
-  const values = { __filename: canonicalId, __dirname: path.dirname(canonicalId) } as const;
   const analysis = analyzeServerCjsGlobals(ast);
+  const values: Record<CjsGlobalName, string> = {
+    __filename: canonicalId,
+    __dirname: path.dirname(canonicalId),
+  };
   const parts = CJS_GLOBALS.filter(
-    (name) => analysis.reads.has(name) && !analysis.topLevelBindings.has(name),
+    (name) => analysis.reads.has(name) && !analysis.moduleBindings.has(name),
   ).map((name) => `var ${name} = ${JSON.stringify(values[name])};`);
   return parts.length ? parts.join("") : null;
 }
 
 type ServerCjsAnalysis = {
   reads: Set<CjsGlobalName>;
-  topLevelBindings: Set<CjsGlobalName>;
+  moduleBindings: Set<CjsGlobalName>;
 };
 
-// One analysis pass produces both facts about the module:
-//   - reads: CJS globals referenced as a value (Identifier in read position)
-//   - topLevelBindings: CJS globals bound by a top-level declaration
-// Top-level binding detection walks only Program.body — nested bindings are
-// correctly shadowed by JS scope and do not need to be tracked.
-//
-// Vite's parseAst (rolldown/oxc) rejects TypeScript syntax, and this plugin
-// runs `enforce: "post"` after TS has been stripped, so only plain-JS binding
-// forms can ever reach here — no `import type`, `enum`, `namespace`,
-// `declare`, or `import =` nodes/fields to account for.
+// One pass collects the two module facts we need:
+//   - reads: names used as values
+//   - moduleBindings: names bound anywhere in module scope, including `var`
+//     declarations hidden inside top-level blocks and control flow
 function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
   const reads = new Set<CjsGlobalName>();
-  const topLevelBindings = new Set<CjsGlobalName>();
+  const moduleBindings = new Set<CjsGlobalName>();
 
-  // Recursively walks a binding pattern (destructuring target, var
-  // declarator id, function/class name, import specifier local). Each name
-  // found is recorded as a top-level binding.
+  function isAnalysisComplete(): boolean {
+    return reads.size === CJS_GLOBALS.length && moduleBindings.size === CJS_GLOBALS.length;
+  }
+
+  // Recursively walks a binding pattern. Each name found is a module binding.
   function recordBinding(pattern: unknown): void {
     if (!isNodeLike(pattern)) return;
     const t = pattern.type;
     if (typeof t !== "string") return;
     switch (t) {
       case "Identifier":
-        if (isCjsGlobalName(pattern.name)) topLevelBindings.add(pattern.name);
+        if (isCjsGlobalName(pattern.name)) moduleBindings.add(pattern.name);
         return;
       case "RestElement":
         recordBinding(pattern.argument);
@@ -414,11 +407,11 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
     }
   }
 
-  // Records top-level bindings declared by a single top-level statement. Only
-  // walks the shape of the declaration itself — initializers and bodies are
-  // left to the read walker, except for `var` heads inside for-loop init/left
-  // which are the only binding form that lives outside a `VariableDeclaration`.
-  function recordTopLevelBindingsFromStatement(statement: NodeLike): void {
+  // Records bindings declared directly by a top-level statement. `var` is
+  // handled by the recursive walk below so nested blocks and loops use the
+  // same rule.
+  function recordDirectTopLevelBindings(statement: NodeLike): void {
+    if (isAnalysisComplete()) return;
     const t = statement.type;
     if (typeof t !== "string") return;
     switch (t) {
@@ -429,6 +422,7 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
         }
         return;
       case "VariableDeclaration":
+        if (statement.kind === "var") return;
         for (const declarator of nodeArray(statement.declarations)) {
           if (!isNodeLike(declarator) || declarator.type !== "VariableDeclarator") continue;
           recordBinding(declarator.id);
@@ -441,45 +435,120 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
       case "ExportNamedDeclaration":
       case "ExportDefaultDeclaration":
         if (isNodeLike(statement.declaration)) {
-          recordTopLevelBindingsFromStatement(statement.declaration);
-        }
-        return;
-      case "ForStatement":
-        if (
-          isNodeLike(statement.init) &&
-          statement.init.type === "VariableDeclaration" &&
-          statement.init.kind === "var"
-        ) {
-          recordTopLevelBindingsFromStatement(statement.init);
-        }
-        return;
-      case "ForInStatement":
-      case "ForOfStatement":
-        if (
-          isNodeLike(statement.left) &&
-          statement.left.type === "VariableDeclaration" &&
-          statement.left.kind === "var"
-        ) {
-          recordTopLevelBindingsFromStatement(statement.left);
+          recordDirectTopLevelBindings(statement.declaration);
         }
         return;
     }
   }
 
-  // Records CJS global names that appear as a value-position read. Excludes
-  // positions that name the identifier without reading the binding: non-
-  // computed member properties (`obj.__filename`), non-computed object/class
-  // keys (`{ __filename: 1 }`, `class { __filename() {} }`), and lookalikes
-  // (`__filenameFoo`). Object shorthand values, computed keys/members,
-  // default values, and assignment/update targets all count as reads.
+  // Walks statement trees and records `var` bindings that stay in module
+  // scope. Function and class bodies are boundaries: their `var`s are local.
+  function recordModuleScopedVarBindings(node: unknown): void {
+    if (isAnalysisComplete() || !isNodeLike(node)) return;
+    const t = node.type;
+    if (typeof t !== "string") return;
+    switch (t) {
+      case "Program":
+        for (const statement of nodeArray(node.body)) {
+          if (isAnalysisComplete()) return;
+          if (!isNodeLike(statement)) continue;
+          recordDirectTopLevelBindings(statement);
+          recordModuleScopedVarBindings(statement);
+        }
+        return;
+      case "VariableDeclaration":
+        if (node.kind !== "var") return;
+        for (const declarator of nodeArray(node.declarations)) {
+          if (!isNodeLike(declarator) || declarator.type !== "VariableDeclarator") continue;
+          recordBinding(declarator.id);
+        }
+        return;
+      case "BlockStatement":
+        for (const statement of nodeArray(node.body)) {
+          if (isAnalysisComplete()) return;
+          if (isNodeLike(statement)) recordModuleScopedVarBindings(statement);
+        }
+        return;
+      case "IfStatement":
+        recordModuleScopedVarBindings(node.consequent);
+        if (isAnalysisComplete()) return;
+        recordModuleScopedVarBindings(node.alternate);
+        return;
+      case "SwitchStatement":
+        for (const switchCase of nodeArray(node.cases)) {
+          if (isAnalysisComplete()) return;
+          if (isNodeLike(switchCase)) recordModuleScopedVarBindings(switchCase);
+        }
+        return;
+      case "SwitchCase":
+        for (const statement of nodeArray(node.consequent)) {
+          if (isAnalysisComplete()) return;
+          if (isNodeLike(statement)) recordModuleScopedVarBindings(statement);
+        }
+        return;
+      case "TryStatement":
+        recordModuleScopedVarBindings(node.block);
+        if (isAnalysisComplete()) return;
+        recordModuleScopedVarBindings(node.handler);
+        if (isAnalysisComplete()) return;
+        recordModuleScopedVarBindings(node.finalizer);
+        return;
+      case "CatchClause":
+        recordModuleScopedVarBindings(node.body);
+        return;
+      case "LabeledStatement":
+        recordModuleScopedVarBindings(node.body);
+        return;
+      case "ForStatement":
+        if (
+          isNodeLike(node.init) &&
+          node.init.type === "VariableDeclaration" &&
+          node.init.kind === "var"
+        ) {
+          recordModuleScopedVarBindings(node.init);
+        }
+        if (isAnalysisComplete()) return;
+        recordModuleScopedVarBindings(node.body);
+        return;
+      case "ForInStatement":
+      case "ForOfStatement":
+        if (
+          isNodeLike(node.left) &&
+          node.left.type === "VariableDeclaration" &&
+          node.left.kind === "var"
+        ) {
+          recordModuleScopedVarBindings(node.left);
+        }
+        if (isAnalysisComplete()) return;
+        recordModuleScopedVarBindings(node.body);
+        return;
+      case "WhileStatement":
+      case "DoWhileStatement":
+      case "WithStatement":
+        recordModuleScopedVarBindings(node.body);
+        return;
+      case "ExportNamedDeclaration":
+      case "ExportDefaultDeclaration":
+        if (isNodeLike(node.declaration)) {
+          recordModuleScopedVarBindings(node.declaration);
+        }
+        return;
+      case "FunctionDeclaration":
+      case "FunctionExpression":
+      case "ArrowFunctionExpression":
+      case "ClassDeclaration":
+      case "ClassExpression":
+        return;
+    }
+  }
+
+  // Reads are collected from the whole module.
   //
-  // This is a syntactic read check, not full scope resolution: it does not
-  // prove the read is *free* (unbound), so a name read only within a scope
-  // that also binds it may still be reported. That is harmless — collision
-  // safety is handled by the binding set, and an over-report at worst injects
-  // an unused `var`.
+  // The read walker is intentionally broader than the binding walk: it can
+  // over-report names that are already bound locally, and the module binding
+  // set decides whether injection is safe.
   function recordReads(value: unknown): void {
-    if (!isNodeLike(value)) return;
+    if (isAnalysisComplete() || !isNodeLike(value)) return;
     const t = value.type;
     if (typeof t !== "string") return;
     switch (t) {
@@ -501,6 +570,7 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
         return;
       default:
         for (const [key, child] of Object.entries(value)) {
+          if (isAnalysisComplete()) return;
           if (key === "type" || key === "start" || key === "end" || key === "loc") continue;
           if (Array.isArray(child)) {
             for (const item of child) recordReads(item);
@@ -511,16 +581,12 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
     }
   }
 
-  // Bindings are only top-level when declared in Program.body. Reads are
-  // collected from the whole module.
   if (isNodeLike(ast) && ast.type === "Program") {
-    for (const statement of nodeArray(ast.body)) {
-      if (isNodeLike(statement)) recordTopLevelBindingsFromStatement(statement);
-    }
+    recordModuleScopedVarBindings(ast);
   }
   recordReads(ast);
 
-  return { reads, topLevelBindings };
+  return { reads, moduleBindings };
 }
 
 function isNodeLike(value: unknown): value is NodeLike {
