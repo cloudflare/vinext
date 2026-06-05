@@ -1085,6 +1085,19 @@ describe("hasFreeCjsGlobal", () => {
     expect(hasFreeCjsGlobal("if (++i) { return /'/; }\nconst d = __dirname;")).toBe(true);
   });
 
+  // Known limitation (documented on hasFreeCjsGlobal): distinguishing a value-position
+  // regex literal from division after `}` needs a real parser. We bias to division, so
+  // a statement-start regex after a block `}` whose body has an unpaired quote can mask
+  // a same-line __dirname. Accepted for an advisory check; pinned here so the gap is
+  // explicit. The multi-line variant is unaffected (string scanning stops at \n).
+  it("does not detect a __dirname hidden by a value-position regex on the same line", () => {
+    expect(hasFreeCjsGlobal("function f(){} /'/.test(x); const d = __dirname;")).toBe(false);
+  });
+
+  it("still detects __dirname on a later line after a value-position regex", () => {
+    expect(hasFreeCjsGlobal("function f(){} /'/.test(x);\nconst d = __dirname;")).toBe(true);
+  });
+
   // Regression: the old alternation regex's `(?:[^"\\]|\\.)*` string-body loop
   // overflowed V8's regex stack ("Maximum call stack size exceeded") on very large
   // files. These inputs reproduce that; the scanner must return in linear time.

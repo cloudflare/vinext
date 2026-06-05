@@ -388,9 +388,18 @@ const REGEX_PRECEDING_KEYWORDS = new Set([
  * template / comment / regex contexts, and whether a `/` is in expression position)
  * to avoid mistaking quotes inside one context for the start of another. Where the
  * division-vs-regex distinction is ambiguous it biases toward division, because a
- * misread division is harmless (it never consumes a following identifier) whereas a
- * misread regex would swallow the rest of the line and could hide a later __dirname.
- * This is fine for an advisory check.
+ * misread division is usually harmless (it never consumes a following identifier)
+ * whereas a misread regex would swallow the rest of the line and could hide a later
+ * __dirname.
+ *
+ * Known limitation: telling a value-position regex literal apart from division after
+ * a `}` needs real parser context (was the `}` a block or an object?). We bias to
+ * division, so a regex used in value position — e.g. a statement-start regex after a
+ * block `}`, like `function f(){} /'/.test(x)` — is read as division; if its body
+ * contains an unpaired quote/backtick, that quote opens a string that can mask a
+ * __dirname *on the same line*. This is rare in hand-written source, the multi-line
+ * case is unaffected (string scanning stops at the newline), and the check is only
+ * advisory — so we accept it rather than pull in a full parser.
  */
 export function hasFreeCjsGlobal(content: string): boolean {
   const n = content.length;
@@ -892,7 +901,12 @@ export function checkConventions(root: string): CheckItem[] {
       // /plugins\s*:\s*\[[\s\S]*?(['"][^'"]+['"])[\s\S]*?\]/, had two lazy `[\s\S]*?`
       // quantifiers around a capture group; on a large config without a closing `]`
       // it backtracked quadratically, hanging the process and overflowing the regex
-      // stack. This anchored form is linear-time and matches exactly the same configs.
+      // stack. This anchored form is linear-time and matches the same string-form
+      // configs. It intentionally diverges from the old regex on the require()-form
+      // (`plugins: [require("x")]`): the old pattern matched it as a false positive,
+      // this one correctly skips it since the first element is an identifier, not a
+      // quote. (It also won't see a string preceded by a `/* comment */`, which is
+      // not worth handling.)
       const stringPluginRegex = /plugins\s*:\s*\[\s*['"]/;
       if (stringPluginRegex.test(content)) {
         items.push({
