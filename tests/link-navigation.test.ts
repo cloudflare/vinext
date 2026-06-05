@@ -1575,6 +1575,37 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("does not issue a prefetchInlining shell request for dynamic routes without loading shells", async () => {
+    vi.stubEnv("__VINEXT_PREFETCH_INLINING", "true");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/clothing/1",
+      nodeEnv: "production",
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
+
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/clothing/1",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        null,
+      );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("upgrades automatic dynamic links to full prefetch on unstable_dynamicOnHover intent", async () => {
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({
