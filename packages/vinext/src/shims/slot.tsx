@@ -51,9 +51,7 @@ export type BfcacheSlotEntry = {
 };
 
 function isCacheComponentsEnabled(): boolean {
-  // Vite's define replacement turns this process.env access into a boolean
-  // literal in built app code even though TypeScript types process.env as string.
-  return (process.env.__NEXT_CACHE_COMPONENTS as unknown) === true;
+  return process.env.__NEXT_CACHE_COMPONENTS === "true";
 }
 
 type MergeElementsOptions = {
@@ -235,6 +233,8 @@ function useBfcacheSlotEntries(activeEntry: BfcacheSlotEntry): BfcacheSlotEntry[
   const snapshotsByStateKey = React.useRef(new Map<string, BfcacheSlotEntry>());
   const [entryOrder, setEntryOrder] = React.useState<string[]>(() => [activeEntry.stateKey]);
 
+  // Render can be restarted or discarded; snapshots are render-tolerant because
+  // the active key is overwritten on every render and pruned to committed order.
   snapshotsByStateKey.current.set(activeEntry.stateKey, activeEntry);
 
   const nextOrder = updateBfcacheSlotEntryOrder(entryOrder, activeEntry.stateKey);
@@ -302,6 +302,8 @@ function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: st
   const stateKeyMap = React.useContext(BfcacheStateKeyMapContext);
   const activeStateKey = stateKeyMap[id];
   if (!SegmentContext) return <>{content}</>;
+  // The empty default map intentionally keeps apps without BFCache state keys on
+  // the original unkeyed provider path.
   if (activeStateKey === undefined) {
     return <SegmentContext.Provider value={id}>{content}</SegmentContext.Provider>;
   }

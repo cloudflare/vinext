@@ -1336,7 +1336,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Activity tree cache.
         // See: packages/next/src/client/components/layout-router.tsx
         defines["process.env.__NEXT_CACHE_COMPONENTS"] = JSON.stringify(
-          nextConfig.cacheComponents ?? false,
+          String(nextConfig.cacheComponents ?? false),
         );
 
         // User-defined compile-time constants from `compiler.define` in

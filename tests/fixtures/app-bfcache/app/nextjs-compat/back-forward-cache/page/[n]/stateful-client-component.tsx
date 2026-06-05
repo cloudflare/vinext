@@ -20,6 +20,7 @@ export function StatefulClientComponent({ n }: { n: string }) {
       <div>
         <input id={`uncontrolled-input-${n}`} type="text" />
       </div>
+      {/* Reserved for the upstream search-param BFCache case, not yet ported. */}
       <div id={`has-search-param-${n}`}>
         Has search param: {searchParams.get("param") ? "yes" : "no"}
       </div>

@@ -327,6 +327,8 @@ export async function handleSsr(
             {
               value: createBfcacheSegmentStateKeyMap({
                 elements,
+                // Must match the client navigation snapshot pathname byte-for-byte;
+                // Activity keys are derived from this value during hydration.
                 pathname: navContext?.pathname ?? "/",
               }),
             },
