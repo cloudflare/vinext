@@ -143,30 +143,38 @@ function checkFormActionUrl(action: string, source: "action" | "formAction"): vo
 }
 
 function hasUnsupportedSubmitterAttributes(submitter: FormSubmitter): boolean {
+  // Each warning is gated behind the dev check (matches Next.js form-shared.tsx);
+  // the `return true` bail itself runs in all environments.
   const formEncType = submitter.getAttribute("formenctype");
   if (formEncType !== null && formEncType !== SUPPORTED_FORM_ENCTYPE) {
-    console.error(
-      `<Form>'s \`encType\` was set to an unsupported value via \`formEncType="${formEncType}"\`. ` +
-        `This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
-    );
+    if (process.env.NODE_ENV !== "production") {
+      console.error(
+        `<Form>'s \`encType\` was set to an unsupported value via \`formEncType="${formEncType}"\`. ` +
+          `This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
+      );
+    }
     return true;
   }
 
   const formMethod = submitter.getAttribute("formmethod");
   if (formMethod !== null && formMethod.toUpperCase() !== SUPPORTED_FORM_METHOD) {
-    console.error(
-      `<Form>'s \`method\` was set to an unsupported value via \`formMethod="${formMethod}"\`. ` +
-        `This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
-    );
+    if (process.env.NODE_ENV !== "production") {
+      console.error(
+        `<Form>'s \`method\` was set to an unsupported value via \`formMethod="${formMethod}"\`. ` +
+          `This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
+      );
+    }
     return true;
   }
 
   const formTarget = submitter.getAttribute("formtarget");
   if (formTarget !== null && formTarget !== SUPPORTED_FORM_TARGET) {
-    console.error(
-      `<Form>'s \`target\` was set to an unsupported value via \`formTarget="${formTarget}"\`. ` +
-        `This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
-    );
+    if (process.env.NODE_ENV !== "production") {
+      console.error(
+        `<Form>'s \`target\` was set to an unsupported value via \`formTarget="${formTarget}"\`. ` +
+          `This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
+      );
+    }
     return true;
   }
 
@@ -243,6 +251,10 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/app-dir/form.tsx
   const isNavigatingForm = typeof action === "string";
   if (process.env.NODE_ENV !== "production") {
+    // Validate `action` first, matching upstream's dev-validation order.
+    if (typeof action === "string") {
+      checkFormActionUrl(action, "action");
+    }
     // Validate `prefetch`: must be `false` or `null` (undefined is the absence
     // of the prop and is allowed). Read the raw prop so the default doesn't mask it.
     if (!(props.prefetch === undefined || props.prefetch === false || props.prefetch === null)) {
@@ -351,10 +363,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
 
   // Block dangerous action URLs. Render <form> without action attribute
   // so it submits to the current page (safe default).
-  if (process.env.NODE_ENV !== "production") {
-    checkFormActionUrl(action, "action");
-  }
-
+  // (Dev-mode `action` URL validation runs earlier, in the top validation block.)
   if (!isSafeAction(action)) {
     if (process.env.NODE_ENV !== "production") {
       console.warn(`<Form> blocked unsafe action: ${action}`);
