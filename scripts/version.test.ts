@@ -108,7 +108,7 @@ describe("rewriteReleaseSection", () => {
     const out = rewriteReleaseSection(base, body, ["@bob", "@alice"]);
     expect(out).toContain("### Features");
     expect(out).not.toContain("Minor Changes"); // raw dump replaced
-    expect(out).toContain("## Contributors");
+    expect(out).toContain("### Contributors");
     expect(out.indexOf("- @alice")).toBeLessThan(out.indexOf("- @bob"));
     // older section untouched
     expect(out).toContain("## 0.0.55");
@@ -118,7 +118,7 @@ describe("rewriteReleaseSection", () => {
   it("is idempotent — only `## <digit>` is a section boundary", () => {
     const once = rewriteReleaseSection(base, body, ["@bob"]);
     const twice = rewriteReleaseSection(once, body, ["@bob", "@carol"]);
-    expect(twice.match(/## Contributors/g)?.length).toBe(1);
+    expect(twice.match(/### Contributors/g)?.length).toBe(1);
     expect(twice.match(/## 0\.0\.55/g)?.length).toBe(1);
     expect(twice).toContain("- @carol");
   });

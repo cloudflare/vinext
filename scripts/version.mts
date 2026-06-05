@@ -119,8 +119,13 @@ export function groupedChangelogBody(commits: Commit[]): string {
 
 /**
  * Replace the body of the newest `## <version>` section with `body`, then append
- * a `## Contributors` list. Older sections are untouched. Only `## <digit>`
+ * a `### Contributors` list. Older sections are untouched. Only `## <digit>`
  * counts as a section boundary, so re-running is idempotent. Pure.
+ *
+ * Contributors is `###` (not `##`) deliberately: changesets' getChangelogEntry
+ * extracts the GitHub Release body by slicing from the `## <version>` heading to
+ * the next *same-depth* (`##`) heading, so a `## Contributors` would truncate
+ * the release notes and drop the list. `###` keeps it inside the release body.
  */
 export function rewriteReleaseSection(
   changelog: string,
@@ -142,7 +147,7 @@ export function rewriteReleaseSection(
   const block = [lines[start]]; // the `## <version>` heading
   if (body.trim()) block.push("", body);
   const logins = dedupeSortLogins(contributors);
-  if (logins.length) block.push("", "## Contributors", "", ...logins.map((l) => `- @${l}`));
+  if (logins.length) block.push("", "### Contributors", "", ...logins.map((l) => `- @${l}`));
   block.push("");
 
   const rebuilt = [...lines.slice(0, start), ...block, ...lines.slice(end)].join("\n");
