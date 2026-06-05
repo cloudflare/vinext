@@ -5,6 +5,15 @@ function hasKey<K extends string, T extends object>(
   return key in value;
 }
 
+// Per-route state for the load lifecycle (loaded flag + in-flight promise).
+//
+// For intercepted routes, `findIntercept` returns a per-request shallow copy
+// of the manifest entry, so the WeakMap here keys the state on the copy —
+// not the shared lookup entry. That means the route-level `loaded` flag is
+// per-request, but the actual `import()` dedup still happens inside
+// `createRouteModuleLoader` (whose closure promise is keyed on the loader
+// function from the shared manifest entry). So concurrent `loadRouteModules`
+// calls for the same intercept still share a single in-flight `import()`.
 const lazyRouteStates = new WeakMap<object, LazyRouteState>();
 
 type LazyRouteState = {
@@ -31,6 +40,11 @@ async function loadLazyModules(route: object): Promise<void> {
   }
 }
 
+// Rejected `import()` results are cached for the lifetime of the loader
+// (i.e. the worker instance). This is intentional: the loaders point at
+// built JS chunks whose URL is stable for a deploy, so a rejection means
+// the chunk is genuinely missing — there is nothing to retry within the
+// same deploy. Operators must roll forward (rebuild/redeploy) to recover.
 export function createRouteModuleLoader<T>(loadModule: () => Promise<T>): () => Promise<T> {
   let promise: Promise<T> | null = null;
   return () => {
