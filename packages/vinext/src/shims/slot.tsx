@@ -68,53 +68,41 @@ function normalizeBfcacheSlotEntryLimit(maxEntries: number): number {
   return Math.max(1, Math.trunc(maxEntries));
 }
 
-export function updateBfcacheSlotEntries(
-  previousEntries: readonly BfcacheSlotEntry[],
+export function updateBfcacheSlotEntryOrder(
+  previousOrder: readonly string[],
   activeStateKey: string,
-  content: React.ReactNode,
   maxEntries: number = getBfcacheSlotEntryLimit(),
-  segmentId?: string,
-  elements?: AppElements,
-  stateKeyMap?: Readonly<Record<string, string>>,
-): BfcacheSlotEntry[] {
-  const activeEntry: BfcacheSlotEntry = { content, stateKey: activeStateKey };
-  if (segmentId !== undefined) activeEntry.segmentId = segmentId;
-  if (elements !== undefined) activeEntry.elements = elements;
-  if (stateKeyMap !== undefined) activeEntry.stateKeyMap = stateKeyMap;
-
-  const nextEntries: BfcacheSlotEntry[] = [activeEntry];
+): string[] {
   const entryLimit = normalizeBfcacheSlotEntryLimit(maxEntries);
+  const nextOrder = [activeStateKey];
 
-  for (const entry of previousEntries) {
-    if (nextEntries.length >= entryLimit) break;
-    if (entry.stateKey === activeStateKey) continue;
-    nextEntries.push(entry);
+  for (const stateKey of previousOrder) {
+    if (nextOrder.length >= entryLimit) break;
+    if (stateKey === activeStateKey) continue;
+    nextOrder.push(stateKey);
   }
 
-  return nextEntries;
+  return nextOrder;
 }
 
-function haveSameBfcacheSlotEntryOrder(
-  left: readonly BfcacheSlotEntry[],
-  right: readonly BfcacheSlotEntry[],
-): boolean {
-  if (left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index++) {
-    if (left[index].stateKey !== right[index].stateKey) return false;
-  }
-  return true;
-}
-
-function pruneLatestBfcacheSlotEntries(
-  latestEntriesByStateKey: Map<string, BfcacheSlotEntry>,
-  currentEntries: readonly BfcacheSlotEntry[],
+function pruneBfcacheSlotEntrySnapshots(
+  snapshotsByStateKey: Map<string, BfcacheSlotEntry>,
+  retainedOrder: readonly string[],
 ): void {
-  const currentKeys = new Set(currentEntries.map((entry) => entry.stateKey));
-  for (const stateKey of latestEntriesByStateKey.keys()) {
-    if (!currentKeys.has(stateKey)) {
-      latestEntriesByStateKey.delete(stateKey);
+  const retainedKeys = new Set(retainedOrder);
+  for (const stateKey of snapshotsByStateKey.keys()) {
+    if (!retainedKeys.has(stateKey)) {
+      snapshotsByStateKey.delete(stateKey);
     }
   }
+}
+
+function haveSameBfcacheSlotEntryOrder(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
 }
 
 function isLayoutFlagsValue(value: unknown): value is LayoutFlags {
@@ -237,54 +225,44 @@ function BfcacheEntryProviders({
   );
 }
 
+function useBfcacheSlotEntries(activeEntry: BfcacheSlotEntry): BfcacheSlotEntry[] {
+  const snapshotsByStateKey = React.useRef(new Map<string, BfcacheSlotEntry>());
+  const [entryOrder, setEntryOrder] = React.useState<string[]>(() => [activeEntry.stateKey]);
+
+  snapshotsByStateKey.current.set(activeEntry.stateKey, activeEntry);
+
+  const nextOrder = updateBfcacheSlotEntryOrder(entryOrder, activeEntry.stateKey);
+  const orderChanged = !haveSameBfcacheSlotEntryOrder(entryOrder, nextOrder);
+
+  if (orderChanged) {
+    pruneBfcacheSlotEntrySnapshots(snapshotsByStateKey.current, nextOrder);
+    setEntryOrder(nextOrder);
+  }
+
+  const renderOrder = orderChanged ? nextOrder : entryOrder;
+
+  return renderOrder
+    .map((stateKey) => snapshotsByStateKey.current.get(stateKey))
+    .filter((entry): entry is BfcacheSlotEntry => entry !== undefined);
+}
+
 function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: string }) {
   const SegmentContext = BfcacheSegmentIdContext;
   const elements = React.useContext(ElementsContext);
   const stateKeyMap = React.useContext(BfcacheStateKeyMapContext);
   const activeStateKey = stateKeyMap[id];
-  const latestEntriesByStateKey = React.useRef(new Map<string, BfcacheSlotEntry>());
-  const [entries, setEntries] = React.useState<BfcacheSlotEntry[]>(() =>
-    updateBfcacheSlotEntries(
-      [],
-      activeStateKey ?? id,
-      content,
-      getBfcacheSlotEntryLimit(),
-      id,
-      elements,
-      stateKeyMap,
-    ),
-  );
+  const latestActiveEntry: BfcacheSlotEntry = {
+    content,
+    elements,
+    segmentId: id,
+    stateKey: activeStateKey ?? id,
+    stateKeyMap,
+  };
+  const renderEntries = useBfcacheSlotEntries(latestActiveEntry);
   if (!SegmentContext) return <>{content}</>;
   if (activeStateKey === undefined) {
     return <SegmentContext.Provider value={id}>{content}</SegmentContext.Provider>;
   }
-
-  latestEntriesByStateKey.current.set(activeStateKey, {
-    content,
-    elements,
-    segmentId: id,
-    stateKey: activeStateKey,
-    stateKeyMap,
-  });
-
-  const orderedEntries = updateBfcacheSlotEntries(
-    entries,
-    activeStateKey,
-    content,
-    getBfcacheSlotEntryLimit(),
-    id,
-    elements,
-    stateKeyMap,
-  ).map((entry) => latestEntriesByStateKey.current.get(entry.stateKey) ?? entry);
-
-  if (!haveSameBfcacheSlotEntryOrder(entries, orderedEntries)) {
-    pruneLatestBfcacheSlotEntries(latestEntriesByStateKey.current, orderedEntries);
-    setEntries(orderedEntries);
-  }
-
-  const renderEntries = haveSameBfcacheSlotEntryOrder(entries, orderedEntries)
-    ? entries.map((entry) => latestEntriesByStateKey.current.get(entry.stateKey) ?? entry)
-    : orderedEntries;
 
   // Without cacheComponents there is no Activity retention, so this boundary must
   // reconcile in place exactly like the baseline router. The segment stateKey

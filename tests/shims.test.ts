@@ -27,38 +27,53 @@ describe("vinext next data client helpers", () => {
   });
 });
 
-describe("slot BFCache entry state", () => {
+describe("slot BFCache entry ordering", () => {
   it("keeps the three most recent state-key entries", async () => {
-    const { updateBfcacheSlotEntries } = await import("../packages/vinext/src/shims/slot.js");
+    const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
 
-    let entries = updateBfcacheSlotEntries([], "one", "one", 3);
-    entries = updateBfcacheSlotEntries(entries, "two", "two", 3);
-    entries = updateBfcacheSlotEntries(entries, "three", "three", 3);
-    entries = updateBfcacheSlotEntries(entries, "four", "four", 3);
+    let order: readonly string[] = [];
+    order = updateBfcacheSlotEntryOrder(order, "one", 3);
+    order = updateBfcacheSlotEntryOrder(order, "two", 3);
+    order = updateBfcacheSlotEntryOrder(order, "three", 3);
+    order = updateBfcacheSlotEntryOrder(order, "four", 3);
 
-    expect(entries.map((entry) => entry.stateKey)).toEqual(["four", "three", "two"]);
+    expect(order).toEqual(["four", "three", "two"]);
   });
 
   it("moves an existing entry to the front without evicting another entry", async () => {
-    const { updateBfcacheSlotEntries } = await import("../packages/vinext/src/shims/slot.js");
+    const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
 
-    let entries = updateBfcacheSlotEntries([], "one", "one", 3);
-    entries = updateBfcacheSlotEntries(entries, "two", "two", 3);
-    entries = updateBfcacheSlotEntries(entries, "three", "three", 3);
-    entries = updateBfcacheSlotEntries(entries, "one", "one-updated", 3);
+    let order: readonly string[] = [];
+    order = updateBfcacheSlotEntryOrder(order, "one", 3);
+    order = updateBfcacheSlotEntryOrder(order, "two", 3);
+    order = updateBfcacheSlotEntryOrder(order, "three", 3);
+    order = updateBfcacheSlotEntryOrder(order, "one", 3);
 
-    expect(entries.map((entry) => entry.stateKey)).toEqual(["one", "three", "two"]);
-    expect(entries[0].content).toBe("one-updated");
+    expect(order).toEqual(["one", "three", "two"]);
   });
 
-  it("updates the active entry content when the state key is already current", async () => {
-    const { updateBfcacheSlotEntries } = await import("../packages/vinext/src/shims/slot.js");
+  it("keeps a single retained entry when the limit is one", async () => {
+    const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
 
-    let entries = updateBfcacheSlotEntries([], "one", "one", 3);
-    entries = updateBfcacheSlotEntries(entries, "one", "one-updated", 3);
+    expect(updateBfcacheSlotEntryOrder(["one", "two", "three"], "two", 1)).toEqual(["two"]);
+  });
 
-    expect(entries.map((entry) => entry.stateKey)).toEqual(["one"]);
-    expect(entries[0].content).toBe("one-updated");
+  it("normalizes non-finite or non-positive limits to a single entry", async () => {
+    const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
+
+    expect(updateBfcacheSlotEntryOrder(["one", "two"], "two", Number.NaN)).toEqual(["two"]);
+    expect(updateBfcacheSlotEntryOrder(["one", "two"], "two", 0)).toEqual(["two"]);
+    expect(updateBfcacheSlotEntryOrder(["one", "two"], "two", 1.9)).toEqual(["two"]);
+  });
+
+  it("ignores the active key when scanning the previous order", async () => {
+    const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
+
+    expect(updateBfcacheSlotEntryOrder(["one", "two", "three"], "two", 3)).toEqual([
+      "two",
+      "one",
+      "three",
+    ]);
   });
 });
 
