@@ -108,9 +108,7 @@ describe("executeMiddleware propagates trailingSlash to NextURL", () => {
     const result = await executeMiddleware({
       isProxy: false,
       module: {
-        middleware: (request: Request) => {
-          return NextResponse.redirect(new URL("/somewhere", request.url));
-        },
+        middleware: (request: Request) => NextResponse.redirect(new URL("/somewhere", request.url)),
       },
       request: new Request("http://localhost/src"),
       trailingSlash: true,
@@ -125,9 +123,8 @@ describe("executeMiddleware propagates trailingSlash to NextURL", () => {
     const result = await executeMiddleware({
       isProxy: false,
       module: {
-        middleware: (request: Request) => {
-          return NextResponse.redirect(new URL("/somewhere/", request.url));
-        },
+        middleware: (request: Request) =>
+          NextResponse.redirect(new URL("/somewhere/", request.url)),
       },
       request: new Request("http://localhost/src"),
       trailingSlash: false,
@@ -142,9 +139,7 @@ describe("executeMiddleware propagates trailingSlash to NextURL", () => {
     const result = await executeMiddleware({
       isProxy: false,
       module: {
-        middleware: (request: Request) => {
-          return NextResponse.redirect(new URL("/file.css", request.url));
-        },
+        middleware: (request: Request) => NextResponse.redirect(new URL("/file.css", request.url)),
       },
       request: new Request("http://localhost/src"),
       trailingSlash: true,
