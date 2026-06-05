@@ -374,7 +374,9 @@ function hasReadReference(ast: unknown, name: string): boolean {
   let found = false;
   function visit(value: unknown): void {
     if (found || !isNodeLike(value)) return;
-    switch (value.type) {
+    const type = value.type;
+    if (typeof type !== "string") return;
+    switch (type) {
       case "Identifier":
         if (value.name === name) found = true;
         return;
@@ -425,7 +427,9 @@ function hasTopLevelBinding(ast: unknown, name: string): boolean {
 // or `import =` nodes/fields to account for.
 function declaresBinding(node: unknown, name: string): boolean {
   if (!isNodeLike(node)) return false;
-  switch (node.type) {
+  const type = node.type;
+  if (typeof type !== "string") return false;
+  switch (type) {
     case "ImportDeclaration":
       return nodeArray(node.specifiers).some((s) => isNodeLike(s) && bindsName(s.local, name));
     case "VariableDeclaration":
@@ -459,7 +463,9 @@ function declaresVarHead(node: unknown, name: string): boolean {
 function bindsName(value: unknown, name: string): boolean {
   if (!isNodeLike(value)) return false;
   if (isIdentifierNamed(value, name)) return true;
-  switch (value.type) {
+  const type = value.type;
+  if (typeof type !== "string") return false;
+  switch (type) {
     case "RestElement":
       return bindsName(value.argument, name);
     case "AssignmentPattern":

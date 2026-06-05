@@ -399,7 +399,11 @@ describe("vinext:import-meta-url plugin", () => {
   });
 
   it("does not inject for non-computed member access (obj.__filename is not a read)", () => {
-    const result = rewriteServerCjsGlobals(`obj.__filename;\nobj.__dirname;\n`, pagePath, linkedRoot);
+    const result = rewriteServerCjsGlobals(
+      `obj.__filename;\nobj.__dirname;\n`,
+      pagePath,
+      linkedRoot,
+    );
 
     expect(result).toBeNull();
   });
@@ -441,7 +445,11 @@ describe("vinext:import-meta-url plugin", () => {
   });
 
   it("injects a name with a real read even when the other only appears as a member", () => {
-    const result = rewriteServerCjsGlobals(`obj.__filename;\nconsole.log(__dirname);\n`, pagePath, linkedRoot);
+    const result = rewriteServerCjsGlobals(
+      `obj.__filename;\nconsole.log(__dirname);\n`,
+      pagePath,
+      linkedRoot,
+    );
 
     // __dirname is read freely → injected; __filename only appears as a member
     // property → not injected.
