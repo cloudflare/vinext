@@ -3745,22 +3745,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
     },
     // Inject __dirname/__filename shims into node_modules files that reference
-    // these CJS globals in SSR/RSC environments. Node 21.2+ exposes
-    // `import.meta.dirname` / `import.meta.filename`; we fall back to the
-    // URL-based equivalent for older versions.
+    // these CJS globals in SSR/RSC environments. We use static string literals
+    // derived from the module's file path at transform time — safe in all
+    // environments (Node, Cloudflare Workers, dev server) because the values
+    // are baked in at build time, never evaluated at runtime.
     //
-    // We skip the client environment because client bundles are processed by
-    // Rolldown/esbuild which handles CJS interop separately. We also guard
-    // against re-injecting when the file already declares the identifier.
+    // We skip the client environment (Rolldown/esbuild handles CJS interop
+    // there separately) and guard against re-injecting when the file already
+    // declares the identifier.
     {
       name: "vinext:cjs-globals-node-modules",
       transform(code: string, id: string) {
         if (!id.includes("/node_modules/")) return null;
         if (id.includes("?")) return null;
         // Only inject into Node.js server environments (ssr / rsc).
-        // Cloudflare Workers environments have non-file import.meta.url values
-        // (e.g. "worker:index.js") that would cause `new URL(import.meta.url)`
-        // to throw. The client environment uses its own CJS interop.
         const envName = this.environment?.name;
         if (envName !== "ssr" && envName !== "rsc") return null;
         if (!referencesCjsGlobals(code)) return null;
@@ -3769,13 +3767,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const hasOwnFilename = /\b(?:const|let|var)\s+__filename\b/.test(code);
         if (hasOwnDirname && hasOwnFilename) return null;
 
+        const filenameLiteral = JSON.stringify(id);
+        const dirnameLiteral = JSON.stringify(path.dirname(id));
+
         const lines =
-          (hasOwnFilename
-            ? ""
-            : `const __filename = import.meta.filename ?? new URL(import.meta.url).pathname;\n`) +
-          (hasOwnDirname
-            ? ""
-            : `const __dirname = import.meta.dirname ?? new URL(".", import.meta.url).pathname;\n`);
+          (hasOwnFilename ? "" : `const __filename = ${filenameLiteral};\n`) +
+          (hasOwnDirname ? "" : `const __dirname = ${dirnameLiteral};\n`);
 
         return { code: lines + code, map: null };
       },
