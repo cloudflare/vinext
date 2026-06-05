@@ -773,9 +773,7 @@ describe("Form prefetch prop", () => {
         React.createElement("input", { name: "q" }),
       ),
     );
-    expect(error).toHaveBeenCalledWith(
-      expect.stringContaining("invalid value for `prefetch`"),
-    );
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("invalid value for `prefetch`"));
   });
 });
 
@@ -789,9 +787,7 @@ describe("Form function-action prop warnings", () => {
     ReactDOMServer.renderToString(
       React.createElement(Form, { action: serverAction, replace: true }),
     );
-    expect(error).toHaveBeenCalledWith(
-      expect.stringContaining("`replace`"),
-    );
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("`replace`"));
     expect(error).toHaveBeenCalledWith(
       expect.stringContaining("no effect when `action` is a function"),
     );
@@ -802,9 +798,7 @@ describe("Form function-action prop warnings", () => {
     ReactDOMServer.renderToString(
       React.createElement(Form, { action: serverAction, scroll: false }),
     );
-    expect(error).toHaveBeenCalledWith(
-      expect.stringContaining("`scroll`"),
-    );
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("`scroll`"));
     expect(error).toHaveBeenCalledWith(
       expect.stringContaining("no effect when `action` is a function"),
     );
@@ -815,9 +809,7 @@ describe("Form function-action prop warnings", () => {
     ReactDOMServer.renderToString(
       React.createElement(Form, { action: serverAction, prefetch: false }),
     );
-    expect(error).toHaveBeenCalledWith(
-      expect.stringContaining("`prefetch`"),
-    );
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("`prefetch`"));
     expect(error).toHaveBeenCalledWith(
       expect.stringContaining("no effect when `action` is a function"),
     );
@@ -825,9 +817,7 @@ describe("Form function-action prop warnings", () => {
 
   it("does not emit a warning when no navigation props are passed with a function action", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    ReactDOMServer.renderToString(
-      React.createElement(Form, { action: serverAction }),
-    );
+    ReactDOMServer.renderToString(React.createElement(Form, { action: serverAction }));
     expect(error).not.toHaveBeenCalledWith(
       expect.stringContaining("no effect when `action` is a function"),
     );
