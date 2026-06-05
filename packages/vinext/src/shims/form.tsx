@@ -18,11 +18,20 @@
  *   </Form>
  */
 
-import { forwardRef, useActionState, type FormHTMLAttributes, type ForwardedRef } from "react";
+import {
+  forwardRef,
+  useActionState,
+  useCallback,
+  useEffect,
+  useRef,
+  type FormHTMLAttributes,
+  type ForwardedRef,
+} from "react";
 import { hasAppNavigationRuntime } from "../client/navigation-runtime.js";
-import { navigateClientSide } from "./navigation.js";
+import { navigateClientSide, prefetchRscResponse } from "./navigation.js";
 import { isDangerousScheme } from "./url-safety.js";
 import { toSameOriginPath, withBasePath } from "./url-utils.js";
+import { createRscRequestHeaders, createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
 
 // Mirrors `__NEXT_ROUTER_BASEPATH` exposure in `next/link` / `next/router`.
 // `addBasePath` is only applied to the form-level `action` prop. A submitter's
@@ -30,6 +39,12 @@ import { toSameOriginPath, withBasePath } from "./url-utils.js";
 // upstream `form.tsx` notes "this should not have basePath added, because we
 // can't add it before hydration").
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+
+// Props that <Form> does not allow users to set directly, matching Next.js's
+// DISALLOWED_FORM_PROPS in packages/next/src/client/form-shared.tsx.
+// These are stripped (with a dev warning) rather than passed to the <form> element.
+const DISALLOWED_FORM_PROPS = ["method", "encType", "target"] as const;
+type DisallowedFormPropKey = (typeof DISALLOWED_FORM_PROPS)[number];
 
 // Re-export useActionState from React 19 to match Next.js's next/form module
 export { useActionState };
@@ -149,7 +164,19 @@ function createFormSubmitDestinationUrl(
 
   const formData = buildFormData(form, submitter);
   for (const [name, value] of formData) {
-    targetUrl.searchParams.append(name, typeof value === "string" ? value : value.name);
+    if (typeof value !== "string") {
+      // File inputs: use the filename as the value (matches browser behavior).
+      // Reference: https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#converting-an-entry-list-to-a-list-of-name-value-pairs
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(
+          `<Form> only supports file inputs if \`action\` is a function. File inputs cannot be used if \`action\` is a string, ` +
+            `because files cannot be encoded as search params.`,
+        );
+      }
+      targetUrl.searchParams.append(name, value.name);
+    } else {
+      targetUrl.searchParams.append(name, value);
+    }
   }
 
   return toSameOriginPath(targetUrl.href) ?? targetUrl.href;
@@ -176,14 +203,97 @@ type FormProps = {
   replace?: boolean;
   /** Scroll to top after navigation (default: true) */
   scroll?: boolean;
-} & FormHTMLAttributes<HTMLFormElement>;
+  /**
+   * Controls whether the form's target URL is prefetched when the form enters
+   * the viewport. Only applies to App Router with a string `action`.
+   * - `null` (default): prefetch automatically (production only)
+   * - `false`: disable prefetching
+   *
+   * In pages dir, prefetch is not supported and passing this prop emits a warning.
+   */
+  prefetch?: false | null;
+} & Omit<FormHTMLAttributes<HTMLFormElement>, DisallowedFormPropKey>;
 
 const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFormElement>) {
-  const { action, replace = false, scroll = true, onSubmit, ...rest } = props;
+  const { action, replace = false, scroll = true, prefetch = null, onSubmit, ...rest } = props;
 
-  // If action is a function (server action), pass it directly to React
+  // Strip DISALLOWED_FORM_PROPS and emit dev warnings (matches Next.js form-shared.tsx).
+  // Ported from: packages/next/src/client/app-dir/form.tsx (DISALLOWED_FORM_PROPS loop)
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/app-dir/form.tsx
+  const cleanRest = { ...rest } as Record<string, unknown>;
+  for (const key of DISALLOWED_FORM_PROPS) {
+    if (key in cleanRest) {
+      if (process.env.NODE_ENV !== "production") {
+        console.error(
+          `<Form> does not support changing \`${key}\`. ` +
+            (typeof action === "string"
+              ? `If you'd like to use it to perform a mutation, consider making \`action\` a function instead.\n` +
+                `Learn more: https://nextjs.org/docs/app/building-your-application/data-fetching/server-actions-and-mutations`
+              : ""),
+        );
+      }
+      delete cleanRest[key];
+    }
+  }
+
+  // All hooks must be called unconditionally (React Rules of Hooks).
+  // These are placed before any conditional return.
+
+  // Merge the forwarded ref with our internal ref for viewport prefetching.
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const setRefs = useCallback(
+    (node: HTMLFormElement | null) => {
+      formRef.current = node;
+      if (typeof ref === "function") ref(node);
+      else if (ref) (ref as React.MutableRefObject<HTMLFormElement | null>).current = node;
+    },
+    [ref],
+  );
+
+  // Compute actionHref unconditionally (empty string for function actions — unused).
+  const actionHref = typeof action === "string" ? withBasePath(action, __basePath) : "";
+
+  // Viewport-based prefetch: when the form enters the viewport, prefetch the
+  // RSC payload for the action URL. App Router only; disabled in dev (matches
+  // Next.js behavior). Gated by `prefetch !== false` and string action.
+  // Reference: link.tsx IntersectionObserver wiring pattern.
+  useEffect(() => {
+    if (typeof action !== "string") return;
+    if (prefetch === false || process.env.NODE_ENV !== "production") return;
+    if (!hasAppNavigationRuntime()) return;
+    const node = formRef.current;
+    if (!node) return;
+    if (typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting || entry.intersectionRatio > 0) {
+            void (async () => {
+              const headers = createRscRequestHeaders();
+              const rscUrl = await createRscRequestUrl(actionHref, headers);
+              const fetchPromise = fetch(rscUrl, { headers, credentials: "include" });
+              prefetchRscResponse(rscUrl, fetchPromise, null, null, undefined, {
+                cacheForNavigation: true,
+                optimisticRouteShell: false,
+              });
+            })();
+            observer.unobserve(node);
+          }
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(node);
+    return () => {
+      observer.unobserve(node);
+    };
+  }, [action, prefetch, actionHref]);
+
+  // If action is a function (server action), pass it directly to React.
+  // Hooks are already called above.
   if (typeof action === "function") {
-    return <form ref={ref} action={action} onSubmit={onSubmit} {...rest} />;
+    return <form ref={setRefs} action={action} onSubmit={onSubmit} {...cleanRest} />;
   }
 
   // Block dangerous action URLs. Render <form> without action attribute
@@ -196,14 +306,8 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     if (process.env.NODE_ENV !== "production") {
       console.warn(`<Form> blocked unsafe action: ${action}`);
     }
-    return <form ref={ref} onSubmit={onSubmit} {...rest} />;
+    return <form ref={setRefs} onSubmit={onSubmit} {...cleanRest} />;
   }
-
-  // Prefix basePath to the navigating `action` prop (matches Next.js's
-  // `addBasePath(actionProp)` in `client/form.tsx` and `client/app-dir/form.tsx`).
-  // This becomes both the rendered `action=` attribute (so JS-disabled
-  // submissions still hit the right URL) and the soft-navigation target.
-  const actionHref = withBasePath(action, __basePath);
 
   async function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
     // Call user's onSubmit first
@@ -218,7 +322,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     }
 
     // Only intercept GET forms for client-side navigation
-    const method = getEffectiveMethod(submitter, rest.method);
+    const method = getEffectiveMethod(submitter, undefined);
     if (method !== "GET") return;
 
     // NOTE: a submitter's `formAction` is intentionally NOT base-path-prefixed
@@ -274,12 +378,12 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
 
   return (
     <form
-      ref={ref}
+      ref={setRefs}
       action={actionHref}
       onSubmit={(event) => {
         void handleSubmit(event);
       }}
-      {...rest}
+      {...cleanRest}
     />
   );
 });
