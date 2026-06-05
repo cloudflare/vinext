@@ -223,26 +223,8 @@ type FormProps = {
 const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFormElement>) {
   const { action, replace = false, scroll = true, prefetch = null, onSubmit, ...rest } = props;
 
-  // Strip DISALLOWED_FORM_PROPS and emit dev warnings (matches Next.js form-shared.tsx).
-  // Ported from: packages/next/src/client/app-dir/form.tsx (DISALLOWED_FORM_PROPS loop)
-  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/app-dir/form.tsx
-  const cleanRest = { ...rest } as Record<string, unknown>;
-  for (const key of DISALLOWED_FORM_PROPS) {
-    if (key in cleanRest) {
-      if (process.env.NODE_ENV !== "production") {
-        console.error(
-          `<Form> does not support changing \`${key}\`. ` +
-            (typeof action === "string"
-              ? `If you'd like to use it to perform a mutation, consider making \`action\` a function instead.\n` +
-                `Learn more: https://nextjs.org/docs/app/building-your-application/data-fetching/server-actions-and-mutations`
-              : ""),
-        );
-      }
-      delete cleanRest[key];
-    }
-  }
-
   // Dev-mode validation, ported verbatim from Next.js app-dir/form.tsx.
+  // Runs before the DISALLOWED_FORM_PROPS strip to match upstream console-output order.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/app-dir/form.tsx
   const isNavigatingForm = typeof action === "string";
   if (process.env.NODE_ENV !== "production") {
@@ -263,6 +245,25 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
           "  `redirect()`       - https://nextjs.org/docs/app/api-reference/functions/redirect#parameters\n" +
           "  `router.replace()` - https://nextjs.org/docs/app/api-reference/functions/use-router#userouter\n",
       );
+    }
+  }
+
+  // Strip DISALLOWED_FORM_PROPS and emit dev warnings (matches Next.js form-shared.tsx).
+  // Ported from: packages/next/src/client/app-dir/form.tsx (DISALLOWED_FORM_PROPS loop)
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/app-dir/form.tsx
+  const cleanRest = { ...rest } as Record<string, unknown>;
+  for (const key of DISALLOWED_FORM_PROPS) {
+    if (key in cleanRest) {
+      if (process.env.NODE_ENV !== "production") {
+        console.error(
+          `<Form> does not support changing \`${key}\`. ` +
+            (typeof action === "string"
+              ? `If you'd like to use it to perform a mutation, consider making \`action\` a function instead.\n` +
+                `Learn more: https://nextjs.org/docs/app/building-your-application/data-fetching/server-actions-and-mutations`
+              : ""),
+        );
+      }
+      delete cleanRest[key];
     }
   }
 
