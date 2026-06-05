@@ -41,6 +41,14 @@
       "types": "./dist/cloudflare/index.d.ts",
       "import": "./dist/cloudflare/index.js"
     },
+    "./cloudflare/cache/kv-data-adapter": {
+      "types": "./dist/cloudflare/cache/kv-data-adapter.d.ts",
+      "import": "./dist/cloudflare/cache/kv-data-adapter.js"
+    },
+    "./cloudflare/cache/cdn-adapter": {
+      "types": "./dist/cloudflare/cache/cdn-adapter.d.ts",
+      "import": "./dist/cloudflare/cache/cdn-adapter.js"
+    },
     "./server/image-optimization": {
       "types": "./dist/server/image-optimization.d.ts",
       "import": "./dist/server/image-optimization.js"

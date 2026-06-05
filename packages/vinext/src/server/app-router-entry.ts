@@ -24,6 +24,8 @@ import rscHandler, {
   __basePath as __rscBasePath,
 } from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
+// @ts-expect-error -- virtual module resolved by vinext at build time
+import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import { resolveStaticAssetSignal } from "./worker-utils.js";
 import {
   cloneRequestWithHeaders,
@@ -66,6 +68,9 @@ async function handleRequest(
   env: WorkerAssetEnv | undefined,
   ctx: ExecutionContextLike | undefined,
 ): Promise<Response> {
+  // Register config-driven cache adapters before any rendering touches the cache.
+  registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
+
   const url = new URL(request.url);
 
   // Block protocol-relative URL open redirects (//evil.com/, /\evil.com/,

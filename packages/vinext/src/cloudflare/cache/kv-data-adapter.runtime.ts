@@ -1,31 +1,22 @@
 /**
- * Cloudflare KV-backed CacheHandler for vinext.
+ * Cloudflare KV data cache — implementation + runtime factory.
  *
- * Provides persistent ISR caching on Cloudflare Workers using KV as the
- * storage backend. Supports time-based expiry (stale-while-revalidate)
- * and tag-based invalidation.
+ * `KVCacheHandler` provides persistent ISR caching on Cloudflare Workers using
+ * KV as the storage backend (time-based expiry / stale-while-revalidate and
+ * tag-based invalidation). The default export is the adapter factory the
+ * generated `virtual:vinext-cache-adapters` registration imports: it reads the
+ * KV namespace from `env[binding]` at request time and constructs the handler.
  *
- * Usage in worker/index.ts:
+ * Configure it from vite.config via the {@link kvDataAdapter} builder in
+ * `./kv-data-adapter.ts` (which `require.resolve`s this file), or imperatively:
  *
  *   import { KVCacheHandler } from "vinext/cloudflare";
  *   import { setDataCacheHandler } from "vinext/shims/cache";
- *
- *   export default {
- *     async fetch(request: Request, env: Env, ctx: ExecutionContext) {
- *       setDataCacheHandler(new KVCacheHandler(env.VINEXT_CACHE));
- *       // ctx is propagated automatically via runWithExecutionContext in
- *       // the vinext handler — no need to pass it to KVCacheHandler.
- *       // ... rest of worker handler
- *     }
- *   };
+ *   setDataCacheHandler(new KVCacheHandler(env.VINEXT_KV_CACHE));
  *
  * Wrangler config (wrangler.jsonc):
  *
- *   {
- *     "kv_namespaces": [
- *       { "binding": "VINEXT_CACHE", "id": "<your-kv-namespace-id>" }
- *     ]
- *   }
+ *   { "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }] }
  */
 
 import { Buffer } from "node:buffer";
@@ -43,7 +34,14 @@ import {
   getRequestExecutionContext,
   type ExecutionContextLike,
 } from "vinext/shims/request-context";
-import { isUnknownRecord, readCacheControlNumberField } from "../utils/cache-control-metadata.js";
+import {
+  isUnknownRecord,
+  readCacheControlNumberField,
+} from "../../utils/cache-control-metadata.js";
+import type { KvDataAdapterOptions } from "./kv-data-adapter.js";
+
+/** Default KV namespace binding name read from the Worker `env`. */
+const DEFAULT_BINDING = "VINEXT_KV_CACHE";
 
 // ---------------------------------------------------------------------------
 // Serialized cache value types — ArrayBuffer fields replaced with base64 strings
@@ -643,3 +641,29 @@ function safeBase64ToArrayBuffer(base64: string): ArrayBuffer | null {
     return null;
   }
 }
+
+// Config-driven adapter factory (default export).
+const createKvDataCacheAdapter = ({
+  env,
+  options,
+}: {
+  env?: Record<string, unknown>;
+  options?: KvDataAdapterOptions;
+}): CacheHandler => {
+  const binding = options?.binding ?? DEFAULT_BINDING;
+  const namespace = env?.[binding];
+  if (!namespace) {
+    throw new Error(
+      `[vinext] The KV data cache adapter requires a \`${binding}\` KV namespace binding.\n` +
+        `  Add it to wrangler.jsonc:\n` +
+        `    "kv_namespaces": [{ "binding": "${binding}", "id": "<your-kv-namespace-id>" }]`,
+    );
+  }
+  return new KVCacheHandler(namespace as ConstructorParameters<typeof KVCacheHandler>[0], {
+    appPrefix: options?.appPrefix,
+    ttlSeconds: options?.ttlSeconds,
+    tagCacheTtlMs: options?.tagCacheTtlMs,
+  });
+};
+
+export default createKvDataCacheAdapter;

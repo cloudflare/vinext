@@ -6,20 +6,34 @@ import {
   APP_LAYOUT_FLAGS_KEY,
   APP_RENDER_OBSERVATION_KEY,
   APP_ROOT_LAYOUT_KEY,
+  APP_SKIPPED_LAYOUT_IDS_KEY,
+  AppElementsWire,
   isAppElementsRecord,
   type AppOutgoingElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import {
   APP_ELEMENTS_SCHEMA_VERSION,
   ARTIFACT_COMPATIBILITY_SCHEMA_VERSION,
+  createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
   RSC_PAYLOAD_SCHEMA_VERSION,
 } from "../packages/vinext/src/server/artifact-compatibility.js";
 import type { LayoutClassificationOptions } from "../packages/vinext/src/server/app-page-execution.js";
+import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
+import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
+import {
+  parseClientReuseManifestHeader,
+  type ClientReuseManifestParseResult,
+  type ClientReuseManifestSkipDisposition,
+} from "../packages/vinext/src/server/client-reuse-manifest.js";
 import { VINEXT_DYNAMIC_STALE_TIME_HEADER } from "../packages/vinext/src/server/headers.js";
-import type { ClientReuseManifestSkipDisposition } from "../packages/vinext/src/server/client-reuse-manifest.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
+import { markDynamicUsage } from "../packages/vinext/src/shims/headers.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 
 function captureRecord(value: ReactNode | AppOutgoingElements): Record<string, unknown> {
   if (!isAppElementsRecord(value)) {
@@ -186,6 +200,43 @@ function createCommonOptions() {
       },
     },
   };
+}
+
+function createVerifiedStaticLayoutManifest(input: {
+  deploymentVersion: string;
+  layoutId: string;
+  rootBoundaryId: string;
+  routeId: string;
+  routePattern: string;
+}): ClientReuseManifestParseResult {
+  const artifactCompatibility = createArtifactCompatibilityEnvelope({
+    deploymentVersion: input.deploymentVersion,
+    graphVersion: createArtifactCompatibilityGraphVersion({
+      routePattern: input.routePattern,
+      rootBoundaryId: input.rootBoundaryId,
+    }),
+    rootBoundaryId: input.rootBoundaryId,
+  });
+
+  const header = createClientReuseManifestHeaderFromVisibleAppState({
+    elements: {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [input.layoutId],
+        rootLayoutTreePath: input.rootBoundaryId,
+        routeId: input.routeId,
+      }),
+      [AppElementsWire.keys.artifactCompatibility]: artifactCompatibility,
+      [AppElementsWire.keys.layoutFlags]: { [input.layoutId]: "s" },
+      [input.layoutId]: `retained-${input.layoutId}`,
+    },
+    visibleCommitVersion: 1,
+  });
+  if (header === null) {
+    throw new Error("Expected retained static layout manifest");
+  }
+
+  return parseClientReuseManifestHeader(header);
 }
 
 describe("clearRequestContext timing — issue #660", () => {
@@ -831,18 +882,29 @@ describe("app page render lifecycle", () => {
     await expect(response.text()).resolves.toBe("flight-data");
   });
 
-  it("omits the dynamic stale time header on production default-config renders that turn dynamic", async () => {
-    // Documents the known over-gating at the cache-capture boundary: a production
-    // default-config route (revalidateSeconds === null, not force-dynamic) that
-    // uses a late dynamic API is genuinely dynamic, but shouldCaptureRscForCacheMetadata
-    // is true (computed from config before the stream runs), so the header is omitted.
-    // Next.js would emit it here (!isStaticGeneration); the value is unknowable until
-    // after the headers are built, so the advisory hint is dropped on this NO_STORE
-    // response. See app-page-render.ts gating comment.
+  it("emits the dynamic stale time header on dynamic production default-config RSC responses", async () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
+    // The upstream fixture pages export unstable_dynamicStaleTime and call
+    // connection(), so the per-page value is authoritative only once the render
+    // is known to be dynamic.
     const common = createCommonOptions();
     const response = await renderAppPageLifecycle({
       ...common.options,
       consumeDynamicUsage: vi.fn(() => true),
+      dynamicStaleTimeSeconds: 60,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: null,
+    });
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("60");
+    await expect(response.text()).resolves.toBe("flight-data");
+  });
+
+  it("omits the dynamic stale time header on static production default-config RSC responses", async () => {
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeDynamicUsage: vi.fn(() => false),
       dynamicStaleTimeSeconds: 60,
       isProduction: true,
       isRscRequest: true,
@@ -855,19 +917,24 @@ describe("app page render lifecycle", () => {
 
 describe("layoutFlags injection into RSC payload", () => {
   function createRscOptions(overrides: {
+    cleanPathname?: string;
+    clientReuseManifest?: ClientReuseManifestParseResult;
     element?: Record<string, ReactNode>;
+    layoutParamAccess?: ReturnType<typeof createAppLayoutParamAccessTracker>;
     layoutCount?: number;
     probeLayoutAt?: (index: number) => unknown;
     classification?: LayoutClassificationOptions | null;
+    routePattern?: string;
     skipDisposition?: ClientReuseManifestSkipDisposition;
   }) {
     let capturedElement: Record<string, unknown> | null = null;
 
     const options = {
-      cleanPathname: "/test",
+      cleanPathname: overrides.cleanPathname ?? "/test",
       clearRequestContext: vi.fn(),
       consumeDynamicUsage: vi.fn(() => false),
       createRscOnErrorHandler: () => () => {},
+      clientReuseManifest: overrides.clientReuseManifest,
       getDraftModeCookieHeader: () => null,
       getFontLinks: () => [],
       getFontPreloads: () => [],
@@ -886,6 +953,7 @@ describe("layoutFlags injection into RSC payload", () => {
       isrHtmlKey: (p: string) => `html:${p}`,
       isrRscKey: (p: string) => `rsc:${p}`,
       isrSet: vi.fn().mockResolvedValue(undefined),
+      layoutParamAccess: overrides.layoutParamAccess,
       layoutCount: overrides.layoutCount ?? 0,
       loadSsrHandler: vi.fn(),
       middlewareContext: { headers: null, status: null },
@@ -901,7 +969,7 @@ describe("layoutFlags injection into RSC payload", () => {
         return createStream(["flight-data"]);
       },
       routeHasLocalBoundary: false,
-      routePattern: "/test",
+      routePattern: overrides.routePattern ?? "/test",
       runWithSuppressedHookWarning: <T>(probe: () => Promise<T>) => probe(),
       element: overrides.element ?? { "page:/test": "test-page" },
       classification: overrides.classification,
@@ -1176,6 +1244,61 @@ describe("layoutFlags injection into RSC payload", () => {
     expect(capturedElement["layout:/"]).toBe("root-layout");
     expect(capturedElement["layout:/blog"]).toBe("blog-layout");
     expect(capturedElement["page:/blog/post"]).toBe("post-page");
+  });
+
+  it("keeps the layout in the payload when final skip verification rejects dynamic usage", async () => {
+    const originalBuildId = process.env.__VINEXT_BUILD_ID;
+    process.env.__VINEXT_BUILD_ID = "deploy-test";
+    const layoutId = "layout:/blog";
+    const tracker = createAppLayoutParamAccessTracker();
+    const clientReuseManifest = createVerifiedStaticLayoutManifest({
+      deploymentVersion: "deploy-test",
+      layoutId,
+      rootBoundaryId: "/",
+      routeId: "route:/blog/hello",
+      routePattern: "/blog/[slug]",
+    });
+    const { options, getCapturedElement } = createRscOptions({
+      cleanPathname: "/blog/hello",
+      clientReuseManifest,
+      element: {
+        [APP_ROOT_LAYOUT_KEY]: "/",
+        [layoutId]: "blog-layout",
+        "page:/blog/hello": "post-page",
+      },
+      layoutCount: 1,
+      layoutParamAccess: tracker,
+      probeLayoutAt() {
+        return tracker.runLayoutProbe(layoutId, () => {
+          markDynamicUsage();
+        });
+      },
+      classification: {
+        getLayoutId: () => layoutId,
+        buildTimeClassifications: null,
+        isLayoutObservationDynamic: () => false,
+        async runWithIsolatedDynamicScope(fn) {
+          const result = await fn();
+          return { result, dynamicDetected: false };
+        },
+      },
+      routePattern: "/blog/[slug]",
+    });
+
+    try {
+      await runWithRequestContext(createRequestContext(), () => renderAppPageLifecycle(options));
+    } finally {
+      if (originalBuildId === undefined) {
+        delete process.env.__VINEXT_BUILD_ID;
+      } else {
+        process.env.__VINEXT_BUILD_ID = originalBuildId;
+      }
+    }
+
+    expect(getCapturedElement()[layoutId]).toBe("blog-layout");
+    expect(getCapturedElement()["page:/blog/hello"]).toBe("post-page");
+    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({ [layoutId]: "s" });
+    expect(Object.hasOwn(getCapturedElement(), APP_SKIPPED_LAYOUT_IDS_KEY)).toBe(false);
   });
 
   it("wire payload layoutFlags uses only the shorthand 's'/'d' values, never tagged reasons", async () => {

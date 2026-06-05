@@ -27,6 +27,11 @@
  * `revalidateTag` / `revalidatePath` pass the same canonical form to this
  * adapter's `revalidateTag`, so a purge targets exactly the responses that
  * carried the tag.
+ *
+ * The default export is the adapter factory the generated
+ * `virtual:vinext-cache-adapters` registration imports; configure it from
+ * vite.config via the {@link cdnAdapter} builder in `./cdn-adapter.ts` (which
+ * `require.resolve`s this file).
  */
 
 import type {
@@ -177,3 +182,8 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     await cache.purge({ tags: tagList });
   }
 }
+
+// Config-driven adapter factory (default export).
+const createCloudflareCdnCacheAdapter = (): CdnCacheAdapter => new CloudflareCdnCacheAdapter();
+
+export default createCloudflareCdnCacheAdapter;

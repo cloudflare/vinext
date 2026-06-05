@@ -24,7 +24,9 @@ import {
   reportToOverlay,
   setOverlayIndex,
   subscribeOverlay,
+  updateOverlayErrorStack,
 } from "./dev-error-overlay-store.js";
+import { VINEXT_ORIGINAL_STACK_TRACE_ENDPOINT } from "./dev-stack-sourcemap.js";
 
 // Re-export so callers (e.g. the HMR rsc:update handler) can clear the
 // overlay when a new payload lands.
@@ -93,11 +95,17 @@ function reportDevError(
   const stack = error instanceof Error ? error.stack : undefined;
 
   ensureMounted();
-  reportToOverlay({
+  const id = reportToOverlay({
     source: options.source,
     message,
     stack,
     componentStack: options.componentStack,
+  });
+
+  void resolveBrowserStackTrace(stack).then((mappedStack) => {
+    if (mappedStack !== stack) {
+      updateOverlayErrorStack(id, mappedStack);
+    }
   });
 }
 
@@ -435,6 +443,25 @@ function parseStack(stack: string): Frame[] {
     pushFrame(line);
   }
   return frames;
+}
+
+async function resolveBrowserStackTrace(stack: string | undefined): Promise<string | undefined> {
+  if (!stack || typeof window === "undefined" || typeof fetch !== "function") {
+    return stack;
+  }
+
+  try {
+    const response = await fetch(VINEXT_ORIGINAL_STACK_TRACE_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stack }),
+    });
+    if (!response.ok) return stack;
+    const payload = (await response.json()) as { stack?: unknown };
+    return typeof payload.stack === "string" ? payload.stack : stack;
+  } catch {
+    return stack;
+  }
 }
 
 // ---------------------------------------------------------------------------

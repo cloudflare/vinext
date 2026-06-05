@@ -35,6 +35,7 @@ import {
   pushHistoryStateWithoutNotify,
   replaceClientParamsWithoutNotify,
   replaceHistoryStateWithoutNotify,
+  resolvePrefetchCacheEntryMountedSlotsHeader,
   restoreRscResponse,
   saveScrollPosition,
   setClientParams,
@@ -106,11 +107,11 @@ import {
   createHistoryStateWithNavigationMetadata,
   createInitialBfcacheIdMap,
   isHistoryStateBfcacheVersionCurrent,
+  isCacheRestorableAppPayloadMetadata,
   readHistoryStateBfcacheIds,
   readHistoryStateBfcacheVersion,
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
-  isCacheRestorableAppPayloadMetadata,
   resolveHistoryTraversalIntent,
   resolveInterceptionContextFromPreviousNextUrl,
   resolveServerActionRequestState,
@@ -119,6 +120,11 @@ import {
   type HistoryTraversalIntent,
   type OperationLane,
 } from "./app-browser-state.js";
+import {
+  createVisitedResponseCacheEntry,
+  isVisitedResponseCacheEntryFresh,
+  type VisitedResponseCacheEntry,
+} from "./app-visited-response-cache.js";
 import { createPopstateRestoreHandler } from "./app-browser-popstate.js";
 import { DevRecoveryBoundary, RedirectBoundary } from "vinext/shims/error-boundary";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
@@ -200,15 +206,7 @@ function toOperationLane(kind: NavigationKind): OperationLane {
   }
 }
 
-type VisitedResponseCacheEntry = {
-  params: Record<string, string | string[]>;
-  expiresAt: number;
-  response: CachedRscResponse;
-};
-
 const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
-const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
-const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
 const CLIENT_RSC_COMPATIBILITY_ID = getVinextRscCompatibilityId();
 const optimisticRouteTemplates = new Map<string, OptimisticRouteTemplate>();
 const optimisticRouteTemplateSources = new Set<string>();
@@ -476,8 +474,9 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
 }): Promise<boolean> {
   const source = parsePrefetchCacheKey(options.cacheKey);
   if (source.interceptionContext !== options.interceptionContext) return false;
-  if ((options.entry.snapshot.mountedSlotsHeader ?? null) !== options.mountedSlotsHeader)
+  if (resolvePrefetchCacheEntryMountedSlotsHeader(options.entry) !== options.mountedSlotsHeader) {
     return false;
+  }
   if (options.interceptionContext !== null) return false;
 
   const elements = await decodeAppElementsPromise(
@@ -841,31 +840,31 @@ function getVisitedResponse(
     return null;
   }
 
-  if (navigationKind === "refresh") {
-    return null;
-  }
-
-  if (navigationKind === "traverse") {
-    const createdAt = cached.expiresAt - VISITED_RESPONSE_CACHE_TTL;
-    if (Date.now() - createdAt >= MAX_TRAVERSAL_CACHE_TTL) {
-      visitedResponseCache.delete(cacheKey);
-      return null;
-    }
-    // LRU: promote to most-recently-used (delete + re-insert moves to end of Map)
-    visitedResponseCache.delete(cacheKey);
-    visitedResponseCache.set(cacheKey, cached);
-    return cached;
-  }
-
-  if (cached.expiresAt > Date.now()) {
+  // `isVisitedResponseCacheEntryFresh` is the single source of truth for
+  // freshness and returns `false` for `navigationKind === "refresh"`, so a
+  // refresh falls through to the miss path below.
+  if (
+    isVisitedResponseCacheEntryFresh(cached, {
+      navigationKind,
+      now: Date.now(),
+    })
+  ) {
     // LRU: promote to most-recently-used
     visitedResponseCache.delete(cacheKey);
     visitedResponseCache.set(cacheKey, cached);
     return cached;
   }
 
+  // Stale (or refresh) entries are evicted on read. A refresh intentionally
+  // drops any prior snapshot here — the navigation re-fetches and re-stores a
+  // fresh one, so leaving the old entry around would only risk a later
+  // non-refresh navigation reusing a snapshot the user explicitly refreshed.
   visitedResponseCache.delete(cacheKey);
   return null;
+}
+
+function deleteVisitedResponse(rscUrl: string, interceptionContext: string | null): void {
+  visitedResponseCache.delete(AppElementsWire.encodeCacheKey(rscUrl, interceptionContext));
 }
 
 function storeVisitedResponseSnapshot(
@@ -878,11 +877,14 @@ function storeVisitedResponseSnapshot(
   visitedResponseCache.delete(cacheKey);
   evictVisitedResponseCacheIfNeeded();
   const now = Date.now();
-  visitedResponseCache.set(cacheKey, {
-    params,
-    expiresAt: now + VISITED_RESPONSE_CACHE_TTL,
-    response: snapshot,
-  });
+  visitedResponseCache.set(
+    cacheKey,
+    createVisitedResponseCacheEntry({
+      now,
+      params,
+      response: snapshot,
+    }),
+  );
 }
 
 type NavigationRequestState = {
@@ -1055,7 +1057,7 @@ function BrowserRoot({
   >(() => ({
     activeOperation: null,
     // Intentional Next.js parity: a hard reload starts a new browser
-    // document without the prior in-memory CacheNode/Activity tree. Hydrate
+    // document without the prior in-memory router state. Hydrate
     // the new document on the zero sentinel and rely on the document-scoped
     // bfcache version gate to reject stale ids persisted by previous
     // documents.
@@ -1078,7 +1080,6 @@ function BrowserRoot({
     throw unresolvedMpaNavigation;
   }
   const treeState = isRouterStatePromise(treeStateValue) ? use(treeStateValue) : treeStateValue;
-
   // Keep the latest router state in a ref so external callers (navigate(),
   // server actions, HMR) always read the current state. Safe: those readers
   // run from events/effects, never from React render itself.
@@ -1725,7 +1726,6 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             activeTraversalIntent?.historyState ?? window.history.state,
           )
         : null;
-
     try {
       const shouldUsePendingRouterState = programmaticTransition;
       if (shouldUsePendingRouterState && hasBrowserRouterState()) {
@@ -1843,7 +1843,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             ),
           );
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
-          await renderNavigationPayload(
+          const cachedRenderOutcome = await renderNavigationPayload(
             cachedPayload,
             cachedNavigationSnapshot,
             currentHref,
@@ -1859,6 +1859,10 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             scrollIntent,
             restoredBfcacheIds,
           );
+          if (cachedRenderOutcome === "no-commit") {
+            deleteVisitedResponse(rscUrl, requestInterceptionContext);
+            continue;
+          }
           return;
         }
 
@@ -1866,6 +1870,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // and prefetch compatibility decisions.
 
         let navResponse: Response | undefined;
+        let navResponseExpiresAt: number | undefined;
         let navResponseUrl: string | null = null;
         if (navigationKind !== "refresh") {
           const prefetchedResponse = await consumePrefetchResponseForNavigation(
@@ -1879,6 +1884,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           if (!browserNavigationController.isCurrentNavigation(navId)) return;
           if (prefetchedResponse) {
             navResponse = restoreRscResponse(prefetchedResponse, false);
+            navResponseExpiresAt = prefetchedResponse.expiresAt;
             navResponseUrl = prefetchedResponse.url;
           }
         }
@@ -2095,9 +2101,10 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // here would block the commit until the page's slowest server
         // promise resolved, hiding the loading state entirely.
         //
-        // The cache branch is read in the background so the visited-
-        // response snapshot lands as soon as the full stream completes,
-        // without holding up React's commit.
+        // The cache branch is read alongside React's branch, but persistence is
+        // best-effort after a successful visible commit. A failed snapshot must
+        // degrade future back/forward reuse, not recover by reloading the page
+        // the user already reached.
         const navBody = navResponse.body;
         if (!navBody) {
           // Already validated above (`!navResponse.body` triggers a hard
@@ -2144,25 +2151,31 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // If we stored it before and renderNavigationPayload threw, a future
         // back/forward navigation could replay a snapshot from a navigation that
         // never actually rendered successfully.
-        const resolvedElements = await rscPayload;
-        const metadata = AppElementsWire.readMetadata(resolvedElements);
-        if (!isCacheRestorableAppPayloadMetadata(metadata)) {
-          void cacheBufferPromise.catch(() => {});
-          return;
+        try {
+          const renderedElements = await rscPayload;
+          const metadata = AppElementsWire.readMetadata(renderedElements);
+          if (!isCacheRestorableAppPayloadMetadata(metadata)) {
+            void cacheBufferPromise.catch(() => {});
+            return;
+          }
+          const cacheBuffer = await cacheBufferPromise;
+          storeVisitedResponseSnapshot(
+            rscUrl,
+            resolveVisitedResponseInterceptionContext(
+              requestInterceptionContext,
+              metadata.interceptionContext,
+            ),
+            {
+              ...createCachedRscResponseSnapshot(navResponse, cacheBuffer, navResponseUrl),
+              ...(navResponseExpiresAt !== undefined ? { expiresAt: navResponseExpiresAt } : {}),
+              mountedSlotsHeader: getMountedSlotIdsHeader(renderedElements),
+            },
+            navParams,
+          );
+        } catch {
+          // The visible navigation already committed. A cache snapshot failure
+          // only affects future reuse; it must not reload the page.
         }
-        void cacheBufferPromise
-          .then((cacheBuffer) => {
-            storeVisitedResponseSnapshot(
-              rscUrl,
-              resolveVisitedResponseInterceptionContext(
-                requestInterceptionContext,
-                metadata.interceptionContext,
-              ),
-              createCachedRscResponseSnapshot(navResponse, cacheBuffer, navResponseUrl),
-              navParams,
-            );
-          })
-          .catch(() => {});
         return;
       }
     } catch (error) {

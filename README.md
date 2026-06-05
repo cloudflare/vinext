@@ -533,14 +533,61 @@ Override behavior:
 
 ### Caching
 
-The cache is pluggable. The default `MemoryCacheHandler` works out of the box. Swap in your own backend for production:
+The cache is pluggable. The default `MemoryCacheHandler` works out of the box. Swap in your own backend for production.
+
+#### Configuring cache adapters from `vite.config`
+
+Instead of wiring up cache handlers imperatively from a worker entry, you can declare them in the `vinext()` plugin config. vinext ships two Cloudflare adapters for this:
+
+- **`kvDataAdapter()`** (`vinext/cloudflare/cache/kv-data-adapter`) — backs the `"use cache"` data cache with a Workers KV namespace.
+- **`cdnAdapter()`** (`vinext/cloudflare/cache/cdn-adapter`) — backs full-route CDN caching with the Workers Cache API.
 
 ```ts
-import { setCacheHandler } from "next/cache";
-setCacheHandler(new MyCacheHandler()); // Redis, DynamoDB, etc.
+import { defineConfig } from "vite";
+import vinext from "vinext";
+import { cdnAdapter } from "vinext/cloudflare/cache/cdn-adapter";
+import { kvDataAdapter } from "vinext/cloudflare/cache/kv-data-adapter";
+
+export default defineConfig({
+  plugins: [
+    vinext({
+      cache: {
+        cdn: cdnAdapter(),
+        data: kvDataAdapter(),
+      },
+    }),
+  ],
+});
 ```
 
-The `CacheHandler` interface matches Next.js 16's shape, so community adapters should be compatible.
+The KV data adapter reads `env[binding]` at runtime, so add the matching KV namespace to your `wrangler.jsonc`:
+
+```jsonc
+{
+  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "<your-namespace-id>" }],
+}
+```
+
+`binding` defaults to `VINEXT_KV_CACHE`, so `kvDataAdapter()` with no options works as long as that's your binding name. Other options: `appPrefix` (namespace cache keys to isolate multiple apps in one KV namespace), `ttlSeconds` (default KV `expirationTtl`, default 30 days), and `tagCacheTtlMs` (in-memory tag-invalidation cache TTL, default 5s). `cdnAdapter()` takes no options — it just needs the Workers Cache, which is always available on Workers.
+
+Each builder returns a plain, serializable `{ adapter, options }` descriptor — **it never touches the Workers runtime**, so nothing throws at build or dev time when bindings aren't available. The actual adapter (and its `env` binding lookup) is instantiated lazily on the first request.
+
+Registration is wired into **every router and runtime** — App Router and Pages Router, on Cloudflare Workers as well as the Node.js server (`vinext start`) and dev. It self-guards (instantiated once per isolate) and is resilient: if an adapter can't initialize on a given runtime (e.g. a KV binding doesn't exist on the Node server), vinext logs a warning and falls back to the default handler instead of failing requests.
+
+To write your own adapter, point a slot at any module by path and default-export a factory that receives `{ env, options }` at runtime and returns a data-cache `CacheHandler` (or a CDN adapter):
+
+```ts
+vinext({
+  cache: {
+    data: {
+      adapter: require.resolve("./my-adapter.js"),
+      options: {
+        /* … */
+      },
+    },
+  },
+});
+```
 
 ## What's NOT supported (and won't be)
 
@@ -650,8 +697,6 @@ packages/vinext/
       middleware.ts        # middleware.ts / proxy.ts runner
       metadata-routes.ts  # File-based metadata route scanner
       instrumentation.ts  # instrumentation.ts support
-    cloudflare/
-      kv-cache-handler.ts # Cloudflare KV-backed CacheHandler for ISR
     shims/                # One file per next/* module (33 shims + 6 internal)
     build/
       static-export.ts    # output: 'export' support

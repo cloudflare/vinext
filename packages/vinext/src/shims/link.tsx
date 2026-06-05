@@ -31,6 +31,7 @@ import {
   getPrefetchCache,
   getPrefetchedUrls,
   getMountedSlotsHeader,
+  hasPrefetchCacheEntryForNavigation,
   navigateClientSide,
   prefetchRscResponse,
 } from "./navigation.js";
@@ -373,12 +374,22 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
         if (prefetched.has(cacheKey)) {
-          if (autoPrefetch.cacheForNavigation) {
-            const existing = getPrefetchCache().get(cacheKey);
-            if (existing?.cacheForNavigation === false) {
-              existing.cacheForNavigation = true;
-            }
+          if (!autoPrefetch.cacheForNavigation) {
+            return;
           }
+
+          const existing = getPrefetchCache().get(cacheKey);
+          if (existing?.cacheForNavigation === false) {
+            existing.cacheForNavigation = true;
+          }
+        }
+        // A single freshness-aware gate covers both an exact prior prefetch and
+        // an equivalent `_rsc` variant; the helper also deletes any stale exact
+        // entry, so a stale `prefetched` member is harmlessly re-added below.
+        if (
+          autoPrefetch.cacheForNavigation &&
+          hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader)
+        ) {
           return;
         }
         prefetched.add(cacheKey);

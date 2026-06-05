@@ -229,6 +229,7 @@ import { resetSSRHead, getSSRHeadHTML, setDocumentInitialHead } from "next/head"
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext, wrapWithRouterContext } from "next/router";
 import { _runWithCacheState, configureMemoryCacheHandler as __configureMemoryCacheHandler } from "next/cache";
+import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import { runWithPrivateCache } from "vinext/cache-runtime";
 import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -277,6 +278,10 @@ const __hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
 
+// Default to the in-memory data cache; a configured cache.data/cache.cdn adapter
+// overrides it on the first request via registerConfiguredCacheAdapters (called
+// from renderPage/handleApiRoute below, and with env from the worker entry on
+// Cloudflare). The registration self-guards, so the first call wins.
 __configureMemoryCacheHandler({ cacheMaxMemorySize: vinextConfig.cacheMaxMemorySize });
 
 // Path to the user's pages/_app file (or null). Used to look up the
@@ -575,6 +580,7 @@ function resolveClientModuleUrl(manifest, moduleId) {
 }
 
 export async function renderPage(request, url, manifest, ctx, middlewareHeaders, options) {
+  __registerConfiguredCacheAdapters();
   if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders, options));
   return _renderPage(request, url, manifest, middlewareHeaders, options);
 }
@@ -1038,6 +1044,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
 }
 
 export async function handleApiRoute(request, url, ctx) {
+  __registerConfiguredCacheAdapters();
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({
     ctx,

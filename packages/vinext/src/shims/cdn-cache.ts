@@ -34,7 +34,7 @@ import { getRequestExecutionContext } from "./request-context.js";
 // The edge adapter lives with the Cloudflare integration; the resolver below
 // imports it to use as the built-in default when a request-context host cache
 // is present.
-import { CloudflareCdnCacheAdapter } from "../cloudflare/cloudflare-cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../cloudflare/cache/cdn-adapter.runtime.js";
 
 /** A map of response header name -> value the adapter wants applied. */
 export type CdnResponseHeaders = Record<string, string>;

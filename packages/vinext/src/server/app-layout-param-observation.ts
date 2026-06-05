@@ -15,6 +15,10 @@ import {
   runWithUnifiedStateMutation,
 } from "vinext/shims/unified-request-context";
 import type { RenderRequestApiKind } from "./cache-proof.js";
+import type {
+  ClientReuseManifestRejectionCode,
+  ClientReuseManifestTraceFields,
+} from "./client-reuse-manifest.js";
 
 export type AppLayoutParamAccessObservation = Readonly<{
   cacheLifeObserved: boolean;
@@ -45,22 +49,80 @@ export type AppLayoutParamAccessTracker = Readonly<{
   runLayoutProbe: (layoutId: string, probe: () => unknown) => unknown;
 }>;
 
+type StaticLayoutObservationSkipCode = Extract<
+  ClientReuseManifestRejectionCode,
+  `SKIP_LAYOUT_${string}`
+>;
+
+type StaticLayoutObservationSkipRule = readonly [
+  code: StaticLayoutObservationSkipCode,
+  matches: (observation: AppLayoutParamAccessObservation) => boolean,
+];
+
+// Ordered by diagnostic precedence. The first matching rule becomes the
+// observable skip rejection code, so insert new rules deliberately.
+const STATIC_LAYOUT_OBSERVATION_SKIP_RULES = [
+  [
+    "SKIP_LAYOUT_PARAMS_OBSERVATION_INCOMPLETE",
+    (observation) => observation.completeness !== "complete",
+  ],
+  ["SKIP_LAYOUT_PARAMS_PRESENT", (observation) => observation.paramScopeKeys.length > 0],
+  ["SKIP_LAYOUT_PARAMS_OBSERVED", (observation) => observation.observed],
+  ["SKIP_LAYOUT_DYNAMIC_USAGE_OBSERVED", (observation) => observation.dynamicUsageObserved],
+  ["SKIP_LAYOUT_REQUEST_API_OBSERVED", (observation) => observation.requestApis.length > 0],
+  ["SKIP_LAYOUT_REVALIDATE_PRESENT", (observation) => observation.finiteRevalidateSeconds !== null],
+  ["SKIP_LAYOUT_CACHE_LIFE_OBSERVED", (observation) => observation.cacheLifeObserved],
+  ["SKIP_LAYOUT_UNSTABLE_CACHE_OBSERVED", (observation) => observation.unstableCaches.length > 0],
+  ["SKIP_LAYOUT_CACHE_TAGS_OBSERVED", (observation) => observation.cacheTags.length > 0],
+  ["SKIP_LAYOUT_CACHEABLE_FETCHES_OBSERVED", (observation) => observation.cacheableFetchCount > 0],
+  ["SKIP_LAYOUT_DYNAMIC_FETCHES_OBSERVED", (observation) => observation.dynamicFetchCount > 0],
+] satisfies readonly StaticLayoutObservationSkipRule[];
+
+export type StaticLayoutObservationSkipRejection = Readonly<{
+  code: StaticLayoutObservationSkipCode;
+  fields: ClientReuseManifestTraceFields;
+}>;
+
+function createStaticLayoutObservationTraceFields(
+  observation: AppLayoutParamAccessObservation,
+): ClientReuseManifestTraceFields {
+  return {
+    cacheLifeObserved: observation.cacheLifeObserved,
+    cacheTags: observation.cacheTags,
+    cacheableFetchCount: observation.cacheableFetchCount,
+    dynamicFetchCount: observation.dynamicFetchCount,
+    dynamicUsageObserved: observation.dynamicUsageObserved,
+    finiteRevalidateSeconds: observation.finiteRevalidateSeconds,
+    observedParamKeys: observation.keys,
+    paramScopeKeys: observation.paramScopeKeys,
+    requestApis: observation.requestApis,
+    unstableCacheCount: observation.unstableCaches.length,
+    unstableCacheKeyHashes: observation.unstableCaches.map((cache) => cache.keyHash),
+    unstableCacheRevalidates: observation.unstableCaches.map((cache) => String(cache.revalidate)),
+    unstableCacheTagCounts: observation.unstableCaches.map((cache) => String(cache.tagCount)),
+    unstableCacheTagHashes: observation.unstableCaches.map((cache) => cache.tagHash ?? "none"),
+  };
+}
+
+export function getStaticLayoutObservationSkipRejection(
+  observation: AppLayoutParamAccessObservation,
+): StaticLayoutObservationSkipRejection | null {
+  for (const [code, matches] of STATIC_LAYOUT_OBSERVATION_SKIP_RULES) {
+    if (matches(observation)) {
+      return {
+        code,
+        fields: createStaticLayoutObservationTraceFields(observation),
+      };
+    }
+  }
+
+  return null;
+}
+
 export function isAppLayoutObservationUnsafeForStaticReuse(
   observation: AppLayoutParamAccessObservation,
 ): boolean {
-  return (
-    observation.completeness !== "complete" ||
-    observation.paramScopeKeys.length > 0 ||
-    observation.observed ||
-    observation.dynamicUsageObserved ||
-    observation.requestApis.length > 0 ||
-    observation.finiteRevalidateSeconds !== null ||
-    observation.cacheLifeObserved ||
-    observation.cacheTags.length > 0 ||
-    observation.cacheableFetchCount > 0 ||
-    observation.dynamicFetchCount > 0 ||
-    observation.unstableCaches.length > 0
-  );
+  return getStaticLayoutObservationSkipRejection(observation) !== null;
 }
 
 type MutableLayoutParamAccessObservation = {
