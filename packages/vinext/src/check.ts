@@ -630,6 +630,198 @@ export function scanImports(root: string): CheckItem[] {
 }
 
 /**
+ * Strip comments and string-literal values from JS/TS source so config-option
+ * detection only sees real code.
+ *
+ * Options are detected with regexes over the raw file text (we can't import
+ * next.config because it may use loaders/plugins we don't run). Without this
+ * pre-pass, any mention of an option name in a comment or string value is a
+ * false positive — e.g. `// migrate webpack: config` or a value like
+ * `"react-server-dom-webpack"` would both be reported as a webpack config.
+ *
+ * What it does:
+ * - Line (`//`) and block comments are removed entirely.
+ * - String literals are emptied (`"value"` -> `""`), EXCEPT when the literal is
+ *   immediately followed by `:` — i.e. a quoted property key like `"webpack":`,
+ *   which is preserved so quoted keys still match.
+ * - Template literals are emptied; their `${ … }` interpolations are scanned as
+ *   real code (an option key inside an interpolation is a genuine usage).
+ * - Regex literals are skipped, so a quote inside one (e.g. `/['"]/`) cannot be
+ *   mistaken for the start of a string and swallow following code.
+ *
+ * Like {@link hasFreeCjsGlobal}, this is a single-pass, lexer-grade scanner (not
+ * a parser). It runs in O(n) time / O(template-nesting) stack so it cannot blow
+ * up on large input, and it shares that function's regex-vs-division heuristic.
+ *
+ * Known limitation (same as `hasFreeCjsGlobal`): a value-position regex literal
+ * after a block `}` is read as division, and a string followed by `:` is treated
+ * as a key — so a string value used in ternary key position (`cond ? "x" : y`)
+ * is preserved. Both are rare in next.config and the check is only advisory, so
+ * we accept them rather than pull in a full parser.
+ */
+export function stripCommentsAndStrings(src: string): string {
+  const n = src.length;
+  type Frame = {
+    kind: "code" | "template";
+    depth: number;
+    isExpr: boolean;
+    prevType: "value" | "op";
+  };
+  const stack: Frame[] = [{ kind: "code", depth: 0, isExpr: false, prevType: "op" }];
+  const out: string[] = [];
+  let i = 0;
+
+  while (i < n) {
+    const top = stack[stack.length - 1]!;
+    const ch = src[i]!;
+
+    // ── template literal text (emit nothing; it is string content) ──
+    if (top.kind === "template") {
+      if (ch === "\\") {
+        i += 2; // escape — skip the next char
+        continue;
+      }
+      if (ch === "`") {
+        stack.pop();
+        const outer = stack[stack.length - 1];
+        if (outer) outer.prevType = "value";
+        i++;
+        continue;
+      }
+      if (ch === "$" && src[i + 1] === "{") {
+        // Interpolation is real code — scan it normally.
+        stack.push({ kind: "code", depth: 0, isExpr: true, prevType: "op" });
+        i += 2;
+        continue;
+      }
+      i++;
+      continue;
+    }
+
+    // ── code context ──
+    if (ch === "/" && src[i + 1] === "/") {
+      i += 2;
+      while (i < n && src[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && src[i + 1] === "*") {
+      i += 2;
+      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) i++;
+      i += 2; // consume the closing */
+      continue;
+    }
+    if (ch === "/") {
+      if (top.prevType === "op") {
+        // Regex literal. Skip its body (escapes + `[…]` char classes) and flags,
+        // emitting nothing — a regex can never be an option key.
+        i++;
+        let inClass = false;
+        while (i < n) {
+          const c = src[i];
+          if (c === "\\") {
+            i += 2;
+            continue;
+          }
+          if (c === "\n") break; // regex literals cannot span lines — bail out
+          if (c === "[") inClass = true;
+          else if (c === "]") inClass = false;
+          else if (c === "/" && !inClass) {
+            i++;
+            break;
+          }
+          i++;
+        }
+        while (i < n && isIdentChar(src[i]!)) i++; // flags
+        top.prevType = "value";
+        continue;
+      }
+      out.push(ch); // division operator
+      top.prevType = "op";
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      const start = i;
+      i++;
+      while (i < n) {
+        const c = src[i];
+        if (c === "\\") {
+          i += 2;
+          continue;
+        }
+        if (c === quote || c === "\n") break;
+        i++;
+      }
+      if (i < n && src[i] === quote) i++; // consume closing quote
+      // Peek past whitespace: a string immediately followed by `:` is a quoted
+      // property key (e.g. `"webpack":`) and is preserved so it still matches.
+      let j = i;
+      while (j < n && (src[j] === " " || src[j] === "\t" || src[j] === "\n" || src[j] === "\r"))
+        j++;
+      out.push(src[j] === ":" ? src.slice(start, i) : quote + quote);
+      top.prevType = "value";
+      continue;
+    }
+    if (ch === "`") {
+      stack.push({ kind: "template", depth: 0, isExpr: false, prevType: "op" });
+      i++;
+      continue;
+    }
+    if (ch === "{") {
+      out.push(ch);
+      top.depth++;
+      top.prevType = "op";
+      i++;
+      continue;
+    }
+    if (ch === "}") {
+      if (top.isExpr && top.depth === 0) {
+        stack.pop(); // close the ${ … } and return to the template
+      } else {
+        if (top.depth > 0) top.depth--;
+        out.push(ch);
+        top.prevType = "value";
+      }
+      i++;
+      continue;
+    }
+    if (isIdentStart(ch)) {
+      const startId = i;
+      i++;
+      while (i < n && isIdentChar(src[i]!)) i++;
+      const ident = src.slice(startId, i);
+      out.push(ident);
+      top.prevType = REGEX_PRECEDING_KEYWORDS.has(ident) ? "op" : "value";
+      continue;
+    }
+    if (ch >= "0" && ch <= "9") {
+      const startNum = i;
+      i++;
+      while (i < n && (isIdentChar(src[i]!) || src[i] === ".")) i++;
+      out.push(src.slice(startNum, i));
+      top.prevType = "value";
+      continue;
+    }
+    // `++` / `--` does not change expression position (see hasFreeCjsGlobal).
+    if ((ch === "+" && src[i + 1] === "+") || (ch === "-" && src[i + 1] === "-")) {
+      out.push(src.slice(i, i + 2));
+      i += 2;
+      continue;
+    }
+    out.push(ch);
+    if (ch === ")" || ch === "]") {
+      top.prevType = "value";
+    } else if (ch !== " " && ch !== "\t" && ch !== "\n" && ch !== "\r") {
+      top.prevType = "op";
+    }
+    i++;
+  }
+
+  return out.join("");
+}
+
+/**
  * Analyze next.config.js/mjs/ts for supported and unsupported options.
  */
 export function analyzeConfig(root: string): CheckItem[] {
@@ -662,7 +854,9 @@ export function analyzeConfig(root: string): CheckItem[] {
     ];
   }
 
-  const content = fs.readFileSync(configPath, "utf-8");
+  // Strip comments and string values first so option detection only sees real
+  // code — a mention of an option in a comment or string value is not a usage.
+  const content = stripCommentsAndStrings(fs.readFileSync(configPath, "utf-8"));
   const items: CheckItem[] = [];
 
   // Check for known config options by searching for property names in the config file
@@ -684,12 +878,11 @@ export function analyzeConfig(root: string): CheckItem[] {
   ];
 
   for (const opt of configOptions) {
-    // Heuristic: only match the option when it appears as an actual object
-    // property key, not anywhere in the file. Matching the bare word produced
-    // false positives — e.g. a comment mentioning "webpack" or a value like
-    // "react-server-dom-webpack" would be reported as an unsupported webpack
-    // config. We accept `opt:`, method shorthand `opt(`, assignment `opt =`,
-    // and quoted keys like `"opt":`.
+    // Match the option only when it appears as an actual object property key,
+    // not anywhere in the file. Comments and string values are already removed
+    // by stripCommentsAndStrings, so this just guards against identifier
+    // substrings (e.g. `myWebpackHelper`). We accept `opt:`, method shorthand
+    // `opt(`, assignment `opt =`, and preserved quoted keys like `"opt":`.
     const regex = new RegExp(String.raw`(?:^|[\s,{("'])${opt}["']?\s*[:(=]`, "m");
     if (regex.test(content)) {
       const support = CONFIG_SUPPORT[opt];
