@@ -48,9 +48,12 @@ type BuildLayer2ClassificationsOptions = Pick<
 >;
 
 // The `?` after the semicolon is intentional: Rolldown may or may not emit the
-// trailing semicolon depending on minification settings. This regex relies on
-// `__VINEXT_CLASS` retaining its name, which holds because RSC entry chunk
-// bindings are not subject to scope-hoisting renames.
+// trailing semicolon depending on codegen settings. This regex relies on the
+// stub still being in its readable, unminified form (`__VINEXT_CLASS` /
+// `routeIdx` not yet renamed) — which is why the caller patches it from a
+// `renderChunk` hook with `order: "pre"`, before rolldown's minifier mangles
+// top-level names. Patching in `generateBundle` (post-minify) would silently
+// fail to match once `build.minify` is on (the default for server envs).
 const CLASS_STUB_RE = /function __VINEXT_CLASS\(routeIdx\)\s*\{\s*return null;?\s*\}/;
 const REASONS_STUB_RE = /function __VINEXT_CLASS_REASONS\(routeIdx\)\s*\{\s*return null;?\s*\}/;
 

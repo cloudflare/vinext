@@ -148,6 +148,20 @@ async function buildCloudflareAppFixture(root: string) {
       cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
     ],
     logLevel: "silent",
+    // vinext minifies server environments by default
+    // (vinext:server-minify-defaults). Minification reshapes chunk boundaries,
+    // which can concatenate compiled-MDX frontmatter into whichever chunk this
+    // test reads — defeating the `not.toContain('title: "Second Post"')`
+    // introspection even though the alias transform and frontmatter handling are
+    // correct. These assertions verify build-time *source shape* (aliases
+    // rewritten, frontmatter not leaked verbatim), so they must run against
+    // unminified output. minify is a user-overridable default, so opting out
+    // here is sound.
+    build: { minify: false },
+    environments: {
+      rsc: { build: { minify: false } },
+      ssr: { build: { minify: false } },
+    },
   });
   await builder.buildApp();
 }

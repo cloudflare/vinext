@@ -179,6 +179,18 @@ export default createAdapter;
         cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
       ],
       logLevel: "silent",
+      // vinext minifies server environments by default
+      // (vinext:server-minify-defaults), which renames the
+      // `registerConfiguredCacheAdapters` function. That is harmless at runtime —
+      // the function is imported and called by reference, never looked up by name
+      // — but the assertion below greps the emitted chunk for the readable name to
+      // prove the registration is wired. Disable minify (a user-overridable
+      // default) so the identifier survives for introspection.
+      build: { minify: false },
+      environments: {
+        rsc: { build: { minify: false } },
+        ssr: { build: { minify: false } },
+      },
     });
 
     // Build completing at all proves the absolute-path import resolved and that

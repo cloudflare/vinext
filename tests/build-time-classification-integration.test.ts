@@ -170,6 +170,21 @@ export default function ForceStaticLayout({ children }) {
     configFile: false,
     plugins: [vinext({ appDir: tmpDir, rscOutDir, ssrOutDir, clientOutDir })],
     logLevel: "silent",
+    // vinext minifies server environments by default (vinext:server-minify-defaults),
+    // which renames the `__VINEXT_CLASS` function and mangles its `routeIdx`
+    // parameter. The production patch survives this — it runs in renderChunk
+    // before minification — but these tests extract and *evaluate* the patched
+    // dispatch body from the emitted chunk by matching the readable
+    // `function __VINEXT_CLASS(routeIdx) { ... }` shape (see extractDispatch).
+    // Disabling minify keeps the emitted identifiers readable so the regex
+    // introspection stays deterministic. This is a test-only concern: minify is
+    // a user-overridable default (see the `config.build?.minify !== undefined`
+    // guard in vinext:server-minify-defaults), so opting out here is sound.
+    build: { minify: false },
+    environments: {
+      rsc: { build: { minify: false } },
+      ssr: { build: { minify: false } },
+    },
   });
 
   // The plugin reads `VINEXT_DEBUG_CLASSIFICATION` directly from `process.env`
