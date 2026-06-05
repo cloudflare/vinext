@@ -611,6 +611,36 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "i18n.domains")?.status).toBe("partial");
   });
 
+  it("does not flag i18n.domains when domains belongs to images, not i18n", () => {
+    // Reviewer case: the old check tested parent and child as independent
+    // regexes, so any config with both i18n and images.domains wrongly reported
+    // i18n.domains. Scoping the child lookup to the i18n block fixes this.
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        i18n: { locales: ["en"], defaultLocale: "en" },
+        images: { domains: ["x.com"] },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "i18n.domains")).toBeUndefined();
+    expect(items.find((i) => i.name === "i18n")?.status).toBe("supported");
+  });
+
+  it("does not flag experimental.ppr when ppr is outside the experimental block", () => {
+    writeFile(
+      "next.config.js",
+      `const ppr = true;
+      module.exports = {
+        experimental: { inlineCss: true },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.ppr")).toBeUndefined();
+  });
+
   it.each([
     ["experimental.ppr", "experimental", "ppr: true"],
     ["experimental.typedRoutes", "experimental", "typedRoutes: true"],

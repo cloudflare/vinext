@@ -347,6 +347,36 @@ function isIdentChar(c: string): boolean {
   );
 }
 
+// Escape a string for safe interpolation into a `RegExp`. Config option names
+// are plain identifiers today, but escaping future-proofs against a key that
+// contains a regex metacharacter.
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Return the body (the text between the matching braces) of the first
+ * `name: { … }` / `name = { … }` block in `content`, or null if there is none.
+ *
+ * Expects `content` to already be run through {@link stripCommentsAndStrings},
+ * so naive `{`/`}` counting is safe — braces inside comments or string values
+ * cannot throw off the balance. Used to scope nested dot-notation child lookups
+ * to their parent block instead of matching the child anywhere in the file.
+ */
+function extractBlockBody(content: string, name: string): string | null {
+  const opener = new RegExp(String.raw`\b${escapeRegExp(name)}\s*[:=]\s*\{`);
+  const m = opener.exec(content);
+  if (!m) return null;
+  const start = m.index + m[0].length; // first char after the opening `{`
+  let depth = 1;
+  for (let i = start; i < content.length; i++) {
+    const c = content[i];
+    if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return content.slice(start, i);
+  }
+  return content.slice(start); // unterminated block — return the rest
+}
+
 // The CJS globals we flag, so the identifier-match check has no magic offsets.
 const CJS_GLOBALS = new Set(["__dirname", "__filename"]);
 
@@ -883,7 +913,7 @@ export function analyzeConfig(root: string): CheckItem[] {
     // by stripCommentsAndStrings, so this just guards against identifier
     // substrings (e.g. `myWebpackHelper`). We accept `opt:`, method shorthand
     // `opt(`, assignment `opt =`, and preserved quoted keys like `"opt":`.
-    const regex = new RegExp(String.raw`(?:^|[\s,{("'])${opt}["']?\s*[:(=]`, "m");
+    const regex = new RegExp(String.raw`(?:^|[\s,{("'])${escapeRegExp(opt)}["']?\s*[:(=]`, "m");
     if (regex.test(content)) {
       const support = CONFIG_SUPPORT[opt];
       if (support) {
@@ -894,13 +924,17 @@ export function analyzeConfig(root: string): CheckItem[] {
     }
   }
 
-  // Check for nested (dot-notation) options: parent block present + child name appears
+  // Check for nested (dot-notation) options: the child must appear *inside* the
+  // parent block, not just anywhere in the file. Scoping to the parent block
+  // body avoids false positives like `i18n: {…}` + `images: { domains: [...] }`
+  // wrongly reporting `i18n.domains`.
   for (const key of Object.keys(CONFIG_SUPPORT)) {
     if (!key.includes(".")) continue;
     const dot = key.indexOf(".");
-    const parentBlock = new RegExp(String.raw`\b${key.slice(0, dot)}\s*[:=]\s*\{`);
-    const childRef = new RegExp(String.raw`\b${key.slice(dot + 1)}\b`);
-    if (parentBlock.test(content) && childRef.test(content)) {
+    const body = extractBlockBody(content, key.slice(0, dot));
+    if (body === null) continue;
+    const childRef = new RegExp(String.raw`\b${escapeRegExp(key.slice(dot + 1))}\b`);
+    if (childRef.test(body)) {
       items.push({ name: key, ...CONFIG_SUPPORT[key]! });
     }
   }
