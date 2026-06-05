@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { Commit } from "./create-changeset.mts";
 import {
+  contributorsForCommits,
   dedupeSortLogins,
   groupedChangelogBody,
   humanizeArea,
@@ -9,6 +10,8 @@ import {
 } from "./version.mts";
 
 const commit = (subject: string): Commit => ({ sha: subject, subject, body: "", files: [] });
+
+const commitSha = (sha: string): Commit => ({ sha, subject: sha, body: "", files: [] });
 
 describe("dedupeSortLogins", () => {
   it("strips @, dedupes case-insensitively, and sorts", () => {
@@ -24,6 +27,42 @@ describe("dedupeSortLogins", () => {
       // @ts-expect-error testing runtime robustness
       dedupeSortLogins(["@x", "", "  ", null, undefined, 5, "dependabot[bot]", "Full Name"]),
     ).toEqual(["x"]);
+  });
+});
+
+describe("contributorsForCommits", () => {
+  it("returns only the authors of the package's own commits", () => {
+    const shaToLogin = new Map([
+      ["a", "alice"],
+      ["b", "bob"],
+      ["c", "carol"], // commit outside this package's set
+    ]);
+    expect(contributorsForCommits(shaToLogin, [commitSha("a"), commitSha("b")])).toEqual([
+      "alice",
+      "bob",
+    ]);
+  });
+
+  it("dedupes across multiple commits by the same author and sorts", () => {
+    const shaToLogin = new Map([
+      ["a", "Bob"],
+      ["b", "alice"],
+      ["c", "bob"],
+    ]);
+    expect(
+      contributorsForCommits(shaToLogin, [commitSha("a"), commitSha("b"), commitSha("c")]),
+    ).toEqual(["alice", "Bob"]);
+  });
+
+  it("drops commits with no mapped login or an empty login", () => {
+    const shaToLogin = new Map([
+      ["a", "alice"],
+      ["b", ""], // empty login
+      // "c" has no mapping at all
+    ]);
+    expect(
+      contributorsForCommits(shaToLogin, [commitSha("a"), commitSha("b"), commitSha("c")]),
+    ).toEqual(["alice"]);
   });
 });
 

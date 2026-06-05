@@ -185,10 +185,26 @@ function readVersions(packageDirToName: Record<string, string>): Record<string, 
 }
 
 /**
- * GitHub contributor logins for `from..HEAD` via a single (paginated) compare
- * call. Bots are dropped by dedupeSortLogins. Returns [] on any failure.
+ * Pick the deduped, sorted GitHub logins for exactly `commits`, looking each
+ * commit's sha up in a `sha → login` map. Commits with no mapped login (or an
+ * empty one) are dropped. Pure — no git/gh. Bots and non-login shapes are
+ * filtered by dedupeSortLogins.
  */
-function resolveContributors(from: string, repository: string): string[] {
+export function contributorsForCommits(
+  shaToLogin: Map<string, string>,
+  commits: Commit[],
+): string[] {
+  const logins = commits.map((c) => shaToLogin.get(c.sha)).filter((l): l is string => !!l);
+  return dedupeSortLogins(logins);
+}
+
+/**
+ * GitHub contributor logins for exactly `commits` (the same per-package set used
+ * to build the changelog body), not the whole `from..HEAD` range. One paginated
+ * compare call builds a `sha → login` map; only the package's own commits are
+ * then selected. Returns [] on any failure.
+ */
+function resolveContributors(from: string, repository: string, commits: Commit[]): string[] {
   try {
     const out = execFileSync(
       "gh",
@@ -196,14 +212,20 @@ function resolveContributors(from: string, repository: string): string[] {
         "api",
         "--paginate",
         `repos/${repository}/compare/${from}...HEAD`,
-        // Only linked GitHub authors; `// empty` drops commits whose author is
-        // an unlinked email (no valid login to @-mention).
+        // sha/login pairs for the whole range; `// ""` keeps a placeholder for
+        // commits whose author is an unlinked email (no valid login).
         "--jq",
-        ".commits[] | .author.login // empty",
+        '.commits[] | [.sha, (.author.login // "")] | @tsv',
       ],
       { cwd: REPO_ROOT, encoding: "utf8" },
     );
-    return dedupeSortLogins(out.split("\n").filter(Boolean));
+    const shaToLogin = new Map<string, string>();
+    for (const line of out.split("\n")) {
+      if (!line) continue;
+      const [sha, login = ""] = line.split("\t");
+      if (sha && login) shaToLogin.set(sha, login);
+    }
+    return contributorsForCommits(shaToLogin, commits);
   } catch {
     return [];
   }
@@ -233,8 +255,9 @@ function main(): void {
     // before[name] would derive a ref like `v0.0.1` that need not exist — for a
     // brand-new package that throws and yields an empty changelog (see #1759).
     const from = releaseRangeStart(name);
-    const body = groupedChangelogBody(collectReleaseCommits(from, name, packages));
-    const contributors = repository ? resolveContributors(from, repository) : [];
+    const commits = collectReleaseCommits(from, name, packages);
+    const body = groupedChangelogBody(commits);
+    const contributors = repository ? resolveContributors(from, repository, commits) : [];
 
     const original = readFileSync(changelogPath, "utf8");
     const updated = rewriteReleaseSection(original, body, contributors);
