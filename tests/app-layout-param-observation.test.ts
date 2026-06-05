@@ -256,9 +256,9 @@ describe("app layout param observation", () => {
         // Catch the background promise so it cannot produce an
         // unhandled rejection after the synchronous assertions
         // complete. The patched fetch continues past observation
-        // into cache lookup and network fetch, which may fail in
-        // this test environment.
-        fetch("https://example.com/data", {
+        // into cache lookup and fetch completion. Use a deterministic data URL
+        // because the test only needs the synchronous observation side effect.
+        fetch("data:application/json,%7B%22ok%22%3Atrue%7D", {
           next: { revalidate: 60, tags: ["banner"] },
         }).catch(() => {});
       });

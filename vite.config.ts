@@ -130,7 +130,10 @@ export default defineConfig({
         test: {
           name: "unit",
           setupFiles: [MSW_SETUP],
-          include: ["tests/**/*.test.ts"],
+          // `scripts/**` covers the release-tooling unit tests
+          // (scripts/create-changeset.test.ts, scripts/version.test.ts), which
+          // are pure-logic and have no fixture/server dependencies.
+          include: ["tests/**/*.test.ts", "scripts/**/*.test.ts"],
           exclude: [
             "tests/fixtures/**/node_modules/**",
             // Integration tests: spin up Vite dev servers against shared fixture

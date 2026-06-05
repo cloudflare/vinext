@@ -1,0 +1,58 @@
+name: Release
+
+# Single release workflow. On every push to `main`:
+#   1. create-changeset.mts writes auto changesets from Conventional Commits into
+#      the WORKING TREE only (never committed to main). Its version-vs-tag guard
+#      generates nothing right after a Version PR merges.
+#   2. changesets/action does everything else — it maintains the rolling "Version
+#      Packages" PR while changesets exist, and when none exist (the PR just
+#      merged) it publishes via OIDC trusted publishing + provenance and creates
+#      the git tag + GitHub Release.
+#
+# `version:` runs scripts/version.mts (`changeset version` + the `## Contributors`
+# list). `publish:` is `changeset publish`, which publishes only changed packages.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  release:
+    name: Release
+    if: github.repository_owner == 'cloudflare'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # version PR branch, git tags, GitHub Releases
+      pull-requests: write # open / update the Version PR
+      id-token: write # npm OIDC trusted publishing + provenance
+    steps:
+      # zizmor: ignore[artipacked] persisted creds are required for
+      # changesets/action to push the Version PR branch, tags, and releases.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0 # full history + tags for the guard and contributor list
+
+      - uses: ./.github/actions/setup
+
+      - name: Generate changesets from Conventional Commits
+        run: node scripts/create-changeset.mts
+
+      - name: Version PR / publish
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        with:
+          version: node scripts/version.mts
+          # `vp exec` runs the pinned, installed @changesets/cli (not a floating dlx fetch).
+          publish: vp exec changeset publish
+          title: "chore: version packages"
+          commit: "chore: version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          NPM_CONFIG_PROVENANCE: "true"
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org

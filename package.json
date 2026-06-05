@@ -14,6 +14,7 @@
     "lint": "vp lint",
     "test:e2e": "playwright test",
     "knip": "knip",
+    "changeset": "changeset",
     "prepare": "vp config",
     "postinstall": "vp run vinext#build"
   },
@@ -22,6 +23,7 @@
     "@mdx-js/rollup": "catalog:"
   },
   "devDependencies": {
+    "@changesets/cli": "2.31.0",
     "@mswjs/interceptors": "catalog:",
     "@playwright/test": "catalog:",
     "@types/node": "catalog:",
