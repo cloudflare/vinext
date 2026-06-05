@@ -684,8 +684,13 @@ export function analyzeConfig(root: string): CheckItem[] {
   ];
 
   for (const opt of configOptions) {
-    // Simple heuristic: check if the option name appears as a property in the config
-    const regex = new RegExp(String.raw`\b${opt}\b`);
+    // Heuristic: only match the option when it appears as an actual object
+    // property key, not anywhere in the file. Matching the bare word produced
+    // false positives — e.g. a comment mentioning "webpack" or a value like
+    // "react-server-dom-webpack" would be reported as an unsupported webpack
+    // config. We accept `opt:`, method shorthand `opt(`, assignment `opt =`,
+    // and quoted keys like `"opt":`.
+    const regex = new RegExp(String.raw`(?:^|[\s,{("'])${opt}["']?\s*[:(=]`, "m");
     if (regex.test(content)) {
       const support = CONFIG_SUPPORT[opt];
       if (support) {

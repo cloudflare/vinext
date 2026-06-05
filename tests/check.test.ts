@@ -310,6 +310,55 @@ describe("analyzeConfig", () => {
     expect(webpackItem?.detail).toContain("Vite replaces webpack");
   });
 
+  it("does not flag webpack when it only appears in a comment", () => {
+    writeFile(
+      "next.config.js",
+      `// We removed our custom webpack config when migrating to vinext.
+      module.exports = {
+        reactStrictMode: true,
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")).toBeUndefined();
+  });
+
+  it("does not flag webpack when it only appears as a substring of a value", () => {
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        env: { RSD: "react-server-dom-webpack" },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")).toBeUndefined();
+  });
+
+  it("detects webpack when written as a method shorthand", () => {
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        webpack(config) { return config; },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+  });
+
+  it("detects webpack when written as a quoted property key", () => {
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        "webpack": (config) => config,
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+  });
+
   it("detects partial image config", () => {
     writeFile(
       "next.config.mjs",
