@@ -258,6 +258,24 @@ describe("App Router integration", () => {
     expect(html).toContain("Old School Pages Directory");
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/action-in-pages-router/action-in-pages-router.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/action-in-pages-router/action-in-pages-router.test.ts
+  //
+  // Pages Router does not support Server Actions. A file with `"use server"`
+  // imported from a pages/ route must NOT be turned into a server-reference
+  // proxy by the RSC plugin — it must behave like a normal module so the
+  // function returns its real value (here, the literal string "action:foo").
+  // Regression test for https://github.com/cloudflare/vinext/issues/1476.
+  it("does not transform 'use server' imports from pages router into server-reference proxies", async () => {
+    const res = await fetch(`${baseUrl}/action-import-test`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain('data-testid="action-result"');
+    expect(html).toContain(">action:foo<");
+  });
+
   it("returns RSC stream for .rsc requests", async () => {
     const res = await fetch(`${baseUrl}/.rsc`);
     expect(res.status).toBe(200);

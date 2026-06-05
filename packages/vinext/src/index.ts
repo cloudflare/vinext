@@ -111,6 +111,7 @@ import {
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
+import { createStripNonAppUseServerPlugin } from "./plugins/strip-non-app-use-server.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
 import { generateRouteTypes } from "./typegen.js";
@@ -1094,6 +1095,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       getCanonicalMiddlewarePath: () =>
         middlewarePath ? (tryRealpathSync(middlewarePath) ?? middlewarePath) : null,
       serverOnlyShimPath: resolveShimModulePath(shimsDir, "server-only"),
+    }),
+    // Strip `"use server"` directives from files outside the `app/` directory
+    // so Pages Router imports of such files aren't rewritten by
+    // @vitejs/plugin-rsc into server-reference proxies. Server Actions are
+    // an App Router-only feature; in Next.js the server-actions SWC pass
+    // only runs for the App Router layer. Regression test for
+    // https://github.com/cloudflare/vinext/issues/1476.
+    // See packages/vinext/src/plugins/strip-non-app-use-server.ts.
+    createStripNonAppUseServerPlugin({
+      getAppDir: () => appDir,
+      hasAppDir: () => hasAppDir,
     }),
     // Resolve `data:text/css[+module],...` imports into virtual CSS files so
     // Vite's CSS pipeline (LightningCSS, CSS modules) processes them instead
