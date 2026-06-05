@@ -440,6 +440,37 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result?.code).toMatch(/^#!\/usr\/bin\/env node\nvar __filename/);
   });
 
+  it("does not inject for an export-namespace alias (export * as __filename)", () => {
+    const result = rewriteServerCjsGlobals(
+      `export * as __filename from "./mod.js";\n`,
+      pagePath,
+      linkedRoot,
+    );
+
+    // The exported name is not a value read of __filename.
+    expect(result).toBeNull();
+  });
+
+  it("does not inject for an export-specifier alias (export { foo as __filename })", () => {
+    const result = rewriteServerCjsGlobals(
+      [`const foo = 1;`, `export { foo as __filename };`].join("\n"),
+      pagePath,
+      linkedRoot,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not inject for an import-specifier alias (import { __filename as foo })", () => {
+    const result = rewriteServerCjsGlobals(
+      [`import { __filename as foo } from "./x.js";`, `console.log(foo);`].join("\n"),
+      pagePath,
+      linkedRoot,
+    );
+
+    expect(result).toBeNull();
+  });
+
   it("does not inject server CJS globals in build output paths", () => {
     const result = rewriteServerCjsGlobals(
       `console.log(__filename);\n`,

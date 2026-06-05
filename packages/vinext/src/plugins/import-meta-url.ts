@@ -531,6 +531,28 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
         if (value.computed) recordReads(value.key);
         recordReads(value.value);
         return;
+      case "ImportDeclaration":
+        // Specifiers bind locals; the imported names and module source string
+        // are never value reads. (e.g. `import { __filename as foo }` does not
+        // read __filename.)
+        return;
+      case "ExportAllDeclaration":
+        // `export * [as name] from "..."` reads no local value; `name` is only
+        // an export name, not a reference to a local binding.
+        return;
+      case "ExportNamedDeclaration":
+        // `export const/function/class ...` — recurse into the declaration.
+        // `export { local as exported }` — only `local` references a binding,
+        // and only when there is no `source` (a re-export points at the source
+        // module, not a local). `exported` is always just a name.
+        if (isNodeLike(value.declaration)) {
+          recordReads(value.declaration);
+        } else if (!value.source) {
+          for (const specifier of nodeArray(value.specifiers)) {
+            if (isNodeLike(specifier)) recordReads(specifier.local);
+          }
+        }
+        return;
       default:
         for (const [key, child] of Object.entries(value)) {
           if (key === "type" || key === "start" || key === "end" || key === "loc") continue;
