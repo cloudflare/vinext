@@ -111,14 +111,6 @@ function hasReactClientActionAttributes(submitter: FormSubmitter): boolean {
   return Boolean(action && /\s*javascript:/i.test(action));
 }
 
-function getEffectiveMethod(
-  submitter: FormSubmitter | null,
-  formMethod: FormHTMLAttributes<HTMLFormElement>["method"],
-): string {
-  const override = submitter?.getAttribute("formmethod");
-  return (override ?? formMethod ?? "GET").toUpperCase();
-}
-
 function getEffectiveAction(submitter: FormSubmitter | null, formAction: string): string {
   return submitter?.getAttribute("formaction") ?? formAction;
 }
@@ -395,9 +387,10 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
       }
     }
 
-    // Only intercept GET forms for client-side navigation
-    const method = getEffectiveMethod(submitter, undefined);
-    if (method !== "GET") return;
+    // No explicit GET check needed (matches upstream app-dir/form.tsx): the
+    // form-level `method` prop is stripped via DISALLOWED_FORM_PROPS, and any
+    // non-GET submitter `formmethod` override is already caught and bailed on by
+    // `hasUnsupportedSubmitterAttributes` above. By this point the method is GET.
 
     // NOTE: a submitter's `formAction` is intentionally NOT base-path-prefixed
     // here, matching Next.js. Upstream `form.tsx` notes: "this should not have
