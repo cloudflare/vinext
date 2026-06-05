@@ -262,6 +262,21 @@ describe("loadNextConfig with CJS globals in next.config.ts", () => {
     );
   });
 
+  it("does not inject require when user already declares it", async () => {
+    // The createRequire polyfill commonly appears alongside the __dirname one
+    // and hits the same duplicate-`const` Rolldown crash if injected blindly.
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { createRequire } from "node:module";\n` +
+        `const require = createRequire(import.meta.url);\n` +
+        `export default { env: { HAS_REQUIRE: typeof require } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.HAS_REQUIRE).toBe("function");
+  });
+
   it("loads a pure-ESM next.config.ts without injecting CJS shims", async () => {
     // No __filename / __dirname / require / module / exports references —
     // the injector transform should short-circuit. We only assert
