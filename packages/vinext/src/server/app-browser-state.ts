@@ -293,16 +293,25 @@ export function createInitialBfcacheIdMap(elements: AppElements): BfcacheIdMap {
   return ids;
 }
 
+function normalizeBfcachePathname(pathname: string): string {
+  // Decode and strip trailing slash so SSR and client produce byte-identical
+  // Activity keys regardless of encoding or trailing-slash normalization
+  // differences between the two pathname sources.
+  const decoded = decodeURIComponent(pathname);
+  return decoded.length > 1 ? decoded.replace(/\/$/, "") : decoded;
+}
+
 export function createBfcacheSegmentStateKeyMap(options: {
   elements: AppElements;
   pathname: string;
 }): BfcacheStateKeyMap {
   const metadata = readAppElementsMetadata(options.elements);
+  const normalizedPathname = normalizeBfcachePathname(options.pathname);
   const stateKeys: Record<string, string> = {};
   for (const id of collectBfcacheSegmentIds(options.elements, metadata)) {
     const stateKey = createBfcacheSegmentIdentity(id, {
       metadata,
-      pathname: options.pathname,
+      pathname: normalizedPathname,
     });
     if (stateKey !== null) {
       stateKeys[id] = stateKey;

@@ -246,8 +246,10 @@ function buildHeadInjectionHtml(
 
 function requireNavigationContext(navContext: NavigationContext | null): NavigationContext {
   if (!navContext) {
-    // Real request rendering must pass the RSC handler's navigation context;
-    // fallback boundary renderers synthesize one when request scope is gone.
+    // Guaranteed by the RSC handler (app-rsc-handler.ts) before every main
+    // render and by the ISR/revalidation path (app-page-dispatch.ts). Fallback
+    // boundary renderers synthesize one (app-page-boundary-render.ts) when
+    // request scope is gone.
     throw new Error("App SSR requires navigation context for BFCache state keys");
   }
   return navContext;
@@ -336,8 +338,8 @@ export async function handleSsr(
             {
               value: createBfcacheSegmentStateKeyMap({
                 elements,
-                // Must match the client navigation snapshot pathname byte-for-byte;
-                // Activity keys are derived from this value during hydration.
+                // Normalized inside the function to match the client navigation
+                // snapshot pathname (SSR/client Activity key parity).
                 pathname: ssrNavigationContext.pathname,
               }),
             },
