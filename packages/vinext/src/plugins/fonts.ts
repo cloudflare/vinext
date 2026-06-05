@@ -1113,8 +1113,19 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
  * Rewrites relative font file paths in `next/font/local` calls into Vite
  * asset import references so that both dev (/@fs/...) and prod
  * (/assets/font-xxx.woff2) URLs resolve correctly.
+ *
+ * @param shimsDir - Absolute path to the shims directory (with trailing
+ *   separator). Used to skip vinext's own shim files from transform — they
+ *   contain example `next/font/local` paths in comments that must not be
+ *   rewritten. A precise prefix check is required (rather than a loose
+ *   substring match) because, now that `node_modules` is no longer excluded,
+ *   the guard runs against arbitrary third-party package paths — some of
+ *   which may legitimately contain the substring `font-local` (e.g. a
+ *   package named `font-local-loader`) and must still be transformed. This
+ *   mirrors `createGoogleFontsPlugin`, which takes `shimsDir` for the same
+ *   reason.
  */
-export function createLocalFontsPlugin(): Plugin {
+export function createLocalFontsPlugin(shimsDir: string): Plugin {
   return {
     name: "vinext:local-fonts",
     enforce: "pre",
@@ -1141,12 +1152,13 @@ export function createLocalFontsPlugin(): Plugin {
         if (id.startsWith("\0")) return null;
         if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
         if (!code.includes("next/font/local")) return null;
-        // Skip vinext's own font-local shim — it contains example paths
-        // in comments that would be incorrectly rewritten. When vinext is
-        // installed as a dependency this lives under
-        // `node_modules/vinext/.../shims/font-local.*`, so the guard must run
-        // even though node_modules is no longer excluded above.
-        if (id.includes("font-local")) return null;
+        // Skip vinext's own shim files — the font-local shim contains example
+        // paths in comments that would be incorrectly rewritten. A precise
+        // prefix check against `shimsDir` (not a loose `id.includes("font-local")`
+        // substring) is required now that node_modules is no longer excluded,
+        // so legitimate third-party packages whose path happens to contain
+        // `font-local` are still transformed. Mirrors `createGoogleFontsPlugin`.
+        if (id.startsWith(shimsDir)) return null;
 
         // Verify there's actually a default import from next/font/local and
         // remember its local binding so family payloads only attach to real
