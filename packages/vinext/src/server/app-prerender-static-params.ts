@@ -46,30 +46,40 @@ export function createAppPrerenderStaticParamsResolver(
   sources: readonly unknown[],
   rootParamNames?: readonly string[],
 ): GenerateStaticParamsFunction | null {
-  const eagerFns = sources.filter(isGenerateStaticParamsFunction);
-  const lazySources = sources.filter(isLazyStaticParamsSource);
-  if (eagerFns.length === 0 && lazySources.length === 0) return null;
+  // A source is usable if it is an eager generateStaticParams function or a
+  // lazy `{ load }` page source. Keep them in their original order so the
+  // composition order does not depend on the emitter happening to append
+  // layout (eager) sources before the page (lazy) source.
+  const usableSources = sources.filter(
+    (source) => isGenerateStaticParamsFunction(source) || isLazyStaticParamsSource(source),
+  );
+  if (usableSources.length === 0) return null;
 
   const filterRootParams = (params: RootParams): RootParams =>
     pickRootParams(params, rootParamNames ?? []);
 
   // Resolve lazy page modules once, on first invocation (prerender time), and
-  // memoize the combined function list. Dedup concurrent callers.
+  // memoize the combined function list. Dedup concurrent callers. Resolution
+  // preserves `sources` order: each source maps to its eager function or its
+  // awaited lazy function, then non-functions are dropped.
   let resolvedFns: GenerateStaticParamsFunction[] | null = null;
   let resolvePromise: Promise<GenerateStaticParamsFunction[]> | null = null;
   const resolveFns = (): Promise<GenerateStaticParamsFunction[]> => {
     if (resolvedFns) return Promise.resolve(resolvedFns);
     if (!resolvePromise) {
       resolvePromise = (async () => {
-        const modules = await Promise.all(lazySources.map((source) => source.load()));
-        const lazyFns = modules
-          .map((mod) =>
-            mod && typeof mod === "object"
-              ? (mod as { generateStaticParams?: unknown }).generateStaticParams
-              : undefined,
-          )
-          .filter(isGenerateStaticParamsFunction);
-        resolvedFns = [...eagerFns, ...lazyFns];
+        const maybeFns = await Promise.all(
+          usableSources.map(async (source) => {
+            if (isGenerateStaticParamsFunction(source)) return source;
+            const mod = await source.load();
+            const fn =
+              mod && typeof mod === "object"
+                ? (mod as { generateStaticParams?: unknown }).generateStaticParams
+                : undefined;
+            return isGenerateStaticParamsFunction(fn) ? fn : null;
+          }),
+        );
+        resolvedFns = maybeFns.filter((fn): fn is GenerateStaticParamsFunction => fn !== null);
         return resolvedFns;
       })();
     }

@@ -54,4 +54,18 @@ describe("createAppPrerenderStaticParamsResolver", () => {
       { lang: "fr", slug: "post" },
     ]);
   });
+
+  it("composes sources in declared order regardless of eager/lazy kind", async () => {
+    // Lazy source first, eager second: composition order must follow `sources`
+    // order, not be reordered to eager-then-lazy.
+    const resolver = createAppPrerenderStaticParamsResolver([
+      { load: async () => ({ generateStaticParams: () => [{ a: "1" }, { a: "2" }] }) },
+      () => [{ b: "x" }],
+    ]);
+
+    await expect(resolver!({ params: {} })).resolves.toEqual([
+      { a: "1", b: "x" },
+      { a: "2", b: "x" },
+    ]);
+  });
 });
