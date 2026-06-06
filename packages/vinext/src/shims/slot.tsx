@@ -233,6 +233,12 @@ function BfcacheEntryProviders({
   );
 }
 
+// TODO(bfcache): Move retained segment ownership into the App Router commit
+// state once the navigation/BFCache bug queue stabilizes. This synchronous
+// slot-local cache intentionally makes Activity entries available in the same
+// render that observes the committed active state key; the long-term model
+// should let navigation commits update retained slot entries and keep Slot as a
+// pure Activity renderer.
 function useBfcacheSlotEntries(activeEntry: BfcacheSlotEntry): BfcacheSlotEntry[] {
   const snapshotsByStateKey = React.useRef(new Map<string, BfcacheSlotEntry>());
   const [entryOrder, setEntryOrder] = React.useState<string[]>(() => [activeEntry.stateKey]);
