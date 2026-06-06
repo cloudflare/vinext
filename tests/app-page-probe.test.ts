@@ -676,6 +676,7 @@ describe("buildAppPageProbes", () => {
       asyncRouteParams: makeThenableParams({ slug: "intro" }),
       searchParams: new URLSearchParams("q=hello"),
       intercept: { page: { default: recordingPage("intercept", probed) } },
+      isRscRequest: true,
       matchedParams: { slug: "intro" },
       makeThenableParams: makeThenableParamsLoose,
     });
@@ -684,6 +685,35 @@ describe("buildAppPageProbes", () => {
 
     expect(probes).toHaveLength(4);
     expect(probed.sort()).toEqual(["intercept", "modal", "page", "sidebar"]);
+  });
+
+  it("ignores the interception match for non-RSC (HTML) requests", async () => {
+    const probed: string[] = [];
+    const probes = buildAppPageProbes({
+      route: {
+        slots: {
+          // On an HTML request interception never fires, so the modal slot
+          // renders its own page and must be probed; the interception page
+          // (which never renders) must NOT be probed.
+          modal: { page: { default: recordingPage("modal", probed) } },
+        },
+      },
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: new URLSearchParams("q=hello"),
+      intercept: {
+        slotKey: "modal",
+        page: { default: recordingPage("intercept", probed) },
+      },
+      isRscRequest: false,
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    expect(probed.sort()).toEqual(["modal", "page"]);
+    expect(probed).not.toContain("intercept");
   });
 
   it("probes the interception page in place of the slot it overrides", async () => {
@@ -704,6 +734,7 @@ describe("buildAppPageProbes", () => {
         slotKey: "modal",
         page: { default: recordingPage("intercept", probed) },
       },
+      isRscRequest: true,
       matchedParams: {},
       makeThenableParams: makeThenableParamsLoose,
     });
@@ -723,6 +754,7 @@ describe("buildAppPageProbes", () => {
       asyncRouteParams: makeThenableParams({}),
       searchParams: null,
       intercept: null,
+      isRscRequest: true,
       matchedParams: {},
       makeThenableParams: makeThenableParamsLoose,
     });
@@ -747,6 +779,7 @@ describe("buildAppPageProbes", () => {
       pageComponent: recordingPage("page", probed),
       asyncRouteParams: makeThenableParams({}),
       searchParams: null,
+      isRscRequest: true,
       matchedParams: {},
       makeThenableParams: makeThenableParamsLoose,
     });
@@ -771,6 +804,7 @@ describe("buildAppPageProbes", () => {
       asyncRouteParams: makeThenableParams({}),
       searchParams: null,
       intercept: { page: { default: InterceptPage } },
+      isRscRequest: true,
       matchedParams: fallbackParams,
       makeThenableParams: makeThenableParamsLoose,
     });

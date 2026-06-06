@@ -320,6 +320,16 @@ type AppPageProbeIntercept =
  *   is no `slot.page?.default`, so `probeAppPage` short-circuits to `null` and
  *   probes nothing — a no-op, not an over-bail.
  *
+ * Interception only fires for RSC navigations (`resolveAppPageInterceptState`
+ * returns `kind: "none"` when `!isRscRequest`, app-page-request.ts:324), so the
+ * interception handling here is gated on `isRscRequest`. For non-RSC (HTML)
+ * requests the matched route renders normally, so we probe every slot's own
+ * page and skip the interception probe entirely. The remaining "source-route"
+ * interception case (where a *different* route renders, app-page-request.ts:342)
+ * never reaches this probe: `dispatchAppPage` returns the intercepted response
+ * before calling `probePage`, so by the time this runs any matched interception
+ * is the current-route override case above.
+ *
  * A `default.tsx` that itself awaits `searchParams` is not probed here, but the
  * real render still observes that access and skips the query-invariant cache
  * write (the same loading.tsx backstop), so this cannot under-bail.
@@ -330,12 +340,20 @@ export function buildAppPageProbes(options: {
   asyncRouteParams: unknown;
   searchParams: URLSearchParams | null | undefined;
   intercept?: AppPageProbeIntercept;
+  /**
+   * Whether this is an RSC navigation. Interception only fires for RSC
+   * requests, so the interception probe is ignored when this is false.
+   */
+  isRscRequest: boolean;
   /** Fallback raw params used when an interception match omits its own. */
   matchedParams: unknown;
   makeThenableParams: (params: unknown) => unknown;
 }): Promise<unknown>[] {
-  const { route, pageComponent, asyncRouteParams, searchParams, intercept, matchedParams } =
-    options;
+  const { route, pageComponent, asyncRouteParams, searchParams, matchedParams } = options;
+
+  // Interception only fires for RSC navigations; on HTML requests the matched
+  // route renders normally, so ignore any interception match entirely.
+  const intercept = options.isRscRequest ? options.intercept : null;
 
   const probes: unknown[] = [probeAppPage({ pageComponent, asyncRouteParams, searchParams })];
 

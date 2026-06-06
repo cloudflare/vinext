@@ -675,6 +675,7 @@ export default __createAppRscHandler({
           asyncRouteParams: _asyncRouteParams,
           searchParams,
           intercept: findIntercept(cleanPathname, interceptionContext),
+          isRscRequest,
           matchedParams: params,
           makeThenableParams,
         }));
