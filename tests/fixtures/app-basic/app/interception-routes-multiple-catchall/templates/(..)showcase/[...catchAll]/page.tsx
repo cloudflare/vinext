@@ -1,0 +1,4 @@
+export default async function Page({ params }: { params: Promise<{ catchAll: string[] }> }) {
+  const { catchAll } = await params;
+  return <div id="intercepting-page">intercepting: {catchAll.join("/")}</div>;
+}
