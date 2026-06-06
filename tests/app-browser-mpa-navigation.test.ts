@@ -39,10 +39,18 @@ function createNavigationWindow(): {
 }
 
 describe("hasPendingAppRouterPageRedirect", () => {
+  it("treats a missing document as no pending redirect marker", () => {
+    expect(hasPendingAppRouterPageRedirect(undefined)).toBe(false);
+  });
+
+  it("treats a partial document without DOM lookup support as no pending redirect marker", () => {
+    expect(hasPendingAppRouterPageRedirect({ createElement: vi.fn() })).toBe(false);
+  });
+
   it("detects Next.js's streamed redirect marker", () => {
     expect(
       hasPendingAppRouterPageRedirect({
-        getElementById(id) {
+        getElementById(id: string) {
           return id === "__next-page-redirect" ? { id } : null;
         },
       }),

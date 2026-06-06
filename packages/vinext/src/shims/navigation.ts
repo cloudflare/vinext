@@ -1713,10 +1713,21 @@ export async function navigateClientSide(
     saveScrollPosition();
   }
 
+  // Hash-only change: update URL and scroll to target, skip RSC fetch
+  if (isHashOnlyChange(fullHref)) {
+    const hash = fullHref.includes("#") ? fullHref.slice(fullHref.indexOf("#")) : "";
+    commitHashOnlyHistoryState(fullHref, mode, scroll);
+    commitClientNavigationState();
+    if (scroll) {
+      scrollToHashTarget(hash);
+    }
+    return;
+  }
+
   // Next.js treats a streamed redirect meta tag as an MPA-navigation marker.
   // A soft RSC redirect would leave the source document alive long enough for
   // the delayed meta refresh to fire and render the target a second time.
-  if (hasPendingAppRouterPageRedirect(document)) {
+  if (hasPendingAppRouterPageRedirect(typeof document === "undefined" ? undefined : document)) {
     const mpaNavigate = getNavigationRuntime()?.functions.navigateExternal;
     if (mpaNavigate) {
       await mpaNavigate(fullHref, mode);
@@ -1729,17 +1740,6 @@ export async function navigateClientSide(
       window.location.assign(fullHref);
     }
     await new Promise<void>(() => {});
-    return;
-  }
-
-  // Hash-only change: update URL and scroll to target, skip RSC fetch
-  if (isHashOnlyChange(fullHref)) {
-    const hash = fullHref.includes("#") ? fullHref.slice(fullHref.indexOf("#")) : "";
-    commitHashOnlyHistoryState(fullHref, mode, scroll);
-    commitClientNavigationState();
-    if (scroll) {
-      scrollToHashTarget(hash);
-    }
     return;
   }
 
