@@ -279,6 +279,13 @@ type AppPageProbeIntercept =
   | Readonly<{
       page?: AppPageProbeModule;
       matchedParams?: unknown;
+      /**
+       * Key of the parallel-route slot this interception overrides. At render
+       * time the matched route's `slots[slotKey].page` is replaced by the
+       * interception page (see app-page-element-builder.ts), so the slot's own
+       * page never renders for this request.
+       */
+      slotKey?: string | null;
     }>
   | null
   | undefined;
@@ -296,12 +303,14 @@ type AppPageProbeIntercept =
  * Entry Modules Should Stay Thin"). Returns a list of resolved promises so the
  * caller can `Promise.all` them.
  *
- * Note: this probes every declared slot's `page.default`, including slots that
- * are inactive for the current request (eg. an `@modal/page.tsx` replaced by an
- * interception override at render time). That can over-bail an otherwise-static
- * page out of the cache. The behavior fails safe (toward dynamic / never serving
- * a stale query-bearing response) and is tracked as a caching-efficiency
- * follow-up in https://github.com/cloudflare/vinext/issues/1798.
+ * Only the page components that actually render for this request are probed.
+ * When an interception matches, it replaces the page of the slot named by
+ * `intercept.slotKey` (the element builder sets `overrides[slotKey].pageModule`
+ * to the interception page, which wins over `slot.page` in
+ * app-page-route-wiring.tsx). We therefore probe the interception page in place
+ * of that slot's own page rather than probing both — probing the overridden
+ * slot page would mark an otherwise-static request dynamic for a component that
+ * never renders.
  */
 export function buildAppPageProbes(options: {
   route: AppPageProbeRoute;
@@ -318,7 +327,15 @@ export function buildAppPageProbes(options: {
 
   const probes: unknown[] = [probeAppPage({ pageComponent, asyncRouteParams, searchParams })];
 
-  for (const slot of Object.values(route.slots ?? {})) {
+  // A slot whose page is replaced by an active interception override does not
+  // render its own `page.tsx`; the interception page (probed below) renders in
+  // its place, so skip the overridden slot to avoid a false dynamic bailout.
+  const overriddenSlotKey = intercept?.slotKey ?? null;
+
+  for (const [slotKey, slot] of Object.entries(route.slots ?? {})) {
+    if (overriddenSlotKey !== null && slotKey === overriddenSlotKey) {
+      continue;
+    }
     probes.push(
       probeAppPage({
         pageComponent: slot?.page?.default,

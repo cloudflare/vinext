@@ -686,6 +686,35 @@ describe("buildAppPageProbes", () => {
     expect(probed.sort()).toEqual(["intercept", "modal", "page", "sidebar"]);
   });
 
+  it("probes the interception page in place of the slot it overrides", async () => {
+    const probed: string[] = [];
+    const probes = buildAppPageProbes({
+      route: {
+        slots: {
+          // modal slot is overridden by the active interception below, so its
+          // own page must NOT be probed (it never renders for this request).
+          modal: { page: { default: recordingPage("modal-page", probed) } },
+          sidebar: { page: { default: recordingPage("sidebar", probed) } },
+        },
+      },
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: new URLSearchParams("q=hello"),
+      intercept: {
+        slotKey: "modal",
+        page: { default: recordingPage("intercept", probed) },
+      },
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    // modal-page is skipped (overridden); intercept renders in its place.
+    expect(probed.sort()).toEqual(["intercept", "page", "sidebar"]);
+    expect(probed).not.toContain("modal-page");
+  });
+
   it("omits the interception probe when no interception matches", async () => {
     const probed: string[] = [];
     const probes = buildAppPageProbes({
