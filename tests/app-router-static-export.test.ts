@@ -92,6 +92,7 @@ describe("App Router Static export", () => {
         isDynamic: true,
         params: ["id"],
         patternParts: ["fake", ":id"],
+        siblingIntercepts: [],
       },
     ];
     const config = await resolveNextConfig({ output: "export" });
@@ -139,6 +140,7 @@ describe("App Router Static export", () => {
         isDynamic: false,
         params: [],
         patternParts: ["api", "test"],
+        siblingIntercepts: [],
       },
     ];
     const config = await resolveNextConfig({ output: "export" });
