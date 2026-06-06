@@ -8,11 +8,10 @@
  * KV namespace from `env[binding]` at request time and constructs the handler.
  *
  * Configure it from vite.config via the {@link kvDataAdapter} builder in
- * `./kv-data-adapter.ts` (which `require.resolve`s this file), or imperatively:
- *
- *   import { KVCacheHandler } from "@vinext/cloudflare/cache/kv-data-adapter.runtime";
- *   import { setDataCacheHandler } from "vinext/shims/cache";
- *   setDataCacheHandler(new KVCacheHandler(env.VINEXT_KV_CACHE));
+ * `./kv-data-adapter.ts` (which `require.resolve`s this file). The legacy
+ * imperative path (constructing `KVCacheHandler` and calling
+ * `setDataCacheHandler` from a worker entry) is deprecated — prefer the
+ * `cache.data` plugin option.
  *
  * Wrangler config (wrangler.jsonc):
  *
@@ -152,6 +151,27 @@ function isPathChildOf(path: string, prefix: string): boolean {
   return path.startsWith(prefix + "/");
 }
 
+/**
+ * Cloudflare KV data cache handler.
+ *
+ * @deprecated Consumers should not instantiate or register this handler by
+ * hand. Configure it declaratively via the `cache.data` option on the
+ * `vinext()` plugin, using the {@link kvDataAdapter} builder:
+ *
+ * ```ts
+ * import { vinext } from "vinext";
+ * import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+ *
+ * export default defineConfig({
+ *   plugins: [vinext({ cache: { data: kvDataAdapter({ binding: "VINEXT_KV_CACHE" }) } })],
+ * });
+ * ```
+ *
+ * `kvDataAdapter()` is safe to call from `vite.config.ts` — it never touches
+ * the Workers runtime — and the plugin defers instantiation of this handler to
+ * the first request. This class stays exported for the runtime factory and for
+ * backwards compatibility, but is not the recommended consumer API.
+ */
 export class KVCacheHandler implements CacheHandler {
   private kv: KVNamespace;
   private prefix: string;

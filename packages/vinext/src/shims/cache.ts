@@ -9,12 +9,14 @@
  * existing community adapters (@neshca/cache-handler, @opennextjs/aws, etc.)
  * can be used directly.
  *
- * Configuration (in vite.config.ts or next.config.js):
- *   vinext({ cacheHandler: './my-cache-handler.ts' })
+ * Recommended configuration is declarative, via the `cache` option on the
+ * `vinext()` plugin in vite.config.ts:
+ *   import { kvDataAdapter } from '@vinext/cloudflare/cache/kv-data-adapter';
+ *   vinext({ cache: { data: kvDataAdapter({ binding: 'VINEXT_KV_CACHE' }) } })
  *
- * Or set at runtime:
- *   import { setCacheHandler } from 'next/cache';
- *   setCacheHandler(new MyCacheHandler());
+ * The imperative `setCacheHandler` / `setDataCacheHandler` setters are
+ * deprecated for consumers and retained only as the internal registration
+ * target used by the generated cache-adapter module.
  */
 
 import { getHeadersAccessPhase, markDynamicUsage as _markDynamic } from "./headers.js";
@@ -258,6 +260,16 @@ function readStringArrayField(ctx: Record<string, unknown> | undefined, field: s
   return value.filter((item): item is string => typeof item === "string");
 }
 
+/**
+ * In-memory data cache handler. This is the built-in default — vinext installs
+ * it automatically, so consumers should not construct or register it by hand.
+ *
+ * @deprecated Consumers should not instantiate cache handlers directly.
+ * Configure caching declaratively via the `cache` option on the `vinext()`
+ * plugin (see {@link setDataCacheHandler}); the in-memory handler is the
+ * default when nothing is configured, and its size is tuned via the
+ * `cacheMaxMemorySize` plugin option.
+ */
 export class MemoryCacheHandler implements CacheHandler {
   private store = new Map<string, MemoryEntry>();
   private tagRevalidatedAt = new Map<string, number>();
@@ -468,9 +480,26 @@ export function configureMemoryCacheHandler(options?: MemoryCacheHandlerOptions)
  * `fetch` caching, `"use cache"`, `unstable_cache` — and is also the default
  * underlying store for page-level ISR (via the default CDN cache adapter).
  *
- * Call this during server startup to plug in Cloudflare KV, Redis, DynamoDB,
- * or any other backend. The handler must implement the CacheHandler interface
- * (same shape as Next.js 16's CacheHandler class).
+ * The handler must implement the CacheHandler interface (same shape as
+ * Next.js 16's CacheHandler class).
+ *
+ * @deprecated Don't wire up the data cache imperatively. Configure it
+ * declaratively via the `cache.data` option on the `vinext()` plugin in your
+ * `vite.config.ts`, using a config-time adapter builder. On Cloudflare Workers:
+ *
+ * ```ts
+ * import { vinext } from "vinext";
+ * import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+ *
+ * export default defineConfig({
+ *   plugins: [vinext({ cache: { data: kvDataAdapter({ binding: "VINEXT_KV_CACHE" }) } })],
+ * });
+ * ```
+ *
+ * The plugin defers instantiation to the first request and registers the
+ * handler across every runtime/router entry, so you don't have to call this
+ * from a worker entry. This setter remains as the internal registration target
+ * and for backwards compatibility, but is not the recommended consumer API.
  */
 export function setDataCacheHandler(handler: CacheHandler): void {
   _gHandler[_HANDLER_KEY] = handler;
@@ -484,8 +513,12 @@ export function getDataCacheHandler(): CacheHandler {
 }
 
 /**
- * @deprecated Prefer {@link setDataCacheHandler}. Retained as a backwards-compatible
- * alias — `setCacheHandler` has always configured the data cache handler.
+ * @deprecated Don't wire up the data cache imperatively. Configure it
+ * declaratively via the `cache.data` option on the `vinext()` plugin (e.g.
+ * `kvDataAdapter()` from `@vinext/cloudflare/cache/kv-data-adapter`). See
+ * {@link setDataCacheHandler} for the migration example. Retained as a
+ * backwards-compatible alias — `setCacheHandler` has always configured the
+ * data cache handler.
  */
 export function setCacheHandler(handler: CacheHandler): void {
   setDataCacheHandler(handler);

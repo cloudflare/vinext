@@ -481,7 +481,7 @@ The ISR cache layer sits **above** `CacheHandler`, not inside it. `CacheHandler`
 - **Revalidate tracking:** A side map stores revalidate durations by cache key (populated on MISS, read on HIT/STALE)
 - **Tag invalidation:** Tag-invalidated entries are hard-deleted (return null), unlike time-expired entries which return stale
 
-The caching layer is pluggable via `setCacheHandler()`. KV is the default for Cloudflare Workers. The ISR logic works automatically with any backend.
+The caching layer is pluggable. The default data cache handler is the in-memory `MemoryCacheHandler` in **all** runtimes (including Cloudflare Workers) when nothing is configured — KV is opt-in, not the default. Configure a backend declaratively via the `cache` option on the `vinext()` plugin (e.g. `cache: { data: kvDataAdapter({ binding: "VINEXT_KV_CACHE" }) }` from `@vinext/cloudflare/cache/kv-data-adapter`); the generated `virtual:vinext-cache-adapters` module registers it on the first request. The imperative `setDataCacheHandler()` / `setCdnCacheAdapter()` setters still work but are deprecated for consumers. The ISR logic works automatically with any backend.
 
 ### Next.js Request Execution Order
 

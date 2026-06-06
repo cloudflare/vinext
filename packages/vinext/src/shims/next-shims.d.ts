@@ -691,6 +691,11 @@ declare module "next/cache" {
     | { kind: "REDIRECT"; props: object }
     | { kind: "IMAGE"; etag: string; buffer: ArrayBuffer; extension: string; revalidate?: number };
 
+  /**
+   * @deprecated Consumers should not instantiate cache handlers directly.
+   * Configure caching via the `cache` option on the `vinext()` plugin; the
+   * in-memory handler is the default when nothing is configured.
+   */
   export class MemoryCacheHandler implements CacheHandler {
     constructor(options?: number | { cacheMaxMemorySize?: number; maxMemoryCacheSize?: number });
     get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
@@ -703,9 +708,18 @@ declare module "next/cache" {
     resetRequestCache(): void;
   }
 
+  /**
+   * @deprecated Don't wire up the data cache imperatively. Configure it via the
+   * `cache.data` option on the `vinext()` plugin (e.g. `kvDataAdapter()` from
+   * `@vinext/cloudflare/cache/kv-data-adapter`) in your `vite.config.ts`.
+   */
   export function setDataCacheHandler(handler: CacheHandler): void;
   export function getDataCacheHandler(): CacheHandler;
-  /** @deprecated Use setDataCacheHandler. */
+  /**
+   * @deprecated Don't wire up the data cache imperatively. Configure it via the
+   * `cache.data` option on the `vinext()` plugin (e.g. `kvDataAdapter()` from
+   * `@vinext/cloudflare/cache/kv-data-adapter`) in your `vite.config.ts`.
+   */
   export function setCacheHandler(handler: CacheHandler): void;
   /** @deprecated Use getDataCacheHandler. */
   export function getCacheHandler(): CacheHandler;
