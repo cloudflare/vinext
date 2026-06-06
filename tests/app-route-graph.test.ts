@@ -1062,6 +1062,28 @@ describe("App Router route graph builder", () => {
       return out;
     }
 
+    function collectSiblingIntercepts(routes: readonly AppRouteGraphRoute[]) {
+      const out: Array<{
+        ownerRoute: string;
+        targetPattern: string;
+        sourceMatchPattern: string;
+        convention: string;
+        params: string[];
+      }> = [];
+      for (const route of routes) {
+        for (const ir of (route as any).siblingIntercepts ?? []) {
+          out.push({
+            ownerRoute: route.pattern,
+            targetPattern: ir.targetPattern,
+            sourceMatchPattern: ir.sourceMatchPattern,
+            convention: ir.convention,
+            params: ir.params,
+          });
+        }
+      }
+      return out;
+    }
+
     it("computes `/` for root-level (.) slot", async () => {
       // Mirrors test/e2e/app-dir/parallel-routes-and-interception-basepath.
       await withTempApp(async (appDir) => {
@@ -1256,13 +1278,10 @@ describe("App Router route graph builder", () => {
       });
     });
 
-    it("ignores interception marker directories that live outside a parallel slot", async () => {
+    it("registers `(..)` sibling interception for showcase catchall outside a parallel slot", async () => {
       // Ported from Next.js: test/e2e/app-dir/interception-routes-multiple-catchall
-      // and test/e2e/app-dir/interception-segments-two-levels-above. Next.js
-      // allows interception marker directories anywhere — they should not be
-      // treated as standalone routes (the marker is not a real URL segment),
-      // so the build must not register `/templates/(..)showcase` as a page
-      // and must not throw while validating its pattern.
+      // The marker at templates/(..)showcase is a sibling (no @slot). Build must not
+      // register it as a literal route, AND must register it as a sibling intercept.
       await withTempApp(async (appDir) => {
         await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
         await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
@@ -1275,19 +1294,32 @@ describe("App Router route graph builder", () => {
         const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
         const patterns = graph.routes.map((route) => route.pattern);
 
-        // The marker directory itself is not a route — it must never surface
-        // as `/templates/(..)showcase` or similar.
         for (const pattern of patterns) {
           expect(pattern).not.toMatch(/\(\.{1,3}\)/);
         }
+
+        const intercepts = collectSiblingIntercepts(graph.routes);
+        // (..) from templates/ climbs 1 visible segment → target /showcase
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/showcase",
+            sourceMatchPattern: "/templates",
+            convention: "..",
+          }),
+        );
+        // Also the catchAll page registers a sibling intercept for /showcase/:catchAll+
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/showcase/:catchAll+",
+            sourceMatchPattern: "/templates",
+            convention: "..",
+          }),
+        );
       });
     });
 
-    it("ignores `(..)(..)` interception marker outside a parallel slot", async () => {
+    it("registers `(..)(..)` sibling interception outside a parallel slot", async () => {
       // Ported from Next.js: test/e2e/app-dir/interception-segments-two-levels-above
-      // app/foo/bar/(..)(..)hoge/page.tsx is a sibling-style interception
-      // marker (no @slot). Build must not throw and must not register a
-      // route with the literal marker in its pattern.
       await withTempApp(async (appDir) => {
         await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
         await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
@@ -1301,12 +1333,19 @@ describe("App Router route graph builder", () => {
         for (const pattern of patterns) {
           expect(pattern).not.toMatch(/\(\.{1,3}\)/);
         }
+
+        const intercepts = collectSiblingIntercepts(graph.routes);
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/hoge",
+            sourceMatchPattern: "/foo/bar",
+            convention: "../..",
+          }),
+        );
       });
     });
 
-    it("ignores `(.)` same-level interception marker outside a parallel slot", async () => {
-      // Coverage for the same-level marker — sibling of a regular route,
-      // not inside a `@slot`. Must not register `/gallery/(.)photo` as a page.
+    it("registers `(.)` sibling interception outside a parallel slot", async () => {
       await withTempApp(async (appDir) => {
         await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
         await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
@@ -1319,13 +1358,20 @@ describe("App Router route graph builder", () => {
         for (const pattern of patterns) {
           expect(pattern).not.toMatch(/\(\.{1,3}\)/);
         }
+
+        const intercepts = collectSiblingIntercepts(graph.routes);
+        // (.) resolves relative to the marker's parent dir (gallery/), so target = /gallery/photo
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/gallery/photo",
+            sourceMatchPattern: "/gallery",
+            convention: ".",
+          }),
+        );
       });
     });
 
-    it("ignores `(...)` root interception marker outside a parallel slot", async () => {
-      // Coverage for the root marker — `(...)` always resolves against the
-      // app root, so the marker must be stripped even when buried deep in
-      // the filesystem tree.
+    it("registers `(...)` sibling root interception outside a parallel slot", async () => {
       await withTempApp(async (appDir) => {
         await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
         await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
@@ -1338,6 +1384,15 @@ describe("App Router route graph builder", () => {
         for (const pattern of patterns) {
           expect(pattern).not.toMatch(/\(\.{1,3}\)/);
         }
+
+        const intercepts = collectSiblingIntercepts(graph.routes);
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/target",
+            sourceMatchPattern: "/deep/path",
+            convention: "...",
+          }),
+        );
       });
     });
   });
