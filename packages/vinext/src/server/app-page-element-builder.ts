@@ -165,7 +165,6 @@ export async function buildPageElements<
   }
 
   const {
-    hasSearchParams,
     hasDynamicMetadata,
     metadata: resolvedMetadata,
     pageSearchParams,
@@ -193,11 +192,12 @@ export async function buildPageElements<
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(params) };
   if (searchParams) {
-    pageProps.searchParams = makeThenableParams(pageSearchParams);
-    if (hasSearchParams) {
-      markDynamicUsage();
-      markRenderRequestApiUsage("searchParams");
-    }
+    pageProps.searchParams = makeThenableParams(pageSearchParams, {
+      observeParamAccess() {
+        markDynamicUsage();
+        markRenderRequestApiUsage("searchParams");
+      },
+    });
   }
 
   const mountedSlotIds = mountedSlotsHeader ? new Set(mountedSlotsHeader.split(" ")) : null;
