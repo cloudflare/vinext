@@ -194,6 +194,12 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
         }
       }
     }
+    for (const ir of route.siblingIntercepts ?? []) {
+      imports.getImportVar(ir.pagePath);
+      for (const layoutPath of ir.layoutPaths) {
+        imports.getImportVar(layoutPath);
+      }
+    }
   }
 }
 
@@ -215,6 +221,17 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
     );
     const unauthorizedVars = (route.unauthorizedPaths ?? []).map((up) =>
       up ? imports.getImportVar(up) : "null",
+    );
+    const siblingInterceptEntries = (route.siblingIntercepts ?? []).map(
+      (ir) => `    {
+      convention: ${JSON.stringify(ir.convention)},
+      targetPattern: ${JSON.stringify(ir.targetPattern)},
+      sourceMatchPattern: ${JSON.stringify(ir.sourceMatchPattern)},
+      slotId: ${JSON.stringify(ir.slotId ?? null)},
+      interceptLayouts: [${ir.layoutPaths.map((l) => imports.getImportVar(l)).join(", ")}],
+      page: ${imports.getImportVar(ir.pagePath)},
+      params: ${JSON.stringify(ir.params)},
+    }`,
     );
     const slotEntries = route.parallelSlots.map((slot) => {
       const interceptEntries = slot.interceptingRoutes.map(
@@ -279,6 +296,9 @@ ${interceptEntries.join(",\n")}
     slots: {
 ${slotEntries.join(",\n")}
     },
+    siblingIntercepts: [
+${siblingInterceptEntries.join(",\n")}
+    ],
     loading: ${route.loadingPath ? imports.getImportVar(route.loadingPath) : "null"},
     error: ${route.errorPath ? imports.getImportVar(route.errorPath) : "null"},
     notFound: ${route.notFoundPath ? imports.getImportVar(route.notFoundPath) : "null"},
