@@ -5,7 +5,6 @@ import os from "node:os";
 import {
   scanImports,
   analyzeConfig,
-  stripCommentsAndStrings,
   checkLibraries,
   checkConventions,
   hasFreeCjsGlobal,
@@ -265,60 +264,6 @@ describe("scanImports", () => {
       const item = items.find((i) => i.name === p);
       expect(item?.status, `expected ${p} to be supported`).toBe("supported");
     }
-  });
-});
-
-// ── stripCommentsAndStrings ──────────────────────────────────────────────────
-
-describe("stripCommentsAndStrings", () => {
-  it("removes line and block comments", () => {
-    const out = stripCommentsAndStrings(`const a = 1; // webpack: gone
-    /* webpack(config) gone */ const b = 2;`);
-    expect(out).not.toContain("webpack");
-    expect(out).toContain("const a = 1;");
-    expect(out).toContain("const b = 2;");
-  });
-
-  it("empties string values but keeps structure", () => {
-    const out = stripCommentsAndStrings(`const a = "react-server-dom-webpack";`);
-    expect(out).not.toContain("webpack");
-    expect(out).toContain(`const a = "";`);
-  });
-
-  it("preserves quoted property keys (string followed by colon)", () => {
-    const out = stripCommentsAndStrings(`{ "webpack": (c) => c }`);
-    expect(out).toContain(`"webpack":`);
-  });
-
-  it("does not treat // or /* inside a string as a comment", () => {
-    const out = stripCommentsAndStrings(`const a = "http://x"; const b = "/* not a comment */";`);
-    expect(out).toContain(`const a = "";`);
-    expect(out).toContain(`const b = "";`);
-  });
-
-  it("handles escaped quotes inside strings", () => {
-    const out = stripCommentsAndStrings(String.raw`const a = "he said \"webpack\"";`);
-    expect(out).not.toContain("webpack");
-    expect(out).toContain(`const a = "";`);
-  });
-
-  it("does not let a quote inside a regex literal hijack string state", () => {
-    // `/['"]/` contains a quote; a naive scanner would treat it as a string
-    // start and swallow the real `webpack:` key after it.
-    const out = stripCommentsAndStrings(`const re = /['"]/; const c = { webpack: 1 };`);
-    expect(out).toContain("webpack:");
-  });
-
-  it("empties template literals but scans their interpolations as code", () => {
-    const out = stripCommentsAndStrings("const a = `webpack ${headers} text`;");
-    // The literal text "webpack" is gone, but the interpolated identifier stays.
-    expect(out).not.toContain("webpack");
-    expect(out).toContain("headers");
-  });
-
-  it("treats division as division, not a regex literal", () => {
-    const out = stripCommentsAndStrings(`const a = b / c; const d = { webpack: 1 };`);
-    expect(out).toContain("webpack:");
   });
 });
 
@@ -664,6 +609,29 @@ describe("analyzeConfig", () => {
 
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+  });
+
+  it("detects options when the config is wrapped in a plugin call", () => {
+    writeFile(
+      "next.config.mjs",
+      `import withMDX from "@next/mdx";
+      const nextConfig = { basePath: "/docs", webpack: (c) => c };
+      export default withMDX()(nextConfig);`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+  });
+
+  it("detects options through a `satisfies` annotation", () => {
+    writeFile(
+      "next.config.ts",
+      `export default { trailingSlash: true } satisfies import("next").NextConfig;`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
   });
 
   it.each([

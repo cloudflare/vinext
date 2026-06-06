@@ -168,6 +168,9 @@ catalogs:
     nuqs:
       specifier: ^2.8.8
       version: 2.8.8
+    oxc-parser:
+      specifier: ^0.127.0
+      version: 0.127.0
     playwright:
       specifier: ^1.52.0
       version: 1.58.2
@@ -975,6 +978,9 @@ importers:
       magic-string:
         specifier: 'catalog:'
         version: 0.30.21
+      oxc-parser:
+        specifier: 'catalog:'
+        version: 0.127.0
       vite:
         specifier: npm:@voidzero-dev/vite-plus-core@0.1.24
         version: '@voidzero-dev/vite-plus-core@0.1.24(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3)'

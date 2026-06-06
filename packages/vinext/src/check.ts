@@ -6,6 +6,14 @@
  */
 
 import { detectPackageManager } from "./utils/project.js";
+import {
+  parseSync,
+  type Expression,
+  type ObjectExpression,
+  type ObjectProperty,
+  type ObjectPropertyKind,
+  type SpreadElement,
+} from "oxc-parser";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -347,46 +355,6 @@ function isIdentChar(c: string): boolean {
   );
 }
 
-// Escape a string for safe interpolation into a `RegExp`. Config option names
-// are plain identifiers today, but escaping future-proofs against a key that
-// contains a regex metacharacter.
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * Return the bodies (text between the matching braces) of every
- * `name: { … }` / `name = { … }` block in `content`. Quoted parent keys
- * (`"name": { … }`) are matched too. Returns an empty array if there are none.
- *
- * All matching blocks are returned, not just the first, so a child key that only
- * appears in a later same-named block (e.g. two `experimental: {}` objects) is
- * still found.
- *
- * Expects `content` to already be run through {@link stripCommentsAndStrings},
- * so naive `{`/`}` counting is safe — braces inside comments or string values
- * cannot throw off the balance. Used to scope nested dot-notation child lookups
- * to their parent block instead of matching the child anywhere in the file.
- */
-function extractBlockBodies(content: string, name: string): string[] {
-  const opener = new RegExp(String.raw`\b${escapeRegExp(name)}["']?\s*[:=]\s*\{`, "g");
-  const bodies: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = opener.exec(content)) !== null) {
-    const start = m.index + m[0].length; // first char after the opening `{`
-    let depth = 1;
-    let i = start;
-    for (; i < content.length; i++) {
-      const c = content[i];
-      if (c === "{") depth++;
-      else if (c === "}" && --depth === 0) break;
-    }
-    bodies.push(content.slice(start, i));
-    opener.lastIndex = i; // resume scanning after this block
-  }
-  return bodies;
-}
-
 // The CJS globals we flag, so the identifier-match check has no magic offsets.
 const CJS_GLOBALS = new Set(["__dirname", "__filename"]);
 
@@ -669,196 +637,124 @@ export function scanImports(root: string): CheckItem[] {
   return items;
 }
 
+/** Option keys found on the exported config object. */
+type ConfigKeys = {
+  /** Top-level property names, e.g. `webpack`, `experimental`, `i18n`. */
+  top: Set<string>;
+  /** For each object-valued property, its child key names (for `parent.child`). */
+  nested: Map<string, Set<string>>;
+};
+
+/** The property key name of an object property, or null for spreads/computed keys. */
+function propertyKeyName(prop: ObjectPropertyKind): string | null {
+  if (prop.type !== "Property" || prop.computed) return null;
+  const { key } = prop;
+  if (key.type === "Identifier") return key.name;
+  if (key.type === "Literal" && typeof key.value === "string") return key.value;
+  return null;
+}
+
 /**
- * Strip comments and string-literal values from JS/TS source so config-option
- * detection only sees real code.
+ * Parse a next.config file and collect the option keys off its exported config
+ * object — top-level keys plus, for each object-valued property, its child keys
+ * (used for dot-notation options like `experimental.ppr`).
  *
- * Options are detected with regexes over the raw file text (we can't import
- * next.config because it may use loaders/plugins we don't run). Without this
- * pre-pass, any mention of an option name in a comment or string value is a
- * false positive — e.g. `// migrate webpack: config` or a value like
- * `"react-server-dom-webpack"` would both be reported as a webpack config.
- *
- * What it does:
- * - Line (`//`) and block comments are removed entirely.
- * - String literals are emptied (`"value"` -> `""`), EXCEPT when the literal is
- *   immediately followed by `:` — i.e. a quoted property key like `"webpack":`,
- *   which is preserved so quoted keys still match.
- * - Template literals are emptied; their `${ … }` interpolations are scanned as
- *   real code (an option key inside an interpolation is a genuine usage).
- * - Regex literals are skipped, so a quote inside one (e.g. `/['"]/`) cannot be
- *   mistaken for the start of a string and swallow following code.
- *
- * Like {@link hasFreeCjsGlobal}, this is a single-pass, lexer-grade scanner (not
- * a parser). It runs in O(n) time / O(template-nesting) stack so it cannot blow
- * up on large input, and it shares that function's regex-vs-division heuristic.
- *
- * Known limitation (same as `hasFreeCjsGlobal`): a value-position regex literal
- * after a block `}` is read as division, and a string followed by `:` is treated
- * as a key — so a string value used in ternary key position (`cond ? "x" : y`)
- * is preserved. Both are rare in next.config and the check is only advisory, so
- * we accept them rather than pull in a full parser.
+ * Uses the oxc parser (the project's own toolchain) instead of scanning text, so
+ * comments, string values, and other non-key mentions of an option name are
+ * never mistaken for a real config option. Returns empty sets if the file cannot
+ * be parsed — the check is advisory, so a parse failure simply reports nothing.
  */
-export function stripCommentsAndStrings(src: string): string {
-  const n = src.length;
-  type Frame = {
-    kind: "code" | "template";
-    depth: number;
-    isExpr: boolean;
-    prevType: "value" | "op";
-  };
-  const stack: Frame[] = [{ kind: "code", depth: 0, isExpr: false, prevType: "op" }];
-  const out: string[] = [];
-  let i = 0;
+function collectConfigKeys(configPath: string, source: string): ConfigKeys {
+  const top = new Set<string>();
+  const nested = new Map<string, Set<string>>();
 
-  while (i < n) {
-    const top = stack[stack.length - 1]!;
-    const ch = src[i]!;
-
-    // ── template literal text (emit nothing; it is string content) ──
-    if (top.kind === "template") {
-      if (ch === "\\") {
-        i += 2; // escape — skip the next char
-        continue;
-      }
-      if (ch === "`") {
-        stack.pop();
-        const outer = stack[stack.length - 1];
-        if (outer) outer.prevType = "value";
-        i++;
-        continue;
-      }
-      if (ch === "$" && src[i + 1] === "{") {
-        // Interpolation is real code — scan it normally.
-        stack.push({ kind: "code", depth: 0, isExpr: true, prevType: "op" });
-        i += 2;
-        continue;
-      }
-      i++;
-      continue;
-    }
-
-    // ── code context ──
-    if (ch === "/" && src[i + 1] === "/") {
-      i += 2;
-      while (i < n && src[i] !== "\n") i++;
-      continue;
-    }
-    if (ch === "/" && src[i + 1] === "*") {
-      i += 2;
-      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) i++;
-      i += 2; // consume the closing */
-      continue;
-    }
-    if (ch === "/") {
-      if (top.prevType === "op") {
-        // Regex literal. Skip its body (escapes + `[…]` char classes) and flags,
-        // emitting nothing — a regex can never be an option key.
-        i++;
-        let inClass = false;
-        while (i < n) {
-          const c = src[i];
-          if (c === "\\") {
-            i += 2;
-            continue;
-          }
-          if (c === "\n") break; // regex literals cannot span lines — bail out
-          if (c === "[") inClass = true;
-          else if (c === "]") inClass = false;
-          else if (c === "/" && !inClass) {
-            i++;
-            break;
-          }
-          i++;
-        }
-        while (i < n && isIdentChar(src[i]!)) i++; // flags
-        top.prevType = "value";
-        continue;
-      }
-      out.push(ch); // division operator
-      top.prevType = "op";
-      i++;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      const quote = ch;
-      const start = i;
-      i++;
-      while (i < n) {
-        const c = src[i];
-        if (c === "\\") {
-          i += 2;
-          continue;
-        }
-        if (c === quote || c === "\n") break;
-        i++;
-      }
-      if (i < n && src[i] === quote) i++; // consume closing quote
-      // Peek past whitespace: a string immediately followed by `:` is a quoted
-      // property key (e.g. `"webpack":`) and is preserved so it still matches.
-      let j = i;
-      while (j < n && (src[j] === " " || src[j] === "\t" || src[j] === "\n" || src[j] === "\r"))
-        j++;
-      out.push(src[j] === ":" ? src.slice(start, i) : quote + quote);
-      top.prevType = "value";
-      continue;
-    }
-    if (ch === "`") {
-      stack.push({ kind: "template", depth: 0, isExpr: false, prevType: "op" });
-      i++;
-      continue;
-    }
-    if (ch === "{") {
-      out.push(ch);
-      top.depth++;
-      top.prevType = "op";
-      i++;
-      continue;
-    }
-    if (ch === "}") {
-      if (top.isExpr && top.depth === 0) {
-        stack.pop(); // close the ${ … } and return to the template
-      } else {
-        if (top.depth > 0) top.depth--;
-        out.push(ch);
-        top.prevType = "value";
-      }
-      i++;
-      continue;
-    }
-    if (isIdentStart(ch)) {
-      const startId = i;
-      i++;
-      while (i < n && isIdentChar(src[i]!)) i++;
-      const ident = src.slice(startId, i);
-      out.push(ident);
-      top.prevType = REGEX_PRECEDING_KEYWORDS.has(ident) ? "op" : "value";
-      continue;
-    }
-    if (ch >= "0" && ch <= "9") {
-      const startNum = i;
-      i++;
-      while (i < n && (isIdentChar(src[i]!) || src[i] === ".")) i++;
-      out.push(src.slice(startNum, i));
-      top.prevType = "value";
-      continue;
-    }
-    // `++` / `--` does not change expression position (see hasFreeCjsGlobal).
-    if ((ch === "+" && src[i + 1] === "+") || (ch === "-" && src[i + 1] === "-")) {
-      out.push(src.slice(i, i + 2));
-      i += 2;
-      continue;
-    }
-    out.push(ch);
-    if (ch === ")" || ch === "]") {
-      top.prevType = "value";
-    } else if (ch !== " " && ch !== "\t" && ch !== "\n" && ch !== "\r") {
-      top.prevType = "op";
-    }
-    i++;
+  let program;
+  try {
+    program = parseSync(configPath, source).program;
+  } catch {
+    return { top, nested };
   }
 
-  return out.join("");
+  // Index top-level variable declarations so a config assigned to a variable and
+  // exported later (`const config = {…}; export default config`) can be resolved.
+  const vars = new Map<string, Expression>();
+  for (const node of program.body) {
+    if (node.type !== "VariableDeclaration") continue;
+    for (const decl of node.declarations) {
+      if (decl.id.type === "Identifier" && decl.init) vars.set(decl.id.name, decl.init);
+    }
+  }
+
+  // Resolve an expression to the object literal it denotes, unwrapping variable
+  // refs, wrapper calls (`withMDX(config)`, `defineConfig({…})`), TS
+  // `as`/`satisfies`, and parentheses. Depth-bounded to guard against cycles.
+  function resolveObject(
+    node: Expression | SpreadElement | null | undefined,
+    depth = 0,
+  ): ObjectExpression | null {
+    if (!node || depth > 10) return null;
+    if (node.type === "ObjectExpression") return node;
+    if (node.type === "Identifier") return resolveObject(vars.get(node.name), depth + 1);
+    if (node.type === "CallExpression") {
+      // A wrapper like `withMDX(config)` / `defineConfig({…})` — find the first
+      // argument that resolves to an object.
+      for (const arg of node.arguments) {
+        const obj = resolveObject(arg, depth + 1);
+        if (obj) return obj;
+      }
+      return null;
+    }
+    if (
+      node.type === "TSAsExpression" ||
+      node.type === "TSSatisfiesExpression" ||
+      node.type === "ParenthesizedExpression"
+    ) {
+      return resolveObject(node.expression, depth + 1);
+    }
+    return null;
+  }
+
+  // Find the exported config object: `export default <expr>` or
+  // `module.exports = <expr>`.
+  let configObj: ObjectExpression | null = null;
+  for (const node of program.body) {
+    if (node.type === "ExportDefaultDeclaration") {
+      configObj = resolveObject(node.declaration as Expression);
+    } else if (
+      node.type === "ExpressionStatement" &&
+      node.expression.type === "AssignmentExpression"
+    ) {
+      const { left, right } = node.expression;
+      const isModuleExports =
+        left.type === "MemberExpression" &&
+        !left.computed &&
+        left.object.type === "Identifier" &&
+        left.object.name === "module" &&
+        left.property.type === "Identifier" &&
+        left.property.name === "exports";
+      if (isModuleExports) configObj = resolveObject(right);
+    }
+    if (configObj) break;
+  }
+
+  if (!configObj) return { top, nested };
+
+  for (const prop of configObj.properties) {
+    const name = propertyKeyName(prop);
+    if (!name) continue;
+    top.add(name);
+    // `prop` is a non-spread Property here (propertyKeyName returned a name).
+    const childObj = resolveObject((prop as ObjectProperty).value);
+    if (!childObj) continue;
+    const children = new Set<string>();
+    for (const childProp of childObj.properties) {
+      const childName = propertyKeyName(childProp);
+      if (childName) children.add(childName);
+    }
+    nested.set(name, children);
+  }
+
+  return { top, nested };
 }
 
 /**
@@ -894,12 +790,13 @@ export function analyzeConfig(root: string): CheckItem[] {
     ];
   }
 
-  // Strip comments and string values first so option detection only sees real
-  // code — a mention of an option in a comment or string value is not a usage.
-  const content = stripCommentsAndStrings(fs.readFileSync(configPath, "utf-8"));
+  // Parse the config to an AST and read the option keys off the exported config
+  // object. This is exact: a mention of an option name in a comment or string
+  // value is not a property key, so it is never reported.
+  const present = collectConfigKeys(configPath, fs.readFileSync(configPath, "utf-8"));
   const items: CheckItem[] = [];
 
-  // Check for known config options by searching for property names in the config file
+  // Known top-level options we report on when present in the config object.
   const configOptions = [
     "basePath",
     "trailingSlash",
@@ -918,33 +815,21 @@ export function analyzeConfig(root: string): CheckItem[] {
   ];
 
   for (const opt of configOptions) {
-    // Match the option only when it appears as an actual object property key,
-    // not anywhere in the file. Comments and string values are already removed
-    // by stripCommentsAndStrings, so this just guards against identifier
-    // substrings (e.g. `myWebpackHelper`). We accept `opt:`, method shorthand
-    // `opt(`, assignment `opt =`, and preserved quoted keys like `"opt":`.
-    const regex = new RegExp(String.raw`(?:^|[\s,{("'])${escapeRegExp(opt)}["']?\s*[:(=]`, "m");
-    if (regex.test(content)) {
-      const support = CONFIG_SUPPORT[opt];
-      if (support) {
-        items.push({ name: opt, status: support.status, detail: support.detail });
-      } else {
-        items.push({ name: opt, status: "unsupported", detail: "not recognized" });
-      }
+    if (!present.top.has(opt)) continue;
+    const support = CONFIG_SUPPORT[opt];
+    if (support) {
+      items.push({ name: opt, status: support.status, detail: support.detail });
+    } else {
+      items.push({ name: opt, status: "unsupported", detail: "not recognized" });
     }
   }
 
-  // Check for nested (dot-notation) options: the child must appear *inside* the
-  // parent block, not just anywhere in the file. Scoping to the parent block
-  // body avoids false positives like `i18n: {…}` + `images: { domains: [...] }`
-  // wrongly reporting `i18n.domains`.
+  // Nested (dot-notation) options: the child must be a key inside its parent
+  // object (e.g. `experimental.ppr`), as resolved from the parsed AST.
   for (const key of Object.keys(CONFIG_SUPPORT)) {
     if (!key.includes(".")) continue;
     const dot = key.indexOf(".");
-    const bodies = extractBlockBodies(content, key.slice(0, dot));
-    if (bodies.length === 0) continue;
-    const childRef = new RegExp(String.raw`\b${escapeRegExp(key.slice(dot + 1))}\b`);
-    if (bodies.some((body) => childRef.test(body))) {
+    if (present.nested.get(key.slice(0, dot))?.has(key.slice(dot + 1))) {
       items.push({ name: key, ...CONFIG_SUPPORT[key]! });
     }
   }
