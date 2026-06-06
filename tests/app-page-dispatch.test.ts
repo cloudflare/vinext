@@ -21,6 +21,11 @@ import {
   parseClientReuseManifestHeader,
   type ClientReuseManifestParseResult,
 } from "../packages/vinext/src/server/client-reuse-manifest.js";
+import {
+  buildRenderObservation,
+  buildRenderRequestApiObservations,
+  type RenderObservation,
+} from "../packages/vinext/src/server/cache-proof.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
@@ -85,8 +90,9 @@ function buildCachedAppPageValue(
   html: string,
   rscData?: ArrayBuffer,
   status?: number,
+  renderObservation?: RenderObservation,
 ): CachedAppPageValue {
-  return {
+  const value: CachedAppPageValue = {
     kind: "APP_PAGE",
     html,
     rscData,
@@ -94,6 +100,31 @@ function buildCachedAppPageValue(
     postponed: undefined,
     status,
   };
+  if (renderObservation) {
+    value.renderObservation = renderObservation;
+  }
+  return value;
+}
+
+function buildQueryInvariantRenderObservation(): RenderObservation {
+  return buildRenderObservation({
+    boundaryOutcome: { kind: "success" },
+    cacheability: "public",
+    cacheTags: [],
+    completeness: "complete",
+    dynamicFetches: [],
+    output: {
+      kind: "app-html",
+      renderEpoch: null,
+      rootBoundaryId: null,
+      routeId: "route:/posts/[slug]",
+    },
+    pathTags: [],
+    requestApis: buildRenderRequestApiObservations({
+      completeness: "complete",
+      observed: [],
+    }),
+  });
 }
 
 function createRoute(overrides: Partial<TestRoute> = {}): TestRoute {
@@ -335,6 +366,9 @@ describe("app page dispatch", () => {
   });
 
   it("serves cached production HTML instead of revalidating params or rendering", async () => {
+    const probePage = vi.fn(() => {
+      throw new Error("cache hit must not execute page code");
+    });
     const { options } = createDispatchOptions({
       async buildPageElement() {
         throw new Error("cache hit should not render the page");
@@ -344,6 +378,7 @@ describe("app page dispatch", () => {
       },
       isProduction: true,
       isrGet: vi.fn(async () => buildISRCacheEntry(buildCachedAppPageValue("<html>cached</html>"))),
+      probePage,
       revalidateSeconds: 60,
       route: createRoute({ isDynamic: true, params: ["slug"] }),
     });
@@ -351,11 +386,12 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(response.status).toBe(200);
+    expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toBe("<html>cached</html>");
   });
 
-  it("bypasses cached production HTML when the page probe observes searchParams access", async () => {
+  it("treats unproofed cached production HTML as a miss for query-bearing requests", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached empty query</html>")),
     );
@@ -373,7 +409,7 @@ describe("app page dispatch", () => {
 
     const response = await dispatchAppPage(options);
 
-    expect(isrGet).not.toHaveBeenCalled();
+    expect(isrGet).toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBeNull();
     expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
     await expect(response.text()).resolves.toBe("<html>page</html>");
@@ -381,16 +417,24 @@ describe("app page dispatch", () => {
 
   it("serves cached production HTML when searchParams is only mentioned but not accessed", async () => {
     const isrGet = vi.fn(async () =>
-      buildISRCacheEntry(buildCachedAppPageValue("<html>cached static page</html>")),
+      buildISRCacheEntry(
+        buildCachedAppPageValue(
+          "<html>cached static page</html>",
+          undefined,
+          undefined,
+          buildQueryInvariantRenderObservation(),
+        ),
+      ),
     );
+    const probePage = vi.fn(() => {
+      const unusedCommentOnlySearchParams = "searchParams";
+      expect(unusedCommentOnlySearchParams).toBe("searchParams");
+      return null;
+    });
     const { options } = createDispatchOptions({
       isProduction: true,
       isrGet,
-      probePage() {
-        const unusedCommentOnlySearchParams = "searchParams";
-        expect(unusedCommentOnlySearchParams).toBe("searchParams");
-        return null;
-      },
+      probePage,
       revalidateSeconds: 60,
       searchParams: new URLSearchParams("search=hello"),
     });
@@ -398,6 +442,7 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet).toHaveBeenCalled();
+    expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toBe("<html>cached static page</html>");
   });

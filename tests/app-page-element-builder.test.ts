@@ -456,7 +456,7 @@ describe("buildPageElements", () => {
     expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
   });
 
-  it("calls markDynamicUsage when render-tree searchParams is consumed", async () => {
+  it("keeps render-tree searchParams status inspection inert", async () => {
     function SearchPage(): React.ReactNode {
       return React.createElement("div", null, "Search");
     }
@@ -480,11 +480,15 @@ describe("buildPageElements", () => {
     if (!React.isValidElement<{ searchParams?: Promise<Record<string, unknown>> }>(pageElement)) {
       throw new Error("Expected page element");
     }
+    if (!pageElement.props.searchParams) {
+      throw new Error("Expected searchParams prop");
+    }
 
+    Reflect.get(pageElement.props.searchParams, "status");
     await pageElement.props.searchParams;
 
-    expect(markDynamicUsageMock).toHaveBeenCalled();
-    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
+    expect(markDynamicUsageMock).not.toHaveBeenCalled();
+    expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
   });
 
   it("does NOT call markDynamicUsage just because the request query has content", async () => {

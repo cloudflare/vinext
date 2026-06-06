@@ -15,7 +15,6 @@ import {
   getDraftModeCookieHeader,
   isDraftModeRequest,
   markDynamicUsage,
-  peekDynamicUsage,
   peekRenderRequestApiUsage,
   setHeadersContext,
 } from "vinext/shims/headers";
@@ -376,6 +375,10 @@ function shouldReadAppPageCache(options: {
   );
 }
 
+function hasSearchParams(searchParams: URLSearchParams | null | undefined): boolean {
+  return searchParams !== null && searchParams !== undefined && searchParams.size > 0;
+}
+
 function buildAppPageTags(
   cleanPathname: string,
   extraTags: string[],
@@ -510,28 +513,21 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     });
   }
 
-  const pageCacheReadEligibleBeforeProbe = shouldReadAppPageCache({
-    isDraftMode,
-    isForceDynamic,
-    isProgressiveActionRender: options.isProgressiveActionRender === true,
-    isProduction: options.isProduction,
-    isRscRequest: options.isRscRequest,
-    revalidateSeconds: currentRevalidateSeconds,
-    scriptNonce: options.scriptNonce,
-  });
-  let pageProbeUsedDynamicApi = false;
-  if (pageCacheReadEligibleBeforeProbe && !isForceStatic) {
-    const earlyPageProbeResponse = await probeAppPageForCacheEligibility(options);
-    if (earlyPageProbeResponse) {
-      return earlyPageProbeResponse;
-    }
-    pageProbeUsedDynamicApi = peekDynamicUsage();
-  }
-
-  if (pageCacheReadEligibleBeforeProbe && !pageProbeUsedDynamicApi) {
+  if (
+    shouldReadAppPageCache({
+      isDraftMode,
+      isForceDynamic,
+      isProgressiveActionRender: options.isProgressiveActionRender === true,
+      isProduction: options.isProduction,
+      isRscRequest: options.isRscRequest,
+      revalidateSeconds: currentRevalidateSeconds,
+      scriptNonce: options.scriptNonce,
+    })
+  ) {
     const cachedPageResponse = await readAppPageCacheResponse({
       cleanPathname: options.cleanPathname,
       clearRequestContext: options.clearRequestContext,
+      hasRequestSearchParams: !isForceStatic && hasSearchParams(options.searchParams),
       isEdgeRuntime: options.isEdgeRuntime,
       isRscRequest: options.isRscRequest,
       isrDebug: options.isrDebug,
@@ -923,23 +919,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       getRequestExecutionContext()?.waitUntil(cachePromise);
     },
   });
-}
-
-async function probeAppPageForCacheEligibility<TRoute extends AppPageDispatchRoute>(
-  options: DispatchAppPageOptions<TRoute>,
-): Promise<Response | null> {
-  try {
-    await options.runWithSuppressedHookWarning(async () => {
-      await Promise.resolve(options.probePage());
-    });
-    return null;
-  } catch (probeError) {
-    const specialError = resolveAppPageSpecialError(probeError);
-    if (specialError) {
-      return renderPageSpecialError(options, specialError);
-    }
-    return null;
-  }
 }
 
 /**

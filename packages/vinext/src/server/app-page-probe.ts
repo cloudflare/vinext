@@ -1,5 +1,6 @@
 import { Fragment, isValidElement, type ReactElement, type ReactNode } from "react";
 import { markDynamicUsage, markRenderRequestApiUsage } from "vinext/shims/headers";
+import { isNextRouterError } from "vinext/shims/navigation";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { collectAppPageSearchParams } from "./app-page-head.js";
 import {
@@ -216,6 +217,17 @@ export async function probeReactServerSubtree(
   await visit(node, 0);
 }
 
+async function probeReactServerSubtreeForDynamicUsage(node: unknown): Promise<void> {
+  try {
+    await probeReactServerSubtree(node);
+  } catch (error) {
+    if (isNextRouterError(error)) {
+      return;
+    }
+    throw error;
+  }
+}
+
 /**
  * Build a probePage() invocation for the App Router request lifecycle.
  *
@@ -248,6 +260,7 @@ export function probeAppPage(options: {
       markDynamicUsage();
       markRenderRequestApiUsage("searchParams");
     },
+    observeReactPromiseStatus: true,
   });
   const result = (pageComponent as (props: Record<string, unknown>) => unknown)({
     params: asyncRouteParams,
@@ -255,12 +268,12 @@ export function probeAppPage(options: {
   });
   if (isPromiseLike(result)) {
     return result.then(async (resolved) => {
-      await probeReactServerSubtree(resolved);
+      await probeReactServerSubtreeForDynamicUsage(resolved);
       return resolved;
     });
   }
   if (isValidElement(result) || Array.isArray(result)) {
-    return probeReactServerSubtree(result).then(() => result);
+    return probeReactServerSubtreeForDynamicUsage(result).then(() => result);
   }
   return result;
 }
