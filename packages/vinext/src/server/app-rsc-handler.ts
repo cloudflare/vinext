@@ -37,6 +37,7 @@ import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
 import { handleAppPrerenderEndpoint } from "./app-prerender-endpoints.js";
 import {
   createRscRedirectLocation,
+  hasRscCacheBustingSearchParam,
   resolveInvalidRscCacheBustingRequest,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
@@ -342,15 +343,16 @@ function applyConfigHeadersToMiddlewareRedirect(
 
 function requestWithoutRscCacheBustingSearchParam(request: Request): Request {
   const url = new URL(request.url);
-  // Use `stripRscCacheBustingSearchParam` as the single source of truth for
-  // detecting the param too: comparing the search string before/after the
-  // strip keeps the guard and the stripper using identical, encoding-aware
-  // matching (`URLSearchParams.has` decodes keys differently for encoded edge
-  // cases like `%5Frsc`), so they can never diverge.
-  const originalSearch = url.search;
-  stripRscCacheBustingSearchParam(url);
-  if (url.search === originalSearch) return request;
+  // `hasRscCacheBustingSearchParam` and `stripRscCacheBustingSearchParam` share
+  // the same encoding-aware matcher (`isRscCacheBustingSearchPair`), so the
+  // guard and the strip can never disagree on which pairs count as `_rsc`
+  // (including encoded-key edge cases like `%5Frsc`). Gating on the matcher
+  // rather than a before/after search comparison also avoids spuriously
+  // rebuilding/normalizing requests whose only difference is degenerate empty
+  // query pairs (e.g. `?a=1&&b=2`).
+  if (!hasRscCacheBustingSearchParam(url)) return request;
 
+  stripRscCacheBustingSearchParam(url);
   const source = request.body ? request.clone() : request;
   return new Request(url.toString(), source);
 }
