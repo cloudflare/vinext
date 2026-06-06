@@ -303,14 +303,26 @@ type AppPageProbeIntercept =
  * Entry Modules Should Stay Thin"). Returns a list of resolved promises so the
  * caller can `Promise.all` them.
  *
- * Only the page components that actually render for this request are probed.
- * When an interception matches, it replaces the page of the slot named by
- * `intercept.slotKey` (the element builder sets `overrides[slotKey].pageModule`
- * to the interception page, which wins over `slot.page` in
- * app-page-route-wiring.tsx). We therefore probe the interception page in place
- * of that slot's own page rather than probing both — probing the overridden
- * slot page would mark an otherwise-static request dynamic for a component that
- * never renders.
+ * The fan-out is scoped to the page components that render for this request:
+ *
+ * - **Interception override:** when an interception matches it replaces the
+ *   page of the slot named by `intercept.slotKey` (the element builder sets
+ *   `overrides[slotKey].pageModule` to the interception page, which wins over
+ *   `slot.page` in `app-page-route-wiring.tsx`). We probe the interception page
+ *   in place of that slot's own page rather than probing both — probing the
+ *   overridden slot page would mark an otherwise-static request dynamic for a
+ *   component that never renders.
+ * - **Non-overridden slots:** `slot.page?.default` is exactly what renders.
+ *   `app-page-route-wiring.tsx` resolves a slot to `overrideOrPageComponent ??
+ *   defaultComponent`, so whenever a slot has a `page.tsx` that page renders.
+ *   When a slot has only a `default.tsx` (including the soft-nav case at
+ *   `app-page-route-wiring.tsx:741` that skips an already-mounted slot), there
+ *   is no `slot.page?.default`, so `probeAppPage` short-circuits to `null` and
+ *   probes nothing — a no-op, not an over-bail.
+ *
+ * A `default.tsx` that itself awaits `searchParams` is not probed here, but the
+ * real render still observes that access and skips the query-invariant cache
+ * write (the same loading.tsx backstop), so this cannot under-bail.
  */
 export function buildAppPageProbes(options: {
   route: AppPageProbeRoute;
