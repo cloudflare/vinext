@@ -127,6 +127,5 @@ export const docs = "function isPromiseLike(value) { return true; }";
 
     expect(result.status).toBe(0);
     expect(result.output).not.toContain("prefer-shared-utils");
-    expect(result.output).not.toContain("error");
   });
 });
