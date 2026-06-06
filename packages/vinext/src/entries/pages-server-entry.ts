@@ -229,6 +229,7 @@ import { resetSSRHead, getSSRHeadHTML, setDocumentInitialHead } from "next/head"
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext, wrapWithRouterContext } from "next/router";
 import { _runWithCacheState, configureMemoryCacheHandler as __configureMemoryCacheHandler } from "next/cache";
+import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import { runWithPrivateCache } from "vinext/cache-runtime";
 import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
@@ -277,6 +278,10 @@ const __hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
 
+// Default to the in-memory data cache; a configured cache.data/cache.cdn adapter
+// overrides it on the first request via registerConfiguredCacheAdapters (called
+// from renderPage/handleApiRoute below, and with env from the worker entry on
+// Cloudflare). The registration self-guards, so the first call wins.
 __configureMemoryCacheHandler({ cacheMaxMemorySize: vinextConfig.cacheMaxMemorySize });
 
 // Path to the user's pages/_app file (or null). Used to look up the
@@ -373,6 +378,15 @@ const _errorPageRoute = ErrorPageModule
       filePath: ${errorAssetPathJson},
     }
   : null;
+
+function __findPagesNotFoundRoute() {
+  for (var __i = 0; __i < pageRoutes.length; __i++) {
+    if (pageRoutes[__i].pattern === "/404") {
+      return pageRoutes[__i];
+    }
+  }
+  return _errorPageRoute;
+}
 
 const apiRoutes = [
 ${apiRouteEntries.join(",\n")}
@@ -575,6 +589,7 @@ function resolveClientModuleUrl(manifest, moduleId) {
 }
 
 export async function renderPage(request, url, manifest, ctx, middlewareHeaders, options) {
+  __registerConfiguredCacheAdapters();
   if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders, options));
   return _renderPage(request, url, manifest, middlewareHeaders, options);
 }
@@ -604,6 +619,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
   // returns the plain "Internal Server Error" text response instead of trying
   // to render an error page again. Fixes #1458.
   const isInternalErrorRender = !!(options && options.__isInternalErrorRender);
+  const err = options && options.err;
   const localeInfo = i18nConfig
     ? resolvePagesI18nRequest(
         url,
@@ -649,14 +665,9 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     if (!renderErrorPageOnMiss) {
       return __buildDefaultPagesNotFoundResponse();
     }
-    const notFoundMatch = matchRoute("/404", pageRoutes);
-    // matchRoute may match a catch-all (e.g. [...slug]); only use the explicit pages/404 route.
-    if (notFoundMatch && notFoundMatch.route.pattern === "/404") {
-      match = notFoundMatch;
-      renderStatusCodeOverride = 404;
-      renderAsPath = routeUrl;
-    } else if (_errorPageRoute) {
-      match = { route: _errorPageRoute, params: {} };
+    const notFoundRoute = __findPagesNotFoundRoute();
+    if (notFoundRoute) {
+      match = { route: notFoundRoute, params: {} };
       renderStatusCodeOverride = 404;
       renderAsPath = routeUrl;
     } else {
@@ -741,6 +752,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       } catch (e) { /* font preloads not available */ }
       const pageDataResult = await __resolvePagesPageData({
         isDataReq,
+        err,
         applyRequestContexts() {
           if (typeof setSSRContext === "function") {
             setSSRContext({
@@ -794,6 +806,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         pageModule,
         params,
         query,
+        asPath: renderAsPath || routeUrl,
         renderIsrPassToStringAsync,
         route: {
           isDynamic: route.isDynamic,
@@ -820,6 +833,18 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
           hasMiddleware: __hasMiddleware,
         },
       });
+      if (pageDataResult.kind === "notFound") {
+        const notFoundRoute = __findPagesNotFoundRoute();
+        if (notFoundRoute && routePattern !== "/404" && routePattern !== "/_error") {
+          return await _renderPage(request, url, manifest, middlewareHeaders, {
+            statusCode: 404,
+            asPath: renderAsPath || routeUrl,
+            renderErrorPageOnMiss: false,
+            __forcedRoute: notFoundRoute,
+          });
+        }
+        return __buildDefaultPagesNotFoundResponse();
+      }
       if (pageDataResult.kind === "response") {
         return pageDataResult.response;
       }
@@ -1026,6 +1051,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
               renderErrorPageOnMiss: false,
               __isInternalErrorRender: true,
               __forcedRoute: errorRoute,
+              err: e instanceof Error ? e : new Error(String(e)),
             });
           } catch (errorPageErr) {
             console.error("[vinext] Error page render failed:", errorPageErr);
@@ -1038,6 +1064,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
 }
 
 export async function handleApiRoute(request, url, ctx) {
+  __registerConfiguredCacheAdapters();
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({
     ctx,

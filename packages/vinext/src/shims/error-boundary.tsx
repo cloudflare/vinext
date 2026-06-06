@@ -4,6 +4,7 @@ import React from "react";
 // Import the local shim, not the public next/navigation alias. The built
 // package may execute this file before the plugin's resolveId hook is active.
 import { decodeRedirectError, isRedirectError, usePathname, useRouter } from "./navigation.js";
+import { VINEXT_DEV_ERROR_RECOVERY_EVENT } from "../utils/dev-error-recovery-event.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 
 export type ErrorBoundaryProps = {
@@ -64,6 +65,16 @@ function shouldResetBoundary(
   }
 
   return nextResetState.previousPathname !== previousResetState.previousPathname;
+}
+
+function addDevErrorRecoveryListener(listener: () => void): void {
+  if (typeof window === "undefined") return;
+  window.addEventListener(VINEXT_DEV_ERROR_RECOVERY_EVENT, listener);
+}
+
+function removeDevErrorRecoveryListener(listener: () => void): void {
+  if (typeof window === "undefined") return;
+  window.removeEventListener(VINEXT_DEV_ERROR_RECOVERY_EVENT, listener);
 }
 
 function HandleRedirect({
@@ -196,6 +207,22 @@ export class ErrorBoundaryInner extends React.Component<
       throw error;
     }
     return { error: { thrownValue: error } };
+  }
+
+  handleDevErrorRecovery = () => {
+    if (!this.state.error) return;
+    this.setState({
+      error: null,
+      ...readBoundaryResetState(this.props),
+    });
+  };
+
+  componentDidMount(): void {
+    addDevErrorRecoveryListener(this.handleDevErrorRecovery);
+  }
+
+  componentWillUnmount(): void {
+    removeDevErrorRecoveryListener(this.handleDevErrorRecovery);
   }
 
   reset = () => {
@@ -510,6 +537,22 @@ export class DevRecoveryBoundary extends React.Component<
       throw error;
     }
     return { error: { thrownValue: error } };
+  }
+
+  handleDevErrorRecovery = () => {
+    if (!this.state.error) return;
+    this.setState({
+      error: null,
+      previousResetKey: this.props.resetKey,
+    });
+  };
+
+  componentDidMount(): void {
+    addDevErrorRecoveryListener(this.handleDevErrorRecovery);
+  }
+
+  componentWillUnmount(): void {
+    removeDevErrorRecoveryListener(this.handleDevErrorRecovery);
   }
 
   componentDidCatch(): void {

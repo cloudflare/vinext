@@ -261,6 +261,23 @@ function getLinkPrefetchRouterMode(): LinkPrefetchRouterMode {
   return hasAppNavigationRuntime() ? "app" : "pages";
 }
 
+function resolveMatchedAutoAppRoutePrefetch(route: VinextLinkPrefetchRoute): {
+  cacheForNavigation: boolean;
+  prefetchShellFirst: boolean;
+  shouldPrefetch: boolean;
+} {
+  const hasLoadingShell = route.isDynamic && route.canPrefetchLoadingShell;
+  return {
+    // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
+    // Until that route fact exists, dynamic routes without loading-shell
+    // fallbacks are treated as exact-URL full prefetches. The prefetch cache is
+    // keyed by the concrete RSC URL, so this cannot reuse data across params.
+    cacheForNavigation: !hasLoadingShell,
+    prefetchShellFirst: !route.isDynamic,
+    shouldPrefetch: true,
+  };
+}
+
 export function canAutoPrefetchFullAppRoute(href: string): boolean {
   if (typeof window === "undefined") return false;
 
@@ -273,36 +290,34 @@ export function canAutoPrefetchFullAppRoute(href: string): boolean {
   const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
   if (!match) return false;
 
-  return !match.route.isDynamic;
+  return resolveMatchedAutoAppRoutePrefetch(match.route).cacheForNavigation;
 }
 
 export function resolveAutoAppRoutePrefetch(href: string): {
   cacheForNavigation: boolean;
+  prefetchShellFirst: boolean;
   shouldPrefetch: boolean;
 } {
   if (typeof window === "undefined") {
-    return { cacheForNavigation: false, shouldPrefetch: false };
+    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
   }
 
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
   if (!routes) {
-    return { cacheForNavigation: false, shouldPrefetch: false };
+    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
   }
 
   const routeHref = toSameOriginRouteHref(href);
   if (routeHref === null) {
-    return { cacheForNavigation: false, shouldPrefetch: false };
+    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
   }
 
   const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
   if (!match) {
-    return { cacheForNavigation: false, shouldPrefetch: false };
+    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
   }
 
-  return {
-    cacheForNavigation: !match.route.isDynamic,
-    shouldPrefetch: !match.route.isDynamic || match.route.canPrefetchLoadingShell,
-  };
+  return resolveMatchedAutoAppRoutePrefetch(match.route);
 }
 
 // ---------------------------------------------------------------------------
@@ -352,7 +367,7 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         const autoPrefetch =
           mode === "auto"
             ? resolveAutoAppRoutePrefetch(prefetchHref)
-            : { cacheForNavigation: true, shouldPrefetch: true };
+            : { cacheForNavigation: true, prefetchShellFirst: true, shouldPrefetch: true };
         if (!autoPrefetch.shouldPrefetch) return;
 
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
@@ -398,7 +413,7 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         // unified route payload, so gate that payload behind a loading-shell
         // request to preserve the same pending/dedup observable contract.
         const fetchPromise =
-          __prefetchInlining && autoPrefetch.cacheForNavigation
+          __prefetchInlining && autoPrefetch.cacheForNavigation && autoPrefetch.prefetchShellFirst
             ? (async () => {
                 const shellHeaders = createRscRequestHeaders({
                   interceptionContext,

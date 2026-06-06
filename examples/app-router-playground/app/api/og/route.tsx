@@ -1,12 +1,9 @@
+import { ImageResponse } from "next/og";
 import type { NextRequest } from "next/server";
 import type { ReactElement } from "react";
 
 export async function GET(req: NextRequest): Promise<Response> {
   try {
-    // Dynamic import to avoid @vercel/og's eager font loading at module init
-    // which breaks in Cloudflare Workers due to import.meta.url issues
-    const { ImageResponse } = await import("next/og");
-
     const { searchParams } = new URL(req.url);
     const isLight = req.headers.get("Sec-CH-Prefers-Color-Scheme") === "light";
 

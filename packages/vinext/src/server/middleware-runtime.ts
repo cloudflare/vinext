@@ -289,6 +289,35 @@ export async function executeMiddleware(
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
       const relativeLocation = relativizeLocation(location, options.request.url);
 
+      // Normalize trailing slash on middleware redirect Locations that came
+      // from a plain `new URL(...)` rather than `request.nextUrl`. NextURL
+      // already applies the policy at stringify time, but plain URLs bypass it.
+      let normalizedLocation = relativeLocation;
+      if (options.trailingSlash !== undefined) {
+        try {
+          const loc = new URL(relativeLocation, options.request.url);
+          if (loc.origin === new URL(options.request.url).origin) {
+            // Use the same plain add/strip rule as NextURL._applyTrailingSlash /
+            // Next.js's formatNextPathnameInfo — no exemptions for /api, file
+            // extensions, etc. Only root is exempt.
+            const p = loc.pathname;
+            let normalized: string | null = null;
+            if (p !== "" && p !== "/") {
+              if (options.trailingSlash) {
+                normalized = p.endsWith("/") ? null : p + "/";
+              } else {
+                normalized = p.endsWith("/") ? p.slice(0, -1) : null;
+              }
+            }
+            if (normalized !== null) {
+              normalizedLocation = normalized + loc.search + loc.hash;
+            }
+          }
+        } catch {
+          // malformed URL — leave as-is
+        }
+      }
+
       // For `_next/data` requests, translate the HTTP redirect into the
       // `x-nextjs-redirect` soft-redirect protocol so the client router can
       // perform the navigation without tripping CORS on cross-origin targets.
@@ -298,7 +327,7 @@ export async function executeMiddleware(
       if (options.isDataRequest) {
         return {
           continue: false,
-          response: dataRedirectResponse(relativeLocation, response),
+          response: dataRedirectResponse(normalizedLocation, response),
           waitUntilPromises,
         };
       }
@@ -313,7 +342,7 @@ export async function executeMiddleware(
       // forward `result.response` (rather than `result.redirectUrl`) also send
       // the correct header.
       const relativizedResponseHeaders = new Headers(response.headers);
-      relativizedResponseHeaders.set("Location", relativeLocation);
+      relativizedResponseHeaders.set("Location", normalizedLocation);
       const relativizedResponse = new Response(response.body, {
         status: response.status,
         statusText: response.statusText,
@@ -321,7 +350,7 @@ export async function executeMiddleware(
       });
       return {
         continue: false,
-        redirectUrl: relativeLocation,
+        redirectUrl: normalizedLocation,
         redirectStatus: response.status,
         response: stripMiddlewareHeadersFromResponse(relativizedResponse),
         responseHeaders,

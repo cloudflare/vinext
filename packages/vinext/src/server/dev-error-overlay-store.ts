@@ -2,14 +2,37 @@
 // overlay React component (dev-error-overlay.tsx) can subscribe via
 // useSyncExternalStore without circular imports.
 
-export type Source = "uncaught" | "caught" | "window-error" | "unhandledrejection";
+export type Source =
+  | "server"
+  | "vite"
+  | "uncaught"
+  | "caught"
+  | "window-error"
+  | "unhandledrejection";
 
 export type ReportedError = {
   id: number;
   source: Source;
   message: string;
   stack: string | undefined;
+  ignoredStackFrames: boolean[] | undefined;
+  projectRoot: string | undefined;
+  codeFrame: OverlayCodeFrame | undefined;
   componentStack: string | undefined;
+};
+
+export type OverlayCodeFrame = {
+  file: string;
+  line: number;
+  column: number;
+  methodName?: string;
+  lines: OverlayCodeFrameLine[];
+};
+
+export type OverlayCodeFrameLine = {
+  line: number;
+  text: string;
+  isErrorLine: boolean;
 };
 
 export type OverlayState = {
@@ -59,16 +82,25 @@ export function reportToOverlay(error: Omit<ReportedError, "id">): number {
   return id;
 }
 
-export function updateOverlayErrorStack(id: number, stack: string | undefined): void {
+export function updateOverlayErrorStack(
+  id: number,
+  stack: string | undefined,
+  ignoredStackFrames?: boolean[],
+  codeFrame?: OverlayCodeFrame,
+  projectRoot?: string,
+): void {
   if (!snapshot.errors.some((error) => error.id === id)) return;
   snapshot = {
     ...snapshot,
-    errors: snapshot.errors.map((error) => (error.id === id ? { ...error, stack } : error)),
+    errors: snapshot.errors.map((error) =>
+      error.id === id ? { ...error, stack, ignoredStackFrames, codeFrame, projectRoot } : error,
+    ),
   };
   emit();
 }
 
 export function dismissOverlay(): void {
+  if (snapshot.errors.length === 0 && snapshot.index === 0 && !snapshot.minimized) return;
   snapshot = { errors: [], index: 0, minimized: false };
   emit();
 }

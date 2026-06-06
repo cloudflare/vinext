@@ -241,6 +241,7 @@ function createAppPageBoundaryRscPayload<TModule extends AppPageModule>(
 async function renderAppPageBoundaryElementResponse<TModule extends AppPageModule>(
   options: AppPageBoundaryRenderCommonOptions<TModule> & {
     element: ReactNode;
+    initialDevServerError?: unknown;
     layoutModules: readonly (TModule | null | undefined)[];
     route?: AppPageBoundaryRoute<TModule> | null;
     routePattern?: string;
@@ -274,6 +275,7 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
         scriptNonce: options.scriptNonce,
         ssrHandler,
         status: responseStatus,
+        initialDevServerError: options.initialDevServerError,
       });
     },
     createRscOnErrorHandler() {
@@ -431,6 +433,7 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
   return renderAppPageBoundaryElementResponse({
     ...options,
     element,
+    initialDevServerError: rawError,
     layoutModules,
     route: options.route,
     routePattern: options.route?.pattern,

@@ -7,6 +7,7 @@ import {
   analyzeConfig,
   checkLibraries,
   checkConventions,
+  hasFreeCjsGlobal,
   runCheck,
   formatReport,
   type CheckResult,
@@ -845,6 +846,71 @@ describe("checkConventions", () => {
     expect(postcss).toBeUndefined();
   });
 
+  it("detects multiline PostCSS string-form plugins", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile(
+      "postcss.config.mjs",
+      `export default {\n  plugins: [\n    "@tailwindcss/postcss",\n    "autoprefixer",\n  ],\n};`,
+    );
+
+    const items = checkConventions(tmpDir);
+    const postcss = items.find((i) => i.name.includes("PostCSS"));
+    expect(postcss?.status).toBe("partial");
+  });
+
+  it("does not flag require()-form PostCSS plugins", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile(
+      "postcss.config.cjs",
+      `module.exports = {\n  plugins: [require("@tailwindcss/postcss"), require("autoprefixer")]\n};`,
+    );
+
+    const items = checkConventions(tmpDir);
+    const postcss = items.find((i) => i.name.includes("PostCSS"));
+    expect(postcss).toBeUndefined();
+  });
+
+  // Regression: a very large config whose `plugins: [` array is never closed used to
+  // send the old `/plugins\s*:\s*\[[\s\S]*?(['"]…['"])[\s\S]*?\]/` regex into quadratic
+  // backtracking, hanging the process / overflowing the regex stack. The anchored
+  // replacement runs in linear time, so this must complete near-instantly.
+  it("handles a huge unterminated PostCSS plugins array without hanging", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    // ~1.2MB of quoted entries inside an array that is never closed with `]`.
+    const huge = `export default {\n  plugins: [\n` + `    "plugin-x",\n`.repeat(200_000);
+    writeFile("postcss.config.mjs", huge);
+
+    const start = Date.now();
+    const items = checkConventions(tmpDir);
+    const elapsed = Date.now() - start;
+
+    // The first element is a bare string, so it is still correctly flagged...
+    const postcss = items.find((i) => i.name.includes("PostCSS"));
+    expect(postcss?.status).toBe("partial");
+    // ...and crucially it returns quickly instead of backtracking for minutes.
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  // Regression: the catastrophic case for the old regex — a large array with quoted
+  // tokens but no closing `]`, where the trailing `[\s\S]*?\]` forced repeated full
+  // re-scans. The anchored regex resolves this in a single linear pass.
+  it("handles a huge unterminated array with no leading string quickly", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    // No leading quote after `[` (require-style head) then a huge unterminated tail.
+    const huge =
+      `export default {\n  plugins: [\n    require("a"),\n` + `    require("x"),\n`.repeat(200_000);
+    writeFile("postcss.config.mjs", huge);
+
+    const start = Date.now();
+    const items = checkConventions(tmpDir);
+    const elapsed = Date.now() - start;
+
+    // require()-style head → not flagged as string-form.
+    const postcss = items.find((i) => i.name.includes("PostCSS"));
+    expect(postcss).toBeUndefined();
+    expect(elapsed).toBeLessThan(2000);
+  });
+
   it("detects __dirname usage in server files", () => {
     writeFile("lib/db.ts", `import path from "path";\nconst dir = path.join(__dirname, "data");`);
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
@@ -949,6 +1015,112 @@ describe("checkConventions", () => {
     expect(cjs?.files).toHaveLength(2);
     expect(cjs?.files).toContain("lib/a.ts");
     expect(cjs?.files).toContain("lib/b.ts");
+  });
+});
+
+// ── hasFreeCjsGlobal ─────────────────────────────────────────────────────────
+
+describe("hasFreeCjsGlobal", () => {
+  it("detects free __dirname / __filename in code", () => {
+    expect(hasFreeCjsGlobal(`const d = __dirname;`)).toBe(true);
+    expect(hasFreeCjsGlobal(`const f = __filename;`)).toBe(true);
+    expect(hasFreeCjsGlobal(`path.join(__dirname, "data")`)).toBe(true);
+  });
+
+  it("ignores occurrences inside strings, comments and plain templates", () => {
+    expect(hasFreeCjsGlobal(`const m = "use __dirname instead";`)).toBe(false);
+    expect(hasFreeCjsGlobal(`const m = 'use __dirname instead';`)).toBe(false);
+    expect(hasFreeCjsGlobal(`// previously used __dirname here`)).toBe(false);
+    expect(hasFreeCjsGlobal(`/* block __dirname comment */`)).toBe(false);
+    expect(hasFreeCjsGlobal("const m = `use __dirname instead`;")).toBe(false);
+  });
+
+  it("detects __dirname inside a template expression", () => {
+    expect(hasFreeCjsGlobal("const dir = `${__dirname}/views`;")).toBe(true);
+    // nested template inside the expression, real use deeper in
+    expect(hasFreeCjsGlobal("const x = `a${ `b${__filename}c` }d`;")).toBe(true);
+    // __dirname only appears in the inner plain-template text → not a free use
+    expect(hasFreeCjsGlobal("const x = `a${ `__dirname` }d`;")).toBe(false);
+  });
+
+  it("does not match identifiers that merely contain the substring", () => {
+    expect(hasFreeCjsGlobal(`const my__dirname = 1;`)).toBe(false);
+    expect(hasFreeCjsGlobal(`const __dirnameSuffix = 1;`)).toBe(false);
+  });
+
+  it("does not let a regex literal hide a later __dirname", () => {
+    // A stray quote/backtick inside a regex literal must not hijack string/template
+    // state and swallow real code that follows it.
+    expect(hasFreeCjsGlobal(`const r = /'/; const d = __dirname;`)).toBe(true);
+    expect(hasFreeCjsGlobal("const r = /`/;\nconst d = __dirname;")).toBe(true);
+    expect(hasFreeCjsGlobal("const r = /['\"`]/; const d = __filename;")).toBe(true);
+    // `/` after a `return` keyword is a regex; the `__dirname` after still counts.
+    expect(hasFreeCjsGlobal(`function f() { return /'/; }\nconst d = __dirname;`)).toBe(true);
+  });
+
+  it("does not treat division as a regex literal", () => {
+    // `/` after a value is division, not a regex — the second operand still scans.
+    expect(hasFreeCjsGlobal(`const x = a / b; const d = __dirname;`)).toBe(true);
+    expect(hasFreeCjsGlobal(`const x = total / __dirname.length;`)).toBe(true);
+  });
+
+  it("ignores __dirname inside a regex literal", () => {
+    expect(hasFreeCjsGlobal(`const r = /__dirname/; const x = 1;`)).toBe(false);
+  });
+
+  it("does not misread division after } or postfix ++/-- as a regex literal", () => {
+    // Division after a postfix `++`/`--` or a `}` must not be parsed as a regex
+    // literal (which would swallow the rest of the line and hide the __dirname).
+    expect(hasFreeCjsGlobal("i++ / 2; const d = __dirname;")).toBe(true);
+    expect(hasFreeCjsGlobal("i-- / 2; const d = __dirname;")).toBe(true);
+    expect(hasFreeCjsGlobal("const x = {a:1} / 2; const d = __dirname;")).toBe(true);
+    expect(hasFreeCjsGlobal("i++ / __dirname / b; z;")).toBe(true);
+    expect(hasFreeCjsGlobal("const half = list.pop() ? a-- / 2 : 0; const root = __dirname;")).toBe(
+      true,
+    );
+  });
+
+  it("still parses a real regex after a prefix ++ or keyword", () => {
+    // Prefix `++i` keeps operator position; the regex that follows is still a regex.
+    expect(hasFreeCjsGlobal("if (++i) { return /'/; }\nconst d = __dirname;")).toBe(true);
+  });
+
+  // Known limitation (documented on hasFreeCjsGlobal): distinguishing a value-position
+  // regex literal from division after `}` needs a real parser. We bias to division, so
+  // a statement-start regex after a block `}` whose body has an unpaired quote can mask
+  // a same-line __dirname. Accepted for an advisory check; pinned here so the gap is
+  // explicit. The multi-line variant is unaffected (string scanning stops at \n).
+  it("does not detect a __dirname hidden by a value-position regex on the same line", () => {
+    expect(hasFreeCjsGlobal("function f(){} /'/.test(x); const d = __dirname;")).toBe(false);
+  });
+
+  it("still detects __dirname on a later line after a value-position regex", () => {
+    expect(hasFreeCjsGlobal("function f(){} /'/.test(x);\nconst d = __dirname;")).toBe(true);
+  });
+
+  // Regression: the old alternation regex's `(?:[^"\\]|\\.)*` string-body loop
+  // overflowed V8's regex stack ("Maximum call stack size exceeded") on very large
+  // files. These inputs reproduce that; the scanner must return in linear time.
+  it("handles a multi-megabyte unterminated string literal without overflowing", () => {
+    const content = `const s = "` + "a".repeat(20_000_000); // ~20MB, no closing quote
+    const start = Date.now();
+    expect(hasFreeCjsGlobal(content)).toBe(false);
+    expect(Date.now() - start).toBeLessThan(2000);
+  });
+
+  it("handles an escape-heavy unterminated string without overflowing", () => {
+    // Unrolling the regex did not help this shape — it still overflowed. The scanner does not.
+    const content = `const s = "` + 'a\\"'.repeat(10_000_000); // ~30MB of escaped quotes
+    const start = Date.now();
+    expect(hasFreeCjsGlobal(content)).toBe(false);
+    expect(Date.now() - start).toBeLessThan(3000);
+  });
+
+  it("still finds a real __dirname after a huge benign string", () => {
+    const content = `const s = "${"x".repeat(5_000_000)}";\nconst d = __dirname;`;
+    const start = Date.now();
+    expect(hasFreeCjsGlobal(content)).toBe(true);
+    expect(Date.now() - start).toBeLessThan(2000);
   });
 });
 

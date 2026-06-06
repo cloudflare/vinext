@@ -922,4 +922,39 @@ describe("Pages Router entry template", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("installs the dev error overlay before loading Pages Router modules", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-overlay-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+      );
+
+      const overlayImportIndex = code.indexOf('await import("vinext/dev-error-overlay")');
+      const pageLoadIndex = code.indexOf("const pageModule = await loader()");
+      const hydrateRootIndex = code.indexOf("hydrateRoot(container, element, hydrateRootOptions)");
+
+      expect(overlayImportIndex).toBeGreaterThanOrEqual(0);
+      expect(pageLoadIndex).toBeGreaterThanOrEqual(0);
+      expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+      expect(code).toContain("overlay.installDevErrorOverlay()");
+      expect(code).toContain("overlay.installViteHmrErrorHandler(import.meta.hot)");
+      expect(code).toContain("overlay.reportInitialDevServerErrors()");
+      expect(code).toContain("onCaughtError: overlay.devOnCaughtError");
+      expect(code).toContain("onUncaughtError: overlay.devOnUncaughtError");
+      expect(overlayImportIndex).toBeLessThan(pageLoadIndex);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

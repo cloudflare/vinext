@@ -29,9 +29,24 @@ import {
   removeStylesheetLinksCoveredByInlineCss,
 } from "../packages/vinext/src/server/app-inline-css-client.js";
 import {
+  DEV_ERROR_OVERLAY_HOST_ID,
+  DEV_ERROR_OVERLAY_MOUNT_ID,
+  createDevErrorOverlayMountNode,
+  createViteOpenInEditorUrl,
   devOnCaughtError,
   devOnUncaughtError,
+  formatErrorInfoForClipboard,
+  formatOverlayDisplayFile,
+  formatViteOpenInEditorFile,
+  installReactRefreshErrorRecovery,
+  normalizeViteHmrError,
 } from "../packages/vinext/src/server/dev-error-overlay.js";
+import {
+  dismissOverlay,
+  reportToOverlay,
+  subscribeOverlay,
+} from "../packages/vinext/src/server/dev-error-overlay-store.js";
+import { VINEXT_DEV_ERROR_RECOVERY_EVENT } from "../packages/vinext/src/utils/dev-error-recovery-event.js";
 import {
   APP_CACHE_ENTRY_REUSE_PROOF_KEY,
   AppElementsWire,
@@ -5203,6 +5218,446 @@ describe("devOnUncaughtError (hydrateRoot dev handler)", () => {
       expect(consoleSpy).not.toHaveBeenCalled();
     } finally {
       consoleSpy.mockRestore();
+    }
+  });
+});
+
+describe("dev overlay Shadow DOM mount", () => {
+  class FakeShadowRoot {
+    children: FakeElement[] = [];
+
+    appendChild<T extends FakeElement>(node: T): T {
+      this.children.push(node);
+      return node;
+    }
+
+    getElementById(id: string): FakeElement | null {
+      return this.children.find((child) => child.id === id) ?? null;
+    }
+  }
+
+  class FakeElement {
+    children: FakeElement[] = [];
+    id = "";
+    shadowRoot: FakeShadowRoot | null = null;
+    style: Record<string, string> = {};
+    attributes = new Map<string, string>();
+
+    constructor(
+      private readonly owner: FakeDocument | null,
+      readonly tagName: string,
+    ) {}
+
+    appendChild<T extends FakeElement>(node: T): T {
+      this.children.push(node);
+      this.owner?.registerTree(node);
+      return node;
+    }
+
+    attachShadow(init: { mode: "open" | "closed" }): FakeShadowRoot {
+      expect(init.mode).toBe("open");
+      this.shadowRoot = new FakeShadowRoot();
+      return this.shadowRoot;
+    }
+
+    setAttribute(name: string, value: string): void {
+      this.attributes.set(name, value);
+    }
+  }
+
+  class FakeDocument {
+    private readonly elementsById = new Map<string, FakeElement>();
+    readonly body = new FakeElement(this, "body");
+    readonly documentElement = new FakeElement(this, "html");
+
+    createElement(tagName: string): FakeElement {
+      return new FakeElement(this, tagName);
+    }
+
+    getElementById(id: string): FakeElement | null {
+      return this.elementsById.get(id) ?? null;
+    }
+
+    registerTree(node: FakeElement): void {
+      if (node.id) this.elementsById.set(node.id, node);
+      for (const child of node.children) this.registerTree(child);
+    }
+  }
+
+  it("mounts the React root inside an open shadow root", () => {
+    const fakeDocument = new FakeDocument();
+
+    const mount = createDevErrorOverlayMountNode(fakeDocument as unknown as Document);
+    const host = fakeDocument.getElementById(DEV_ERROR_OVERLAY_HOST_ID);
+
+    expect(host).not.toBeNull();
+    expect(host?.shadowRoot).not.toBeNull();
+    expect(mount.id).toBe(DEV_ERROR_OVERLAY_MOUNT_ID);
+    expect(host?.shadowRoot?.getElementById(DEV_ERROR_OVERLAY_MOUNT_ID)).toBe(mount);
+    expect(host?.children).toHaveLength(0);
+  });
+
+  it("keeps the shadow host out of normal page layout", () => {
+    const fakeDocument = new FakeDocument();
+
+    createDevErrorOverlayMountNode(fakeDocument as unknown as Document);
+    const host = fakeDocument.getElementById(DEV_ERROR_OVERLAY_HOST_ID);
+
+    expect(host?.style.position).toBe("absolute");
+    expect(host?.style.width).toBe("0");
+    expect(host?.style.height).toBe("0");
+    expect(host?.style.overflow).toBe("visible");
+    expect(host?.attributes.get("data-vinext-dev-error-overlay")).toBe("");
+  });
+
+  it("reuses the existing host and shadow mount across installs", () => {
+    const fakeDocument = new FakeDocument();
+    const firstMount = createDevErrorOverlayMountNode(fakeDocument as unknown as Document);
+    const secondMount = createDevErrorOverlayMountNode(fakeDocument as unknown as Document);
+
+    expect(secondMount).toBe(firstMount);
+    expect(fakeDocument.body.children).toHaveLength(1);
+    expect(fakeDocument.body.children[0]?.shadowRoot?.children).toHaveLength(1);
+  });
+});
+
+describe("dev overlay open-in-editor helpers", () => {
+  it("formats overlay display files relative to the project root", () => {
+    expect(
+      formatOverlayDisplayFile(
+        "file:///Users/hyoban/f/vinext/apps/web/app/_components/site-footer.tsx",
+        "/Users/hyoban/f/vinext/apps/web",
+      ),
+    ).toBe("app/_components/site-footer.tsx");
+
+    expect(
+      formatOverlayDisplayFile(
+        "/Users/hyoban/f/vinext/apps/web/app/_components/site-footer.tsx",
+        "/Users/hyoban/f/vinext/apps/web",
+      ),
+    ).toBe("app/_components/site-footer.tsx");
+
+    expect(
+      formatOverlayDisplayFile(
+        "/Users/hyoban/f/vinext/packages/vinext/src/server/dev-error-overlay.tsx",
+        "/Users/hyoban/f/vinext/apps/web",
+      ),
+    ).toBe("/Users/hyoban/f/vinext/packages/vinext/src/server/dev-error-overlay.tsx");
+
+    expect(
+      formatOverlayDisplayFile(
+        "about://React/Server/file:///Users/hyoban/f/vinext/apps/web/app/_components/site-footer.tsx?9",
+        "/Users/hyoban/f/vinext/apps/web/",
+      ),
+    ).toBe("app/_components/site-footer.tsx");
+  });
+
+  it("formats stack frames as Vite open-in-editor file payloads", () => {
+    expect(
+      formatViteOpenInEditorFile({
+        file: "/Users/hyoban/f/vinext/apps/web/app/_components/site-footer.tsx",
+        line: "9",
+        col: "8",
+      }),
+    ).toBe("/Users/hyoban/f/vinext/apps/web/app/_components/site-footer.tsx:9:8");
+
+    expect(
+      formatViteOpenInEditorFile({
+        file: "/Users/hyoban/f/vinext/apps/web/app/_components/site-footer.tsx",
+        line: "9",
+      }),
+    ).toBe("/Users/hyoban/f/vinext/apps/web/app/_components/site-footer.tsx:9");
+
+    expect(formatViteOpenInEditorFile({ file: "virtual:vinext-app-browser-entry" })).toBe(
+      "virtual:vinext-app-browser-entry",
+    );
+    expect(
+      formatViteOpenInEditorFile({
+        file: "about://React/Server/file:///Users/hyoban/f/vinext/apps/web/app/_components/site-footer.tsx?9",
+        line: "9",
+        col: "8",
+      }),
+    ).toBe("/Users/hyoban/f/vinext/apps/web/app/_components/site-footer.tsx:9:8");
+    expect(formatViteOpenInEditorFile({})).toBeNull();
+  });
+
+  it("builds the Vite dev server open-in-editor URL", () => {
+    expect(
+      createViteOpenInEditorUrl(
+        "/Users/hyoban/f/vinext/apps/web/app/_components/site footer.tsx:9:8",
+        "http://localhost:3001/@id/__x00__virtual:vinext-app-browser-entry",
+      ),
+    ).toBe(
+      "http://localhost:3001/__open-in-editor?file=%2FUsers%2Fhyoban%2Ff%2Fvinext%2Fapps%2Fweb%2Fapp%2F_components%2Fsite%20footer.tsx%3A9%3A8",
+    );
+  });
+
+  it("formats copied error info with visible stack frames and code frames", () => {
+    expect(
+      formatErrorInfoForClipboard(
+        {
+          source: "server",
+          message: "vinext is not ready yet. Stay tuned!",
+          projectRoot: "/Users/hyoban/f/vinext/apps/web",
+          codeFrame: {
+            file: "file:///Users/hyoban/f/vinext/apps/web/app/_components/site-footer.tsx",
+            line: 6,
+            column: 9,
+            methodName: "SiteFooter",
+            lines: [
+              { line: 4, text: "const unused = 1;", isErrorLine: false },
+              { line: 5, text: "export function SiteFooter() {", isErrorLine: false },
+              {
+                line: 6,
+                text: '  throw new Error("vinext is not ready yet. Stay tuned!");',
+                isErrorLine: true,
+              },
+              { line: 7, text: "  return (", isErrorLine: false },
+            ],
+          },
+        },
+        [
+          {
+            fn: "SiteFooter",
+            displayFile: "app/_components/site-footer.tsx",
+            line: "6",
+            col: "9",
+            ignored: false,
+          },
+          {
+            fn: "renderFunctionComponent",
+            displayFile: "node_modules/.vite/deps_rsc/react-server-dom-webpack_server__edge.js",
+            line: "956",
+            col: "71",
+            ignored: true,
+          },
+        ],
+      ),
+    ).toBe(
+      [
+        "## Error Type",
+        "",
+        "Server Error",
+        "",
+        "## Error Message",
+        "",
+        "vinext is not ready yet. Stay tuned!",
+        "",
+        "## Stack",
+        "",
+        "    at SiteFooter (app/_components/site-footer.tsx:6:9)",
+        "",
+        "## Code Frame",
+        "",
+        "app/_components/site-footer.tsx:6:9 @ SiteFooter",
+        "    4 | const unused = 1;",
+        "    5 | export function SiteFooter() {",
+        '>   6 |   throw new Error("vinext is not ready yet. Stay tuned!");',
+        "      |         ^",
+        "    7 |   return (",
+      ].join("\n"),
+    );
+  });
+
+  it("formats copied build errors without Vite internal stack frames", () => {
+    expect(
+      formatErrorInfoForClipboard(
+        {
+          source: "vite",
+          message:
+            "[plugin:vite:oxc] Transform failed with 1 error:\n\n[PARSE_ERROR] Error: Unterminated string",
+          codeFrame: {
+            file: "app/_components/site-footer.tsx",
+            line: 7,
+            column: 90,
+            lines: [
+              {
+                line: 7,
+                text: '<div className="broken>',
+                isErrorLine: true,
+              },
+            ],
+          },
+        },
+        [
+          {
+            fn: "transformWithOxc",
+            displayFile: "node_modules/@voidzero-dev/vite-plus-core/dist/vite/node.js",
+            line: "5987",
+            col: "19",
+            ignored: false,
+          },
+        ],
+      ),
+    ).toBe(
+      [
+        "## Error Type",
+        "",
+        "Build Error",
+        "",
+        "## Error Message",
+        "",
+        "[plugin:vite:oxc] Transform failed with 1 error:",
+        "",
+        "[PARSE_ERROR] Error: Unterminated string",
+      ].join("\n"),
+    );
+  });
+});
+
+describe("dev overlay Vite HMR errors", () => {
+  it("normalizes Vite transform errors into build-error overlay data", () => {
+    const normalized = normalizeViteHmrError({
+      err: {
+        message:
+          "Transform failed with 1 error:\napp/_components/site-footer.tsx:7:90: ERROR: Unterminated string",
+        plugin: "vite:esbuild",
+        frame: [
+          "  5 |    return (",
+          '  6 |      <footer className="mt-auto border-t">',
+          '> 7 |        <div className="mx-auto flex w-full max-w-6xl items-center justify-center px-6 py-6">',
+          "    |                                                                                          ^",
+          "  8 |          <Text>vinext</Text>",
+        ].join("\n"),
+      },
+    });
+
+    expect(normalized.message).toContain("[plugin:vite:esbuild] Transform failed with 1 error");
+    expect(normalized.message).toContain(
+      '> 7 |        <div className="mx-auto flex w-full max-w-6xl items-center justify-center px-6 py-6">',
+    );
+  });
+
+  it("normalizes OXC build error frames from Vite+", () => {
+    const message = [
+      "Transform failed with 1 error:",
+      "",
+      "[PARSE_ERROR] Error: Unterminated string",
+      "   ╭─[ app/dev-overlay-hmr-toggle/server-hmr-toggle.tsx:2:55 ]",
+      "   │",
+      ' 2 │ ╭─▶   return <p data-testid="server-hmr-toggle" className="broken>server hmr clean</p>;',
+      " 3 │ ├─▶ }",
+      "   │ │       ",
+      "   │ ╰─────── ",
+      "───╯",
+    ].join("\n");
+
+    const normalized = normalizeViteHmrError({
+      err: {
+        message,
+      },
+    });
+
+    expect(normalized.message).toBe(message);
+  });
+});
+
+describe("dev overlay React Refresh recovery", () => {
+  it("dispatches recovery before React Refresh retries failed roots", async () => {
+    const callbacks: Array<() => void | Promise<void>> = [];
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal("window", {
+      __registerBeforePerformReactRefresh(cb: () => void | Promise<void>) {
+        callbacks.push(cb);
+      },
+      dispatchEvent,
+      setTimeout: vi.fn(),
+    });
+
+    installReactRefreshErrorRecovery();
+
+    expect(callbacks).toHaveLength(1);
+    await callbacks[0]?.();
+    expect(dispatchEvent).toHaveBeenCalledTimes(1);
+    const event = dispatchEvent.mock.calls[0]?.[0];
+    expect(event).toBeInstanceOf(Event);
+    expect((event as Event).type).toBe(VINEXT_DEV_ERROR_RECOVERY_EVENT);
+  });
+
+  it("does not register duplicate React Refresh recovery callbacks", () => {
+    const callbacks: Array<() => void | Promise<void>> = [];
+    vi.stubGlobal("window", {
+      __registerBeforePerformReactRefresh(cb: () => void | Promise<void>) {
+        callbacks.push(cb);
+      },
+      dispatchEvent: vi.fn(),
+      setTimeout: vi.fn(),
+    });
+
+    installReactRefreshErrorRecovery();
+    installReactRefreshErrorRecovery();
+
+    expect(callbacks).toHaveLength(1);
+  });
+
+  it("retries until the React Refresh runtime hook is available", async () => {
+    const callbacks: Array<() => void | Promise<void>> = [];
+    const timeoutCallbacks: Array<() => void> = [];
+    const dispatchEvent = vi.fn();
+    const setTimeout = vi.fn((cb: () => void, _delay?: number) => {
+      timeoutCallbacks.push(cb);
+      return timeoutCallbacks.length;
+    });
+    const refreshWindow: {
+      __registerBeforePerformReactRefresh?: (cb: () => void | Promise<void>) => void;
+      dispatchEvent: typeof dispatchEvent;
+      setTimeout: typeof setTimeout;
+    } = {
+      dispatchEvent,
+      setTimeout,
+    };
+    vi.stubGlobal("window", refreshWindow);
+
+    installReactRefreshErrorRecovery();
+    expect(setTimeout).toHaveBeenCalledTimes(1);
+    expect(setTimeout.mock.calls[0]?.[1]).toBe(0);
+
+    await Promise.resolve();
+    expect(setTimeout).toHaveBeenCalledTimes(1);
+
+    timeoutCallbacks.shift()?.();
+    expect(setTimeout).toHaveBeenCalledTimes(2);
+    expect(setTimeout.mock.calls[1]?.[1]).toBe(16);
+
+    refreshWindow.__registerBeforePerformReactRefresh = (cb) => {
+      callbacks.push(cb);
+    };
+    timeoutCallbacks.shift()?.();
+
+    expect(callbacks).toHaveLength(1);
+    await callbacks[0]?.();
+    expect(dispatchEvent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("dev overlay store", () => {
+  it("does not notify subscribers when an empty overlay is dismissed", () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeOverlay(listener);
+
+    try {
+      dismissOverlay();
+      expect(listener).not.toHaveBeenCalled();
+
+      reportToOverlay({
+        source: "caught",
+        message: "boom",
+        stack: undefined,
+        ignoredStackFrames: undefined,
+        projectRoot: undefined,
+        codeFrame: undefined,
+        componentStack: undefined,
+      });
+      expect(listener).toHaveBeenCalledTimes(1);
+
+      dismissOverlay();
+      expect(listener).toHaveBeenCalledTimes(2);
+
+      dismissOverlay();
+      expect(listener).toHaveBeenCalledTimes(2);
+    } finally {
+      unsubscribe();
+      dismissOverlay();
     }
   });
 });

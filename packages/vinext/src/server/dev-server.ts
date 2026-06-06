@@ -55,6 +55,7 @@ import {
   runDocumentRenderPage,
 } from "./pages-document-initial-props.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
+import { loadPagesGetInitialProps } from "./pages-get-initial-props.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -1053,6 +1054,30 @@ export function createSSRHandler(
           }
         }
 
+        if (
+          typeof pageModule.getServerSideProps !== "function" &&
+          typeof pageModule.getStaticProps !== "function"
+        ) {
+          const initialProps = await loadPagesGetInitialProps(PageComponent, {
+            req,
+            res,
+            pathname: patternToNextFormat(route.pattern),
+            query,
+            asPath: url,
+            locale: locale ?? currentDefaultLocale,
+            locales: i18nConfig?.locales,
+            defaultLocale: currentDefaultLocale,
+          });
+
+          if (res.headersSent || res.writableEnded) {
+            return;
+          }
+
+          if (initialProps) {
+            pageProps = { ...pageProps, ...initialProps };
+          }
+        }
+
         // ── _next/data JSON envelope short-circuit (dev) ──────────────
         // Client-side navigations fetch /_next/data/<buildId>/<page>.json and
         // expect { pageProps } as JSON. We have pageProps; skip the React
@@ -1195,6 +1220,18 @@ const nextData = window.__NEXT_DATA__;
 const { pageProps } = nextData.props;
 
 async function hydrate() {
+  let hydrateRootOptions;
+  if (import.meta.env.DEV) {
+    const overlay = await import("vinext/dev-error-overlay");
+    overlay.installDevErrorOverlay();
+    overlay.installViteHmrErrorHandler(import.meta.hot);
+    overlay.reportInitialDevServerErrors();
+    hydrateRootOptions = {
+      onCaughtError: overlay.devOnCaughtError,
+      onUncaughtError: overlay.devOnUncaughtError,
+    };
+  }
+
   const pageModule = await import("${pageModuleUrl}");
   const PageComponent = pageModule.default;
   let element;
@@ -1211,7 +1248,7 @@ async function hydrate() {
   `
   }
   element = wrapWithRouterContext(element);
-  const root = hydrateRoot(document.getElementById("__next"), element);
+  const root = hydrateRoot(document.getElementById("__next"), element, hydrateRootOptions);
   window.__VINEXT_ROOT__ = root;
   installPagesRouterRuntime();
   const hydratedAt = performance.now();
@@ -1408,7 +1445,18 @@ hydrate();
         });
         // Try to render custom 500 error page
         try {
-          await renderErrorPage(server, runner, req, res, url, pagesDir, 500, undefined, matcher);
+          await renderErrorPage(
+            server,
+            runner,
+            req,
+            res,
+            url,
+            pagesDir,
+            500,
+            undefined,
+            matcher,
+            e instanceof Error ? e : new Error(String(e)),
+          );
         } catch (fallbackErr) {
           // If error page itself fails, fall back to plain text.
           // This is a dev-only code path (prod uses prod-server.ts), so
@@ -1434,13 +1482,14 @@ hydrate();
 async function renderErrorPage(
   server: ViteDevServer,
   runner: ModuleImporter,
-  _req: IncomingMessage,
+  req: IncomingMessage,
   res: ServerResponse,
   url: string,
   pagesDir: string,
   statusCode: number,
   wrapWithRouterContext?: ((el: React.ReactElement) => React.ReactElement) | null,
   fileMatcher?: ValidFileMatcher,
+  err?: Error,
 ): Promise<void> {
   const matcher = fileMatcher ?? createValidFileMatcher();
   // Try specific status page first, then _error, then fallback
@@ -1470,7 +1519,16 @@ async function renderErrorPage(
       }
 
       const createElement = React.createElement;
-      const errorProps = { statusCode };
+      const initialErrorProps = await loadPagesGetInitialProps(ErrorComponent, {
+        req,
+        res,
+        err,
+        pathname: candidate === "_error" ? "/_error" : `/${candidate}`,
+        query: parseQuery(url),
+        asPath: url,
+      });
+      if (res.headersSent || res.writableEnded) return;
+      const errorProps = { ...initialErrorProps, statusCode };
 
       // If the caller didn't supply wrapWithRouterContext, load it now.
       // runner.import() caches internally so the cost is negligible.

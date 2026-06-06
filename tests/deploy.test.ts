@@ -16,10 +16,13 @@ import {
   buildWranglerDeployArgs,
   parseDeployArgs,
   resolveWranglerBin,
+  withCloudflareEnv,
   isPackageResolvable,
   viteConfigHasCloudflarePlugin,
+  viteConfigHasCacheAdapter,
   hasWranglerConfig,
   formatMissingCloudflarePluginError,
+  formatMissingCacheAdapterError,
 } from "../packages/vinext/src/deploy.js";
 import {
   detectPackageManager,
@@ -93,6 +96,81 @@ describe("buildWranglerDeployArgs", () => {
 
   it("treats empty string env as production", () => {
     expect(buildWranglerDeployArgs({ env: "" })).toEqual({ args: ["deploy"], env: undefined });
+  });
+});
+
+// ─── CLOUDFLARE_ENV propagation (issue #1210) ──────────────────────────────
+
+describe("withCloudflareEnv", () => {
+  let priorEnv: string | undefined;
+  let priorHadEnv: boolean;
+
+  beforeEach(() => {
+    priorHadEnv = "CLOUDFLARE_ENV" in process.env;
+    priorEnv = process.env.CLOUDFLARE_ENV;
+    delete process.env.CLOUDFLARE_ENV;
+  });
+
+  afterEach(() => {
+    if (priorHadEnv) {
+      process.env.CLOUDFLARE_ENV = priorEnv;
+    } else {
+      delete process.env.CLOUDFLARE_ENV;
+    }
+  });
+
+  it("sets CLOUDFLARE_ENV for the duration of the callback", async () => {
+    let observed: string | undefined;
+    await withCloudflareEnv("staging", async () => {
+      observed = process.env.CLOUDFLARE_ENV;
+    });
+    expect(observed).toBe("staging");
+  });
+
+  it("restores absence of CLOUDFLARE_ENV after the callback when no prior value existed", async () => {
+    await withCloudflareEnv("hml", async () => {
+      // no-op
+    });
+    expect("CLOUDFLARE_ENV" in process.env).toBe(false);
+  });
+
+  it("restores the prior CLOUDFLARE_ENV value after the callback", async () => {
+    process.env.CLOUDFLARE_ENV = "preview";
+    await withCloudflareEnv("staging", async () => {
+      expect(process.env.CLOUDFLARE_ENV).toBe("staging");
+    });
+    expect(process.env.CLOUDFLARE_ENV).toBe("preview");
+  });
+
+  it("does not touch process.env when env is undefined", async () => {
+    let observed: string | undefined = "sentinel";
+    await withCloudflareEnv(undefined, async () => {
+      observed = process.env.CLOUDFLARE_ENV;
+    });
+    expect(observed).toBeUndefined();
+    expect("CLOUDFLARE_ENV" in process.env).toBe(false);
+  });
+
+  it("does not touch process.env when env is empty string", async () => {
+    await withCloudflareEnv("", async () => {
+      expect("CLOUDFLARE_ENV" in process.env).toBe(false);
+    });
+    expect("CLOUDFLARE_ENV" in process.env).toBe(false);
+  });
+
+  it("restores CLOUDFLARE_ENV after the callback throws", async () => {
+    process.env.CLOUDFLARE_ENV = "preview";
+    await expect(
+      withCloudflareEnv("staging", async () => {
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    expect(process.env.CLOUDFLARE_ENV).toBe("preview");
+  });
+
+  it("returns the callback's resolved value", async () => {
+    const result = await withCloudflareEnv("staging", async () => 42);
+    expect(result).toBe(42);
   });
 });
 
@@ -408,7 +486,7 @@ describe("generateWranglerConfig", () => {
     const parsed = JSON.parse(config);
 
     expect(parsed.kv_namespaces).toBeDefined();
-    expect(parsed.kv_namespaces[0].binding).toBe("VINEXT_CACHE");
+    expect(parsed.kv_namespaces[0].binding).toBe("VINEXT_KV_CACHE");
   });
 
   it("omits KV namespace when no ISR", () => {
@@ -480,20 +558,84 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).toContain("env.IMAGES");
   });
 
-  it("does not include KV wiring when hasISR is false", () => {
-    const content = generateAppRouterWorkerEntry(false);
+  it("never wires a cache handler into the Worker entry", () => {
+    // Cache backends are configured declaratively via vinext({ cache }) in
+    // vite.config; the Worker entry must not scaffold setDataCacheHandler.
+    const content = generateAppRouterWorkerEntry();
     expect(content).not.toContain("KVCacheHandler");
-    expect(content).not.toContain("setCacheHandler");
-    expect(content).not.toContain("VINEXT_CACHE");
+    expect(content).not.toContain("setDataCacheHandler");
+    expect(content).not.toContain("setCdnCacheAdapter");
+    expect(content).not.toContain("VINEXT_KV_CACHE");
   });
 
-  it("includes KV wiring when hasISR is true", () => {
-    const content = generateAppRouterWorkerEntry(true);
-    expect(content).toContain('import { KVCacheHandler } from "vinext/cloudflare"');
-    expect(content).toContain('import { setDataCacheHandler } from "vinext/shims/cache"');
-    expect(content).toContain("VINEXT_CACHE: KVNamespace");
-    expect(content).toContain("new KVCacheHandler(env.VINEXT_CACHE)");
-    expect(content).toContain("setDataCacheHandler(");
+  it("points users to the declarative cache config", () => {
+    const content = generateAppRouterWorkerEntry();
+    expect(content).toContain("vinext({ cache })");
+  });
+});
+
+describe("viteConfigHasCacheAdapter", () => {
+  it("detects a data field assigned an adapter", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+       export default { plugins: [vinext({ cache: { data: kvDataAdapter() } })] };`,
+    );
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+
+  it("detects a cdn field assigned an adapter", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `export default { plugins: [vinext({ cache: { cdn: cdnAdapter() } })] };`,
+    );
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+
+  it("detects a hand-written descriptor object on the data field", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `export default {
+         plugins: [vinext({ cache: { data: { adapter: "./x.js", options: {} } } })],
+       };`,
+    );
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+
+  it("returns false when the cache object is empty", () => {
+    writeFile(tmpDir, "vite.config.ts", `export default { plugins: [vinext({ cache: {} })] };`);
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(false);
+  });
+
+  it("returns false when cdn/data are explicitly undefined", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `export default { plugins: [vinext({ cache: { cdn: undefined, data: undefined } })] };`,
+    );
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(false);
+  });
+
+  it("returns false when there is no cache config at all", () => {
+    writeFile(tmpDir, "vite.config.ts", `export default { plugins: [vinext()] };`);
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(false);
+  });
+
+  it("returns true (does not block) when there is no Vite config to inspect", () => {
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+});
+
+describe("formatMissingCacheAdapterError", () => {
+  it("names the adapter builders and the KV namespace command", () => {
+    const msg = formatMissingCacheAdapterError({});
+    expect(msg).toContain("no cache adapter is configured");
+    expect(msg).toContain("kvDataAdapter()");
+    expect(msg).toContain("cdnAdapter()");
+    expect(msg).toContain("npx wrangler kv namespace create VINEXT_KV_CACHE");
   });
 });
 
@@ -2648,12 +2790,12 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     expect(config?.customDomain).toBeUndefined();
   });
 
-  it("extracts KV namespace ID for VINEXT_CACHE", () => {
+  it("extracts KV namespace ID for VINEXT_KV_CACHE", () => {
     writeFile(
       tmpDir,
       "wrangler.json",
       JSON.stringify({
-        kv_namespaces: [{ binding: "VINEXT_CACHE", id: "abc123" }],
+        kv_namespaces: [{ binding: "VINEXT_KV_CACHE", id: "abc123" }],
       }),
     );
     const config = parseWranglerConfig(tmpDir);

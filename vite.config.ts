@@ -5,6 +5,14 @@ import { randomUUID } from "node:crypto";
 const SHIMS_SRC = path.resolve(import.meta.dirname, "packages/vinext/src/shims");
 const MSW_SETUP = path.resolve(import.meta.dirname, "tests/_msw/setup.ts");
 
+// Resolve own-workspace sources directly in tests so the vinext <->
+// @vinext/cloudflare dependency edge points at source (single module instance,
+// no prior build required). Shared by both test projects below.
+const WORKSPACE_SRC_ALIAS = {
+  "vinext/shims": SHIMS_SRC,
+  "@vinext/cloudflare/cache": path.resolve(import.meta.dirname, "packages/cloudflare/src/cache"),
+};
+
 export default defineConfig({
   staged: {
     "*": "vp check --fix",
@@ -125,12 +133,15 @@ export default defineConfig({
     projects: [
       {
         resolve: {
-          alias: { "vinext/shims": SHIMS_SRC },
+          alias: WORKSPACE_SRC_ALIAS,
         },
         test: {
           name: "unit",
           setupFiles: [MSW_SETUP],
-          include: ["tests/**/*.test.ts"],
+          // `scripts/**` covers the release-tooling unit tests
+          // (scripts/create-changeset.test.ts, scripts/version.test.ts), which
+          // are pure-logic and have no fixture/server dependencies.
+          include: ["tests/**/*.test.ts", "scripts/**/*.test.ts"],
           exclude: [
             "tests/fixtures/**/node_modules/**",
             // Integration tests: spin up Vite dev servers against shared fixture
@@ -138,7 +149,23 @@ export default defineConfig({
             // (node_modules/.vite/*) that produce "outdated pre-bundle" 500s.
             // When adding a test that calls startFixtureServer() or createServer(),
             // move it here.
-            "tests/app-router.test.ts",
+            "tests/app-router-client-preloading.test.ts",
+            "tests/app-router-dev-server.test.ts",
+            "tests/app-router-external-rewrite.test.ts",
+            "tests/app-router-font-google-prod.test.ts",
+            "tests/app-router-isr-codegen.test.ts",
+            "tests/app-router-malformed-url.test.ts",
+            "tests/app-router-metadata-routes.test.ts",
+            "tests/app-router-middleware-next-request.test.ts",
+            "tests/app-router-next-config-codegen.test.ts",
+            "tests/app-router-next-config-dev.test.ts",
+            "tests/app-router-origin-check.test.ts",
+            "tests/app-router-production-build.test.ts",
+            "tests/app-router-production-server.test.ts",
+            "tests/app-router-rsc-flight-hint.test.ts",
+            "tests/app-router-rsc-plugin.test.ts",
+            "tests/app-router-static-export.test.ts",
+            "tests/app-router-worker-entry.test.ts",
             "tests/api-handler.test.ts",
             "tests/cjs.test.ts",
             "tests/ecosystem.test.ts",
@@ -162,7 +189,7 @@ export default defineConfig({
       },
       {
         resolve: {
-          alias: { "vinext/shims": SHIMS_SRC },
+          alias: WORKSPACE_SRC_ALIAS,
         },
         test: {
           name: "integration",
@@ -179,7 +206,23 @@ export default defineConfig({
           // test needs to mock an external fetch, wire MSW per-file with
           // `setupServer` rather than reverting this exclusion.
           include: [
-            "tests/app-router.test.ts",
+            "tests/app-router-client-preloading.test.ts",
+            "tests/app-router-dev-server.test.ts",
+            "tests/app-router-external-rewrite.test.ts",
+            "tests/app-router-font-google-prod.test.ts",
+            "tests/app-router-isr-codegen.test.ts",
+            "tests/app-router-malformed-url.test.ts",
+            "tests/app-router-metadata-routes.test.ts",
+            "tests/app-router-middleware-next-request.test.ts",
+            "tests/app-router-next-config-codegen.test.ts",
+            "tests/app-router-next-config-dev.test.ts",
+            "tests/app-router-origin-check.test.ts",
+            "tests/app-router-production-build.test.ts",
+            "tests/app-router-production-server.test.ts",
+            "tests/app-router-rsc-flight-hint.test.ts",
+            "tests/app-router-rsc-plugin.test.ts",
+            "tests/app-router-static-export.test.ts",
+            "tests/app-router-worker-entry.test.ts",
             "tests/api-handler.test.ts",
             "tests/cjs.test.ts",
             "tests/ecosystem.test.ts",

@@ -138,6 +138,8 @@ import {
   devOnUncaughtError,
   dismissOverlay,
   installDevErrorOverlay,
+  installViteHmrErrorHandler,
+  reportInitialDevServerErrors,
 } from "./dev-error-overlay.js";
 import { DANGEROUS_URL_BLOCK_MESSAGE, isDangerousScheme } from "vinext/shims/url-safety";
 import { throwOnServerActionNotFound } from "./server-action-not-found.js";
@@ -283,6 +285,8 @@ let browserRouterStateHasEverCommitted = false;
 let pendingNavigationRecoveryHref: string | null = null;
 const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
 const unresolvedMpaNavigation = new Promise<never>(() => {});
+const RSC_HMR_SETTLE_DELAY_MS = 150;
+let latestRscHmrUpdateId = 0;
 const initialHistoryBfcacheVersion = readHistoryStateBfcacheVersion(window.history.state);
 // A new browser document does not retain Next's in-memory BFCache entries.
 // Treat bfcache ids persisted by an older document as stale so a hard reload
@@ -295,6 +299,16 @@ let nextHistoryTraversalIndex: number = currentHistoryTraversalIndex;
 
 function isCurrentBfcacheVersion(state: unknown): boolean {
   return isHistoryStateBfcacheVersionCurrent(state, currentBfcacheVersion);
+}
+
+// Vite can notify the browser about an RSC HMR update before the dev server's
+// request runner has swapped to the invalidated module graph. Give the
+// invalidated graph a short settle window so HMR sees the same payload a
+// direct refresh would see.
+function waitForRscHmrSettle(delayMs = RSC_HMR_SETTLE_DELAY_MS): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, delayMs);
+  });
 }
 
 function readCurrentBfcacheVersionHistoryIds(
@@ -1624,6 +1638,12 @@ function registerServerActionCallback(): void {
 async function main(): Promise<void> {
   registerServerActionCallback();
 
+  if (import.meta.env.DEV) {
+    installDevErrorOverlay();
+    installViteHmrErrorHandler(import.meta.hot);
+    reportInitialDevServerErrors();
+  }
+
   const rscStream = await readInitialRscStream();
   // null signals that readInitialRscStream aborted hydration — either because
   // a reload is in flight (first-attempt recovery) or the endpoint is
@@ -1635,10 +1655,6 @@ async function main(): Promise<void> {
 }
 
 function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
-  if (import.meta.env.DEV) {
-    installDevErrorOverlay();
-  }
-
   const root = decodeAppElementsPromise(createFromReadableStream<AppWireElements>(rscStream));
   const initialNavigationSnapshot = createClientNavigationRenderSnapshot(
     window.location.href,
@@ -2252,68 +2268,87 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
   });
 
   if (import.meta.hot) {
-    const handleRscUpdate = async (): Promise<void> => {
-      try {
-        // If BrowserRoot has been mounted before but isn't now, a render
-        // error tore down the tree (e.g. a server route threw). HMR can't
-        // dispatch into a missing setter, and waitForBrowserRouterStateReady
-        // would block forever — the tree won't remount until the page reloads.
-        // Trigger that reload so the user's fix actually lands without a
-        // manual refresh. Cleared after a successful mount, so this only
-        // fires once per teardown.
-        if (
-          browserRouterStateHasEverCommitted &&
-          !browserNavigationController.hasBrowserRouterState()
-        ) {
-          window.location.reload();
-          return;
-        }
-        // HMR can also fire before BrowserRoot's layout effect publishes
-        // the browser router state (e.g. saving a file while the initial RSC
-        // stream is still suspended). Wait for readiness, then re-check the
-        // mounted state — readiness can race with cleanup, which nulls it again.
-        // Skip silently when the tree is not currently mounted; the next
-        // HMR push or full reload will reconcile.
-        await waitForBrowserRouterStateReady();
-        if (!browserNavigationController.hasBrowserRouterState()) {
-          return;
-        }
-        clearClientNavigationCaches();
-        const navigationSnapshot = createClientNavigationRenderSnapshot(
-          window.location.href,
-          latestClientParams,
-        );
-        // Clear stale errors from the dev overlay before dispatching the
-        // fresh tree. If the new tree renders cleanly, the overlay stays
-        // empty; if it throws again, devOnCaughtError/devOnUncaughtError
-        // re-populates it. Without this, an old "DropZone is not defined"
-        // error would linger after the developer fixed the bug.
-        dismissOverlay();
-        // Interception context on HMR re-renders is intentionally deferred:
-        // preserving intercepted modal state across HMR reloads is out of scope
-        // for the previousNextUrl mechanism.
-        const hmrHeaders = createRscRequestHeaders();
-        await browserNavigationController.hmrReplaceTree(
-          decodeAppElementsPromise(
-            createFromFetch<AppWireElements>(
-              fetch(
-                await createRscRequestUrl(
-                  window.location.pathname + window.location.search,
-                  hmrHeaders,
-                ),
-                { headers: hmrHeaders },
+    const applyRscHmrUpdate = async (updateId: number): Promise<void> => {
+      if (updateId !== latestRscHmrUpdateId) return;
+
+      // Root layout errors can leave the browser on a document-level error
+      // shell. A normal RSC tree replacement can't reliably reconstruct the
+      // original document from there, so let the next HMR update reload the
+      // current URL. If the edit fixed the error the page comes back clean; if
+      // not, initial dev server errors re-populate the overlay.
+      if (document.documentElement.id === "__next_error__") {
+        window.location.reload();
+        return;
+      }
+
+      // If BrowserRoot has been mounted before but isn't now, a render
+      // error tore down the tree (e.g. a server route threw). HMR can't
+      // dispatch into a missing setter, and waitForBrowserRouterStateReady
+      // would block forever — the tree won't remount until the page reloads.
+      // Trigger that reload so the user's fix actually lands without a
+      // manual refresh. Cleared after a successful mount, so this only
+      // fires once per teardown.
+      if (
+        browserRouterStateHasEverCommitted &&
+        !browserNavigationController.hasBrowserRouterState()
+      ) {
+        window.location.reload();
+        return;
+      }
+      // HMR can also fire before BrowserRoot's layout effect publishes
+      // the browser router state (e.g. saving a file while the initial RSC
+      // stream is still suspended). Wait for readiness, then re-check the
+      // mounted state — readiness can race with cleanup, which nulls it again.
+      // Skip silently when the tree is not currently mounted; the next
+      // HMR push or full reload will reconcile.
+      await waitForBrowserRouterStateReady();
+      if (updateId !== latestRscHmrUpdateId) return;
+      if (!browserNavigationController.hasBrowserRouterState()) {
+        return;
+      }
+      clearClientNavigationCaches();
+      const navigationSnapshot = createClientNavigationRenderSnapshot(
+        window.location.href,
+        latestClientParams,
+      );
+      // Clear stale errors from the dev overlay before dispatching the
+      // fresh tree. If the new tree renders cleanly, the overlay stays
+      // empty; if it throws again, devOnCaughtError/devOnUncaughtError
+      // re-populates it. Without this, an old "DropZone is not defined"
+      // error would linger after the developer fixed the bug.
+      dismissOverlay();
+      // Interception context on HMR re-renders is intentionally deferred:
+      // preserving intercepted modal state across HMR reloads is out of scope
+      // for the previousNextUrl mechanism.
+      const hmrHeaders = createRscRequestHeaders();
+      await browserNavigationController.hmrReplaceTree(
+        decodeAppElementsPromise(
+          createFromFetch<AppWireElements>(
+            fetch(
+              await createRscRequestUrl(
+                window.location.pathname + window.location.search,
+                hmrHeaders,
               ),
+              { headers: hmrHeaders },
             ),
           ),
-          navigationSnapshot,
-        );
+        ),
+        navigationSnapshot,
+      );
+    };
+
+    const handleRscUpdate = async (updateId: number): Promise<void> => {
+      try {
+        await waitForRscHmrSettle();
+        await applyRscHmrUpdate(updateId);
       } catch (error) {
         console.error("[vinext] RSC HMR error:", error);
       }
     };
 
     import.meta.hot.on("rsc:update", () => {
-      void handleRscUpdate();
+      const updateId = ++latestRscHmrUpdateId;
+      void handleRscUpdate(updateId);
     });
   }
 }

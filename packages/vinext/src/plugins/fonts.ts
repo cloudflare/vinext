@@ -1113,29 +1113,52 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
  * Rewrites relative font file paths in `next/font/local` calls into Vite
  * asset import references so that both dev (/@fs/...) and prod
  * (/assets/font-xxx.woff2) URLs resolve correctly.
+ *
+ * @param shimsDir - Absolute path to the shims directory (with trailing
+ *   separator). Used to skip vinext's own shim files from transform — they
+ *   contain example `next/font/local` paths in comments that must not be
+ *   rewritten. A precise prefix check is required (rather than a loose
+ *   substring match) because, now that `node_modules` is no longer excluded,
+ *   the guard runs against arbitrary third-party package paths — some of
+ *   which may legitimately contain the substring `font-local` (e.g. a
+ *   package named `font-local-loader`) and must still be transformed. This
+ *   mirrors `createGoogleFontsPlugin`, which takes `shimsDir` for the same
+ *   reason.
  */
-export function createLocalFontsPlugin(): Plugin {
+export function createLocalFontsPlugin(shimsDir: string): Plugin {
   return {
     name: "vinext:local-fonts",
     enforce: "pre",
 
     transform: {
+      // NOTE: node_modules is intentionally NOT excluded here. npm packages
+      // commonly wrap `next/font/local` and ship the font files alongside the
+      // module (e.g. `geist/dist/mono.js` calls
+      // `localFont({ src: "./fonts/geist-mono/GeistMono-Variable.woff2" })`).
+      // Those relative `src` paths are resolved against the package's own
+      // directory and must be promoted to Vite asset imports just like a user's
+      // source files, otherwise the runtime `@font-face` references the raw
+      // relative path and the font 404s. Next.js's font loader runs on these
+      // package files too, so vinext must as well. The `code` filter plus the
+      // default-import check below keep this from touching unrelated modules.
       filter: {
         id: {
           include: /\.(tsx?|jsx?|mjs)$/,
-          exclude: /node_modules/,
         },
         code: "next/font/local",
       },
       handler(code, id) {
         // Defensive guards — duplicate filter logic
-        if (id.includes("node_modules")) return null;
         if (id.startsWith("\0")) return null;
         if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
         if (!code.includes("next/font/local")) return null;
-        // Skip vinext's own font-local shim — it contains example paths
-        // in comments that would be incorrectly rewritten.
-        if (id.includes("font-local")) return null;
+        // Skip vinext's own shim files — the font-local shim contains example
+        // paths in comments that would be incorrectly rewritten. A precise
+        // prefix check against `shimsDir` (not a loose `id.includes("font-local")`
+        // substring) is required now that node_modules is no longer excluded,
+        // so legitimate third-party packages whose path happens to contain
+        // `font-local` are still transformed. Mirrors `createGoogleFontsPlugin`.
+        if (id.startsWith(shimsDir)) return null;
 
         // Verify there's actually a default import from next/font/local and
         // remember its local binding so family payloads only attach to real

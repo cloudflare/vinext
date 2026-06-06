@@ -10,8 +10,13 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "noEmit": true,
+    // Node (>=24) runs the release scripts in scripts/*.mts directly via native
+    // type stripping, which requires explicit `.mts` import specifiers. Permit
+    // them here (safe: this project is noEmit).
+    "allowImportingTsExtensions": true,
     "paths": {
-      "vinext/shims/*": ["./packages/vinext/src/shims/*"]
+      "vinext/shims/*": ["./packages/vinext/src/shims/*"],
+      "@vinext/cloudflare/cache/*": ["./packages/cloudflare/src/cache/*"]
     }
   },
   "exclude": ["node_modules", "dist", "fixtures", "tests/fixtures", "benchmarks", "examples"]

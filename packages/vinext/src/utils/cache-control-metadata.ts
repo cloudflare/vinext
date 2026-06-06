@@ -1,5 +1,4 @@
 import { isUnknownRecord } from "./record.js";
-export { isUnknownRecord } from "./record.js";
 
 function readRecordField(
   ctx: Record<string, unknown> | undefined,
