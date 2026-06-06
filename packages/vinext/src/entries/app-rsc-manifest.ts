@@ -174,6 +174,10 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
     try {
       source = fs.readFileSync(pagePath, "utf8");
     } catch (cause) {
+      if (hasErrorCode(cause, "ENOENT")) {
+        pageSearchParamsUsage.set(pagePath, false);
+        return false;
+      }
       throw new Error(`vinext: failed to read page for route manifest at ${pagePath}`, { cause });
     }
     const usesSearchParams = /\bsearchParams\b/.test(source);
@@ -265,6 +269,10 @@ ${slotEntries.join(",\n")}
     unauthorizeds: [${unauthorizedVars.join(", ")}],
   }`;
   });
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
 }
 
 type RoutePatternPrefix = {
