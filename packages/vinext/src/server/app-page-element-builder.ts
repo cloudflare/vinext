@@ -153,7 +153,12 @@ export async function buildPageElements<
     displayPathname: routePath,
     interceptionContext: opts?.interceptionContext ?? null,
     interceptSourceMatchedUrl: opts?.interceptSourceMatchedUrl ?? null,
-    interceptSlotId: opts?.interceptSlotId ?? null,
+    // Sibling intercepts are full-page replacements with no slot proof.
+    // Passing null here makes the payload carry interception:null so the
+    // client planner commits the result as a normal navigation rather than
+    // attempting slot-preservation validation (which would fail — the
+    // synthetic __page slot has no real slot binding in the component tree).
+    interceptSlotId: isSiblingIntercept ? null : (opts?.interceptSlotId ?? null),
   });
 
   if (hasPageModule && !PageComponent) {
