@@ -39,10 +39,17 @@ export type { ClassificationReason };
 /**
  * Marker we tag onto a thrown redirect/notFound error when it originates from
  * `generateMetadata()` (vs. a server component itself). Metadata resolution is
- * suspended/streamed in Next.js, so a redirect from metadata never becomes an
- * HTTP-level 307 — it rides inside the flight payload with a 200 status,
- * regardless of whether the request is RSC or a full document SSR. Page-level
- * redirect()s, by contrast, still produce a 307 for SSR document requests.
+ * suspended/streamed in Next.js, so a redirect from metadata is not emitted as
+ * a plain HTTP-level 307. Instead the transport depends on the request:
+ *   - RSC navigation requests (`Rsc: 1`) ride inside the flight payload with a
+ *     200 status; the client router decodes the redirect digest.
+ *   - Streaming-capable document requests get a 200 HTML response carrying a
+ *     refresh meta tag (the streamed document can't switch to a 307 after the
+ *     head has flushed).
+ *   - html-limited bots (which Next.js serves a blocking, non-streamed
+ *     response) get the HTTP-level 307.
+ * Page-level redirect()s, by contrast, still produce a 307 for SSR document
+ * requests.
  *
  * See Next.js test:
  *   test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
@@ -310,6 +317,11 @@ function buildMetadataRedirectHtmlResponse(options: {
   }
 
   const errorMetaTags = renderSsrErrorMetaTags([{ digest: options.digest }]);
+  // Intentional divergence from Next.js: Next.js inserts the redirect meta tag
+  // into the otherwise fully-rendered streamed document, whereas we emit a
+  // minimal stub (refresh meta tag, empty body). For a redirect this is
+  // functionally equivalent — the browser follows the refresh regardless of
+  // body content — and avoids re-rendering page content we're about to discard.
   return new Response(`<!DOCTYPE html><html><head>${errorMetaTags}</head><body></body></html>`, {
     headers,
     status: 200,

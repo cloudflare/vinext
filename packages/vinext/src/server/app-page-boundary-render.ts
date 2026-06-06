@@ -10,7 +10,6 @@ import { resolveAppPageHead } from "./app-page-head.js";
 import {
   renderAppPageBoundaryResponse,
   resolveAppPageErrorBoundary,
-  resolveAppPageHttpAccessBoundaryComponent,
   resolveAppPageHttpAccessBoundaryModule,
   wrapAppPageBoundaryElement,
   type AppPageParams,
@@ -305,19 +304,12 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
     statusCode: options.statusCode,
   });
   const boundaryModule = options.boundaryModule ?? resolvedBoundaryModule;
-  const boundaryComponent =
-    options.boundaryComponent ??
-    getDefaultExport(boundaryModule) ??
-    resolveAppPageHttpAccessBoundaryComponent({
-      getDefaultExport,
-      rootForbiddenModule: options.rootForbiddenModule,
-      rootNotFoundModule: options.rootNotFoundModule,
-      rootUnauthorizedModule: options.rootUnauthorizedModule,
-      routeForbiddenModule: options.route?.forbidden,
-      routeNotFoundModule: options.route?.notFound,
-      routeUnauthorizedModule: options.route?.unauthorized,
-      statusCode: options.statusCode,
-    });
+  // `boundaryModule` already resolves both the explicit-module and resolved
+  // (status-derived) cases, so `getDefaultExport(boundaryModule)` is the single
+  // source of truth here. A previous `resolveAppPageHttpAccessBoundaryComponent`
+  // fallback was redundant — it re-ran the same `resolveAppPageHttpAccessBoundaryModule`
+  // resolution and produced the same component for the resolved-module path.
+  const boundaryComponent = options.boundaryComponent ?? getDefaultExport(boundaryModule);
   if (!boundaryComponent) {
     return null;
   }
