@@ -337,10 +337,13 @@ export function planSummary(groups, weights) {
 
 // ── CI gate ─────────────────────────────────────────────────────────────
 
-// Aggregates every fail-closed condition into one error list plus the computed
-// plan. Pure: callers handle discovery, reading, logging, and exit codes.
+// `errors` are fail-closed structural invariants (bad schema, shard-count
+// drift, zero discovery, dropped/duplicated file). `warnings` are weight-
+// freshness drift (unknown or stale file): they degrade balance, not
+// correctness, so adding/removing a test must not red CI. Pure.
 export function checkPlan({ discovered, manifest, shardTotal }) {
   const errors = [];
+  const warnings = [];
 
   if (discovered.length === 0) {
     errors.push("Discovered zero integration test files — something is wrong");
@@ -349,7 +352,7 @@ export function checkPlan({ discovered, manifest, shardTotal }) {
   errors.push(...validateManifest(manifest));
 
   // Schema must be sound before comparing file sets / packing.
-  if (errors.length > 0) return { errors, groups: [] };
+  if (errors.length > 0) return { errors, warnings, groups: [] };
 
   if (manifest.shardTotal !== shardTotal) {
     errors.push(
@@ -360,9 +363,15 @@ export function checkPlan({ discovered, manifest, shardTotal }) {
 
   const manifestFiles = Object.keys(manifest.files);
   const missing = discovered.filter((f) => !(f in manifest.files));
-  for (const f of missing) errors.push(`Missing from timing manifest: ${f}`);
+  for (const f of missing) {
+    warnings.push(
+      `No timing for ${f}: packed at ${DEFAULT_TIMING_MS}ms until the manifest is refreshed`,
+    );
+  }
   const stale = manifestFiles.filter((f) => !discovered.includes(f));
-  for (const f of stale) errors.push(`Stale manifest entry (no longer discovered): ${f}`);
+  for (const f of stale) {
+    warnings.push(`Stale manifest entry (no longer discovered): ${f}, drop on next refresh`);
+  }
 
   const weights = manifestWeights(manifest);
   const groups = pack(discovered, weights, shardTotal);
@@ -378,7 +387,7 @@ export function checkPlan({ discovered, manifest, shardTotal }) {
     if (!placedSet.has(f)) errors.push(`File dropped during packing: ${f}`);
   }
 
-  return { errors, groups };
+  return { errors, warnings, groups };
 }
 
 // ── manifest building (refresh) ─────────────────────────────────────────

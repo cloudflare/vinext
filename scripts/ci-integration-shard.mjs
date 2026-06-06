@@ -76,9 +76,15 @@ function runCheck(args) {
 
   const discovered = readDiscoveredIntegrationFiles();
   const manifest = readManifest();
-  const { errors, groups } = checkPlan({ discovered, manifest, shardTotal });
+  const { errors, warnings, groups } = checkPlan({ discovered, manifest, shardTotal });
 
   if (groups.length > 0) printSummary(groups, manifestWeights(manifest), discovered.length);
+
+  // Advisory: plan is valid, CI passes. Annotate so a maintainer refreshes.
+  if (warnings.length > 0) {
+    console.error(`\nIntegration shard manifest warnings (${warnings.length}):`);
+    for (const w of warnings) console.error(`  ::warning::${w}`);
+  }
 
   if (errors.length > 0) {
     console.error(`\nIntegration shard manifest check failed (${errors.length}):`);
@@ -104,6 +110,15 @@ function runShard(shardFlag) {
     console.error("Timing manifest is invalid:");
     for (const e of errors) console.error(`  ${e}`);
     process.exit(1);
+  }
+
+  // Enforce the count invariant at the selection point, not only in --check:
+  // a matrix/manifest mismatch would otherwise silently drop or double-run tests.
+  if (manifest.shardTotal !== total) {
+    die(
+      `Shard-count drift: manifest shardTotal is ${manifest.shardTotal} but --shard requested ${total}. ` +
+        "Update scripts/ci-integration-timings.json and the CI matrix together.",
+    );
   }
 
   const weights = manifestWeights(manifest);
