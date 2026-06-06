@@ -134,26 +134,14 @@ function createImportAllocator(): ImportAllocator {
   };
 }
 
-/**
- * Decide whether a route's page module is loaded lazily.
- *
- * Static-route pages are lazy (kept out of startup evaluation). Dynamic-route
- * pages stay eager because their `generateStaticParams` is referenced directly
- * in the module-level `generateStaticParamsMap` (see
- * `buildGenerateStaticParamsEntries`), which is evaluated at import time and
- * cannot await a dynamic `import()`. Making dynamic-route pages lazy requires
- * reworking the prerender static-params resolver and is tracked separately.
- */
-function isPageLazy(route: AppRoute): boolean {
-  return !!route.pagePath && !route.isDynamic;
-}
-
 function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): void {
   for (const route of routes) {
-    if (route.pagePath) {
-      if (isPageLazy(route)) imports.getLazyLoaderVar(route.pagePath);
-      else imports.getImportVar(route.pagePath);
-    }
+    // All page modules are lazy-loaded so route modules — including dynamic
+    // routes and routes nested under a dynamic segment — stay out of the RSC
+    // entry's top-level evaluation. Their generateStaticParams (if any) is
+    // reached via lazy `{ load }` sources in generateStaticParamsMap, resolved
+    // on demand at prerender time.
+    if (route.pagePath) imports.getLazyLoaderVar(route.pagePath);
     // Route handlers are always lazy: they are never referenced by
     // generateStaticParamsMap (buildGenerateStaticParamsEntries sources only
     // from layouts + page, never route.routePath), so unlike dynamic-route
@@ -260,15 +248,9 @@ ${interceptEntries.join(",\n")}
       ep ? imports.getImportVar(ep) : "null",
     );
     const errorVars = (route.errorPaths ?? []).map((ep) => imports.getImportVar(ep));
-    // Page: lazy for static routes (kept out of startup eval), eager for
-    // dynamic routes (referenced by generateStaticParamsMap at module load).
-    let pageField = "null";
-    let loadPageField = "null";
-    if (route.pagePath) {
-      if (isPageLazy(route)) loadPageField = imports.getLazyLoaderVar(route.pagePath);
-      else pageField = imports.getImportVar(route.pagePath);
-    }
-    // Route handler: always lazy.
+    // Page and route handler are always lazy-loaded; hydrated onto route.page /
+    // route.routeHandler by ensureAppRouteModulesLoaded before any read.
+    const loadPageField = route.pagePath ? imports.getLazyLoaderVar(route.pagePath) : "null";
     const loadRouteHandlerField = route.routePath
       ? imports.getLazyLoaderVar(route.routePath)
       : "null";
@@ -282,7 +264,7 @@ ${interceptEntries.join(",\n")}
     params: ${JSON.stringify(route.params)},
     staticSiblings: ${JSON.stringify(staticSiblings)},
     rootParamNames: ${JSON.stringify(route.rootParamNames ?? [])},
-    page: ${pageField},
+    page: null,
     __loadPage: ${loadPageField},
     routeHandler: null,
     __loadRouteHandler: ${loadRouteHandlerField},
@@ -394,10 +376,13 @@ function buildGenerateStaticParamsEntries(
     }
 
     if (route.pagePath) {
+      // Page modules are lazy; the resolver imports them on demand at prerender
+      // time and reads `.generateStaticParams` then (see
+      // createAppPrerenderStaticParamsResolver).
       appendStaticParamSource(
         sourcesByPattern,
         route.pattern,
-        `${imports.getImportVar(route.pagePath)}?.generateStaticParams`,
+        `{ load: ${imports.getLazyLoaderVar(route.pagePath)} }`,
       );
     }
   }
