@@ -1,51 +1,47 @@
-import { isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
 
 /**
- * Dependencies bundled into vinext's `dist` instead of being kept external.
+ * Absolute path to the `@vinext/cloudflare` cache source.
  *
  * vinext consumes a few runtime helpers from `@vinext/cloudflare`
  * (`KVCacheHandler`, `CloudflareCdnCacheAdapter`, `ENTRY_PREFIX`). Keeping it as
  * an external runtime `dependency` created a cycle
  * (`vinext` -> `@vinext/cloudflare` -> `vinext`, the latter via its `peerDep`),
  * which forced changesets to force-major `@vinext/cloudflare` on every vinext
- * release. Bundling that small surface lets `@vinext/cloudflare` stay a dev-only
+ * release. Bundling that surface lets `@vinext/cloudflare` stay a dev-only
  * dependency, so the install graph only points one way
  * (`@vinext/cloudflare` -> `vinext`).
- *
- * `@vinext/cloudflare` is still published independently: user `vite.config`
- * files import its `cdnAdapter()` / `kvDataAdapter()` builders, and the
- * generated worker resolves its `*.runtime.js` factories by absolute path. The
- * bundled-in code's `vinext/shims/*` imports stay external and resolve through
- * vinext's own package exports at runtime (Node self-referencing).
  */
-const BUNDLED_DEPS = ["@vinext/cloudflare"];
-
-/**
- * Externalize every bare import (npm packages, `node:` builtins, `next/*` and
- * `vinext/*` specifiers resolved by the plugin, `virtual:*` ids) — i.e. the
- * behaviour of `deps.skipNodeModulesBundle` — except the deps in
- * {@link BUNDLED_DEPS}, which are bundled in.
- *
- * The carve-out has to live inside `neverBundle`: tsdown rejects
- * `skipNodeModulesBundle` + `alwaysBundle` as mutually exclusive, and a
- * catch-all `neverBundle` takes precedence over `alwaysBundle`, so the only
- * place to force a single dep to be bundled is here.
- */
-const externalizeAllExceptBundled = (id: string): boolean => {
-  if (BUNDLED_DEPS.some((dep) => id === dep || id.startsWith(`${dep}/`))) {
-    return false;
-  }
-  return !id.startsWith(".") && !isAbsolute(id);
-};
+const cloudflareCacheSrc = fileURLToPath(new URL("../cloudflare/src/cache", import.meta.url));
 
 export default defineConfig({
   pack: {
     entry: ["src/**/*.ts", "src/**/*.tsx", "!src/**/*.d.ts"],
     clean: true,
     deps: {
-      neverBundle: externalizeAllExceptBundled,
-      dts: { neverBundle: externalizeAllExceptBundled },
+      // Keep externalizing node_modules (and rewriting vinext's own
+      // `vinext/shims/*` tsconfig-path self-imports to relative). This must stay
+      // untouched: replacing it with a custom external predicate breaks the
+      // self-import rewrite and duplicates shim modules across Vite's separate
+      // RSC/SSR/client dev graphs (e.g. `instanceof ReadonlyURLSearchParams`).
+      skipNodeModulesBundle: true,
+    },
+    // Bundle `@vinext/cloudflare` in by aliasing its `cache/*` subpath to source.
+    // `skipNodeModulesBundle` externalizes bare package specifiers before
+    // tsconfig paths apply, so the alias rewrites the import to a file path up
+    // front — tsdown then treats it as local source and bundles it. The
+    // bundled code's own `vinext/shims/*` imports still resolve to vinext's
+    // relative output (single module instance). `@vinext/cloudflare` remains a
+    // published package: user `vite.config` files import its `cdnAdapter()` /
+    // `kvDataAdapter()` builders, and the generated worker resolves its
+    // `*.runtime.js` factories by absolute path.
+    inputOptions: {
+      resolve: {
+        alias: {
+          "@vinext/cloudflare/cache": cloudflareCacheSrc,
+        },
+      },
     },
     dts: true,
     fixedExtension: false,
