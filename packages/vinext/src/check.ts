@@ -682,7 +682,9 @@ function collectConfigKeys(source: string): ConfigKeys {
 
   // Resolve an expression to the object literal it denotes, unwrapping variable
   // refs, wrapper calls (`withMDX(config)`, `defineConfig({…})`), TS
-  // `as`/`satisfies`, and parentheses. Depth-bounded to guard against cycles.
+  // `as`/`satisfies`, parentheses, and function-form configs
+  // (`(phase) => ({…})` / `function(phase){ return {…} }`). Depth-bounded to
+  // guard against cycles.
   function resolveObject(
     node: ESTree.Expression | ESTree.SpreadElement | null | undefined,
     depth = 0,
@@ -696,6 +698,18 @@ function collectConfigKeys(source: string): ConfigKeys {
       for (const arg of node.arguments) {
         const obj = resolveObject(arg, depth + 1);
         if (obj) return obj;
+      }
+      return null;
+    }
+    if (node.type === "ArrowFunctionExpression" || node.type === "FunctionExpression") {
+      // Function-form config (a documented Next.js pattern). A concise arrow
+      // body is the expression itself; a block body returns the config from its
+      // first top-level `return`.
+      const body = node.body;
+      if (!body) return null;
+      if (body.type !== "BlockStatement") return resolveObject(body, depth + 1);
+      for (const stmt of body.body) {
+        if (stmt.type === "ReturnStatement") return resolveObject(stmt.argument, depth + 1);
       }
       return null;
     }

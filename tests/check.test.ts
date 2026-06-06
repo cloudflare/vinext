@@ -634,6 +634,38 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
   });
 
+  it("detects options in a concise arrow function config", () => {
+    // Documented Next.js function form: (phase) => config
+    writeFile(
+      "next.config.js",
+      `module.exports = (phase) => ({
+        basePath: "/app",
+        webpack: (config) => config,
+      });`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+  });
+
+  it("detects options in a block-body function config (next/constants PHASE_*)", () => {
+    writeFile(
+      "next.config.js",
+      `module.exports = function (phase, { defaultConfig }) {
+        const isDev = phase === "phase-development-server";
+        return {
+          trailingSlash: true,
+          experimental: { ppr: true },
+        };
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+  });
+
   it.each([
     ["experimental.ppr", "experimental", "ppr: true"],
     ["experimental.typedRoutes", "experimental", "typedRoutes: true"],
