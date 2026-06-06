@@ -37,6 +37,10 @@ const BfcacheIdMapContext = getBfcacheIdMapContext();
 const BfcacheSegmentIdContext = getBfcacheSegmentIdContext();
 const EMPTY_BFCACHE_STATE_KEYS: Readonly<Record<string, string>> = Object.freeze({});
 const MAX_BFCACHE_SLOT_ENTRIES_WITH_CACHE_COMPONENTS = 3;
+// Used by updateBfcacheSlotEntryOrder when invoked directly (unit tests) and
+// as a future-proof limit for non-flag-keyed entries; the current render path
+// (BfcacheActivitySlotBoundary) only runs under cacheComponents, so this 1-entry
+// branch is a contract bound for the helper, not live render code.
 const MAX_BFCACHE_SLOT_ENTRIES_WITHOUT_CACHE_COMPONENTS = 1;
 
 export const BfcacheStateKeyMapContext =
@@ -326,6 +330,9 @@ function BfcacheSlotBoundary({ content, id }: { content: React.ReactNode; id: st
   // state that survives a normal navigation. Reset for genuinely fresh entries is
   // driven by userland bfcacheId keying, not by remounting the slot subtree, so
   // the active entry renders unkeyed here.
+  // NOTE: This diverges from Next.js, which keys the active child by stateKey
+  // even without cacheComponents; vinext defers fresh-entry reset to userland
+  // bfcacheId keying. See use-router-bfcache-id fixture.
   if (!isCacheComponentsEnabled()) {
     return <SegmentContext.Provider value={id}>{content}</SegmentContext.Provider>;
   }
