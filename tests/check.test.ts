@@ -686,6 +686,41 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
   });
 
+  it("detects options across all branches of a multi-phase function config", () => {
+    // Canonical next/constants multi-phase form: the phase-specific config is in
+    // an early return nested in an `if`, and the default config is the trailing
+    // return. Keys from both branches should be reported.
+    writeFile(
+      "next.config.js",
+      `const { PHASE_DEVELOPMENT_SERVER } = require("next/constants");
+      module.exports = (phase, { defaultConfig }) => {
+        if (phase === PHASE_DEVELOPMENT_SERVER) {
+          return { trailingSlash: true, experimental: { ppr: true } };
+        }
+        return { webpack: (config) => config };
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+  });
+
+  it("detects options across both branches of a ternary function config", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default (phase) =>
+        phase === "phase-development-server"
+          ? { trailingSlash: true }
+          : { basePath: "/app" };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
+  });
+
   it.each([
     ["experimental.ppr", "experimental", "ppr: true"],
     ["experimental.typedRoutes", "experimental", "typedRoutes: true"],

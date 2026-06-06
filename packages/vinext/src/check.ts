@@ -680,27 +680,63 @@ function collectConfigKeys(source: string): ConfigKeys {
     }
   }
 
-  // Resolve an expression to the object literal it denotes, unwrapping variable
-  // refs, wrapper calls (`withMDX(config)`, `defineConfig({…})`), TS
-  // `as`/`satisfies`, parentheses, and function-form configs
-  // (`(phase) => ({…})` / `function(phase){ return {…} }` /
-  // `export default function(phase){ return {…} }`). Depth-bounded to
-  // guard against cycles.
-  function resolveObject(
+  // Collect the arguments of every `return` reachable from a function body
+  // without crossing into a nested function. Descends through the control-flow
+  // statements a config might branch on (if/else, switch, try) so the
+  // multi-phase `next/constants` form — where each `phase` branch returns a
+  // different object — contributes all of its branches, not just the first.
+  function collectReturnArgs(
+    stmt: ESTree.Statement | null | undefined,
+    out: ESTree.Expression[],
+  ): void {
+    if (!stmt) return;
+    if (stmt.type === "ReturnStatement") {
+      if (stmt.argument) out.push(stmt.argument);
+    } else if (stmt.type === "BlockStatement") {
+      for (const s of stmt.body) collectReturnArgs(s, out);
+    } else if (stmt.type === "IfStatement") {
+      collectReturnArgs(stmt.consequent, out);
+      collectReturnArgs(stmt.alternate, out);
+    } else if (stmt.type === "SwitchStatement") {
+      for (const c of stmt.cases) for (const s of c.consequent) collectReturnArgs(s, out);
+    } else if (stmt.type === "TryStatement") {
+      collectReturnArgs(stmt.block, out);
+      if (stmt.handler) collectReturnArgs(stmt.handler.body, out);
+      collectReturnArgs(stmt.finalizer, out);
+    }
+    // Other statements (loops, expressions, nested function/class decls) are not
+    // followed — a config object is not produced from them in practice.
+  }
+
+  // Resolve an expression to the object literals it can denote, unwrapping
+  // variable refs, wrapper calls (`withMDX(config)`, `defineConfig({…})`), TS
+  // `as`/`satisfies`, parentheses, conditional branches, and function-form
+  // configs (`(phase) => ({…})` / `function(phase){ return {…} }` /
+  // `export default function(phase){ return {…} }`). Returns multiple objects
+  // when a function or ternary can return different configs per branch (the
+  // multi-phase form), so their keys can be merged. Depth-bounded against cycles.
+  function resolveObjects(
     node: ESTree.Expression | ESTree.SpreadElement | ESTree.Function | null | undefined,
     depth = 0,
-  ): ESTree.ObjectExpression | null {
-    if (!node || depth > 10) return null;
-    if (node.type === "ObjectExpression") return node;
-    if (node.type === "Identifier") return resolveObject(vars.get(node.name), depth + 1);
+  ): ESTree.ObjectExpression[] {
+    if (!node || depth > 10) return [];
+    if (node.type === "ObjectExpression") return [node];
+    if (node.type === "Identifier") return resolveObjects(vars.get(node.name), depth + 1);
     if (node.type === "CallExpression") {
-      // A wrapper like `withMDX(config)` / `defineConfig({…})` — find the first
+      // A wrapper like `withMDX(config)` / `defineConfig({…})` — use the first
       // argument that resolves to an object.
       for (const arg of node.arguments) {
-        const obj = resolveObject(arg, depth + 1);
-        if (obj) return obj;
+        const objs = resolveObjects(arg, depth + 1);
+        if (objs.length) return objs;
       }
-      return null;
+      return [];
+    }
+    if (node.type === "ConditionalExpression") {
+      // `phase === X ? {…} : {…}` — both branches are possible configs.
+      return [
+        ...resolveObjects(node.consequent, depth + 1),
+        ...resolveObjects(node.alternate, depth + 1),
+      ];
     }
     if (
       node.type === "ArrowFunctionExpression" ||
@@ -710,33 +746,31 @@ function collectConfigKeys(source: string): ConfigKeys {
       // (FunctionExpression) and arrow forms.
       node.type === "FunctionDeclaration"
     ) {
-      // Function-form config (a documented Next.js pattern). A concise arrow
-      // body is the expression itself; a block body returns the config from its
-      // first top-level `return`.
+      // Function-form config. A concise arrow body is the expression itself; a
+      // block body contributes every reachable `return`'s object.
       const body = node.body;
-      if (!body) return null;
-      if (body.type !== "BlockStatement") return resolveObject(body, depth + 1);
-      for (const stmt of body.body) {
-        if (stmt.type === "ReturnStatement") return resolveObject(stmt.argument, depth + 1);
-      }
-      return null;
+      if (!body) return [];
+      if (body.type !== "BlockStatement") return resolveObjects(body, depth + 1);
+      const returns: ESTree.Expression[] = [];
+      collectReturnArgs(body, returns);
+      return returns.flatMap((arg) => resolveObjects(arg, depth + 1));
     }
     if (
       node.type === "TSAsExpression" ||
       node.type === "TSSatisfiesExpression" ||
       node.type === "ParenthesizedExpression"
     ) {
-      return resolveObject(node.expression, depth + 1);
+      return resolveObjects(node.expression, depth + 1);
     }
-    return null;
+    return [];
   }
 
-  // Find the exported config object: `export default <expr>` or
+  // Find the exported config object(s): `export default <expr>` or
   // `module.exports = <expr>`.
-  let configObj: ESTree.ObjectExpression | null = null;
+  let configObjs: ESTree.ObjectExpression[] = [];
   for (const node of program.body) {
     if (node.type === "ExportDefaultDeclaration") {
-      configObj = resolveObject(node.declaration as ESTree.Expression | ESTree.Function);
+      configObjs = resolveObjects(node.declaration as ESTree.Expression | ESTree.Function);
     } else if (
       node.type === "ExpressionStatement" &&
       node.expression.type === "AssignmentExpression"
@@ -749,26 +783,29 @@ function collectConfigKeys(source: string): ConfigKeys {
         left.object.name === "module" &&
         left.property.type === "Identifier" &&
         left.property.name === "exports";
-      if (isModuleExports) configObj = resolveObject(right);
+      if (isModuleExports) configObjs = resolveObjects(right);
     }
-    if (configObj) break;
+    if (configObjs.length) break;
   }
 
-  if (!configObj) return { top, nested };
-
-  for (const prop of configObj.properties) {
-    const name = propertyKeyName(prop);
-    if (!name) continue;
-    top.add(name);
-    // `prop` is a non-spread Property here (propertyKeyName returned a name).
-    const childObj = resolveObject((prop as ESTree.ObjectProperty).value);
-    if (!childObj) continue;
-    const children = new Set<string>();
-    for (const childProp of childObj.properties) {
-      const childName = propertyKeyName(childProp);
-      if (childName) children.add(childName);
+  // Merge keys across all candidate config objects (multi-phase branches).
+  for (const configObj of configObjs) {
+    for (const prop of configObj.properties) {
+      const name = propertyKeyName(prop);
+      if (!name) continue;
+      top.add(name);
+      // `prop` is a non-spread Property here (propertyKeyName returned a name).
+      const childObjs = resolveObjects((prop as ESTree.ObjectProperty).value);
+      if (!childObjs.length) continue;
+      const children = nested.get(name) ?? new Set<string>();
+      for (const childObj of childObjs) {
+        for (const childProp of childObj.properties) {
+          const childName = propertyKeyName(childProp);
+          if (childName) children.add(childName);
+        }
+      }
+      nested.set(name, children);
     }
-    nested.set(name, children);
   }
 
   return { top, nested };
