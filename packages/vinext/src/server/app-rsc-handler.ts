@@ -57,6 +57,7 @@ import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import {
   cloneRequestWithHeaders,
+  cloneRequestWithUrl,
   filterInternalHeaders,
   applyConfigHeadersToResponse,
   normalizeTrailingSlash,
@@ -353,8 +354,12 @@ function requestWithoutRscCacheBustingSearchParam(request: Request): Request {
   if (!hasRscCacheBustingSearchParam(url)) return request;
 
   stripRscCacheBustingSearchParam(url);
+  // Clone when a body is present so the original request stays usable, then
+  // reconstruct via `cloneRequestWithUrl` rather than a bare `new Request` so
+  // the Workers `cf` metadata is preserved (user middleware reads it directly)
+  // and `duplex: "half"` is set for streaming bodies.
   const source = request.body ? request.clone() : request;
-  return new Request(url.toString(), source);
+  return cloneRequestWithUrl(source, url.toString());
 }
 
 async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
