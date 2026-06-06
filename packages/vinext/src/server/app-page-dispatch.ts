@@ -977,17 +977,15 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
         routeUnauthorizedModules: options.route.unauthorizeds,
         statusCode,
       });
-      const parentBoundary = parentBoundaryModule?.default;
-      return options.renderHttpAccessFallbackPage(
-        statusCode,
-        {
-          boundaryComponent: parentBoundary,
-          boundaryModule: parentBoundaryModule,
-          layouts: options.route.layouts.slice(0, layoutIndex),
-          matchedParams: options.params,
-        },
-        null,
-      );
+      const fallbackOptions: Parameters<typeof options.renderHttpAccessFallbackPage>[1] = {
+        layouts: options.route.layouts.slice(0, layoutIndex),
+        matchedParams: options.params,
+      };
+      if (parentBoundaryModule) {
+        fallbackOptions.boundaryComponent = parentBoundaryModule.default;
+        fallbackOptions.boundaryModule = parentBoundaryModule;
+      }
+      return options.renderHttpAccessFallbackPage(statusCode, fallbackOptions, null);
     },
     request: options.request,
     specialError,
@@ -1044,24 +1042,17 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
       const useLayoutAlignedBoundary =
         boundaryLayoutIndex !== null &&
         (routeBoundaryModule === null || routeBoundaryModule === parentBoundaryModule);
-      const boundaryComponent = useLayoutAlignedBoundary
-        ? ((parentBoundaryModule as { default?: unknown } | null)?.default ?? undefined)
-        : undefined;
-      const boundaryModule = useLayoutAlignedBoundary ? parentBoundaryModule : null;
-      const layoutsForBoundary =
-        useLayoutAlignedBoundary && boundaryLayoutIndex !== null
-          ? options.route.layouts.slice(0, boundaryLayoutIndex + 1)
-          : undefined;
-      return options.renderHttpAccessFallbackPage(
-        statusCode,
-        {
-          boundaryComponent,
-          boundaryModule,
-          layouts: layoutsForBoundary,
-          matchedParams: options.params,
-        },
-        null,
-      );
+      const fallbackOptions: Parameters<typeof options.renderHttpAccessFallbackPage>[1] = {
+        matchedParams: options.params,
+      };
+      if (useLayoutAlignedBoundary && boundaryLayoutIndex !== null) {
+        fallbackOptions.layouts = options.route.layouts.slice(0, boundaryLayoutIndex + 1);
+        if (parentBoundaryModule) {
+          fallbackOptions.boundaryComponent = parentBoundaryModule.default;
+          fallbackOptions.boundaryModule = parentBoundaryModule;
+        }
+      }
+      return options.renderHttpAccessFallbackPage(statusCode, fallbackOptions, null);
     },
     request: options.request,
     specialError,
