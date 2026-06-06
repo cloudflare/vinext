@@ -294,17 +294,10 @@ export function createInitialBfcacheIdMap(elements: AppElements): BfcacheIdMap {
 }
 
 function normalizeBfcachePathname(pathname: string): string {
-  // Decode and strip trailing slash so SSR and client produce byte-identical
-  // Activity keys regardless of encoding or trailing-slash normalization
-  // differences between the two pathname sources. Malformed percent escapes
-  // should not crash BFCache state-key creation; fall back to the raw pathname.
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    decoded = pathname;
-  }
-  return decoded.length > 1 ? decoded.replace(/\/$/, "") : decoded;
+  // Use the route-match normalizer so decoded delimiters like %2F remain data
+  // inside their segment instead of becoming structural path separators.
+  const normalized = normalizePath(normalizePathnameForRouteMatch(pathname));
+  return normalized.length > 1 ? normalized.replace(/\/$/, "") : normalized;
 }
 
 export function createBfcacheSegmentStateKeyMap(options: {
@@ -343,15 +336,17 @@ export function createNextBfcacheIdMap(options: {
 
   const currentMetadata = readAppElementsMetadata(options.currentElements);
   const nextMetadata = readAppElementsMetadata(options.elements);
+  const currentPathname = normalizeBfcachePathname(options.currentPathname);
+  const nextPathname = normalizeBfcachePathname(options.nextPathname);
   const ids: Record<string, string> = {};
   for (const id of collectBfcacheSegmentIds(options.elements, nextMetadata)) {
     const currentIdentity = createBfcacheSegmentIdentity(id, {
       metadata: currentMetadata,
-      pathname: options.currentPathname,
+      pathname: currentPathname,
     });
     const nextIdentity = createBfcacheSegmentIdentity(id, {
       metadata: nextMetadata,
-      pathname: options.nextPathname,
+      pathname: nextPathname,
     });
     const currentValue = currentIdentity === nextIdentity ? options.current[id] : undefined;
     // History traversals restore persisted ids first, matching segments keep

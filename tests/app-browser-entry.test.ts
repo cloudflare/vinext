@@ -4523,6 +4523,49 @@ describe("app browser entry bfcacheId helpers", () => {
     expect(pageOneKeys[dynamicPageId]).not.toBe(pageTwoKeys[dynamicPageId]);
   });
 
+  it("preserves encoded path delimiters when deriving segment state keys", () => {
+    const pageId = AppElementsWire.encodePageId("/files/[...slug]", null);
+    const encodedKeys = createBfcacheSegmentStateKeyMap({
+      elements: createBfcacheElements(pageId),
+      pathname: "/files/a%2Fb",
+    });
+    const nestedKeys = createBfcacheSegmentStateKeyMap({
+      elements: createBfcacheElements(pageId),
+      pathname: "/files/a/b",
+    });
+
+    expect(encodedKeys[pageId]).toBe(`${pageId}@/files/a%2Fb`);
+    expect(nestedKeys[pageId]).toBe(`${pageId}@/files/a/b`);
+    expect(encodedKeys[pageId]).not.toBe(nestedKeys[pageId]);
+  });
+
+  it("uses route-safe pathname normalization when preserving bfcache ids", () => {
+    const pageId = AppElementsWire.encodePageId("/files/[...slug]", null);
+    const current = {
+      [rootLayoutId]: "0",
+      [groupLayoutId]: "_b_4_",
+      [pageId]: "_b_5_",
+    };
+
+    const equivalentEncoding = createNextBfcacheIdMap({
+      current,
+      currentElements: createBfcacheElements(pageId),
+      currentPathname: "/files/%61",
+      elements: createBfcacheElements(pageId),
+      nextPathname: "/files/a",
+    });
+    const encodedDelimiter = createNextBfcacheIdMap({
+      current,
+      currentElements: createBfcacheElements(pageId),
+      currentPathname: "/files/a%2Fb",
+      elements: createBfcacheElements(pageId),
+      nextPathname: "/files/a/b",
+    });
+
+    expect(equivalentEncoding[pageId]).toBe("_b_5_");
+    expect(encodedDelimiter[pageId]).not.toBe("_b_5_");
+  });
+
   it("falls back to raw pathname for malformed encoded state-key paths", () => {
     const dynamicPageId = AppElementsWire.encodePageId("/page/[n]", null);
     const keys = createBfcacheSegmentStateKeyMap({
