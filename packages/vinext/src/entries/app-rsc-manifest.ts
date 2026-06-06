@@ -121,6 +121,12 @@ function createImportAllocator(): ImportAllocator {
 
       const varName = `load_${lazyIdx++}`;
       const absPath = normalizePathSeparators(filePath);
+      // `filePath` is a trusted filesystem-scan result (route.pagePath /
+      // route.routePath), the same input and trust model as the eager
+      // `import * as ${var} from ${JSON.stringify(absPath)}` in getImportVar
+      // above. CodeQL flags the `import()` form as dynamic code construction,
+      // but this is a build-time codegen template with a JSON-encoded absolute
+      // path, not runtime-attacker-controlled input — a false positive.
       imports.push(`const ${varName} = () => import(${JSON.stringify(absPath)});`);
       lazyMap.set(filePath, varName);
       return varName;

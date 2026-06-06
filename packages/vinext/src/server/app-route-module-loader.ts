@@ -60,13 +60,24 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
   const loading = Promise.all([
     loadPage ? loadPage() : undefined,
     loadRouteHandler ? loadRouteHandler() : undefined,
-  ]).then(([pageModule, routeHandlerModule]) => {
-    if (loadPage) route.page = pageModule;
-    if (loadRouteHandler) route.routeHandler = routeHandlerModule;
-    route.__loaded = true;
-    route.__loading = null;
-    return route;
-  });
+  ])
+    .then(([pageModule, routeHandlerModule]) => {
+      if (loadPage) route.page = pageModule;
+      if (loadRouteHandler) route.routeHandler = routeHandlerModule;
+      route.__loaded = true;
+      route.__loading = null;
+      return route;
+    })
+    .catch((error: unknown) => {
+      // A rejected dynamic import() must not be cached: clearing `__loading`
+      // (and leaving `__loaded` false) lets the next request retry instead of
+      // wedging the route into a permanent failure for the isolate's lifetime.
+      // Re-throw so the current request still observes the error. This mirrors
+      // the eager model, where a module-eval failure is retried per isolate
+      // rather than stuck on a stored rejected promise.
+      route.__loading = null;
+      throw error;
+    });
 
   route.__loading = loading;
   return loading;

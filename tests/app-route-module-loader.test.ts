@@ -90,6 +90,26 @@ describe("ensureAppRouteModulesLoaded", () => {
     expect(route.page).toBe(pageModule);
   });
 
+  it("does not cache a failed import: re-throws and retries on the next call", async () => {
+    const pageModule = { default: () => null };
+    const __loadPage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("chunk load failed"))
+      .mockResolvedValueOnce(pageModule);
+    const route: LazyLoadableRoute = { page: null, __loadPage };
+
+    // First call rejects and the rejection propagates to the caller.
+    await expect(ensureAppRouteModulesLoaded(route)).rejects.toThrow("chunk load failed");
+    // The failure is not stuck: state is reset for a retry.
+    expect(route.__loaded).toBeFalsy();
+    expect(route.__loading).toBeNull();
+
+    // Next call retries the import and succeeds.
+    await ensureAppRouteModulesLoaded(route);
+    expect(route.page).toBe(pageModule);
+    expect(__loadPage).toHaveBeenCalledTimes(2);
+  });
+
   it("tolerates null / undefined routes", () => {
     expect(ensureAppRouteModulesLoaded(null)).toBeNull();
     expect(ensureAppRouteModulesLoaded(undefined)).toBeUndefined();
