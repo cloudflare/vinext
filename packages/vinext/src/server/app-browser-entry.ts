@@ -1908,6 +1908,12 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           }
         }
 
+        // The optimistic shell is intentionally not gated by
+        // `shouldBypassNavigationCache`. A same-page search change can still
+        // render an optimistic shell from cached route templates before the
+        // real fetch commits, but that shell is a detached commit (see below)
+        // that is always superseded by the authoritative fetch — the same as
+        // cross-route navigations — so it never persists stale page content.
         if (!navResponse && navigationKind === "navigate") {
           const routeManifest = getBrowserRouteManifest();
           await learnOptimisticRouteTemplatesFromPrefetchCache({

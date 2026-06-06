@@ -19,15 +19,28 @@ async function closeServer(server: Server): Promise<void> {
   await closed;
 }
 
+async function linkFixtureNodeModules(fixtureRoot: string): Promise<void> {
+  const sourceNodeModules = path.resolve(process.cwd(), "tests/fixtures/app-basic/node_modules");
+  const targetNodeModules = path.join(fixtureRoot, "node_modules");
+
+  await fs.mkdir(targetNodeModules, { recursive: true });
+
+  for (const entry of await fs.readdir(sourceNodeModules, { withFileTypes: true })) {
+    if (entry.name === ".vite-temp") continue;
+
+    await fs.symlink(
+      path.join(sourceNodeModules, entry.name),
+      path.join(targetNodeModules, entry.name),
+      entry.isDirectory() ? "junction" : "file",
+    );
+  }
+}
+
 async function writeHashRscFixture(fixtureRoot: string): Promise<void> {
   const appDir = path.join(fixtureRoot, "app");
   const routeDir = path.join(appDir, "nextjs-compat", "hash-rsc-requests");
   await fs.mkdir(routeDir, { recursive: true });
-  await fs.symlink(
-    path.resolve(process.cwd(), "node_modules"),
-    path.join(fixtureRoot, "node_modules"),
-    "junction",
-  );
+  await linkFixtureNodeModules(fixtureRoot);
 
   await fs.writeFile(
     path.join(fixtureRoot, "package.json"),
@@ -190,6 +203,17 @@ test.describe("Next.js compat: hash RSC requests in production", () => {
           rscRequestUrls.add(request.url());
         }
       });
+      // The fixture middleware returns HTTP 599 if the internal `_rsc`
+      // cache-busting query ever leaks into request.nextUrl. Track every
+      // response so a regression in the `_rsc`-hiding logic fails with a clear
+      // status assertion instead of an indirect scroll-offset mismatch (a 599
+      // on the RSC fetch would hard-navigate rather than soft-navigate).
+      const middlewareLeakResponses: string[] = [];
+      page.on("response", (response) => {
+        if (response.status() === 599) {
+          middlewareLeakResponses.push(response.url());
+        }
+      });
       const checkLink = async (id: number | string, expectedScroll: number) => {
         await page.locator(`#link-to-${id.toString()}`).click();
         await expect.poll(() => page.evaluate(() => window.pageYOffset)).toBe(expectedScroll);
@@ -221,6 +245,10 @@ test.describe("Next.js compat: hash RSC requests in production", () => {
       await expect
         .poll(() => Array.from(rscRequestUrls).some((url) => url.includes("with-query-param")))
         .toBe(true);
+
+      // No request (RSC fetch included) should have leaked `_rsc` to the
+      // fixture middleware, which would have responded with HTTP 599.
+      expect(middlewareLeakResponses).toEqual([]);
     } finally {
       await closeServer(app.server);
       await fs.rm(app.fixtureRoot, { recursive: true, force: true });

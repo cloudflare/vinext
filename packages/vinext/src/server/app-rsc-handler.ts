@@ -40,7 +40,6 @@ import {
   resolveInvalidRscCacheBustingRequest,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
-  VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
 } from "./app-rsc-cache-busting.js";
 import { finalizeAppRscResponse } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
@@ -343,9 +342,15 @@ function applyConfigHeadersToMiddlewareRedirect(
 
 function requestWithoutRscCacheBustingSearchParam(request: Request): Request {
   const url = new URL(request.url);
-  if (!url.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)) return request;
-
+  // Use `stripRscCacheBustingSearchParam` as the single source of truth for
+  // detecting the param too: comparing the search string before/after the
+  // strip keeps the guard and the stripper using identical, encoding-aware
+  // matching (`URLSearchParams.has` decodes keys differently for encoded edge
+  // cases like `%5Frsc`), so they can never diverge.
+  const originalSearch = url.search;
   stripRscCacheBustingSearchParam(url);
+  if (url.search === originalSearch) return request;
+
   const source = request.body ? request.clone() : request;
   return new Request(url.toString(), source);
 }
