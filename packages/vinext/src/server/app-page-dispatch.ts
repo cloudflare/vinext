@@ -15,7 +15,7 @@ import {
   getDraftModeCookieHeader,
   isDraftModeRequest,
   markDynamicUsage,
-  markRenderRequestApiUsage,
+  peekDynamicUsage,
   peekRenderRequestApiUsage,
   setHeadersContext,
 } from "vinext/shims/headers";
@@ -163,7 +163,6 @@ type AppPageDispatchRoute = {
   notFound?: AppPageModule | null;
   notFounds?: readonly (AppPageModule | null | undefined)[];
   params: readonly string[];
-  pageUsesSearchParams?: boolean;
   pattern: string;
   routeSegments: readonly string[];
   unauthorized?: AppPageModule | null;
@@ -471,7 +470,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
-  const pageUsesSearchParams = route.pageUsesSearchParams === true && !isForceStatic;
   const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
   const layoutParamAccess = createAppLayoutParamAccessTracker();
 
@@ -512,22 +510,25 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     });
   }
 
-  if (pageUsesSearchParams) {
-    markDynamicUsage();
-    markRenderRequestApiUsage("searchParams");
+  const pageCacheReadEligibleBeforeProbe = shouldReadAppPageCache({
+    isDraftMode,
+    isForceDynamic,
+    isProgressiveActionRender: options.isProgressiveActionRender === true,
+    isProduction: options.isProduction,
+    isRscRequest: options.isRscRequest,
+    revalidateSeconds: currentRevalidateSeconds,
+    scriptNonce: options.scriptNonce,
+  });
+  let pageProbeUsedDynamicApi = false;
+  if (pageCacheReadEligibleBeforeProbe && !isForceStatic) {
+    const earlyPageProbeResponse = await probeAppPageForCacheEligibility(options);
+    if (earlyPageProbeResponse) {
+      return earlyPageProbeResponse;
+    }
+    pageProbeUsedDynamicApi = peekDynamicUsage();
   }
 
-  if (
-    shouldReadAppPageCache({
-      isDraftMode,
-      isForceDynamic: isForceDynamic || pageUsesSearchParams,
-      isProgressiveActionRender: options.isProgressiveActionRender === true,
-      isProduction: options.isProduction,
-      isRscRequest: options.isRscRequest,
-      revalidateSeconds: currentRevalidateSeconds,
-      scriptNonce: options.scriptNonce,
-    })
-  ) {
+  if (pageCacheReadEligibleBeforeProbe && !pageProbeUsedDynamicApi) {
     const cachedPageResponse = await readAppPageCacheResponse({
       cleanPathname: options.cleanPathname,
       clearRequestContext: options.clearRequestContext,
@@ -922,6 +923,23 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       getRequestExecutionContext()?.waitUntil(cachePromise);
     },
   });
+}
+
+async function probeAppPageForCacheEligibility<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+): Promise<Response | null> {
+  try {
+    await options.runWithSuppressedHookWarning(async () => {
+      await Promise.resolve(options.probePage());
+    });
+    return null;
+  } catch (probeError) {
+    const specialError = resolveAppPageSpecialError(probeError);
+    if (specialError) {
+      return renderPageSpecialError(options, specialError);
+    }
+    return null;
+  }
 }
 
 /**

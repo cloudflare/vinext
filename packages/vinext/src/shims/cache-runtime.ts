@@ -50,6 +50,8 @@ import { markDynamicUsage } from "./headers.js";
 // Constants for nested-dynamic cache life detection
 // ---------------------------------------------------------------------------
 
+const APP_PAGE_PROPS_CACHE_KEY_MARKER = Symbol.for("vinext.appPagePropsCacheKeyMarker");
+
 /** Threshold below which expire is considered "dynamic" (5 minutes in seconds). */
 const DYNAMIC_EXPIRE = 300;
 
@@ -392,6 +394,16 @@ export function clearPrivateCache(): void {
   } else {
     _privateFallbackState._privateCache = new Map();
   }
+}
+
+export function markAppPagePropsForUseCache<T extends object>(props: T): T {
+  Object.defineProperty(props, APP_PAGE_PROPS_CACHE_KEY_MARKER, {
+    configurable: false,
+    enumerable: false,
+    value: true,
+    writable: false,
+  });
+  return props;
 }
 
 // ---------------------------------------------------------------------------
@@ -884,7 +896,7 @@ function unwrapThenableObjects(value: unknown): unknown {
   // Regular object — recurse into values
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(value)) {
-    if (key === "searchParams" && isAppPagePropsObject(value)) {
+    if (key === "searchParams" && isMarkedAppPagePropsObject(value)) {
       continue;
     }
     // oxlint-disable-next-line @typescript-eslint/no-explicit-any
@@ -893,8 +905,8 @@ function unwrapThenableObjects(value: unknown): unknown {
   return result;
 }
 
-function isAppPagePropsObject(value: object): boolean {
-  return Object.hasOwn(value, "params") && Object.hasOwn(value, "searchParams");
+function isMarkedAppPagePropsObject(value: object): boolean {
+  return Reflect.get(value, APP_PAGE_PROPS_CACHE_KEY_MARKER) === true;
 }
 
 function unwrapThenableObjectArray(values: readonly unknown[]): unknown[] {

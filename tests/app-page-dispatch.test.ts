@@ -29,6 +29,12 @@ import {
   runWithExecutionContext,
   type ExecutionContextLike,
 } from "../packages/vinext/src/shims/request-context.js";
+import {
+  consumeDynamicUsage,
+  consumeRenderRequestApiUsage,
+  markDynamicUsage,
+  markRenderRequestApiUsage,
+} from "../packages/vinext/src/shims/headers.js";
 
 type TestRoute = {
   __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
@@ -41,7 +47,6 @@ type TestRoute = {
   loading?: { default?: unknown } | null;
   notFounds?: readonly ({ default?: unknown } | null | undefined)[];
   params: readonly string[];
-  pageUsesSearchParams?: boolean;
   pattern: string;
   routeSegments: readonly string[];
   unauthorizeds?: readonly ({ default?: unknown } | null | undefined)[];
@@ -126,6 +131,7 @@ function createDispatchOptions(
     mountedSlotsHeader?: string | null;
     params?: Record<string, string | string[]>;
     probeLayoutAt?: DispatchOptions["probeLayoutAt"];
+    probePage?: DispatchOptions["probePage"];
     renderToReadableStream?: DispatchOptions["renderToReadableStream"];
     request?: Request;
     revalidateSeconds?: number | null;
@@ -205,9 +211,7 @@ function createDispatchOptions(
     mountedSlotsHeader: overrides.mountedSlotsHeader,
     params,
     probeLayoutAt: overrides.probeLayoutAt ?? createLayoutParamProbe(route, params, []),
-    probePage() {
-      return null;
-    },
+    probePage: overrides.probePage ?? (() => null),
     renderErrorBoundaryPage: vi.fn(async () => null),
     renderHttpAccessFallbackPage: vi.fn(async () => null),
     renderToReadableStream,
@@ -325,6 +329,8 @@ function createLayoutParamProbe(
 
 describe("app page dispatch", () => {
   afterEach(() => {
+    consumeDynamicUsage();
+    consumeRenderRequestApiUsage();
     vi.unstubAllEnvs();
   });
 
@@ -349,15 +355,19 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>cached</html>");
   });
 
-  it("bypasses cached production HTML when the page source uses searchParams", async () => {
+  it("bypasses cached production HTML when the page probe observes searchParams access", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached empty query</html>")),
     );
     const { options } = createDispatchOptions({
       isProduction: true,
       isrGet,
+      probePage() {
+        markDynamicUsage();
+        markRenderRequestApiUsage("searchParams");
+        return null;
+      },
       revalidateSeconds: 60,
-      route: createRoute({ pageUsesSearchParams: true }),
       searchParams: new URLSearchParams("search=hello"),
     });
 
@@ -369,7 +379,30 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>page</html>");
   });
 
-  it("lets force-static override page source searchParams usage", async () => {
+  it("serves cached production HTML when searchParams is only mentioned but not accessed", async () => {
+    const isrGet = vi.fn(async () =>
+      buildISRCacheEntry(buildCachedAppPageValue("<html>cached static page</html>")),
+    );
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrGet,
+      probePage() {
+        const unusedCommentOnlySearchParams = "searchParams";
+        expect(unusedCommentOnlySearchParams).toBe("searchParams");
+        return null;
+      },
+      revalidateSeconds: 60,
+      searchParams: new URLSearchParams("search=hello"),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(isrGet).toHaveBeenCalled();
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(response.text()).resolves.toBe("<html>cached static page</html>");
+  });
+
+  it("lets force-static override observed searchParams access", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached force static</html>")),
     );
@@ -377,8 +410,12 @@ describe("app page dispatch", () => {
       dynamicConfig: "force-static",
       isProduction: true,
       isrGet,
+      probePage() {
+        markDynamicUsage();
+        markRenderRequestApiUsage("searchParams");
+        return null;
+      },
       revalidateSeconds: 60,
-      route: createRoute({ pageUsesSearchParams: true }),
       searchParams: new URLSearchParams("search=hello"),
     });
 

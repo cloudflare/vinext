@@ -249,10 +249,20 @@ export function probeAppPage(options: {
       markRenderRequestApiUsage("searchParams");
     },
   });
-  return (pageComponent as (props: Record<string, unknown>) => unknown)({
+  const result = (pageComponent as (props: Record<string, unknown>) => unknown)({
     params: asyncRouteParams,
     searchParams: asyncSearchParams,
   });
+  if (isPromiseLike(result)) {
+    return result.then(async (resolved) => {
+      await probeReactServerSubtree(resolved);
+      return resolved;
+    });
+  }
+  if (isValidElement(result) || Array.isArray(result)) {
+    return probeReactServerSubtree(result).then(() => result);
+  }
+  return result;
 }
 
 type ProbeAppPageBeforeRenderResult = {

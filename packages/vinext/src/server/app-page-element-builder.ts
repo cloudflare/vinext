@@ -1,4 +1,6 @@
 import { createElement } from "react";
+import { markAppPagePropsForUseCache } from "vinext/shims/cache-runtime";
+import { markDynamicUsage, markRenderRequestApiUsage } from "vinext/shims/headers";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { resolveActiveParallelRouteHeadInputs, resolveAppPageHead } from "./app-page-head.js";
 import {
@@ -190,9 +192,18 @@ export async function buildPageElements<
   });
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(params) };
+  let pageSearchParamsThenable: unknown;
   if (searchParams) {
-    pageProps.searchParams = makeThenableParams(pageSearchParams);
+    pageSearchParamsThenable = makeThenableParams(pageSearchParams, {
+      observeParamAccess() {
+        markDynamicUsage();
+        markRenderRequestApiUsage("searchParams");
+      },
+      observeReactPromiseStatus: true,
+    });
+    pageProps.searchParams = pageSearchParamsThenable;
   }
+  markAppPagePropsForUseCache(pageProps);
 
   const mountedSlotIds = mountedSlotsHeader ? new Set(mountedSlotsHeader.split(" ")) : null;
 
@@ -229,6 +240,7 @@ export async function buildPageElements<
     rootForbiddenModule: rootForbiddenModule ?? null,
     rootUnauthorizedModule: rootUnauthorizedModule ?? null,
     route,
+    searchParams: pageSearchParamsThenable,
     slotOverrides,
     renderMode,
   });

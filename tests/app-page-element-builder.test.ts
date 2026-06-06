@@ -452,10 +452,39 @@ describe("buildPageElements", () => {
       throw new Error("Expected page element");
     }
 
-    await pageElement.props.searchParams;
-
     expect(markDynamicUsageMock).not.toHaveBeenCalled();
     expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
+  });
+
+  it("calls markDynamicUsage when render-tree searchParams is consumed", async () => {
+    function SearchPage(): React.ReactNode {
+      return React.createElement("div", null, "Search");
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(SearchPage),
+      layouts: [],
+      routeSegments: ["search"],
+      pattern: "/search",
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({
+        route,
+        routePath: "/search",
+        searchParams: new URLSearchParams("q=test"),
+      }),
+    );
+    const record = result as Record<string, unknown>;
+    const pageElement = record["page:/search"];
+    if (!React.isValidElement<{ searchParams?: Promise<Record<string, unknown>> }>(pageElement)) {
+      throw new Error("Expected page element");
+    }
+
+    await pageElement.props.searchParams;
+
+    expect(markDynamicUsageMock).toHaveBeenCalled();
+    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
   });
 
   it("does NOT call markDynamicUsage just because the request query has content", async () => {
@@ -540,6 +569,88 @@ describe("buildPageElements", () => {
     const record = result as Record<string, unknown>;
     expect(record[APP_ROUTE_KEY]).toBe("route:/user/[id]");
     expect(Object.prototype.hasOwnProperty.call(record, "page:/user/[id]")).toBe(true);
+  });
+
+  it("passes page searchParams to active slot pages", async () => {
+    function MainPage(): React.ReactNode {
+      return React.createElement("div", null, "main");
+    }
+    function SlotPage(): React.ReactNode {
+      return React.createElement("span", null, "slot");
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(MainPage),
+      layouts: [],
+      routeSegments: ["feed"],
+      pattern: "/feed",
+      slots: {
+        "@modal": {
+          name: "modal",
+          page: createSyntheticPageModule(SlotPage),
+          layoutIndex: -1,
+          routeSegments: [],
+        },
+      },
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({
+        route,
+        routePath: "/feed",
+        searchParams: new URLSearchParams("search=hello"),
+      }),
+    );
+
+    const record = result as Record<string, unknown>;
+    const slotElement = record["slot:modal:/"] as React.ReactElement<{
+      searchParams: PromiseLike<Record<string, unknown>>;
+    }>;
+    expect(slotElement).toBeDefined();
+    await expect(slotElement.props.searchParams).resolves.toEqual({ search: "hello" });
+  });
+
+  it("passes page searchParams to intercepting slot pages", async () => {
+    function MainPage(): React.ReactNode {
+      return React.createElement("div", null, "main");
+    }
+    function InterceptPage(): React.ReactNode {
+      return React.createElement("span", null, "intercept");
+    }
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(MainPage),
+      layouts: [],
+      routeSegments: ["feed"],
+      pattern: "/feed",
+      slots: {
+        "@modal": {
+          name: "modal",
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: -1,
+          routeSegments: [],
+        },
+      },
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({
+        route,
+        routePath: "/feed",
+        searchParams: new URLSearchParams("search=hello"),
+        opts: {
+          interceptSlotKey: "@modal",
+          interceptPage: createSyntheticPageModule(InterceptPage),
+        },
+      }),
+    );
+
+    const record = result as Record<string, unknown>;
+    const slotElement = record["slot:modal:/"] as React.ReactElement<{
+      searchParams: PromiseLike<Record<string, unknown>>;
+    }>;
+    expect(slotElement).toBeDefined();
+    await expect(slotElement.props.searchParams).resolves.toEqual({ search: "hello" });
   });
 
   it("extracts slot params from routePath, not request.url, so basePath does not break the match", async () => {
@@ -636,6 +747,34 @@ describe("probeAppPage", () => {
         asyncRouteParams: makeThenableParams({}),
         pageComponent: SearchPage,
         searchParams: new URLSearchParams(""),
+      }),
+    );
+
+    expect(markDynamicUsageMock).toHaveBeenCalled();
+    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
+  });
+
+  it("calls markDynamicUsage when a returned server component consumes spread searchParams", async () => {
+    async function Child({
+      searchParams,
+    }: {
+      searchParams: Promise<Record<string, unknown>>;
+    }): Promise<React.ReactNode> {
+      await searchParams;
+      return React.createElement("div", null, "Child");
+    }
+
+    function SearchPage(props: {
+      searchParams: Promise<Record<string, unknown>>;
+    }): React.ReactNode {
+      return React.createElement(Child, props);
+    }
+
+    await Promise.resolve(
+      probeAppPage({
+        asyncRouteParams: makeThenableParams({}),
+        pageComponent: SearchPage,
+        searchParams: new URLSearchParams("q=test"),
       }),
     );
 
