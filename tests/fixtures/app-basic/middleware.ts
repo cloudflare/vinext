@@ -243,6 +243,21 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.next({ request: { headers } });
   }
 
+  // Locale rewrite for interception-dynamic-segment-middleware suite.
+  // Scoped exclusively to /interception-mw/* to avoid interfering with other tests.
+  // Mirrors Next.js: test/e2e/app-dir/interception-dynamic-segment-middleware/middleware.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/interception-dynamic-segment-middleware/middleware.ts
+  if (pathname.startsWith("/interception-mw/")) {
+    const withoutPrefix = pathname.slice("/interception-mw".length); // → /foo/p/1
+    const locale = "en";
+    const hasLocale = withoutPrefix.startsWith(`/${locale}/`) || withoutPrefix === `/${locale}`;
+    if (!hasLocale) {
+      const target = request.nextUrl.clone();
+      target.pathname = `/interception-mw/${locale}${withoutPrefix}`;
+      return NextResponse.rewrite(target);
+    }
+  }
+
   // Forward search params as a header for RSC testing
   // Ref: opennextjs-cloudflare middleware.ts — search-params header
   const requestHeaders = new Headers(request.headers);
@@ -347,6 +362,7 @@ export const config = {
     },
     "/mw-gated-fallback-pages",
     "/photos/:path*",
+    "/interception-mw/:path*",
     "/actions",
     "/beforeinteractive-head-ordering/:path*",
     "/beforeinteractive-head-ordering",
