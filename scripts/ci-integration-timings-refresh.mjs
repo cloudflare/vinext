@@ -16,6 +16,10 @@
  * claim stronger provenance than the directory provides. --allow-partial
  * relaxes this to "at least one sample per file" for re-run-failed-shard cases.
  *
+ * --shard-total defaults to the existing manifest's shardTotal, so a plain
+ * refresh preserves the count the CI matrix already uses. Pass it explicitly
+ * only when changing the shard count (and update the matrix to match).
+ *
  * Without --write it prints a dry-run summary and exits non-zero if the
  * manifest would change, so it can double as a freshness check.
  *
@@ -47,15 +51,29 @@ const runIds = args
   .map((a) => a.slice("--run=".length))
   .filter(Boolean);
 const shardTotalRaw = args.find((a) => a.startsWith("--shard-total="));
+// Default to the current manifest's shardTotal so a plain refresh preserves the
+// count the CI matrix already uses. manifest.shardTotal is the single source of
+// truth for the count (the matrix mirrors it and `--check` enforces no drift),
+// so a hardcoded default here would silently drift whenever the count changes.
+// Only an explicit --shard-total changes the count.
+const currentShardTotal = existsSync(MANIFEST_PATH)
+  ? JSON.parse(readFileSync(MANIFEST_PATH, "utf8")).shardTotal
+  : undefined;
 const shardTotal = shardTotalRaw
   ? Number.parseInt(shardTotalRaw.slice("--shard-total=".length), 10)
-  : 6;
+  : currentShardTotal;
 
 if (!blobDir)
   die("Usage: ci-integration-timings-refresh.mjs <blob-dir> --run=<id> [--run=...] [--write]");
 if (runIds.length === 0)
   die("At least one --run=<id> is required so the manifest records its provenance.");
-if (!Number.isInteger(shardTotal) || shardTotal < 1) die(`Invalid --shard-total: ${shardTotalRaw}`);
+if (!Number.isInteger(shardTotal) || shardTotal < 1) {
+  die(
+    shardTotalRaw
+      ? `Invalid --shard-total: ${shardTotalRaw}`
+      : "No --shard-total given and the existing manifest has no valid shardTotal to inherit. Pass --shard-total=N.",
+  );
+}
 
 // Discover the authoritative file set so we can fail closed when the blobs do
 // not cover every integration test file. A single complete successful CI run
