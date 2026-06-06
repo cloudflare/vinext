@@ -6,7 +6,7 @@ import {
 } from "./layout-classification.js";
 import type { ModuleGraphStaticReason } from "./layout-classification-types.js";
 import {
-  buildGenerateBundleReplacement,
+  buildClassificationReplacement,
   buildReasonsReplacement,
   type RouteClassificationManifest,
 } from "./route-classification-manifest.js";
@@ -152,7 +152,7 @@ export function planRouteClassificationInjection(
   }
 
   const layer2PerRoute = buildLayer2Classifications(options);
-  const replacement = buildGenerateBundleReplacement(options.manifest, layer2PerRoute);
+  const replacement = buildClassificationReplacement(options.manifest, layer2PerRoute);
   const patchedBody = `function __VINEXT_CLASS(routeIdx) { return (${replacement})(routeIdx); }`;
   let code = target.code.replace(CLASS_STUB_RE, patchedBody);
 

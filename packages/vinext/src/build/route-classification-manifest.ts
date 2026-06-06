@@ -200,13 +200,13 @@ function buildRouteDispatchReplacement(
  * Builds a JavaScript arrow-function expression that dispatches route index
  * to a pre-computed `Map<layoutIndex, "static" | "dynamic">` of build-time
  * classifications. The returned string is suitable for embedding into the
- * generated RSC entry via `generateBundle`.
+ * generated RSC entry via the `renderChunk` hook.
  *
  * `layer2PerRoute` is typed to only carry `"static"` entries — the
  * module-graph classifier can only prove static, so "needs-probe" results
  * are omitted by the caller before this map is constructed.
  */
-export function buildGenerateBundleReplacement(
+export function buildClassificationReplacement(
   manifest: RouteClassificationManifest,
   layer2PerRoute: ReadonlyMap<number, ReadonlyMap<number, ModuleGraphStaticReason>>,
 ): string {
@@ -216,14 +216,14 @@ export function buildGenerateBundleReplacement(
 }
 
 /**
- * Sibling of `buildGenerateBundleReplacement`: emits a dispatch function
+ * Sibling of `buildClassificationReplacement`: emits a dispatch function
  * that returns `Map<layoutIndex, ClassificationReason>` per route.
  *
  * The runtime consults this map only when `VINEXT_DEBUG_CLASSIFICATION` is
  * set, and the plugin only patches this dispatcher into the built bundle when
  * that env var is present at build time.
  *
- * Layer 1 priority applies the same way as in `buildGenerateBundleReplacement`:
+ * Layer 1 priority applies the same way as in `buildClassificationReplacement`:
  * a segment-config reason must override a module-graph reason for the same
  * layout index.
  */
