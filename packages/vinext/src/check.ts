@@ -6,14 +6,7 @@
  */
 
 import { detectPackageManager } from "./utils/project.js";
-import {
-  parseSync,
-  type Expression,
-  type ObjectExpression,
-  type ObjectProperty,
-  type ObjectPropertyKind,
-  type SpreadElement,
-} from "oxc-parser";
+import { parseAst, type ESTree } from "vite";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -646,7 +639,7 @@ type ConfigKeys = {
 };
 
 /** The property key name of an object property, or null for spreads/computed keys. */
-function propertyKeyName(prop: ObjectPropertyKind): string | null {
+function propertyKeyName(prop: ESTree.ObjectExpression["properties"][number]): string | null {
   if (prop.type !== "Property" || prop.computed) return null;
   const { key } = prop;
   if (key.type === "Identifier") return key.name;
@@ -659,25 +652,27 @@ function propertyKeyName(prop: ObjectPropertyKind): string | null {
  * object — top-level keys plus, for each object-valued property, its child keys
  * (used for dot-notation options like `experimental.ppr`).
  *
- * Uses the oxc parser (the project's own toolchain) instead of scanning text, so
+ * Uses Vite's `parseAst` (the bundled oxc parser) instead of scanning text, so
  * comments, string values, and other non-key mentions of an option name are
  * never mistaken for a real config option. Returns empty sets if the file cannot
  * be parsed — the check is advisory, so a parse failure simply reports nothing.
  */
-function collectConfigKeys(configPath: string, source: string): ConfigKeys {
+function collectConfigKeys(source: string): ConfigKeys {
   const top = new Set<string>();
   const nested = new Map<string, Set<string>>();
 
-  let program;
+  let program: ESTree.Program;
   try {
-    program = parseSync(configPath, source).program;
+    // Parse as TS (a superset of JS) so `.ts` configs with type annotations,
+    // `as`, and `satisfies` parse the same as `.js`/`.mjs`.
+    program = parseAst(source, { lang: "ts" });
   } catch {
     return { top, nested };
   }
 
   // Index top-level variable declarations so a config assigned to a variable and
   // exported later (`const config = {…}; export default config`) can be resolved.
-  const vars = new Map<string, Expression>();
+  const vars = new Map<string, ESTree.Expression>();
   for (const node of program.body) {
     if (node.type !== "VariableDeclaration") continue;
     for (const decl of node.declarations) {
@@ -689,9 +684,9 @@ function collectConfigKeys(configPath: string, source: string): ConfigKeys {
   // refs, wrapper calls (`withMDX(config)`, `defineConfig({…})`), TS
   // `as`/`satisfies`, and parentheses. Depth-bounded to guard against cycles.
   function resolveObject(
-    node: Expression | SpreadElement | null | undefined,
+    node: ESTree.Expression | ESTree.SpreadElement | null | undefined,
     depth = 0,
-  ): ObjectExpression | null {
+  ): ESTree.ObjectExpression | null {
     if (!node || depth > 10) return null;
     if (node.type === "ObjectExpression") return node;
     if (node.type === "Identifier") return resolveObject(vars.get(node.name), depth + 1);
@@ -716,10 +711,10 @@ function collectConfigKeys(configPath: string, source: string): ConfigKeys {
 
   // Find the exported config object: `export default <expr>` or
   // `module.exports = <expr>`.
-  let configObj: ObjectExpression | null = null;
+  let configObj: ESTree.ObjectExpression | null = null;
   for (const node of program.body) {
     if (node.type === "ExportDefaultDeclaration") {
-      configObj = resolveObject(node.declaration as Expression);
+      configObj = resolveObject(node.declaration as ESTree.Expression);
     } else if (
       node.type === "ExpressionStatement" &&
       node.expression.type === "AssignmentExpression"
@@ -744,7 +739,7 @@ function collectConfigKeys(configPath: string, source: string): ConfigKeys {
     if (!name) continue;
     top.add(name);
     // `prop` is a non-spread Property here (propertyKeyName returned a name).
-    const childObj = resolveObject((prop as ObjectProperty).value);
+    const childObj = resolveObject((prop as ESTree.ObjectProperty).value);
     if (!childObj) continue;
     const children = new Set<string>();
     for (const childProp of childObj.properties) {
@@ -793,7 +788,7 @@ export function analyzeConfig(root: string): CheckItem[] {
   // Parse the config to an AST and read the option keys off the exported config
   // object. This is exact: a mention of an option name in a comment or string
   // value is not a property key, so it is never reported.
-  const present = collectConfigKeys(configPath, fs.readFileSync(configPath, "utf-8"));
+  const present = collectConfigKeys(fs.readFileSync(configPath, "utf-8"));
   const items: CheckItem[] = [];
 
   // Known top-level options we report on when present in the config object.
