@@ -431,6 +431,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     // from key). Falls back to stableStringify when RSC is unavailable.
     let cacheKey: string;
     try {
+      const processedArgs = args.length > 0 ? unwrapThenableObjectArray(args) : [];
       if (rsc && args.length > 0) {
         // Temporary references let encodeReply handle non-serializable values
         // (like React elements in args) by excluding them from the key.
@@ -443,13 +444,12 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         // values (e.g., section:"sports" vs section:"electronics") produce
         // identical cache keys. We must extract the plain data so the actual
         // values are included in the cache key.
-        const processedArgs = unwrapThenableObjectArray(args);
         const encoded = await rsc.encodeReply(processedArgs, {
           temporaryReferences: tempRefs,
         });
         cacheKey = buildUseCacheKey(id, keySeed, await replyToCacheKey(encoded));
       } else {
-        const argsKey = args.length > 0 ? stableStringify(args) : undefined;
+        const argsKey = processedArgs.length > 0 ? stableStringify(processedArgs) : undefined;
         cacheKey = buildUseCacheKey(id, keySeed, argsKey);
       }
     } catch {
@@ -884,10 +884,17 @@ function unwrapThenableObjects(value: unknown): unknown {
   // Regular object — recurse into values
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(value)) {
+    if (key === "searchParams" && isAppPagePropsObject(value)) {
+      continue;
+    }
     // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     result[key] = unwrapThenableObjects((value as any)[key]);
   }
   return result;
+}
+
+function isAppPagePropsObject(value: object): boolean {
+  return Object.hasOwn(value, "params") && Object.hasOwn(value, "searchParams");
 }
 
 function unwrapThenableObjectArray(values: readonly unknown[]): unknown[] {

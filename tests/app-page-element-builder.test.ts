@@ -16,6 +16,7 @@ import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params
 // eslint-disable-next-line import/first
 import { buildPageElements } from "../packages/vinext/src/server/app-page-element-builder.js";
 import type { AppPageBuildRoute } from "../packages/vinext/src/server/app-page-element-builder.js";
+import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -422,7 +423,7 @@ describe("buildPageElements", () => {
     ).rejects.toThrow("App Router slot id mismatch");
   });
 
-  it("calls markDynamicUsage when the page awaits searchParams, even when the query is empty", async () => {
+  it("does NOT call markDynamicUsage while wiring searchParams into the render tree", async () => {
     function SearchPage(): React.ReactNode {
       return React.createElement("div", null, "Search");
     }
@@ -453,8 +454,8 @@ describe("buildPageElements", () => {
 
     await pageElement.props.searchParams;
 
-    expect(markDynamicUsageMock).toHaveBeenCalled();
-    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
+    expect(markDynamicUsageMock).not.toHaveBeenCalled();
+    expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
   });
 
   it("does NOT call markDynamicUsage just because the request query has content", async () => {
@@ -611,5 +612,49 @@ describe("buildPageElements", () => {
     return thenable.then((resolved: AppPageParams) => {
       expect(resolved).toEqual(plainParams);
     });
+  });
+});
+
+describe("probeAppPage", () => {
+  beforeEach(() => {
+    markDynamicUsageMock.mockClear();
+    markRenderRequestApiUsageMock.mockClear();
+  });
+
+  it("calls markDynamicUsage when the page awaits searchParams, even when the query is empty", async () => {
+    async function SearchPage({
+      searchParams,
+    }: {
+      searchParams: Promise<Record<string, unknown>>;
+    }): Promise<React.ReactNode> {
+      await searchParams;
+      return React.createElement("div", null, "Search");
+    }
+
+    await Promise.resolve(
+      probeAppPage({
+        asyncRouteParams: makeThenableParams({}),
+        pageComponent: SearchPage,
+        searchParams: new URLSearchParams(""),
+      }),
+    );
+
+    expect(markDynamicUsageMock).toHaveBeenCalled();
+    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
+  });
+
+  it("does NOT call markDynamicUsage just because the request query has content", () => {
+    function NoSearchPage(): React.ReactNode {
+      return React.createElement("div", null, "No Search");
+    }
+
+    probeAppPage({
+      asyncRouteParams: makeThenableParams({}),
+      pageComponent: NoSearchPage,
+      searchParams: new URLSearchParams("q=test"),
+    });
+
+    expect(markDynamicUsageMock).not.toHaveBeenCalled();
+    expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
   });
 });

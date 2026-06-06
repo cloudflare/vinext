@@ -1,4 +1,5 @@
 import { Fragment, isValidElement, type ReactElement, type ReactNode } from "react";
+import { markDynamicUsage, markRenderRequestApiUsage } from "vinext/shims/headers";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { collectAppPageSearchParams } from "./app-page-head.js";
 import {
@@ -242,7 +243,12 @@ export function probeAppPage(options: {
     return null;
   }
   const { pageSearchParams } = collectAppPageSearchParams(searchParams);
-  const asyncSearchParams = makeThenableParams(pageSearchParams);
+  const asyncSearchParams = makeThenableParams(pageSearchParams, {
+    observeParamAccess() {
+      markDynamicUsage();
+      markRenderRequestApiUsage("searchParams");
+    },
+  });
   return (pageComponent as (props: Record<string, unknown>) => unknown)({
     params: asyncRouteParams,
     searchParams: asyncSearchParams,

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import {
   computeAppRouteStaticSiblings,
   convertSegmentsToRouteParts,
@@ -162,6 +163,24 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
 }
 
 function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string[] {
+  const pageSearchParamsUsage = new Map<string, boolean>();
+
+  function pageUsesSearchParams(pagePath: string | null): boolean {
+    if (!pagePath) return false;
+    const cached = pageSearchParamsUsage.get(pagePath);
+    if (cached !== undefined) return cached;
+
+    let source: string;
+    try {
+      source = fs.readFileSync(pagePath, "utf8");
+    } catch (cause) {
+      throw new Error(`vinext: failed to read page for route manifest at ${pagePath}`, { cause });
+    }
+    const usesSearchParams = /\bsearchParams\b/.test(source);
+    pageSearchParamsUsage.set(pagePath, usesSearchParams);
+    return usesSearchParams;
+  }
+
   return routes.map((route, routeIdx) => {
     // Pre-compute static-sibling segment names for the matched route's
     // dynamic URL levels. The client router uses this to decide if a cached
@@ -223,6 +242,7 @@ ${interceptEntries.join(",\n")}
     staticSiblings: ${JSON.stringify(staticSiblings)},
     rootParamNames: ${JSON.stringify(route.rootParamNames ?? [])},
     page: ${route.pagePath ? imports.getImportVar(route.pagePath) : "null"},
+    pageUsesSearchParams: ${pageUsesSearchParams(route.pagePath)},
     routeHandler: ${route.routePath ? imports.getImportVar(route.routePath) : "null"},
     layouts: [${layoutVars.join(", ")}],
     routeSegments: ${JSON.stringify(route.routeSegments)},

@@ -15,6 +15,7 @@ import {
   getDraftModeCookieHeader,
   isDraftModeRequest,
   markDynamicUsage,
+  markRenderRequestApiUsage,
   peekRenderRequestApiUsage,
   setHeadersContext,
 } from "vinext/shims/headers";
@@ -162,6 +163,7 @@ type AppPageDispatchRoute = {
   notFound?: AppPageModule | null;
   notFounds?: readonly (AppPageModule | null | undefined)[];
   params: readonly string[];
+  pageUsesSearchParams?: boolean;
   pattern: string;
   routeSegments: readonly string[];
   unauthorized?: AppPageModule | null;
@@ -469,6 +471,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
+  const pageUsesSearchParams = route.pageUsesSearchParams === true && !isForceStatic;
   const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
   const layoutParamAccess = createAppLayoutParamAccessTracker();
 
@@ -509,10 +512,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     });
   }
 
+  if (pageUsesSearchParams) {
+    markDynamicUsage();
+    markRenderRequestApiUsage("searchParams");
+  }
+
   if (
     shouldReadAppPageCache({
       isDraftMode,
-      isForceDynamic,
+      isForceDynamic: isForceDynamic || pageUsesSearchParams,
       isProgressiveActionRender: options.isProgressiveActionRender === true,
       isProduction: options.isProduction,
       isRscRequest: options.isRscRequest,

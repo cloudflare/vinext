@@ -41,6 +41,7 @@ type TestRoute = {
   loading?: { default?: unknown } | null;
   notFounds?: readonly ({ default?: unknown } | null | undefined)[];
   params: readonly string[];
+  pageUsesSearchParams?: boolean;
   pattern: string;
   routeSegments: readonly string[];
   unauthorizeds?: readonly ({ default?: unknown } | null | undefined)[];
@@ -106,6 +107,7 @@ function createDispatchOptions(
     buildPageElement?: DispatchOptions["buildPageElement"];
     cleanPathname?: string;
     clearRequestContext?: DispatchOptions["clearRequestContext"];
+    dynamicConfig?: DispatchOptions["dynamicConfig"];
     findIntercept?: DispatchOptions["findIntercept"];
     generateStaticParams?: DispatchOptions["generateStaticParams"];
     formState?: DispatchOptions["formState"];
@@ -158,6 +160,7 @@ function createDispatchOptions(
       return () => null;
     },
     draftModeSecret: "draft-secret",
+    dynamicConfig: overrides.dynamicConfig,
     findIntercept: overrides.findIntercept ?? (() => null),
     generateStaticParams: overrides.generateStaticParams ?? null,
     getFontLinks() {
@@ -344,6 +347,46 @@ describe("app page dispatch", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toBe("<html>cached</html>");
+  });
+
+  it("bypasses cached production HTML when the page source uses searchParams", async () => {
+    const isrGet = vi.fn(async () =>
+      buildISRCacheEntry(buildCachedAppPageValue("<html>cached empty query</html>")),
+    );
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrGet,
+      revalidateSeconds: 60,
+      route: createRoute({ pageUsesSearchParams: true }),
+      searchParams: new URLSearchParams("search=hello"),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+  });
+
+  it("lets force-static override page source searchParams usage", async () => {
+    const isrGet = vi.fn(async () =>
+      buildISRCacheEntry(buildCachedAppPageValue("<html>cached force static</html>")),
+    );
+    const { options } = createDispatchOptions({
+      dynamicConfig: "force-static",
+      isProduction: true,
+      isrGet,
+      revalidateSeconds: 60,
+      route: createRoute({ pageUsesSearchParams: true }),
+      searchParams: new URLSearchParams("search=hello"),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(isrGet).toHaveBeenCalled();
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(response.text()).resolves.toBe("<html>cached force static</html>");
   });
 
   it("bypasses cached production HTML when draft mode is enabled", async () => {
