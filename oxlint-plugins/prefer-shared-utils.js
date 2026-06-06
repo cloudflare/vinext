@@ -11,9 +11,11 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const VINEXT_SOURCE_SEGMENT = "/packages/vinext/src/";
 const VINEXT_SOURCE_ROOT = "packages/vinext/src";
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const STATIC_HELPER_MODULES = [
   "plugins/ast-utils.ts",
@@ -78,7 +80,7 @@ function listUtilsModules(srcRootAbs) {
 }
 
 function buildSharedUtilities() {
-  const srcRootAbs = path.resolve(process.cwd(), VINEXT_SOURCE_ROOT);
+  const srcRootAbs = path.resolve(REPO_ROOT, VINEXT_SOURCE_ROOT);
   const modulePaths = [...listUtilsModules(srcRootAbs), ...STATIC_HELPER_MODULES];
   const shared = new Map(MANUAL_ALIASES);
 

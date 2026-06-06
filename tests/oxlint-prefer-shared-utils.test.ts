@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const SRC_ROOT = path.resolve(import.meta.dirname, "../packages/vinext/src");
 
 let fixtureDir: string | undefined;
+let fixtureLinkDir: string | undefined;
 
 function createFixtureDir(): string {
-  fixtureDir = fs.mkdtempSync(path.join(SRC_ROOT, "__lint_rule_fixtures__-"));
+  fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-lint-rule-fixtures-"));
+  fixtureLinkDir = path.join(SRC_ROOT, `__lint_rule_fixtures__-${path.basename(fixtureDir)}`);
+  fs.symlinkSync(fixtureDir, fixtureLinkDir, "dir");
   return fixtureDir;
 }
 
@@ -16,7 +20,7 @@ function writeFixture(name: string, source: string): string {
   const dir = fixtureDir ?? createFixtureDir();
   const file = path.join(dir, name);
   fs.writeFileSync(file, source, "utf-8");
-  return file;
+  return path.join(fixtureLinkDir ?? dir, name);
 }
 
 function runLint(files: readonly string[]): { status: number | null; output: string } {
@@ -32,6 +36,10 @@ function runLint(files: readonly string[]): { status: number | null; output: str
 }
 
 afterEach(() => {
+  if (fixtureLinkDir) {
+    fs.rmSync(fixtureLinkDir, { force: true });
+    fixtureLinkDir = undefined;
+  }
   if (!fixtureDir) return;
   fs.rmSync(fixtureDir, { recursive: true, force: true });
   fixtureDir = undefined;
