@@ -3883,9 +3883,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // `__vinext_img_url_X is not defined`.
           const imageExtRe = new RegExp(`\\.(${IMAGE_EXTS})$`);
 
+          // This plugin uses `enforce: "pre"`, so the handler runs on RAW
+          // source — before the JSX/TS transform. `parseAst` defaults to plain
+          // JavaScript and would throw on JSX or TS type annotations, which
+          // would silently skip image transforms for every `.tsx`/`.jsx`/typed
+          // `.ts` file. Parse as `tsx` so JSX + TS + JS all parse. (The adjacent
+          // `use-cache` plugin avoids this by running after the JSX transform;
+          // we can't, since the import must be rewritten before Vite resolves
+          // the asset.)
           let ast: ReturnType<typeof parseAst>;
           try {
-            ast = parseAst(code);
+            ast = parseAst(code, { lang: "tsx" });
           } catch {
             // Unparseable input (e.g. unsupported syntax) — leave untouched.
             return null;

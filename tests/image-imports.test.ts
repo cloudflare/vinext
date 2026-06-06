@@ -273,4 +273,43 @@ describe("vinext:image-imports — transform", () => {
     const result = await transform.call(plugin, code, fakeId);
     expect(result).toBeNull();
   });
+
+  // Regression: the plugin runs with `enforce: "pre"`, so the handler sees RAW
+  // source containing JSX and TS type annotations. `parseAst` defaults to plain
+  // JS and throws on that syntax; if the handler swallows the error and returns
+  // null, image imports in every real component silently skip transformation
+  // (hero.src/width/height become undefined). These cases use real TSX/TS
+  // syntax that plain-JS parsing would reject.
+  it("transforms an image import in a TSX component (JSX in body)", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import Image from 'next/image';`,
+      `import hero from './test-4x3.png';`,
+      `export default function Home() {`,
+      `  return <Image src={hero} alt="hero" width={100} height={100} />;`,
+      `}`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, fakeId);
+    expect(result).not.toBeNull();
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+    // JSX is left intact for the downstream JSX transform.
+    expect(result.code).toContain(`<Image src={hero}`);
+  });
+
+  it("transforms an image import in a typed .ts file (type annotations)", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import hero from './test-4x3.png';`,
+      `const count: number = 1;`,
+      `function load(arg: string): void { console.log(arg, count); }`,
+      `console.log(hero);`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, path.join(IMAGES_DIR, "page.ts"));
+    expect(result).not.toBeNull();
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+    // Type annotations are preserved for the downstream TS transform.
+    expect(result.code).toContain(`const count: number = 1;`);
+  });
 });
