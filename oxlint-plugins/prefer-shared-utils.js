@@ -130,6 +130,30 @@ function maskCommentsAndQuotedStrings(source) {
       i = rangeEnd;
       continue;
     }
+    if (current === "`") {
+      // Skip over template literals without masking their contents. The rule
+      // intentionally scans generated source embedded in template strings, so
+      // the body must stay intact. Advancing past the literal here also stops
+      // an apostrophe or `/* */` sequence *inside* the template from being
+      // mistaken for a string/comment opener (which would otherwise mask
+      // across a subsequent helper definition and produce a false negative).
+      // `${...}` interpolations are not parsed as code; they are scanned as
+      // part of the template body, which is acceptable for declaration matching.
+      let end = i + 1;
+      while (end < masked.length) {
+        if (masked[end] === "\\") {
+          end += 2;
+          continue;
+        }
+        if (masked[end] === "`") {
+          end += 1;
+          break;
+        }
+        end += 1;
+      }
+      i = end;
+      continue;
+    }
     if (current === '"' || current === "'") {
       const quote = current;
       let end = i + 1;

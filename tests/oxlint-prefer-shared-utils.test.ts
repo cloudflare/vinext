@@ -93,6 +93,20 @@ export function findFileWithExts(): boolean {
 }
 `,
     );
+    // A helper definition embedded in a template literal that also contains an
+    // apostrophe and a block-comment sequence before it. These must not be
+    // treated as string/comment openers that mask the subsequent definition.
+    const templateApostropheFile = writeFixture(
+      "template-apostrophe.ts",
+      `
+export const generatedSource = \`
+This template body documents the user's generated output.
+function findFileWithExts(value) {
+  return value;
+}
+\`;
+`,
+    );
 
     const result = runLint([
       functionFile,
@@ -101,6 +115,7 @@ export function findFileWithExts(): boolean {
       exportConstFile,
       semanticAliasFile,
       reExportFile,
+      templateApostropheFile,
     ]);
 
     expect(result.status).not.toBe(0);
@@ -110,6 +125,7 @@ export function findFileWithExts(): boolean {
     expect(result.output).toContain("export-const-helper.ts");
     expect(result.output).toContain("semantic-alias-helper.ts");
     expect(result.output).toContain("re-export-helper.ts");
+    expect(result.output).toContain("template-apostrophe.ts");
     expect(result.output).toContain("Use shared isPromiseLike");
     expect(result.output).toContain("Use shared compareStrings");
     expect(result.output).toContain("Use shared compareAppElementsSlotIds");
