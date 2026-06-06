@@ -94,6 +94,10 @@ function isPromiseContinuation(prop: PropertyKey): boolean {
   return prop === "then" || prop === "catch" || prop === "finally";
 }
 
+function isReactPromiseStatusRead(prop: PropertyKey): boolean {
+  return prop === "status";
+}
+
 export function makeThenableParams<T extends Record<string, unknown>>(
   obj: T,
   observer?: ThenableParamsObserver,
@@ -107,6 +111,11 @@ export function makeThenableParams<T extends Record<string, unknown>>(
   // the boundary so the handler above stays fully type-checked.
   return new Proxy(promise, {
     get(target, prop, receiver) {
+      if (isReactPromiseStatusRead(prop)) {
+        observeAllParamKeys(observer, plain);
+        return Reflect.get(target, prop, receiver);
+      }
+
       if (isPromiseContinuation(prop)) {
         const value = Reflect.get(target, prop, receiver);
         if (typeof value !== "function") return value;

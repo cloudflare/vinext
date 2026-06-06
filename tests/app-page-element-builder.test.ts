@@ -422,7 +422,7 @@ describe("buildPageElements", () => {
     ).rejects.toThrow("App Router slot id mismatch");
   });
 
-  it("calls markDynamicUsage when search params have content", async () => {
+  it("calls markDynamicUsage when the page awaits searchParams, even when the query is empty", async () => {
     function SearchPage(): React.ReactNode {
       return React.createElement("div", null, "Search");
     }
@@ -434,19 +434,30 @@ describe("buildPageElements", () => {
       pattern: "/search",
     });
 
-    await buildPageElements(
+    const result = await buildPageElements(
       createBaseOptions({
         route,
         routePath: "/search",
-        searchParams: new URLSearchParams("q=test"),
+        searchParams: new URLSearchParams(""),
       }),
     );
+    const record = result as Record<string, unknown>;
+    const pageElement = record["page:/search"];
+    expect(
+      React.isValidElement<{ searchParams?: Promise<Record<string, unknown>> }>(pageElement),
+    ).toBe(true);
+
+    if (!React.isValidElement<{ searchParams?: Promise<Record<string, unknown>> }>(pageElement)) {
+      throw new Error("Expected page element");
+    }
+
+    await pageElement.props.searchParams;
 
     expect(markDynamicUsageMock).toHaveBeenCalled();
     expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
   });
 
-  it("does NOT call markDynamicUsage when search params are empty", async () => {
+  it("does NOT call markDynamicUsage just because the request query has content", async () => {
     function NoSearchPage(): React.ReactNode {
       return React.createElement("div", null, "No Search");
     }
@@ -462,7 +473,7 @@ describe("buildPageElements", () => {
       createBaseOptions({
         route,
         routePath: "/no-search",
-        searchParams: new URLSearchParams(""),
+        searchParams: new URLSearchParams("q=test"),
       }),
     );
 
