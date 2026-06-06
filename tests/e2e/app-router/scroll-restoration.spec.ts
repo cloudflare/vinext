@@ -26,10 +26,12 @@ test.describe("App Router scroll restoration", () => {
     expect(scrollPosition).toBeGreaterThan(0);
 
     await page.locator('a[href="/scroll-restoration/other"]').click();
+    await expect(page).toHaveURL(`${BASE}/scroll-restoration/other`);
     await expect(page.locator("#back-button")).toBeVisible();
     await page.locator("#back-button").click();
+    await expect(page).toHaveURL(`${BASE}/scroll-restoration`);
+    await expect(body).toContainText("Item 200");
 
-    const newScrollPosition = await page.evaluate(() => window.pageYOffset);
-    expect(newScrollPosition).toEqual(scrollPosition);
+    await expect.poll(() => page.evaluate(() => window.pageYOffset)).toEqual(scrollPosition);
   });
 });

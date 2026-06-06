@@ -1,8 +1,9 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useState } from "react";
 import { LinkAccordion } from "../../components/link-accordion";
-import { refreshAction } from "../../actions";
+import { refreshAction, returnValueOnlyAction } from "../../actions";
 
 const base = "/nextjs-compat/use-router-bfcache-id";
 
@@ -11,6 +12,7 @@ export function LeafContent() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const search = searchParams.toString();
+  const [returnValue, setReturnValue] = useState("");
 
   return (
     <>
@@ -32,6 +34,16 @@ export function LeafContent() {
           server action refresh
         </button>
       </form>
+      <button
+        data-testid="server-action-return-value-only"
+        onClick={async () => {
+          setReturnValue(await returnValueOnlyAction());
+        }}
+        type="button"
+      >
+        server action return value only
+      </button>
+      <p data-testid="server-action-return-value">{returnValue}</p>
       <button
         data-testid="router-push-x-2"
         onClick={() => router.push(`${base}/x/2`)}

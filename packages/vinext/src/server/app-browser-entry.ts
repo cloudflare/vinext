@@ -109,10 +109,8 @@ import {
   createBfcacheSegmentStateKeyMap,
   createHistoryStateWithNavigationMetadata,
   createInitialBfcacheIdMap,
-  isHistoryStateBfcacheVersionCurrent,
   isCacheRestorableAppPayloadMetadata,
   readHistoryStateBfcacheIds,
-  readHistoryStateBfcacheVersion,
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
   resolveHistoryTraversalIntent,
@@ -123,6 +121,7 @@ import {
   type HistoryTraversalIntent,
   type OperationLane,
 } from "./app-browser-state.js";
+import { RestorableClientStateController } from "./app-history-state.js";
 import {
   createVisitedResponseCacheEntry,
   isVisitedResponseCacheEntryFresh,
@@ -290,21 +289,15 @@ const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
 const unresolvedMpaNavigation = new Promise<never>(() => {});
 const RSC_HMR_SETTLE_DELAY_MS = 150;
 let latestRscHmrUpdateId = 0;
-const initialHistoryBfcacheVersion = readHistoryStateBfcacheVersion(window.history.state);
-// A new browser document does not retain Next's in-memory BFCache entries.
-// Treat bfcache ids persisted by an older document as stale so a hard reload
-// cannot restore/collide with pre-reload route identities.
-let currentBfcacheVersion =
-  initialHistoryBfcacheVersion === null ? 0 : initialHistoryBfcacheVersion + 1;
 let currentHistoryTraversalIndex: number | null =
   readHistoryStateTraversalIndex(window.history.state) ?? 0;
 let nextHistoryTraversalIndex: number = currentHistoryTraversalIndex;
-const historyStateSnapshots = new Map<number, AppRouterState>();
+let synchronousPopstateScrollRestoreNavigationId: number | null = null;
 const MAX_HISTORY_STATE_SNAPSHOTS = 50;
-
-function isCurrentBfcacheVersion(state: unknown): boolean {
-  return isHistoryStateBfcacheVersionCurrent(state, currentBfcacheVersion);
-}
+const restorableClientState = new RestorableClientStateController<AppRouterState>({
+  initialHistoryState: window.history.state,
+  maxHistoryStateSnapshots: MAX_HISTORY_STATE_SNAPSHOTS,
+});
 
 // Vite can notify the browser about an RSC HMR update before the dev server's
 // request runner has swapped to the invalidated module graph. Give the
@@ -314,18 +307,6 @@ function waitForRscHmrSettle(delayMs = RSC_HMR_SETTLE_DELAY_MS): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, delayMs);
   });
-}
-
-function readCurrentBfcacheVersionHistoryIds(
-  state: unknown,
-): Readonly<Record<string, string>> | null {
-  const ids = readHistoryStateBfcacheIds(state);
-  if (ids === null) return null;
-  return isCurrentBfcacheVersion(state) ? ids : null;
-}
-
-function invalidateRestorableBfcacheIds(): void {
-  currentBfcacheVersion += 1;
 }
 
 function allocateNavigationHistoryTraversalIndex(
@@ -366,12 +347,12 @@ function commitHashOnlyNavigation(
     : readHistoryStatePreviousNextUrl(window.history.state);
   const bfcacheIds = hasBrowserRouterState()
     ? getBrowserRouterState().bfcacheIds
-    : readCurrentBfcacheVersionHistoryIds(window.history.state);
+    : restorableClientState.readCurrentBfcacheVersionHistoryIds(window.history.state);
   const historyState = createHistoryStateWithNavigationMetadata(
     createHashOnlyNavigationBaseHistoryState(historyUpdateMode, scroll),
     {
       bfcacheIds,
-      bfcacheVersion: bfcacheIds === null ? undefined : currentBfcacheVersion,
+      bfcacheVersion: bfcacheIds === null ? undefined : restorableClientState.currentBfcacheVersion,
       previousNextUrl,
       traversalIndex: navigationHistoryIndex,
     },
@@ -415,32 +396,27 @@ function commitTraversalIndexFromHistoryState(historyState: unknown): void {
   commitHistoryTraversalIndex(readHistoryStateTraversalIndex(historyState));
 }
 
-function rememberHistoryStateSnapshot(state: AppRouterState): void {
-  const index = currentHistoryTraversalIndex;
-  if (index === null) return;
-
-  historyStateSnapshots.delete(index);
-  historyStateSnapshots.set(index, state);
-  if (historyStateSnapshots.size <= MAX_HISTORY_STATE_SNAPSHOTS) return;
-
-  const oldestIndex = historyStateSnapshots.keys().next().value;
-  if (typeof oldestIndex === "number") {
-    historyStateSnapshots.delete(oldestIndex);
-  }
-}
-
 function restoreHistoryStateSnapshot(historyState: unknown): boolean {
-  const targetIndex = readHistoryStateTraversalIndex(historyState);
-  if (targetIndex === null) return false;
+  const decision = restorableClientState.resolveHistoryStateSnapshotRestore(historyState);
+  if (decision.kind === "skip") {
+    return false;
+  }
 
-  const snapshot = historyStateSnapshots.get(targetIndex);
-  if (!snapshot) return false;
-
-  commitHistoryTraversalIndex(targetIndex);
-  stageClientParams(snapshot.navigationSnapshot.params);
+  const navId = browserNavigationController.getActiveNavigationId();
+  let restored = false;
   flushSync(() => {
-    browserNavigationController.restoreVisibleState(snapshot);
+    restored = browserNavigationController.restoreHistorySnapshotVisibleState({
+      beforeCommit: () => {
+        commitHistoryTraversalIndex(decision.targetHistoryIndex);
+        stageClientParams(decision.state.navigationSnapshot.params);
+      },
+      navId,
+      state: decision.state,
+      targetHref: window.location.href,
+    });
   });
+  if (!restored) return false;
+
   commitClientNavigationState();
   return true;
 }
@@ -489,7 +465,7 @@ function clearPrefetchState(): void {
 function clearClientNavigationCaches(): void {
   clearVisitedResponseCache();
   clearPrefetchState();
-  invalidateRestorableBfcacheIds();
+  restorableClientState.invalidateClientState();
 }
 
 function isSettledPrefetchCacheEntry(
@@ -615,7 +591,7 @@ function isHistoryStateNavigationMetadataInSync(
     readHistoryStatePreviousNextUrl(state) === previousNextUrl &&
     (bfcacheIds === undefined ||
       (areBfcacheIdMapsEqual(readHistoryStateBfcacheIds(state), bfcacheIds) &&
-        isCurrentBfcacheVersion(state)))
+        restorableClientState.isCurrentBfcacheVersion(state)))
   );
 }
 
@@ -629,7 +605,8 @@ function syncCurrentHistoryStatePreviousNextUrl(
 
   const nextHistoryState = createHistoryStateWithNavigationMetadata(window.history.state, {
     bfcacheIds,
-    bfcacheVersion: bfcacheIds === undefined ? undefined : currentBfcacheVersion,
+    bfcacheVersion:
+      bfcacheIds === undefined ? undefined : restorableClientState.currentBfcacheVersion,
     previousNextUrl,
   });
   // First attempt: use replaceHistoryStateWithoutNotify which fires no popstate
@@ -695,7 +672,7 @@ function createNavigationCommitEffect(options: {
       preserveExistingState ? window.history.state : null,
       {
         bfcacheIds,
-        bfcacheVersion: currentBfcacheVersion,
+        bfcacheVersion: restorableClientState.currentBfcacheVersion,
         previousNextUrl,
         traversalIndex: navigationHistoryIndex,
       },
@@ -745,6 +722,7 @@ async function renderNavigationPayload(
   traversalIntent: HistoryTraversalIntent | null = null,
   scrollIntent: AppRouterScrollIntent | null | undefined = null,
   restoredBfcacheIds: Readonly<Record<string, string>> | null = null,
+  reuseCurrentBfcacheIds: boolean = true,
 ): Promise<NavigationPayloadOutcome> {
   syncServerActionHttpFallbackHead(null);
   try {
@@ -764,6 +742,7 @@ async function renderNavigationPayload(
       previousNextUrl,
       scrollIntent,
       restoredBfcacheIds,
+      reuseCurrentBfcacheIds,
       targetHistoryIndex: traversalIntent === null ? undefined : traversalIntent.targetHistoryIndex,
       targetHref,
       navId,
@@ -1189,7 +1168,10 @@ function BrowserRoot({
   }, [setTreeStateValue]);
 
   useLayoutEffect(() => {
-    rememberHistoryStateSnapshot(treeState);
+    restorableClientState.rememberHistoryStateSnapshot({
+      historyIndex: currentHistoryTraversalIndex,
+      state: treeState,
+    });
   }, [treeState]);
 
   useLayoutEffect(() => {
@@ -1206,7 +1188,7 @@ function BrowserRoot({
     replaceHistoryStateWithoutNotify(
       createHistoryStateWithNavigationMetadata(window.history.state, {
         bfcacheIds: treeState.bfcacheIds,
-        bfcacheVersion: currentBfcacheVersion,
+        bfcacheVersion: restorableClientState.currentBfcacheVersion,
         previousNextUrl: treeState.previousNextUrl,
         traversalIndex: currentHistoryTraversalIndex,
       }),
@@ -1507,10 +1489,9 @@ function applyRuntimeRscBootstrap(rsc: NavigationRuntimeRscBootstrap): void {
 }
 
 function registerServerActionCallback(): void {
-  setServerCallback(async (id, args) => {
+  const serverActionCallback: Parameters<typeof setServerCallback>[0] = async (id, args) => {
     syncServerActionHttpFallbackHead(null);
     const temporaryReferences = createTemporaryReferenceSet();
-
     // Carry the interception context + mounted slots from the current router
     // state so the server-action re-render rebuilds the intercepted tree
     // instead of replacing it with the direct page. Parity with Next.js,
@@ -1578,6 +1559,9 @@ function registerServerActionCallback(): void {
     }
 
     const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
+    if (revalidation !== "none") {
+      clearClientNavigationCaches();
+    }
     const invalidResponseError = await readInvalidServerActionResponseError(
       fetchResponse.clone(),
       actionRedirectTarget !== null,
@@ -1604,7 +1588,10 @@ function registerServerActionCallback(): void {
       Promise.resolve(flightResponse),
       { temporaryReferences },
     );
-    if (shouldClearClientNavigationCachesForServerActionResult(result, revalidation)) {
+    if (
+      revalidation === "none" &&
+      shouldClearClientNavigationCachesForServerActionResult(result, revalidation)
+    ) {
       clearClientNavigationCaches();
     }
 
@@ -1694,6 +1681,13 @@ function registerServerActionCallback(): void {
       undefined,
       revalidation,
     );
+  };
+
+  setServerCallback((id, args) => {
+    const releaseCacheInvalidationGuard = restorableClientState.beginCacheInvalidationGuard();
+    return Promise.resolve()
+      .then(() => serverActionCallback(id, args))
+      .finally(releaseCacheInvalidationGuard);
   });
 }
 
@@ -1800,10 +1794,16 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     // stale ids from the pre-redirect history entry cannot win.
     let restoredBfcacheIds =
       navigationKind === "traverse"
-        ? readCurrentBfcacheVersionHistoryIds(
+        ? restorableClientState.readCurrentBfcacheVersionHistoryIds(
             activeTraversalIntent?.historyState ?? window.history.state,
           )
         : null;
+    const reuseCurrentBfcacheIds =
+      navigationKind !== "traverse" ||
+      (!restorableClientState.isCacheInvalidationGuarded() &&
+        restorableClientState.isCurrentBfcacheVersion(
+          activeTraversalIntent?.historyState ?? window.history.state,
+        ));
     try {
       const shouldUsePendingRouterState = programmaticTransition;
       if (shouldUsePendingRouterState && hasBrowserRouterState()) {
@@ -1945,6 +1945,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             activeTraversalIntent,
             scrollIntent,
             restoredBfcacheIds,
+            reuseCurrentBfcacheIds,
           );
           if (cachedRenderOutcome === "no-commit") {
             deleteVisitedResponse(rscUrl, requestInterceptionContext);
@@ -2028,6 +2029,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
                 activeTraversalIntent,
                 scrollIntent,
                 restoredBfcacheIds,
+                reuseCurrentBfcacheIds,
               ).catch((error) => {
                 if (browserNavigationController.isCurrentNavigation(navId)) {
                   console.error("[vinext] Optimistic RSC navigation error:", error);
@@ -2235,6 +2237,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           activeTraversalIntent,
           scrollIntent,
           restoredBfcacheIds,
+          reuseCurrentBfcacheIds,
         );
         if (renderOutcome !== "committed") return;
         // Don't cache the response if this navigation was superseded during
@@ -2321,6 +2324,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     setPendingNavigation: (pendingNavigation) => {
       window.__VINEXT_RSC_PENDING__ = pendingNavigation;
     },
+    shouldSkipScrollRestore: (navId) => synchronousPopstateScrollRestoreNavigationId === navId,
   });
 
   window.addEventListener("popstate", (event) => {
@@ -2339,6 +2343,8 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     }
     handlePopstate(event);
     if (restoreHistoryStateSnapshot(event.state)) {
+      synchronousPopstateScrollRestoreNavigationId =
+        browserNavigationController.getActiveNavigationId();
       restorePopstateScrollPosition(event.state);
     }
   });

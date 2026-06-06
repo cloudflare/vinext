@@ -17,6 +17,8 @@ import {
   type AppNavigationPayloadOrigin,
   type AppRouterState,
   type OperationLane,
+  type PendingNavigationCommit,
+  type PendingOperationRecord,
 } from "./app-browser-state.js";
 import {
   applyApprovedVisibleCommit,
@@ -86,7 +88,12 @@ type BrowserNavigationController = {
   ): () => void;
   beginPendingBrowserRouterState(): PendingBrowserRouterState;
   finalizeNavigation(navId: number, pending: PendingBrowserRouterState | null | undefined): void;
-  restoreVisibleState(state: AppRouterState): void;
+  restoreHistorySnapshotVisibleState(options: {
+    beforeCommit?: () => void;
+    navId: number;
+    state: AppRouterState;
+    targetHref: string;
+  }): boolean;
   renderNavigationPayload(options: {
     actionType: "navigate" | "replace" | "traverse";
     createNavigationCommitEffect: BrowserNavigationCommitEffectFactory;
@@ -100,6 +107,7 @@ type BrowserNavigationController = {
     previousNextUrl: string | null;
     scrollIntent?: AppRouterScrollIntent | null;
     restoredBfcacheIds?: Readonly<Record<string, string>> | null;
+    reuseCurrentBfcacheIds?: boolean;
     targetHistoryIndex?: number | null;
     targetHref: string;
     navId: number;
@@ -203,6 +211,24 @@ function performHardNavigationWithLoopGuard(
     window.location.assign(href);
   }
   return true;
+}
+
+function createSnapshotPathAndSearch(snapshot: ClientNavigationRenderSnapshot): string {
+  const query = snapshot.searchParams.toString();
+  return query === "" ? snapshot.pathname : `${snapshot.pathname}?${query}`;
+}
+
+function isSnapshotTargetHref(
+  snapshot: ClientNavigationRenderSnapshot,
+  targetHref: string,
+): boolean {
+  try {
+    const baseHref = typeof window === "undefined" ? "http://localhost" : window.location.href;
+    const targetUrl = new URL(targetHref, baseHref);
+    return `${targetUrl.pathname}${targetUrl.search}` === createSnapshotPathAndSearch(snapshot);
+  } catch {
+    return false;
+  }
 }
 
 export function createAppBrowserNavigationController(
@@ -493,13 +519,78 @@ export function createAppBrowserNavigationController(
     setter(applyApprovedVisibleCommit(getBrowserRouterState(), commit));
   }
 
-  function restoreVisibleState(state: AppRouterState): void {
+  function createRestoredHistorySnapshotCommit(options: {
+    currentState: AppRouterState;
+    renderId: number;
+    restoredState: AppRouterState;
+  }): PendingNavigationCommit {
+    const operation: PendingOperationRecord = {
+      id: options.renderId,
+      lane: "traverse",
+      startedVisibleCommitVersion: options.currentState.visibleCommitVersion,
+      state: "pending",
+    };
+
+    return {
+      action: {
+        bfcacheIds: options.restoredState.bfcacheIds,
+        elements: options.restoredState.elements,
+        interception: options.restoredState.interception,
+        interceptionContext: options.restoredState.interceptionContext,
+        layoutFlags: options.restoredState.layoutFlags,
+        layoutIds: options.restoredState.layoutIds,
+        navigationSnapshot: options.restoredState.navigationSnapshot,
+        operation,
+        previousNextUrl: options.restoredState.previousNextUrl,
+        renderId: options.renderId,
+        rootLayoutTreePath: options.restoredState.rootLayoutTreePath,
+        reuseCurrentBfcacheIds: false,
+        routeId: options.restoredState.routeId,
+        skippedLayoutIds: [],
+        slotBindings: options.restoredState.slotBindings,
+        type: "traverse",
+      },
+      interception: options.restoredState.interception,
+      interceptionContext: options.restoredState.interceptionContext,
+      previousNextUrl: options.restoredState.previousNextUrl,
+      rootLayoutTreePath: options.restoredState.rootLayoutTreePath,
+      routeId: options.restoredState.routeId,
+      skippedLayoutIds: [],
+    };
+  }
+
+  function restoreHistorySnapshotVisibleState(options: {
+    beforeCommit?: () => void;
+    navId: number;
+    state: AppRouterState;
+    targetHref: string;
+  }): boolean {
+    if (!isSnapshotTargetHref(options.state.navigationSnapshot, options.targetHref)) {
+      return false;
+    }
+
     const currentState = getBrowserRouterState();
-    getBrowserRouterStateSetter()({
-      ...state,
-      activeOperation: null,
-      visibleCommitVersion: currentState.visibleCommitVersion + 1,
+    const pending = createRestoredHistorySnapshotCommit({
+      currentState,
+      renderId: allocateRenderId(),
+      restoredState: options.state,
     });
+    const approval = approvePendingNavigationCommit({
+      activeNavigationId,
+      currentState,
+      pending,
+      routeManifest: getRouteManifest(),
+      startedNavigationId: options.navId,
+      targetHref: options.targetHref,
+    });
+
+    if (approval.approvedCommit === null) {
+      return false;
+    }
+
+    options.beforeCommit?.();
+    dispatchSynchronousVisibleCommit(approval.approvedCommit);
+    return true;
   }
 
   function notifyDiscardedServerActionRevalidation(
@@ -524,6 +615,7 @@ export function createAppBrowserNavigationController(
     previousNextUrl: string | null;
     scrollIntent?: AppRouterScrollIntent | null;
     restoredBfcacheIds?: Readonly<Record<string, string>> | null;
+    reuseCurrentBfcacheIds?: boolean;
     targetHistoryIndex?: number | null;
     targetHref: string;
     navId: number;
@@ -547,6 +639,7 @@ export function createAppBrowserNavigationController(
         previousNextUrl: options.previousNextUrl,
         renderId,
         restoredBfcacheIds: options.restoredBfcacheIds,
+        reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds,
         type: options.actionType,
       });
 
@@ -727,7 +820,7 @@ export function createAppBrowserNavigationController(
     attachBrowserRouterState,
     beginPendingBrowserRouterState,
     finalizeNavigation,
-    restoreVisibleState,
+    restoreHistorySnapshotVisibleState,
     renderNavigationPayload,
     commitSameUrlNavigatePayload,
     hmrReplaceTree,

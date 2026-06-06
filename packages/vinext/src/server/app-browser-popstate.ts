@@ -1,23 +1,25 @@
+import {
+  readHistoryStateTraversalIndex,
+  type HistoryTraversalIntent,
+} from "./app-browser-state.js";
+import type { NavigationRuntimeNavigate } from "../client/navigation-runtime.js";
+
 type RestoreScrollPosition = (
   state: unknown,
   options?: {
     shouldContinue?: () => boolean;
   },
 ) => void;
-type NavigateRsc = (
-  href: string,
-  redirectDepth?: number,
-  navigationKind?: "navigate" | "traverse" | "refresh",
-) => Promise<void>;
 
 type BrowserPopstateRestoreDeps = {
   getActiveNavigationId: () => number;
   getPendingNavigation: () => Promise<void> | null | undefined;
-  getNavigate: () => NavigateRsc | undefined;
+  getNavigate: () => NavigationRuntimeNavigate | undefined;
   isCurrentNavigation: (navId: number) => boolean;
   notifyAppRouterTransitionStart: (href: string) => void;
   restorePopstateScrollPosition: RestoreScrollPosition;
   setPendingNavigation: (pendingNavigation: Promise<void> | null) => void;
+  shouldSkipScrollRestore: (navId: number) => boolean;
 };
 
 function hasSavedScrollPosition(state: unknown): boolean {
@@ -33,29 +35,49 @@ function scheduleAfterFrame(callback: () => void): void {
   queueMicrotask(callback);
 }
 
+function createPopstateTraversalIntent(historyState: unknown): HistoryTraversalIntent {
+  return {
+    direction: "unknown",
+    historyState,
+    targetHistoryIndex: readHistoryStateTraversalIndex(historyState),
+  };
+}
+
 export function createPopstateRestoreHandler(
   deps: BrowserPopstateRestoreDeps,
 ): (event: PopStateEvent) => void {
   return (event) => {
     deps.notifyAppRouterTransitionStart(window.location.href);
     const navigate = deps.getNavigate();
-    const pendingNavigation = navigate?.(window.location.href, 0, "traverse") ?? Promise.resolve();
+    const pendingNavigation =
+      navigate?.(
+        window.location.href,
+        0,
+        "traverse",
+        undefined,
+        undefined,
+        false,
+        createPopstateTraversalIntent(event.state),
+      ) ?? Promise.resolve();
     const popstateNavId = deps.getActiveNavigationId();
 
     deps.setPendingNavigation(pendingNavigation);
     const shouldRestoreSavedScroll = hasSavedScrollPosition(event.state);
+    const shouldRestoreScrollForNavigation = () =>
+      deps.isCurrentNavigation(popstateNavId) && !deps.shouldSkipScrollRestore(popstateNavId);
+
     if (shouldRestoreSavedScroll) {
       scheduleAfterFrame(() => {
-        if (deps.isCurrentNavigation(popstateNavId)) {
+        if (shouldRestoreScrollForNavigation()) {
           deps.restorePopstateScrollPosition(event.state, {
-            shouldContinue: () => deps.isCurrentNavigation(popstateNavId),
+            shouldContinue: shouldRestoreScrollForNavigation,
           });
         }
       });
     }
 
     void pendingNavigation.finally(() => {
-      if (deps.isCurrentNavigation(popstateNavId) && !shouldRestoreSavedScroll) {
+      if (shouldRestoreScrollForNavigation() && !shouldRestoreSavedScroll) {
         deps.restorePopstateScrollPosition(event.state);
       }
 
