@@ -32,6 +32,7 @@ const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", impo
 const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 const _cspPath = resolveEntryPath("../server/csp.js", import.meta.url);
 const _serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
+const _queryUtilsPath = resolveEntryPath("../utils/query.js", import.meta.url);
 
 /**
  * Generate the virtual SSR server entry module.
@@ -239,7 +240,7 @@ import { runWithHeadState } from "vinext/head-state";
 import "vinext/i18n-state";
 import { setI18nContext } from "vinext/i18n-context";
 import { createNonceAttribute as __createNonceAttribute, safeJsonStringify } from "vinext/html";
-import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "vinext/utils/query";
+import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from ${JSON.stringify(_queryUtilsPath)};
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 import { sanitizeDestination as sanitizeDestinationLocal } from ${JSON.stringify(resolveEntryPath("../config/config-matchers.js", import.meta.url))};

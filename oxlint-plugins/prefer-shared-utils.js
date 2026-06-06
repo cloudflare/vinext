@@ -17,7 +17,9 @@ const VINEXT_SOURCE_ROOT = "packages/vinext/src";
 
 const STATIC_HELPER_MODULES = [
   "plugins/ast-utils.ts",
+  "routing/file-matcher.ts",
   "routing/utils.ts",
+  "entries/pages-entry-helpers.ts",
   "server/cookie-utils.ts",
   "server/worker-utils.ts",
   "shims/font-utils.ts",
@@ -26,10 +28,17 @@ const STATIC_HELPER_MODULES = [
 ];
 
 const MANUAL_ALIASES = new Map([
+  [
+    "compareAppElementsSlotIds",
+    { exportName: "compareAppElementsSlotIds", modulePath: "server/app-elements-wire.ts" },
+  ],
   ["isRecord", { exportName: "isUnknownRecord", modulePath: "utils/record.ts" }],
 ]);
 
 const EXPORT_FUNCTION_RE = /^export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b/gm;
+const EXPORT_VARIABLE_RE =
+  /^export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b[^=]*=\s*(?:async\s*)?(?:function\b|\([^)]*\)(?:\s*:\s*[^=]+?)?\s*=>|[A-Za-z_$][\w$]*\s*(?:=>|;))/gm;
+const EXPORT_NAMED_RE = /^export\s*\{([^}]+)\}\s*(?:from\s*["'][^"']+["'])?\s*;?/gm;
 
 function normalizeFilename(filename) {
   return filename.split(path.sep).join("/");
@@ -41,7 +50,23 @@ function escapeRegExp(value) {
 
 function readExportedFunctionNames(absPath) {
   const source = fs.readFileSync(absPath, "utf-8");
-  return Array.from(source.matchAll(EXPORT_FUNCTION_RE), (match) => match[1]);
+  const exportNames = new Set();
+  for (const match of source.matchAll(EXPORT_FUNCTION_RE)) {
+    exportNames.add(match[1]);
+  }
+  for (const match of source.matchAll(EXPORT_VARIABLE_RE)) {
+    exportNames.add(match[1]);
+  }
+  for (const match of source.matchAll(EXPORT_NAMED_RE)) {
+    for (const specifier of match[1].split(",")) {
+      const cleaned = specifier.trim();
+      if (!cleaned || cleaned.startsWith("type ")) continue;
+      const [, exportedName] =
+        /\bas\s+([A-Za-z_$][\w$]*)$/.exec(cleaned) ?? /^([A-Za-z_$][\w$]*)$/.exec(cleaned) ?? [];
+      if (exportedName) exportNames.add(exportedName);
+    }
+  }
+  return Array.from(exportNames);
 }
 
 function listUtilsModules(srcRootAbs) {
@@ -60,7 +85,9 @@ function buildSharedUtilities() {
   for (const modulePath of modulePaths) {
     const absPath = path.join(srcRootAbs, modulePath);
     for (const exportName of readExportedFunctionNames(absPath)) {
-      shared.set(exportName, { exportName, modulePath });
+      if (!shared.has(exportName)) {
+        shared.set(exportName, { exportName, modulePath });
+      }
     }
   }
 
@@ -73,9 +100,56 @@ const SHARED_UTILITY_DECLARATION =
   SHARED_UTILITY_NAMES_PATTERN === ""
     ? null
     : new RegExp(
-        String.raw`\b(?:export\s+)?(?:async\s+)?function\s+(${SHARED_UTILITY_NAMES_PATTERN})\b|\b(?:const|let|var)\s+(${SHARED_UTILITY_NAMES_PATTERN})\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)`,
+        String.raw`\b(?:export\s+)?(?:async\s+)?function\s+(${SHARED_UTILITY_NAMES_PATTERN})\b|\b(?:export\s+)?(?:const|let|var)\s+(${SHARED_UTILITY_NAMES_PATTERN})\s*[^=]*=\s*(?:async\s*)?(?:function\b|\([^)]*\)(?:\s*:\s*[^=]+?)?\s*=>|[A-Za-z_$][\w$]*\s*=>)`,
         "g",
       );
+
+function maskRange(source, start, end) {
+  return `${source.slice(0, start)}${" ".repeat(end - start)}${source.slice(end)}`;
+}
+
+function maskCommentsAndQuotedStrings(source) {
+  let masked = source;
+  let i = 0;
+  while (i < masked.length) {
+    const current = masked[i];
+    const next = masked[i + 1];
+    if (current === "/" && next === "/") {
+      const end = masked.indexOf("\n", i + 2);
+      const rangeEnd = end === -1 ? masked.length : end;
+      masked = maskRange(masked, i, rangeEnd);
+      i = rangeEnd;
+      continue;
+    }
+    if (current === "/" && next === "*") {
+      const end = masked.indexOf("*/", i + 2);
+      const rangeEnd = end === -1 ? masked.length : end + 2;
+      masked = maskRange(masked, i, rangeEnd);
+      i = rangeEnd;
+      continue;
+    }
+    if (current === '"' || current === "'") {
+      const quote = current;
+      let end = i + 1;
+      while (end < masked.length) {
+        if (masked[end] === "\\") {
+          end += 2;
+          continue;
+        }
+        if (masked[end] === quote) {
+          end += 1;
+          break;
+        }
+        end += 1;
+      }
+      masked = maskRange(masked, i, end);
+      i = end;
+      continue;
+    }
+    i += 1;
+  }
+  return masked;
+}
 
 function isCanonicalDefinitionFile(filename, modulePath) {
   return filename.endsWith(`/packages/vinext/src/${modulePath}`);
@@ -104,7 +178,7 @@ const rule = {
         if (!SHARED_UTILITY_DECLARATION) return;
         const filename = normalizeFilename(context.filename);
         if (!filename.includes(VINEXT_SOURCE_SEGMENT)) return;
-        const source = context.sourceCode.getText(node);
+        const source = maskCommentsAndQuotedStrings(context.sourceCode.getText(node));
         const reported = new Set();
         for (const match of source.matchAll(SHARED_UTILITY_DECLARATION)) {
           const name = match[1] ?? match[2];
