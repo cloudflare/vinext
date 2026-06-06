@@ -683,10 +683,11 @@ function collectConfigKeys(source: string): ConfigKeys {
   // Resolve an expression to the object literal it denotes, unwrapping variable
   // refs, wrapper calls (`withMDX(config)`, `defineConfig({…})`), TS
   // `as`/`satisfies`, parentheses, and function-form configs
-  // (`(phase) => ({…})` / `function(phase){ return {…} }`). Depth-bounded to
+  // (`(phase) => ({…})` / `function(phase){ return {…} }` /
+  // `export default function(phase){ return {…} }`). Depth-bounded to
   // guard against cycles.
   function resolveObject(
-    node: ESTree.Expression | ESTree.SpreadElement | null | undefined,
+    node: ESTree.Expression | ESTree.SpreadElement | ESTree.Function | null | undefined,
     depth = 0,
   ): ESTree.ObjectExpression | null {
     if (!node || depth > 10) return null;
@@ -701,7 +702,14 @@ function collectConfigKeys(source: string): ConfigKeys {
       }
       return null;
     }
-    if (node.type === "ArrowFunctionExpression" || node.type === "FunctionExpression") {
+    if (
+      node.type === "ArrowFunctionExpression" ||
+      node.type === "FunctionExpression" ||
+      // `export default function (phase) { return {…} }` parses as a
+      // FunctionDeclaration, unlike the `module.exports = function (…) {…}`
+      // (FunctionExpression) and arrow forms.
+      node.type === "FunctionDeclaration"
+    ) {
       // Function-form config (a documented Next.js pattern). A concise arrow
       // body is the expression itself; a block body returns the config from its
       // first top-level `return`.
@@ -728,7 +736,7 @@ function collectConfigKeys(source: string): ConfigKeys {
   let configObj: ESTree.ObjectExpression | null = null;
   for (const node of program.body) {
     if (node.type === "ExportDefaultDeclaration") {
-      configObj = resolveObject(node.declaration as ESTree.Expression);
+      configObj = resolveObject(node.declaration as ESTree.Expression | ESTree.Function);
     } else if (
       node.type === "ExpressionStatement" &&
       node.expression.type === "AssignmentExpression"

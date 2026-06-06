@@ -666,6 +666,26 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
   });
 
+  it("detects options in an `export default function` config", () => {
+    // `export default function (phase) {…}` parses as a FunctionDeclaration,
+    // unlike the `module.exports = function (…)` (FunctionExpression) form.
+    writeFile(
+      "next.config.mjs",
+      `export default function (phase) {
+        return {
+          trailingSlash: true,
+          webpack: (config) => config,
+          experimental: { ppr: true },
+        };
+      }`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+  });
+
   it.each([
     ["experimental.ppr", "experimental", "ppr: true"],
     ["experimental.typedRoutes", "experimental", "typedRoutes: true"],
