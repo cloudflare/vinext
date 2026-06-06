@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { resolveActiveParallelRouteHeadInputs, resolveAppPageHead } from "./app-page-head.js";
+import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
 import {
   buildAppPageElements,
   createAppPageTreePath,
@@ -135,6 +136,18 @@ export async function buildPageElements<
 
   const pageModule: AppPageModule | null | undefined = route.page;
   const PageComponent = pageModule?.default;
+
+  // Sibling intercepts replace the full page — the intercepting page is the
+  // effective page module. Slot-based intercepts use a different code path
+  // (buildSlotOverrides) and are unaffected.
+  const isSiblingIntercept =
+    opts?.interceptSlotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY && !!opts?.interceptPage;
+  const effectivePageModule = isSiblingIntercept
+    ? (opts!.interceptPage as AppPageModule | null | undefined)
+    : pageModule;
+  const EffectivePageComponent = effectivePageModule?.default ?? PageComponent;
+  const effectiveParams = isSiblingIntercept ? (opts!.interceptParams ?? params) : params;
+
   const hasPageModule = !!pageModule;
   const renderIdentity = createAppPageRenderIdentity({
     displayPathname: routePath,
@@ -178,7 +191,7 @@ export async function buildPageElements<
     layoutModules: route.layouts,
     layoutTreePositions: route.layoutTreePositions,
     metadataRoutes,
-    pageModule: route.page ?? null,
+    pageModule: effectivePageModule ?? null,
     parallelRoutes: resolveActiveParallelRouteHeadInputs({
       interceptLayouts: opts?.interceptLayouts ?? null,
       interceptPage: opts?.interceptPage ?? null,
@@ -194,7 +207,7 @@ export async function buildPageElements<
     searchParams,
   });
 
-  const pageProps: Record<string, unknown> = { params: makeThenableParams(params) };
+  const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
   let pageSearchParamsThenable: unknown;
   if (searchParams) {
     const shouldObservePageSearchParamsAccess =
@@ -218,7 +231,7 @@ export async function buildPageElements<
       : "head";
 
   return buildAppPageElements({
-    element: PageComponent ? createElement(PageComponent, pageProps) : null,
+    element: EffectivePageComponent ? createElement(EffectivePageComponent, pageProps) : null,
     // Fall back to vinext's built-in default global error module so that
     // uncaught client render errors are caught by the route-level
     // <ErrorBoundary> wrapper in app-page-route-wiring.tsx, mirroring
@@ -268,7 +281,12 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
 ): Readonly<Record<string, AppPageSlotOverride<TModule>>> | null {
   const overrides: Record<string, AppPageSlotOverride<TModule>> = {};
 
-  if (opts && opts.interceptSlotKey && opts.interceptPage) {
+  if (
+    opts &&
+    opts.interceptSlotKey &&
+    opts.interceptPage &&
+    opts.interceptSlotKey !== SIBLING_PAGE_INTERCEPT_SLOT_KEY
+  ) {
     overrides[opts.interceptSlotKey] = {
       layoutModules: opts.interceptLayouts || null,
       pageModule: opts.interceptPage,
