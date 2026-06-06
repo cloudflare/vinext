@@ -6,6 +6,13 @@ import {
 } from "../routing/route-pattern.js";
 import { splitPathnameForRouteMatch } from "../routing/utils.js";
 
+/**
+ * Sentinel slot key used for sibling-style interception entries.
+ * When a matched intercept carries this key, the render layer replaces the
+ * route's main page element instead of a parallel slot.
+ */
+export const SIBLING_PAGE_INTERCEPT_SLOT_KEY = "__vinext_page_intercept";
+
 type AppRscRouteParams = RoutePatternParams;
 
 type AppRscInterceptForMatching = {
@@ -39,9 +46,19 @@ type AppRscSlotForMatching = {
   intercepts?: readonly AppRscInterceptForMatching[];
 };
 
+type AppRscSiblingInterceptForMatching = {
+  targetPattern: string;
+  sourceMatchPattern: string | null;
+  slotId: string | null;
+  interceptLayouts: readonly unknown[];
+  page: unknown;
+  params: readonly string[];
+};
+
 type AppRscRouteForMatching = {
   patternParts: string[];
   slots?: Record<string, AppRscSlotForMatching>;
+  siblingIntercepts?: AppRscSiblingInterceptForMatching[];
 };
 
 type AppRscInterceptMatch = AppRscInterceptLookupEntry & {
@@ -155,18 +172,39 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
   const interceptLookup: AppRscInterceptLookupEntry[] = [];
   for (let routeIndex = 0; routeIndex < routes.length; routeIndex++) {
     const route = routes[routeIndex];
-    if (!route.slots) continue;
-    for (const [slotKey, slotModule] of Object.entries(route.slots)) {
-      if (!slotModule.intercepts) continue;
-      for (const intercept of slotModule.intercepts) {
+    if (route.slots) {
+      for (const [slotKey, slotModule] of Object.entries(route.slots)) {
+        if (!slotModule.intercepts) continue;
+        for (const intercept of slotModule.intercepts) {
+          const sourceMatchPattern = intercept.sourceMatchPattern ?? null;
+          const sourceMatchPatternParts = sourceMatchPattern
+            ? sourceMatchPattern.split("/").filter(Boolean)
+            : null;
+          interceptLookup.push({
+            sourceRouteIndex: routeIndex,
+            slotKey,
+            slotId: typeof slotModule.id === "string" ? slotModule.id : null,
+            targetPattern: intercept.targetPattern,
+            targetPatternParts: intercept.targetPattern.split("/").filter(Boolean),
+            sourceMatchPattern,
+            sourceMatchPatternParts,
+            interceptLayouts: intercept.interceptLayouts,
+            page: intercept.page,
+            params: intercept.params,
+          });
+        }
+      }
+    }
+    if (route.siblingIntercepts) {
+      for (const intercept of route.siblingIntercepts) {
         const sourceMatchPattern = intercept.sourceMatchPattern ?? null;
         const sourceMatchPatternParts = sourceMatchPattern
           ? sourceMatchPattern.split("/").filter(Boolean)
           : null;
         interceptLookup.push({
           sourceRouteIndex: routeIndex,
-          slotKey,
-          slotId: typeof slotModule.id === "string" ? slotModule.id : null,
+          slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+          slotId: typeof intercept.slotId === "string" ? intercept.slotId : null,
           targetPattern: intercept.targetPattern,
           targetPatternParts: intercept.targetPattern.split("/").filter(Boolean),
           sourceMatchPattern,
