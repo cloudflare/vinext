@@ -312,4 +312,36 @@ describe("vinext:image-imports — transform", () => {
     // Type annotations are preserved for the downstream TS transform.
     expect(result.code).toContain(`const count: number = 1;`);
   });
+
+  // Regression: parsing a plain `.ts` file as `tsx` throws on TS-only syntax
+  // because `<T>` is read as the start of a JSX element. The handler swallows
+  // parse errors and returns null, which would silently skip the image
+  // transform (hero.src/width/height become undefined). `.ts` must parse as
+  // `ts`, not `tsx`.
+  it("transforms an image import in a .ts file using an angle-bracket cast", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import hero from './test-4x3.png';`,
+      `const value: unknown = hero;`,
+      `const widened = <{ src: string }>value;`,
+      `console.log(widened.src);`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, path.join(IMAGES_DIR, "cast.ts"));
+    expect(result).not.toBeNull();
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+  });
+
+  it("transforms an image import in a .ts file using a non-comma generic arrow", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import hero from './test-4x3.png';`,
+      `const identity = <T>(x: T): T => x;`,
+      `console.log(identity(hero));`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, path.join(IMAGES_DIR, "arrow.ts"));
+    expect(result).not.toBeNull();
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+  });
 });

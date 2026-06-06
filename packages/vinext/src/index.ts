@@ -3887,13 +3887,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // source — before the JSX/TS transform. `parseAst` defaults to plain
           // JavaScript and would throw on JSX or TS type annotations, which
           // would silently skip image transforms for every `.tsx`/`.jsx`/typed
-          // `.ts` file. Parse as `tsx` so JSX + TS + JS all parse. (The adjacent
-          // `use-cache` plugin avoids this by running after the JSX transform;
-          // we can't, since the import must be rewritten before Vite resolves
-          // the asset.)
+          // `.ts` file. (The adjacent `use-cache` plugin avoids this by running
+          // after the JSX transform; we can't, since the import must be
+          // rewritten before Vite resolves the asset.)
+          //
+          // Pick the parser language by extension. `.tsx`/`.jsx`/`.js`/`.mjs`
+          // can contain JSX, so parse those as `tsx`. Plain `.ts` files must be
+          // parsed as `ts`: the `tsx` grammar treats `<T>` as the start of a JSX
+          // element, so legitimate TS-only syntax such as angle-bracket casts
+          // (`<Foo>bar`) and non-comma generic arrows (`<T>(x) => x`) would throw
+          // — which the `catch` below would swallow, silently leaving image
+          // imports in those files untransformed.
+          const lang = id.endsWith(".ts") ? "ts" : "tsx";
           let ast: ReturnType<typeof parseAst>;
           try {
-            ast = parseAst(code, { lang: "tsx" });
+            ast = parseAst(code, { lang });
           } catch {
             // Unparseable input (e.g. unsupported syntax) — leave untouched.
             return null;
