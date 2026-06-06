@@ -168,6 +168,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
+import { normalizePathSeparators } from "./utils/path.js";
 
 // Install the process-level peer-disconnect backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
@@ -3891,9 +3892,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const matchStart = match.index;
             const matchEnd = matchStart + fullMatch.length;
 
-            // Resolve the absolute path of the image
+            // Resolve the absolute path of the image. Normalize separators
+            // since the path is embedded in the ESM module specifier below,
+            // which should use forward slashes. fs accepts them on Windows,
+            // so existsSync still works.
             const dir = path.dirname(id);
-            const absImagePath = path.resolve(dir, importPath);
+            const absImagePath = normalizePathSeparators(path.resolve(dir, importPath));
 
             if (!fs.existsSync(absImagePath)) continue;
 
