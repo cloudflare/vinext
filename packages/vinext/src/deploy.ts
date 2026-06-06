@@ -1374,7 +1374,40 @@ function writeGeneratedFiles(files: GeneratedFile[]): void {
 
 // ─── Build ───────────────────────────────────────────────────────────────────
 
-async function runBuild(info: ProjectInfo): Promise<void> {
+/**
+ * Run a function with `process.env.CLOUDFLARE_ENV` set to the given value,
+ * restoring the previous state (whether set or absent) after the function
+ * resolves or throws.
+ *
+ * The `@cloudflare/vite-plugin` reads `CLOUDFLARE_ENV` from `process.env` to
+ * drive the multi-environment merge applied to the emitted `wrangler.json`.
+ * Without this propagation the `--env <name>` CLI flag is silently ignored at
+ * build time and the top-level config is emitted regardless. See issue #1210.
+ *
+ * Passing `undefined` is a no-op; the callback runs with `process.env` untouched.
+ */
+export async function withCloudflareEnv<T>(
+  env: string | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (env === undefined || env === "") {
+    return fn();
+  }
+  const hadPrev = "CLOUDFLARE_ENV" in process.env;
+  const prev = process.env.CLOUDFLARE_ENV;
+  process.env.CLOUDFLARE_ENV = env;
+  try {
+    return await fn();
+  } finally {
+    if (hadPrev) {
+      process.env.CLOUDFLARE_ENV = prev;
+    } else {
+      delete process.env.CLOUDFLARE_ENV;
+    }
+  }
+}
+
+async function runBuild(info: ProjectInfo, env: string | undefined): Promise<void> {
   console.log("\n  Building for Cloudflare Workers...\n");
 
   // Resolve Vite from the project root so that symlinked vinext installs
@@ -1401,8 +1434,10 @@ async function runBuild(info: ProjectInfo): Promise<void> {
   // .wrangler/deploy/config.json. A plain build() call bypasses cloudflare()'s
   // config() hook's builder.buildApp override, so writeBundle never fires on
   // the correct environment name.
-  const builder = await createBuilder({ root: info.root });
-  await builder.buildApp();
+  await withCloudflareEnv(env, async () => {
+    const builder = await createBuilder({ root: info.root });
+    await builder.buildApp();
+  });
 }
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────
@@ -1590,7 +1625,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
 
   // Step 5: Build
   if (!options.skipBuild) {
-    await runBuild(info);
+    // Resolve the env name the same way buildWranglerDeployArgs does, so the
+    // build emits a wrangler.json that matches the env we'll deploy with.
+    const buildEnv = options.env || (options.preview ? "preview" : undefined);
+    await runBuild(info, buildEnv);
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }

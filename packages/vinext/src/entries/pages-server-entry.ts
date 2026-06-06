@@ -379,6 +379,15 @@ const _errorPageRoute = ErrorPageModule
     }
   : null;
 
+function __findPagesNotFoundRoute() {
+  for (var __i = 0; __i < pageRoutes.length; __i++) {
+    if (pageRoutes[__i].pattern === "/404") {
+      return pageRoutes[__i];
+    }
+  }
+  return _errorPageRoute;
+}
+
 const apiRoutes = [
 ${apiRouteEntries.join(",\n")}
 ];
@@ -610,6 +619,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
   // returns the plain "Internal Server Error" text response instead of trying
   // to render an error page again. Fixes #1458.
   const isInternalErrorRender = !!(options && options.__isInternalErrorRender);
+  const err = options && options.err;
   const localeInfo = i18nConfig
     ? resolvePagesI18nRequest(
         url,
@@ -655,14 +665,9 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
     if (!renderErrorPageOnMiss) {
       return __buildDefaultPagesNotFoundResponse();
     }
-    const notFoundMatch = matchRoute("/404", pageRoutes);
-    // matchRoute may match a catch-all (e.g. [...slug]); only use the explicit pages/404 route.
-    if (notFoundMatch && notFoundMatch.route.pattern === "/404") {
-      match = notFoundMatch;
-      renderStatusCodeOverride = 404;
-      renderAsPath = routeUrl;
-    } else if (_errorPageRoute) {
-      match = { route: _errorPageRoute, params: {} };
+    const notFoundRoute = __findPagesNotFoundRoute();
+    if (notFoundRoute) {
+      match = { route: notFoundRoute, params: {} };
       renderStatusCodeOverride = 404;
       renderAsPath = routeUrl;
     } else {
@@ -747,6 +752,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       } catch (e) { /* font preloads not available */ }
       const pageDataResult = await __resolvePagesPageData({
         isDataReq,
+        err,
         applyRequestContexts() {
           if (typeof setSSRContext === "function") {
             setSSRContext({
@@ -800,6 +806,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         pageModule,
         params,
         query,
+        asPath: renderAsPath || routeUrl,
         renderIsrPassToStringAsync,
         route: {
           isDynamic: route.isDynamic,
@@ -826,6 +833,18 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
           hasMiddleware: __hasMiddleware,
         },
       });
+      if (pageDataResult.kind === "notFound") {
+        const notFoundRoute = __findPagesNotFoundRoute();
+        if (notFoundRoute && routePattern !== "/404" && routePattern !== "/_error") {
+          return await _renderPage(request, url, manifest, middlewareHeaders, {
+            statusCode: 404,
+            asPath: renderAsPath || routeUrl,
+            renderErrorPageOnMiss: false,
+            __forcedRoute: notFoundRoute,
+          });
+        }
+        return __buildDefaultPagesNotFoundResponse();
+      }
       if (pageDataResult.kind === "response") {
         return pageDataResult.response;
       }
@@ -1032,6 +1051,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
               renderErrorPageOnMiss: false,
               __isInternalErrorRender: true,
               __forcedRoute: errorRoute,
+              err: e instanceof Error ? e : new Error(String(e)),
             });
           } catch (errorPageErr) {
             console.error("[vinext] Error page render failed:", errorPageErr);

@@ -329,6 +329,8 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
 
 - **NEVER use `gh pr merge --admin`.** The `--admin` flag bypasses branch protection checks entirely. If merge is blocked, investigate why — don't force it through. A blocked merge usually means a required check failed or is still running.
 
+- **NEVER create changesets manually.** Changesets are generated automatically from Conventional Commits during CI by `scripts/create-changeset.mts` (see `.github/workflows/release.yml`). Do not run `pnpm changeset` or hand-author `.changeset/*.md` files. Instead, write a well-formed Conventional Commit message (e.g. `fix(build): ...`, `feat(router): ...`) and let CI produce the changeset.
+
 - **PR workflow:**
   1. Create a branch: `git checkout -b fix/descriptive-name`
   2. Make changes and commit

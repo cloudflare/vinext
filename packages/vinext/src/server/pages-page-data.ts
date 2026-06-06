@@ -11,7 +11,11 @@ import {
   type PagesGsspResponse,
   type PagesI18nRenderContext,
 } from "./pages-page-response.js";
-import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
+import {
+  hasPagesGetInitialProps,
+  isResponseSent,
+  loadPagesGetInitialProps,
+} from "./pages-get-initial-props.js";
 import { buildNextDataJsonResponse } from "./pages-data-route.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 
@@ -124,6 +128,7 @@ export type ResolvePagesPageDataOptions = {
    * `isNextDataRequest` checks in `packages/next/src/server/base-server.ts`.
    */
   isDataReq?: boolean;
+  err?: unknown;
   createGsspReqRes: () => PagesGsspContextResponse;
   createPageElement: (pageProps: Record<string, unknown>) => ReactNode;
   fontLinkHeader: string;
@@ -165,6 +170,7 @@ export type ResolvePagesPageDataOptions = {
   pageModule: PagesPageModule;
   params: Record<string, unknown>;
   query: Record<string, unknown>;
+  asPath?: string;
   route: Pick<Route, "isDynamic">;
   routePattern: string;
   routeUrl: string;
@@ -201,13 +207,14 @@ type ResolvePagesPageDataResponseResult = {
   response: Response;
 };
 
+type ResolvePagesPageDataNotFoundResult = {
+  kind: "notFound";
+};
+
 type ResolvePagesPageDataResult =
   | ResolvePagesPageDataRenderResult
-  | ResolvePagesPageDataResponseResult;
-
-function buildPagesNotFoundResponse(): Response {
-  return buildDefaultPagesNotFoundResponse();
-}
+  | ResolvePagesPageDataResponseResult
+  | ResolvePagesPageDataNotFoundResult;
 
 function buildPagesDataNotFoundResponse(): Response {
   // Matches Next.js: `/_next/data/<buildId>/<page>.json` 404 responses use
@@ -217,6 +224,19 @@ function buildPagesDataNotFoundResponse(): Response {
     status: 404,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function buildPagesNotFoundResult(
+  options: Pick<ResolvePagesPageDataOptions, "isDataReq">,
+): ResolvePagesPageDataResponseResult | ResolvePagesPageDataNotFoundResult {
+  if (options.isDataReq) {
+    return {
+      kind: "response",
+      response: buildPagesDataNotFoundResponse(),
+    };
+  }
+
+  return { kind: "notFound" };
 }
 
 function resolvePagesRedirectStatus(redirect: PagesRedirectResult): number {
@@ -430,13 +450,8 @@ export async function resolvePagesPageData(
     if (fallback === false && !isValidPath) {
       // For data requests (`/_next/data/...json`), return a JSON-shaped 404
       // so the client router can `res.json()` without blowing up — matches
-      // Next.js' behavior. HTML navigations still get the HTML 404 page.
-      return {
-        kind: "response",
-        response: options.isDataReq
-          ? buildPagesDataNotFoundResponse()
-          : buildPagesNotFoundResponse(),
-      };
+      // Next.js' behavior. HTML navigations still get the configured 404 page.
+      return buildPagesNotFoundResult(options);
     }
 
     // Render the fallback shell for unlisted paths under `fallback: true`.
@@ -473,7 +488,7 @@ export async function resolvePagesPageData(
       defaultLocale: options.i18n.defaultLocale,
     });
 
-    if (res.headersSent) {
+    if (isResponseSent(res)) {
       return {
         kind: "response",
         response: await responsePromise,
@@ -496,12 +511,7 @@ export async function resolvePagesPageData(
     }
 
     if (result?.notFound) {
-      return {
-        kind: "response",
-        response: options.isDataReq
-          ? buildPagesDataNotFoundResponse()
-          : buildPagesNotFoundResponse(),
-      };
+      return buildPagesNotFoundResult(options);
     }
 
     // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getServerSideProps", data.props)`
@@ -651,12 +661,7 @@ export async function resolvePagesPageData(
     }
 
     if (result?.notFound) {
-      return {
-        kind: "response",
-        response: options.isDataReq
-          ? buildPagesDataNotFoundResponse()
-          : buildPagesNotFoundResponse(),
-      };
+      return buildPagesNotFoundResult(options);
     }
 
     // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getStaticProps", data.props)`
@@ -673,6 +678,36 @@ export async function resolvePagesPageData(
 
     if (typeof result?.revalidate === "number" && result.revalidate > 0) {
       isrRevalidateSeconds = result.revalidate;
+    }
+  }
+
+  if (
+    typeof options.pageModule.getServerSideProps !== "function" &&
+    typeof options.pageModule.getStaticProps !== "function" &&
+    hasPagesGetInitialProps(options.pageModule.default)
+  ) {
+    const { req, res, responsePromise } = options.createGsspReqRes();
+    const initialProps = await loadPagesGetInitialProps(options.pageModule.default, {
+      req,
+      res,
+      err: options.err,
+      pathname: options.routePattern,
+      query: options.query,
+      asPath: options.asPath ?? options.routeUrl,
+      locale: options.i18n.locale,
+      locales: options.i18n.locales,
+      defaultLocale: options.i18n.defaultLocale,
+    });
+
+    if (isResponseSent(res)) {
+      return {
+        kind: "response",
+        response: await responsePromise,
+      };
+    }
+
+    if (initialProps) {
+      pageProps = { ...pageProps, ...initialProps };
     }
   }
 

@@ -84,13 +84,54 @@ function createFormDataClass({ supportsSubmitter }: { supportsSubmitter: boolean
 function renderClientForm(props: Record<string, unknown>) {
   // `forwardRef()` exposes the wrapped render function on `.render`, which lets us
   // exercise the submit handler directly without adding a DOM renderer just for this shim.
-  const rendered = (Form as unknown as { render: (props: Record<string, unknown>) => any }).render(
-    props,
-  );
-  expect(rendered.type).toBe("form");
-  return rendered.props as {
-    onSubmit: (event: any) => Promise<void>;
+  //
+  // Form now uses hooks (useRef, useCallback, useEffect). We patch the React 19 dispatcher
+  // (ReactSharedInternals.H) with a minimal stub so hooks resolve without error outside a
+  // real rendering pipeline. useEffect is a no-op; useRef returns a stable ref object;
+  // useCallback returns the callback unchanged.
+  const ReactSharedInternals = (React as any)
+    .__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+  const previousDispatcher = ReactSharedInternals.H;
+  const refStore: Map<number, { current: unknown }> = new Map();
+  let hookIndex = 0;
+  const dispatcher = {
+    useRef(initialValue: unknown) {
+      const idx = hookIndex++;
+      if (!refStore.has(idx)) refStore.set(idx, { current: initialValue });
+      return refStore.get(idx)!;
+    },
+    useCallback(fn: unknown) {
+      return fn;
+    },
+    useEffect() {},
+    // Minimal pass-through for anything else that might be called
+    readContext: () => null,
+    useContext: () => null,
+    useMemo: (fn: () => unknown) => fn(),
+    useState: (init: unknown) => [init, () => {}],
+    useReducer: (_reducer: unknown, init: unknown) => [init, () => {}],
+    useLayoutEffect: () => {},
+    useImperativeHandle: () => {},
+    useDebugValue: () => {},
+    useDeferredValue: (val: unknown) => val,
+    useTransition: () => [false, (fn: () => void) => fn()],
+    useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot(),
+    useId: () => ":test:",
+    useActionState: (_action: unknown, init: unknown) => [init, () => {}, false],
   };
+  ReactSharedInternals.H = dispatcher;
+  hookIndex = 0;
+  try {
+    const rendered = (
+      Form as unknown as { render: (props: Record<string, unknown>) => any }
+    ).render(props);
+    expect(rendered.type).toBe("form");
+    return rendered.props as {
+      onSubmit: (event: any) => Promise<void>;
+    };
+  } finally {
+    ReactSharedInternals.H = previousDispatcher;
+  }
 }
 
 function createWindowStub() {
@@ -210,7 +251,7 @@ describe("Form SSR rendering", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(
         Form,
-        { action: "/submit", method: "POST", className: "my-form", id: "contact-form" },
+        { action: "/submit", className: "my-form", id: "contact-form" },
         React.createElement("input", { name: "email", type: "email" }),
       ),
     );
@@ -285,6 +326,8 @@ describe("Form client GET interception", () => {
 
   it("honors submitter formAction, formMethod, and submitter name/value", async () => {
     const { navigate } = installClientGlobals({ supportsSubmitter: true });
+    // method is a DISALLOWED_FORM_PROP; suppress the expected dev console.error.
+    vi.spyOn(console, "error").mockImplementation(() => {});
     const { onSubmit } = renderClientForm({ action: "/search", method: "POST" });
     const submitter = new FakeButtonElement({
       attributes: {
@@ -349,15 +392,25 @@ describe("Form client GET interception", () => {
     );
   });
 
-  it("does not intercept POST submissions without a submitter GET override", async () => {
+  it("does not intercept when submitter overrides method to POST", async () => {
+    // A submitter with formmethod="POST" should suppress GET interception.
     const { navigate } = installClientGlobals({ supportsSubmitter: true });
-    const { onSubmit } = renderClientForm({ action: "/search", method: "POST" });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { onSubmit } = renderClientForm({ action: "/search" });
+    const submitter = new FakeButtonElement({
+      attributes: { formmethod: "POST" },
+    });
     const event = createSubmitEvent({
       entries: [["q", "server-action"]],
+      submitter,
     });
 
     await onSubmit(event);
 
+    // hasUnsupportedSubmitterAttributes fires an error and returns true → no nav.
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining("<Form>'s `method` was set to an unsupported value"),
+    );
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
   });
@@ -414,6 +467,45 @@ describe("Form client GET interception", () => {
     expect(error).toHaveBeenCalledWith(
       `<Form>'s \`target\` was set to an unsupported value via \`formTarget="_blank"\`. This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
     );
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("bails silently for React server-action submitters ($ACTION_ID_ / $ACTION_REF_)", async () => {
+    // Ported from Next.js app-dir/form.tsx: server-action submitters are detected
+    // via their encoded `name` and must not be intercepted for GET navigation.
+    const { navigate } = installClientGlobals({ supportsSubmitter: true });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { onSubmit } = renderClientForm({ action: "/search" });
+    const submitter = new FakeButtonElement({
+      attributes: { name: "$ACTION_ID_abc123", formmethod: "POST" },
+    });
+    const event = createSubmitEvent({ entries: [["q", "react"]], submitter });
+
+    await onSubmit(event);
+
+    // Bails silently — no unsupported-attribute warning, no navigation, no preventDefault.
+    expect(error).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('bails for React client-action submitters (formAction="javascript:...")', async () => {
+    // Ported from Next.js form-shared.tsx hasReactClientActionAttributes: client
+    // actions encode as `formAction="javascript:..."` and can't be navigated to.
+    const { navigate } = installClientGlobals({ supportsSubmitter: true });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { onSubmit } = renderClientForm({ action: "/search" });
+    const submitter = new FakeButtonElement({
+      attributes: { formaction: "javascript:void(0)" },
+    });
+    const event = createSubmitEvent({ entries: [["q", "react"]], submitter });
+
+    await onSubmit(event);
+
+    expect(warn).not.toHaveBeenCalled();
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
   });
@@ -532,12 +624,16 @@ describe("Form Pages Router soft navigation", () => {
     expect(event.preventDefault).toHaveBeenCalledOnce();
   });
 
-  it("does not call preventDefault for non-GET forms (lets native submit run)", async () => {
+  it("does not call preventDefault when submitter overrides method to POST", async () => {
     // POST forms (e.g. server actions) must not be intercepted by the Form's
     // navigation logic — React's own form-action handling owns them.
     installPagesGlobals();
-    const { onSubmit } = renderClientForm({ action: "/results", method: "POST" });
-    const event = createSubmitEvent({ entries: [["q", "react"]] });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { onSubmit } = renderClientForm({ action: "/results" });
+    const submitter = new FakeButtonElement({
+      attributes: { formmethod: "POST" },
+    });
+    const event = createSubmitEvent({ entries: [["q", "react"]], submitter });
 
     await onSubmit(event);
 
@@ -565,5 +661,203 @@ describe("Form function action (client/server action)", () => {
     // We never invoke the action during SSR — but we did successfully render
     // a form with the function attached (React will bind it client-side).
     expect(actionFn).not.toHaveBeenCalled();
+  });
+});
+
+// ─── DISALLOWED_FORM_PROPS ──────────────────────────────────────────────
+
+describe("Form DISALLOWED_FORM_PROPS", () => {
+  // Ported from Next.js: packages/next/src/client/app-dir/form.tsx
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/app-dir/form.tsx
+
+  for (const prop of ["method", "encType", "target"] as const) {
+    it(`emits console.error and strips \`${prop}\` from the rendered form`, () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const html = ReactDOMServer.renderToString(
+        React.createElement(
+          Form,
+          { action: "/search", [prop]: "bad-value" } as any,
+          React.createElement("input", { name: "q" }),
+        ),
+      );
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining(`<Form> does not support changing \`${prop}\``),
+      );
+      // The disallowed prop must not appear as an attribute on the rendered <form>.
+      expect(html).not.toContain(`${prop.toLowerCase()}="bad-value"`);
+    });
+  }
+
+  it("emits console.error for disallowed props in test/dev mode", () => {
+    // NODE_ENV is 'test' which is !== 'production', so warnings fire.
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    ReactDOMServer.renderToString(
+      React.createElement(Form, { action: "/search", method: "GET" } as any),
+    );
+    // In non-production mode, we expect the error to have been called.
+    expect(error).toHaveBeenCalled();
+  });
+});
+
+// ─── File input dev warning ─────────────────────────────────────────────
+
+describe("Form file input warning", () => {
+  // Ported from Next.js: packages/next/src/client/form-shared.tsx (createFormSubmitDestinationUrl)
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/form-shared.tsx
+
+  it("warns in dev when FormData contains a File value", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    // Stub a File-like object with a name property.
+    class FakeFile {
+      name: string;
+      constructor(name: string) {
+        this.name = name;
+      }
+    }
+
+    // FormData that yields a File-like entry. The FormData constructor is called
+    // with a form element and an optional submitter; we ignore those and always
+    // yield the faked File entry so we can exercise the dev-warning branch.
+    const fileEntry: [string, FakeFile] = ["attachment", new FakeFile("photo.jpg")];
+    class FileFormData {
+      // No constructor needed — default constructor ignores arguments.
+      [Symbol.iterator]() {
+        return [fileEntry][Symbol.iterator]();
+      }
+      append() {}
+    }
+
+    const windowStub = createWindowStub();
+    vi.stubGlobal("window", windowStub.window);
+    vi.stubGlobal("Element", FakeElement);
+    vi.stubGlobal("HTMLButtonElement", FakeButtonElement);
+    vi.stubGlobal("HTMLInputElement", FakeInputElement);
+    vi.stubGlobal("FormData", FileFormData);
+
+    const { onSubmit } = renderClientForm({ action: "/upload" });
+    // Pass a form target that buildFormData will wrap in FileFormData.
+    const event = {
+      currentTarget: {},
+      defaultPrevented: false,
+      nativeEvent: { submitter: null },
+      preventDefault: vi.fn(function (this: { defaultPrevented: boolean }) {
+        this.defaultPrevented = true;
+      }),
+    };
+    // Bind preventDefault to the event so it mutates the right object.
+    event.preventDefault = vi.fn(() => {
+      event.defaultPrevented = true;
+    });
+
+    await onSubmit(event);
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "<Form> only supports file inputs if `action` is a function. File inputs cannot be used if `action` is a string",
+      ),
+    );
+    // Navigation still happens, using the filename as the value.
+    expect(windowStub.navigate).toHaveBeenCalledWith(
+      expect.stringContaining("attachment=photo.jpg"),
+      expect.any(Number),
+      "navigate",
+      "push",
+      undefined,
+      false,
+      undefined,
+      expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
+    );
+  });
+});
+
+// ─── prefetch prop ──────────────────────────────────────────────────────
+
+describe("Form prefetch prop", () => {
+  it("accepts prefetch={false} without errors", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => {
+      ReactDOMServer.renderToString(
+        React.createElement(
+          Form,
+          { action: "/search", prefetch: false },
+          React.createElement("input", { name: "q" }),
+        ),
+      );
+    }).not.toThrow();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("accepts prefetch={null} without errors", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => {
+      ReactDOMServer.renderToString(
+        React.createElement(
+          Form,
+          { action: "/search", prefetch: null },
+          React.createElement("input", { name: "q" }),
+        ),
+      );
+    }).not.toThrow();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("emits console.error for an invalid prefetch value", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    ReactDOMServer.renderToString(
+      React.createElement(
+        Form,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { action: "/search", prefetch: true as any },
+        React.createElement("input", { name: "q" }),
+      ),
+    );
+    expect(error).toHaveBeenCalledWith("The `prefetch` prop of <Form> must be `false` or `null`");
+  });
+});
+
+// ─── function-action prop warnings ──────────────────────────────────────
+
+describe("Form function-action prop warnings", () => {
+  const serverAction = (_formData: FormData) => {};
+
+  it("emits console.error when replace is passed with a function action", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    ReactDOMServer.renderToString(
+      React.createElement(Form, { action: serverAction, replace: true }),
+    );
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Passing `replace` or `scroll` to a <Form> whose `action` is a function has no effect.",
+      ),
+    );
+  });
+
+  it("emits console.error when scroll is passed with a function action", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    ReactDOMServer.renderToString(
+      React.createElement(Form, { action: serverAction, scroll: false }),
+    );
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Passing `replace` or `scroll` to a <Form> whose `action` is a function has no effect.",
+      ),
+    );
+  });
+
+  it("emits console.error when prefetch is passed with a function action", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    ReactDOMServer.renderToString(
+      React.createElement(Form, { action: serverAction, prefetch: false }),
+    );
+    expect(error).toHaveBeenCalledWith(
+      "Passing `prefetch` to a <Form> whose `action` is a function has no effect.",
+    );
+  });
+
+  it("does not emit a warning when no navigation props are passed with a function action", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    ReactDOMServer.renderToString(React.createElement(Form, { action: serverAction }));
+    expect(error).not.toHaveBeenCalledWith(expect.stringContaining("has no effect"));
   });
 });

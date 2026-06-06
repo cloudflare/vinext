@@ -172,24 +172,25 @@ export const ogAssetsPlugin: Plugin = {
   writeBundle: {
     sequential: true,
     order: "post",
-    async handler(options) {
+    async handler(options, bundle) {
       const envName = this.environment?.name;
       if (envName !== "rsc") return;
 
       const outDir = options.dir;
       if (!outDir) return;
 
-      // Check if the bundle references @vercel/og assets
-      const indexPath = path.join(outDir, "index.js");
-      if (!fs.existsSync(indexPath)) return;
-
-      const content = fs.readFileSync(indexPath, "utf-8");
       // The font is inlined as base64 by vinext:og-inline-fetch-assets, so only
       // the WASM needs to be present as a file alongside the bundle.
       const ogAssets = ["resvg.wasm"];
 
-      // Only copy if the bundle actually references these files
-      const referencedAssets = ogAssets.filter((asset) => content.includes(asset));
+      // Only copy if the bundle actually references these files. Scan every
+      // emitted chunk, not just index.js: @vercel/og is lazily imported by the
+      // next/og shim, so the asset reference lives in its own code-split chunk
+      // rather than the main entry.
+      const chunkCode = Object.values(bundle)
+        .map((output) => (output.type === "chunk" ? output.code : ""))
+        .join("\n");
+      const referencedAssets = ogAssets.filter((asset) => chunkCode.includes(asset));
       if (referencedAssets.length === 0) return;
 
       // Find @vercel/og in node_modules

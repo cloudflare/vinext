@@ -20,6 +20,7 @@
  * Ported from Next.js:
  *   - test/e2e/invalid-static-asset-404-pages/invalid-static-asset-404-pages.test.ts
  *   - test/e2e/invalid-static-asset-404-app/invalid-static-asset-404-app.test.ts
+ *   - test/e2e/invalid-static-asset-404-app/invalid-static-asset-404-app-base-path.test.ts
  *   - test/e2e/invalid-static-asset-404-pages/invalid-static-asset-404-pages-base-path.test.ts
  *   - test/e2e/invalid-static-asset-404-pages/invalid-static-asset-404-pages-asset-prefix.test.ts
  *
@@ -73,6 +74,21 @@ async function buildAppFixtureWithConfig(
   return { outDir };
 }
 
+function findClientRuntimeManifestBuildId(outDir: string, pathPrefix: string): string | undefined {
+  const prefixSegments = pathPrefix.split("/").filter(Boolean);
+  const staticDir = path.join(outDir, "client", ...prefixSegments, "_next", "static");
+  if (!fs.existsSync(staticDir)) return undefined;
+
+  for (const entry of fs.readdirSync(staticDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (fs.existsSync(path.join(staticDir, entry.name, "_buildManifest.js"))) {
+      return entry.name;
+    }
+  }
+
+  return undefined;
+}
+
 describe("App Router invalid `_next/static/*` 404", () => {
   const cleanups: Array<() => void> = [];
   afterAll(() => {
@@ -105,6 +121,38 @@ describe("App Router invalid `_next/static/*` 404", () => {
       expect(htmlRes.status).toBe(404);
       const htmlBody = await htmlRes.text();
       expect(htmlBody).toContain("<");
+    } finally {
+      server.close();
+    }
+  }, 180_000);
+
+  it("serves generated build manifest asset under basePath", async () => {
+    // Ported from Next.js: test/e2e/invalid-static-asset-404-app/invalid-static-asset-404-app-base-path.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/invalid-static-asset-404-app/invalid-static-asset-404-app-base-path.test.ts
+    const built = await buildAppFixtureWithConfig(`basePath: "/base",`, register);
+    const buildId = findClientRuntimeManifestBuildId(built.outDir, "/base");
+    if (!buildId) {
+      throw new Error("Expected _buildManifest.js under /base/_next/static/<buildId>/");
+    }
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const { server } = await startProdServer({
+      port: 0,
+      outDir: built.outDir,
+      noCompression: true,
+    });
+    try {
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      const baseUrl = `http://localhost:${port}`;
+
+      const res = await fetch(`${baseUrl}/base/_next/static/${buildId}/_buildManifest.js`);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("__BUILD_MANIFEST");
+
+      const ssgRes = await fetch(`${baseUrl}/base/_next/static/${buildId}/_ssgManifest.js`);
+      expect(ssgRes.status).toBe(200);
+      expect(await ssgRes.text()).toContain("__SSG_MANIFEST");
     } finally {
       server.close();
     }

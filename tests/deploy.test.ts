@@ -16,6 +16,7 @@ import {
   buildWranglerDeployArgs,
   parseDeployArgs,
   resolveWranglerBin,
+  withCloudflareEnv,
   isPackageResolvable,
   viteConfigHasCloudflarePlugin,
   viteConfigHasCacheAdapter,
@@ -95,6 +96,81 @@ describe("buildWranglerDeployArgs", () => {
 
   it("treats empty string env as production", () => {
     expect(buildWranglerDeployArgs({ env: "" })).toEqual({ args: ["deploy"], env: undefined });
+  });
+});
+
+// ─── CLOUDFLARE_ENV propagation (issue #1210) ──────────────────────────────
+
+describe("withCloudflareEnv", () => {
+  let priorEnv: string | undefined;
+  let priorHadEnv: boolean;
+
+  beforeEach(() => {
+    priorHadEnv = "CLOUDFLARE_ENV" in process.env;
+    priorEnv = process.env.CLOUDFLARE_ENV;
+    delete process.env.CLOUDFLARE_ENV;
+  });
+
+  afterEach(() => {
+    if (priorHadEnv) {
+      process.env.CLOUDFLARE_ENV = priorEnv;
+    } else {
+      delete process.env.CLOUDFLARE_ENV;
+    }
+  });
+
+  it("sets CLOUDFLARE_ENV for the duration of the callback", async () => {
+    let observed: string | undefined;
+    await withCloudflareEnv("staging", async () => {
+      observed = process.env.CLOUDFLARE_ENV;
+    });
+    expect(observed).toBe("staging");
+  });
+
+  it("restores absence of CLOUDFLARE_ENV after the callback when no prior value existed", async () => {
+    await withCloudflareEnv("hml", async () => {
+      // no-op
+    });
+    expect("CLOUDFLARE_ENV" in process.env).toBe(false);
+  });
+
+  it("restores the prior CLOUDFLARE_ENV value after the callback", async () => {
+    process.env.CLOUDFLARE_ENV = "preview";
+    await withCloudflareEnv("staging", async () => {
+      expect(process.env.CLOUDFLARE_ENV).toBe("staging");
+    });
+    expect(process.env.CLOUDFLARE_ENV).toBe("preview");
+  });
+
+  it("does not touch process.env when env is undefined", async () => {
+    let observed: string | undefined = "sentinel";
+    await withCloudflareEnv(undefined, async () => {
+      observed = process.env.CLOUDFLARE_ENV;
+    });
+    expect(observed).toBeUndefined();
+    expect("CLOUDFLARE_ENV" in process.env).toBe(false);
+  });
+
+  it("does not touch process.env when env is empty string", async () => {
+    await withCloudflareEnv("", async () => {
+      expect("CLOUDFLARE_ENV" in process.env).toBe(false);
+    });
+    expect("CLOUDFLARE_ENV" in process.env).toBe(false);
+  });
+
+  it("restores CLOUDFLARE_ENV after the callback throws", async () => {
+    process.env.CLOUDFLARE_ENV = "preview";
+    await expect(
+      withCloudflareEnv("staging", async () => {
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    expect(process.env.CLOUDFLARE_ENV).toBe("preview");
+  });
+
+  it("returns the callback's resolved value", async () => {
+    const result = await withCloudflareEnv("staging", async () => 42);
+    expect(result).toBe(42);
   });
 });
 
