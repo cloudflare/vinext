@@ -154,8 +154,12 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       if (isPageLazy(route)) imports.getLazyLoaderVar(route.pagePath);
       else imports.getImportVar(route.pagePath);
     }
-    // Route handlers are always lazy: they have no generateStaticParams and are
-    // only read after the matched route has been hydrated.
+    // Route handlers are always lazy: they are never referenced by
+    // generateStaticParamsMap (buildGenerateStaticParamsEntries sources only
+    // from layouts + page, never route.routePath), so unlike dynamic-route
+    // pages they have no module-load-time consumer. (Next.js route handlers can
+    // export generateStaticParams for prerendering, but vinext does not wire
+    // that into the map yet — a separate gap, unaffected by lazy loading.)
     if (route.routePath) imports.getLazyLoaderVar(route.routePath);
     for (const layout of route.layouts) imports.getImportVar(layout);
     for (const tmpl of route.templates) imports.getImportVar(tmpl);
