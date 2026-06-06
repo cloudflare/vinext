@@ -10,7 +10,11 @@ import { generateServerEntry as _generateServerEntry } from "./entries/pages-ser
 import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
 import { appRouteGraph, appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
 import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
-import { buildViteResolveExtensions, createValidFileMatcher } from "./routing/file-matcher.js";
+import {
+  buildViteResolveExtensions,
+  createValidFileMatcher,
+  findFileWithExts,
+} from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
 import { isImageOptimizationPath } from "./server/image-optimization.js";
@@ -34,10 +38,7 @@ import {
   collectRouteClassificationManifest,
   type RouteClassificationManifest,
 } from "./build/route-classification-manifest.js";
-import {
-  planRouteClassificationInjection,
-  type RouteClassificationChunk,
-} from "./build/route-classification-injector.js";
+import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import {
   findNextConfigPath,
@@ -94,6 +95,7 @@ import {
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-request-headers.js";
 import { detectPackageManager } from "./utils/project.js";
+import { isUnknownRecord as isRecord } from "./utils/record.js";
 import { manifestFilesWithBase } from "./utils/manifest-paths.js";
 import { hasBasePath } from "./utils/base-path.js";
 import { mergeRewriteQuery } from "./utils/query.js";
@@ -168,6 +170,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
+import { normalizePathSeparators } from "./utils/path.js";
 
 // Install the process-level peer-disconnect backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
@@ -328,10 +331,6 @@ function isVinextOgShimImporter(importer: string | undefined): boolean {
 
 function toRelativeFileEntry(root: string, absPath: string): string {
   return path.relative(root, absPath).split(path.sep).join("/");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
@@ -787,14 +786,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const draftModeSecret = randomUUID();
 
   // Build-time layout classification manifest, captured in the RSC virtual
-  // module's load hook and consumed in generateBundle to patch the generated
+  // module's load hook and consumed in renderChunk to patch the generated
   // `__VINEXT_CLASS` stub with a real dispatch table.
   let rscClassificationManifest: RouteClassificationManifest | null = null;
 
   // Resolve shim paths - works both from source (.ts) and built (.js)
   const shimsDir = path.resolve(__dirname, "shims");
 
-  // Shared with the Layer 2 generateBundle hook below. Rolldown stores module
+  // Shared with the Layer 2 renderChunk hook below. Rolldown stores module
   // IDs as canonicalized filesystem paths (fs.realpathSync.native), so we must
   // canonicalize anything we hand to the classifier and anything we ask the
   // module graph for. The shim files exist in the vinext package before plugin
@@ -2450,12 +2449,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // See https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
           const globalNotFoundPath = findFileWithExts(appDir, "global-not-found", fileMatcher);
           // Collect Layer 1 (segment config) classifications for all layouts.
-          // Layer 2 (module graph) runs later in generateBundle once Rollup's
+          // Layer 2 (module graph) runs later in renderChunk once Rollup's
           // module info is available.
           // Invariant: rscClassificationManifest must be built from the same
           // `routes` value passed to generateRscEntry below so that layout
           // indices in the manifest correspond 1:1 to the route.layouts arrays
-          // used during codegen. generateBundle clears this after patching.
+          // used during codegen. renderChunk clears this after patching.
           rscClassificationManifest = collectRouteClassificationManifest(routes);
           return generateRscEntry(
             appDir,
@@ -2520,77 +2519,85 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // phase that emits the real RSC entry. We only patch when we actually
       // see the stub in a chunk — the scan phase produces a tiny stub chunk
       // that does not contain our code.
-      generateBundle(_options, bundle) {
-        // Only run in the RSC environment. SSR/client builds never contain
-        // the __VINEXT_CLASS stub so there is nothing to patch there, and
-        // pulling ModuleInfo from the wrong graph would give nonsense results.
-        if (this.environment?.name !== "rsc") return;
-        if (!rscClassificationManifest) return;
+      //
+      // This MUST run in `renderChunk` with `order: "pre"`, NOT in
+      // `generateBundle`: when server environments are minified (the default —
+      // see `vinext:server-minify-defaults`), rolldown's minifier renames the
+      // top-level `__VINEXT_CLASS` function and mangles its `routeIdx`
+      // parameter by the time `generateBundle` runs, so the stub regex would
+      // never match and build-time classification would silently no-op (every
+      // route would fall back to the Layer 3 runtime probe). `renderChunk`
+      // with `order: "pre"` runs before minification, so the stub is still in
+      // its readable form; the patched body is then minified along with the
+      // rest of the chunk, which is fine because the runtime calls the function
+      // by reference rather than by name.
+      renderChunk: {
+        order: "pre",
+        handler(code, chunk) {
+          // Only run in the RSC environment. SSR/client builds never contain
+          // the __VINEXT_CLASS stub so there is nothing to patch there, and
+          // pulling ModuleInfo from the wrong graph would give nonsense
+          // results.
+          if (this.environment?.name !== "rsc") return null;
+          if (!rscClassificationManifest) return null;
+          // Cheap pre-filter: skip chunks that don't mention the stub at all
+          // (e.g. the scan-phase chunk and every non-entry chunk).
+          if (!code.includes("__VINEXT_CLASS")) return null;
 
-        const enableClassificationDebug = Boolean(process.env.VINEXT_DEBUG_CLASSIFICATION);
+          // Patching per-chunk (rather than scanning the whole bundle in
+          // generateBundle) assumes the stub body and its per-route call sites
+          // are emitted into the same chunk. That holds with current codegen:
+          // both live in the single RSC entry module, so they never split
+          // across chunks. If a future codegen change hoisted the call sites
+          // into a separate chunk, this hook would patch the stub but leave the
+          // callers referencing the original — revisit the hook scope then.
 
-        const chunks: RouteClassificationChunk[] = [];
-        const chunksByFileName = new Map<
-          string,
-          Extract<(typeof bundle)[string], { type: "chunk" }>
-        >();
-        for (const chunk of Object.values(bundle)) {
-          if (chunk.type !== "chunk") continue;
-          chunks.push({
-            code: chunk.code,
-            fileName: chunk.fileName,
+          const enableClassificationDebug = Boolean(process.env.VINEXT_DEBUG_CLASSIFICATION);
+
+          // `canonicalize` and `dynamicShimPaths` are hoisted to plugin init
+          // (above) so they are constructed once per plugin instance instead of
+          // on every renderChunk invocation. The macOS realpath quirk
+          // (/var/folders/... → /private/var/folders/...) still applies to
+          // every path we hand to the classifier.
+
+          // Adapter: the classifier in `build/layout-classification.ts` uses
+          // `dynamicImportedIds` (matches the old-Rollup field name we used when
+          // we wrote it). Rolldown's current ModuleInfo exposes it as
+          // `dynamicallyImportedIds` (the new Rollup field name). Keep the
+          // translation in one place so future call sites don't have to remember.
+          const moduleInfo = {
+            getModuleInfo: (moduleId: string) => {
+              const info = this.getModuleInfo(moduleId);
+              if (!info) return null;
+              return {
+                importedIds: info.importedIds ?? [],
+                dynamicImportedIds: info.dynamicallyImportedIds ?? [],
+              };
+            },
+          };
+
+          const patchPlan = planRouteClassificationInjection({
+            canonicalizeLayoutPath: canonicalize,
+            chunks: [{ code, fileName: chunk.fileName }],
+            dynamicShimPaths,
+            enableDebugReasons: enableClassificationDebug,
+            manifest: rscClassificationManifest,
+            moduleInfo,
           });
-          chunksByFileName.set(chunk.fileName, chunk);
-        }
+          if (patchPlan.kind === "skip") return null;
 
-        // `canonicalize` and `dynamicShimPaths` are hoisted to plugin init
-        // (above) so they are constructed once per plugin instance instead of
-        // on every generateBundle invocation. The macOS realpath quirk
-        // (/var/folders/... → /private/var/folders/...) still applies to
-        // every path we hand to the classifier.
+          // Consume the manifest exactly once per RSC entry. Clearing here
+          // prevents a stale manifest from leaking into a subsequent build pass
+          // if the load hook is not re-triggered (e.g., in non-standard rebuild
+          // paths).
+          rscClassificationManifest = null;
 
-        // Adapter: the classifier in `build/layout-classification.ts` uses
-        // `dynamicImportedIds` (matches the old-Rollup field name we used when
-        // we wrote it). Rolldown's current ModuleInfo exposes it as
-        // `dynamicallyImportedIds` (the new Rollup field name). Keep the
-        // translation in one place so future call sites don't have to remember.
-        const moduleInfo = {
-          getModuleInfo: (moduleId: string) => {
-            const info = this.getModuleInfo(moduleId);
-            if (!info) return null;
-            return {
-              importedIds: info.importedIds ?? [],
-              dynamicImportedIds: info.dynamicallyImportedIds ?? [],
-            };
-          },
-        };
-
-        const patchPlan = planRouteClassificationInjection({
-          canonicalizeLayoutPath: canonicalize,
-          chunks,
-          dynamicShimPaths,
-          enableDebugReasons: enableClassificationDebug,
-          manifest: rscClassificationManifest,
-          moduleInfo,
-        });
-        if (patchPlan.kind === "skip") return;
-
-        const target = chunksByFileName.get(patchPlan.fileName);
-        if (!target) {
-          throw new Error(
-            `vinext: build-time classification — patch target ${patchPlan.fileName} disappeared from the RSC bundle`,
-          );
-        }
-        target.code = patchPlan.code;
-
-        // The patched body is longer than the stub, so any existing source map
-        // would be stale. RSC entry source maps are not served or consumed, so
-        // nulling the map is safe and prevents stale-map confusion in tooling.
-        target.map = patchPlan.map;
-        // Consume the manifest exactly once per RSC entry load. Clearing here
-        // prevents a stale manifest from leaking into a subsequent generateBundle
-        // call if the load hook is not re-triggered (e.g., in non-standard rebuild paths).
-        rscClassificationManifest = null;
+          // The patched body is longer than the stub, so any existing source
+          // map would be stale. RSC entry source maps are not served or
+          // consumed, so nulling the map is safe and prevents stale-map
+          // confusion in tooling.
+          return { code: patchPlan.code, map: patchPlan.map };
+        },
       },
     },
     // CSS url() asset parity with Next.js. Build-only and client-scoped: dev CSS
@@ -2617,6 +2624,39 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       configEnvironment(name) {
         if (name !== "client") return null;
         return { build: { assetsInlineLimit: clientAssetsInlineLimit } };
+      },
+    },
+    {
+      // Minify server-side build environments (rsc/ssr and the Cloudflare
+      // worker env) by default. Vite only minifies the `client` environment
+      // out of the box — `build.minify` defaults to `false` for every other
+      // environment — so the deployed worker (dist/server/index.js) and the
+      // SSR renderer (dist/server/ssr/index.js) ship full of readable
+      // identifiers, comments, and whitespace. That bloats raw size (workerd
+      // cold-start parse CPU) and gzip size (counted against the Cloudflare
+      // Workers size limit).
+      //
+      // This is a TRUE DEFAULT that yields to user configuration, NOT a hard
+      // override. `apply: "build"` already scopes it to production builds
+      // (never dev/preview). We then read the *incoming* per-environment
+      // config: Vite seeds each non-client environment's `build` from the
+      // top-level `config.build` before running configEnvironment (see
+      // getDefaultEnvironmentOptions), so `config.build?.minify` here reflects
+      // any explicit setting from the user (top-level OR
+      // `environments.<name>.build.minify`) or an earlier plugin (e.g.
+      // @cloudflare/vite-plugin). If anyone already chose a value — including
+      // `false` — we leave it alone; we only fill in the default when it is
+      // still unset. `minify: true` lets the rolldown/oxc toolchain pick its
+      // native minifier rather than pinning a specific one.
+      name: "vinext:server-minify-defaults",
+      apply: "build",
+
+      configEnvironment(name, config) {
+        // The client env is already minified by Vite's defaults.
+        if (name === "client") return null;
+        // Respect any explicit user/plugin minify choice (including `false`).
+        if (config.build?.minify !== undefined) return null;
+        return { build: { minify: true } };
       },
     },
     {
@@ -3901,9 +3941,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const matchStart = match.index;
             const matchEnd = matchStart + fullMatch.length;
 
-            // Resolve the absolute path of the image
+            // Resolve the absolute path of the image. Normalize separators
+            // since the path is embedded in the ESM module specifier below,
+            // which should use forward slashes. fs accepts them on Windows,
+            // so existsSync still works.
             const dir = path.dirname(id);
-            const absImagePath = path.resolve(dir, importPath);
+            const absImagePath = normalizePathSeparators(path.resolve(dir, importPath));
 
             if (!fs.existsSync(absImagePath)) continue;
 
@@ -4966,22 +5009,6 @@ function applyHeaders(
       }
     }
   }
-}
-
-/**
- * Find a file by name (without extension) in a directory.
- * Checks the configured page extensions.
- */
-function findFileWithExts(
-  dir: string,
-  name: string,
-  matcher: ReturnType<typeof createValidFileMatcher>,
-): string | null {
-  for (const ext of matcher.dottedExtensions) {
-    const filePath = path.join(dir, name + ext);
-    if (fs.existsSync(filePath)) return filePath;
-  }
-  return null;
 }
 
 // Public exports for static export

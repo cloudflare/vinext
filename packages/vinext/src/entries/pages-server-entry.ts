@@ -32,6 +32,7 @@ const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", impo
 const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 const _cspPath = resolveEntryPath("../server/csp.js", import.meta.url);
 const _serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
+const _queryUtilsPath = resolveEntryPath("../utils/query.js", import.meta.url);
 
 /**
  * Generate the virtual SSR server entry module.
@@ -239,6 +240,7 @@ import { runWithHeadState } from "vinext/head-state";
 import "vinext/i18n-state";
 import { setI18nContext } from "vinext/i18n-context";
 import { createNonceAttribute as __createNonceAttribute, safeJsonStringify } from "vinext/html";
+import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from ${JSON.stringify(_queryUtilsPath)};
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 import { sanitizeDestination as sanitizeDestinationLocal } from ${JSON.stringify(resolveEntryPath("../config/config-matchers.js", import.meta.url))};
@@ -415,32 +417,6 @@ export function matchPageRoute(url, request) {
       ).url
     : url;
   return matchRoute(routeUrl, pageRoutes);
-}
-
-function parseQuery(url) {
-  // Per RFC 3986 only the first "?" separates path from query, so additional
-  // "?" chars belong to the query string (e.g. /linker?href=/about?hello=world
-  // has query "href=/about?hello=world"). split("?")[1] would drop everything
-  // after the second "?" and strip embedded query strings from values.
-  const queryIndex = url.indexOf("?");
-  if (queryIndex === -1) return {};
-  const hashIndex = url.indexOf("#", queryIndex + 1);
-  const qs = hashIndex === -1 ? url.slice(queryIndex + 1) : url.slice(queryIndex + 1, hashIndex);
-  if (!qs) return {};
-  const p = new URLSearchParams(qs);
-  const q = {};
-  for (const [k, v] of p) {
-    if (k in q) {
-      q[k] = Array.isArray(q[k]) ? q[k].concat(v) : [q[k], v];
-    } else {
-      q[k] = v;
-    }
-  }
-  return q;
-}
-
-function mergeRouteParamsIntoQuery(query, params) {
-  return Object.assign(query, params);
 }
 
 function patternToNextFormat(pattern) {

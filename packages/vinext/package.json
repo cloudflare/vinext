@@ -61,6 +61,18 @@
       "types": "./dist/server/worker-utils.d.ts",
       "import": "./dist/server/worker-utils.js"
     },
+    "./server/http-error-responses": {
+      "types": "./dist/server/http-error-responses.d.ts",
+      "import": "./dist/server/http-error-responses.js"
+    },
+    "./utils/asset-prefix": {
+      "types": "./dist/utils/asset-prefix.d.ts",
+      "import": "./dist/utils/asset-prefix.js"
+    },
+    "./utils/base-path": {
+      "types": "./dist/utils/base-path.d.ts",
+      "import": "./dist/utils/base-path.js"
+    },
     "./utils/query": {
       "types": "./dist/utils/query.d.ts",
       "import": "./dist/utils/query.js"

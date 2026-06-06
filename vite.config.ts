@@ -39,7 +39,10 @@ export default defineConfig({
       denyWarnings: true,
     },
     plugins: ["typescript", "unicorn", "import", "react"],
-    jsPlugins: ["./oxlint-plugins/prefer-import-alias.js"],
+    jsPlugins: [
+      "./oxlint-plugins/prefer-import-alias.js",
+      "./oxlint-plugins/prefer-shared-utils.js",
+    ],
     rules: {
       "@typescript-eslint/no-explicit-any": "error",
       "typescript/consistent-type-definitions": ["error", "type"],
@@ -61,6 +64,7 @@ export default defineConfig({
       "react/no-array-index-key": "error",
       "react/rules-of-hooks": "error",
       "react/self-closing-comp": "error",
+      "vinext-utils/prefer-shared-utils": "error",
     },
     overrides: [
       {

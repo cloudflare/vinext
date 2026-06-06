@@ -4,6 +4,7 @@ import {
 } from "./artifact-compatibility.js";
 import { AppElementsWire } from "./app-elements-wire.js";
 import { fnv1a64 } from "../utils/hash.js";
+import { isNonNegativeSafeInteger } from "../utils/number.js";
 import { isUnknownRecord } from "../utils/record.js";
 
 export const CLIENT_REUSE_MANIFEST_SCHEMA_VERSION = 1;
@@ -231,10 +232,6 @@ export function countUtf8Bytes(input: string): number {
   return textEncoder.encode(input).length;
 }
 
-function isVisibleCommitVersion(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
 function parseReplayWindow(value: unknown, visibleCommitVersion: number): ParseReplayWindowResult {
   if (!isUnknownRecord(value)) {
     return {
@@ -246,8 +243,8 @@ function parseReplayWindow(value: unknown, visibleCommitVersion: number): ParseR
   const validFromVisibleCommitVersion = value.validFromVisibleCommitVersion;
   const validUntilVisibleCommitVersion = value.validUntilVisibleCommitVersion;
   if (
-    !isVisibleCommitVersion(validFromVisibleCommitVersion) ||
-    !isVisibleCommitVersion(validUntilVisibleCommitVersion) ||
+    !isNonNegativeSafeInteger(validFromVisibleCommitVersion) ||
+    !isNonNegativeSafeInteger(validUntilVisibleCommitVersion) ||
     validFromVisibleCommitVersion > validUntilVisibleCommitVersion ||
     visibleCommitVersion < validFromVisibleCommitVersion ||
     visibleCommitVersion > validUntilVisibleCommitVersion
@@ -255,10 +252,10 @@ function parseReplayWindow(value: unknown, visibleCommitVersion: number): ParseR
     return {
       kind: "rejected",
       rejection: createRejection("SKIP_REPLAY_WINDOW_INVALID", {
-        validFromVisibleCommitVersion: isVisibleCommitVersion(validFromVisibleCommitVersion)
+        validFromVisibleCommitVersion: isNonNegativeSafeInteger(validFromVisibleCommitVersion)
           ? validFromVisibleCommitVersion
           : null,
-        validUntilVisibleCommitVersion: isVisibleCommitVersion(validUntilVisibleCommitVersion)
+        validUntilVisibleCommitVersion: isNonNegativeSafeInteger(validUntilVisibleCommitVersion)
           ? validUntilVisibleCommitVersion
           : null,
         visibleCommitVersion,
@@ -439,7 +436,7 @@ export function parseClientReuseManifestHeader(
   }
 
   const visibleCommitVersion = decoded.visibleCommitVersion;
-  if (!isVisibleCommitVersion(visibleCommitVersion)) {
+  if (!isNonNegativeSafeInteger(visibleCommitVersion)) {
     return rejectManifest("SKIP_VISIBLE_COMMIT_VERSION_INVALID", {
       visibleCommitVersion: null,
     });

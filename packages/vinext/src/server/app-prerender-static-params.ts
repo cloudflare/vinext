@@ -1,4 +1,5 @@
 import { pickRootParams, runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
+import { isUnknownRecord } from "../utils/record.js";
 
 type GenerateStaticParamsFunction = (input: { params: RootParams }) => unknown;
 
@@ -7,7 +8,7 @@ function isGenerateStaticParamsFunction(value: unknown): value is GenerateStatic
 }
 
 function isRootParams(value: unknown): value is RootParams {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+  return isUnknownRecord(value);
 }
 
 export function createAppPrerenderStaticParamsResolver(

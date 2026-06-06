@@ -285,6 +285,9 @@ const rootPkg = JSON.parse(fs.readFileSync(path.join(vinextDir, 'package.json'),
 const vinextPkg = JSON.parse(
   fs.readFileSync(path.join(vinextDir, 'packages', 'vinext', 'package.json'), 'utf8'),
 )
+const cloudflarePkg = JSON.parse(
+  fs.readFileSync(path.join(vinextDir, 'packages', 'cloudflare', 'package.json'), 'utf8'),
+)
 const workspaceConfig = fs.readFileSync(
   path.join(vinextDir, 'pnpm-workspace.yaml'),
   'utf8',
@@ -324,6 +327,15 @@ function parseCatalog(yaml) {
 }
 
 const catalog = parseCatalog(workspaceConfig)
+const localCloudflarePkgDir = path.join(process.cwd(), '.vinext-local-cloudflare-package')
+
+function workspaceDependencySpecFor(name) {
+  if (name === cloudflarePkg.name) {
+    return 'file:../.vinext-local-cloudflare-package'
+  }
+
+  throw new Error(`Unable to resolve workspace dependency spec for ${name}`)
+}
 
 function dependencySpecFor(name) {
   for (const deps of [
@@ -335,6 +347,7 @@ function dependencySpecFor(name) {
   ]) {
     const spec = deps?.[name]
     if (!spec) continue
+    if (spec.startsWith('workspace:')) return workspaceDependencySpecFor(name)
     if (spec !== 'catalog:') return spec
     if (catalog[name]) return catalog[name]
   }
@@ -352,14 +365,42 @@ function resolveManifestDeps(deps) {
   return Object.fromEntries(
     Object.entries(deps).map(([name, spec]) => [
       name,
-      spec === 'catalog:' ? dependencySpecFor(name) : spec,
+      spec === 'catalog:' || spec.startsWith('workspace:') ? dependencySpecFor(name) : spec,
     ]),
   )
 }
 
 const localVinextPkgDir = path.join(process.cwd(), '.vinext-local-package')
 fs.rmSync(localVinextPkgDir, { recursive: true, force: true })
+fs.rmSync(localCloudflarePkgDir, { recursive: true, force: true })
 fs.mkdirSync(localVinextPkgDir, { recursive: true })
+fs.mkdirSync(localCloudflarePkgDir, { recursive: true })
+fs.cpSync(
+  path.join(vinextDir, 'packages', 'cloudflare', 'dist'),
+  path.join(localCloudflarePkgDir, 'dist'),
+  {
+    recursive: true,
+  },
+)
+fs.writeFileSync(
+  path.join(localCloudflarePkgDir, 'package.json'),
+  JSON.stringify(
+    {
+      name: cloudflarePkg.name,
+      version: cloudflarePkg.version,
+      description: cloudflarePkg.description,
+      license: cloudflarePkg.license,
+      repository: cloudflarePkg.repository,
+      type: cloudflarePkg.type,
+      files: ['dist'],
+      exports: cloudflarePkg.exports,
+      peerDependencies: resolveManifestDeps(cloudflarePkg.peerDependencies),
+      engines: cloudflarePkg.engines,
+    },
+    null,
+    2,
+  ) + '\n',
+)
 fs.cpSync(path.join(vinextDir, 'packages', 'vinext', 'dist'), path.join(localVinextPkgDir, 'dist'), {
   recursive: true,
 })

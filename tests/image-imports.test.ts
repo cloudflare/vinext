@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vite-plus/test";
 import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
+import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
 import type { Plugin } from "vite-plus";
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -105,7 +106,10 @@ describe("vinext:image-imports — transform", () => {
   function expectImageBinding(code: string, name: string, fileBasename: string) {
     expect(code).not.toMatch(new RegExp(`import\\s+${name}\\s+from`));
     expect(code).toMatch(new RegExp(`const\\s+${name}\\s*=\\s*\\{[^}]*src\\s*:`));
-    expect(code).toContain(path.join(IMAGES_DIR, fileBasename) + "?vinext-meta");
+    // The meta import specifier uses forward slashes — the transform normalizes
+    // the resolved path so generated output is consistent across platforms.
+    const metaSpecifier = normalizePathSeparators(path.join(IMAGES_DIR, fileBasename));
+    expect(code).toContain(metaSpecifier + "?vinext-meta");
   }
 
   it("transforms a PNG import into StaticImageData", async () => {

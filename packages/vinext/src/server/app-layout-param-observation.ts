@@ -19,6 +19,7 @@ import type {
   ClientReuseManifestRejectionCode,
   ClientReuseManifestTraceFields,
 } from "./client-reuse-manifest.js";
+import { isPromiseLike } from "../utils/promise.js";
 
 export type AppLayoutParamAccessObservation = Readonly<{
   cacheLifeObserved: boolean;
@@ -139,15 +140,6 @@ type MutableLayoutParamAccessObservation = {
   requestApis: Set<RenderRequestApiKind>;
   unstableCaches: Map<string, UnstableCacheObservation>;
 };
-
-function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return Boolean(
-    value &&
-    (typeof value === "object" || typeof value === "function") &&
-    "then" in value &&
-    typeof value.then === "function",
-  );
-}
 
 export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker {
   const observations = new Map<string, MutableLayoutParamAccessObservation>();
