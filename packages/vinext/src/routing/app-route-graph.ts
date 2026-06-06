@@ -39,6 +39,11 @@ export type InterceptingRoute = {
   layoutPaths: string[];
   /** Parameter names for dynamic segments */
   params: string[];
+  /**
+   * Synthetic page-carrier slot id for sibling (slot-less) interception.
+   * Set only when the marker has no `@slot` wrapper; undefined for slot intercepts.
+   */
+  slotId?: string;
 };
 
 export type ParallelSlot = {
@@ -110,6 +115,12 @@ export type AppRoute = {
   templates: string[];
   /** Parallel route slots (from @slot directories at the route's directory level) */
   parallelSlots: ParallelSlot[];
+  /**
+   * Interception markers not wrapped in an `@slot` directory.
+   * On soft-nav, the intercepting page replaces the entire page response.
+   * Empty array when there are no sibling-style interception markers.
+   */
+  siblingIntercepts: InterceptingRoute[];
   /** Loading component path */
   loadingPath: string | null;
   /** Error component path (leaf directory only) */
@@ -354,6 +365,11 @@ function createAppRouteGraphSlotId(slotName: string, ownerTreePath: string): str
 
 function createAppRouteGraphDefaultId(slotId: string): string {
   return `default:${slotId}`;
+}
+
+const SIBLING_INTERCEPT_SLOT_NAME = "__page";
+function createAppRouteGraphSiblingInterceptSlotId(sourcePattern: string): string {
+  return createAppRouteGraphSlotId(SIBLING_INTERCEPT_SLOT_NAME, sourcePattern);
 }
 
 function createAppRouteGraphInterceptionId(
@@ -899,15 +915,19 @@ export async function buildAppRouteGraph(
   const slotSubRoutes = discoverSlotSubRoutes(routes, matcher, ghostParentRoutes);
   routes.push(...slotSubRoutes);
 
+  // Discover sibling-style interception markers (markers not inside an @slot directory).
+  discoverSiblingInterceptingRoutes(routes, appDir, matcher);
+
   validatePageRouteConflicts(routes, appDir);
   validateRoutePatterns(routes.map((route) => route.pattern));
   const interceptTargetPatterns = [
     ...new Set(
-      routes.flatMap((route) =>
-        route.parallelSlots.flatMap((slot) =>
+      routes.flatMap((route) => [
+        ...route.parallelSlots.flatMap((slot) =>
           slot.interceptingRoutes.map((intercept) => intercept.targetPattern),
         ),
-      ),
+        ...route.siblingIntercepts.map((intercept) => intercept.targetPattern),
+      ]),
     ),
   ];
   validateRoutePatterns(interceptTargetPatterns);
@@ -1169,6 +1189,7 @@ function discoverSlotSubRoutes(
         params: [...parentRoute.params, ...subParams],
         rootParamNames: parentRoute.rootParamNames,
         patternParts: [...parentRoute.patternParts, ...urlParts],
+        siblingIntercepts: [],
       };
       syntheticRoutes.push(newRoute);
       routesByPattern.set(pattern, newRoute);
@@ -1361,6 +1382,7 @@ function directoryToAppRoute(
     params,
     rootParamNames: computeRootParamNames(segments, layoutTreePositions),
     patternParts: urlSegments,
+    siblingIntercepts: [],
   };
 }
 
@@ -1981,6 +2003,137 @@ function discoverInterceptingRoutes(
   scanForInterceptingPages(slotDir, routeDir, appDir, results, matcher);
 
   return results;
+}
+
+/**
+ * Discover sibling-style interception markers — interception marker directories
+ * (e.g. `(..)showcase`, `(..)(..)hoge`) that are NOT wrapped inside an `@slot`
+ * directory. Mutates each matching route's `siblingIntercepts` array.
+ *
+ * Sibling intercepts use the same conventions and target-computation logic as
+ * slot intercepts, but their intercepting page replaces the full page response
+ * (not a slot) during soft navigation.
+ */
+function discoverSiblingInterceptingRoutes(
+  routes: AppRouteGraphRoute[],
+  appDir: string,
+  matcher: ValidFileMatcher,
+): void {
+  // Build a map from a route's "owner directory" to the routes it serves.
+  // A route's owner directory is derived from its pagePath or its routePath.
+  // Multiple routes may share a directory (e.g. catch-all + static page),
+  // so we map dir → first matched route (any route in the directory will do).
+  const routesByDir = new Map<string, AppRouteGraphRoute>();
+  for (const route of routes) {
+    const filePath = route.pagePath ?? route.routePath;
+    if (!filePath) continue;
+    const routeDir = path.dirname(filePath);
+    if (!routesByDir.has(routeDir)) {
+      routesByDir.set(routeDir, route);
+    }
+  }
+
+  function walk(dir: string): void {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      // Skip private folders (_private convention)
+      if (entry.name.startsWith("_")) continue;
+      // Skip @slot subtrees — their markers are handled by the slot path
+      if (entry.name.startsWith("@")) continue;
+
+      const childDir = path.join(dir, entry.name);
+      const marker = matchInterceptConvention(entry.name);
+
+      if (marker) {
+        // This is a sibling interception marker directory (no @slot wrapper).
+        // Collect all intercept targets from the marker subtree.
+        const restOfName = entry.name.slice(marker.prefix.length);
+        const parentDir = dir; // directory that owns the marker (the "intercepting route" dir)
+        const results: InterceptingRoute[] = [];
+        collectInterceptingPages(
+          childDir,
+          childDir,
+          marker.convention,
+          restOfName,
+          parentDir, // routeDir: the parent directory (no @slot between parent and marker)
+          appDir,
+          parentDir, // interceptParentDir: same as routeDir for sibling case
+          results,
+          matcher,
+        );
+        for (const ir of results) {
+          ir.slotId = createAppRouteGraphSiblingInterceptSlotId(ir.sourceMatchPattern);
+          // Find the route that serves the parentDir. Fall back to scanning all
+          // routes that live under parentDir (handles the case where the route
+          // pattern is a catch-all like /templates/:catchAll+ rather than /templates).
+          const owner = findOwnerRouteForDir(parentDir, appDir, routes, routesByDir);
+          if (owner) {
+            owner.siblingIntercepts.push(ir);
+          }
+        }
+        // collectInterceptingPages already scanned the marker subtree; skip walk into it
+        continue;
+      }
+
+      // Regular directory — keep walking for nested markers
+      walk(childDir);
+    }
+  }
+
+  walk(appDir);
+}
+
+/**
+ * Find the best route to attach a sibling intercept to, given the directory
+ * that contains the interception marker.
+ *
+ * 1. Exact hit: a route whose page/handler lives directly in `dir`.
+ * 2. Subtree hit: shallowest route whose page lives anywhere under `dir`
+ *    (handles catch-all routes like `/templates/:catchAll+`).
+ * 3. Ancestor walk: walk up the directory tree toward `appDir` looking for
+ *    any of the above. This handles the case where the marker directory has
+ *    no sibling pages at all (e.g. `deep/path/(...)target` with no
+ *    `deep/path/page.tsx`).
+ */
+function findOwnerRouteForDir(
+  dir: string,
+  appDir: string,
+  routes: readonly AppRouteGraphRoute[],
+  routesByDir: Map<string, AppRouteGraphRoute>,
+): AppRouteGraphRoute | null {
+  let current = dir;
+  while (true) {
+    // Exact match: a route whose page/handler file lives directly in `current`
+    const exact = routesByDir.get(current);
+    if (exact) return exact;
+
+    // Subtree match: a route whose page is somewhere under `current` — pick
+    // the one with the fewest pattern parts (shallowest / least specific).
+    const currentWithSep = current + path.sep;
+    let best: AppRouteGraphRoute | null = null;
+    for (const route of routes) {
+      const filePath = route.pagePath ?? route.routePath;
+      if (!filePath) continue;
+      if (!filePath.startsWith(currentWithSep)) continue;
+      if (!best || route.patternParts.length < best.patternParts.length) {
+        best = route;
+      }
+    }
+    if (best) return best;
+
+    // Stop if we've reached the app root
+    if (current === appDir) break;
+    const parent = path.dirname(current);
+    if (parent === current) break; // filesystem root safety guard
+    current = parent;
+  }
+  return null;
 }
 
 /**
