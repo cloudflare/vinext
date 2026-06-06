@@ -84,6 +84,13 @@ function rootRouteBoundaryPath(
 
 type ImportAllocator = {
   getImportVar(filePath: string): string;
+  /**
+   * Emit a `const load_N = () => import(path)` lazy loader thunk for a module
+   * that should be code-split out of the RSC entry's top-level evaluation
+   * (page modules of static routes, and all route-handler modules). Returns the
+   * loader variable name. Deduplicated independently of eager imports.
+   */
+  getLazyLoaderVar(filePath: string): string;
   importMap: ReadonlyMap<string, string>;
   imports: string[];
 };
@@ -91,7 +98,9 @@ type ImportAllocator = {
 function createImportAllocator(): ImportAllocator {
   const imports: string[] = [];
   const importMap = new Map<string, string>();
+  const lazyMap = new Map<string, string>();
   let importIdx = 0;
+  let lazyIdx = 0;
 
   return {
     importMap,
@@ -106,13 +115,42 @@ function createImportAllocator(): ImportAllocator {
       importMap.set(filePath, varName);
       return varName;
     },
+    getLazyLoaderVar(filePath) {
+      const existing = lazyMap.get(filePath);
+      if (existing) return existing;
+
+      const varName = `load_${lazyIdx++}`;
+      const absPath = normalizePathSeparators(filePath);
+      imports.push(`const ${varName} = () => import(${JSON.stringify(absPath)});`);
+      lazyMap.set(filePath, varName);
+      return varName;
+    },
   };
+}
+
+/**
+ * Decide whether a route's page module is loaded lazily.
+ *
+ * Static-route pages are lazy (kept out of startup evaluation). Dynamic-route
+ * pages stay eager because their `generateStaticParams` is referenced directly
+ * in the module-level `generateStaticParamsMap` (see
+ * `buildGenerateStaticParamsEntries`), which is evaluated at import time and
+ * cannot await a dynamic `import()`. Making dynamic-route pages lazy requires
+ * reworking the prerender static-params resolver and is tracked separately.
+ */
+function isPageLazy(route: AppRoute): boolean {
+  return !!route.pagePath && !route.isDynamic;
 }
 
 function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): void {
   for (const route of routes) {
-    if (route.pagePath) imports.getImportVar(route.pagePath);
-    if (route.routePath) imports.getImportVar(route.routePath);
+    if (route.pagePath) {
+      if (isPageLazy(route)) imports.getLazyLoaderVar(route.pagePath);
+      else imports.getImportVar(route.pagePath);
+    }
+    // Route handlers are always lazy: they have no generateStaticParams and are
+    // only read after the matched route has been hydrated.
+    if (route.routePath) imports.getLazyLoaderVar(route.routePath);
     for (const layout of route.layouts) imports.getImportVar(layout);
     for (const tmpl of route.templates) imports.getImportVar(tmpl);
     if (route.loadingPath) imports.getImportVar(route.loadingPath);
@@ -212,6 +250,18 @@ ${interceptEntries.join(",\n")}
       ep ? imports.getImportVar(ep) : "null",
     );
     const errorVars = (route.errorPaths ?? []).map((ep) => imports.getImportVar(ep));
+    // Page: lazy for static routes (kept out of startup eval), eager for
+    // dynamic routes (referenced by generateStaticParamsMap at module load).
+    let pageField = "null";
+    let loadPageField = "null";
+    if (route.pagePath) {
+      if (isPageLazy(route)) loadPageField = imports.getLazyLoaderVar(route.pagePath);
+      else pageField = imports.getImportVar(route.pagePath);
+    }
+    // Route handler: always lazy.
+    const loadRouteHandlerField = route.routePath
+      ? imports.getLazyLoaderVar(route.routePath)
+      : "null";
     return `  {
     __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
     __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(${routeIdx}) : null,
@@ -222,8 +272,10 @@ ${interceptEntries.join(",\n")}
     params: ${JSON.stringify(route.params)},
     staticSiblings: ${JSON.stringify(staticSiblings)},
     rootParamNames: ${JSON.stringify(route.rootParamNames ?? [])},
-    page: ${route.pagePath ? imports.getImportVar(route.pagePath) : "null"},
-    routeHandler: ${route.routePath ? imports.getImportVar(route.routePath) : "null"},
+    page: ${pageField},
+    __loadPage: ${loadPageField},
+    routeHandler: null,
+    __loadRouteHandler: ${loadRouteHandlerField},
     layouts: [${layoutVars.join(", ")}],
     routeSegments: ${JSON.stringify(route.routeSegments)},
     templateTreePositions: ${JSON.stringify(route.templateTreePositions)},

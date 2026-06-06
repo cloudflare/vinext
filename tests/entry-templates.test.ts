@@ -336,17 +336,24 @@ describe("App Router generated manifest construction", () => {
 
     const imports = manifest.imports.join("\n");
     expect(imports.match(/\/tmp\/test\/app\/layout\.tsx/g)).toHaveLength(1);
-    expect(imports).toContain('import * as mod_0 from "/tmp/test/app/page.tsx";');
+    // The root "/" page is a static route → lazy loader, not a static import.
+    expect(imports).toContain('const load_0 = () => import("/tmp/test/app/page.tsx");');
+    // The dynamic "/dashboard/:id" page stays eager (referenced by
+    // generateStaticParamsMap); its route handler is lazy-loaded.
+    expect(imports).toContain('import * as mod_4 from "/tmp/test/app/dashboard/[id]/page.tsx";');
     expect(imports).toContain(
-      'import * as mod_17 from "/tmp/test/app/dashboard/@modal/(.)photos/[photoId]/page.tsx";',
+      'const load_1 = () => import("/tmp/test/app/dashboard/[id]/route.ts");',
     );
-    expect(imports).toContain('import * as mod_19 from "/tmp/test/app/global-error.tsx";');
+    expect(imports).toContain(
+      'import * as mod_15 from "/tmp/test/app/dashboard/@modal/(.)photos/[photoId]/page.tsx";',
+    );
+    expect(imports).toContain('import * as mod_17 from "/tmp/test/app/global-error.tsx";');
 
-    expect(manifest.rootNotFoundVar).toBe("mod_2");
-    expect(manifest.rootForbiddenVar).toBe("mod_3");
-    expect(manifest.rootUnauthorizedVar).toBe("mod_4");
-    expect(manifest.rootLayoutVars).toEqual(["mod_1"]);
-    expect(manifest.globalErrorVar).toBe("mod_19");
+    expect(manifest.rootNotFoundVar).toBe("mod_1");
+    expect(manifest.rootForbiddenVar).toBe("mod_2");
+    expect(manifest.rootUnauthorizedVar).toBe("mod_3");
+    expect(manifest.rootLayoutVars).toEqual(["mod_0"]);
+    expect(manifest.globalErrorVar).toBe("mod_17");
 
     const dynamicRouteEntry = manifest.routeEntries[1];
     expect(dynamicRouteEntry).toContain('"route":"route:/dashboard/:id"');
@@ -355,14 +362,16 @@ describe("App Router generated manifest construction", () => {
     );
     expect(dynamicRouteEntry).toContain('id: "slot:modal:/dashboard"');
     expect(dynamicRouteEntry).toContain('pattern: "/dashboard/:id"');
-    expect(dynamicRouteEntry).toContain("routeHandler: mod_6");
-    expect(dynamicRouteEntry).toContain("layouts: [mod_1, mod_7]");
+    expect(dynamicRouteEntry).toContain("page: mod_4");
+    expect(dynamicRouteEntry).toContain("routeHandler: null");
+    expect(dynamicRouteEntry).toContain("__loadRouteHandler: load_1");
+    expect(dynamicRouteEntry).toContain("layouts: [mod_0, mod_5]");
     expect(dynamicRouteEntry).toContain('"modal:/tmp/test/app/dashboard/@modal": {');
-    expect(dynamicRouteEntry).toContain("interceptLayouts: [mod_18]");
-    expect(dynamicRouteEntry).toContain("page: mod_17");
+    expect(dynamicRouteEntry).toContain("interceptLayouts: [mod_16]");
+    expect(dynamicRouteEntry).toContain("page: mod_15");
     expect(dynamicRouteEntry).toContain('params: ["photoId"]');
     expect(manifest.generateStaticParamsEntries).toEqual([
-      '  "/dashboard/:id": __createAppPrerenderStaticParamsResolver([mod_5?.generateStaticParams], ["id"]),',
+      '  "/dashboard/:id": __createAppPrerenderStaticParamsResolver([mod_4?.generateStaticParams], ["id"]),',
     ]);
   });
 
@@ -399,10 +408,12 @@ describe("App Router generated manifest construction", () => {
       globalErrorPath: null,
     });
 
-    expect(manifest.rootLayoutVars).toEqual(["mod_1"]);
-    expect(manifest.rootNotFoundVar).toBe("mod_2");
-    expect(manifest.rootForbiddenVar).toBe("mod_3");
-    expect(manifest.rootUnauthorizedVar).toBe("mod_4");
+    // The "/server" page is a static route, so it is lazy-loaded (load_0) and
+    // the eager `import * as mod_N` numbering starts at the root layout.
+    expect(manifest.rootLayoutVars).toEqual(["mod_0"]);
+    expect(manifest.rootNotFoundVar).toBe("mod_1");
+    expect(manifest.rootForbiddenVar).toBe("mod_2");
+    expect(manifest.rootUnauthorizedVar).toBe("mod_3");
   });
 
   it("exposes layout-level generateStaticParams to App Router prerender", () => {
@@ -663,8 +674,10 @@ describe("App Router entry templates", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
     const globalsImportIndex = code.indexOf("/server-globals.js");
+    // The root page is a static route, so it is emitted as a lazy loader
+    // (`const load_N = () => import(...)`) rather than a static `import * as`.
     const firstUserImportIndex = code.search(
-      /import \* as mod_\d+ from "\/tmp\/test\/app\/page\.tsx";/,
+      /const load_\d+ = \(\) => import\("\/tmp\/test\/app\/page\.tsx"\);/,
     );
 
     expect(globalsImportIndex).toBeGreaterThanOrEqual(0);

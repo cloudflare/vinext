@@ -219,6 +219,12 @@ export type HandleServerActionRscRequestOptions<
     body: string | FormData,
     options: DecodeServerActionReplyOptions<TTemporaryReferences>,
   ) => Promise<unknown[]> | unknown[];
+  /**
+   * Hydrate a route's lazy page/route-handler modules before reading
+   * `route.page` / `route.routeHandler` on action redirect targets and
+   * re-render targets obtained via `matchRoute`/`getSourceRoute`. Idempotent.
+   */
+  ensureRouteLoaded?: (route: TRoute) => unknown;
   findIntercept: (pathname: string) => AppServerActionIntercept<TPage> | null;
   getAndClearPendingCookies: () => string[];
   getDraftModeCookieHeader: () => string | null | undefined;
@@ -1026,6 +1032,9 @@ export async function handleServerActionRscRequest<
 
       const targetPathname = stripBasePath(redirectTarget.pathname, options.basePath ?? "");
       const targetMatch = options.matchRoute(targetPathname);
+      // Hydrate the redirect target before reading its page/route-handler
+      // modules (canRenderActionRedirectTarget + fetch-cache-mode below).
+      if (targetMatch) await options.ensureRouteLoaded?.(targetMatch.route);
       if (!targetMatch || !canRenderActionRedirectTarget(targetMatch.route)) {
         options.clearRequestContext();
         return new Response(null, {
@@ -1034,6 +1043,8 @@ export async function handleServerActionRscRequest<
         });
       }
       const currentMatch = options.matchRoute(options.cleanPathname);
+      // Hydrate the current route before resolving its runtime below.
+      if (currentMatch) await options.ensureRouteLoaded?.(currentMatch.route);
 
       const redirectRenderRequest = createActionRedirectRenderRequest({
         pendingCookies: [
@@ -1159,6 +1170,8 @@ export async function handleServerActionRscRequest<
         searchParams: options.searchParams,
         params: actionRerenderTarget.navigationParams,
       });
+      // Hydrate the re-render target before reading its page module.
+      await options.ensureRouteLoaded?.(actionRerenderTarget.route);
       setCurrentFetchCacheMode(
         options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null,
       );

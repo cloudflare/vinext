@@ -80,6 +80,10 @@ const appRscErrorHandlerPath = resolveEntryPath(
   import.meta.url,
 );
 const appRequestContextPath = resolveEntryPath("../server/app-request-context.js", import.meta.url);
+const appRouteModuleLoaderPath = resolveEntryPath(
+  "../server/app-route-module-loader.js",
+  import.meta.url,
+);
 const appPrerenderStaticParamsPath = resolveEntryPath(
   "../server/app-prerender-static-params.js",
   import.meta.url,
@@ -326,6 +330,7 @@ import { clearAppRequestContext as __clearRequestContext, setAppNavigationContex
 
 __configureMemoryCacheHandler({ cacheMaxMemorySize: ${JSON.stringify(cacheMaxMemorySize)} });
 import { createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver } from ${JSON.stringify(appPrerenderStaticParamsPath)};
+import { ensureAppRouteModulesLoaded as __ensureRouteLoaded } from ${JSON.stringify(appRouteModuleLoaderPath)};
 import { seedMemoryCacheFromPrerender as __seedMemoryCacheFromPrerender } from ${JSON.stringify(seedCachePath)};
 
 const __draftModeSecret = ${JSON.stringify(draftModeSecret)};
@@ -484,6 +489,8 @@ function findIntercept(pathname, sourcePathname = null) {
 }
 
 async function buildPageElements(route, params, routePath, pageRequest, layoutParamAccess) {
+  // Hydrate lazy page/route-handler modules before any synchronous read.
+  await __ensureRouteLoaded(route);
   return __buildPageElements({
     route,
     params,
@@ -553,6 +560,7 @@ ${rootParamNameEntries.join("\n")}
 
 export default __createAppRscHandler({
   basePath: __basePath,
+  ensureRouteLoaded: __ensureRouteLoaded,
   clearRequestContext() {
     __clearRequestContext();
   },
@@ -597,6 +605,7 @@ export default __createAppRscHandler({
     const _asyncRouteParams = makeThenableParams(params);
     return __dispatchAppPage({
       basePath: __basePath,
+      ensureRouteLoaded: __ensureRouteLoaded,
       clientTraceMetadata: __clientTraceMetadata,
       buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams, layoutParamAccess) {
         return buildPageElements(targetRoute, targetParams, cleanPathname, {
@@ -771,7 +780,7 @@ export default __createAppRscHandler({
       setHeadersAccessPhase,
     });
   },
-  handleServerActionRequest({
+  async handleServerActionRequest({
     actionId,
     cleanPathname,
     contentType,
@@ -783,11 +792,13 @@ export default __createAppRscHandler({
     searchParams,
   }) {
     const __actionMatch = matchRoute(cleanPathname);
+    if (__actionMatch) await __ensureRouteLoaded(__actionMatch.route);
     const __actionIsEdgeRuntime = __actionMatch
       ? __isEdgeRuntime(__resolveAppPageSegmentConfig({ layouts: __actionMatch.route.layouts, page: __actionMatch.route.page }).runtime)
       : false;
     return __handleServerActionRscRequest({
       actionId,
+      ensureRouteLoaded: __ensureRouteLoaded,
       allowedOrigins: __allowedOrigins,
       basePath: __basePath,
       isEdgeRuntime: __actionIsEdgeRuntime,

@@ -230,6 +230,12 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   dispatchMatchedRouteHandler: (
     options: DispatchMatchedRouteHandlerOptions<TRoute>,
   ) => Promise<Response>;
+  /**
+   * Hydrate a matched route's lazily-loaded page/route-handler modules before
+   * any synchronous read of `route.page` / `route.routeHandler`. Idempotent and
+   * dedup'd. Provided by the generated RSC entry; absent in older entries.
+   */
+  ensureRouteLoaded?: (route: TRoute) => unknown;
   ensureInstrumentation?: () => Promise<void>;
   /**
    * Register cache adapters configured via the vinext() `cache` option. Wired
@@ -667,6 +673,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const { route, params } = match;
+  // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
+  // branch and any downstream synchronous module reads.
+  if (options.ensureRouteLoaded) await options.ensureRouteLoaded(route);
   const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
   const prerenderRouteParams = prerenderRouteParamsPayloadMatchesRoute(
     prerenderRouteParamsPayload,

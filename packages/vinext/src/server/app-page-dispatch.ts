@@ -203,6 +203,12 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   dynamicConfig?: string;
   dynamicStaleTimeSeconds?: number;
   dynamicParamsConfig?: boolean;
+  /**
+   * Hydrate a source route's lazy page/route-handler modules before reading
+   * `route.page` (e.g. for fetch-cache-mode resolution) on intercept and ISR
+   * revalidation targets obtained via `getSourceRoute`. Idempotent.
+   */
+  ensureRouteLoaded?: (route: TRoute) => unknown;
   fetchCache?: FetchCacheMode | null;
   findIntercept: (pathname: string) => AppPageDispatchIntercept | null;
   formState?: ReactFormState | null;
@@ -557,6 +563,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           },
         });
 
+        // Hydrate the (possibly different) source route before reading its
+        // page module for fetch-cache-mode resolution.
+        await options.ensureRouteLoaded?.(revalidationTarget.route);
         return runAppPageRevalidationContext(
           {
             cleanPathname: options.cleanPathname,
@@ -699,13 +708,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     AppPageDispatchInterceptOptions,
     AppPageElement
   >({
-    buildPageElement(
+    async buildPageElement(
       interceptRoute,
       interceptParams,
       interceptOpts,
       interceptSearchParams,
       interceptLayoutParamAccess,
     ) {
+      // Hydrate the intercept source route before reading its page module.
+      await options.ensureRouteLoaded?.(interceptRoute);
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
       return options.buildPageElement(
         interceptRoute,
