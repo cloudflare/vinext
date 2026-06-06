@@ -1,6 +1,7 @@
 import React from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  buildAppPageProbes,
   probeAppPage,
   probeAppPageBeforeRender,
   probeReactServerSubtree,
@@ -641,5 +642,113 @@ describe("probeAppPage", () => {
     }) as Promise<unknown>;
 
     await expect(result).rejects.toBe(REDIRECT);
+  });
+});
+
+// buildAppPageProbes() fans out the per-request page probes (matched page +
+// active parallel slots + interception page). Extracted out of the generated
+// RSC entry so the fan-out is unit-testable (AGENTS.md: keep generated entries
+// thin). These tests pin which page components get probed for a request.
+describe("buildAppPageProbes", () => {
+  // Loosely-typed adapter matching the helper's `(params: unknown) => unknown`
+  // signature, so the test's generic makeThenableParams can be passed in.
+  const makeThenableParamsLoose = (params: unknown): unknown =>
+    makeThenableParams((params ?? {}) as Record<string, unknown>);
+
+  function recordingPage(label: string, sink: string[]) {
+    return function Page(props: { searchParams: Promise<Record<string, unknown>> }) {
+      void props;
+      sink.push(label);
+      return label;
+    };
+  }
+
+  it("probes the matched page, every slot page, and the interception page", async () => {
+    const probed: string[] = [];
+    const probes = buildAppPageProbes({
+      route: {
+        slots: {
+          modal: { page: { default: recordingPage("modal", probed) } },
+          sidebar: { page: { default: recordingPage("sidebar", probed) } },
+        },
+      },
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({ slug: "intro" }),
+      searchParams: new URLSearchParams("q=hello"),
+      intercept: { page: { default: recordingPage("intercept", probed) } },
+      matchedParams: { slug: "intro" },
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    expect(probes).toHaveLength(4);
+    expect(probed.sort()).toEqual(["intercept", "modal", "page", "sidebar"]);
+  });
+
+  it("omits the interception probe when no interception matches", async () => {
+    const probed: string[] = [];
+    const probes = buildAppPageProbes({
+      route: { slots: { modal: { page: { default: recordingPage("modal", probed) } } } },
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: null,
+      intercept: null,
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    expect(probes).toHaveLength(2);
+    expect(probed.sort()).toEqual(["modal", "page"]);
+  });
+
+  it("skips slots without a page default export", async () => {
+    const probed: string[] = [];
+    const probes = buildAppPageProbes({
+      route: {
+        slots: {
+          modal: { page: { default: recordingPage("modal", probed) } },
+          // default-only slot: no page component to probe
+          children: { page: null },
+          empty: null,
+        },
+      },
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: null,
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    // One probe per slot is created, but only real page components run.
+    expect(probed.sort()).toEqual(["modal", "page"]);
+  });
+
+  it("falls back to matchedParams when an interception match omits its own params", async () => {
+    const receivedParams: unknown[] = [];
+    function InterceptPage(props: { params: Promise<Record<string, unknown>> }) {
+      receivedParams.push(props.params);
+      return "intercept";
+    }
+
+    const fallbackParams = { username: "ada" };
+    const probes = buildAppPageProbes({
+      route: {},
+      pageComponent: () => "page",
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: null,
+      intercept: { page: { default: InterceptPage } },
+      matchedParams: fallbackParams,
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    expect(receivedParams).toHaveLength(1);
+    expect(await (receivedParams[0] as Promise<Record<string, unknown>>)).toEqual(fallbackParams);
   });
 });

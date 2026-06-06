@@ -267,6 +267,80 @@ export function probeAppPage(options: {
   return result;
 }
 
+type AppPageProbeModule = Readonly<{ default?: unknown }> | null | undefined;
+
+type AppPageProbeSlot = Readonly<{ page?: AppPageProbeModule }> | null | undefined;
+
+type AppPageProbeRoute = Readonly<{
+  slots?: Readonly<Record<string, AppPageProbeSlot>> | null;
+}>;
+
+type AppPageProbeIntercept =
+  | Readonly<{
+      page?: AppPageProbeModule;
+      matchedParams?: unknown;
+    }>
+  | null
+  | undefined;
+
+/**
+ * Fan out the per-request page probes for the App Router dispatch lifecycle.
+ *
+ * A single request can render more than one page component: the matched page,
+ * each active parallel-route slot page, and an interception page when one
+ * matches. Each must be probed so searchParams access anywhere in the rendered
+ * tree bails the request out of the query-invariant static cache.
+ *
+ * Extracted out of the generated RSC entry so the fan-out is directly
+ * unit-testable and the entry stays codegen glue (see AGENTS.md "Generated
+ * Entry Modules Should Stay Thin"). Returns a list of resolved promises so the
+ * caller can `Promise.all` them.
+ *
+ * Note: this probes every declared slot's `page.default`, including slots that
+ * are inactive for the current request (eg. an `@modal/page.tsx` replaced by an
+ * interception override at render time). That can over-bail an otherwise-static
+ * page out of the cache. The behavior fails safe (toward dynamic / never serving
+ * a stale query-bearing response) and is tracked as a caching-efficiency
+ * follow-up in https://github.com/cloudflare/vinext/issues/1798.
+ */
+export function buildAppPageProbes(options: {
+  route: AppPageProbeRoute;
+  pageComponent: unknown;
+  asyncRouteParams: unknown;
+  searchParams: URLSearchParams | null | undefined;
+  intercept?: AppPageProbeIntercept;
+  /** Fallback raw params used when an interception match omits its own. */
+  matchedParams: unknown;
+  makeThenableParams: (params: unknown) => unknown;
+}): Promise<unknown>[] {
+  const { route, pageComponent, asyncRouteParams, searchParams, intercept, matchedParams } =
+    options;
+
+  const probes: unknown[] = [probeAppPage({ pageComponent, asyncRouteParams, searchParams })];
+
+  for (const slot of Object.values(route.slots ?? {})) {
+    probes.push(
+      probeAppPage({
+        pageComponent: slot?.page?.default,
+        asyncRouteParams,
+        searchParams,
+      }),
+    );
+  }
+
+  if (intercept) {
+    probes.push(
+      probeAppPage({
+        pageComponent: intercept.page?.default,
+        asyncRouteParams: options.makeThenableParams(intercept.matchedParams ?? matchedParams),
+        searchParams,
+      }),
+    );
+  }
+
+  return probes.map((probe) => Promise.resolve(probe));
+}
+
 type ProbeAppPageBeforeRenderResult = {
   response: Response | null;
   layoutFlags: LayoutFlags;
