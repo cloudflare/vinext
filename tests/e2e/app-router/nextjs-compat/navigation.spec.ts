@@ -96,6 +96,9 @@ test.describe("Next.js compat: navigation (browser)", () => {
       timeout: 10_000,
     });
     await expect(page.locator("#params-change-count")).toHaveText("2");
+    const paramsSnapshots = await page.locator("#params-snapshots").textContent();
+    expect(paramsSnapshots).toContain("foo");
+    expect(paramsSnapshots).not.toContain("alpha");
   });
 
   // Next.js: 'should trigger not-found in a server component'

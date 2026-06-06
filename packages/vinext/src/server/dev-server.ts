@@ -385,6 +385,7 @@ export function createSSRHandler(
   basePath = "",
   trailingSlash = false,
   hasMiddleware = false,
+  hasRewrites = false,
   /**
    * Allow-list of OpenTelemetry propagation keys to emit as `<meta>` tags
    * in the SSR head. Sourced from `experimental.clientTraceMetadata` in
@@ -555,6 +556,55 @@ export function createSSRHandler(
         // Load the page module through Vite's SSR pipeline
         // This gives us HMR and transform support for free
         const pageModule = await importModule(runner, route.filePath);
+        // Try to load _app.tsx if it exists. This happens before the readiness
+        // predicate so app-level getInitialProps participates in the same
+        // initial Pages Router state as the client __NEXT_DATA__ payload.
+        // oxlint-disable-next-line typescript/no-explicit-any
+        let AppComponent: any = null;
+        const appPath = path.join(pagesDir, "_app");
+        if (findFileWithExtensions(appPath, matcher)) {
+          try {
+            const appModule = await importModule(runner, appPath);
+            AppComponent = appModule.default ?? null;
+          } catch {
+            // _app exists but failed to load
+          }
+        }
+        const hasPageGssp = typeof pageModule.getServerSideProps === "function";
+        const hasPageGsp = typeof pageModule.getStaticProps === "function";
+        const hasPageGip = typeof pageModule.default?.getInitialProps === "function";
+        const hasAppGip = typeof AppComponent?.getInitialProps === "function";
+        const pagesNextData = {
+          gssp: hasPageGssp,
+          gsp: hasPageGsp,
+          gip: hasPageGip,
+          appGip: hasAppGip,
+          autoExport: !hasPageGssp && !hasPageGsp && !hasPageGip && !hasAppGip,
+          __vinext: {
+            hasRewrites,
+          },
+        };
+        const navigationIsReady =
+          typeof routerShim.getPagesNavigationIsReadyFromSerializedState === "function"
+            ? routerShim.getPagesNavigationIsReadyFromSerializedState(
+                patternToNextFormat(route.pattern),
+                new URL(url, "http://_").search,
+                pagesNextData,
+              )
+            : true;
+        if (typeof routerShim.setSSRContext === "function") {
+          routerShim.setSSRContext({
+            pathname: patternToNextFormat(route.pattern),
+            query,
+            asPath: url,
+            navigationIsReady,
+            nextData: pagesNextData,
+            locale: locale ?? currentDefaultLocale,
+            locales: i18nConfig?.locales,
+            defaultLocale: currentDefaultLocale,
+            domainLocales,
+          });
+        }
         // Mark end of compile phase: everything from here is rendering.
         _compileEnd = now();
 
@@ -673,6 +723,7 @@ export function createSSRHandler(
                 pathname: patternToNextFormat(route.pattern),
                 query,
                 asPath: url,
+                navigationIsReady: false,
                 locale: locale ?? currentDefaultLocale,
                 locales: i18nConfig?.locales,
                 defaultLocale: currentDefaultLocale,
@@ -887,6 +938,7 @@ export function createSSRHandler(
                           pathname: patternToNextFormat(route.pattern),
                           query,
                           asPath: url,
+                          navigationIsReady,
                           locale: locale ?? currentDefaultLocale,
                           locales: i18nConfig?.locales,
                           defaultLocale: currentDefaultLocale,
@@ -946,6 +998,15 @@ export function createSSRHandler(
                           ? "/" + path.relative(viteRoot, path.join(pagesDir, "_app"))
                           : path.join(pagesDir, "_app")
                         : null;
+                      const freshPagesNextData = {
+                        ...pagesNextData,
+                        __vinext: {
+                          ...pagesNextData.__vinext,
+                          pageModuleUrl: regenPageUrl,
+                          appModuleUrl: regenAppUrl,
+                          hasMiddleware,
+                        },
+                      };
 
                       const freshNextData = `<script>window.__NEXT_DATA__ = ${safeJsonStringify({
                         props: { pageProps: freshProps },
@@ -957,11 +1018,7 @@ export function createSSRHandler(
                         locales: i18nConfig?.locales,
                         defaultLocale: currentDefaultLocale,
                         domainLocales,
-                        __vinext: {
-                          pageModuleUrl: regenPageUrl,
-                          appModuleUrl: regenAppUrl,
-                          hasMiddleware,
-                        },
+                        ...freshPagesNextData,
                       })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}</script>`;
 
                       const hydrationMatch = cachedHtml.match(
@@ -1099,19 +1156,6 @@ export function createSSRHandler(
           return;
         }
 
-        // Try to load _app.tsx if it exists
-        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-        let AppComponent: any = null;
-        const appPath = path.join(pagesDir, "_app");
-        if (findFileWithExtensions(appPath, matcher)) {
-          try {
-            const appModule = await importModule(runner, appPath);
-            AppComponent = appModule.default ?? null;
-          } catch {
-            // _app exists but failed to load
-          }
-        }
-
         // React and ReactDOMServer are imported at the top level as native Node
         // modules. They must NOT go through Vite's SSR module runner because
         // React is CJS and the ESModulesEvaluator doesn't define `module`.
@@ -1205,6 +1249,15 @@ export function createSSRHandler(
         const appModuleUrl = AppComponent
           ? "/" + path.relative(viteRoot, path.join(pagesDir, "_app"))
           : null;
+        const serializedPagesNextData = {
+          ...pagesNextData,
+          __vinext: {
+            ...pagesNextData.__vinext,
+            pageModuleUrl,
+            appModuleUrl,
+            hasMiddleware,
+          },
+        };
 
         // Hydration entry: inline script that imports the page and hydrates.
         // Stores the React root and page loader for client-side navigation.
@@ -1271,12 +1324,7 @@ hydrate();
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
             domainLocales,
-            // Include module URLs so client navigation can import pages directly
-            __vinext: {
-              pageModuleUrl,
-              appModuleUrl,
-              hasMiddleware,
-            },
+            ...serializedPagesNextData,
           })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}`,
           scriptNonce,
         );

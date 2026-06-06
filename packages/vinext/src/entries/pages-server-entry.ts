@@ -227,7 +227,7 @@ import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML, setDocumentInitialHead } from "next/head";
 import { flushPreloads } from "next/dynamic";
-import { setSSRContext, wrapWithRouterContext } from "next/router";
+import { setSSRContext, wrapWithRouterContext, getPagesNavigationIsReadyFromSerializedState } from "next/router";
 import { _runWithCacheState, configureMemoryCacheHandler as __configureMemoryCacheHandler } from "next/cache";
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import { runWithPrivateCache } from "vinext/cache-runtime";
@@ -685,11 +685,37 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
       const routePattern = patternToNextFormat(route.pattern);
       const renderStatusCode = renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
       const query = mergeRouteParamsIntoQuery(parseQuery(routeUrl), params);
+      const pageModule = route.module;
+      const hasPageGssp = typeof pageModule.getServerSideProps === "function";
+      const hasPageGsp = typeof pageModule.getStaticProps === "function";
+      const hasPageGip = typeof pageModule.default?.getInitialProps === "function";
+      const hasAppGip = typeof AppComponent?.getInitialProps === "function";
+      const hasPagesRewrites =
+        vinextConfig.rewrites.beforeFiles.length > 0 ||
+        vinextConfig.rewrites.afterFiles.length > 0 ||
+        vinextConfig.rewrites.fallback.length > 0;
+      const pagesNextData = {
+        gssp: hasPageGssp,
+        gsp: hasPageGsp,
+        gip: hasPageGip,
+        appGip: hasAppGip,
+        autoExport: !hasPageGssp && !hasPageGsp && !hasPageGip && !hasAppGip,
+        __vinext: {
+          hasRewrites: hasPagesRewrites,
+        },
+      };
+      const navigationIsReady = getPagesNavigationIsReadyFromSerializedState(
+        routePattern,
+        new URL(renderAsPath || routeUrl, "http://_").search,
+        pagesNextData,
+      );
       if (typeof setSSRContext === "function") {
         setSSRContext({
           pathname: routePattern,
           query,
           asPath: renderAsPath || routeUrl,
+          navigationIsReady,
+          nextData: pagesNextData,
           locale: locale,
           locales: i18nConfig ? i18nConfig.locales : undefined,
           defaultLocale: currentDefaultLocale,
@@ -707,7 +733,6 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         });
       }
 
-      const pageModule = route.module;
       const PageComponent = pageModule.default;
       if (!PageComponent) {
         return new Response("Page has no default export", { status: 500 });
@@ -737,6 +762,15 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
 
       const pageModuleUrl = resolveClientModuleUrl(manifest, route.filePath);
       const appModuleUrl = resolveClientModuleUrl(manifest, _appAssetPath);
+      const serializedPagesNextData = {
+        ...pagesNextData,
+        __vinext: {
+          ...pagesNextData.__vinext,
+          pageModuleUrl,
+          appModuleUrl,
+          hasMiddleware: __hasMiddleware,
+        },
+      };
       const scriptNonce = __getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
       // Build font Link header early so it's available for ISR cached responses too.
       // Font preloads are module-level state populated at import time and persist across requests.
@@ -759,6 +793,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
               pathname: routePattern,
               query,
               asPath: renderAsPath || routeUrl,
+              navigationIsReady,
               locale: locale,
               locales: i18nConfig ? i18nConfig.locales : undefined,
               defaultLocale: currentDefaultLocale,
@@ -827,11 +862,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         scriptNonce,
         statusCode: renderStatusCode,
         triggerBackgroundRegeneration,
-        vinext: {
-          pageModuleUrl,
-          appModuleUrl,
-          hasMiddleware: __hasMiddleware,
-        },
+        vinext: serializedPagesNextData.__vinext,
       });
       if (pageDataResult.kind === "notFound") {
         const notFoundRoute = __findPagesNotFoundRoute();
@@ -865,6 +896,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
           pathname: routePattern,
           query,
           asPath: renderAsPath || routeUrl,
+          navigationIsReady: false,
           locale: locale,
           locales: i18nConfig ? i18nConfig.locales : undefined,
           defaultLocale: currentDefaultLocale,
@@ -1013,11 +1045,7 @@ async function _renderPage(request, url, manifest, middlewareHeaders, options) {
         safeJsonStringify,
         scriptNonce,
         statusCode: renderStatusCode,
-        vinext: {
-          pageModuleUrl,
-          appModuleUrl,
-          hasMiddleware: __hasMiddleware,
-        },
+        nextData: serializedPagesNextData,
       });
     } catch (e) {
       console.error("[vinext] SSR error:", e);

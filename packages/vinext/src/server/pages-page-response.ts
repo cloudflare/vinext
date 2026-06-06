@@ -99,6 +99,10 @@ type RenderPagesPageResponseOptions = {
   scriptNonce?: string;
   statusCode?: number;
   vinext?: VinextNextData["__vinext"];
+  nextData?: Pick<
+    VinextNextData,
+    "__vinext" | "appGip" | "autoExport" | "gip" | "gsp" | "gssp" | "isExperimentalCompile"
+  >;
 };
 
 function buildPagesFontHeadHtml(
@@ -136,6 +140,7 @@ export function buildPagesNextDataScript(
     | "routePattern"
     | "safeJsonStringify"
     | "scriptNonce"
+    | "nextData"
   > & {
     vinext?: VinextNextData["__vinext"];
   },
@@ -148,6 +153,14 @@ export function buildPagesNextDataScript(
     isFallback: options.isFallback === true,
   };
 
+  if (options.nextData) {
+    for (const [key, value] of Object.entries(options.nextData)) {
+      if (value !== undefined) {
+        nextDataPayload[key] = value;
+      }
+    }
+  }
+
   if (options.i18n.locales) {
     nextDataPayload.locale = options.i18n.locale;
     nextDataPayload.locales = options.i18n.locales;
@@ -156,7 +169,10 @@ export function buildPagesNextDataScript(
   }
 
   if (options.vinext) {
-    nextDataPayload.__vinext = options.vinext;
+    nextDataPayload.__vinext = {
+      ...options.nextData?.__vinext,
+      ...options.vinext,
+    };
   }
 
   const localeGlobals = options.i18n.locales
@@ -360,6 +376,7 @@ export async function renderPagesPageResponse(
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
     scriptNonce: options.scriptNonce,
+    nextData: options.nextData,
     vinext: options.vinext,
   });
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";

@@ -190,10 +190,14 @@ export type NavigationContext = {
 
 const _READONLY_SEARCH_PARAMS = Symbol("vinext.navigation.readonlySearchParams");
 const _READONLY_SEARCH_PARAMS_SOURCE = Symbol("vinext.navigation.readonlySearchParamsSource");
+const _READONLY_SEARCH_PARAMS_SOURCE_KEY = Symbol(
+  "vinext.navigation.readonlySearchParamsSourceKey",
+);
 
 type NavigationContextWithReadonlyCache = NavigationContext & {
   [_READONLY_SEARCH_PARAMS]?: ReadonlyURLSearchParams;
   [_READONLY_SEARCH_PARAMS_SOURCE]?: URLSearchParams;
+  [_READONLY_SEARCH_PARAMS_SOURCE_KEY]?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -250,6 +254,12 @@ function _getClientHydrationContext(): NavigationContext | null | undefined {
 
 function _setClientHydrationContext(ctx: NavigationContext | null): void {
   (globalThis as _GlobalWithHydrationContext)[_GLOBAL_HYDRATION_CONTEXT_KEY] = ctx;
+}
+
+function clearClientHydrationContext(): void {
+  if (typeof window !== "undefined") {
+    _setClientHydrationContext(null);
+  }
 }
 
 let _serverContext: NavigationContext | null = null;
@@ -1139,6 +1149,26 @@ if (!isServer) {
 // useSyncExternalStore compares snapshots with Object.is — avoid creating
 // new instances on every render (infinite re-renders).
 let _cachedEmptyServerSearchParams: ReadonlyURLSearchParams | null = null;
+const _readonlyPagesSearchParamsCache = new WeakMap<URLSearchParams, ReadonlyURLSearchParams>();
+let _cachedReadonlyPagesSearchParamsKey: string | null = null;
+let _cachedReadonlyPagesSearchParams: ReadonlyURLSearchParams | null = null;
+
+function getReadonlyPagesSearchParams(searchParams: URLSearchParams): ReadonlyURLSearchParams {
+  const cached = _readonlyPagesSearchParamsCache.get(searchParams);
+  if (cached) return cached;
+
+  const key = searchParams.toString();
+  if (_cachedReadonlyPagesSearchParamsKey === key && _cachedReadonlyPagesSearchParams) {
+    _readonlyPagesSearchParamsCache.set(searchParams, _cachedReadonlyPagesSearchParams);
+    return _cachedReadonlyPagesSearchParams;
+  }
+
+  const readonly = new ReadonlyURLSearchParams(searchParams);
+  _readonlyPagesSearchParamsCache.set(searchParams, readonly);
+  _cachedReadonlyPagesSearchParamsKey = key;
+  _cachedReadonlyPagesSearchParams = readonly;
+  return readonly;
+}
 
 /**
  * Get cached pathname snapshot for useSyncExternalStore.
@@ -1148,7 +1178,9 @@ let _cachedEmptyServerSearchParams: ReadonlyURLSearchParams | null = null;
  * External pushState/replaceState while URL notifications are suppressed won't
  * be visible until the next commit.
  */
-function getPathnameSnapshot(): string {
+function getPathnameSnapshot(): string | null {
+  const pagesCtx = _getPagesNavigationContext();
+  if (pagesCtx) return pagesCtx.pathname;
   return getClientNavigationState()?.cachedPathname ?? "/";
 }
 
@@ -1163,6 +1195,13 @@ let _cachedEmptyClientSearchParams: ReadonlyURLSearchParams | null = null;
  * be visible until the next commit.
  */
 function getSearchParamsSnapshot(): ReadonlyURLSearchParams {
+  if (_getServerContext()) return getServerSearchParamsSnapshot();
+
+  const pagesCtx = _getPagesNavigationContext();
+  if (pagesCtx) {
+    return getReadonlyPagesSearchParams(pagesCtx.searchParams);
+  }
+
   const cached = getClientNavigationState()?.cachedReadonlySearchParams;
   if (cached) return cached;
   if (_cachedEmptyClientSearchParams === null) {
@@ -1202,7 +1241,7 @@ function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
     // .nextjs-ref/packages/next/src/shared/lib/router/adapters.tsx
     const pagesCtx = _getPagesNavigationContext();
     if (pagesCtx) {
-      return new ReadonlyURLSearchParams(pagesCtx.searchParams);
+      return getReadonlyPagesSearchParams(pagesCtx.searchParams);
     }
     if (_cachedEmptyServerSearchParams === null) {
       _cachedEmptyServerSearchParams = new ReadonlyURLSearchParams();
@@ -1213,9 +1252,13 @@ function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
   const source = ctx.searchParams;
   const cached = ctx[_READONLY_SEARCH_PARAMS];
   const cachedSource = ctx[_READONLY_SEARCH_PARAMS_SOURCE];
+  const sourceKey = source.toString();
+  const cachedSourceKey = ctx[_READONLY_SEARCH_PARAMS_SOURCE_KEY];
 
-  // Return cached wrapper if source hasn't changed
-  if (cached && cachedSource === source) {
+  // Return the cached wrapper when the source object, or an equivalent
+  // hydration-cloned source value, has not changed.
+  if (cached && (cachedSource === source || cachedSourceKey === sourceKey)) {
+    ctx[_READONLY_SEARCH_PARAMS_SOURCE] = source;
     return cached;
   }
 
@@ -1223,6 +1266,7 @@ function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
   const readonly = new ReadonlyURLSearchParams(source);
   ctx[_READONLY_SEARCH_PARAMS] = readonly;
   ctx[_READONLY_SEARCH_PARAMS_SOURCE] = source;
+  ctx[_READONLY_SEARCH_PARAMS_SOURCE_KEY] = sourceKey;
 
   return readonly;
 }
@@ -1253,49 +1297,6 @@ export function activateNavigationSnapshot(): void {
 // We cache the params object for referential stability — only create a new
 // object when the params actually change (shallow key/value comparison).
 const _EMPTY_PARAMS: Record<string, string | string[]> = {};
-
-function getRouteParamNamesFromPagesPattern(pattern: string): string[] {
-  const names: string[] = [];
-  for (const segment of pattern.split("/")) {
-    if (segment.startsWith("[[...") && segment.endsWith("]]")) {
-      names.push(segment.slice(5, -2));
-    } else if (segment.startsWith("[...") && segment.endsWith("]")) {
-      names.push(segment.slice(4, -1));
-    } else if (segment.startsWith("[") && segment.endsWith("]")) {
-      names.push(segment.slice(1, -1));
-    }
-  }
-  return names;
-}
-
-let _cachedPagesHydrationParamsKey: string | null = null;
-let _cachedPagesHydrationParams: Record<string, string | string[]> | null = null;
-
-function getPagesHydrationParamsFromNextData(): Record<string, string | string[]> | null {
-  if (isServer) return null;
-  const nextData = window.__NEXT_DATA__;
-  if (!nextData) return null;
-  const names = getRouteParamNamesFromPagesPattern(nextData.page);
-
-  const params: Record<string, string | string[]> = {};
-  if (names.length > 0) {
-    for (const name of names) {
-      const value = nextData.query[name];
-      if (typeof value === "string") {
-        params[name] = value;
-      } else if (Array.isArray(value)) {
-        params[name] = [...value];
-      }
-    }
-  }
-  const key = `${nextData.page}|${JSON.stringify(params)}`;
-  if (_cachedPagesHydrationParamsKey === key && _cachedPagesHydrationParams) {
-    return _cachedPagesHydrationParams;
-  }
-  _cachedPagesHydrationParamsKey = key;
-  _cachedPagesHydrationParams = params;
-  return params;
-}
 
 // ---------------------------------------------------------------------------
 // Client navigation render snapshot — provides pending URL values to hooks
@@ -1423,16 +1424,17 @@ export function clearPendingPathname(navId: number): void {
 
 function getClientParamsSnapshot(): Record<string, string | string[]> | null {
   const state = getClientNavigationState();
+  const ctx = _getServerContext();
+  if (ctx) return ctx.params;
+
   const pagesCtx = _getPagesNavigationContext();
   if (pagesCtx) {
-    if (pagesCtx.params) return pagesCtx.params;
-    if (state && Object.keys(state.clientParams).length > 0) return state.clientParams;
-    return getPagesHydrationParamsFromNextData();
+    return pagesCtx.params;
   }
   if (state && Object.keys(state.clientParams).length > 0) {
     return state.clientParams;
   }
-  return getPagesHydrationParamsFromNextData() ?? state?.clientParams ?? _EMPTY_PARAMS;
+  return state?.clientParams ?? _EMPTY_PARAMS;
 }
 
 function getServerParamsSnapshot(): Record<string, string | string[]> | null {
@@ -1442,7 +1444,8 @@ function getServerParamsSnapshot(): Record<string, string | string[]> | null {
   // See `adaptForPathParams` in Next.js's pages-router adapter:
   // .nextjs-ref/packages/next/src/shared/lib/router/adapters.tsx
   const pagesCtx = _getPagesNavigationContext();
-  return pagesCtx?.params ?? getPagesHydrationParamsFromNextData() ?? _EMPTY_PARAMS;
+  if (pagesCtx) return pagesCtx.params;
+  return _EMPTY_PARAMS;
 }
 
 function subscribeToNavigation(cb: () => void): () => void {
@@ -1460,22 +1463,24 @@ function subscribeToNavigation(cb: () => void): () => void {
  * Returns the current pathname.
  * Server: from request context. Client: from window.location.
  */
-export function usePathname(): string {
+export function usePathname(): string | null {
   if (isServer) {
     // During SSR of "use client" components, the navigation context may not be set.
     // Return a safe fallback — the client will hydrate with the real value.
     const ctx = _getServerContext();
     if (ctx) return ctx.pathname;
     // Pages Router compat shim: derive pathname from the Pages Router state.
-    return _getPagesNavigationContext()?.pathname ?? "/";
+    const pagesCtx = _getPagesNavigationContext();
+    return pagesCtx ? pagesCtx.pathname : "/";
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
   // Client-side: use the hook system for reactivity
-  const pathname = React.useSyncExternalStore(
-    subscribeToNavigation,
-    getPathnameSnapshot,
-    () => _getServerContext()?.pathname ?? _getPagesNavigationContext()?.pathname ?? "/",
-  );
+  const pathname = React.useSyncExternalStore(subscribeToNavigation, getPathnameSnapshot, () => {
+    const ctx = _getServerContext();
+    if (ctx) return ctx.pathname;
+    const pagesCtx = _getPagesNavigationContext();
+    return pagesCtx ? pagesCtx.pathname : "/";
+  });
   // Prefer the render snapshot during an active navigation transition so
   // hooks return the pending URL, not the stale committed one. After commit,
   // fall through to useSyncExternalStore so user pushState/replaceState
@@ -1594,11 +1599,13 @@ export function commitClientNavigationState(
   }
 
   const urlChanged = syncCommittedUrlStateFromLocation();
+  let paramsChanged = false;
   if (state.pendingClientParams !== null && state.pendingClientParamsJson !== null) {
     state.clientParams = state.pendingClientParams;
     state.clientParamsJson = state.pendingClientParamsJson;
     state.pendingClientParams = null;
     state.pendingClientParamsJson = null;
+    paramsChanged = true;
   }
   // Clear pending pathname when navigation commits, but only if:
   // - The navId matches the one that set pendingPathname
@@ -1614,6 +1621,10 @@ export function commitClientNavigationState(
   }
   const shouldNotify = urlChanged || state.hasPendingNavigationUpdate;
   state.hasPendingNavigationUpdate = false;
+
+  if (urlChanged || paramsChanged) {
+    clearClientHydrationContext();
+  }
 
   if (shouldNotify) {
     notifyNavigationListeners();

@@ -649,24 +649,52 @@ describe("Pages Router integration", () => {
 
   // Ported from Next.js: test/e2e/app-dir/params-hooks-compat/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/params-hooks-compat/index.test.ts
-  // Under Pages Router, hooks from `next/navigation` must work as compat shims
-  // populated from the Pages Router (next/router) state — useParams returns
-  // ONLY dynamic route params (no query keys), useSearchParams returns ONLY
-  // the URL search string (no route params).
-  it("next/navigation useParams returns only dynamic route params under Pages Router", async () => {
+  // Under a static Pages Router SSR render, `next/navigation` sees the same
+  // pre-ready Pages router state that the client uses for hydration. The ready
+  // browser transition is covered by the app-router/pages-router-use-params e2e.
+  it("next/navigation useParams is null for a pre-ready static Pages Router render", async () => {
     const res = await fetch(`${baseUrl}/nav-compat/foobar?a=pages`);
     expect(res.status).toBe(200);
     const html = await res.text();
     const paramsMatch = html.match(/<pre id="use-params">([^<]*)<\/pre>/);
     expect(paramsMatch).not.toBeNull();
-    const params = JSON.parse(paramsMatch![1].replaceAll("&quot;", '"'));
-    expect(params).toEqual({ slug: "foobar" });
+    expect(paramsMatch![1]).toBe("null");
   });
 
-  it("next/navigation useSearchParams returns only query string under Pages Router", async () => {
+  it("next/navigation useSearchParams is empty for a pre-ready static Pages Router render", async () => {
     const res = await fetch(`${baseUrl}/nav-compat/foobar?q=pages`);
     expect(res.status).toBe(200);
     const html = await res.text();
+    const searchMatch = html.match(/<pre id="use-search-params">([^<]*)<\/pre>/);
+    expect(searchMatch).not.toBeNull();
+    const search = JSON.parse(searchMatch![1].replaceAll("&quot;", '"'));
+    expect(search).toEqual({});
+  });
+
+  it("next/navigation defers a dynamic getStaticProps Pages route when rewrites are configured", async () => {
+    const res = await fetch(`${baseUrl}/nav-compat-gsp/foobar`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    const paramsMatch = html.match(/<pre id="use-params">([^<]*)<\/pre>/);
+    expect(paramsMatch).not.toBeNull();
+    expect(paramsMatch![1]).toBe("null");
+
+    const searchMatch = html.match(/<pre id="use-search-params">([^<]*)<\/pre>/);
+    expect(searchMatch).not.toBeNull();
+    const search = JSON.parse(searchMatch![1].replaceAll("&quot;", '"'));
+    expect(search).toEqual({});
+  });
+
+  it("next/navigation treats Page.getInitialProps Pages routes as ready during SSR", async () => {
+    const res = await fetch(`${baseUrl}/nav-compat-gip/foobar?q=pages`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    const paramsMatch = html.match(/<pre id="use-params">([^<]*)<\/pre>/);
+    expect(paramsMatch).not.toBeNull();
+    expect(JSON.parse(paramsMatch![1].replaceAll("&quot;", '"'))).toEqual({ slug: "foobar" });
+
     const searchMatch = html.match(/<pre id="use-search-params">([^<]*)<\/pre>/);
     expect(searchMatch).not.toBeNull();
     const search = JSON.parse(searchMatch![1].replaceAll("&quot;", '"'));

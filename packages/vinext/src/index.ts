@@ -3688,6 +3688,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 nextConfig?.basePath ?? "",
                 nextConfig?.trailingSlash ?? false,
                 middlewarePath !== null,
+                (nextConfig?.rewrites.beforeFiles.length ?? 0) > 0 ||
+                  (nextConfig?.rewrites.afterFiles.length ?? 0) > 0 ||
+                  (nextConfig?.rewrites.fallback.length ?? 0) > 0,
                 nextConfig?.clientTraceMetadata,
               );
               const mwStatus = req.__vinextMiddlewareStatus;
