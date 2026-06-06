@@ -1,18 +1,27 @@
 /**
  * Build-time layout classification integration tests.
  *
- * These tests build a real App Router fixture through the full Vite pipeline,
- * then extract the generated __VINEXT_CLASS dispatch function from the emitted
- * RSC chunk and evaluate it. They verify that Fix 2 (wiring the build-time
- * classifier into the plugin's renderChunk hook) actually produces a
- * populated dispatch table at the end of the build pipeline — previously every
- * route fell back to the Layer 3 runtime probe because the plugin never ran
- * the classifier.
+ * These tests build a real App Router fixture through the full Vite pipeline —
+ * with vinext's production defaults, INCLUDING server minification — then
+ * recover the generated dispatch function from the emitted RSC chunk and
+ * evaluate it. They verify that wiring the build-time classifier into the
+ * plugin's renderChunk hook actually produces a populated dispatch table at the
+ * end of the build pipeline (previously every route fell back to the Layer 3
+ * runtime probe because the plugin never ran the classifier).
  *
- * A sibling suite at the bottom builds the SAME fixture with vinext's default
- * server minification LEFT ON (the production path) and asserts on
- * minify-robust signals, so a revert of the patch to a post-minify hook is
- * caught even though identifier-name introspection is impossible under minify.
+ * IMPORTANT: these tests deliberately run against MINIFIED output (the real
+ * shipping path). The original bug was that the classifier patched the
+ * `__VINEXT_CLASS` stub in a `generateBundle` hook that runs AFTER minification,
+ * so once `build.minify` became the server default the stub had already been
+ * renamed and the patch silently no-op'd. Building these fixtures unminified
+ * would mask exactly that bug — it is the one config where the buggy code also
+ * passes — so we must NOT disable minify here. Instead, the helpers below locate
+ * the dispatch function by its property-keyed call site (`__buildTimeClassifications:`
+ * — property keys are never mangled) rather than by the renamed function name,
+ * and evaluate its body (string-literal contents like `"static"` also survive
+ * minification). If the patch ever regresses to a post-minify hook, the dispatch
+ * stays an unconditional `return null` stub and `evalDispatchFn` throws, failing
+ * every suite.
  */
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -36,37 +45,84 @@ async function writeFile(file: string, source: string): Promise<void> {
   await fsp.writeFile(file, source, "utf8");
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
- * Extracts the __VINEXT_CLASS function body from the RSC chunk source and
- * evaluates it to a callable dispatch function. Throws if the stub is still
- * the untouched `return null` form — the caller is expected to have patched
- * it via the plugin's renderChunk hook.
+ * The build-time dispatch functions are emitted as `__VINEXT_CLASS` /
+ * `__VINEXT_CLASS_REASONS`, but minification renames them. Their call sites in
+ * the route table use object PROPERTY KEYS (`__buildTimeClassifications`,
+ * `__buildTimeReasons`), which minifiers never rename, so we recover the
+ * (possibly-mangled) function name from there:
+ *   `__buildTimeClassifications: <name>(0)`
+ *   `__buildTimeReasons: <debugFlag> ? <name>(0) : null`
  */
-function extractDispatch(chunkSource: string): Dispatch {
-  const stubRe = /function\s+__VINEXT_CLASS\s*\(routeIdx\)\s*\{\s*return null;?\s*\}/;
-  if (stubRe.test(chunkSource)) {
-    throw new Error("__VINEXT_CLASS was not patched — still returns null unconditionally");
+function classDispatchName(chunkSource: string): string {
+  const match = /__buildTimeClassifications:\s*([A-Za-z0-9_$]+)\s*\(/.exec(chunkSource);
+  if (!match) {
+    throw new Error("No __buildTimeClassifications call site found in chunk source");
+  }
+  return match[1]!;
+}
+
+function reasonsDispatchName(chunkSource: string): string {
+  const match = /__buildTimeReasons:\s*[A-Za-z0-9_$]+\s*\?\s*([A-Za-z0-9_$]+)\s*\(/.exec(
+    chunkSource,
+  );
+  if (!match) {
+    throw new Error("No __buildTimeReasons call site found in chunk source");
+  }
+  return match[1]!;
+}
+
+/**
+ * Recovers `function <name>(p) { return (<expr>)(p); }` from the chunk and
+ * evaluates `<expr>` to the underlying dispatch function. `<name>` is derived
+ * from the route-table call site (see classDispatchName/reasonsDispatchName) so
+ * this works regardless of minifier renaming. Throws if the function is still
+ * the untouched `return null` stub — i.e. the renderChunk patch never applied
+ * (the original post-minify bug), which keeps this as a real regression guard.
+ */
+function evalDispatchFn(chunkSource: string, fnName: string): (routeIdx: number) => unknown {
+  const esc = escapeRegExp(fnName);
+
+  const nullStubRe = new RegExp(
+    `function\\s+${esc}\\s*\\(\\s*\\w+\\s*\\)\\s*\\{\\s*return null;?\\s*\\}`,
+  );
+  if (nullStubRe.test(chunkSource)) {
+    throw new Error(`${fnName} was not patched — still returns null unconditionally`);
   }
 
-  // Non-greedy match: assumes the inner dispatch body does not contain
-  // ')(routeIdx)' as a substring. Coupled to the codegen shape in
-  // route-classification-manifest.ts buildGenerateBundleReplacement.
-  const re =
-    /function\s+__VINEXT_CLASS\s*\(routeIdx\)\s*\{\s*return\s+(\([\s\S]*?\))\(routeIdx\);\s*\}/;
+  // Non-greedy capture of the inner expression up to the trailing `(<param>)`
+  // self-call. The dispatch body never contains `(<param>)}` other than its own
+  // closing call, so the non-greedy match terminates correctly. `<param>` is
+  // captured (\\1) because the minifier renames it too.
+  const re = new RegExp(
+    `function\\s+${esc}\\s*\\(\\s*(\\w+)\\s*\\)\\s*\\{\\s*return\\s*([\\s\\S]*?)\\(\\s*\\1\\s*\\)\\s*\\}`,
+  );
   const match = re.exec(chunkSource);
   if (!match) {
-    throw new Error("Could not locate patched __VINEXT_CLASS in chunk source");
+    throw new Error(`Could not locate patched ${fnName} body in chunk source`);
   }
 
   // Use vm.runInThisContext so the resulting Map instances share their
   // prototype with the test process — `instanceof Map` would otherwise
   // fail across v8 contexts.
-  const raw: unknown = vm.runInThisContext(match[1]!);
+  const raw: unknown = vm.runInThisContext(match[2]!);
   if (typeof raw !== "function") {
-    throw new Error("Patched __VINEXT_CLASS body did not evaluate to a function");
+    throw new Error(`Patched ${fnName} body did not evaluate to a function`);
   }
+  return (routeIdx: number) => Reflect.apply(raw, null, [routeIdx]);
+}
+
+/**
+ * Recovers the __VINEXT_CLASS dispatch and wraps it with Map narrowing.
+ */
+function extractDispatch(chunkSource: string): Dispatch {
+  const raw = evalDispatchFn(chunkSource, classDispatchName(chunkSource));
   return (routeIdx: number) => {
-    const result: unknown = Reflect.apply(raw, null, [routeIdx]);
+    const result: unknown = raw(routeIdx);
     if (result === null) return null;
     if (result instanceof Map) return result;
     throw new Error(
@@ -76,19 +132,23 @@ function extractDispatch(chunkSource: string): Dispatch {
 }
 
 /**
- * Extracts the per-route route indices emitted in the `routes = [...]` table
- * by matching `__VINEXT_CLASS(N)` call expressions alongside each pattern.
- * Maps pattern strings (stable across test edits) to numeric indices.
+ * Maps route pattern strings (stable across test edits) to numeric indices by
+ * matching each `__buildTimeClassifications: <name>(N)` route-table entry to its
+ * `pattern:` field. Property keys and string-literal contents survive
+ * minification; the function name is matched as any identifier.
  */
 function extractRouteIndexByPattern(chunkSource: string): Map<string, number> {
   const result = new Map<string, number>();
-  const re = /__buildTimeClassifications:\s*__VINEXT_CLASS\((\d+)\)[\s\S]*?pattern:\s*"([^"]+)"/g;
+  const re =
+    /__buildTimeClassifications:\s*[A-Za-z0-9_$]+\((\d+)\)[\s\S]*?pattern:\s*[`"']([^`"']+)[`"']/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(chunkSource)) !== null) {
     result.set(match[2]!, Number(match[1]!));
   }
   if (result.size === 0) {
-    throw new Error("No route entries with __VINEXT_CLASS + pattern found in chunk source");
+    throw new Error(
+      "No route entries with __buildTimeClassifications + pattern found in chunk source",
+    );
   }
   return result;
 }
@@ -99,8 +159,7 @@ type BuiltFixtureRaw = {
 
 async function buildMinimalFixtureRaw({
   debug = false,
-  minify = false,
-}: { debug?: boolean; minify?: boolean } = {}): Promise<BuiltFixtureRaw> {
+}: { debug?: boolean } = {}): Promise<BuiltFixtureRaw> {
   const workspaceRoot = path.resolve(import.meta.dirname, "..");
   const workspaceNodeModules = path.join(workspaceRoot, "node_modules");
 
@@ -175,33 +234,14 @@ export default function ForceStaticLayout({ children }) {
     pathToFileURL(path.join(workspaceRoot, "packages/vinext/src/index.ts")).href
   );
   const { createBuilder } = await import("vite");
-  // When `minify` is false we override vinext's default server minification
-  // (vinext:server-minify-defaults), which renames the `__VINEXT_CLASS`
-  // function and mangles its `routeIdx` parameter. The production patch
-  // survives minification — it runs in renderChunk before the minifier — but
-  // the dispatch-logic suites below extract and *evaluate* the patched body by
-  // matching the readable `function __VINEXT_CLASS(routeIdx) { ... }` shape
-  // (see extractDispatch), which only exists in unminified output. Keeping
-  // those suites unminified makes the regex introspection deterministic.
-  //
-  // The `minify: true` path leaves vinext's production default in place. That
-  // path can't be introspected by identifier name (everything is mangled), so
-  // its suite asserts on minify-robust signals instead — string literals the
-  // patch injects, which minification preserves. minify is a user-overridable
-  // default, so toggling it per-build here is sound.
-  const minifyOverride = minify ? undefined : { build: { minify: false as const } };
+  // No minify override: build with vinext's production defaults, which minify
+  // the server environments (vinext:server-minify-defaults). The assertions
+  // below are minify-robust by design — see the file header.
   const builder = await createBuilder({
     root: tmpDir,
     configFile: false,
     plugins: [vinext({ appDir: tmpDir, rscOutDir, ssrOutDir, clientOutDir })],
     logLevel: "silent",
-    ...minifyOverride,
-    environments: minify
-      ? {}
-      : {
-          rsc: { build: { minify: false } },
-          ssr: { build: { minify: false } },
-        },
   });
 
   // The plugin reads `VINEXT_DEBUG_CLASSIFICATION` directly from `process.env`
@@ -240,15 +280,10 @@ export default function ForceStaticLayout({ children }) {
   return { chunkSource };
 }
 
-/**
- * Unminified build helper. Adds the identifier-name-based introspection
- * (`extractDispatch` / `extractRouteIndexByPattern`) the dispatch-logic suites
- * rely on, which only works when `__VINEXT_CLASS` / `routeIdx` survive verbatim.
- */
 async function buildMinimalFixture({
   debug = false,
 }: { debug?: boolean } = {}): Promise<BuiltFixture> {
-  const { chunkSource } = await buildMinimalFixtureRaw({ debug, minify: false });
+  const { chunkSource } = await buildMinimalFixtureRaw({ debug });
   return {
     chunkSource,
     dispatch: extractDispatch(chunkSource),
@@ -269,21 +304,25 @@ describe("build-time classification integration", () => {
   });
 
   // (the dispatch-was-patched contract is enforced by extractDispatch in
-  // beforeAll — if the stub still returned null, every other test below
-  // would also fail with a clearer setup error).
+  // beforeAll — if the stub still returned null under minification, every other
+  // test below would also fail with a clearer setup error. That is the
+  // regression guard for the original post-minify-hook bug.)
 
-  it("gates the reasons sidecar behind __classDebug in the route table", () => {
+  it("gates the reasons sidecar behind the debug flag in the route table", () => {
+    // Minified shape: `__buildTimeReasons: <debugFlag> ? <reasonsFn>(N) : null`.
+    // Property key + structure survive minification; identifiers are mangled.
     expect(built.chunkSource).toMatch(
-      /__buildTimeReasons:\s*__classDebug\s*\?\s*__VINEXT_CLASS_REASONS\(\d+\)\s*:\s*null/,
+      /__buildTimeReasons:\s*[A-Za-z0-9_$]+\s*\?\s*[A-Za-z0-9_$]+\(\d+\)\s*:\s*null/,
     );
   });
 
-  it("leaves __VINEXT_CLASS_REASONS as a null stub when build-time debug is off", () => {
+  it("leaves the reasons dispatch as a null stub when build-time debug is off", () => {
+    const name = escapeRegExp(reasonsDispatchName(built.chunkSource));
     expect(built.chunkSource).toMatch(
-      /function\s+__VINEXT_CLASS_REASONS\s*\(routeIdx\)\s*\{\s*return null;?\s*\}/,
+      new RegExp(`function\\s+${name}\\s*\\(\\s*\\w+\\s*\\)\\s*\\{\\s*return null;?\\s*\\}`),
     );
     expect(built.chunkSource).not.toMatch(
-      /function\s+__VINEXT_CLASS_REASONS\s*\(routeIdx\)\s*\{[^}]*switch/,
+      new RegExp(`function\\s+${name}\\s*\\([^)]*\\)\\s*\\{[^}]*switch`),
     );
   });
 
@@ -329,10 +368,11 @@ describe("build-time classification integration", () => {
 });
 
 /**
- * Extracts and evaluates `__VINEXT_CLASS_REASONS` from a build output that was
- * produced with `VINEXT_DEBUG_CLASSIFICATION=1`. Mirrors `extractDispatch` but
- * targets the sibling reasons stub. Kept intentionally permissive about the
- * emitted codegen shape so this test survives the #863 refactor.
+ * Recovers and evaluates the reasons dispatch from a build produced with
+ * `VINEXT_DEBUG_CLASSIFICATION=1`. Mirrors `extractDispatch` but targets the
+ * sibling reasons function and narrows its `{ layer, result }` payload. Kept
+ * intentionally permissive about the emitted codegen shape so this test
+ * survives the #863 refactor.
  */
 type ReasonShape = { layer: string; result?: string };
 
@@ -345,22 +385,9 @@ function isReasonShape(value: unknown): value is ReasonShape {
 function extractReasonsDispatch(
   chunkSource: string,
 ): (routeIdx: number) => Map<number, ReasonShape> | null {
-  const stubRe = /function\s+__VINEXT_CLASS_REASONS\s*\(routeIdx\)\s*\{\s*return null;?\s*\}/;
-  if (stubRe.test(chunkSource)) {
-    throw new Error("__VINEXT_CLASS_REASONS was not patched despite VINEXT_DEBUG_CLASSIFICATION=1");
-  }
-  const re =
-    /function\s+__VINEXT_CLASS_REASONS\s*\(routeIdx\)\s*\{\s*return\s+(\([\s\S]*?\))\(routeIdx\);\s*\}/;
-  const match = re.exec(chunkSource);
-  if (!match) {
-    throw new Error("Could not locate patched __VINEXT_CLASS_REASONS in chunk source");
-  }
-  const raw: unknown = vm.runInThisContext(match[1]!);
-  if (typeof raw !== "function") {
-    throw new Error("Patched __VINEXT_CLASS_REASONS body did not evaluate to a function");
-  }
+  const raw = evalDispatchFn(chunkSource, reasonsDispatchName(chunkSource));
   return (routeIdx: number) => {
-    const result: unknown = Reflect.apply(raw, null, [routeIdx]);
+    const result: unknown = raw(routeIdx);
     if (result === null) return null;
     if (result instanceof Map) {
       const narrowed = new Map<number, ReasonShape>();
@@ -388,12 +415,13 @@ describe("build-time classification integration (debug on)", () => {
     built = await buildMinimalFixture({ debug: true });
   }, 120_000);
 
-  it("patches __VINEXT_CLASS_REASONS with a populated dispatcher", () => {
+  it("patches the reasons dispatch with a populated dispatcher", () => {
+    const name = escapeRegExp(reasonsDispatchName(built.chunkSource));
     expect(built.chunkSource).toMatch(
-      /function\s+__VINEXT_CLASS_REASONS\s*\(routeIdx\)\s*\{[^}]*switch/,
+      new RegExp(`function\\s+${name}\\s*\\([^)]*\\)\\s*\\{[\\s\\S]*?switch`),
     );
     expect(built.chunkSource).not.toMatch(
-      /function\s+__VINEXT_CLASS_REASONS\s*\(routeIdx\)\s*\{\s*return null;?\s*\}/,
+      new RegExp(`function\\s+${name}\\s*\\(\\s*\\w+\\s*\\)\\s*\\{\\s*return null;?\\s*\\}`),
     );
   });
 
@@ -414,71 +442,5 @@ describe("build-time classification integration (debug on)", () => {
     expect(rootReason).toBeDefined();
     expect(rootReason!.layer).toBe("module-graph");
     expect(rootReason!.result).toBe("static");
-  });
-});
-
-/**
- * Production-default coverage: builds the SAME fixture with vinext's default
- * server minification LEFT ON. Under minify, `__VINEXT_CLASS` / `routeIdx` are
- * mangled, so identifier-name introspection is impossible — these assertions
- * instead key off minify-robust signals that only exist when the patch actually
- * applied:
- *
- *   - The dispatch result value literals `"static"` / `"dynamic"` (string
- *     literal contents are never mangled). The untouched stub returns null
- *     unconditionally and contains neither, so their presence proves the
- *     `__VINEXT_CLASS` switch was injected.
- *   - In a DEBUG build, the reason `layer` literals (`"module-graph"`,
- *     `"segment-config"`, `"no-classifier"`) injected by the reasons
- *     replacement. These appear ONLY after the reasons stub is patched.
- *   - The classification function is no longer an unconditional `return null`
- *     stub.
- *
- * This is the regression guard the prior `minify: false`-only tests lost: the
- * OLD buggy code patched in `generateBundle` (post-minify), so under minify the
- * stub regex never matched and these literals would be ABSENT. A revert to a
- * post-minify hook makes this suite FAIL. (Verified manually by temporarily
- * moving the injector hook past minification — the assertions below failed.)
- */
-describe("build-time classification integration (production default — minify on)", () => {
-  let chunkSource: string;
-  let debugChunkSource: string;
-
-  beforeAll(async () => {
-    // Sequential, not Promise.all: the debug toggle mutates process.env around
-    // the build, so concurrent builds would race on that shared global.
-    ({ chunkSource } = await buildMinimalFixtureRaw({ minify: true }));
-    ({ chunkSource: debugChunkSource } = await buildMinimalFixtureRaw({
-      minify: true,
-      debug: true,
-    }));
-  }, 120_000);
-
-  it("injects the dispatch switch into __VINEXT_CLASS under minification", () => {
-    // Minification rewrites every string literal to backtick form and mangles
-    // all identifiers, so we cannot find the function by name or by quote style.
-    // The injected dispatch body has a stable STRUCTURE that the minifier
-    // preserves: `switch (routeIdx) { case N: return new Map([[idx, "kind"]]);
-    // ... }`. The untouched stub is just `return null`, which has no switch and
-    // no `new Map([[`. Assert that structural shape — pairing a numeric `case`
-    // label with a `new Map([[<digit>,` dispatch entry — is present. This is the
-    // signal that vanishes if the patch reverts to a post-minify hook (the
-    // original bug): under minify the mangled stub regex never matches, the
-    // switch is never injected, and this shape is absent.
-    expect(chunkSource).toMatch(/case \d+:\s*return new Map\(\[\[\d+,/);
-  });
-
-  it("injects module-graph reason literals into the dispatch table under minification (debug)", () => {
-    // `module-graph` as a `layer` value is emitted ONLY by the patched reasons
-    // dispatch table (buildReasonsReplacement.serializeReasonExpression). Unlike
-    // `segment-config` / `no-classifier`, which also appear in bundled runtime
-    // source (app-page-dispatch.ts / app-page-execution.ts) and therefore
-    // survive even an unpatched build, `module-graph` never appears at runtime —
-    // it is purely a build-time injection. Its presence is conclusive proof the
-    // reasons table was patched in before minification. Quote-agnostic match:
-    // the minifier emits it backtick-quoted.
-    expect(debugChunkSource).toMatch(/["'`]module-graph["'`]/);
-    // And the populated switch dispatch shape, same as the non-debug build.
-    expect(debugChunkSource).toMatch(/case \d+:\s*return new Map\(\[\[\d+,/);
   });
 });
