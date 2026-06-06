@@ -152,69 +152,109 @@ export function greedyPack(files, weights, groupTotal) {
 // two files. All three reduce to "transfer a set out of A and a set into A from
 // B"; `makespanAfter` scores any such transfer from a single primitive.
 export function localImprove(groups, weights) {
-  let improved = true;
-  while (improved) {
-    improved = false;
+  for (;;) {
     const currentMax = makespan(groups, weights);
     const byLoad = [...groups].sort(
       (a, b) => groupLoad(b, weights) - groupLoad(a, weights) || a.index - b.index,
     );
     const heavy = byLoad[0];
 
-    // Phase 1: move one file from the heaviest shard to a lighter one.
-    for (let i = byLoad.length - 1; i >= 1 && !improved; i--) {
-      const other = byLoad[i];
-      for (const file of heaviestFirst(heavy.files, weights)) {
-        const w = weightOf(weights, file);
-        if (makespanAfter(groups, heavy, other, w, 0, weights) < currentMax) {
-          transfer(heavy, other, [file], []);
-          improved = true;
-          break;
-        }
+    const improvement =
+      firstImprovingTransfer(
+        groups,
+        weights,
+        currentMax,
+        moveOneFileCandidates(heavy, byLoad, weights),
+      ) ??
+      firstImprovingTransfer(
+        groups,
+        weights,
+        currentMax,
+        swapOneFileCandidates(heavy, byLoad, weights),
+      ) ??
+      firstImprovingTransfer(
+        groups,
+        weights,
+        currentMax,
+        swapTwoFileCandidates(heavy, byLoad, weights),
+      );
+
+    if (!improvement) break;
+    transfer(improvement.from, improvement.to, improvement.outFiles, improvement.inFiles);
+  }
+}
+
+function firstImprovingTransfer(groups, weights, currentMax, candidates) {
+  for (const candidate of candidates) {
+    if (
+      makespanAfter(
+        groups,
+        candidate.from,
+        candidate.to,
+        candidate.outMs,
+        candidate.inMs,
+        weights,
+      ) < currentMax
+    ) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function* moveOneFileCandidates(heavy, byLoad, weights) {
+  for (let i = byLoad.length - 1; i >= 1; i--) {
+    const other = byLoad[i];
+    for (const file of heaviestFirst(heavy.files, weights)) {
+      yield transferCandidate(heavy, other, [file], [], weights);
+    }
+  }
+}
+
+function* swapOneFileCandidates(heavy, byLoad, weights) {
+  for (let i = byLoad.length - 1; i >= 1; i--) {
+    const other = byLoad[i];
+    for (const out of heaviestFirst(heavy.files, weights)) {
+      const dOut = weightOf(weights, out);
+      for (const back of lightestFirst(other.files, weights)) {
+        const dIn = weightOf(weights, back);
+        if (dIn >= dOut) break;
+        yield transferCandidate(heavy, other, [out], [back], weights);
       }
     }
-    if (improved) continue;
+  }
+}
 
-    // Phase 2: swap one heavy file out for one lighter file from another shard.
-    for (let i = byLoad.length - 1; i >= 1 && !improved; i--) {
-      const other = byLoad[i];
-      for (const out of heaviestFirst(heavy.files, weights)) {
-        for (const back of lightestFirst(other.files, weights)) {
-          const dOut = weightOf(weights, out);
-          const dIn = weightOf(weights, back);
-          if (dIn >= dOut) break; // sorted ascending; no lighter candidate remains
-          if (makespanAfter(groups, heavy, other, dOut, dIn, weights) < currentMax) {
-            transfer(heavy, other, [out], [back]);
-            improved = true;
-            break;
-          }
-        }
-        if (improved) break;
-      }
-    }
-    if (improved) continue;
+function* swapTwoFileCandidates(heavy, byLoad, weights) {
+  const light = byLoad[byLoad.length - 1];
+  if (heavy.index === light.index || heavy.files.length < 2 || light.files.length < 2) return;
 
-    // Phase 3: bounded two-for-two swap with the lightest shard.
-    const light = byLoad[byLoad.length - 1];
-    if (heavy.index !== light.index && heavy.files.length >= 2 && light.files.length >= 2) {
-      const outs = heaviestFirst(heavy.files, weights).slice(0, 4);
-      const backs = lightestFirst(light.files, weights).slice(0, 4);
-      for (let a = 0; a < outs.length && !improved; a++) {
-        for (let b = a + 1; b < outs.length && !improved; b++) {
-          const dOut = weightOf(weights, outs[a]) + weightOf(weights, outs[b]);
-          for (let c = 0; c < backs.length && !improved; c++) {
-            for (let d = c + 1; d < backs.length && !improved; d++) {
-              const dIn = weightOf(weights, backs[c]) + weightOf(weights, backs[d]);
-              if (makespanAfter(groups, heavy, light, dOut, dIn, weights) < currentMax) {
-                transfer(heavy, light, [outs[a], outs[b]], [backs[c], backs[d]]);
-                improved = true;
-              }
-            }
-          }
+  const outs = heaviestFirst(heavy.files, weights).slice(0, 4);
+  const backs = lightestFirst(light.files, weights).slice(0, 4);
+  for (let a = 0; a < outs.length; a++) {
+    for (let b = a + 1; b < outs.length; b++) {
+      for (let c = 0; c < backs.length; c++) {
+        for (let d = c + 1; d < backs.length; d++) {
+          yield transferCandidate(heavy, light, [outs[a], outs[b]], [backs[c], backs[d]], weights);
         }
       }
     }
   }
+}
+
+function transferCandidate(from, to, outFiles, inFiles, weights) {
+  return {
+    from,
+    to,
+    outFiles,
+    inFiles,
+    outMs: filesLoad(outFiles, weights),
+    inMs: filesLoad(inFiles, weights),
+  };
+}
+
+function filesLoad(files, weights) {
+  return files.reduce((total, file) => total + weightOf(weights, file), 0);
 }
 
 // Makespan if `dOut` ms moves out of A and `dIn` ms moves in (B is the inverse).
