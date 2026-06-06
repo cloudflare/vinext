@@ -12,8 +12,8 @@ export const SUITE = "integration";
 export const ESTIMATOR_METRIC = "p75";
 
 // Weight used when the planner meets a file with no manifest entry. The CI
-// `--check` gate fails on such files, so this only keeps `--shard` output
-// functional in the window between adding a test and refreshing the manifest.
+// `--check` gate warns on such files, so newly added tests keep running until
+// the manifest is refreshed with real timings.
 export const DEFAULT_TIMING_MS = 5_000;
 
 // ── manifest → weights ──────────────────────────────────────────────────
