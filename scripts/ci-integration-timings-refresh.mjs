@@ -27,13 +27,13 @@
  *   node scripts/ci-integration-timings-refresh.mjs <blob-dir> --run=<id> [--run=<id>...] [--shard-total=N] [--allow-partial] [--write]
  */
 
-import { execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
+import { parseFlag } from "./lib/cli-args.mjs";
+import { discoverIntegrationFiles } from "./lib/integration-files.mjs";
 import { buildManifest } from "./lib/integration-shard-plan.mjs";
 import { aggregateBlobDir } from "./lib/vitest-blob-timings.mjs";
 
-const ROOT = new URL("..", import.meta.url).pathname;
 const MANIFEST_PATH = new URL("ci-integration-timings.json", import.meta.url).pathname;
 const REPO_RUN_URL = "https://github.com/cloudflare/vinext/actions/runs";
 
@@ -50,7 +50,7 @@ const runIds = args
   .filter((a) => a.startsWith("--run="))
   .map((a) => a.slice("--run=".length))
   .filter(Boolean);
-const shardTotalRaw = args.find((a) => a.startsWith("--shard-total="));
+const shardTotalRaw = parseFlag(args, "--shard-total");
 // Default to the current manifest's shardTotal so a plain refresh preserves the
 // count the CI matrix already uses. manifest.shardTotal is the single source of
 // truth for the count (the matrix mirrors it and `--check` enforces no drift),
@@ -59,9 +59,7 @@ const shardTotalRaw = args.find((a) => a.startsWith("--shard-total="));
 const currentShardTotal = existsSync(MANIFEST_PATH)
   ? JSON.parse(readFileSync(MANIFEST_PATH, "utf8")).shardTotal
   : undefined;
-const shardTotal = shardTotalRaw
-  ? Number.parseInt(shardTotalRaw.slice("--shard-total=".length), 10)
-  : currentShardTotal;
+const shardTotal = shardTotalRaw === null ? currentShardTotal : Number.parseInt(shardTotalRaw, 10);
 
 if (!blobDir)
   die("Usage: ci-integration-timings-refresh.mjs <blob-dir> --run=<id> [--run=...] [--write]");
@@ -69,38 +67,19 @@ if (runIds.length === 0)
   die("At least one --run=<id> is required so the manifest records its provenance.");
 if (!Number.isInteger(shardTotal) || shardTotal < 1) {
   die(
-    shardTotalRaw
-      ? `Invalid --shard-total: ${shardTotalRaw}`
+    shardTotalRaw !== null
+      ? `Invalid --shard-total: --shard-total=${shardTotalRaw}`
       : "No --shard-total given and the existing manifest has no valid shardTotal to inherit. Pass --shard-total=N.",
   );
 }
 
-// Discover the authoritative file set so we can fail closed when the blobs do
-// not cover every integration test file. A single complete successful CI run
-// spans all shards and therefore every file.
-function discoverIntegrationFiles() {
-  let raw;
-  try {
-    raw = execSync("vp test list --project integration --filesOnly", {
-      cwd: ROOT,
-      encoding: "utf8",
-    });
-  } catch {
-    die("Failed to run 'vp test list --project integration --filesOnly'");
-  }
-  const files = [];
-  for (const line of raw.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const bracketed = trimmed.match(/^\[\w+\]\s+(.+)$/);
-    if (bracketed) files.push(bracketed[1]);
-    else if (/^tests\/.+\.test\.(ts|js|tsx|jsx)$/.test(trimmed)) files.push(trimmed);
-  }
-  return files.sort((a, b) => a.localeCompare(b));
-}
-
 const { samples, blobCount } = await aggregateBlobDir(blobDir);
-const discovered = discoverIntegrationFiles();
+let discovered;
+try {
+  discovered = discoverIntegrationFiles();
+} catch (err) {
+  die(err.message);
+}
 
 // Provenance must not overclaim. A test file runs in exactly one shard per
 // run, so one complete run yields exactly one sample per file. Require

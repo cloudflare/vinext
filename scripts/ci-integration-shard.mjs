@@ -14,10 +14,11 @@
  *   node scripts/ci-integration-shard.mjs --list                    list all integration files
  */
 
-import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { intFlag, parseFlag } from "./lib/cli-args.mjs";
+import { discoverIntegrationFiles } from "./lib/integration-files.mjs";
 import {
   checkPlan,
   manifestWeights,
@@ -33,17 +34,11 @@ const DEFAULT_OVERHEAD_MS = 48_000;
 const DEFAULT_REPORT_MS = 35_000;
 const DEFAULT_MAX_SHARDS = 10;
 
-const ROOT = new URL("..", import.meta.url).pathname;
 const MANIFEST_PATH = new URL("ci-integration-timings.json", import.meta.url).pathname;
 
 function die(...msg) {
   console.error(...msg);
   process.exit(1);
-}
-
-function parseFlag(args, name) {
-  const flag = args.find((a) => a.startsWith(`${name}=`));
-  return flag ? flag.split("=").slice(1).join("=") : null;
 }
 
 function readManifest() {
@@ -55,35 +50,21 @@ function readManifest() {
   }
 }
 
-function discoverIntegrationFiles() {
-  let raw;
-  try {
-    raw = execSync("vp test list --project integration --filesOnly", {
-      cwd: ROOT,
-      encoding: "utf8",
-    });
-  } catch {
-    die("Failed to run 'vp test list --project integration --filesOnly'");
-  }
-
-  const files = [];
-  for (const line of raw.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const bracketed = trimmed.match(/^\[\w+\]\s+(.+)$/);
-    if (bracketed) files.push(bracketed[1]);
-    else if (/^tests\/.+\.test\.(ts|js|tsx|jsx)$/.test(trimmed)) files.push(trimmed);
-  }
-  return files.sort((a, b) => a.localeCompare(b));
-}
-
 function printSummary(groups, weights, fileCount) {
   console.error(`\nIntegration shard plan (${groups.length} ways, ${fileCount} files):`);
   for (const line of planSummary(groups, weights)) console.error(line);
 }
 
+function readDiscoveredIntegrationFiles() {
+  try {
+    return discoverIntegrationFiles();
+  } catch (err) {
+    die(err.message);
+  }
+}
+
 function runList() {
-  for (const f of discoverIntegrationFiles()) console.log(f);
+  for (const f of readDiscoveredIntegrationFiles()) console.log(f);
 }
 
 function runCheck(args) {
@@ -93,7 +74,7 @@ function runCheck(args) {
   if (!Number.isInteger(shardTotal) || shardTotal < 1)
     die(`Invalid --shard-total: ${shardTotalRaw}`);
 
-  const discovered = discoverIntegrationFiles();
+  const discovered = readDiscoveredIntegrationFiles();
   const manifest = readManifest();
   const { errors, groups } = checkPlan({ discovered, manifest, shardTotal });
 
@@ -116,7 +97,7 @@ function runShard(shardFlag) {
   const total = Number.parseInt(match[2], 10);
   if (pos < 1 || pos > total) die(`Shard index ${pos} out of range [1, ${total}]`);
 
-  const discovered = discoverIntegrationFiles();
+  const discovered = readDiscoveredIntegrationFiles();
   const manifest = readManifest();
   const errors = validateManifest(manifest);
   if (errors.length > 0) {
@@ -133,18 +114,10 @@ function runShard(shardFlag) {
   if (out) console.log(out);
 }
 
-function intFlag(args, name, fallback) {
-  const raw = parseFlag(args, name);
-  if (raw === null) return fallback;
-  const value = Number.parseInt(raw, 10);
-  if (!Number.isInteger(value) || value < 1) die(`Invalid ${name}: ${raw}`);
-  return value;
-}
-
 // Advisory only: models the optimal shard count from the committed weights so a
 // maintainer can update the matrix deliberately. Never run by CI.
 function runRecommend(args) {
-  const discovered = discoverIntegrationFiles();
+  const discovered = readDiscoveredIntegrationFiles();
   const manifest = readManifest();
   const errors = validateManifest(manifest);
   if (errors.length > 0) {
@@ -162,9 +135,9 @@ function runRecommend(args) {
   const { rows, recommended } = recommendShardCount({
     files: discovered,
     weights: manifestWeights(manifest),
-    maxShards: intFlag(args, "--max-shards", DEFAULT_MAX_SHARDS),
-    overheadMs: intFlag(args, "--overhead-ms", DEFAULT_OVERHEAD_MS),
-    reportMs: intFlag(args, "--report-ms", DEFAULT_REPORT_MS),
+    maxShards: readIntFlag(args, "--max-shards", DEFAULT_MAX_SHARDS),
+    overheadMs: readIntFlag(args, "--overhead-ms", DEFAULT_OVERHEAD_MS),
+    reportMs: readIntFlag(args, "--report-ms", DEFAULT_REPORT_MS),
     targetMs,
   });
 
@@ -189,6 +162,14 @@ function runRecommend(args) {
       `Recommended: ${recommended} shard(s) — the smallest count that drops integration to or below ${s(targetMs)}.\n` +
         `Manifest currently declares ${manifest.shardTotal}. Update manifest.shardTotal and the CI matrix together if you change it.`,
     );
+  }
+}
+
+function readIntFlag(args, name, fallback) {
+  try {
+    return intFlag(args, name, fallback);
+  } catch (err) {
+    die(err.message);
   }
 }
 
