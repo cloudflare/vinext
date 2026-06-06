@@ -52,8 +52,7 @@ export type { ClassificationReason };
  * requests.
  *
  * See Next.js test:
- *   test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
- *   ("should support redirect in generateMetadata")
+ *   test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
  */
 const APP_PAGE_METADATA_ERROR_MARKER = Symbol.for("vinext.appPage.metadataError");
 
