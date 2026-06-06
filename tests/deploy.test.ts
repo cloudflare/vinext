@@ -772,9 +772,9 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("handles basePath stripping and creates a new request with stripped URL for middleware", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("basePath");
-    expect(content).toContain("function hasBasePath(pathname: string, basePath: string): boolean");
-    expect(content).toContain("function stripBasePath(pathname: string, basePath: string): string");
-    expect(content).toContain('pathname === basePath || pathname.startsWith(basePath + "/")');
+    expect(content).toContain(
+      'import { hasBasePath, stripBasePath } from "vinext/utils/base-path"',
+    );
     expect(content).toContain("const stripped = stripBasePath(pathname, basePath);");
     // After stripping, a new request with the stripped URL must be created
     // so middleware matchers see the basePath-free pathname (matching prod-server)
@@ -838,17 +838,12 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("merges middleware and config headers into responses with correct precedence", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("mergeHeaders");
+    expect(content).toContain('import { mergeHeaders } from "vinext/server/worker-utils"');
     expect(content).toContain("middlewareHeaders");
-    // Response headers must override middleware headers (matching prod-server).
-    // mergeHeaders uses Headers API and getSetCookie() to preserve multi-value cookies.
-    expect(content).toContain("merged.set(k, v)");
-    expect(content).toContain("getSetCookie");
+    expect(content).toContain("return mergeHeaders(response, middlewareHeaders");
   });
 
   it("mergeHeaders preserves multiple Set-Cookie headers from both middleware and response", () => {
-    // Behavioral test for the mergeHeaders function inlined in the generated worker entry.
-    // worker-utils.ts exports the same function — kept in sync with the deploy.ts template.
     const response = new Response("body", {
       headers: [
         ["set-cookie", "resp=1; Path=/"],
@@ -993,11 +988,8 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("generated worker entry includes the no-body and streamed content-length merge guards", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("NO_BODY_RESPONSE_STATUSES");
-    expect(content).toContain("__vinextStreamedHtmlResponse");
-    expect(content).toContain('merged.delete("content-length")');
-    expect(content).toContain("if (isContentLengthHeader(k)) continue;");
-    expect(content).toContain("cancelResponseBody(response)");
+    expect(content).toContain('import { mergeHeaders } from "vinext/server/worker-utils"');
+    expect(content).toContain("return mergeHeaders(response, middlewareHeaders");
   });
 
   it("resolveStaticAssetSignal fetches and merges static asset responses with middleware status", async () => {

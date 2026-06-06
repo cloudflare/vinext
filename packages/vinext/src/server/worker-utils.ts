@@ -1,9 +1,8 @@
 /**
  * Shared utilities for Cloudflare Worker entries.
  *
- * Used by hand-written example worker entries and can be imported as
- * "vinext/server/worker-utils". The generated worker entry (deploy.ts)
- * inlines these functions in its template string.
+ * Used by hand-written example worker entries and by the generated Pages
+ * Router worker entry through "vinext/server/worker-utils".
  */
 import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 
@@ -12,7 +11,7 @@ import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
  * Response headers take precedence over middleware headers for all headers
  * except Set-Cookie, which is additive (both middleware and response cookies
  * are preserved). Uses getSetCookie() to preserve multiple Set-Cookie values.
- * Keep this in sync with prod-server.ts and the generated copy in deploy.ts.
+ * Keep this in sync with prod-server.ts.
  */
 const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
 

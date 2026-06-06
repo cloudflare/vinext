@@ -21,7 +21,12 @@ import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { detectPackageManager, ensureViteConfigCompatibility } from "./utils/project.js";
+import {
+  detectPackageManager,
+  ensureViteConfigCompatibility,
+  hasAppDir,
+  hasViteConfig,
+} from "./utils/project.js";
 import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
@@ -197,25 +202,10 @@ function createBuildLogger(vite: ViteModule): import("vite").Logger {
 
 // ─── Auto-configuration ───────────────────────────────────────────────────────
 
-function hasAppDir(): boolean {
-  return (
-    fs.existsSync(path.join(process.cwd(), "app")) ||
-    fs.existsSync(path.join(process.cwd(), "src", "app"))
-  );
-}
-
 function hasPagesDir(): boolean {
   return (
     fs.existsSync(path.join(process.cwd(), "pages")) ||
     fs.existsSync(path.join(process.cwd(), "src", "pages"))
-  );
-}
-
-function hasViteConfig(root = process.cwd()): boolean {
-  return (
-    fs.existsSync(path.join(root, "vite.config.ts")) ||
-    fs.existsSync(path.join(root, "vite.config.js")) ||
-    fs.existsSync(path.join(root, "vite.config.mjs"))
   );
 }
 
@@ -239,7 +229,7 @@ async function loadBuildEmptyOutDir(vite: ViteModule, root: string): Promise<boo
  * If there's no vite.config, this provides everything needed.
  */
 function buildViteConfig(overrides: Record<string, unknown> = {}, logger?: import("vite").Logger) {
-  const hasConfig = hasViteConfig();
+  const hasConfig = hasViteConfig(process.cwd());
 
   // If a vite.config exists, let Vite load it — only set root and overrides.
   // The user's config already has vinext() + rsc() plugins configured.
@@ -449,7 +439,7 @@ async function buildApp() {
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
   const root = process.cwd();
-  const isApp = hasAppDir();
+  const isApp = hasAppDir(process.cwd());
   const resolvedNextConfig = await resolveNextConfig(
     await loadNextConfig(root, PHASE_PRODUCTION_BUILD),
     root,
@@ -525,7 +515,7 @@ async function buildApp() {
       // will re-register itself, and cloudflare() which must not run here.
       const root = process.cwd();
       let userTransformPlugins: import("vite").PluginOption[] = [];
-      if (hasViteConfig()) {
+      if (hasViteConfig(process.cwd())) {
         const loaded = await vite.loadConfigFromFile(
           { command: "build", mode: "production", isSsrBuild: true },
           undefined,

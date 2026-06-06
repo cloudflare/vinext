@@ -4858,6 +4858,263 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(2); // Must have called the function again!
   });
 
+  it("does not read page searchParams while deriving a use cache key", async () => {
+    const { registerCachedFunction, markAppPagePropsForUseCache } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const observeSearchParams = vi.fn();
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<Record<string, unknown>>;
+      }) => {
+        callCount++;
+        const params = await props.params;
+        return { slug: params.slug };
+      },
+      "test:page-props-searchparams",
+    );
+
+    const first = await cached(
+      markAppPagePropsForUseCache({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams(
+          { q: "first" },
+          { observeParamAccess: observeSearchParams },
+        ),
+      }),
+    );
+    expect(first).toEqual({ slug: "same" });
+    expect(callCount).toBe(1);
+    expect(observeSearchParams).not.toHaveBeenCalled();
+
+    const second = await cached(
+      markAppPagePropsForUseCache({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams(
+          { q: "second" },
+          { observeParamAccess: observeSearchParams },
+        ),
+      }),
+    );
+    expect(second).toEqual({ slug: "same" });
+    expect(callCount).toBe(1);
+    expect(observeSearchParams).not.toHaveBeenCalled();
+  });
+
+  it("omits page default export searchParams from use cache keys via transform metadata", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const observeSearchParams = vi.fn();
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<Record<string, unknown>>;
+      }) => {
+        callCount++;
+        const params = await props.params;
+        return { slug: params.slug };
+      },
+      "/fixture/app/cached/page.tsx:default",
+      "",
+      { appPageDefaultExport: true },
+    );
+
+    const first = await cached({
+      params: makeThenableParams({ slug: "same" }),
+      searchParams: makeThenableParams({ q: "first" }, { observeParamAccess: observeSearchParams }),
+    });
+    expect(first).toEqual({ slug: "same" });
+    expect(callCount).toBe(1);
+    expect(observeSearchParams).not.toHaveBeenCalled();
+
+    const second = await cached({
+      params: makeThenableParams({ slug: "same" }),
+      searchParams: makeThenableParams(
+        { q: "second" },
+        { observeParamAccess: observeSearchParams },
+      ),
+    });
+    expect(second).toEqual({ slug: "same" });
+    expect(callCount).toBe(1);
+    expect(observeSearchParams).not.toHaveBeenCalled();
+  });
+
+  it('rejects app page searchParams access inside page default "use cache"', async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const { makeObservedAppPageSearchParamsThenable } =
+      await import("../packages/vinext/src/server/app-page-search-params-observation.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<Record<string, string | string[]>>;
+      }) => {
+        callCount++;
+        const searchParams = await props.searchParams;
+        return { q: searchParams.q };
+      },
+      "/fixture/app/cached/page.tsx:default",
+      "",
+      { appPageDefaultExport: true },
+    );
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeObservedAppPageSearchParamsThenable({ q: "first" }),
+      }),
+    ).rejects.toThrow(/cannot be called inside "use cache"/);
+    expect(callCount).toBe(1);
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeObservedAppPageSearchParamsThenable({ q: "second" }),
+      }),
+    ).rejects.toThrow(/cannot be called inside "use cache"/);
+    expect(callCount).toBe(2);
+  });
+
+  it('does not store a page default "use cache" result after caught searchParams access', async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const { makeObservedAppPageSearchParamsThenable } =
+      await import("../packages/vinext/src/server/app-page-search-params-observation.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<Record<string, string | string[]>>;
+      }) => {
+        callCount++;
+        try {
+          const searchParams = await props.searchParams;
+          return { q: searchParams.q };
+        } catch {
+          return { q: `caught-${callCount}` };
+        }
+      },
+      "/fixture/app/cached/caught/page.tsx:default",
+      "",
+      { appPageDefaultExport: true },
+    );
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeObservedAppPageSearchParamsThenable({ q: "first" }),
+      }),
+    ).rejects.toThrow(/cannot be called inside "use cache"/);
+    expect(callCount).toBe(1);
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeObservedAppPageSearchParamsThenable({ q: "second" }),
+      }),
+    ).rejects.toThrow(/cannot be called inside "use cache"/);
+    expect(callCount).toBe(2);
+  });
+
+  it("does not infer page props from the cache id alone", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<{ q: string }>;
+      }) => {
+        callCount++;
+        const searchParams = await props.searchParams;
+        return { q: searchParams.q };
+      },
+      "/fixture/app/cached/page.tsx:default",
+    );
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams({ q: "first" }),
+      }),
+    ).resolves.toEqual({ q: "first" });
+    expect(callCount).toBe(1);
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams({ q: "second" }),
+      }),
+    ).resolves.toEqual({ q: "second" });
+    expect(callCount).toBe(2);
+  });
+
+  it("keeps arbitrary params/searchParams objects distinct in use cache keys", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<{ q: string }>;
+      }) => {
+        callCount++;
+        const searchParams = await props.searchParams;
+        return { q: searchParams.q };
+      },
+      "test:userland-params-searchparams",
+    );
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams({ q: "first" }),
+      }),
+    ).resolves.toEqual({ q: "first" });
+    expect(callCount).toBe(1);
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams({ q: "second" }),
+      }),
+    ).resolves.toEqual({ q: "second" });
+    expect(callCount).toBe(2);
+  });
+
   // -----------------------------------------------------------------------
   // Nested-dynamic cache life error tests — ported from Next.js PR #93707
   // https://github.com/vercel/next.js/pull/93707

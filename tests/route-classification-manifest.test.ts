@@ -12,7 +12,7 @@ import path from "node:path";
 import vm from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import {
-  buildGenerateBundleReplacement,
+  buildClassificationReplacement,
   buildReasonsReplacement,
   collectRouteClassificationManifest,
 } from "../packages/vinext/src/build/route-classification-manifest.js";
@@ -145,7 +145,7 @@ describe("collectRouteClassificationManifest", () => {
   });
 });
 
-describe("buildGenerateBundleReplacement", () => {
+describe("buildClassificationReplacement", () => {
   function evalDispatch(source: string): (routeIdx: number) => unknown {
     // The helper returns a function expression suitable for:
     //   function __VINEXT_CLASS(routeIdx) { return (<replacement>)(routeIdx); }
@@ -154,14 +154,14 @@ describe("buildGenerateBundleReplacement", () => {
     // fail across v8 contexts.
     const fn: unknown = vm.runInThisContext(`(${source})`);
     if (typeof fn !== "function") {
-      throw new Error("buildGenerateBundleReplacement did not produce a function expression");
+      throw new Error("buildClassificationReplacement did not produce a function expression");
     }
     return (routeIdx: number) => Reflect.apply(fn, null, [routeIdx]);
   }
 
   function makeManifest(
     entries: Array<{ layer1?: Array<[number, "static" | "dynamic"]> }>,
-  ): Parameters<typeof buildGenerateBundleReplacement>[0] {
+  ): Parameters<typeof buildClassificationReplacement>[0] {
     return {
       routes: entries.map((e, idx) => {
         const layer1 = new Map(e.layer1 ?? []);
@@ -185,7 +185,7 @@ describe("buildGenerateBundleReplacement", () => {
 
   it("returns a function expression that evaluates to a dispatch function", () => {
     const manifest = makeManifest([{ layer1: [[0, "dynamic"]] }]);
-    const replacement = buildGenerateBundleReplacement(manifest, new Map());
+    const replacement = buildClassificationReplacement(manifest, new Map());
 
     const dispatch = evalDispatch(replacement);
 
@@ -203,10 +203,10 @@ describe("buildGenerateBundleReplacement", () => {
 
   it("merges Layer 1 and Layer 2 into the dispatch function's Map", () => {
     const manifest = makeManifest([{ layer1: [[0, "dynamic"]] }]);
-    const layer2: Parameters<typeof buildGenerateBundleReplacement>[1] = new Map([
+    const layer2: Parameters<typeof buildClassificationReplacement>[1] = new Map([
       [0, new Map([[1, { layer: "module-graph", result: "static" }]])],
     ]);
-    const replacement = buildGenerateBundleReplacement(manifest, layer2);
+    const replacement = buildClassificationReplacement(manifest, layer2);
 
     const dispatch = evalDispatch(replacement);
     const result = asMap(dispatch(0));
@@ -220,10 +220,10 @@ describe("buildGenerateBundleReplacement", () => {
     // Layer 2 proves "static" for index 0 — but Layer 1 said "dynamic", so
     // Layer 1 must win. This guards against the classifier silently demoting
     // a force-dynamic layout because the module graph happened to be clean.
-    const layer2: Parameters<typeof buildGenerateBundleReplacement>[1] = new Map([
+    const layer2: Parameters<typeof buildClassificationReplacement>[1] = new Map([
       [0, new Map([[0, { layer: "module-graph", result: "static" }]])],
     ]);
-    const replacement = buildGenerateBundleReplacement(manifest, layer2);
+    const replacement = buildClassificationReplacement(manifest, layer2);
 
     const dispatch = evalDispatch(replacement);
     const result = asMap(dispatch(0));
@@ -233,7 +233,7 @@ describe("buildGenerateBundleReplacement", () => {
 
   it("returns null from dispatch for unknown route indices", () => {
     const manifest = makeManifest([{ layer1: [[0, "dynamic"]] }]);
-    const replacement = buildGenerateBundleReplacement(manifest, new Map());
+    const replacement = buildClassificationReplacement(manifest, new Map());
 
     const dispatch = evalDispatch(replacement);
 
@@ -244,7 +244,7 @@ describe("buildGenerateBundleReplacement", () => {
     // Route 0 has Layer 1 data; route 1 has nothing in Layer 1 or Layer 2.
     // A route with no merged entries should fall through to the default case.
     const manifest = makeManifest([{ layer1: [[0, "dynamic"]] }, { layer1: [] }]);
-    const replacement = buildGenerateBundleReplacement(manifest, new Map());
+    const replacement = buildClassificationReplacement(manifest, new Map());
 
     const dispatch = evalDispatch(replacement);
 
@@ -257,7 +257,7 @@ describe("buildGenerateBundleReplacement", () => {
     // must have a corresponding entry in layer1Reasons. collectRouteClassificationManifest
     // always populates them in lockstep, but callers constructing RouteManifestEntry
     // manually could violate this.
-    const brokenManifest: Parameters<typeof buildGenerateBundleReplacement>[0] = {
+    const brokenManifest: Parameters<typeof buildClassificationReplacement>[0] = {
       routes: [
         {
           pattern: "/broken",
@@ -268,7 +268,7 @@ describe("buildGenerateBundleReplacement", () => {
       ],
     };
 
-    expect(() => buildGenerateBundleReplacement(brokenManifest, new Map())).toThrow(
+    expect(() => buildClassificationReplacement(brokenManifest, new Map())).toThrow(
       /Layer 1 decision without a reason/,
     );
   });

@@ -50,6 +50,8 @@ import { markDynamicUsage } from "./headers.js";
 // Constants for nested-dynamic cache life detection
 // ---------------------------------------------------------------------------
 
+const APP_PAGE_PROPS_CACHE_KEY_MARKER = Symbol.for("vinext.appPagePropsCacheKeyMarker");
+
 /** Threshold below which expire is considered "dynamic" (5 minutes in seconds). */
 const DYNAMIC_EXPIRE = 300;
 
@@ -130,6 +132,12 @@ export type CacheContext = {
    * cache. Used as `cause` for the nested-dynamic cache error.
    */
   dynamicNestedCacheError: Error | undefined;
+  /**
+   * Dynamic request API error recorded inside this cache scope. This persists
+   * even if user code catches the original throw, so the wrapper can avoid
+   * storing request-specific output under a shared cache key.
+   */
+  invalidDynamicUsageError?: unknown;
 };
 
 // Store on globalThis via Symbol so headers.ts can detect "use cache" scope
@@ -394,9 +402,30 @@ export function clearPrivateCache(): void {
   }
 }
 
+export function markAppPagePropsForUseCache<T extends object>(props: T): T {
+  Object.defineProperty(props, APP_PAGE_PROPS_CACHE_KEY_MARKER, {
+    configurable: false,
+    enumerable: false,
+    value: true,
+    writable: false,
+  });
+  return props;
+}
+
 // ---------------------------------------------------------------------------
 // Core runtime: registerCachedFunction
 // ---------------------------------------------------------------------------
+
+type RegisterCachedFunctionOptions = {
+  /**
+   * Internal transform metadata for file-level `"use cache"` default exports
+   * in App Router `page.*` files. Page components receive framework-owned
+   * `{ params, searchParams }` props. React may copy that props object before
+   * invocation, so this invariant must live at the cached function boundary
+   * rather than on the intermediate createElement config object.
+   */
+  appPageDefaultExport?: boolean;
+};
 
 /**
  * Register a function as a cached function. This is called by the Vite
@@ -411,8 +440,10 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   fn: (...args: TArgs) => Promise<TResult>,
   id: string,
   variant?: string,
+  options: RegisterCachedFunctionOptions = {},
 ): (...args: TArgs) => Promise<TResult> {
   const cacheVariant = variant ?? "";
+  const omitAppPageSearchParamsFromFirstArg = options.appPageDefaultExport === true;
 
   // In dev mode, skip the shared cache so code changes are immediately
   // visible after HMR. Without this, the MemoryCacheHandler returns stale
@@ -431,6 +462,10 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     // from key). Falls back to stableStringify when RSC is unavailable.
     let cacheKey: string;
     try {
+      const processedArgs =
+        args.length > 0
+          ? unwrapThenableObjectArray(args, { omitAppPageSearchParamsFromFirstArg })
+          : [];
       if (rsc && args.length > 0) {
         // Temporary references let encodeReply handle non-serializable values
         // (like React elements in args) by excluding them from the key.
@@ -443,13 +478,12 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         // values (e.g., section:"sports" vs section:"electronics") produce
         // identical cache keys. We must extract the plain data so the actual
         // values are included in the cache key.
-        const processedArgs = unwrapThenableObjectArray(args);
         const encoded = await rsc.encodeReply(processedArgs, {
           temporaryReferences: tempRefs,
         });
         cacheKey = buildUseCacheKey(id, keySeed, await replyToCacheKey(encoded));
       } else {
-        const argsKey = args.length > 0 ? stableStringify(args) : undefined;
+        const argsKey = processedArgs.length > 0 ? stableStringify(processedArgs) : undefined;
         cacheKey = buildUseCacheKey(id, keySeed, argsKey);
       }
     } catch {
@@ -703,9 +737,14 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
     hasExplicitRevalidate: false,
     hasExplicitExpire: false,
     dynamicNestedCacheError: undefined,
+    invalidDynamicUsageError: undefined,
   };
 
   const result = await cacheContextStorage.run(ctx, () => fn(...args));
+
+  if (ctx.invalidDynamicUsageError) {
+    throw ctx.invalidDynamicUsageError;
+  }
 
   // Resolve effective cache life from collected configs.
   //
@@ -855,13 +894,24 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
  * Only used for cache key generation — the original Promise-augmented
  * objects are still passed to the actual function on cache miss.
  */
-function unwrapThenableObjects(value: unknown): unknown {
+type UnwrapThenableObjectsOptions = {
+  omitAppPageSearchParamsAtRoot?: boolean;
+};
+
+type UnwrapThenableObjectArrayOptions = {
+  omitAppPageSearchParamsFromFirstArg: boolean;
+};
+
+function unwrapThenableObjects(
+  value: unknown,
+  options: UnwrapThenableObjectsOptions = {},
+): unknown {
   if (value === null || value === undefined || typeof value !== "object") {
     return value;
   }
 
   if (Array.isArray(value)) {
-    return value.map(unwrapThenableObjects);
+    return value.map((item) => unwrapThenableObjects(item));
   }
 
   // Detect thenable (Promise-like) with own enumerable properties —
@@ -884,14 +934,31 @@ function unwrapThenableObjects(value: unknown): unknown {
   // Regular object — recurse into values
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(value)) {
+    if (
+      key === "searchParams" &&
+      (options.omitAppPageSearchParamsAtRoot || isMarkedAppPagePropsObject(value))
+    ) {
+      continue;
+    }
     // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     result[key] = unwrapThenableObjects((value as any)[key]);
   }
   return result;
 }
 
-function unwrapThenableObjectArray(values: readonly unknown[]): unknown[] {
-  return values.map(unwrapThenableObjects);
+function isMarkedAppPagePropsObject(value: object): boolean {
+  return Reflect.get(value, APP_PAGE_PROPS_CACHE_KEY_MARKER) === true;
+}
+
+function unwrapThenableObjectArray(
+  values: readonly unknown[],
+  options: UnwrapThenableObjectArrayOptions,
+): unknown[] {
+  return values.map((value, index) =>
+    unwrapThenableObjects(value, {
+      omitAppPageSearchParamsAtRoot: index === 0 && options.omitAppPageSearchParamsFromFirstArg,
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------

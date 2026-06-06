@@ -37,7 +37,7 @@ async function resolveModuleMetadata(
   }
 }
 
-type AppPageSearchParams = Record<string, string | string[]>;
+export type AppPageSearchParams = Record<string, string | string[]>;
 
 type AppPageHeadModule = Record<string, unknown>;
 

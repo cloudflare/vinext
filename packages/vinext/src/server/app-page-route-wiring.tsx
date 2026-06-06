@@ -184,6 +184,7 @@ type BuildAppPageRouteElementOptions<
   rootNotFoundModule?: TModule | null;
   rootUnauthorizedModule?: TModule | null;
   route: AppPageRouteWiringRoute<TModule, TErrorModule>;
+  searchParams?: unknown;
   slotOverrides?: Readonly<Record<string, AppPageSlotOverride<TModule>>> | null;
 };
 
@@ -757,6 +758,9 @@ export function buildAppPageElements<
     const slotProps: Record<string, unknown> = {
       params: slotThenableParams,
     };
+    if (options.searchParams !== undefined) {
+      slotProps.searchParams = options.searchParams;
+    }
     if (slotOverride?.props) {
       Object.assign(slotProps, slotOverride.props);
     }

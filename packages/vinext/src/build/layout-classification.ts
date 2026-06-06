@@ -127,7 +127,7 @@ export function isStaticModuleGraphResult(
  * Shared layouts (same file appearing in multiple routes) are classified once
  * and deduplicated by layout ID.
  *
- * @internal Not called by production code. The `generateBundle` hook in
+ * @internal Not called by production code. The `renderChunk` hook in
  * `index.ts` calls `classifyLayoutByModuleGraph` directly and composes
  * via the numeric-index manifest in `route-classification-manifest.ts`.
  * Used only by `tests/layout-classification.test.ts`.

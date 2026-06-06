@@ -1,5 +1,6 @@
 import { Fragment, isValidElement, type ReactElement, type ReactNode } from "react";
-import { makeThenableParams } from "vinext/shims/thenable-params";
+import { markAppPagePropsForUseCache } from "vinext/shims/cache-runtime";
+import { isNextRouterError } from "vinext/shims/navigation";
 import { collectAppPageSearchParams } from "./app-page-head.js";
 import {
   probeAppPageComponent,
@@ -8,6 +9,8 @@ import {
   type LayoutClassificationOptions,
   type LayoutFlags,
 } from "./app-page-execution.js";
+import { makeObservedAppPageSearchParamsThenable } from "./app-page-search-params-observation.js";
+import { isPromiseLike } from "../utils/promise.js";
 
 const DEFAULT_SUBTREE_PROBE_MAX_DEPTH = 32;
 const DEFAULT_SUBTREE_PROBE_MAX_NODES = 1000;
@@ -47,15 +50,6 @@ class AppPageSubtreeProbeUnsupportedIterableError extends Error {
     super("App page layout subtree probe cannot safely inspect iterable children");
     this.name = "AppPageSubtreeProbeUnsupportedIterableError";
   }
-}
-
-function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return Boolean(
-    value &&
-    (typeof value === "object" || typeof value === "function") &&
-    "then" in value &&
-    typeof value.then === "function",
-  );
 }
 
 function isIterable(value: unknown): value is Iterable<unknown> {
@@ -215,6 +209,17 @@ export async function probeReactServerSubtree(
   await visit(node, 0);
 }
 
+async function probeReactServerSubtreeForDynamicUsage(node: unknown): Promise<void> {
+  try {
+    await probeReactServerSubtree(node);
+  } catch (error) {
+    if (isNextRouterError(error)) {
+      return;
+    }
+    throw error;
+  }
+}
+
 /**
  * Build a probePage() invocation for the App Router request lifecycle.
  *
@@ -242,11 +247,145 @@ export function probeAppPage(options: {
     return null;
   }
   const { pageSearchParams } = collectAppPageSearchParams(searchParams);
-  const asyncSearchParams = makeThenableParams(pageSearchParams);
-  return (pageComponent as (props: Record<string, unknown>) => unknown)({
+  const asyncSearchParams = makeObservedAppPageSearchParamsThenable(pageSearchParams, {
+    observeReactPromiseStatus: true,
+  });
+  const pageProps = markAppPagePropsForUseCache({
     params: asyncRouteParams,
     searchParams: asyncSearchParams,
   });
+  const result = (pageComponent as (props: Record<string, unknown>) => unknown)(pageProps);
+  if (isPromiseLike(result)) {
+    return result.then(async (resolved) => {
+      await probeReactServerSubtreeForDynamicUsage(resolved);
+      return resolved;
+    });
+  }
+  if (isValidElement(result) || Array.isArray(result)) {
+    return probeReactServerSubtreeForDynamicUsage(result).then(() => result);
+  }
+  return result;
+}
+
+type AppPageProbeModule = Readonly<{ default?: unknown }> | null | undefined;
+
+type AppPageProbeSlot = Readonly<{ page?: AppPageProbeModule }> | null | undefined;
+
+type AppPageProbeRoute = Readonly<{
+  slots?: Readonly<Record<string, AppPageProbeSlot>> | null;
+}>;
+
+type AppPageProbeIntercept =
+  | Readonly<{
+      page?: AppPageProbeModule;
+      matchedParams?: unknown;
+      /**
+       * Key of the parallel-route slot this interception overrides. At render
+       * time the matched route's `slots[slotKey].page` is replaced by the
+       * interception page (see app-page-element-builder.ts), so the slot's own
+       * page never renders for this request.
+       */
+      slotKey?: string | null;
+    }>
+  | null
+  | undefined;
+
+/**
+ * Fan out the per-request page probes for the App Router dispatch lifecycle.
+ *
+ * A single request can render more than one page component: the matched page,
+ * each active parallel-route slot page, and an interception page when one
+ * matches. Each must be probed so searchParams access anywhere in the rendered
+ * tree bails the request out of the query-invariant static cache.
+ *
+ * Extracted out of the generated RSC entry so the fan-out is directly
+ * unit-testable and the entry stays codegen glue (see AGENTS.md "Generated
+ * Entry Modules Should Stay Thin"). Returns a list of resolved promises so the
+ * caller can `Promise.all` them.
+ *
+ * The fan-out is scoped to the page components that render for this request:
+ *
+ * - **Interception override:** when an interception matches it replaces the
+ *   page of the slot named by `intercept.slotKey` (the element builder sets
+ *   `overrides[slotKey].pageModule` to the interception page, which wins over
+ *   `slot.page` in `app-page-route-wiring.tsx`). We probe the interception page
+ *   in place of that slot's own page rather than probing both — probing the
+ *   overridden slot page would mark an otherwise-static request dynamic for a
+ *   component that never renders.
+ * - **Non-overridden slots:** `slot.page?.default` is exactly what renders.
+ *   `app-page-route-wiring.tsx` resolves a slot to `overrideOrPageComponent ??
+ *   defaultComponent`, so whenever a slot has a `page.tsx` that page renders.
+ *   When a slot has only a `default.tsx` (including the soft-nav case at
+ *   `app-page-route-wiring.tsx:741` that skips an already-mounted slot), there
+ *   is no `slot.page?.default`, so `probeAppPage` short-circuits to `null` and
+ *   probes nothing — a no-op, not an over-bail.
+ *
+ * Interception only fires for RSC navigations (`resolveAppPageInterceptState`
+ * returns `kind: "none"` when `!isRscRequest`, app-page-request.ts:324), so the
+ * interception handling here is gated on `isRscRequest`. For non-RSC (HTML)
+ * requests the matched route renders normally, so we probe every slot's own
+ * page and skip the interception probe entirely. The remaining "source-route"
+ * interception case (where a *different* route renders, app-page-request.ts:342)
+ * never reaches this probe: `dispatchAppPage` returns the intercepted response
+ * before calling `probePage`, so by the time this runs any matched interception
+ * is the current-route override case above.
+ *
+ * A `default.tsx` that itself awaits `searchParams` is not probed here, but the
+ * real render still observes that access and skips the query-invariant cache
+ * write (the same loading.tsx backstop), so this cannot under-bail.
+ */
+export function buildAppPageProbes(options: {
+  route: AppPageProbeRoute;
+  pageComponent: unknown;
+  asyncRouteParams: unknown;
+  searchParams: URLSearchParams | null | undefined;
+  intercept?: AppPageProbeIntercept;
+  /**
+   * Whether this is an RSC navigation. Interception only fires for RSC
+   * requests, so the interception probe is ignored when this is false.
+   */
+  isRscRequest: boolean;
+  /** Fallback raw params used when an interception match omits its own. */
+  matchedParams: unknown;
+  makeThenableParams: (params: unknown) => unknown;
+}): Promise<unknown>[] {
+  const { route, pageComponent, asyncRouteParams, searchParams, matchedParams } = options;
+
+  // Interception only fires for RSC navigations; on HTML requests the matched
+  // route renders normally, so ignore any interception match entirely.
+  const intercept = options.isRscRequest ? options.intercept : null;
+
+  const probes: unknown[] = [probeAppPage({ pageComponent, asyncRouteParams, searchParams })];
+
+  // A slot whose page is replaced by an active interception override does not
+  // render its own `page.tsx`; the interception page (probed below) renders in
+  // its place, so skip the overridden slot to avoid a false dynamic bailout.
+  const overriddenSlotKey = intercept?.slotKey ?? null;
+
+  for (const [slotKey, slot] of Object.entries(route.slots ?? {})) {
+    if (overriddenSlotKey !== null && slotKey === overriddenSlotKey) {
+      continue;
+    }
+    probes.push(
+      probeAppPage({
+        pageComponent: slot?.page?.default,
+        asyncRouteParams,
+        searchParams,
+      }),
+    );
+  }
+
+  if (intercept) {
+    probes.push(
+      probeAppPage({
+        pageComponent: intercept.page?.default,
+        asyncRouteParams: options.makeThenableParams(intercept.matchedParams ?? matchedParams),
+        searchParams,
+      }),
+    );
+  }
+
+  return probes.map((probe) => Promise.resolve(probe));
 }
 
 type ProbeAppPageBeforeRenderResult = {

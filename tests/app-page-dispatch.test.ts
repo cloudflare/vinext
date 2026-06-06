@@ -9,6 +9,10 @@ import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch
 import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
 import type { AppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
+  buildPageElements,
+  type AppPageBuildRoute,
+} from "../packages/vinext/src/server/app-page-element-builder.js";
+import {
   resolveAppPageSegmentParamScopeKeys,
   resolveAppPageSegmentParams,
 } from "../packages/vinext/src/server/app-page-params.js";
@@ -21,6 +25,11 @@ import {
   parseClientReuseManifestHeader,
   type ClientReuseManifestParseResult,
 } from "../packages/vinext/src/server/client-reuse-manifest.js";
+import {
+  buildRenderObservation,
+  buildRenderRequestApiObservations,
+  type RenderObservation,
+} from "../packages/vinext/src/server/cache-proof.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
@@ -29,6 +38,12 @@ import {
   runWithExecutionContext,
   type ExecutionContextLike,
 } from "../packages/vinext/src/shims/request-context.js";
+import {
+  consumeDynamicUsage,
+  consumeRenderRequestApiUsage,
+  markDynamicUsage,
+  markRenderRequestApiUsage,
+} from "../packages/vinext/src/shims/headers.js";
 
 type TestRoute = {
   __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
@@ -65,6 +80,109 @@ function captureRecord(value: unknown): Record<string, unknown> {
   throw new Error("Expected AppElements record payload");
 }
 
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return Boolean(
+    value &&
+    (typeof value === "object" || typeof value === "function") &&
+    "then" in value &&
+    typeof value.then === "function",
+  );
+}
+
+function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
+  return (typeof value === "object" || typeof value === "function") && value !== null;
+}
+
+function isCachedAppPageValue(value: unknown): value is CachedAppPageValue {
+  return isRecord(value) && value.kind === "APP_PAGE";
+}
+
+function isQueryRecord(value: unknown): value is Record<string, string | string[] | undefined> {
+  return isRecord(value);
+}
+
+function isDispatchReactNode(value: unknown): value is React.ReactNode {
+  if (
+    value === null ||
+    value === undefined ||
+    typeof value === "boolean" ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "bigint"
+  ) {
+    return true;
+  }
+  if (React.isValidElement(value)) {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    return value.every(isDispatchReactNode);
+  }
+  return false;
+}
+
+function toDispatchElementRecord(
+  elements: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, React.ReactNode>> {
+  const dispatchElements: Record<string, React.ReactNode> = {};
+  for (const [key, value] of Object.entries(elements)) {
+    if (isDispatchReactNode(value)) {
+      dispatchElements[key] = value;
+    }
+  }
+  return dispatchElements;
+}
+
+function findPageElement(payload: unknown): React.ReactElement | null {
+  const record = captureRecord(payload);
+  for (const [key, value] of Object.entries(record)) {
+    if (key.startsWith("page:") && React.isValidElement(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+async function renderReactNodeText(node: unknown): Promise<string> {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number" || typeof node === "bigint") {
+    return String(node);
+  }
+  if (isPromiseLike(node)) {
+    return renderReactNodeText(await node);
+  }
+  if (Array.isArray(node)) {
+    const rendered = await Promise.all(node.map((child) => renderReactNodeText(child)));
+    return rendered.join("");
+  }
+  if (!React.isValidElement<{ children?: unknown }>(node)) return "";
+
+  if (node.type === React.Fragment || typeof node.type === "string") {
+    return renderReactNodeText(node.props.children);
+  }
+  if (typeof node.type === "function") {
+    return renderReactNodeText(Reflect.apply(node.type, undefined, [node.props]));
+  }
+  return "";
+}
+
+function renderPagePayloadToStream(payload: unknown): ReadableStream<Uint8Array> {
+  let didRender = false;
+  return new ReadableStream({
+    async pull(controller) {
+      if (didRender) {
+        controller.close();
+        return;
+      }
+      didRender = true;
+      const pageElement = findPageElement(payload);
+      const text = pageElement ? await renderReactNodeText(pageElement) : "";
+      controller.enqueue(new TextEncoder().encode(text));
+      controller.close();
+    },
+  });
+}
+
 function buildISRCacheEntry(value: CachedAppPageValue, isStale = false): ISRCacheEntry {
   return {
     isStale,
@@ -79,8 +197,9 @@ function buildCachedAppPageValue(
   html: string,
   rscData?: ArrayBuffer,
   status?: number,
+  renderObservation?: RenderObservation,
 ): CachedAppPageValue {
-  return {
+  const value: CachedAppPageValue = {
     kind: "APP_PAGE",
     html,
     rscData,
@@ -88,6 +207,43 @@ function buildCachedAppPageValue(
     postponed: undefined,
     status,
   };
+  if (renderObservation) {
+    value.renderObservation = renderObservation;
+  }
+  return value;
+}
+
+function expectCachedAppPageSearchParamsObservation(value: unknown, html: string): void {
+  expect(isCachedAppPageValue(value)).toBe(true);
+  if (!isCachedAppPageValue(value)) {
+    throw new Error("Expected an APP_PAGE cache value");
+  }
+  expect(value.html).toBe(html);
+  expect(
+    value.renderObservation?.requestApis.find((requestApi) => requestApi.kind === "searchParams")
+      ?.status,
+  ).toBe("observed");
+}
+
+function buildQueryInvariantRenderObservation(): RenderObservation {
+  return buildRenderObservation({
+    boundaryOutcome: { kind: "success" },
+    cacheability: "public",
+    cacheTags: [],
+    completeness: "complete",
+    dynamicFetches: [],
+    output: {
+      kind: "app-html",
+      renderEpoch: null,
+      rootBoundaryId: null,
+      routeId: "route:/posts/[slug]",
+    },
+    pathTags: [],
+    requestApis: buildRenderRequestApiObservations({
+      completeness: "complete",
+      observed: [],
+    }),
+  });
 }
 
 function createRoute(overrides: Partial<TestRoute> = {}): TestRoute {
@@ -106,6 +262,7 @@ function createDispatchOptions(
     buildPageElement?: DispatchOptions["buildPageElement"];
     cleanPathname?: string;
     clearRequestContext?: DispatchOptions["clearRequestContext"];
+    dynamicConfig?: DispatchOptions["dynamicConfig"];
     findIntercept?: DispatchOptions["findIntercept"];
     generateStaticParams?: DispatchOptions["generateStaticParams"];
     formState?: DispatchOptions["formState"];
@@ -118,12 +275,14 @@ function createDispatchOptions(
     isRscRequest?: boolean;
     isrRscKey?: DispatchOptions["isrRscKey"];
     isrGet?: DispatchOptions["isrGet"];
+    isrSet?: DispatchOptions["isrSet"];
     clientReuseManifest?: ClientReuseManifestParseResult;
     loadSsrHandler?: DispatchOptions["loadSsrHandler"];
     middlewareContext?: AppPageMiddlewareContext;
     mountedSlotsHeader?: string | null;
     params?: Record<string, string | string[]>;
     probeLayoutAt?: DispatchOptions["probeLayoutAt"];
+    probePage?: DispatchOptions["probePage"];
     renderToReadableStream?: DispatchOptions["renderToReadableStream"];
     request?: Request;
     revalidateSeconds?: number | null;
@@ -158,6 +317,7 @@ function createDispatchOptions(
       return () => null;
     },
     draftModeSecret: "draft-secret",
+    dynamicConfig: overrides.dynamicConfig,
     findIntercept: overrides.findIntercept ?? (() => null),
     generateStaticParams: overrides.generateStaticParams ?? null,
     getFontLinks() {
@@ -192,7 +352,7 @@ function createDispatchOptions(
       overrides.isrRscKey ??
       ((pathname: string, mountedSlotsHeader?: string | null) =>
         mountedSlotsHeader ? `rsc:${pathname}:${mountedSlotsHeader}` : `rsc:${pathname}`),
-    isrSet: vi.fn(async () => {}),
+    isrSet: overrides.isrSet ?? vi.fn(async () => {}),
     loadSsrHandler,
     clientReuseManifest: overrides.clientReuseManifest ?? { kind: "absent" },
     middlewareContext: overrides.middlewareContext ?? {
@@ -202,9 +362,7 @@ function createDispatchOptions(
     mountedSlotsHeader: overrides.mountedSlotsHeader,
     params,
     probeLayoutAt: overrides.probeLayoutAt ?? createLayoutParamProbe(route, params, []),
-    probePage() {
-      return null;
-    },
+    probePage: overrides.probePage ?? (() => null),
     renderErrorBoundaryPage: vi.fn(async () => null),
     renderHttpAccessFallbackPage: vi.fn(async () => null),
     renderToReadableStream,
@@ -322,10 +480,15 @@ function createLayoutParamProbe(
 
 describe("app page dispatch", () => {
   afterEach(() => {
+    consumeDynamicUsage();
+    consumeRenderRequestApiUsage();
     vi.unstubAllEnvs();
   });
 
   it("serves cached production HTML instead of revalidating params or rendering", async () => {
+    const probePage = vi.fn(() => {
+      throw new Error("cache hit must not execute page code");
+    });
     const { options } = createDispatchOptions({
       async buildPageElement() {
         throw new Error("cache hit should not render the page");
@@ -335,6 +498,7 @@ describe("app page dispatch", () => {
       },
       isProduction: true,
       isrGet: vi.fn(async () => buildISRCacheEntry(buildCachedAppPageValue("<html>cached</html>"))),
+      probePage,
       revalidateSeconds: 60,
       route: createRoute({ isDynamic: true, params: ["slug"] }),
     });
@@ -342,8 +506,203 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(response.status).toBe(200);
+    expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toBe("<html>cached</html>");
+  });
+
+  it("treats unproofed cached production HTML as a miss for query-bearing requests", async () => {
+    const isrGet = vi.fn(async () =>
+      buildISRCacheEntry(buildCachedAppPageValue("<html>cached empty query</html>")),
+    );
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrGet,
+      probePage() {
+        markDynamicUsage();
+        markRenderRequestApiUsage("searchParams");
+        return null;
+      },
+      revalidateSeconds: 60,
+      searchParams: new URLSearchParams("search=hello"),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(isrGet).toHaveBeenCalled();
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+  });
+
+  it("serves cached production HTML when searchParams is only mentioned but not accessed", async () => {
+    const isrGet = vi.fn(async () =>
+      buildISRCacheEntry(
+        buildCachedAppPageValue(
+          "<html>cached static page</html>",
+          undefined,
+          undefined,
+          buildQueryInvariantRenderObservation(),
+        ),
+      ),
+    );
+    const probePage = vi.fn(() => {
+      const unusedCommentOnlySearchParams = "searchParams";
+      expect(unusedCommentOnlySearchParams).toBe("searchParams");
+      return null;
+    });
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrGet,
+      probePage,
+      revalidateSeconds: 60,
+      searchParams: new URLSearchParams("search=hello"),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(isrGet).toHaveBeenCalled();
+    expect(probePage).not.toHaveBeenCalled();
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(response.text()).resolves.toBe("<html>cached static page</html>");
+  });
+
+  it("lets force-static override observed searchParams access", async () => {
+    const isrGet = vi.fn(async () =>
+      buildISRCacheEntry(buildCachedAppPageValue("<html>cached force static</html>")),
+    );
+    const { options } = createDispatchOptions({
+      dynamicConfig: "force-static",
+      isProduction: true,
+      isrGet,
+      probePage() {
+        markDynamicUsage();
+        markRenderRequestApiUsage("searchParams");
+        return null;
+      },
+      revalidateSeconds: 60,
+      searchParams: new URLSearchParams("search=hello"),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(isrGet).toHaveBeenCalled();
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(response.text()).resolves.toBe("<html>cached force static</html>");
+  });
+
+  it("does not write query-invariant cache entries when loading-boundary render awaits searchParams", async () => {
+    async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
+      const query = isPromiseLike(props.searchParams) ? await props.searchParams : {};
+      if (!isQueryRecord(query)) {
+        throw new Error("Expected searchParams to resolve to a query record");
+      }
+      return React.createElement("h1", null, query.q ?? "");
+    }
+
+    const route = createRoute({
+      loading: { default: () => null },
+      pattern: "/loading-search",
+      routeSegments: ["loading-search"],
+    });
+    const cache = new Map<string, ISRCacheEntry>();
+    const isrGet = vi.fn(async (key: string) => cache.get(key) ?? null);
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async (key, data) => {
+      cache.set(key, {
+        isStale: false,
+        value: {
+          lastModified: Date.now(),
+          value: data,
+        },
+      });
+    });
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    } satisfies ExecutionContextLike;
+    const buildPageElement: DispatchOptions["buildPageElement"] = (
+      _route,
+      params,
+      _opts,
+      searchParams,
+      layoutParamAccess?: AppLayoutParamAccessTracker,
+    ) => {
+      const buildRoute: AppPageBuildRoute = {
+        layouts: [],
+        loading: { default: () => null },
+        page: { default: Page },
+        pattern: "/loading-search",
+        routeSegments: ["loading-search"],
+      };
+      return buildPageElements({
+        layoutParamAccess,
+        metadataRoutes: [],
+        params,
+        pageRequest: {
+          isRscRequest: false,
+          mountedSlotsHeader: null,
+          opts: undefined,
+          request: new Request(`https://example.test/loading-search?${searchParams}`),
+          searchParams,
+        },
+        route: buildRoute,
+        routePath: "/loading-search",
+      }).then(toDispatchElementRecord);
+    };
+    const loadSsrHandler: DispatchOptions["loadSsrHandler"] = async () => ({
+      async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+        void captureOptions?.sideStream?.cancel().catch(() => {});
+        const renderedText = await new Response(rscStream).text();
+        return createStream([`<html>${renderedText}</html>`]);
+      },
+    });
+
+    async function requestWithQuery(q: string): Promise<Response> {
+      waitUntilPromises.length = 0;
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        cleanPathname: "/loading-search",
+        isProduction: true,
+        isrGet,
+        isrSet,
+        loadSsrHandler,
+        probePage() {
+          throw new Error("loading.tsx should skip the eager page probe");
+        },
+        renderToReadableStream: renderPagePayloadToStream,
+        revalidateSeconds: 60,
+        route,
+        searchParams: new URLSearchParams({ q }),
+      });
+
+      const response = await runWithExecutionContext(executionContext, () =>
+        dispatchAppPage(options),
+      );
+      await Promise.all(waitUntilPromises.splice(0));
+      return response;
+    }
+
+    const firstResponse = await requestWithQuery("first");
+    expect(firstResponse.headers.get("x-vinext-cache")).not.toBe("HIT");
+    expect(firstResponse.headers.get("cache-control")).toContain("no-store");
+    await expect(firstResponse.text()).resolves.toBe("<html>first</html>");
+    const firstCachedValue = cache.get("html:/loading-search")?.value.value;
+    if (firstCachedValue) {
+      expectCachedAppPageSearchParamsObservation(firstCachedValue, "<html>first</html>");
+    } else {
+      expect(isrSet).not.toHaveBeenCalled();
+    }
+
+    const secondResponse = await requestWithQuery("second");
+    expect(secondResponse.headers.get("x-vinext-cache")).not.toBe("HIT");
+    await expect(secondResponse.text()).resolves.toBe("<html>second</html>");
+    expect(isrGet).toHaveBeenCalledTimes(2);
+    const secondCachedValue = cache.get("html:/loading-search")?.value.value;
+    if (secondCachedValue) {
+      expectCachedAppPageSearchParamsObservation(secondCachedValue, "<html>second</html>");
+    }
   });
 
   it("bypasses cached production HTML when draft mode is enabled", async () => {
@@ -722,7 +1081,15 @@ describe("app page dispatch", () => {
       isProduction: true,
       isRscRequest: true,
       isrGet: vi.fn(async () =>
-        buildISRCacheEntry(buildCachedAppPageValue("", staleRscData), true),
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            staleRscData,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
       ),
       isrRscKey(pathname, mountedSlotsHeader, _renderMode, interceptionContext) {
         return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}:${interceptionContext ?? "none"}`;

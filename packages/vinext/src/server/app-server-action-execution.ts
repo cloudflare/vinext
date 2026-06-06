@@ -11,6 +11,7 @@ import {
 } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
 import { isExternalUrl } from "../config/config-matchers.js";
+import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
   ACTION_FORWARDED_HEADER,
@@ -219,6 +220,12 @@ export type HandleServerActionRscRequestOptions<
     body: string | FormData,
     options: DecodeServerActionReplyOptions<TTemporaryReferences>,
   ) => Promise<unknown[]> | unknown[];
+  /**
+   * Hydrate a route's lazy page/route-handler modules before reading
+   * `route.page` / `route.routeHandler` on action redirect targets and
+   * re-render targets obtained via `matchRoute`/`getSourceRoute`. Idempotent.
+   */
+  ensureRouteLoaded?: (route: TRoute) => unknown;
   findIntercept: (pathname: string) => AppServerActionIntercept<TPage> | null;
   getAndClearPendingCookies: () => string[];
   getDraftModeCookieHeader: () => string | null | undefined;
@@ -581,16 +588,12 @@ function isAncestorRouteRedirect(targetPathname: string, currentPathname: string
   return targetPathname !== "/" && currentPathname.startsWith(`${targetPathname}/`);
 }
 
-function splitActionRedirectPathname(pathname: string): string[] {
-  return pathname.split("/").filter(Boolean);
-}
-
 function isStaleChildSiblingRouteRedirect(
   targetPathname: string,
   currentPathname: string,
 ): boolean {
-  const targetSegments = splitActionRedirectPathname(targetPathname);
-  const currentSegments = splitActionRedirectPathname(currentPathname);
+  const targetSegments = splitPathSegments(targetPathname);
+  const currentSegments = splitPathSegments(currentPathname);
   // Only deeper-to-shallower redirects can be stale in the Next.js worker
   // model (same-depth siblings share the same page worker). The depth guard
   // ensures we don't misclassify same-level redirects.
@@ -1026,6 +1029,9 @@ export async function handleServerActionRscRequest<
 
       const targetPathname = stripBasePath(redirectTarget.pathname, options.basePath ?? "");
       const targetMatch = options.matchRoute(targetPathname);
+      // Hydrate the redirect target before reading its page/route-handler
+      // modules (canRenderActionRedirectTarget + fetch-cache-mode below).
+      if (targetMatch) await options.ensureRouteLoaded?.(targetMatch.route);
       if (!targetMatch || !canRenderActionRedirectTarget(targetMatch.route)) {
         options.clearRequestContext();
         return new Response(null, {
@@ -1034,6 +1040,8 @@ export async function handleServerActionRscRequest<
         });
       }
       const currentMatch = options.matchRoute(options.cleanPathname);
+      // Hydrate the current route before resolving its runtime below.
+      if (currentMatch) await options.ensureRouteLoaded?.(currentMatch.route);
 
       const redirectRenderRequest = createActionRedirectRenderRequest({
         pendingCookies: [
@@ -1159,6 +1167,8 @@ export async function handleServerActionRscRequest<
         searchParams: options.searchParams,
         params: actionRerenderTarget.navigationParams,
       });
+      // Hydrate the re-render target before reading its page module.
+      await options.ensureRouteLoaded?.(actionRerenderTarget.route);
       setCurrentFetchCacheMode(
         options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null,
       );

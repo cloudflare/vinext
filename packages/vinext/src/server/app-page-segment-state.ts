@@ -1,12 +1,5 @@
 import type { AppPageParams } from "./app-page-boundary.js";
-
-function isOptionalCatchAllSegment(segment: string): boolean {
-  return segment.startsWith("[[...") && segment.endsWith("]]") && segment.length > 7;
-}
-
-function isCatchAllSegment(segment: string): boolean {
-  return segment.startsWith("[...") && segment.endsWith("]") && segment.length > 5;
-}
+import { isCatchAllSegment, isOptionalCatchAllSegment } from "../routing/utils.js";
 
 function isDynamicSegment(segment: string): boolean {
   return segment.startsWith("[") && segment.endsWith("]") && !segment.includes(".");

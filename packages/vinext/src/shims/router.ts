@@ -37,6 +37,7 @@ import {
 import { dedupedPagesDataFetch } from "./internal/pages-data-fetch-dedup.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
 import { isUnknownRecord } from "../utils/record.js";
+import { splitPathSegments } from "../routing/utils.js";
 import {
   isAbsoluteOrProtocolRelativeUrl,
   isHashOnlyBrowserUrlChange,
@@ -583,10 +584,6 @@ type RouteQueryNextData = {
   page?: string;
   query?: Record<string, string | string[] | undefined>;
 };
-
-function splitPathSegments(pathname: string): string[] {
-  return pathname.split("/").filter(Boolean);
-}
 
 function extractRouteParamsFromPath(
   pattern: string,

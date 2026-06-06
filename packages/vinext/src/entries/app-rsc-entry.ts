@@ -80,6 +80,10 @@ const appRscErrorHandlerPath = resolveEntryPath(
   import.meta.url,
 );
 const appRequestContextPath = resolveEntryPath("../server/app-request-context.js", import.meta.url);
+const appRouteModuleLoaderPath = resolveEntryPath(
+  "../server/app-route-module-loader.js",
+  import.meta.url,
+);
 const appPrerenderStaticParamsPath = resolveEntryPath(
   "../server/app-prerender-static-params.js",
   import.meta.url,
@@ -283,7 +287,7 @@ import {
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
 import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
-import { probeAppPage as __probeAppPage } from ${JSON.stringify(appPageProbePath)};
+import { buildAppPageProbes as __buildAppPageProbes } from ${JSON.stringify(appPageProbePath)};
 import {
   dispatchAppPage as __dispatchAppPage,
 } from ${JSON.stringify(appPageDispatchPath)};
@@ -326,6 +330,7 @@ import { clearAppRequestContext as __clearRequestContext, setAppNavigationContex
 
 __configureMemoryCacheHandler({ cacheMaxMemorySize: ${JSON.stringify(cacheMaxMemorySize)} });
 import { createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver } from ${JSON.stringify(appPrerenderStaticParamsPath)};
+import { ensureAppRouteModulesLoaded as __ensureRouteLoaded } from ${JSON.stringify(appRouteModuleLoaderPath)};
 import { seedMemoryCacheFromPrerender as __seedMemoryCacheFromPrerender } from ${JSON.stringify(seedCachePath)};
 
 const __draftModeSecret = ${JSON.stringify(draftModeSecret)};
@@ -382,7 +387,7 @@ ${
     : ""
 }
 
-// Build-time layout classification dispatch. Replaced in generateBundle
+// Build-time layout classification dispatch. Replaced in renderChunk
 // with a switch statement that returns a pre-computed per-layout
 // Map<layoutIndex, "static" | "dynamic"> for each route. Until the
 // plugin patches this stub, every route falls back to the Layer 3
@@ -394,7 +399,7 @@ function __VINEXT_CLASS(routeIdx) {
 // Build-time layout classification reasons dispatch. Sibling of
 // __VINEXT_CLASS, returning a per-route Map<layoutIndex, ClassificationReason>
 // that feeds the debug channel when VINEXT_DEBUG_CLASSIFICATION is active.
-// Replaced in generateBundle with a real dispatch table; the stub returns
+// Replaced in renderChunk with a real dispatch table; the stub returns
 // null so the hot path never allocates reason maps when debug is off.
 function __VINEXT_CLASS_REASONS(routeIdx) {
   return null;
@@ -484,6 +489,8 @@ function findIntercept(pathname, sourcePathname = null) {
 }
 
 async function buildPageElements(route, params, routePath, pageRequest, layoutParamAccess) {
+  // Hydrate lazy page/route-handler modules before any synchronous read.
+  await __ensureRouteLoaded(route);
   return __buildPageElements({
     route,
     params,
@@ -553,6 +560,7 @@ ${rootParamNameEntries.join("\n")}
 
 export default __createAppRscHandler({
   basePath: __basePath,
+  ensureRouteLoaded: __ensureRouteLoaded,
   clearRequestContext() {
     __clearRequestContext();
   },
@@ -597,6 +605,7 @@ export default __createAppRscHandler({
     const _asyncRouteParams = makeThenableParams(params);
     return __dispatchAppPage({
       basePath: __basePath,
+      ensureRouteLoaded: __ensureRouteLoaded,
       clientTraceMetadata: __clientTraceMetadata,
       buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams, layoutParamAccess) {
         return buildPageElements(targetRoute, targetParams, cleanPathname, {
@@ -670,11 +679,16 @@ export default __createAppRscHandler({
         });
       },
       probePage() {
-        return __probeAppPage({
+        return Promise.all(__buildAppPageProbes({
+          route,
           pageComponent: PageComponent,
           asyncRouteParams: _asyncRouteParams,
           searchParams,
-        });
+          intercept: findIntercept(cleanPathname, interceptionContext),
+          isRscRequest,
+          matchedParams: params,
+          makeThenableParams,
+        }));
       },
       renderErrorBoundaryPage(renderErr) {
         return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, scriptNonce, middlewareContext, { isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime) });
@@ -772,7 +786,7 @@ export default __createAppRscHandler({
       setHeadersAccessPhase,
     });
   },
-  handleServerActionRequest({
+  async handleServerActionRequest({
     actionId,
     cleanPathname,
     contentType,
@@ -784,11 +798,13 @@ export default __createAppRscHandler({
     searchParams,
   }) {
     const __actionMatch = matchRoute(cleanPathname);
+    if (__actionMatch) await __ensureRouteLoaded(__actionMatch.route);
     const __actionIsEdgeRuntime = __actionMatch
       ? __isEdgeRuntime(__resolveAppPageSegmentConfig({ layouts: __actionMatch.route.layouts, page: __actionMatch.route.page }).runtime)
       : false;
     return __handleServerActionRscRequest({
       actionId,
+      ensureRouteLoaded: __ensureRouteLoaded,
       allowedOrigins: __allowedOrigins,
       basePath: __basePath,
       isEdgeRuntime: __actionIsEdgeRuntime,
