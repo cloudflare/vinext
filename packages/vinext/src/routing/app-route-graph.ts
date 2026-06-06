@@ -569,6 +569,28 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
         slot,
       });
     }
+
+    // Emit sibling interception facts (markers without an @slot wrapper).
+    // The synthetic slotId is stored on each InterceptingRoute.
+    for (const ir of route.siblingIntercepts) {
+      if (!ir.slotId) continue;
+      const id = createAppRouteGraphInterceptionId(
+        ir.slotId,
+        ir.sourceMatchPattern,
+        ir.targetPattern,
+      );
+      interceptions.set(id, {
+        id,
+        sourcePattern: ir.sourceMatchPattern,
+        sourcePatternParts: splitRouteManifestPatternParts(ir.sourceMatchPattern),
+        targetPattern: ir.targetPattern,
+        targetPatternParts: splitRouteManifestPatternParts(ir.targetPattern),
+        slotId: ir.slotId,
+        ownerLayoutId: null,
+        interceptingRouteId: routeIdByPattern.get(ir.sourceMatchPattern) ?? null,
+        targetRouteId: routeIdByPattern.get(ir.targetPattern) ?? null,
+      });
+    }
   }
 
   const interceptionsBySlotId = createRouteManifestInterceptionsBySlotId(interceptions);

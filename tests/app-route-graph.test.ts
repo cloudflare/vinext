@@ -1395,5 +1395,36 @@ describe("App Router route graph builder", () => {
         );
       });
     });
+
+    it("promotes sibling interception into RouteManifest facts", async () => {
+      // Sibling intercepts (no @slot) must appear in routeManifest.segmentGraph.interceptions
+      // and be accessible via interceptionsBySlotId using the synthetic slot id.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "hoge/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "foo/bar/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "foo/bar/(..)(..)hoge/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const facts = Array.from(graph.routeManifest.segmentGraph.interceptions.values());
+
+        expect(facts).toContainEqual(
+          expect.objectContaining({
+            sourcePattern: "/foo/bar",
+            targetPattern: "/hoge",
+            slotId: "slot:__page:/foo/bar",
+          }),
+        );
+
+        const bySlotId =
+          graph.routeManifest.segmentGraph.interceptionsBySlotId.get("slot:__page:/foo/bar");
+        expect(bySlotId).toHaveLength(1);
+        expect(bySlotId![0]).toMatchObject({
+          sourcePattern: "/foo/bar",
+          targetPattern: "/hoge",
+        });
+      });
+    });
   });
 });
