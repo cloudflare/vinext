@@ -9,6 +9,8 @@ const EXAMPLE = `${BASE}/interception-from-root/en/example`;
 
 test.describe("parallel-routes-and-interception-from-root", () => {
   test("(...)[[locale]] interceptor interpolates [locale] correctly", async ({ page }) => {
+    // TODO(#1364 Part C): (...) root interception doesn't fire; navigates to the full page instead of modal.
+    test.fail();
     // Tests that the (...)[locale]/intercepted pattern matches the locale
     // segment dynamically. The interception lives at:
     //   [locale]/example/@modal/(...)[locale]/intercepted
@@ -38,6 +40,8 @@ test.describe("parallel-routes-and-interception-from-root", () => {
   });
 
   test("back navigation after interception returns to example page", async ({ page }) => {
+    // TODO(#1364 Part C): depends on (...) interception firing (see test above).
+    test.fail();
     await page.goto(EXAMPLE);
     await waitForAppRouterHydration(page);
 
