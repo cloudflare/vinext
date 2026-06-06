@@ -1250,16 +1250,34 @@ describe("App Router integration", () => {
     expect(text).toContain("/about");
   });
 
-  it("redirect() from generateMetadata returns 200 for SSR document request", async () => {
+  it("redirect() from generateMetadata returns an HTML refresh for SSR document requests", async () => {
     const res = await fetch(`${baseUrl}/metadata-redirect-test`, {
       redirect: "manual",
     });
-    // Metadata is suspended in SSR — the redirect surfaces via the inlined
-    // flight payload, not as an HTTP-level redirect.
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    // ("should trigger redirection when call redirect"). Metadata is suspended
+    // in SSR, so streaming-capable document requests stay HTTP 200 and carry
+    // the redirect as the canonical refresh meta tag in HTML.
     expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
     const text = await res.text();
-    expect(text).toContain("NEXT_REDIRECT");
-    expect(text).toContain("/about");
+    expect(text).toContain(
+      '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/about"/>',
+    );
+  });
+
+  it("redirect() from generateMetadata returns a blocking redirect for html-limited bots", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    // ("should render blocking 307 response status when html limited bots access redirect")
+    const res = await fetch(`${baseUrl}/metadata-redirect-test`, {
+      headers: {
+        "user-agent": "Twitterbot",
+      },
+      redirect: "manual",
+    });
+
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/about");
   });
 
   // ── probePage() with Next.js 15+ async params/searchParams ──

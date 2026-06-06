@@ -73,6 +73,7 @@ import {
   shouldSuppressLoadingBoundaries,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
+import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
@@ -218,6 +219,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   hasPageDefaultExport: boolean;
   hasPageModule: boolean;
   handlerStart: number;
+  htmlLimitedBots?: string;
   interceptionContext: string | null;
   isEdgeRuntime?: boolean;
   isProgressiveActionRender?: boolean;
@@ -247,6 +249,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     statusCode: number,
     opts: {
       boundaryComponent?: unknown;
+      boundaryModule?: AppPageModule | null;
       layouts?: readonly AppPageModule[];
       matchedParams: AppPageParams;
     },
@@ -956,11 +959,15 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
       buildRscRedirectFlightStream(options, rscOptions.digest),
     clearRequestContext: options.clearRequestContext,
     getAndClearPendingCookies,
+    serveStreamingMetadata: shouldServeStreamingMetadata(
+      options.request.headers.get("user-agent") ?? "",
+      options.htmlLimitedBots,
+    ),
     isEdgeRuntime: options.isEdgeRuntime,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {
-      const parentBoundary = resolveAppPageParentHttpAccessBoundaryModule({
+      const parentBoundaryModule = resolveAppPageParentHttpAccessBoundaryModule({
         layoutIndex,
         rootForbiddenModule: options.rootForbiddenModule,
         rootNotFoundModule: options.rootNotFoundModule,
@@ -969,11 +976,13 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
         routeNotFoundModules: options.route.notFounds,
         routeUnauthorizedModules: options.route.unauthorizeds,
         statusCode,
-      })?.default;
+      });
+      const parentBoundary = parentBoundaryModule?.default;
       return options.renderHttpAccessFallbackPage(
         statusCode,
         {
           boundaryComponent: parentBoundary,
+          boundaryModule: parentBoundaryModule,
           layouts: options.route.layouts.slice(0, layoutIndex),
           matchedParams: options.params,
         },
@@ -995,6 +1004,10 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
       buildRscRedirectFlightStream(options, rscOptions.digest),
     clearRequestContext: options.clearRequestContext,
     getAndClearPendingCookies,
+    serveStreamingMetadata: shouldServeStreamingMetadata(
+      options.request.headers.get("user-agent") ?? "",
+      options.htmlLimitedBots,
+    ),
     isEdgeRuntime: options.isEdgeRuntime,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
@@ -1034,6 +1047,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
       const boundaryComponent = useLayoutAlignedBoundary
         ? ((parentBoundaryModule as { default?: unknown } | null)?.default ?? undefined)
         : undefined;
+      const boundaryModule = useLayoutAlignedBoundary ? parentBoundaryModule : null;
       const layoutsForBoundary =
         useLayoutAlignedBoundary && boundaryLayoutIndex !== null
           ? options.route.layouts.slice(0, boundaryLayoutIndex + 1)
@@ -1042,6 +1056,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
         statusCode,
         {
           boundaryComponent,
+          boundaryModule,
           layouts: layoutsForBoundary,
           matchedParams: options.params,
         },

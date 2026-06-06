@@ -9,6 +9,7 @@ import { VINEXT_RSC_REDIRECT_HEADER } from "./headers.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
+import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
 import { addBasePathToPathname } from "../utils/base-path.js";
 
 /**
@@ -132,6 +133,7 @@ type BuildAppPageSpecialErrorResponseOptions = {
   middlewareContext?: { headers: Headers | null };
   renderFallbackPage?: (statusCode: number) => Promise<Response | null>;
   request: Request;
+  serveStreamingMetadata?: boolean;
   specialError: AppPageSpecialError;
 };
 
@@ -290,6 +292,30 @@ function sameOriginPathOrAbsolute(location: string, requestUrl: string): string 
   }
 }
 
+function buildMetadataRedirectHtmlResponse(options: {
+  digest: string;
+  getAndClearPendingCookies?: () => string[];
+  isEdgeRuntime?: boolean;
+  middlewareContext?: { headers: Headers | null };
+}): Response {
+  const headers = new Headers({
+    "Content-Type": "text/html; charset=utf-8",
+  });
+  applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
+  mergeMiddlewareResponseHeaders(headers, options.middlewareContext?.headers ?? null);
+
+  const pendingCookies = options.getAndClearPendingCookies?.() ?? [];
+  for (const cookie of pendingCookies) {
+    headers.append("Set-Cookie", cookie);
+  }
+
+  const errorMetaTags = renderSsrErrorMetaTags([{ digest: options.digest }]);
+  return new Response(`<!DOCTYPE html><html><head>${errorMetaTags}</head><body></body></html>`, {
+    headers,
+    status: 200,
+  });
+}
+
 export async function buildAppPageSpecialErrorResponse(
   options: BuildAppPageSpecialErrorResponseOptions,
 ): Promise<Response> {
@@ -302,20 +328,37 @@ export async function buildAppPageSpecialErrorResponse(
       options.request.url,
       options.basePath,
     );
+    const digestUrl = sameOriginPathOrAbsolute(prefixedLocation, options.request.url);
+    const digest = formatNextRedirectDigest({
+      url: digestUrl,
+      statusCode: options.specialError.statusCode,
+    });
+
+    if (
+      options.specialError.fromMetadata === true &&
+      !options.isRscRequest &&
+      options.serveStreamingMetadata !== false
+    ) {
+      return buildMetadataRedirectHtmlResponse({
+        digest,
+        getAndClearPendingCookies: options.getAndClearPendingCookies,
+        isEdgeRuntime: options.isEdgeRuntime,
+        middlewareContext: options.middlewareContext,
+      });
+    }
 
     // Two cases need a 200 + flight-payload encoding instead of an HTTP 307:
     //   1. RSC navigation requests (`Rsc: 1` header) — the client router
     //      decodes the redirect digest from the flight stream. A raw 307
     //      bypasses that path and breaks cache-busting validation.
-    //   2. `generateMetadata()` redirects — metadata is suspended in Next.js,
-    //      so the redirect rides inside the streamed flight payload even for
-    //      full document SSR. The status line stays 200.
+    // Document requests that redirect from `generateMetadata()` are HTML
+    // responses instead: streaming-capable user agents get a refresh meta tag
+    // and html-limited bots get the blocking 307 above.
     // Mirrors Next.js's `generateDynamicFlightRenderResult` path in
     // `app-render.tsx`, where the redirect error propagates through
     // `renderToFlightStream` and is serialized with its digest.
     const shouldEmbedRedirectInFlight =
-      Boolean(options.buildRscRedirectFlightStream) &&
-      (options.isRscRequest || options.specialError.fromMetadata === true);
+      Boolean(options.buildRscRedirectFlightStream) && options.isRscRequest;
 
     if (shouldEmbedRedirectInFlight && options.buildRscRedirectFlightStream) {
       // Reduce the resolved (absolute) URL back to a path-only form for
@@ -323,11 +366,6 @@ export async function buildAppPageSpecialErrorResponse(
       // `redirect()` (typically a path like "/about"), and the client router's
       // `router.push(url)` happily accepts paths. Cross-origin targets keep
       // their absolute form, matching Next.js's external-redirect handling.
-      const digestUrl = sameOriginPathOrAbsolute(prefixedLocation, options.request.url);
-      const digest = formatNextRedirectDigest({
-        url: digestUrl,
-        statusCode: options.specialError.statusCode,
-      });
       const stream = options.buildRscRedirectFlightStream({ digest });
 
       const headers = new Headers({
