@@ -95,6 +95,11 @@ jobs:
       # (template injection). The shell treats it as data, never as code.
       - name: Run integration shard
         run: |
+          if [ -z "${SHARD_FILES// /}" ]; then
+            echo "::error::shard ${SHARD_INDEX}/${SHARD_TOTAL} resolved to no files"
+            exit 1
+          fi
+
           vp test run --project integration $COVERAGE \
             --reporter=blob \
             --outputFile.blob=".vitest-reports/blob-${SHARD_INDEX}-${SHARD_TOTAL}.json" \

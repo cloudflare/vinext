@@ -50,10 +50,20 @@ export function normalizeTestPath(filePath) {
 
 // One blob's parsed `testFiles` array → one duration sample per file.
 export function extractDurations(testFiles) {
-  return testFiles.map((testFile) => ({
-    file: normalizeTestPath(testFile.filepath),
-    durationMs: testFile.result?.duration ?? 0,
-  }));
+  const durations = [];
+  const warnings = [];
+
+  for (const testFile of testFiles) {
+    const file = normalizeTestPath(testFile.filepath);
+    const durationMs = testFile.result?.duration;
+    if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs <= 0) {
+      warnings.push(`Skipped ${file}: blob report has no positive finite duration`);
+      continue;
+    }
+    durations.push({ file, durationMs });
+  }
+
+  return { durations, warnings };
 }
 
 // Per-blob duration lists → file → samples across all blobs (one sample per
@@ -98,15 +108,18 @@ export async function aggregateBlobDir(dir) {
   }
 
   const perBlob = [];
+  const warnings = [];
   for (const file of blobFiles) {
     const [version, testFiles] = parseBlob(await readFile(file, "utf8"));
     if (!version || !Array.isArray(testFiles)) {
       throw new Error(`${file} does not look like a Vitest blob report`);
     }
-    perBlob.push(extractDurations(testFiles));
+    const extracted = extractDurations(testFiles);
+    perBlob.push(extracted.durations);
+    for (const warning of extracted.warnings) warnings.push(`${file}: ${warning}`);
   }
 
-  return { samples: mergeSamples(perBlob), blobCount: blobFiles.length };
+  return { samples: mergeSamples(perBlob), blobCount: blobFiles.length, warnings };
 }
 
 // Locate Vite+'s bundled Vitest blob parser. This reaches into the published

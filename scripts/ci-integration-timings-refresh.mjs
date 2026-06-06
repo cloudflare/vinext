@@ -14,7 +14,9 @@
  * blobs must back that claim: every discovered file must have exactly one
  * sample per --run (a file runs in one shard per run), so the manifest cannot
  * claim stronger provenance than the directory provides. --allow-partial
- * relaxes this to "at least one sample per file" for re-run-failed-shard cases.
+ * relaxes this to "at least one sample per file" for re-run-failed-shard cases;
+ * in that mode, generatedFrom.runs lists the source runs used for the refresh,
+ * while each file's samples count remains the per-file provenance.
  *
  * --shard-total defaults to the existing manifest's shardTotal, so a plain
  * refresh preserves the count the CI matrix already uses. Pass it explicitly
@@ -73,7 +75,7 @@ if (!Number.isInteger(shardTotal) || shardTotal < 1) {
   );
 }
 
-const { samples, blobCount } = await aggregateBlobDir(blobDir);
+const { samples, blobCount, warnings } = await aggregateBlobDir(blobDir);
 let discovered;
 try {
   discovered = discoverIntegrationFiles();
@@ -87,7 +89,9 @@ try {
 // run's blobs are missing, too many means the directory holds blobs beyond the
 // claimed runs. Either way the manifest would record stronger provenance than
 // the blobs provide. --allow-partial relaxes this to "at least one sample" for
-// the re-run-failed-shard case, while still recording the true per-file count.
+// the re-run-failed-shard case; generatedFrom.runs still records the source runs
+// used for the refresh, while each file's samples count remains the per-file
+// provenance.
 const expectedPerFile = runIds.length;
 const coverage = discovered.map((f) => ({ file: f, samples: samples.get(f)?.length ?? 0 }));
 
@@ -137,6 +141,12 @@ const serialized = `${JSON.stringify(manifest, null, 2)}\n`;
 console.error(
   `Aggregated ${blobCount} blob(s) from ${runIds.length} run(s) into ${Object.keys(manifest.files).length} files.`,
 );
+if (warnings.length > 0) {
+  console.error(
+    `Skipped ${warnings.length} malformed blob entr${warnings.length === 1 ? "y" : "ies"}:`,
+  );
+  for (const warning of warnings) console.error(`  ${warning}`);
+}
 for (const file of Object.keys(manifest.files)) {
   const e = manifest.files[file];
   console.error(
