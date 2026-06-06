@@ -8,6 +8,7 @@ import {
   type LayoutClassificationOptions,
   type LayoutFlags,
 } from "./app-page-execution.js";
+import { isPromiseLike } from "../utils/promise.js";
 
 const DEFAULT_SUBTREE_PROBE_MAX_DEPTH = 32;
 const DEFAULT_SUBTREE_PROBE_MAX_NODES = 1000;
@@ -47,15 +48,6 @@ class AppPageSubtreeProbeUnsupportedIterableError extends Error {
     super("App page layout subtree probe cannot safely inspect iterable children");
     this.name = "AppPageSubtreeProbeUnsupportedIterableError";
   }
-}
-
-function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return Boolean(
-    value &&
-    (typeof value === "object" || typeof value === "function") &&
-    "then" in value &&
-    typeof value.then === "function",
-  );
 }
 
 function isIterable(value: unknown): value is Iterable<unknown> {

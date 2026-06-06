@@ -61,6 +61,10 @@
       "types": "./dist/server/worker-utils.d.ts",
       "import": "./dist/server/worker-utils.js"
     },
+    "./utils/base-path": {
+      "types": "./dist/utils/base-path.d.ts",
+      "import": "./dist/utils/base-path.js"
+    },
     "./utils/query": {
       "types": "./dist/utils/query.d.ts",
       "import": "./dist/utils/query.js"

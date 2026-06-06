@@ -8,8 +8,9 @@ import path from "node:path";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { compareRoutes, decodeRouteSegment, isInvisibleSegment } from "./utils.js";
-import { scanWithExtensions, type ValidFileMatcher } from "./file-matcher.js";
+import { findFileWithExts, scanWithExtensions, type ValidFileMatcher } from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
+import { compareStrings } from "../utils/compare.js";
 
 export type InterceptingRoute = {
   /** The interception convention: "." | ".." | "../.." | "..." */
@@ -367,11 +368,7 @@ function createAppRouteGraphRootBoundaryId(treePath: string): RootBoundaryId {
   return `root-boundary:${treePath}`;
 }
 
-function compareStableStrings(left: string, right: string): number {
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
-}
+const compareStableStrings = compareStrings;
 
 function sortedMapValues<T>(map: ReadonlyMap<string, T>): T[] {
   return Array.from(map.entries())
@@ -2279,13 +2276,7 @@ function markerForInterceptionConvention(convention: string): string {
  * Find a file by name (without extension) in a directory.
  * Checks configured pageExtensions.
  */
-function findFile(dir: string, name: string, matcher: ValidFileMatcher): string | null {
-  for (const ext of matcher.dottedExtensions) {
-    const filePath = path.join(dir, name + ext);
-    if (fs.existsSync(filePath)) return filePath;
-  }
-  return null;
-}
+const findFile = findFileWithExts;
 
 /**
  * Convert filesystem path segments to URL route parts, skipping invisible segments

@@ -1,5 +1,6 @@
 import { AppElementsWire } from "./app-elements.js";
 import type { TraverseDirection } from "./navigation-planner.js";
+import { isNonNegativeSafeInteger } from "../utils/number.js";
 
 const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
 const VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY = "__vinext_historyIndex";
@@ -144,10 +145,6 @@ export function readHistoryStateBfcacheIds(state: unknown): BfcacheIdMap | null 
     ids[key] = id;
   }
   return ids;
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 export function readHistoryStateBfcacheVersion(state: unknown): number | null {

@@ -11,6 +11,7 @@ import {
 } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
 import { isExternalUrl } from "../config/config-matchers.js";
+import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
   ACTION_FORWARDED_HEADER,
@@ -581,16 +582,12 @@ function isAncestorRouteRedirect(targetPathname: string, currentPathname: string
   return targetPathname !== "/" && currentPathname.startsWith(`${targetPathname}/`);
 }
 
-function splitActionRedirectPathname(pathname: string): string[] {
-  return pathname.split("/").filter(Boolean);
-}
-
 function isStaleChildSiblingRouteRedirect(
   targetPathname: string,
   currentPathname: string,
 ): boolean {
-  const targetSegments = splitActionRedirectPathname(targetPathname);
-  const currentSegments = splitActionRedirectPathname(currentPathname);
+  const targetSegments = splitPathSegments(targetPathname);
+  const currentSegments = splitPathSegments(currentPathname);
   // Only deeper-to-shallower redirects can be stale in the Next.js worker
   // model (same-depth siblings share the same page worker). The depth guard
   // ensures we don't misclassify same-level redirects.

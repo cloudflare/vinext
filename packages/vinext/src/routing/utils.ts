@@ -206,7 +206,7 @@ export function splitPathSegments(pathname: string): string[] {
  * bracket conventions live in one place. The length guard rejects empty names
  * (`[...]`).
  */
-function isCatchAllSegment(segment: string): boolean {
+export function isCatchAllSegment(segment: string): boolean {
   return segment.startsWith("[...") && segment.endsWith("]") && segment.length > 5;
 }
 
@@ -214,7 +214,7 @@ function isCatchAllSegment(segment: string): boolean {
  * Optional-catch-all filesystem segment, e.g. `[[...slug]]`. Unlike a catch-all,
  * this matches zero or more URL segments.
  */
-function isOptionalCatchAllSegment(segment: string): boolean {
+export function isOptionalCatchAllSegment(segment: string): boolean {
   return segment.startsWith("[[...") && segment.endsWith("]]") && segment.length > 7;
 }
 

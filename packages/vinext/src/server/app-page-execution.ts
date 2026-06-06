@@ -10,6 +10,7 @@ import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 import { addBasePathToPathname } from "../utils/base-path.js";
+import { isPromiseLike } from "../utils/promise.js";
 
 /**
  * Builds the canonical `NEXT_REDIRECT;<type>;<url>;<status>;` digest that
@@ -185,15 +186,6 @@ type ProbeAppPageComponentOptions = {
   probePage: () => unknown;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
 };
-
-function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return Boolean(
-    value &&
-    (typeof value === "object" || typeof value === "function") &&
-    "then" in value &&
-    typeof value.then === "function",
-  );
-}
 
 function getAppPageStatusText(statusCode: number): string {
   return statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
