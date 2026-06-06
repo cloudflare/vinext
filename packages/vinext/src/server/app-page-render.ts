@@ -57,6 +57,7 @@ import type {
   ClientReuseManifestTraceFields,
 } from "./client-reuse-manifest.js";
 import { NO_STORE_CACHE_CONTROL } from "./cache-control.js";
+import { readStreamAsText } from "../utils/text-stream.js";
 import {
   createClientReuseSkipTransportPlan,
   createStaticLayoutClientReuseArtifactCompatibility,
@@ -178,6 +179,8 @@ type RenderAppPageLifecycleOptions = {
   classification?: LayoutClassificationOptions | null;
 };
 
+const textEncoder = new TextEncoder();
+
 function buildResponseTiming(
   options: Pick<RenderAppPageLifecycleOptions, "handlerStart" | "isProduction"> & {
     compileEnd?: number;
@@ -195,6 +198,18 @@ function buildResponseTiming(
     renderEnd: options.renderEnd,
     responseKind: options.responseKind,
   };
+}
+
+function createBufferedHtmlStream(html: string): ReadableStream<Uint8Array> {
+  const encoded = textEncoder.encode(html);
+  return new ReadableStream({
+    start(controller) {
+      if (encoded.byteLength > 0) {
+        controller.enqueue(encoded);
+      }
+      controller.close();
+    },
+  });
 }
 
 function readRequestCacheLifeForPrerender(
@@ -840,7 +855,7 @@ export async function renderAppPageLifecycle(
   if (htmlRender.response) {
     return htmlRender.response;
   }
-  const htmlStream = htmlRender.htmlStream;
+  let htmlStream = htmlRender.htmlStream;
   if (!htmlStream) {
     throw new Error("[vinext] Expected an HTML stream when no fallback response was returned");
   }
@@ -884,6 +899,8 @@ export async function renderAppPageLifecycle(
 
   // Eagerly read values that must be captured before the stream is consumed.
   if (options.isPrerender === true) {
+    const bufferedHtml = await readStreamAsText(htmlStream);
+    htmlStream = createBufferedHtmlStream(bufferedHtml);
     await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
     ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
       expireSeconds,

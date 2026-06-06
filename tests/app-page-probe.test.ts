@@ -5,6 +5,10 @@ import {
   probeAppPageBeforeRender,
   probeReactServerSubtree,
 } from "../packages/vinext/src/server/app-page-probe.js";
+import {
+  consumeDynamicUsage,
+  consumeRenderRequestApiUsage,
+} from "../packages/vinext/src/shims/headers.js";
 
 // Mirrors makeThenableParams() from app-rsc-entry.ts — the function that
 // converts raw null-prototype params into objects that work with both
@@ -12,6 +16,19 @@ import {
 function makeThenableParams<T extends Record<string, unknown>>(obj: T): Promise<T> & T {
   const plain = { ...obj } as T;
   return Object.assign(Promise.resolve(plain), plain);
+}
+
+async function registerCachedProbePage<TProps extends Record<string, unknown>, TResult>(
+  fn: (props: TProps) => Promise<TResult>,
+  id: string,
+): Promise<(props: TProps) => Promise<TResult>> {
+  const { registerCachedFunction } = await import("../packages/vinext/src/shims/cache-runtime.js");
+  const { MemoryCacheHandler, setCacheHandler } =
+    await import("../packages/vinext/src/shims/cache.js");
+  setCacheHandler(new MemoryCacheHandler());
+  consumeDynamicUsage();
+  consumeRenderRequestApiUsage();
+  return registerCachedFunction(fn, id);
 }
 
 describe("app page probe helpers", () => {
@@ -568,6 +585,46 @@ describe("probeAppPage", () => {
 
     expect(received).toBeDefined();
     expect(Object.keys(received ?? {})).toEqual([]);
+  });
+
+  it("does not mark dynamic when a cached page probe only derives its cache key", async () => {
+    const CachedPage = await registerCachedProbePage(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<Record<string, unknown>>;
+      }) => {
+        const params = await props.params;
+        return `slug:${params.slug}`;
+      },
+      "test:probe-page-props-searchparams-inert",
+    );
+
+    await probeAppPage({
+      pageComponent: CachedPage,
+      asyncRouteParams: makeThenableParams({ slug: "intro" }),
+      searchParams: new URLSearchParams("q=hello"),
+    });
+
+    expect(consumeDynamicUsage()).toBe(false);
+    expect(consumeRenderRequestApiUsage()).toEqual([]);
+  });
+
+  it("rejects when a cached page probe awaits searchParams in the page body", async () => {
+    const CachedPage = await registerCachedProbePage(
+      async (props: { searchParams: Promise<{ q?: string }> }) => {
+        const searchParams = await props.searchParams;
+        return searchParams.q ?? "";
+      },
+      "test:probe-page-props-searchparams-observed",
+    );
+
+    await expect(
+      probeAppPage({
+        pageComponent: CachedPage,
+        asyncRouteParams: makeThenableParams({}),
+        searchParams: new URLSearchParams("q=hello"),
+      }),
+    ).rejects.toThrow(/cannot be called inside "use cache"/);
   });
 
   it("lets redirect()/notFound() throws propagate so the probe lifecycle can catch them", async () => {

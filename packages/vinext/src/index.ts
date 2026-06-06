@@ -184,6 +184,16 @@ function createRscCompatibilityId(nextConfig: ResolvedNextConfig): string {
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
 
+function stripViteModuleQuery(id: string): string {
+  const queryIndex = id.search(/[?#]/);
+  return queryIndex === -1 ? id : id.slice(0, queryIndex);
+}
+
+function isInsideDirectory(dir: string, filePath: string): boolean {
+  const relativePath = path.relative(dir, filePath);
+  return relativePath !== "" && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
+}
+
 // Detect a module-level `"use server"` directive (a Server Actions module).
 // Directives form the leading prologue of string-literal ExpressionStatements,
 // so we only scan until the first non-directive statement.
@@ -4060,13 +4070,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // support yet. Pages, not-found, loading, error, and default are
             // leaf components with no {children} prop and can be cached directly.
             const isLayoutOrTemplate = /\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id);
+            const modulePath = stripViteModuleQuery(id);
+            const moduleFileName = path.basename(modulePath);
+            const isAppPageModule =
+              hasAppDir &&
+              isInsideDirectory(appDir, modulePath) &&
+              path.parse(moduleFileName).name === "page" &&
+              fileMatcher.extensionRegex.test(moduleFileName);
 
             const runtimeModuleUrl = pathToFileURL(
               resolveShimModulePath(shimsDir, "cache-runtime"),
             ).href;
             const result = transformWrapExport(code, ast, {
-              runtime: (value: string, name: string) =>
-                `(await import(${JSON.stringify(runtimeModuleUrl)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`,
+              runtime: (value: string, name: string) => {
+                const pageOptions =
+                  name === "default" && isAppPageModule ? `, { appPageDefaultExport: true }` : "";
+                return `(await import(${JSON.stringify(runtimeModuleUrl)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)}${pageOptions})`;
+              },
               rejectNonAsyncFunction: false,
               filter: (name: string, meta: { isFunction?: boolean }) => {
                 // Skip non-functions (constants, types, etc.)

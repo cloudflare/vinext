@@ -761,6 +761,68 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
+  it("captures prerender cache metadata when SSR fills RSC capture during HTML consumption", async () => {
+    const common = createCommonOptions();
+    let requestCacheLife: { revalidate: number; expire: number } | null = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      getRequestCacheLife() {
+        const value = requestCacheLife;
+        requestCacheLife = null;
+        return value;
+      },
+      isPrerender: true,
+      isProduction: false,
+      loadSsrHandler: async () => ({
+        async handleSsr(
+          _rscStream: ReadableStream<Uint8Array>,
+          _navContext: unknown,
+          _fontData: unknown,
+          options?: {
+            sideStream?: ReadableStream<Uint8Array>;
+            capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+          },
+        ) {
+          let sent = false;
+          return new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (sent) {
+                controller.close();
+                return;
+              }
+              sent = true;
+              if (options?.sideStream && options.capturedRscDataRef) {
+                options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
+              }
+              controller.enqueue(new TextEncoder().encode("<html>page</html>"));
+              controller.close();
+            },
+          });
+        },
+      }),
+      renderToReadableStream() {
+        let sent = false;
+        return new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent) {
+              controller.close();
+              return;
+            }
+            requestCacheLife = { revalidate: 1, expire: 3 };
+            controller.enqueue(new TextEncoder().encode("flight-data"));
+            sent = true;
+          },
+        });
+      },
+      revalidateSeconds: null,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("s-maxage=1, stale-while-revalidate=2");
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
   it("preserves prerender cache metadata for the manifest writer after shaping headers", async () => {
     const common = createCommonOptions();
     let requestCacheLife: { revalidate: number; expire: number } | null = null;

@@ -11,6 +11,7 @@ import {
 import type { AppPageModule } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
 
 // Import the function under test AFTER mocking dependencies.
 // eslint-disable-next-line import/first
@@ -30,6 +31,7 @@ const { markDynamicUsageMock, markRenderRequestApiUsageMock } = vi.hoisted(() =>
 vi.mock("../packages/vinext/src/shims/headers.js", () => ({
   markDynamicUsage: markDynamicUsageMock,
   markRenderRequestApiUsage: markRenderRequestApiUsageMock,
+  throwIfInsideCacheScope: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -82,6 +84,99 @@ function createBaseOptions(overrides?: {
     rootUnauthorizedModule: null,
     metadataRoutes: [],
   };
+}
+
+async function buildSearchPageSearchParams(options?: {
+  loadingBoundary?: boolean;
+}): Promise<{ searchParams: Promise<Record<string, unknown>> }> {
+  function SearchPage(): React.ReactNode {
+    return React.createElement("div", null, "Search");
+  }
+
+  const route = createSyntheticRoute({
+    page: createSyntheticPageModule(SearchPage),
+    loading: options?.loadingBoundary ? { default: () => null } : undefined,
+    layouts: [],
+    routeSegments: ["search"],
+    pattern: "/search",
+  });
+
+  const result = await buildPageElements(
+    createBaseOptions({
+      route,
+      routePath: "/search",
+      searchParams: new URLSearchParams("q=test"),
+    }),
+  );
+  const record = result as Record<string, unknown>;
+  const pageElement = record["page:/search"];
+  if (!React.isValidElement<{ searchParams?: Promise<Record<string, unknown>> }>(pageElement)) {
+    throw new Error("Expected page element");
+  }
+  if (!pageElement.props.searchParams) {
+    throw new Error("Expected searchParams prop");
+  }
+
+  return { searchParams: pageElement.props.searchParams };
+}
+
+async function resetUseCacheRuntime(): Promise<void> {
+  const { MemoryCacheHandler, setCacheHandler } =
+    await import("../packages/vinext/src/shims/cache.js");
+  setCacheHandler(new MemoryCacheHandler());
+}
+
+async function renderNode(node: React.ReactNode): Promise<string> {
+  const { renderToReadableStream } = await import("react-dom/server.edge");
+  const stream = await renderToReadableStream(node, {
+    onError(error: unknown) {
+      throw error instanceof Error ? error : new Error(String(error));
+    },
+  });
+  return readStreamAsText(stream);
+}
+
+async function buildAndRenderElement(
+  route: AppPageBuildRoute,
+  elementId: string,
+  query: string,
+): Promise<string> {
+  const result = await buildPageElements(
+    createBaseOptions({
+      route,
+      params: { slug: "same" },
+      routePath: "/cached",
+      searchParams: new URLSearchParams({ q: query }),
+    }),
+  );
+  const record = result as Record<string, unknown>;
+  const element = record[elementId];
+  if (!React.isValidElement(element)) {
+    throw new Error(`Expected React element for ${elementId}`);
+  }
+
+  markDynamicUsageMock.mockClear();
+  markRenderRequestApiUsageMock.mockClear();
+  return renderNode(element);
+}
+
+function expectNoSearchParamsObservation(): void {
+  expect(markDynamicUsageMock).not.toHaveBeenCalled();
+  expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
+}
+
+async function expectCachedRenderIgnoresQuery(options: {
+  expectedText: string;
+  getCallCount: () => number;
+  render: (query: string) => Promise<string>;
+}): Promise<void> {
+  await expect(options.render("first")).resolves.toContain(options.expectedText);
+  expect(options.getCallCount()).toBe(1);
+  expectNoSearchParamsObservation();
+
+  await expect(options.render("second")).resolves.toContain(options.expectedText);
+  expect(options.getCallCount()).toBe(1);
+  expectNoSearchParamsObservation();
 }
 
 // ---------------------------------------------------------------------------
@@ -456,39 +551,170 @@ describe("buildPageElements", () => {
     expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
   });
 
-  it("keeps render-tree searchParams status inspection inert", async () => {
-    function SearchPage(): React.ReactNode {
-      return React.createElement("div", null, "Search");
-    }
+  it("keeps loading-boundary render-tree searchParams status inspection inert", async () => {
+    const { searchParams } = await buildSearchPageSearchParams({ loadingBoundary: true });
 
-    const route = createSyntheticRoute({
-      page: createSyntheticPageModule(SearchPage),
-      layouts: [],
-      routeSegments: ["search"],
-      pattern: "/search",
-    });
-
-    const result = await buildPageElements(
-      createBaseOptions({
-        route,
-        routePath: "/search",
-        searchParams: new URLSearchParams("q=test"),
-      }),
-    );
-    const record = result as Record<string, unknown>;
-    const pageElement = record["page:/search"];
-    if (!React.isValidElement<{ searchParams?: Promise<Record<string, unknown>> }>(pageElement)) {
-      throw new Error("Expected page element");
-    }
-    if (!pageElement.props.searchParams) {
-      throw new Error("Expected searchParams prop");
-    }
-
-    Reflect.get(pageElement.props.searchParams, "status");
-    await pageElement.props.searchParams;
+    Reflect.get(searchParams, "status");
 
     expect(markDynamicUsageMock).not.toHaveBeenCalled();
     expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps non-loading render-tree searchParams await inert", async () => {
+    const { searchParams } = await buildSearchPageSearchParams();
+
+    await searchParams;
+
+    expect(markDynamicUsageMock).not.toHaveBeenCalled();
+    expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
+  });
+
+  it("observes loading-boundary render-tree searchParams await as dynamic access", async () => {
+    const { searchParams } = await buildSearchPageSearchParams({ loadingBoundary: true });
+
+    await searchParams;
+
+    expect(markDynamicUsageMock).toHaveBeenCalled();
+    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
+  });
+
+  it("keeps a cached primary page query-inert through the React render path", async () => {
+    await resetUseCacheRuntime();
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+
+    let pageCalls = 0;
+    const CachedPage = registerCachedFunction(
+      async ({ params }: { params: Promise<{ slug: string }> }): Promise<string> => {
+        pageCalls++;
+        const resolvedParams = await params;
+        return `primary:${resolvedParams.slug}`;
+      },
+      "/fixture/app/cached/page.tsx:default",
+      "",
+      { appPageDefaultExport: true },
+    );
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(CachedPage),
+      loading: { default: () => null },
+      layouts: [],
+      routeSegments: ["cached"],
+      pattern: "/cached",
+    });
+
+    await expectCachedRenderIgnoresQuery({
+      expectedText: "primary:same",
+      getCallCount: () => pageCalls,
+      render: (query) => buildAndRenderElement(route, "page:/cached", query),
+    });
+  });
+
+  it("keeps a cached active slot page query-inert through the React render path", async () => {
+    await resetUseCacheRuntime();
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+
+    function MainPage(): React.ReactNode {
+      return React.createElement("div", null, "main");
+    }
+
+    let slotCalls = 0;
+    const CachedSlotPage = registerCachedFunction(
+      async ({ params }: { params: Promise<Record<string, unknown>> }): Promise<string> => {
+        slotCalls++;
+        await params;
+        return "slot:cached";
+      },
+      "/fixture/app/cached/@modal/page.tsx:default",
+      "",
+      { appPageDefaultExport: true },
+    );
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(MainPage),
+      loading: { default: () => null },
+      layouts: [],
+      routeSegments: ["cached"],
+      pattern: "/cached",
+      slots: {
+        "@modal": {
+          name: "modal",
+          page: createSyntheticPageModule(CachedSlotPage),
+          layoutIndex: -1,
+          routeSegments: [],
+        },
+      },
+    });
+
+    await expectCachedRenderIgnoresQuery({
+      expectedText: "slot:cached",
+      getCallCount: () => slotCalls,
+      render: (query) => buildAndRenderElement(route, "slot:modal:/", query),
+    });
+  });
+
+  it("keeps a cached intercepting slot page query-inert through the React render path", async () => {
+    await resetUseCacheRuntime();
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+
+    function MainPage(): React.ReactNode {
+      return React.createElement("div", null, "main");
+    }
+
+    let interceptCalls = 0;
+    const CachedInterceptPage = registerCachedFunction(
+      async ({ params }: { params: Promise<Record<string, unknown>> }): Promise<string> => {
+        interceptCalls++;
+        await params;
+        return "intercept:cached";
+      },
+      "/fixture/app/cached/@modal/(.)photo/page.tsx:default",
+      "",
+      { appPageDefaultExport: true },
+    );
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(MainPage),
+      loading: { default: () => null },
+      layouts: [],
+      routeSegments: ["cached"],
+      pattern: "/cached",
+      slots: {
+        "@modal": {
+          name: "modal",
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: -1,
+          routeSegments: [],
+        },
+      },
+    });
+    const renderIntercept = async (query: string): Promise<string> => {
+      const result = await buildPageElements(
+        createBaseOptions({
+          route,
+          routePath: "/cached",
+          searchParams: new URLSearchParams({ q: query }),
+          opts: {
+            interceptSlotKey: "@modal",
+            interceptPage: createSyntheticPageModule(CachedInterceptPage),
+          },
+        }),
+      );
+      const record = result as Record<string, unknown>;
+      const element = record["slot:modal:/"];
+      if (!React.isValidElement(element)) {
+        throw new Error("Expected intercepting slot element");
+      }
+
+      markDynamicUsageMock.mockClear();
+      markRenderRequestApiUsageMock.mockClear();
+      return renderNode(element);
+    };
+
+    await expectCachedRenderIgnoresQuery({
+      expectedText: "intercept:cached",
+      getCallCount: () => interceptCalls,
+      render: renderIntercept,
+    });
   });
 
   it("does NOT call markDynamicUsage just because the request query has content", async () => {

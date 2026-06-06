@@ -1,7 +1,6 @@
 import { Fragment, isValidElement, type ReactElement, type ReactNode } from "react";
-import { markDynamicUsage, markRenderRequestApiUsage } from "vinext/shims/headers";
+import { markAppPagePropsForUseCache } from "vinext/shims/cache-runtime";
 import { isNextRouterError } from "vinext/shims/navigation";
-import { makeThenableParams } from "vinext/shims/thenable-params";
 import { collectAppPageSearchParams } from "./app-page-head.js";
 import {
   probeAppPageComponent,
@@ -10,6 +9,7 @@ import {
   type LayoutClassificationOptions,
   type LayoutFlags,
 } from "./app-page-execution.js";
+import { makeObservedAppPageSearchParamsThenable } from "./app-page-search-params-observation.js";
 
 const DEFAULT_SUBTREE_PROBE_MAX_DEPTH = 32;
 const DEFAULT_SUBTREE_PROBE_MAX_NODES = 1000;
@@ -255,17 +255,14 @@ export function probeAppPage(options: {
     return null;
   }
   const { pageSearchParams } = collectAppPageSearchParams(searchParams);
-  const asyncSearchParams = makeThenableParams(pageSearchParams, {
-    observeParamAccess() {
-      markDynamicUsage();
-      markRenderRequestApiUsage("searchParams");
-    },
+  const asyncSearchParams = makeObservedAppPageSearchParamsThenable(pageSearchParams, {
     observeReactPromiseStatus: true,
   });
-  const result = (pageComponent as (props: Record<string, unknown>) => unknown)({
+  const pageProps = markAppPagePropsForUseCache({
     params: asyncRouteParams,
     searchParams: asyncSearchParams,
   });
+  const result = (pageComponent as (props: Record<string, unknown>) => unknown)(pageProps);
   if (isPromiseLike(result)) {
     return result.then(async (resolved) => {
       await probeReactServerSubtreeForDynamicUsage(resolved);
