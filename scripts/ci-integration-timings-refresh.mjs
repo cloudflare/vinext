@@ -68,7 +68,7 @@ if (runIds.length === 0)
 if (!Number.isInteger(shardTotal) || shardTotal < 1) {
   die(
     shardTotalRaw !== null
-      ? `Invalid --shard-total: --shard-total=${shardTotalRaw}`
+      ? `Invalid --shard-total: ${shardTotalRaw}`
       : "No --shard-total given and the existing manifest has no valid shardTotal to inherit. Pass --shard-total=N.",
   );
 }
