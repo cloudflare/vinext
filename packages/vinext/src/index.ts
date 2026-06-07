@@ -1205,6 +1205,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             rawConfig = await loadNextConfig(root, phase);
           }
           nextConfig = await resolveNextConfig(rawConfig, root);
+
+          // Build-ID coordination across plugin instances.
+          //
+          // A single `vinext build` can instantiate vinext() more than once —
+          // the App Router multi-environment build (createBuilder().buildApp())
+          // and the separate Pages Router SSR build for hybrid app+pages apps
+          // are distinct plugin instances, each resolving its own config. With
+          // no user `generateBuildId`, resolveNextConfig() mints a fresh random
+          // UUID per instance, so the App Router runtime, the Pages Router
+          // runtime, the prerender manifest, and dist/server/BUILD_ID would each
+          // get a different build ID.
+          //
+          // The CLI resolves the build ID once (honoring the user's
+          // generateBuildId) and publishes it via __VINEXT_SHARED_BUILD_ID. We
+          // adopt it here when the user did not supply their own generateBuildId
+          // (a user-provided generateBuildId is authoritative and already shared
+          // because every instance calls it). This keeps all instances coherent
+          // without changing resolveBuildId()'s standalone semantics.
+          const sharedBuildId = process.env.__VINEXT_SHARED_BUILD_ID;
+          if (sharedBuildId && sharedBuildId.length > 0 && !rawConfig?.generateBuildId) {
+            nextConfig = { ...nextConfig, buildId: sharedBuildId };
+          }
         }
         rscCompatibilityId ??= createRscCompatibilityId(nextConfig);
         fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);

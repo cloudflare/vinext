@@ -444,6 +444,16 @@ async function buildApp() {
     await loadNextConfig(root, PHASE_PRODUCTION_BUILD),
     root,
   );
+
+  // Coordinate a single build ID across every vinext() plugin instance in this
+  // build. A hybrid app+pages build runs the App Router multi-environment build
+  // (buildApp) and a separate Pages Router SSR build (vite.build) as distinct
+  // plugin instances; without this, each resolves its own random UUID and the
+  // runtime, prerender manifest, and dist/server/BUILD_ID disagree. We resolve
+  // it once here (honoring the user's generateBuildId) and share it via env; the
+  // plugin adopts it unless the user supplied their own generateBuildId.
+  process.env.__VINEXT_SHARED_BUILD_ID = resolvedNextConfig.buildId;
+
   const outputMode = resolvedNextConfig.output;
   const distDir = path.resolve(root, "dist");
 

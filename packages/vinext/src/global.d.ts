@@ -354,6 +354,15 @@ declare global {
       __VINEXT_BUILD_ID?: string;
 
       /**
+       * Build-only coordination variable set by the `vinext build` CLI so that
+       * every vinext() plugin instance in a single build (App Router buildApp +
+       * the separate hybrid Pages Router vite.build) resolves the same build ID.
+       * Distinct from `__VINEXT_BUILD_ID` (the runtime value baked via `define`)
+       * so it never leaks into dev or standalone resolveBuildId() semantics.
+       */
+      __VINEXT_SHARED_BUILD_ID?: string;
+
+      /**
        * Public App Router RSC compatibility identity injected via Vite
        * `define`. Used by browser navigation code to reject RSC payloads from
        * a different vinext build without exposing the raw build ID header.

@@ -59,6 +59,39 @@ describe("App Router Production build", () => {
     expect(fs.readFileSync(buildIdPath, "utf-8").trim().length).toBeGreaterThan(0);
   }, 30000);
 
+  it("adopts __VINEXT_SHARED_BUILD_ID so the runtime and BUILD_ID file agree", async () => {
+    // The `vinext build` CLI resolves the build ID once and shares it via
+    // __VINEXT_SHARED_BUILD_ID so that every plugin instance in a build (App
+    // Router buildApp + the separate hybrid Pages Router vite.build) uses the
+    // same ID. Without it, each instance mints its own random UUID and the
+    // runtime buildId, prerender manifest, and dist/server/BUILD_ID diverge.
+    const sharedBuildId = "shared-test-build-id-1234";
+    const previous = process.env.__VINEXT_SHARED_BUILD_ID;
+    process.env.__VINEXT_SHARED_BUILD_ID = sharedBuildId;
+    try {
+      const builder = await createBuilder({
+        root: APP_FIXTURE_DIR,
+        configFile: false,
+        plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      // The emitted BUILD_ID file uses the shared ID.
+      expect(fs.readFileSync(path.join(outDir, "server", "BUILD_ID"), "utf-8").trim()).toBe(
+        sharedBuildId,
+      );
+      // The shared ID is baked into the App Router runtime bundle (the value
+      // process.env.__VINEXT_BUILD_ID is defined as), so cache keys and data
+      // routes line up with the BUILD_ID file.
+      const rscEntry = fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8");
+      expect(rscEntry).toContain(sharedBuildId);
+    } finally {
+      if (previous === undefined) delete process.env.__VINEXT_SHARED_BUILD_ID;
+      else process.env.__VINEXT_SHARED_BUILD_ID = previous;
+    }
+  }, 30000);
+
   it("builds proxy.ts that reads __filename before redirecting", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/proxy-nfc-traced/proxy-nfc-traced.test.ts
