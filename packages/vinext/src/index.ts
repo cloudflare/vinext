@@ -41,6 +41,7 @@ import {
 import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import {
+  createRscCompatibilityId,
   findNextConfigPath,
   loadNextConfig,
   resolveNextConfigInput,
@@ -179,11 +180,6 @@ import { normalizePathSeparators } from "./utils/path.js";
 // via env-var gate; bypasses during prerender via fire-time
 // VINEXT_PRERENDER check. See socket-error-backstop.ts.
 installSocketErrorBackstop();
-
-function createRscCompatibilityId(nextConfig: ResolvedNextConfig): string {
-  if (nextConfig.deploymentId) return nextConfig.deploymentId;
-  return randomUUID();
-}
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
 
@@ -1232,7 +1228,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             nextConfig = { ...nextConfig, buildId: sharedBuildId };
           }
         }
-        rscCompatibilityId ??= createRscCompatibilityId(nextConfig);
+        // RSC-compat ID coordination across plugin instances — same rationale as
+        // the build ID above. createRscCompatibilityId() falls back to a random
+        // UUID per instance when no deploymentId is pinned, so a hybrid app+pages
+        // build would otherwise bake two different compatibility tokens. The CLI
+        // resolves it once and publishes it via __VINEXT_SHARED_RSC_COMPATIBILITY_ID;
+        // we always adopt it when set (only the build CLI ever sets it, so dev and
+        // standalone resolution are unchanged).
+        if (rscCompatibilityId === undefined) {
+          const sharedRscCompatibilityId = process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID;
+          rscCompatibilityId =
+            sharedRscCompatibilityId && sharedRscCompatibilityId.length > 0
+              ? sharedRscCompatibilityId
+              : createRscCompatibilityId(nextConfig);
+        }
         fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);
         instrumentationPath = findInstrumentationFile(root, fileMatcher);
         instrumentationClientPath = findInstrumentationClientFile(root, fileMatcher);

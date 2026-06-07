@@ -31,7 +31,12 @@ import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
-import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
+import {
+  createRscCompatibilityId,
+  loadNextConfig,
+  resolveNextConfig,
+  PHASE_PRODUCTION_BUILD,
+} from "./config/next-config.js";
 import { emitStandaloneOutput } from "./build/standalone.js";
 import { cleanBuildOutput } from "./build/clean-output.js";
 import { resolveVinextPackageRoot } from "./utils/vinext-root.js";
@@ -458,6 +463,14 @@ async function buildApp() {
   // exits, so there is no in-process reuse to leak into. The var is namespaced
   // to vinext's build flow and is never read by dev or standalone resolveBuildId.
   process.env.__VINEXT_SHARED_BUILD_ID = resolvedNextConfig.buildId;
+
+  // Same coordination for the App Router RSC compatibility token. Without a
+  // pinned deploymentId, createRscCompatibilityId() mints a random UUID per
+  // plugin instance, so a hybrid app+pages build would bake two different
+  // compatibility tokens. Resolve it once and share it (see the plugin's
+  // adoption site). Reuses deploymentId when set (already stable across
+  // instances).
+  process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID = createRscCompatibilityId(resolvedNextConfig);
 
   const outputMode = resolvedNextConfig.output;
   const distDir = path.resolve(root, "dist");

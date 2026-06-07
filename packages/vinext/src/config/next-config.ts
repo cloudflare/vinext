@@ -1031,6 +1031,27 @@ function resolveDeploymentId(configDeploymentId: unknown): string | undefined {
 }
 
 /**
+ * Resolve the App Router RSC compatibility identity for a build.
+ *
+ * This token is baked into the client bundle and echoed by the server in the
+ * `X-Vinext-RSC-Compatibility-Id` response header; browser navigation rejects
+ * RSC payloads whose token differs (deploy skew) without exposing the raw
+ * build ID. When the user pins a `deploymentId` we reuse it (already stable
+ * across plugin instances); otherwise we mint a random UUID.
+ *
+ * NOTE: like `resolveBuildId`, this is non-deterministic in the no-deploymentId
+ * case, so a single `vinext build` that instantiates the plugin more than once
+ * (App Router `buildApp()` + the hybrid Pages Router `vite.build()`) must
+ * resolve it once and share it — see `__VINEXT_SHARED_RSC_COMPATIBILITY_ID`.
+ */
+export function createRscCompatibilityId(
+  nextConfig: Pick<ResolvedNextConfig, "deploymentId">,
+): string {
+  if (nextConfig.deploymentId) return nextConfig.deploymentId;
+  return randomUUID();
+}
+
+/**
  * Converts a cache handler path to a filesystem path.
  * ESM's import.meta.resolve() returns file:// URLs which break when concatenated
  * with path operations like path.join or path.relative.

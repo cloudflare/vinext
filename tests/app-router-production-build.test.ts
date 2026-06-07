@@ -13,6 +13,17 @@ function isBuiltAppHandler(value: unknown): value is BuiltAppHandler {
   return typeof value === "function";
 }
 
+/** Concatenate every `.js` file under `dir` (recursively) for substring checks. */
+function readAllJs(dir: string): string {
+  let out = "";
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out += readAllJs(full);
+    else if (entry.name.endsWith(".js")) out += fs.readFileSync(full, "utf-8");
+  }
+  return out;
+}
+
 describe("App Router Production build", () => {
   const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
 
@@ -121,6 +132,39 @@ describe("App Router Production build", () => {
     } finally {
       if (previous === undefined) delete process.env.__VINEXT_SHARED_BUILD_ID;
       else process.env.__VINEXT_SHARED_BUILD_ID = previous;
+    }
+  }, 30000);
+
+  it("adopts __VINEXT_SHARED_RSC_COMPATIBILITY_ID across the App Router build", async () => {
+    // Companion to the build-ID coordination: createRscCompatibilityId() mints a
+    // random UUID per plugin instance when no deploymentId is pinned, so a hybrid
+    // app+pages build would otherwise bake two different RSC-compat tokens. The
+    // CLI resolves it once and shares it via __VINEXT_SHARED_RSC_COMPATIBILITY_ID;
+    // the plugin always adopts it when set. Both the App Router server bundle and
+    // the client bundle (which compares its baked token against the server's
+    // X-Vinext-RSC-Compatibility-Id header) must carry the shared value.
+    const sharedCompatId = "shared-rsc-compat-id-9012";
+    const previous = process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID;
+    process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID = sharedCompatId;
+    try {
+      const builder = await createBuilder({
+        root: APP_FIXTURE_DIR,
+        configFile: false,
+        plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      // The compat token is baked via Vite `define`; depending on chunking it
+      // can land in the RSC entry or a shared server/client chunk, so scan the
+      // whole server and client output trees. Both sides must carry the same
+      // adopted token — that is what lets the client reject mismatched RSC
+      // payloads (the X-Vinext-RSC-Compatibility-Id header check).
+      expect(readAllJs(path.join(outDir, "server"))).toContain(sharedCompatId);
+      expect(readAllJs(path.join(outDir, "client"))).toContain(sharedCompatId);
+    } finally {
+      if (previous === undefined) delete process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID;
+      else process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID = previous;
     }
   }, 30000);
 
