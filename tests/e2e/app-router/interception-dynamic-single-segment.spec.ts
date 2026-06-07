@@ -9,9 +9,6 @@ const GROUPS_123 = `${BASE}/interception-dyn-single/groups/123`;
 
 test.describe("interception-dynamic-single-segment", () => {
   test("intercepts /groups/[id]/new with (.) from /groups/[id]", async ({ page }) => {
-    // TODO(#1364 Part C): source page is replaced instead of preserved in #children slot.
-    // The modal fires but #children shows the new-item page instead of the group page.
-    test.fail();
     // The (.) modifier matches same-level routes. The bug was that
     // [^/]+ only matched single segments, failing when the source had
     // multiple path segments like /groups/123. Fixed by using .+ (any depth).

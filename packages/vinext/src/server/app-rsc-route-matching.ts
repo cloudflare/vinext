@@ -56,6 +56,7 @@ type AppRscSiblingInterceptForMatching = {
 };
 
 type AppRscRouteForMatching = {
+  pattern: string;
   patternParts: string[];
   slots?: Record<string, AppRscSlotForMatching>;
   siblingIntercepts?: AppRscSiblingInterceptForMatching[];
@@ -169,6 +170,17 @@ function matchInterceptSource(sourceParts: string[], entry: AppRscInterceptLooku
 function createInterceptLookup<Route extends AppRscRouteForMatching>(
   routes: Route[],
 ): AppRscInterceptLookupEntry[] {
+  // Build a pattern→index map so slot intercepts resolve to the actual owner
+  // route rather than the inheriting descendant that carries the slot copy.
+  // When a route inherits a @slot from an ancestor (e.g. /groups/:id/new
+  // inheriting @modal from /interception-dyn-single), the inherited slot's
+  // interceptingRoutes include a sourceMatchPattern that names the real owner
+  // ("/interception-dyn-single"). Using that pattern's index as sourceRouteIndex
+  // ensures resolveAppPageInterceptState produces kind="source-route" (owner ≠
+  // current) rather than kind="current-route" (owner === current), which would
+  // render the descendant page instead of the owner's layout+page tree.
+  const patternToIndex = new Map<string, number>(routes.map((r, i) => [r.pattern, i]));
+
   const interceptLookup: AppRscInterceptLookupEntry[] = [];
   for (let routeIndex = 0; routeIndex < routes.length; routeIndex++) {
     const route = routes[routeIndex];
@@ -180,8 +192,14 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           const sourceMatchPatternParts = sourceMatchPattern
             ? sourceMatchPattern.split("/").filter(Boolean)
             : null;
+          // Prefer the route whose pattern matches sourceMatchPattern (the actual
+          // slot-owner route). Fall back to routeIndex when no match is found.
+          const ownerRouteIndex =
+            sourceMatchPattern !== null
+              ? (patternToIndex.get(sourceMatchPattern) ?? routeIndex)
+              : routeIndex;
           interceptLookup.push({
-            sourceRouteIndex: routeIndex,
+            sourceRouteIndex: ownerRouteIndex,
             slotKey,
             slotId: typeof slotModule.id === "string" ? slotModule.id : null,
             targetPattern: intercept.targetPattern,
