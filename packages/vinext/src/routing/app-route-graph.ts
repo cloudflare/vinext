@@ -367,7 +367,7 @@ function createAppRouteGraphDefaultId(slotId: string): string {
   return `default:${slotId}`;
 }
 
-const SIBLING_INTERCEPT_SLOT_NAME = "__page";
+const SIBLING_INTERCEPT_SLOT_NAME = "__vinext_sibling_intercept";
 function createAppRouteGraphSiblingInterceptSlotId(sourcePattern: string): string {
   return createAppRouteGraphSlotId(SIBLING_INTERCEPT_SLOT_NAME, sourcePattern);
 }

@@ -206,7 +206,7 @@ export async function buildPageElements<
       routeSegments: route.routeSegments ?? [],
       slots: route.slots ?? null,
     }),
-    params,
+    params: effectiveParams,
     routePath: route.pattern,
     routeSegments: route.routeSegments ?? null,
     searchParams,
