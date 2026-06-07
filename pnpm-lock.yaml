@@ -1048,7 +1048,7 @@ importers:
     dependencies:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
-        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.24(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react@19.2.7)
+        version: 0.5.27(@voidzero-dev/vite-plus-core@0.1.24(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0))(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react@19.2.7)
       react:
         specifier: 'catalog:'
         version: 19.2.7
@@ -1063,11 +1063,11 @@ importers:
         version: link:../../../packages/vinext
       vite:
         specifier: npm:@voidzero-dev/vite-plus-core@0.1.24
-        version: '@voidzero-dev/vite-plus-core@0.1.24(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3)'
+        version: '@voidzero-dev/vite-plus-core@0.1.24(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0)'
     devDependencies:
       vite-plus:
         specifier: 'catalog:'
-        version: 0.1.24(@opentelemetry/api@1.9.1)(@types/node@25.2.3)(@vitest/coverage-istanbul@4.1.6(@voidzero-dev/vite-plus-test@0.1.24))(@voidzero-dev/vite-plus-core@0.1.24(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3))(esbuild@0.27.3)(jiti@2.6.1)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.8.3)
+        version: 0.1.24(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.6(@voidzero-dev/vite-plus-test@0.1.24))(@voidzero-dev/vite-plus-core@0.1.24(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0))(esbuild@0.27.3)(jiti@2.7.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0)
 
   tests/fixtures/app-cjs-violation:
     dependencies:
