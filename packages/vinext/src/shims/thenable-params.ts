@@ -207,6 +207,7 @@ export function makeThenableParams<T extends Record<string, unknown>>(
       ? fallbackShellState.fallbackParamNames
       : null;
   let fallbackShellPromise: Promise<T> | null = null;
+  let fallbackShellPromiseController: AbortController | null = null;
 
   function getFallbackShellPromise(): Promise<T> | null {
     // `fallbackParamNames` is non-null only when this params object was built
@@ -220,12 +221,23 @@ export function makeThenableParams<T extends Record<string, unknown>>(
     // Promise creation stays lazy so the dynamic-boundary side effects only
     // fire on first actual fallback-key access.
     if (!fallbackParamNames || !fallbackShellState) return null;
-    if (!fallbackShellPromise) {
-      fallbackShellPromise = createPprFallbackShellSuspensePromiseForState<T>(
-        fallbackShellState,
-        "`params`",
-      );
+    // `preparePprFallbackShellFinalRender` swaps in a fresh `AbortController`
+    // on the warmup->final transition. Re-derive the hanging promise whenever
+    // the live controller has changed so suspension always tracks the
+    // controller the lifecycle will actually abort, instead of a stale signal
+    // from a prior phase. This also re-applies the dynamic-boundary side
+    // effects against the current phase.
+    if (
+      fallbackShellPromise &&
+      fallbackShellPromiseController === fallbackShellState.abortController
+    ) {
+      return fallbackShellPromise;
     }
+    fallbackShellPromiseController = fallbackShellState.abortController;
+    fallbackShellPromise = createPprFallbackShellSuspensePromiseForState<T>(
+      fallbackShellState,
+      "`params`",
+    );
     return fallbackShellPromise;
   }
 

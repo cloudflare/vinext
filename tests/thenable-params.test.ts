@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   createPprFallbackShellState,
+  preparePprFallbackShellFinalRender,
   runWithPprFallbackShellState,
 } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
@@ -284,6 +285,52 @@ describe("makeThenableParams", () => {
     expect(typeof (thrownFromDescriptor as Promise<unknown>).then).toBe("function");
 
     state.abortController.abort();
+  });
+
+  it("re-derives fallback suspension against the live controller after a phase transition", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+
+    const params = runWithPprFallbackShellState(state, () =>
+      makeThenableParams({ locale: "en", slug: "[slug]" }),
+    );
+
+    // Warmup access throws a hanging promise wired to the warmup controller.
+    let warmupPromise: Promise<unknown> | undefined;
+    try {
+      Reflect.get(params, "slug");
+    } catch (error) {
+      warmupPromise = error as Promise<unknown>;
+    }
+    expect(warmupPromise).toBeDefined();
+    const warmupController = state.abortController;
+
+    // Transition to the final render — this swaps in a fresh AbortController.
+    preparePprFallbackShellFinalRender(state);
+    expect(state.abortController).not.toBe(warmupController);
+
+    // Final-phase access must throw a *new* hanging promise wired to the live
+    // (final) controller, not the memoized warmup promise bound to the dead
+    // signal the lifecycle will never abort again.
+    let finalPromise: Promise<unknown> | undefined;
+    try {
+      Reflect.get(params, "slug");
+    } catch (error) {
+      finalPromise = error as Promise<unknown>;
+    }
+    expect(finalPromise).toBeDefined();
+    expect(finalPromise).not.toBe(warmupPromise);
+
+    // Aborting the live controller rejects the final-phase suspension.
+    const rejectedAssertion = expect(finalPromise).rejects.toThrow();
+    state.abortController.abort();
+    await rejectedAssertion;
+
+    // Settle the warmup promise too so it does not leak as unhandled.
+    warmupController.abort();
+    await (warmupPromise as Promise<unknown>).catch(() => {});
   });
 
   it("Object.keys(params) does not mark dynamic boundary before fallback param access", () => {

@@ -227,6 +227,38 @@ describe("ppr fallback shell render lifecycle", () => {
     state.abortController.abort();
   });
 
+  it("does not drive pendingCacheTasks negative when a warmup task settles after final transition", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+
+    let finishWarmupTask!: () => void;
+    const tracked = runWithPprFallbackShellState(state, () =>
+      trackPprFallbackShellCacheTask(
+        () => new Promise<void>((resolve) => (finishWarmupTask = resolve)),
+        "default",
+      ),
+    );
+    expect(state.pendingCacheTasks).toBe(1);
+
+    // Transition to the final render while the warmup task is still in flight.
+    // This resets `pendingCacheTasks` to 0.
+    preparePprFallbackShellFinalRender(state);
+    expect(state.pendingCacheTasks).toBe(0);
+
+    // The stale warmup task settling must not decrement the reset counter
+    // below zero (which would permanently block `waitForPprFallbackShellCacheReady`).
+    finishWarmupTask();
+    await tracked;
+    expect(state.pendingCacheTasks).toBe(0);
+
+    // Final-phase cache-ready still resolves immediately.
+    await waitForPprFallbackShellCacheReady(state);
+
+    state.abortController.abort();
+  });
+
   it("multiple suspense promises in the same warmup phase track correctly", async () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: ["slug"],

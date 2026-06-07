@@ -3,6 +3,10 @@ import { getOrCreateAls } from "./internal/als-registry.js";
 
 export type PprFallbackShellState = {
   abortController: AbortController;
+  // Incremented on every warmup->final transition so that cache tasks tracked
+  // in an earlier phase no longer touch the (reset) `pendingCacheTasks` counter
+  // when they settle late.
+  cacheEpoch: number;
   cacheReadyResolvers: Array<() => void>;
   fallbackParamNames: ReadonlySet<string>;
   hasDynamicBoundary: boolean;
@@ -20,6 +24,9 @@ type CreatePprFallbackShellStateOptions = {
 };
 
 type PprFallbackShellCacheTask = {
+  // The `cacheEpoch` the task was created in. A task that settles in a later
+  // epoch (after a warmup->final transition) must not decrement the counter.
+  epoch: number;
   isIgnored: boolean;
   isPending: boolean;
 };
@@ -112,6 +119,11 @@ function scheduleAbortIfReady(state: PprFallbackShellState): void {
 function completeCacheTask(state: PprFallbackShellState, task: PprFallbackShellCacheTask): void {
   if (!task.isPending) return;
   task.isPending = false;
+  // A task created in an earlier epoch was already accounted for when
+  // `preparePprFallbackShellFinalRender` reset `pendingCacheTasks` to 0, so a
+  // late settle must not decrement the freshly-reset counter below zero (which
+  // would permanently block `resolveCacheReadyIfSettled`).
+  if (task.epoch !== state.cacheEpoch) return;
   state.pendingCacheTasks--;
   scheduleCacheReadyIfSettled(state);
 }
@@ -127,6 +139,7 @@ export function createPprFallbackShellState(
 ): PprFallbackShellState {
   return {
     abortController: new AbortController(),
+    cacheEpoch: 0,
     cacheReadyResolvers: [],
     fallbackParamNames: new Set(options.fallbackParamNames),
     hasDynamicBoundary: false,
@@ -159,6 +172,7 @@ export function trackPprFallbackShellCacheTask<T>(
   cancelPendingCacheReady(state);
   state.pendingCacheTasks++;
   const task: PprFallbackShellCacheTask = {
+    epoch: state.cacheEpoch,
     isIgnored: false,
     isPending: true,
   };
@@ -230,6 +244,9 @@ export function preparePprFallbackShellFinalRender(state: PprFallbackShellState)
     state.pendingAbortCleanup = null;
   }
   state.abortController = new AbortController();
+  // Bump the epoch so any warmup cache task still in flight no longer
+  // decrements the reset counter when it settles.
+  state.cacheEpoch++;
   state.cacheReadyResolvers.length = 0;
   state.hasDynamicBoundary = false;
   state.isAbortScheduled = false;
