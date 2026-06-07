@@ -11,8 +11,6 @@ const LOCALE_HOME = `${BASE}/interception-mw/en`;
 
 test.describe("interception-dynamic-segment-middleware", () => {
   test("intercepts dynamic route when middleware rewrites add locale prefix", async ({ page }) => {
-    // TODO(#1364 Part C): interception doesn't fire when middleware rewrites add a locale prefix.
-    test.fail();
     await page.goto(LOCALE_HOME);
     await waitForAppRouterHydration(page);
 
@@ -24,8 +22,6 @@ test.describe("interception-dynamic-segment-middleware", () => {
   });
 
   test("refresh after interception shows non-intercepted page", async ({ page }) => {
-    // TODO(#1364 Part C): depends on interception firing (see test above).
-    test.fail();
     await page.goto(LOCALE_HOME);
     await waitForAppRouterHydration(page);
 
@@ -42,8 +38,6 @@ test.describe("interception-dynamic-segment-middleware", () => {
   test("back/forward navigation preserves intercepted state with middleware active", async ({
     page,
   }) => {
-    // TODO(#1364 Part C): depends on interception firing (see test above).
-    test.fail();
     await page.goto(LOCALE_HOME);
     await waitForAppRouterHydration(page);
 
@@ -58,8 +52,6 @@ test.describe("interception-dynamic-segment-middleware", () => {
   });
 
   test("repeated interceptions with middleware work consistently", async ({ page }) => {
-    // TODO(#1364 Part C): depends on interception firing (see test above).
-    test.fail();
     for (let i = 0; i < 2; i++) {
       await page.goto(LOCALE_HOME);
       await waitForAppRouterHydration(page);
