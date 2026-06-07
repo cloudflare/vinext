@@ -14,6 +14,7 @@ import type {
 import type { ClientReuseManifestSkipDisposition } from "./client-reuse-manifest.js";
 import { isInterceptionMatchedUrlPath } from "./normalize-path.js";
 import { releaseAppElementRenderDependency } from "./app-render-dependency.js";
+import { compareStrings } from "../utils/compare.js";
 import { isUnknownRecord } from "../utils/record.js";
 
 const APP_INTERCEPTION_SEPARATOR = "\0";
@@ -87,7 +88,7 @@ const CACHE_PROOF_REJECTION_CODES = createCacheProofRejectionCodeSet([
   "CP_STATIC_LAYOUT_VARIANT_DIMENSION_UNPROVEN",
 ]);
 
-export type AppElementsSlotBindingState = "active" | "default" | "unmatched";
+type AppElementsSlotBindingState = "active" | "default" | "unmatched";
 
 export type AppElementsSlotBinding = Readonly<{
   activeRouteId?: string | null;
@@ -104,11 +105,7 @@ export type AppElementsInterception = Readonly<{
   targetRouteId: string;
 }>;
 
-export function compareAppElementsSlotIds(left: string, right: string): number {
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
-}
+export const compareAppElementsSlotIds = compareStrings;
 
 function compareAppElementsSlotBindingsBySlotId(
   left: Pick<AppElementsSlotBinding, "slotId">,

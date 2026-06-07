@@ -361,12 +361,56 @@ describe("app page execution helpers", () => {
     await expect(response.text()).resolves.toBe("E:NEXT_REDIRECT;replace;/redirected;307;");
   });
 
-  it("always emits 200 + flight payload for metadata-originated redirects (even on document SSR)", async () => {
-    // generateMetadata() redirects are streamed inside the flight payload
-    // because metadata resolution is suspended in Next.js. The HTTP status
-    // stays 200 for both RSC and full document requests. Mirrors Next.js
-    // test/e2e/app-dir/metadata-navigation:
-    //   "should support redirect in generateMetadata"
+  it("keeps metadata-originated RSC redirects on the Flight digest path", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should trigger redirection when call redirect"
+    //
+    // Document requests and RSC navigation requests intentionally diverge:
+    // the document path streams a refresh meta tag, while the client router
+    // still consumes the redirect digest from the Flight stream.
+    const buildRscRedirectFlightStream = vi.fn(
+      (options: { digest: string }) =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`E:${options.digest}`));
+            controller.close();
+          },
+        }),
+    );
+
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: true,
+      request: new Request("https://example.com/start.rsc"),
+      specialError: {
+        kind: "redirect",
+        location: "/redirected",
+        statusCode: 307,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toMatch(/^text\/x-component/);
+    expect(response.headers.get("location")).toBeNull();
+    expect(buildRscRedirectFlightStream).toHaveBeenCalledTimes(1);
+    expect(buildRscRedirectFlightStream).toHaveBeenCalledWith({
+      digest: "NEXT_REDIRECT;replace;/redirected;307;",
+    });
+    await expect(response.text()).resolves.toBe("E:NEXT_REDIRECT;replace;/redirected;307;");
+  });
+
+  it("renders a metadata-originated document redirect as an HTML refresh when metadata streams", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should trigger redirection when call redirect"
+    //
+    // Next.js captures redirect() thrown by generateMetadata() as a streamed
+    // server error and injects the canonical refresh meta tag through
+    // make-get-server-inserted-html.tsx. The document status stays 200, but it
+    // must remain an HTML document so a browser direct visit can follow it.
     const buildRscRedirectFlightStream = vi.fn(
       () =>
         new ReadableStream<Uint8Array>({
@@ -391,7 +435,44 @@ describe("app page execution helpers", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(buildRscRedirectFlightStream).toHaveBeenCalledTimes(1);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(buildRscRedirectFlightStream).not.toHaveBeenCalled();
+    await expect(response.text()).resolves.toContain(
+      '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/redirected"/>',
+    );
+  });
+
+  it("uses an HTTP redirect for metadata-originated redirects when metadata streaming is disabled", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should render blocking 307 response status when html limited bots access redirect"
+    const buildRscRedirectFlightStream = vi.fn(
+      () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("flight-payload"));
+            controller.close();
+          },
+        }),
+    );
+
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream,
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      request: new Request("https://example.com/start"),
+      serveStreamingMetadata: false,
+      specialError: {
+        kind: "redirect",
+        location: "/redirected",
+        statusCode: 307,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("https://example.com/redirected");
+    expect(buildRscRedirectFlightStream).not.toHaveBeenCalled();
   });
 
   it("preserves the 307/308 status code in the encoded digest (permanentRedirect)", async () => {

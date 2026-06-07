@@ -22,7 +22,7 @@
  * by hand. `options` must be JSON-serializable: it is inlined into the generated
  * registration module and forwarded to the adapter factory at runtime.
  */
-export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
+type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
   /**
    * Module specifier (or absolute path, e.g. from `require.resolve(...)`) whose
    * default export is a cache adapter factory.

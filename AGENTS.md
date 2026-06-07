@@ -319,6 +319,10 @@ Always use Node.js built-in modules and APIs before reaching for third-party pac
 
 If a Node built-in does the job, use it. Only reach for a dependency when the built-in is genuinely insufficient.
 
+### Never Install With `--no-frozen-lockfile`
+
+**NEVER run installs with `--no-frozen-lockfile`** (e.g. `pnpm install --no-frozen-lockfile`) on your own. Installs are frozen by default, so updating the lockfile requires this flag — which is exactly why an agent must never run it unattended. Bypassing the frozen lockfile opens the door to supply chain attacks: a frozen lockfile pins exact, vetted dependency versions and integrity hashes, and unfreezing it can pull in unreviewed or tampered packages. If you genuinely believe the lockfile needs to change, stop and ask the user to run the install with `--no-frozen-lockfile` themselves; never run it yourself.
+
 ---
 
 ## Git Workflow
@@ -481,7 +485,7 @@ The ISR cache layer sits **above** `CacheHandler`, not inside it. `CacheHandler`
 - **Revalidate tracking:** A side map stores revalidate durations by cache key (populated on MISS, read on HIT/STALE)
 - **Tag invalidation:** Tag-invalidated entries are hard-deleted (return null), unlike time-expired entries which return stale
 
-The caching layer is pluggable via `setCacheHandler()`. KV is the default for Cloudflare Workers. The ISR logic works automatically with any backend.
+The caching layer is pluggable. The default data cache handler is the in-memory `MemoryCacheHandler` in **all** runtimes (including Cloudflare Workers) when nothing is configured — KV is opt-in, not the default. Configure a backend declaratively via the `cache` option on the `vinext()` plugin (e.g. `cache: { data: kvDataAdapter({ binding: "VINEXT_KV_CACHE" }) }` from `@vinext/cloudflare/cache/kv-data-adapter`); the generated `virtual:vinext-cache-adapters` module registers it on the first request. The imperative `setDataCacheHandler()` / `setCdnCacheAdapter()` setters still work but are deprecated for consumers. The ISR logic works automatically with any backend.
 
 ### Next.js Request Execution Order
 

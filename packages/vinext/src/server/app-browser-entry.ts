@@ -901,6 +901,16 @@ function storeVisitedResponseSnapshot(
   );
 }
 
+function isSamePageSearchNavigation(
+  currentSnapshot: ClientNavigationRenderSnapshot,
+  targetUrl: URL,
+): boolean {
+  const targetPathname = stripBasePath(targetUrl.pathname, __basePath);
+  if (targetPathname !== currentSnapshot.pathname) return false;
+
+  return targetUrl.searchParams.toString() !== currentSnapshot.searchParams.toString();
+}
+
 type NavigationRequestState = {
   interceptionContext: string | null;
   previousNextUrl: string | null;
@@ -1779,6 +1789,13 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         const routerStateAtNavStart = getBrowserRouterState();
         const elementsAtNavStart = routerStateAtNavStart.elements;
         const mountedSlotsHeader = getMountedSlotIdsHeader(elementsAtNavStart);
+        // Next.js refetches page segments for same-page search changes even
+        // when a visible Link prefetched the target. Search params are a page
+        // input, so a cached full-route payload is not authoritative here.
+        // Ref: packages/next/src/client/components/router-reducer/ppr-navigations.ts
+        const shouldBypassNavigationCache =
+          navigationKind === "navigate" &&
+          isSamePageSearchNavigation(routerStateAtNavStart.navigationSnapshot, url);
         // The client reuse manifest is excluded from VINEXT_RSC_VARY_HEADER, so
         // it never affects the cache-busting URL. Defer producing it until the
         // visited-response cache miss is confirmed below — its producer iterates
@@ -1791,12 +1808,14 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             navigationKind === "refresh" ? APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI : undefined,
         });
         const rscUrl = await createRscRequestUrl(url.pathname + url.search, requestHeaders);
-        const cachedRoute = getVisitedResponse(
-          rscUrl,
-          requestInterceptionContext,
-          mountedSlotsHeader,
-          navigationKind,
-        );
+        const cachedRoute = shouldBypassNavigationCache
+          ? null
+          : getVisitedResponse(
+              rscUrl,
+              requestInterceptionContext,
+              mountedSlotsHeader,
+              navigationKind,
+            );
         if (cachedRoute) {
           const compatibilityDecision = resolveRscCompatibilityNavigationDecision({
             clientCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
@@ -1888,7 +1907,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         let navResponse: Response | undefined;
         let navResponseExpiresAt: number | undefined;
         let navResponseUrl: string | null = null;
-        if (navigationKind !== "refresh") {
+        if (navigationKind !== "refresh" && !shouldBypassNavigationCache) {
           const prefetchedResponse = await consumePrefetchResponseForNavigation(
             rscUrl,
             requestInterceptionContext,
@@ -1905,6 +1924,12 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           }
         }
 
+        // The optimistic shell is intentionally not gated by
+        // `shouldBypassNavigationCache`. A same-page search change can still
+        // render an optimistic shell from cached route templates before the
+        // real fetch commits, but that shell is a detached commit (see below)
+        // that is always superseded by the authoritative fetch — the same as
+        // cross-route navigations — so it never persists stale page content.
         if (!navResponse && navigationKind === "navigate") {
           const routeManifest = getBrowserRouteManifest();
           await learnOptimisticRouteTemplatesFromPrefetchCache({

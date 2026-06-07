@@ -74,7 +74,7 @@ export type CommittedOperationRecord = OperationRecordBase & {
   visibleCommitVersion: number;
 };
 
-export type OperationRecord = PendingOperationRecord | CommittedOperationRecord;
+type OperationRecord = PendingOperationRecord | CommittedOperationRecord;
 
 export type AppRouterState = {
   activeOperation: OperationRecord | null;

@@ -33,6 +33,7 @@ import {
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
 import { computeLazyChunks } from "../packages/vinext/src/utils/lazy-chunks.js";
+import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import {
   mergeHeaders,
   resolveStaticAssetSignal,
@@ -56,6 +57,38 @@ function writeFile(dir: string, relativePath: string, content: string): void {
 
 function mkdir(dir: string, relativePath: string): void {
   fs.mkdirSync(path.join(dir, relativePath), { recursive: true });
+}
+
+function readVinextPackageExports(): Record<string, unknown> {
+  const packageJsonPath = path.resolve("packages/vinext/package.json");
+  const parsed: unknown = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
+  if (!isUnknownRecord(parsed) || !isUnknownRecord(parsed.exports)) {
+    throw new Error("packages/vinext/package.json must define an exports object");
+  }
+  return parsed.exports;
+}
+
+function extractVinextImportSubpaths(source: string): string[] {
+  const imports = new Set<string>();
+  const pattern = /\bfrom\s+["']vinext\/([^"']+)["']/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(source)) !== null) {
+    imports.add(`./${match[1]}`);
+  }
+  return [...imports].sort();
+}
+
+function hasPackageExport(exportsMap: Record<string, unknown>, subpath: string): boolean {
+  if (Object.hasOwn(exportsMap, subpath)) return true;
+
+  for (const exportKey of Object.keys(exportsMap)) {
+    if (!exportKey.includes("*")) continue;
+    const [prefix, suffix] = exportKey.split("*");
+    if (prefix === undefined || suffix === undefined) continue;
+    if (subpath.startsWith(prefix) && subpath.endsWith(suffix)) return true;
+  }
+
+  return false;
 }
 
 beforeEach(() => {
@@ -772,9 +805,9 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("handles basePath stripping and creates a new request with stripped URL for middleware", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("basePath");
-    expect(content).toContain("function hasBasePath(pathname: string, basePath: string): boolean");
-    expect(content).toContain("function stripBasePath(pathname: string, basePath: string): string");
-    expect(content).toContain('pathname === basePath || pathname.startsWith(basePath + "/")');
+    expect(content).toContain(
+      'import { hasBasePath, stripBasePath } from "vinext/utils/base-path"',
+    );
     expect(content).toContain("const stripped = stripBasePath(pathname, basePath);");
     // After stripping, a new request with the stripped URL must be created
     // so middleware matchers see the basePath-free pathname (matching prod-server)
@@ -836,19 +869,28 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("env.IMAGES");
   });
 
+  it("exports every vinext subpath imported by generated worker entries", () => {
+    const exportsMap = readVinextPackageExports();
+    const generatedImports = [
+      ...extractVinextImportSubpaths(generateAppRouterWorkerEntry()),
+      ...extractVinextImportSubpaths(generatePagesRouterWorkerEntry()),
+    ];
+    const uniqueGeneratedImports = [...new Set(generatedImports)].sort();
+
+    expect(uniqueGeneratedImports.length).toBeGreaterThan(0);
+    expect(
+      uniqueGeneratedImports.filter((subpath) => !hasPackageExport(exportsMap, subpath)),
+    ).toEqual([]);
+  });
+
   it("merges middleware and config headers into responses with correct precedence", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("mergeHeaders");
+    expect(content).toContain('import { mergeHeaders } from "vinext/server/worker-utils"');
     expect(content).toContain("middlewareHeaders");
-    // Response headers must override middleware headers (matching prod-server).
-    // mergeHeaders uses Headers API and getSetCookie() to preserve multi-value cookies.
-    expect(content).toContain("merged.set(k, v)");
-    expect(content).toContain("getSetCookie");
+    expect(content).toContain("return mergeHeaders(response, middlewareHeaders");
   });
 
   it("mergeHeaders preserves multiple Set-Cookie headers from both middleware and response", () => {
-    // Behavioral test for the mergeHeaders function inlined in the generated worker entry.
-    // worker-utils.ts exports the same function — kept in sync with the deploy.ts template.
     const response = new Response("body", {
       headers: [
         ["set-cookie", "resp=1; Path=/"],
@@ -993,11 +1035,8 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("generated worker entry includes the no-body and streamed content-length merge guards", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("NO_BODY_RESPONSE_STATUSES");
-    expect(content).toContain("__vinextStreamedHtmlResponse");
-    expect(content).toContain('merged.delete("content-length")');
-    expect(content).toContain("if (isContentLengthHeader(k)) continue;");
-    expect(content).toContain("cancelResponseBody(response)");
+    expect(content).toContain('import { mergeHeaders } from "vinext/server/worker-utils"');
+    expect(content).toContain("return mergeHeaders(response, middlewareHeaders");
   });
 
   it("resolveStaticAssetSignal fetches and merges static asset responses with middleware status", async () => {

@@ -26,6 +26,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { parseStaticObjectLiteral } from "../plugins/fonts.js";
+import { isUnknownRecord as isRecord } from "../utils/record.js";
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
 
@@ -33,10 +34,6 @@ type TsconfigPathResolution = {
   aliases: Record<string, string>;
   baseUrl: string | null;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
 
 function resolveTsconfigPathCandidate(candidate: string): string | null {
   const candidates = candidate.endsWith(".json")

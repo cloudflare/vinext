@@ -213,6 +213,7 @@ const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
 
 type UseCacheGuardContext = {
   variant?: unknown;
+  invalidDynamicUsageError?: unknown;
 };
 
 type CacheScopeStorage = {
@@ -270,6 +271,8 @@ export function throwIfInsideCacheScope(apiName: string): void {
     // packages/next/src/server/app-render/app-render.tsx
     // https://github.com/vercel/next.js/commit/f5e54c06726b571a042fce67417e40a29f6b8689
     try {
+      const cacheCtx = _getUseCacheGuardContext();
+      if (cacheCtx) cacheCtx.invalidDynamicUsageError = error;
       const ctx = getRequestContext();
       if (ctx) ctx.invalidDynamicUsageError = error;
     } catch {

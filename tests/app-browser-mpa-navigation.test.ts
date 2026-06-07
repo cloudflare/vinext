@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   AppBrowserMpaNavigationScheduler,
+  hasPendingAppRouterPageRedirect,
   type AppBrowserMpaNavigationWindow,
 } from "../packages/vinext/src/server/app-browser-mpa-navigation.js";
 
@@ -36,6 +37,36 @@ function createNavigationWindow(): {
     },
   };
 }
+
+describe("hasPendingAppRouterPageRedirect", () => {
+  it("treats a missing document as no pending redirect marker", () => {
+    expect(hasPendingAppRouterPageRedirect(undefined)).toBe(false);
+  });
+
+  it("treats a partial document without DOM lookup support as no pending redirect marker", () => {
+    expect(hasPendingAppRouterPageRedirect({ createElement: vi.fn() })).toBe(false);
+  });
+
+  it("detects Next.js's streamed redirect marker", () => {
+    expect(
+      hasPendingAppRouterPageRedirect({
+        getElementById(id: string) {
+          return id === "__next-page-redirect" ? { id } : null;
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not classify unrelated elements as page redirect markers", () => {
+    expect(
+      hasPendingAppRouterPageRedirect({
+        getElementById() {
+          return null;
+        },
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("AppBrowserMpaNavigationScheduler", () => {
   it("supersedes a pending same-href push with a replace before the delayed navigation fires", () => {

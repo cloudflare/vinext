@@ -179,6 +179,15 @@ export default createAdapter;
         cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
       ],
       logLevel: "silent",
+      // Build with vinext's production default (server minification ON) so this
+      // test covers the real shipping path. The assertion below keys off the
+      // adapter's `LOCAL_ADAPTER_MARKER` string literal, whose contents survive
+      // minification verbatim (only identifiers are mangled) — so it remains a
+      // valid "the adapter module was bundled" signal under minify. We
+      // intentionally do NOT grep for the readable `registerConfiguredCacheAdapters`
+      // function name: minify renames it (harmlessly — it is called by reference,
+      // never by name), so that grep would be a minify-off-only proxy that no
+      // longer reflects production.
     });
 
     // Build completing at all proves the absolute-path import resolved and that
@@ -186,7 +195,9 @@ export default createAdapter;
     await builder.buildApp();
 
     const buildOutput = readTextFilesRecursive(path.join(root, "dist"));
+    // Minify-safe: the marker is a string literal in the escaping handler, so
+    // its presence proves the local adapter module was bundled even though the
+    // build ran minified (the production default).
     expect(buildOutput).toContain(LOCAL_ADAPTER_MARKER);
-    expect(buildOutput).toContain("registerConfiguredCacheAdapters");
   }, 60_000);
 });

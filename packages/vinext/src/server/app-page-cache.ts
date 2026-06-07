@@ -17,7 +17,7 @@ import {
   createEmptyAppPageRenderObservationState,
   type AppPageRenderObservationState,
 } from "./app-page-render-observation.js";
-import type { RenderObservation } from "./cache-proof.js";
+import { hasCompleteNegativeRequestApiProof, type RenderObservation } from "./cache-proof.js";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
@@ -51,6 +51,7 @@ export type AppPageCacheOutcomeMetric = Readonly<{
     | "empty-entry"
     | "no-entry"
     | "non-app-page-entry"
+    | "query-variant-unproven"
     | "read-error"
     | "served"
     | "stale-empty-entry";
@@ -94,6 +95,7 @@ type ReadAppPageCacheResponseOptions = {
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
+  hasRequestSearchParams?: boolean;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   mountedSlotsHeader?: string | null;
@@ -236,6 +238,13 @@ function getCachedAppPageValue(entry: ISRCacheEntry | null): CachedAppPageValue 
   return entry?.value.value && entry.value.value.kind === "APP_PAGE" ? entry.value.value : null;
 }
 
+function hasQueryInvariantAppPageProof(cachedValue: CachedAppPageValue): boolean {
+  return (
+    cachedValue.renderObservation !== undefined &&
+    hasCompleteNegativeRequestApiProof(cachedValue.renderObservation, ["searchParams"])
+  );
+}
+
 function resolveAppPageCacheWritePolicy(options: {
   expireSeconds?: number;
   requestCacheLife?: AppPageRequestCacheLife | null;
@@ -343,6 +352,21 @@ export async function readAppPageCacheResponse(
         reason: "non-app-page-entry",
       });
       options.isrDebug?.("MISS (non app-page cache entry)", options.cleanPathname);
+      return null;
+    }
+
+    if (
+      cachedValue &&
+      options.hasRequestSearchParams === true &&
+      !hasQueryInvariantAppPageProof(cachedValue)
+    ) {
+      recordAppPageCacheOutcome(options.recordCacheOutcome, {
+        artifact,
+        cacheKey: isrKey,
+        outcome: "miss",
+        reason: "query-variant-unproven",
+      });
+      options.isrDebug?.("MISS (query-bearing request lacks cache proof)", options.cleanPathname);
       return null;
     }
 

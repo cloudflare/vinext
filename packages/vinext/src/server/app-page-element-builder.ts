@@ -1,5 +1,4 @@
 import { createElement } from "react";
-import { markDynamicUsage, markRenderRequestApiUsage } from "vinext/shims/headers";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { resolveActiveParallelRouteHeadInputs, resolveAppPageHead } from "./app-page-head.js";
 import {
@@ -15,9 +14,14 @@ import type { AppPageParams } from "./app-page-boundary.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
-import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_NAVIGATION,
+  shouldSuppressLoadingBoundaries,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import { createAppPageRenderIdentity } from "./app-page-render-identity.js";
+import { makeObservedAppPageSearchParamsThenable } from "./app-page-search-params-observation.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 
 export type { AppPageErrorModule, AppPageRouteWiringRoute } from "./app-page-route-wiring.js";
@@ -165,7 +169,6 @@ export async function buildPageElements<
   }
 
   const {
-    hasSearchParams,
     hasDynamicMetadata,
     metadata: resolvedMetadata,
     pageSearchParams,
@@ -192,12 +195,14 @@ export async function buildPageElements<
   });
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(params) };
+  let pageSearchParamsThenable: unknown;
   if (searchParams) {
-    pageProps.searchParams = makeThenableParams(pageSearchParams);
-    if (hasSearchParams) {
-      markDynamicUsage();
-      markRenderRequestApiUsage("searchParams");
-    }
+    const shouldObservePageSearchParamsAccess =
+      !shouldSuppressLoadingBoundaries(renderMode) && Boolean(route.loading?.default);
+    pageSearchParamsThenable = shouldObservePageSearchParamsAccess
+      ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
+      : makeThenableParams(pageSearchParams);
+    pageProps.searchParams = pageSearchParamsThenable;
   }
 
   const mountedSlotIds = mountedSlotsHeader ? new Set(mountedSlotsHeader.split(" ")) : null;
@@ -235,6 +240,7 @@ export async function buildPageElements<
     rootForbiddenModule: rootForbiddenModule ?? null,
     rootUnauthorizedModule: rootUnauthorizedModule ?? null,
     route,
+    searchParams: pageSearchParamsThenable,
     slotOverrides,
     renderMode,
   });

@@ -138,7 +138,7 @@ function GlobalErrorBoundary({ error }: { error: Error }) {
 
 type TestModule = {
   default: React.ComponentType<any>;
-  metadata?: { description: string };
+  metadata?: { description?: string; title?: string };
   viewport?: { themeColor: string };
 };
 
@@ -154,6 +154,11 @@ const leafLayoutModule = {
 
 const notFoundModule = {
   default: NotFoundBoundary,
+} satisfies TestModule;
+
+const notFoundModuleWithMetadata = {
+  default: NotFoundBoundary,
+  metadata: { title: "notfound title" },
 } satisfies TestModule;
 
 const routeErrorModule = {
@@ -217,6 +222,38 @@ describe("app page boundary render helpers", () => {
     expect(html).toContain('name="theme-color" content="#111111"');
     expect(html).toContain('name="robots"');
     expect(html).toContain('content="noindex"');
+  });
+
+  it("renders not-found boundary metadata exactly once for HTTP access fallbacks", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should not duplicate metadata with navigation API"
+    //
+    // The upstream fixture calls notFound() from generateMetadata() and expects
+    // the rendered not-found boundary's metadata (`not-found.tsx` static
+    // metadata) to produce a single title in the document.
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      rootLayouts: [rootLayoutModule],
+      route: {
+        layoutTreePositions: [0],
+        layouts: [rootLayoutModule],
+        notFound: notFoundModuleWithMetadata,
+        params: { slug: "missing" },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+
+    const html = await response?.text();
+    expect(html?.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(html).toContain("<title>notfound title</title>");
   });
 
   it("does not inject child route file metadata into layout-level HTTP access fallbacks", async () => {

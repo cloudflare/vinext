@@ -48,7 +48,7 @@ describe("app page stream helpers", () => {
       getStyles: () => [],
     });
 
-    const htmlStream = await renderAppPageHtmlStream({
+    const { htmlStream } = await renderAppPageHtmlStream({
       fontData,
       navigationContext: { pathname: "/test" },
       rscStream: createStream(["flight"]),
@@ -67,7 +67,7 @@ describe("app page stream helpers", () => {
   it("forwards waitForAllReady to the SSR handler", async () => {
     const ssrHandler = vi.fn(async () => createStream(["<html>all-ready</html>"]));
 
-    const htmlStream = await renderAppPageHtmlStream({
+    const { htmlStream } = await renderAppPageHtmlStream({
       fontData: createAppPageFontData({
         getLinks: () => [],
         getPreloads: () => [],
@@ -93,7 +93,7 @@ describe("app page stream helpers", () => {
     const formState = ["action-result", "key-path", "reference-id", 1] as never;
     const ssrHandler = vi.fn(async () => createStream(["<html>form-state</html>"]));
 
-    const htmlStream = await renderAppPageHtmlStream({
+    const { htmlStream } = await renderAppPageHtmlStream({
       fontData: createAppPageFontData({
         getLinks: () => [],
         getPreloads: () => [],
@@ -117,7 +117,7 @@ describe("app page stream helpers", () => {
   it("forwards basePath to the SSR handler", async () => {
     const ssrHandler = vi.fn(async () => createStream(["<html>base-path</html>"]));
 
-    const htmlStream = await renderAppPageHtmlStream({
+    const { htmlStream } = await renderAppPageHtmlStream({
       basePath: "/docs",
       fontData: createAppPageFontData({
         getLinks: () => [],

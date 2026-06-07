@@ -28,6 +28,7 @@ import type { Plugin } from "vite";
 import { parseAst } from "vite";
 import path from "node:path";
 import fs from "node:fs";
+import { escapeRegExp } from "../utils/regex.js";
 import MagicString from "magic-string";
 import {
   buildFallbackFontFace,
@@ -411,10 +412,6 @@ function parseGoogleFontImportClause(clause: string): {
 
 function propertyNameToGoogleFontFamily(prop: string): string {
   return prop.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // ── Font fetching and caching ─────────────────────────────────────────────────

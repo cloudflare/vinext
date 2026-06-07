@@ -188,9 +188,27 @@ const _gCdn = globalThis as unknown as Record<PropertyKey, unknown>;
 let _defaultAdapter: DefaultCdnCacheAdapter | null = null;
 
 /**
- * Set a custom CDN cache adapter. Call during server startup to delegate
- * page-level ISR to a CDN edge. An explicit adapter always wins over the
- * built-in request-context / default selection.
+ * Set a custom CDN cache adapter to delegate page-level ISR to a CDN edge. An
+ * explicit adapter always wins over the built-in request-context / default
+ * selection.
+ *
+ * @deprecated Don't wire up the CDN cache adapter imperatively. Configure it
+ * declaratively via the `cache.cdn` option on the `vinext()` plugin in your
+ * `vite.config.ts`, using a config-time adapter builder. On Cloudflare Workers:
+ *
+ * ```ts
+ * import { vinext } from "vinext";
+ * import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+ *
+ * export default defineConfig({
+ *   plugins: [vinext({ cache: { cdn: cdnAdapter() } })],
+ * });
+ * ```
+ *
+ * The plugin registers the adapter across every runtime/router entry, so you
+ * don't have to call this from a worker entry. This setter remains as the
+ * internal registration target and for backwards compatibility, but is not the
+ * recommended consumer API.
  */
 export function setCdnCacheAdapter(adapter: CdnCacheAdapter): void {
   _gCdn[_CDN_KEY] = adapter;

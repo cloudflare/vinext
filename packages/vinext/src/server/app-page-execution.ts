@@ -9,7 +9,9 @@ import { VINEXT_RSC_REDIRECT_HEADER } from "./headers.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
+import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
 import { addBasePathToPathname } from "../utils/base-path.js";
+import { isPromiseLike } from "../utils/promise.js";
 
 /**
  * Builds the canonical `NEXT_REDIRECT;<type>;<url>;<status>;` digest that
@@ -33,19 +35,24 @@ function formatNextRedirectDigest(options: { url: string; statusCode: number }):
 }
 
 export type { LayoutFlags };
-export type { ClassificationReason };
 
 /**
  * Marker we tag onto a thrown redirect/notFound error when it originates from
  * `generateMetadata()` (vs. a server component itself). Metadata resolution is
- * suspended/streamed in Next.js, so a redirect from metadata never becomes an
- * HTTP-level 307 — it rides inside the flight payload with a 200 status,
- * regardless of whether the request is RSC or a full document SSR. Page-level
- * redirect()s, by contrast, still produce a 307 for SSR document requests.
+ * suspended/streamed in Next.js, so a redirect from metadata is not emitted as
+ * a plain HTTP-level 307. Instead the transport depends on the request:
+ *   - RSC navigation requests (`Rsc: 1`) ride inside the flight payload with a
+ *     200 status; the client router decodes the redirect digest.
+ *   - Streaming-capable document requests get a 200 HTML response carrying a
+ *     refresh meta tag (the streamed document can't switch to a 307 after the
+ *     head has flushed).
+ *   - html-limited bots (which Next.js serves a blocking, non-streamed
+ *     response) get the HTTP-level 307.
+ * Page-level redirect()s, by contrast, still produce a 307 for SSR document
+ * requests.
  *
  * See Next.js test:
- *   test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
- *   ("should support redirect in generateMetadata")
+ *   test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
  */
 const APP_PAGE_METADATA_ERROR_MARKER = Symbol.for("vinext.appPage.metadataError");
 
@@ -132,6 +139,7 @@ type BuildAppPageSpecialErrorResponseOptions = {
   middlewareContext?: { headers: Headers | null };
   renderFallbackPage?: (statusCode: number) => Promise<Response | null>;
   request: Request;
+  serveStreamingMetadata?: boolean;
   specialError: AppPageSpecialError;
 };
 
@@ -185,15 +193,6 @@ type ProbeAppPageComponentOptions = {
   probePage: () => unknown;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
 };
-
-function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return Boolean(
-    value &&
-    (typeof value === "object" || typeof value === "function") &&
-    "then" in value &&
-    typeof value.then === "function",
-  );
-}
 
 function getAppPageStatusText(statusCode: number): string {
   return statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
@@ -290,6 +289,35 @@ function sameOriginPathOrAbsolute(location: string, requestUrl: string): string 
   }
 }
 
+function buildMetadataRedirectHtmlResponse(options: {
+  digest: string;
+  getAndClearPendingCookies?: () => string[];
+  isEdgeRuntime?: boolean;
+  middlewareContext?: { headers: Headers | null };
+}): Response {
+  const headers = new Headers({
+    "Content-Type": "text/html; charset=utf-8",
+  });
+  applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
+  mergeMiddlewareResponseHeaders(headers, options.middlewareContext?.headers ?? null);
+
+  const pendingCookies = options.getAndClearPendingCookies?.() ?? [];
+  for (const cookie of pendingCookies) {
+    headers.append("Set-Cookie", cookie);
+  }
+
+  const errorMetaTags = renderSsrErrorMetaTags([{ digest: options.digest }]);
+  // Intentional divergence from Next.js: Next.js inserts the redirect meta tag
+  // into the otherwise fully-rendered streamed document, whereas we emit a
+  // minimal stub (refresh meta tag, empty body). For a redirect this is
+  // functionally equivalent — the browser follows the refresh regardless of
+  // body content — and avoids re-rendering page content we're about to discard.
+  return new Response(`<!DOCTYPE html><html><head>${errorMetaTags}</head><body></body></html>`, {
+    headers,
+    status: 200,
+  });
+}
+
 export async function buildAppPageSpecialErrorResponse(
   options: BuildAppPageSpecialErrorResponseOptions,
 ): Promise<Response> {
@@ -302,20 +330,37 @@ export async function buildAppPageSpecialErrorResponse(
       options.request.url,
       options.basePath,
     );
+    const digestUrl = sameOriginPathOrAbsolute(prefixedLocation, options.request.url);
+    const digest = formatNextRedirectDigest({
+      url: digestUrl,
+      statusCode: options.specialError.statusCode,
+    });
+
+    if (
+      options.specialError.fromMetadata === true &&
+      !options.isRscRequest &&
+      options.serveStreamingMetadata !== false
+    ) {
+      return buildMetadataRedirectHtmlResponse({
+        digest,
+        getAndClearPendingCookies: options.getAndClearPendingCookies,
+        isEdgeRuntime: options.isEdgeRuntime,
+        middlewareContext: options.middlewareContext,
+      });
+    }
 
     // Two cases need a 200 + flight-payload encoding instead of an HTTP 307:
     //   1. RSC navigation requests (`Rsc: 1` header) — the client router
     //      decodes the redirect digest from the flight stream. A raw 307
     //      bypasses that path and breaks cache-busting validation.
-    //   2. `generateMetadata()` redirects — metadata is suspended in Next.js,
-    //      so the redirect rides inside the streamed flight payload even for
-    //      full document SSR. The status line stays 200.
+    // Document requests that redirect from `generateMetadata()` are HTML
+    // responses instead: streaming-capable user agents get a refresh meta tag
+    // and html-limited bots get the blocking 307 above.
     // Mirrors Next.js's `generateDynamicFlightRenderResult` path in
     // `app-render.tsx`, where the redirect error propagates through
     // `renderToFlightStream` and is serialized with its digest.
     const shouldEmbedRedirectInFlight =
-      Boolean(options.buildRscRedirectFlightStream) &&
-      (options.isRscRequest || options.specialError.fromMetadata === true);
+      Boolean(options.buildRscRedirectFlightStream) && options.isRscRequest;
 
     if (shouldEmbedRedirectInFlight && options.buildRscRedirectFlightStream) {
       // Reduce the resolved (absolute) URL back to a path-only form for
@@ -323,11 +368,6 @@ export async function buildAppPageSpecialErrorResponse(
       // `redirect()` (typically a path like "/about"), and the client router's
       // `router.push(url)` happily accepts paths. Cross-origin targets keep
       // their absolute form, matching Next.js's external-redirect handling.
-      const digestUrl = sameOriginPathOrAbsolute(prefixedLocation, options.request.url);
-      const digest = formatNextRedirectDigest({
-        url: digestUrl,
-        statusCode: options.specialError.statusCode,
-      });
       const stream = options.buildRscRedirectFlightStream({ digest });
 
       const headers = new Headers({

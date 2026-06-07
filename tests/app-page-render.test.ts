@@ -761,6 +761,71 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
+  it("captures prerender cache metadata when SSR fills RSC capture during HTML consumption", async () => {
+    const common = createCommonOptions();
+    let requestCacheLife: { revalidate: number; expire: number } | null = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      getRequestCacheLife() {
+        const value = requestCacheLife;
+        requestCacheLife = null;
+        return value;
+      },
+      isPrerender: true,
+      isProduction: false,
+      loadSsrHandler: async () => ({
+        async handleSsr(
+          rscStream: ReadableStream<Uint8Array>,
+          _navContext: unknown,
+          _fontData: unknown,
+          options?: {
+            sideStream?: ReadableStream<Uint8Array>;
+            capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+          },
+        ) {
+          const stream = options?.sideStream ?? rscStream;
+          const capturedRscData = new Response(stream).arrayBuffer();
+          if (options?.capturedRscDataRef) {
+            options.capturedRscDataRef.value = capturedRscData;
+          }
+
+          const htmlStream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("<html>page</html>"));
+              controller.close();
+            },
+          });
+
+          return {
+            htmlStream,
+            metadataReady: capturedRscData.then(() => {}),
+            capturedRscData,
+          };
+        },
+      }),
+      renderToReadableStream() {
+        let sent = false;
+        return new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent) {
+              controller.close();
+              return;
+            }
+            requestCacheLife = { revalidate: 1, expire: 3 };
+            controller.enqueue(new TextEncoder().encode("flight-data"));
+            sent = true;
+          },
+        });
+      },
+      revalidateSeconds: null,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("s-maxage=1, stale-while-revalidate=2");
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
   it("preserves prerender cache metadata for the manifest writer after shaping headers", async () => {
     const common = createCommonOptions();
     let requestCacheLife: { revalidate: number; expire: number } | null = null;
@@ -936,6 +1001,117 @@ describe("app page render lifecycle", () => {
     });
     expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
     await expect(response.text()).resolves.toBe("flight-data");
+  });
+
+  it("streams runtime HTML responses progressively without buffering the body", async () => {
+    const common = createCommonOptions();
+    const releaseSsr = createDeferred();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isPrerender: false,
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          const htmlStream = new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              controller.enqueue(new TextEncoder().encode("<html>part1</html>"));
+              await releaseSsr.promise;
+              controller.enqueue(new TextEncoder().encode("<html>part2</html>"));
+              controller.close();
+            },
+          });
+          return {
+            htmlStream,
+            metadataReady: Promise.resolve(),
+            capturedRscData: null,
+          };
+        },
+      }),
+    });
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error("Expected a response body");
+    }
+
+    const { value: chunk1 } = await reader.read();
+    expect(new TextDecoder().decode(chunk1)).toBe("<html>part1</html>");
+
+    releaseSsr.resolve();
+    const { value: chunk2 } = await reader.read();
+    expect(new TextDecoder().decode(chunk2)).toBe("<html>part2</html>");
+  });
+
+  it("waits for metadataReady to resolve before returning the response in prerender mode", async () => {
+    const common = createCommonOptions();
+    let metadataReadyResolved = false;
+    const releaseMetadata = createDeferred();
+
+    const responsePromise = renderAppPageLifecycle({
+      ...common.options,
+      isPrerender: true,
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          return {
+            htmlStream: createStream(["<html>page</html>"]),
+            metadataReady: releaseMetadata.promise.then(() => {
+              metadataReadyResolved = true;
+            }),
+            capturedRscData: null,
+          };
+        },
+      }),
+    });
+
+    // Verify that the response is NOT returned yet because metadataReady is pending
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    let responseReturned = false;
+    void responsePromise.then(() => {
+      responseReturned = true;
+    });
+    expect(responseReturned).toBe(false);
+
+    // Resolve metadataReady
+    releaseMetadata.resolve();
+    const response = await responsePromise;
+    expect(metadataReadyResolved).toBe(true);
+    expect(response.status).toBe(200);
+  });
+
+  it("captures special errors thrown during the full prerender SSR pass and converts them to 307/404 response", async () => {
+    const common = createCommonOptions();
+    const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
+    let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isPrerender: true,
+      hasLoadingBoundary: true,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navContext, _fontData, _options) {
+          // Trigger the captured onError callback representing a component throw
+          if (capturedOnError) {
+            capturedOnError(notFoundError, null, null);
+          }
+          return {
+            htmlStream: createStream(["<html>fallback</html>"]),
+            metadataReady: Promise.resolve(),
+            capturedRscData: null,
+          };
+        },
+      }),
+      renderToReadableStream(_element, opts) {
+        capturedOnError = opts.onError;
+        return createStream(["flight-data"]);
+      },
+    });
+
+    expect(response.status).toBe(404);
+    expect(common.renderPageSpecialError).toHaveBeenCalledTimes(1);
+    expect(common.renderPageSpecialError).toHaveBeenCalledWith({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
   });
 });
 

@@ -310,6 +310,93 @@ describe("analyzeConfig", () => {
     expect(webpackItem?.detail).toContain("Vite replaces webpack");
   });
 
+  it("does not flag webpack when it only appears in a comment", () => {
+    writeFile(
+      "next.config.js",
+      `// We removed our custom webpack config when migrating to vinext.
+      module.exports = {
+        reactStrictMode: true,
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")).toBeUndefined();
+  });
+
+  it("does not flag webpack when it only appears as a substring of a value", () => {
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        env: { RSD: "react-server-dom-webpack" },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")).toBeUndefined();
+  });
+
+  it("does not flag an option mentioned in a comment with trailing punctuation", () => {
+    // Reviewer case: the boundary + `:`/`(`/`=` follower alone would still
+    // match these because the leading space satisfies the boundary. Comment
+    // stripping is what prevents the false positive.
+    writeFile(
+      "next.config.js",
+      `// TODO: webpack: removed, migrate to vite
+      /* old webpack(config) hook lived here */
+      // headers: we no longer set custom headers
+      module.exports = {
+        reactStrictMode: true,
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")).toBeUndefined();
+    expect(items.find((i) => i.name === "headers")).toBeUndefined();
+  });
+
+  it("does not flag an option name embedded in a string value", () => {
+    // Reviewer case: a `"<opt>:..."` value would slip past the optional-quote
+    // branch of the regex; string stripping prevents it.
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        images: { domains: ["webpack:1234"] },
+        env: { X: "(headers:foo)" },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")).toBeUndefined();
+    expect(items.find((i) => i.name === "headers")).toBeUndefined();
+    // The real keys are still detected.
+    expect(items.find((i) => i.name === "images")?.status).toBe("partial");
+    expect(items.find((i) => i.name === "env")?.status).toBe("supported");
+  });
+
+  it("detects webpack when written as a method shorthand", () => {
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        webpack(config) { return config; },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+  });
+
+  it("detects webpack when written as a quoted property key", () => {
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        "webpack": (config) => config,
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+  });
+
   it("detects partial image config", () => {
     writeFile(
       "next.config.mjs",
@@ -467,6 +554,171 @@ describe("analyzeConfig", () => {
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "i18n")?.status).toBe("supported");
     expect(items.find((i) => i.name === "i18n.domains")?.status).toBe("partial");
+  });
+
+  it("does not flag i18n.domains when domains belongs to images, not i18n", () => {
+    // Reviewer case: the old check tested parent and child as independent
+    // regexes, so any config with both i18n and images.domains wrongly reported
+    // i18n.domains. Scoping the child lookup to the i18n block fixes this.
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        i18n: { locales: ["en"], defaultLocale: "en" },
+        images: { domains: ["x.com"] },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "i18n.domains")).toBeUndefined();
+    expect(items.find((i) => i.name === "i18n")?.status).toBe("supported");
+  });
+
+  it("does not flag experimental.ppr when ppr is outside the experimental block", () => {
+    writeFile(
+      "next.config.js",
+      `const ppr = true;
+      module.exports = {
+        experimental: { inlineCss: true },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.ppr")).toBeUndefined();
+  });
+
+  it("detects a nested option that only appears in a later same-named block", () => {
+    // The block scan inspects every matching parent block, not just the first,
+    // so a child living in a second `experimental: {}` is still found.
+    writeFile(
+      "next.config.js",
+      `const a = { experimental: { inlineCss: true } };
+      module.exports = { experimental: { ppr: true } };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+  });
+
+  it("detects a nested option under a quoted parent key", () => {
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        "experimental": { ppr: true },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+  });
+
+  it("detects options when the config is wrapped in a plugin call", () => {
+    writeFile(
+      "next.config.mjs",
+      `import withMDX from "@next/mdx";
+      const nextConfig = { basePath: "/docs", webpack: (c) => c };
+      export default withMDX()(nextConfig);`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+  });
+
+  it("detects options through a `satisfies` annotation", () => {
+    writeFile(
+      "next.config.ts",
+      `export default { trailingSlash: true } satisfies import("next").NextConfig;`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
+  });
+
+  it("detects options in a concise arrow function config", () => {
+    // Documented Next.js function form: (phase) => config
+    writeFile(
+      "next.config.js",
+      `module.exports = (phase) => ({
+        basePath: "/app",
+        webpack: (config) => config,
+      });`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+  });
+
+  it("detects options in a block-body function config (next/constants PHASE_*)", () => {
+    writeFile(
+      "next.config.js",
+      `module.exports = function (phase, { defaultConfig }) {
+        const isDev = phase === "phase-development-server";
+        return {
+          trailingSlash: true,
+          experimental: { ppr: true },
+        };
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+  });
+
+  it("detects options in an `export default function` config", () => {
+    // `export default function (phase) {…}` parses as a FunctionDeclaration,
+    // unlike the `module.exports = function (…)` (FunctionExpression) form.
+    writeFile(
+      "next.config.mjs",
+      `export default function (phase) {
+        return {
+          trailingSlash: true,
+          webpack: (config) => config,
+          experimental: { ppr: true },
+        };
+      }`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+  });
+
+  it("detects options across all branches of a multi-phase function config", () => {
+    // Canonical next/constants multi-phase form: the phase-specific config is in
+    // an early return nested in an `if`, and the default config is the trailing
+    // return. Keys from both branches should be reported.
+    writeFile(
+      "next.config.js",
+      `const { PHASE_DEVELOPMENT_SERVER } = require("next/constants");
+      module.exports = (phase, { defaultConfig }) => {
+        if (phase === PHASE_DEVELOPMENT_SERVER) {
+          return { trailingSlash: true, experimental: { ppr: true } };
+        }
+        return { webpack: (config) => config };
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+  });
+
+  it("detects options across both branches of a ternary function config", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default (phase) =>
+        phase === "phase-development-server"
+          ? { trailingSlash: true }
+          : { basePath: "/app" };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
   });
 
   it.each([

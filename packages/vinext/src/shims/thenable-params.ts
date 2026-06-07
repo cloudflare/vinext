@@ -64,6 +64,7 @@ export type ThenableParams<T extends Record<string, unknown>> = Promise<T> &
 
 export type ThenableParamsObserver = Readonly<{
   observeParamAccess: (keys: readonly string[]) => void;
+  observeReactPromiseStatus?: boolean;
 }>;
 
 function observeParamKeys(
@@ -114,6 +115,10 @@ export function makeThenableParams<T extends Record<string, unknown>>(
           observeAllParamKeys(observer, plain);
           return Reflect.apply(value, target, args);
         };
+      }
+
+      if (prop === "status" && observer?.observeReactPromiseStatus === true) {
+        observeAllParamKeys(observer, plain);
       }
 
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {

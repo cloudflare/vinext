@@ -37,7 +37,7 @@ import {
   createRscEmbedTransform,
   createTickBufferedTransform,
 } from "./app-ssr-stream.js";
-import { deferUntilStreamConsumed } from "./app-page-stream.js";
+import { deferUntilStreamConsumed, type AppSsrRenderResult } from "./app-page-stream.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
@@ -272,7 +272,7 @@ export async function handleSsr(
      *  and ISR cache writes to avoid caching fallback content. */
     waitForAllReady?: boolean;
   },
-): Promise<ReadableStream<Uint8Array>> {
+): Promise<AppSsrRenderResult> {
   return runWithNavigationContext(async () => {
     await clientReferencePreloader.preload();
 
@@ -434,14 +434,6 @@ export async function handleSsr(
           },
         });
 
-        // When producing static output (prerender / ISR cache writes), wait for
-        // the full React tree to resolve before emitting bytes. This prevents
-        // Suspense fallback content from being serialized to the cache.
-        // Matches Next.js waitForAllReady forkpoint in renderToNodeFizzStream.
-        if (options?.waitForAllReady === true) {
-          await htmlStream.allReady;
-        }
-
         // Populated before any SSR request runs: at prod-server startup
         // (prod-server.ts) or via build-time bundle injection (index.ts). Left
         // undefined in dev, which naturally disables inline CSS there.
@@ -499,7 +491,11 @@ export async function handleSsr(
         const getBeforeInteractiveHeadHTML = (): string =>
           renderBeforeInteractiveInlineScripts(beforeInteractiveInlineScripts);
 
-        return deferUntilStreamConsumed(
+        if (options?.waitForAllReady === true) {
+          await htmlStream.allReady;
+        }
+
+        const finalStream = deferUntilStreamConsumed(
           htmlStream.pipeThrough(
             createTickBufferedTransform(
               rscEmbed,
@@ -513,12 +509,26 @@ export async function handleSsr(
           ),
           cleanup,
         );
+
+        return {
+          htmlStream: finalStream,
+          // `metadataReady` resolves eagerly precisely *because* `allReady` was
+          // already awaited above when `waitForAllReady` is set (the prerender
+          // path). At that point the React tree is fully rendered, so all
+          // render-time metadata (cache life, headers, captured RSC errors) is
+          // already settled and there is nothing left for the lifecycle to wait
+          // on. The promise exists to keep `renderAppPageLifecycle` agnostic to
+          // *where* the blocking happens — do not move the `allReady` await onto
+          // this promise expecting it to be load-bearing in production.
+          metadataReady: Promise.resolve(),
+          capturedRscData: options?.capturedRscDataRef?.value ?? null,
+        };
       } catch (error) {
         cleanup();
         throw error;
       }
     });
-  }) as Promise<ReadableStream<Uint8Array>>;
+  }) as Promise<AppSsrRenderResult>;
 }
 
 export default {

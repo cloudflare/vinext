@@ -6,6 +6,7 @@
  */
 
 import { detectPackageManager } from "./utils/project.js";
+import { parseAst, type ESTree } from "vite";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -629,6 +630,187 @@ export function scanImports(root: string): CheckItem[] {
   return items;
 }
 
+/** Option keys found on the exported config object. */
+type ConfigKeys = {
+  /** Top-level property names, e.g. `webpack`, `experimental`, `i18n`. */
+  top: Set<string>;
+  /** For each object-valued property, its child key names (for `parent.child`). */
+  nested: Map<string, Set<string>>;
+};
+
+/** The property key name of an object property, or null for spreads/computed keys. */
+function propertyKeyName(prop: ESTree.ObjectExpression["properties"][number]): string | null {
+  if (prop.type !== "Property" || prop.computed) return null;
+  const { key } = prop;
+  if (key.type === "Identifier") return key.name;
+  if (key.type === "Literal" && typeof key.value === "string") return key.value;
+  return null;
+}
+
+/**
+ * Parse a next.config file and collect the option keys off its exported config
+ * object — top-level keys plus, for each object-valued property, its child keys
+ * (used for dot-notation options like `experimental.ppr`).
+ *
+ * Uses Vite's `parseAst` (the bundled oxc parser) instead of scanning text, so
+ * comments, string values, and other non-key mentions of an option name are
+ * never mistaken for a real config option. Returns empty sets if the file cannot
+ * be parsed — the check is advisory, so a parse failure simply reports nothing.
+ */
+function collectConfigKeys(source: string): ConfigKeys {
+  const top = new Set<string>();
+  const nested = new Map<string, Set<string>>();
+
+  let program: ESTree.Program;
+  try {
+    // Parse as TS (a superset of JS) so `.ts` configs with type annotations,
+    // `as`, and `satisfies` parse the same as `.js`/`.mjs`.
+    program = parseAst(source, { lang: "ts" });
+  } catch {
+    return { top, nested };
+  }
+
+  // Index top-level variable declarations so a config assigned to a variable and
+  // exported later (`const config = {…}; export default config`) can be resolved.
+  const vars = new Map<string, ESTree.Expression>();
+  for (const node of program.body) {
+    if (node.type !== "VariableDeclaration") continue;
+    for (const decl of node.declarations) {
+      if (decl.id.type === "Identifier" && decl.init) vars.set(decl.id.name, decl.init);
+    }
+  }
+
+  // Collect the arguments of every `return` reachable from a function body
+  // without crossing into a nested function. Descends through the control-flow
+  // statements a config might branch on (if/else, switch, try) so the
+  // multi-phase `next/constants` form — where each `phase` branch returns a
+  // different object — contributes all of its branches, not just the first.
+  function collectReturnArgs(
+    stmt: ESTree.Statement | null | undefined,
+    out: ESTree.Expression[],
+  ): void {
+    if (!stmt) return;
+    if (stmt.type === "ReturnStatement") {
+      if (stmt.argument) out.push(stmt.argument);
+    } else if (stmt.type === "BlockStatement") {
+      for (const s of stmt.body) collectReturnArgs(s, out);
+    } else if (stmt.type === "IfStatement") {
+      collectReturnArgs(stmt.consequent, out);
+      collectReturnArgs(stmt.alternate, out);
+    } else if (stmt.type === "SwitchStatement") {
+      for (const c of stmt.cases) for (const s of c.consequent) collectReturnArgs(s, out);
+    } else if (stmt.type === "TryStatement") {
+      collectReturnArgs(stmt.block, out);
+      if (stmt.handler) collectReturnArgs(stmt.handler.body, out);
+      collectReturnArgs(stmt.finalizer, out);
+    }
+    // Other statements (loops, expressions, nested function/class decls) are not
+    // followed — a config object is not produced from them in practice.
+  }
+
+  // Resolve an expression to the object literals it can denote, unwrapping
+  // variable refs, wrapper calls (`withMDX(config)`, `defineConfig({…})`), TS
+  // `as`/`satisfies`, parentheses, conditional branches, and function-form
+  // configs (`(phase) => ({…})` / `function(phase){ return {…} }` /
+  // `export default function(phase){ return {…} }`). Returns multiple objects
+  // when a function or ternary can return different configs per branch (the
+  // multi-phase form), so their keys can be merged. Depth-bounded against cycles.
+  function resolveObjects(
+    node: ESTree.Expression | ESTree.SpreadElement | ESTree.Function | null | undefined,
+    depth = 0,
+  ): ESTree.ObjectExpression[] {
+    if (!node || depth > 10) return [];
+    if (node.type === "ObjectExpression") return [node];
+    if (node.type === "Identifier") return resolveObjects(vars.get(node.name), depth + 1);
+    if (node.type === "CallExpression") {
+      // A wrapper like `withMDX(config)` / `defineConfig({…})` — use the first
+      // argument that resolves to an object.
+      for (const arg of node.arguments) {
+        const objs = resolveObjects(arg, depth + 1);
+        if (objs.length) return objs;
+      }
+      return [];
+    }
+    if (node.type === "ConditionalExpression") {
+      // `phase === X ? {…} : {…}` — both branches are possible configs.
+      return [
+        ...resolveObjects(node.consequent, depth + 1),
+        ...resolveObjects(node.alternate, depth + 1),
+      ];
+    }
+    if (
+      node.type === "ArrowFunctionExpression" ||
+      node.type === "FunctionExpression" ||
+      // `export default function (phase) { return {…} }` parses as a
+      // FunctionDeclaration, unlike the `module.exports = function (…) {…}`
+      // (FunctionExpression) and arrow forms.
+      node.type === "FunctionDeclaration"
+    ) {
+      // Function-form config. A concise arrow body is the expression itself; a
+      // block body contributes every reachable `return`'s object.
+      const body = node.body;
+      if (!body) return [];
+      if (body.type !== "BlockStatement") return resolveObjects(body, depth + 1);
+      const returns: ESTree.Expression[] = [];
+      collectReturnArgs(body, returns);
+      return returns.flatMap((arg) => resolveObjects(arg, depth + 1));
+    }
+    if (
+      node.type === "TSAsExpression" ||
+      node.type === "TSSatisfiesExpression" ||
+      node.type === "ParenthesizedExpression"
+    ) {
+      return resolveObjects(node.expression, depth + 1);
+    }
+    return [];
+  }
+
+  // Find the exported config object(s): `export default <expr>` or
+  // `module.exports = <expr>`.
+  let configObjs: ESTree.ObjectExpression[] = [];
+  for (const node of program.body) {
+    if (node.type === "ExportDefaultDeclaration") {
+      configObjs = resolveObjects(node.declaration as ESTree.Expression | ESTree.Function);
+    } else if (
+      node.type === "ExpressionStatement" &&
+      node.expression.type === "AssignmentExpression"
+    ) {
+      const { left, right } = node.expression;
+      const isModuleExports =
+        left.type === "MemberExpression" &&
+        !left.computed &&
+        left.object.type === "Identifier" &&
+        left.object.name === "module" &&
+        left.property.type === "Identifier" &&
+        left.property.name === "exports";
+      if (isModuleExports) configObjs = resolveObjects(right);
+    }
+    if (configObjs.length) break;
+  }
+
+  // Merge keys across all candidate config objects (multi-phase branches).
+  for (const configObj of configObjs) {
+    for (const prop of configObj.properties) {
+      const name = propertyKeyName(prop);
+      if (!name) continue;
+      top.add(name);
+      // `prop` is a non-spread Property here (propertyKeyName returned a name).
+      const childObjs = resolveObjects((prop as ESTree.ObjectProperty).value);
+      if (!childObjs.length) continue;
+      const children = nested.get(name) ?? new Set<string>();
+      for (const childObj of childObjs) {
+        for (const childProp of childObj.properties) {
+          const childName = propertyKeyName(childProp);
+          if (childName) children.add(childName);
+        }
+      }
+      nested.set(name, children);
+    }
+  }
+
+  return { top, nested };
+}
+
 /**
  * Analyze next.config.js/mjs/ts for supported and unsupported options.
  */
@@ -662,10 +844,13 @@ export function analyzeConfig(root: string): CheckItem[] {
     ];
   }
 
-  const content = fs.readFileSync(configPath, "utf-8");
+  // Parse the config to an AST and read the option keys off the exported config
+  // object. This is exact: a mention of an option name in a comment or string
+  // value is not a property key, so it is never reported.
+  const present = collectConfigKeys(fs.readFileSync(configPath, "utf-8"));
   const items: CheckItem[] = [];
 
-  // Check for known config options by searching for property names in the config file
+  // Known top-level options we report on when present in the config object.
   const configOptions = [
     "basePath",
     "trailingSlash",
@@ -684,25 +869,21 @@ export function analyzeConfig(root: string): CheckItem[] {
   ];
 
   for (const opt of configOptions) {
-    // Simple heuristic: check if the option name appears as a property in the config
-    const regex = new RegExp(String.raw`\b${opt}\b`);
-    if (regex.test(content)) {
-      const support = CONFIG_SUPPORT[opt];
-      if (support) {
-        items.push({ name: opt, status: support.status, detail: support.detail });
-      } else {
-        items.push({ name: opt, status: "unsupported", detail: "not recognized" });
-      }
+    if (!present.top.has(opt)) continue;
+    const support = CONFIG_SUPPORT[opt];
+    if (support) {
+      items.push({ name: opt, status: support.status, detail: support.detail });
+    } else {
+      items.push({ name: opt, status: "unsupported", detail: "not recognized" });
     }
   }
 
-  // Check for nested (dot-notation) options: parent block present + child name appears
+  // Nested (dot-notation) options: the child must be a key inside its parent
+  // object (e.g. `experimental.ppr`), as resolved from the parsed AST.
   for (const key of Object.keys(CONFIG_SUPPORT)) {
     if (!key.includes(".")) continue;
     const dot = key.indexOf(".");
-    const parentBlock = new RegExp(String.raw`\b${key.slice(0, dot)}\s*[:=]\s*\{`);
-    const childRef = new RegExp(String.raw`\b${key.slice(dot + 1)}\b`);
-    if (parentBlock.test(content) && childRef.test(content)) {
+    if (present.nested.get(key.slice(0, dot))?.has(key.slice(dot + 1))) {
       items.push({ name: key, ...CONFIG_SUPPORT[key]! });
     }
   }

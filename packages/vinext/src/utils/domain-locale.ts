@@ -69,7 +69,7 @@ export function getLocalePathPrefix(
   return locales.find((locale) => locale.toLowerCase() === normalizedSegment);
 }
 
-function withBasePath(path: string, basePath = ""): string {
+function prefixBasePath(path: string, basePath = ""): string {
   if (!basePath) return path;
   return basePath + path;
 }
@@ -106,5 +106,5 @@ export function getDomainLocaleUrl(
   }
 
   const scheme = `http${targetDomain.http ? "" : "s"}://`;
-  return `${scheme}${targetDomain.domain}${withBasePath(localizedPath, basePath)}`;
+  return `${scheme}${targetDomain.domain}${prefixBasePath(localizedPath, basePath)}`;
 }

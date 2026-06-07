@@ -1,11 +1,9 @@
 import { existsSync } from "node:fs";
 import { glob } from "node:fs/promises";
+import path from "node:path";
+import { escapeRegExp } from "../utils/regex.js";
 
 const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 export function normalizePageExtensions(pageExtensions?: readonly string[] | null): string[] {
   if (!Array.isArray(pageExtensions) || pageExtensions.length === 0) {
@@ -47,7 +45,7 @@ export function createValidFileMatcher(
 ): ValidFileMatcher {
   const extensions = normalizePageExtensions(pageExtensions);
   const dottedExtensions = extensions.map((ext) => `.${ext}`);
-  const extPattern = `(?:${extensions.map((ext) => escapeRegex(ext)).join("|")})`;
+  const extPattern = `(?:${extensions.map((ext) => escapeRegExp(ext)).join("|")})`;
 
   const extensionRegex = new RegExp(`\\.${extPattern}$`);
   const createLeafPattern = (fileNames: readonly string[]): RegExp => {
@@ -88,6 +86,22 @@ export function createValidFileMatcher(
 /** Check if a file exists with any configured page extension. */
 export function findFileWithExtensions(basePath: string, matcher: ValidFileMatcher): boolean {
   return matcher.dottedExtensions.some((ext) => existsSync(basePath + ext));
+}
+
+/**
+ * Find a file by basename and configured page extension in a directory.
+ * Returns the first matching absolute path, or null if not found.
+ */
+export function findFileWithExts(
+  dir: string,
+  name: string,
+  matcher: ValidFileMatcher,
+): string | null {
+  for (const ext of matcher.dottedExtensions) {
+    const filePath = path.join(dir, name + ext);
+    if (existsSync(filePath)) return filePath;
+  }
+  return null;
 }
 
 /**

@@ -683,3 +683,51 @@ export function cloneRequestWithHeaders(request: Request, headers: Headers): Req
   }
   return cloned;
 }
+
+/**
+ * Clone a Request while overriding the URL, preserving headers and metadata
+ * when possible.
+ *
+ * Mirrors `cloneRequestWithHeaders`, but rewrites the URL instead of the
+ * headers. Workers support `new Request(url, request)` to copy method/headers/
+ * body onto a new URL; Node/undici can throw on a foreign Request instance, so
+ * we fall back to a manual RequestInit. `new Request()` does not copy the
+ * Workers-specific `cf` property and omits `duplex` for streaming bodies, so
+ * both are handled explicitly — the same reasons `cloneRequestWithHeaders`
+ * exists.
+ */
+export function cloneRequestWithUrl(request: Request, url: string): Request {
+  let cloned: Request;
+  try {
+    cloned = new Request(url, request);
+  } catch {
+    const init: RequestInitWithCf = {
+      method: request.method,
+      headers: request.headers,
+      body: request.body ?? undefined,
+      redirect: request.redirect,
+      signal: request.signal,
+      integrity: request.integrity,
+      cache: request.cache,
+      mode: request.mode,
+      credentials: request.credentials,
+      referrer: request.referrer,
+      referrerPolicy: request.referrerPolicy,
+    };
+    if (request.body) {
+      // @ts-expect-error — duplex needed for streaming request bodies
+      init.duplex = "half";
+    }
+    cloned = new Request(url, init);
+  }
+  const cf = getRequestCf(request);
+  if (cf !== undefined) {
+    // new Request() does not copy Workers-specific cf, so re-attach it.
+    Object.defineProperty(cloned, "cf", {
+      value: cf,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return cloned;
+}
