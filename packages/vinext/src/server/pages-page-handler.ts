@@ -12,7 +12,7 @@
  * vite.config.ts only aliases `vinext/shims/*`, not `next/*`).
  */
 
-import type { ReactNode } from "react";
+import type { ComponentType, ReactNode } from "react";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { resolvePagesI18nRequest } from "./pages-i18n.js";
@@ -131,21 +131,21 @@ export type CreatePagesPageHandlerOptions = {
   sanitizeDestination: (dest: string) => string;
   /** Build the React page element for a given set of page props. */
   createPageElement: (
-    PageComponent: unknown,
-    AppComponent: unknown,
+    PageComponent: ComponentType,
+    AppComponent: ComponentType | null,
     pageProps: Record<string, unknown>,
   ) => ReactNode;
   /** Build the element with optional App/Component enhancers (for _document). */
   enhancePageElement: (
-    PageComponent: unknown,
-    AppComponent: unknown,
+    PageComponent: ComponentType,
+    AppComponent: ComponentType | null,
     pageProps: Record<string, unknown>,
     opts: RenderPageEnhancers,
   ) => ReactNode;
   /** The `_app` page component (or null). */
-  AppComponent: unknown;
+  AppComponent: ComponentType | null;
   /** The `_document` page component (or null). */
-  DocumentComponent: unknown;
+  DocumentComponent: ComponentType | null;
 };
 
 // Internal render options (mirrors the options shape passed to `renderPage`).
@@ -240,12 +240,11 @@ export function createPagesPageHandler(
     i18nCacheVariant: string | null,
   ): (router: string, pathname: string) => string {
     if (!i18nCacheVariant) {
-      return (router, pathname) =>
-        isrCacheKey(router as "pages" | "app", pathname, buildId ?? undefined);
+      return (router, pathname) => isrCacheKey(router, pathname, buildId ?? undefined);
     }
     return (router, pathname) =>
       isrCacheKey(
-        router as "pages" | "app",
+        router,
         pathname + "::i18n=" + encodeURIComponent(i18nCacheVariant),
         buildId ?? undefined,
       );
@@ -390,7 +389,7 @@ export function createPagesPageHandler(
         applySSRContext();
 
         const pageModule = route.module;
-        const PageComponent = pageModule.default;
+        const PageComponent = pageModule.default as ComponentType | undefined;
         if (!PageComponent) {
           return new Response("Page has no default export", { status: 500 });
         }
@@ -574,9 +573,7 @@ export function createPagesPageHandler(
             const el = enhancePageElement(PageComponent, AppComponent, pageProps, renderPageOpts);
             return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
           },
-          DocumentComponent: DocumentComponent as Parameters<
-            typeof renderPagesPageResponse
-          >[0]["DocumentComponent"],
+          DocumentComponent,
           flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
           fontLinkHeader,
           fontPreloads: allFontPreloads,

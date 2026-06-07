@@ -203,11 +203,15 @@ describe("createPagesPageHandler — 405 method check", () => {
     expect(allow).toContain("GET");
   });
 
-  it("allows POST when page exports getServerSideProps", async () => {
-    const gsspModule = {
-      ...makePageModule(),
+  it("skips 405 check when page exports getServerSideProps", async () => {
+    // The 405 guard only applies to static (no-gSSP) pages. When gSSP is
+    // present, resolvePagesPageMethodResponse returns null and the render
+    // pipeline proceeds. Verify by spying on the module method check result.
+    // We use a module that returns { props: {} } from gSSP so the render
+    // can complete without hitting renderToReadableStream errors.
+    const gsspModule = makePageModule({
       getServerSideProps: async () => ({ props: {} }),
-    };
+    });
     const routes = [makeRoute("/about", gsspModule)];
     const handler = createPagesPageHandler(
       makeOpts({
@@ -219,8 +223,10 @@ describe("createPagesPageHandler — 405 method check", () => {
       }),
     );
     const res = await handler(makeRequest("/about", "POST"), "/about", null, null, null);
-    // Should not 405 — gSSP handles the POST
+    // Must not be 405 — the method check is bypassed for gSSP pages
     expect(res.status).not.toBe(405);
+    // Must not be 405 Allow header either
+    expect(res.headers.get("Allow")).toBeNull();
   });
 
   it("does not 405 on /404 pattern (error pages are exempt)", async () => {
@@ -240,12 +246,34 @@ describe("createPagesPageHandler — 405 method check", () => {
 });
 
 // ---------------------------------------------------------------------------
-// i18n redirect
+// i18n redirect — 307 short-circuit from resolvePagesI18nRequest
 // ---------------------------------------------------------------------------
 
 describe("createPagesPageHandler — i18n redirect", () => {
-  it("redirects when i18n config produces a redirectUrl", async () => {
-    const routes = [makeRoute("/en/about")];
+  // getLocaleRedirect fires when pathname === "/" and the Accept-Language
+  // header prefers a non-default locale. The handler must return a 307
+  // before attempting any route match.
+  it("returns 307 when i18n locale detection produces a redirect", async () => {
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [makeRoute("/")],
+        i18nConfig: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+        },
+      }),
+    );
+    // Visit / with Accept-Language: fr — resolvePagesI18nRequest redirects to /fr
+    const req = new Request("http://localhost/", {
+      headers: { "accept-language": "fr" },
+    });
+    const res = await handler(req, "/", null, null, null);
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/fr");
+  });
+
+  it("does not redirect when locale prefix is already present", async () => {
+    const routes = [makeRoute("/fr/about")];
     const handler = createPagesPageHandler(
       makeOpts({
         pageRoutes: routes,
@@ -253,21 +281,15 @@ describe("createPagesPageHandler — i18n redirect", () => {
           locales: ["en", "fr"],
           defaultLocale: "en",
         },
-        matchRoute: (_url, _r) => null,
-        // Provide a fake i18n resolver via a custom matchRoute that triggers
-        // the redirect path by using i18n config directly.
-        // Instead, we override resolvePagesI18nRequest behavior indirectly:
-        // The handler calls resolvePagesI18nRequest internally. We can't stub
-        // that here, so we test the redirect path via __forcedRoute + options.
+        matchRoute: (url, r) => {
+          const route = r.find((rt) => rt.pattern === url.split("?")[0]);
+          return route ? { route, params: {} } : null;
+        },
       }),
     );
-
-    // We can test the redirect by using the 307 that comes from i18n resolution.
-    // The locale prefix `/fr/about` is stripped to `/about` and fr→en redirect fires.
-    // Since we can't mock the i18n module, just verify a non-i18n request goes through.
-    const res = await handler(makeRequest("/about"), "/about", null, null, null);
-    // Route miss without custom 404 → 404 HTML
-    expect(res.status).toBe(404);
+    const res = await handler(makeRequest("/fr/about"), "/fr/about", null, null, null);
+    // Not a 307 — the locale prefix is already present
+    expect(res.status).not.toBe(307);
   });
 });
 
