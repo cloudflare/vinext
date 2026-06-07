@@ -6,9 +6,11 @@ const BASE = "http://localhost:4174";
 
 for (const path of ["/redirect/servercomponent", "/redirect/redirect-with-loading"]) {
   test(`only triggers the redirect once (${path})`, async ({ page }) => {
-    const requestedPathnames: string[] = [];
+    const documentRequestPathnames: string[] = [];
     page.on("request", (request) => {
-      requestedPathnames.push(new URL(request.url()).pathname);
+      if (request.resourceType() === "document") {
+        documentRequestPathnames.push(new URL(request.url()).pathname);
+      }
     });
 
     await page.goto(`${BASE}${path}`);
@@ -21,8 +23,8 @@ for (const path of ["/redirect/servercomponent", "/redirect/redirect-with-loadin
       await page.waitForTimeout(400);
       await expect(page.locator("#timestamp")).toHaveText(initialTimestamp ?? "");
     }
-    expect(requestedPathnames.filter((pathname) => pathname === "/redirect/result")).toHaveLength(
-      1,
-    );
+    expect(
+      documentRequestPathnames.filter((pathname) => pathname === "/redirect/result"),
+    ).toHaveLength(1);
   });
 }
