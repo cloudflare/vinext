@@ -115,7 +115,7 @@ import {
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
-import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
+import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
   mergeOptimizeDepsExclude,
@@ -4256,8 +4256,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
     // see src/plugins/og-assets.ts
     createOgInlineFetchAssetsPlugin(),
-    // Copy @vercel/og binary assets to the RSC output directory — see src/plugins/og-assets.ts
-    ogAssetsPlugin,
+    // Dedupe/copy @vercel/og binary WASM assets in the RSC output — see src/plugins/og-assets.ts
+    createOgAssetsPlugin(),
     // Collect SSR/RSC bundle externals and write dist/server/vinext-externals.json.
     // Used by emitStandaloneOutput to determine which packages to copy into
     // standalone/node_modules/ — uses the bundler's own import graph instead of
@@ -4781,14 +4781,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (!id.includes("@vercel/og") || !id.includes("index.edge.js")) return null;
         let result = code;
 
-        // ── Yoga WASM: dynamic import + inline base64 fallback ──────────────────────
+        // ── Yoga WASM: dynamic import + disk-read fallback ──────────────────────────
         // yoga-layout's emscripten bundle sets H to a data URL containing the yoga WASM,
         // then later calls WebAssembly.instantiate(bytes, imports), which workerd rejects.
         // Emscripten supports a custom h2.instantiateWasm(imports, callback) escape hatch.
         //
         // Strategy: try dynamic import("./yoga.wasm?module") for workerd (pre-compiled
-        // module), fall back to compiling from inline base64 bytes for Node.js.
-        // Yoga WASM is ~70KB so inlining the base64 (~95KB) is acceptable.
+        // module), fall back to reading the .wasm file from disk + WebAssembly.instantiate
+        // for Node.js. We read from disk rather than inlining base64 so the bundle ships
+        // exactly one physical copy of the WASM (the emitted ?module asset); the disk
+        // fallback is wired to that same file by vinext:og-assets. This mirrors the resvg
+        // handling below and keeps the dedup platform-agnostic.
         const YOGA_DATA_URL_RE = /H = "data:application\/octet-stream;base64,([A-Za-z0-9+/]+=*)";/;
         const yogaMatch = YOGA_DATA_URL_RE.exec(result);
         if (yogaMatch) {
@@ -4805,6 +4808,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Patch the loadYoga call site to inject instantiateWasm with universal handler.
           // WebAssembly.instantiate(Module, imports) → Instance (workerd path)
           // WebAssembly.instantiate(bytes, imports)  → { module, instance } (Node.js path)
+          //
+          // Note: new URL("./yoga.wasm", import.meta.url) MUST live inside the Node.js
+          // branch (the else), never at the top level. In workerd, import.meta.url is
+          // "worker" (not a valid URL base), so new URL(..., "worker") throws TypeError.
+          // The else branch only runs on Node.js where the ?module import failed and
+          // import.meta.url is a file:// URL.
           const YOGA_CALL = `yoga_wasm_base64_esm_default()`;
           const YOGA_CALL_PATCHED = [
             `yoga_wasm_base64_esm_default({ instantiateWasm: function(imports, callback) {`,
@@ -4812,17 +4821,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             `    if (mod) {`,
             `      WebAssembly.instantiate(mod, imports).then(function(inst) { callback(inst); });`,
             `    } else {`,
-            `      var b = Buffer.from(__vi_yoga_b64, "base64");`,
-            `      WebAssembly.instantiate(b, imports).then(function(r) { callback(r.instance); });`,
+            `      Promise.all([import("node:fs"), import("node:url")]).then(function(mods) {`,
+            `        var p = mods[1].fileURLToPath(new URL("./yoga.wasm", import.meta.url));`,
+            `        return mods[0].promises.readFile(p).then(function(bytes) {`,
+            `          return WebAssembly.instantiate(bytes, imports).then(function(r) { callback(r.instance); });`,
+            `        });`,
+            `      });`,
             `    }`,
             `  });`,
             `  return {};`,
             `} })`,
           ].join("\n");
           result = result.replace(YOGA_CALL, YOGA_CALL_PATCHED);
-          // Prepend dynamic import with base64 fallback (no static import — Node.js safe)
+          // Prepend dynamic import (no static import — Node.js safe). On Node.js the
+          // ?module import fails and resolves to null, triggering the disk-read fallback.
           const yogaPreamble = [
-            `var __vi_yoga_b64 = ${JSON.stringify(yogaBase64)};`,
             `var __vi_yoga_mod = import("./yoga.wasm?module").then(function(m) { return m.default; }).catch(function() { return null; });`,
           ].join("\n");
           result = yogaPreamble + "\n" + result;

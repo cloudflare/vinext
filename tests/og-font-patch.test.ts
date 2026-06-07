@@ -105,11 +105,21 @@ describe("vinext:og-font-patch plugin", () => {
         expect(code).toContain(".catch(");
       });
 
-      it("inlines the yoga WASM bytes as a base64 Node.js fallback", () => {
-        // The base64 must be embedded so Node.js (where ?module imports fail)
-        // can WebAssembly.instantiate from the inlined bytes.
-        expect(code).toContain(FAKE_YOGA_B64);
+      it("reads yoga.wasm from disk on the Node.js fallback (no base64 inline)", () => {
+        // The Node.js fallback (where ?module imports fail) must read the .wasm
+        // file from disk and instantiate it — NOT inline a ~95 KiB base64 blob.
+        // This keeps exactly one physical copy of the WASM in the output.
+        expect(code).not.toContain(FAKE_YOGA_B64);
+        expect(code).toContain('new URL("./yoga.wasm", import.meta.url)');
+        expect(code).toContain("node:fs");
         expect(code).toContain("WebAssembly.instantiate");
+      });
+
+      it("does not reference new URL(yoga.wasm) at top level (workerd compat)", () => {
+        // In workerd, import.meta.url is "worker" — a top-level new URL(...) would
+        // throw TypeError at module load. The reference must live in the Node.js
+        // fallback branch only.
+        expect(code).not.toMatch(/^var\s+\w+\s*=\s*new URL\("\.\/yoga\.wasm"/m);
       });
 
       it("clears the inlined emscripten data URL (avoids loading bytes twice)", () => {
