@@ -92,6 +92,38 @@ describe("App Router Production build", () => {
     }
   }, 30000);
 
+  it("adopts the shared build ID even when generateBuildId is set", async () => {
+    // The shared ID must win over a per-instance generateBuildId, because the
+    // CLI already resolved it through the user's generateBuildId once. A
+    // non-deterministic generateBuildId (e.g. returning null → a fresh random
+    // UUID per instance, per resolveBuildId()) would otherwise re-diverge across
+    // the buildApp() and hybrid Pages vite.build() instances — the exact bug
+    // this coordination exists to prevent.
+    const sharedBuildId = "shared-wins-over-generate-5678";
+    const previous = process.env.__VINEXT_SHARED_BUILD_ID;
+    process.env.__VINEXT_SHARED_BUILD_ID = sharedBuildId;
+    try {
+      const builder = await createBuilder({
+        root: APP_FIXTURE_DIR,
+        configFile: false,
+        // generateBuildId returning null falls back to a random UUID per
+        // instance; the shared ID must still be adopted.
+        plugins: [vinext({ appDir: APP_FIXTURE_DIR, nextConfig: { generateBuildId: () => null } })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      expect(fs.readFileSync(path.join(outDir, "server", "BUILD_ID"), "utf-8").trim()).toBe(
+        sharedBuildId,
+      );
+      const rscEntry = fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8");
+      expect(rscEntry).toContain(sharedBuildId);
+    } finally {
+      if (previous === undefined) delete process.env.__VINEXT_SHARED_BUILD_ID;
+      else process.env.__VINEXT_SHARED_BUILD_ID = previous;
+    }
+  }, 30000);
+
   it("builds proxy.ts that reads __filename before redirecting", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/proxy-nfc-traced/proxy-nfc-traced.test.ts

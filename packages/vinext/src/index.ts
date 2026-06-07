@@ -1211,20 +1211,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // A single `vinext build` can instantiate vinext() more than once —
           // the App Router multi-environment build (createBuilder().buildApp())
           // and the separate Pages Router SSR build for hybrid app+pages apps
-          // are distinct plugin instances, each resolving its own config. With
-          // no user `generateBuildId`, resolveNextConfig() mints a fresh random
-          // UUID per instance, so the App Router runtime, the Pages Router
-          // runtime, the prerender manifest, and dist/server/BUILD_ID would each
-          // get a different build ID.
+          // are distinct plugin instances, each resolving its own config. Each
+          // instance runs resolveBuildId() independently, so any non-deterministic
+          // build ID diverges per instance: no `generateBuildId` (random UUID), a
+          // `generateBuildId` that returns `null` (also a random UUID — see
+          // resolveBuildId()), or any side-effecting `generateBuildId`. The result
+          // is that the App Router runtime, the Pages Router runtime, the prerender
+          // manifest, and dist/server/BUILD_ID could each get a different ID.
           //
-          // The CLI resolves the build ID once (honoring the user's
-          // generateBuildId) and publishes it via __VINEXT_SHARED_BUILD_ID. We
-          // adopt it here when the user did not supply their own generateBuildId
-          // (a user-provided generateBuildId is authoritative and already shared
-          // because every instance calls it). This keeps all instances coherent
-          // without changing resolveBuildId()'s standalone semantics.
+          // The CLI resolves the build ID exactly once via the same
+          // resolveBuildId() (so it already honors the user's generateBuildId,
+          // including the null→UUID fallback) and publishes that authoritative
+          // value via __VINEXT_SHARED_BUILD_ID. We always adopt it when set —
+          // there is no case where a per-instance re-resolution should win over
+          // the single shared value. The env var is only ever set by the build
+          // CLI, so resolveBuildId()'s standalone semantics (dev, tests) are
+          // unchanged.
           const sharedBuildId = process.env.__VINEXT_SHARED_BUILD_ID;
-          if (sharedBuildId && sharedBuildId.length > 0 && !rawConfig?.generateBuildId) {
+          if (sharedBuildId && sharedBuildId.length > 0) {
             nextConfig = { ...nextConfig, buildId: sharedBuildId };
           }
         }
