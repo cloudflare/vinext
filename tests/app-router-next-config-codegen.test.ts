@@ -126,14 +126,13 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       hasPagesDir: true,
     });
 
-    expect(code).toContain("const __pagesPathname = url.pathname;");
+    expect(code).toContain("renderPagesFallback as __renderPagesFallback");
+    expect(code).toContain("server/app-pages-bridge.js");
+    expect(code).toContain("return __renderPagesFallback(");
+    expect(code).toContain('return import.meta.viteRsc.loadModule("ssr", "index");');
+    expect(code).toContain("buildRequestHeaders: __buildRequestHeadersFromMiddlewareResponse");
     expect(code).toContain(
-      'if (__pagesPathname.startsWith("/api/") || __pagesPathname === "/api")',
-    );
-    expect(code).toContain('typeof __pagesEntry.handleApiRoute !== "function"');
-    expect(code).toContain("__pagesEntry.handleApiRoute(");
-    expect(code).toContain(
-      "__applyRouteHandlerMiddlewareContext(__pagesApiResponse, middlewareContext)",
+      "applyRouteHandlerMiddlewareContext: __applyRouteHandlerMiddlewareContext",
     );
   });
 
