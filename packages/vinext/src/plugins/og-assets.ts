@@ -254,6 +254,13 @@ export function copyMissingOgWasm(opts: {
 export function createOgAssetsPlugin(): Plugin {
   // Bases whose fallback reference was rewritten to an emitted asset in
   // generateBundle; writeBundle must NOT copy a second root copy for these.
+  //
+  // Cross-hook dependency: this is written in generateBundle and read in
+  // writeBundle. Rollup runs generateBundle before writeBundle within a single
+  // env build, and both hooks early-return unless `envName === "rsc"`, so the
+  // ordering holds today. If a future refactor reorders or parallelizes env
+  // builds, this shared state could go stale (writeBundle would copy a
+  // redundant root file) — keep the produce/consume pair in the same env.
   let dedupedBases = new Set<string>();
 
   return {

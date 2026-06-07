@@ -105,6 +105,26 @@ describe("vinext:og-assets plugin", () => {
       expect(out).not.toContain('new URL("./yoga.wasm"');
     });
 
+    it("rewrites to a directory-relative ref when chunk and asset live in different dirs", () => {
+      const plugin = createOgAssetsPlugin();
+      const generateBundle = unwrapHook(plugin.generateBundle);
+
+      // Chunk at the output root, emitted asset under _next/static/. At Node
+      // runtime `new URL(ref, import.meta.url)` resolves relative to the chunk,
+      // so the rewrite must produce a path that descends into _next/static/.
+      const bundle = makeBundle({
+        chunkCode: 'var p=new URL("./resvg.wasm", import.meta.url);',
+        chunkFileName: "index.edge-AAA.js",
+        resvgAsset: "_next/static/resvg-BBB.wasm",
+      });
+
+      generateBundle.call(rscCtx, {}, bundle);
+
+      const out = bundle["index.edge-AAA.js"].code as string;
+      expect(out).toContain('new URL("./_next/static/resvg-BBB.wasm", import.meta.url)');
+      expect(out).not.toContain('new URL("./resvg.wasm"');
+    });
+
     it("keeps the chunk sourcemap in sync when one is present", () => {
       const plugin = createOgAssetsPlugin();
       const generateBundle = unwrapHook(plugin.generateBundle);
