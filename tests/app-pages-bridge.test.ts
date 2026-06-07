@@ -78,6 +78,40 @@ describe("renderPagesFallback", () => {
     expect(forwardedReq.headers.get("x-middleware")).toBe("injected");
   });
 
+  it("forwards the original request unchanged when buildRequestHeaders returns null", async () => {
+    const handleApiRoute = vi.fn((_req: Request, _url: string) => new Response("api"));
+    const buildRequestHeaders = vi.fn((_req: Headers, _mw: Headers): Headers | null => null);
+    const deps = {
+      ...defaultDeps,
+      buildRequestHeaders,
+      loadPagesEntry: () => ({ handleApiRoute }) as PagesEntry,
+    };
+
+    const request = new Request("http://localhost/api/test", {
+      headers: { "x-original": "value" },
+    });
+    const url = new URL("http://localhost/api/test");
+    const mwRequestHeaders = new Headers({ "x-middleware": "injected" });
+
+    await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: mwRequestHeaders, status: null },
+        request,
+        url,
+      },
+      deps,
+    );
+
+    expect(buildRequestHeaders).toHaveBeenCalledTimes(1);
+    expect(handleApiRoute).toHaveBeenCalledTimes(1);
+    // The original request object is forwarded as-is (not rebuilt).
+    expect(handleApiRoute.mock.calls[0][0]).toBe(request);
+    const forwardedReq = handleApiRoute.mock.calls[0][0];
+    expect(forwardedReq.headers.get("x-original")).toBe("value");
+    expect(forwardedReq.headers.get("x-middleware")).toBeNull();
+  });
+
   it("preserves method, body, and duplex for non-GET/HEAD requests", async () => {
     const handleApiRoute = vi.fn((_req: Request, _url: string) => new Response("api"));
     const deps = {

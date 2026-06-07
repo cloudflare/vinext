@@ -13,7 +13,10 @@ export type PagesEntry = {
 
 type RenderPagesFallbackDependencies = {
   loadPagesEntry: () => Promise<PagesEntry> | PagesEntry;
-  buildRequestHeaders: (requestHeaders: Headers, middlewareRequestHeaders: Headers) => Headers;
+  buildRequestHeaders: (
+    requestHeaders: Headers,
+    middlewareRequestHeaders: Headers,
+  ) => Headers | null;
   decodePathParams: (pathname: string) => string;
   applyRouteHandlerMiddlewareContext: (
     response: Response,
