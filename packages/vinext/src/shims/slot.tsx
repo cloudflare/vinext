@@ -253,6 +253,7 @@ function useBfcacheSlotEntries(activeEntry: BfcacheSlotEntry): BfcacheSlotEntry[
 
   pruneBfcacheSlotEntrySnapshots(snapshotsByStateKey.current, renderOrder);
 
+  // Future retention-policy changes must keep the active key in renderOrder.
   if (
     process.env.NODE_ENV !== "production" &&
     !snapshotsByStateKey.current.has(activeEntry.stateKey)

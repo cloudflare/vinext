@@ -1200,7 +1200,7 @@ function BrowserRoot({
   const redirectedTree = createElement(AppRouterRedirectBridge, null, bfcacheTree);
   const innerTree = AppRouterContext
     ? createElement(AppRouterContext.Provider, { value: appRouterInstance }, redirectedTree)
-    : bfcacheTree;
+    : redirectedTree;
 
   // In dev, wrap the route tree in a top-level recovery boundary. A render
   // error (e.g. a slot's RSC reference rejects) is caught here instead of
