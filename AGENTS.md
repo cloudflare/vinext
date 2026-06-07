@@ -321,7 +321,7 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
 
 ### Never Install With `--no-frozen-lockfile`
 
-**NEVER run installs with `--no-frozen-lockfile`** (e.g. `pnpm install --no-frozen-lockfile`). This silently mutates the lockfile to satisfy mismatched dependencies, masking version drift and producing non-reproducible installs. If an install fails because the lockfile is out of date, fix the root cause — update `package.json` and regenerate the lockfile with a normal `vp install` (or `pnpm install`) and commit the result. A frozen lockfile is the default for a reason: it guarantees that what you install matches what was committed.
+**NEVER run installs with `--no-frozen-lockfile`** (e.g. `pnpm install --no-frozen-lockfile`) on your own. This flag silently mutates the lockfile to satisfy mismatched dependencies, which opens the door to supply chain attacks: a frozen lockfile pins exact, vetted dependency versions and integrity hashes, and bypassing it can pull in unreviewed or tampered packages. If an install fails because the lockfile is out of date, fix the root cause — update `package.json` and regenerate the lockfile with a normal `vp install` (or `pnpm install`) and commit the result. If you genuinely believe `--no-frozen-lockfile` is required, stop and ask the user to run it explicitly; never run it yourself.
 
 ---
 
