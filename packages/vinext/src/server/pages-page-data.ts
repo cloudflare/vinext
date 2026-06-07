@@ -56,7 +56,7 @@ type PagesGsspContextResponse = {
   responsePromise: Promise<Response>;
 };
 
-type PagesPageModule = {
+export type PagesPageModule = {
   default?: unknown;
   getStaticPaths?: (context: {
     locales: string[];
