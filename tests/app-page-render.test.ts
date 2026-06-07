@@ -1041,6 +1041,78 @@ describe("app page render lifecycle", () => {
     const { value: chunk2 } = await reader.read();
     expect(new TextDecoder().decode(chunk2)).toBe("<html>part2</html>");
   });
+
+  it("waits for metadataReady to resolve before returning the response in prerender mode", async () => {
+    const common = createCommonOptions();
+    let metadataReadyResolved = false;
+    const releaseMetadata = createDeferred();
+
+    const responsePromise = renderAppPageLifecycle({
+      ...common.options,
+      isPrerender: true,
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          return {
+            htmlStream: createStream(["<html>page</html>"]),
+            metadataReady: releaseMetadata.promise.then(() => {
+              metadataReadyResolved = true;
+            }),
+            capturedRscData: null,
+          };
+        },
+      }),
+    });
+
+    // Verify that the response is NOT returned yet because metadataReady is pending
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    let responseReturned = false;
+    void responsePromise.then(() => {
+      responseReturned = true;
+    });
+    expect(responseReturned).toBe(false);
+
+    // Resolve metadataReady
+    releaseMetadata.resolve();
+    const response = await responsePromise;
+    expect(metadataReadyResolved).toBe(true);
+    expect(response.status).toBe(200);
+  });
+
+  it("captures special errors thrown during the full prerender SSR pass and converts them to 307/404 response", async () => {
+    const common = createCommonOptions();
+    const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
+    let capturedOnError: any = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isPrerender: true,
+      hasLoadingBoundary: true,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navContext, _fontData, _options) {
+          // Trigger the captured onError callback representing a component throw
+          if (capturedOnError) {
+            capturedOnError(notFoundError, null, null);
+          }
+          return {
+            htmlStream: createStream(["<html>fallback</html>"]),
+            metadataReady: Promise.resolve(),
+            capturedRscData: null,
+          };
+        },
+      }),
+      renderToReadableStream(_element, opts) {
+        capturedOnError = opts.onError;
+        return createStream(["flight-data"]);
+      },
+    });
+
+    expect(response.status).toBe(404);
+    expect(common.renderPageSpecialError).toHaveBeenCalledTimes(1);
+    expect(common.renderPageSpecialError).toHaveBeenCalledWith({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+  });
 });
 
 describe("layoutFlags injection into RSC payload", () => {

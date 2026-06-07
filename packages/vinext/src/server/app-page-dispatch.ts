@@ -620,6 +620,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 basePath: options.basePath,
                 clientTraceMetadata: options.clientTraceMetadata,
                 rootParams: options.rootParams,
+                waitForAllReady: true,
                 ...(revalidatedRscCapture.sideStream
                   ? {
                       sideStream: revalidatedRscCapture.sideStream,

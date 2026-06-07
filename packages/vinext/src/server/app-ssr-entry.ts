@@ -491,6 +491,10 @@ export async function handleSsr(
         const getBeforeInteractiveHeadHTML = (): string =>
           renderBeforeInteractiveInlineScripts(beforeInteractiveInlineScripts);
 
+        if (options?.waitForAllReady === true) {
+          await htmlStream.allReady;
+        }
+
         const finalStream = deferUntilStreamConsumed(
           htmlStream.pipeThrough(
             createTickBufferedTransform(

@@ -846,6 +846,10 @@ export async function renderAppPageLifecycle(
     throw new Error("[vinext] Expected an HTML stream when no fallback response was returned");
   }
 
+  if (options.isPrerender === true) {
+    await htmlRender.metadataReady;
+  }
+
   // Routes with a route-level Suspense boundary (loading.tsx) skip the page
   // probe — the page render happens once, inside the RSC stream. Mirror
   // Next.js's `app-render.tsx:4293` catch shape: by the time the SSR shell
@@ -885,7 +889,6 @@ export async function renderAppPageLifecycle(
 
   // Eagerly read values that must be captured before the stream is consumed.
   if (options.isPrerender === true) {
-    await htmlRender.metadataReady;
     await settleCapturedRscRenderForCacheMetadata(htmlRender.capturedRscData);
     ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
       expireSeconds,
