@@ -47,6 +47,16 @@ describe("App Router Production build", () => {
 
     // Asset manifest should be generated
     expect(fs.existsSync(path.join(outDir, "server", "__vite_rsc_assets_manifest.js"))).toBe(true);
+
+    // BUILD_ID must be written to dist/server so post-build tools (TPR,
+    // seed-cache) and the e2e deploy harness can read the build identifier
+    // without parsing the (minified) server bundle. Regression guard: the
+    // vinext:build-id plugin previously used closeBundle, which does not fire
+    // during the multi-environment buildApp() pipeline, so the file was
+    // silently never written for pure App Router apps.
+    const buildIdPath = path.join(outDir, "server", "BUILD_ID");
+    expect(fs.existsSync(buildIdPath)).toBe(true);
+    expect(fs.readFileSync(buildIdPath, "utf-8").trim().length).toBeGreaterThan(0);
   }, 30000);
 
   it("builds proxy.ts that reads __filename before redirecting", async () => {

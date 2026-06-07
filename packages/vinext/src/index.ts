@@ -4293,18 +4293,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
     // Write BUILD_ID to dist/server/ so post-build tools (TPR, seed-cache) can
     // read the build identifier without depending on the prerender manifest.
-    // Uses closeBundle (not writeBundle) with a one-time write guard so the file
+    // Uses writeBundle (not closeBundle) with a one-time write guard so the file
     // is written exactly once per build regardless of how many environments are
     // active (App Router RSC+SSR+client, Pages Router SSR+client, etc.).
-    // The path is always dist/server/BUILD_ID — derived from root, not from the
-    // per-environment options.dir — so it works for all router types.
+    //
+    // closeBundle does not fire reliably during the multi-environment
+    // createBuilder().buildApp() pipeline used for App Router production builds,
+    // so the file was silently never written for pure App Router apps. writeBundle
+    // fires for every emitted bundle (matching the vinext:image-config plugin
+    // above), so the guard captures the first one. The path is always
+    // dist/server/BUILD_ID — derived from root, not from the per-environment
+    // options.dir — so it works for all router types.
     (() => {
       let buildIdWritten = false;
       return {
         name: "vinext:build-id",
         apply: "build" as const,
         enforce: "post" as const,
-        closeBundle: {
+        writeBundle: {
           sequential: true,
           order: "post" as const,
           handler() {
