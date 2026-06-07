@@ -356,7 +356,12 @@ test.describe("Dev error overlay", () => {
       await expect(page.getByTestId("vinext-dev-error-overlay")).toBeHidden({ timeout: 10_000 });
     });
 
-    test("server component HMR surfaces Vite build errors after a clean load", async ({ page }) => {
+    // FIXME(#1811): flaky — after writing the clean file back, the build-error
+    // overlay intermittently stays visible past the 10s timeout in CI.
+    // https://github.com/cloudflare/vinext/issues/1811
+    test.fixme("server component HMR surfaces Vite build errors after a clean load", async ({
+      page,
+    }) => {
       // Next.js dev redbox labels build-time failures as "Build Error":
       // https://github.com/vercel/next.js/blob/canary/test/e2e/swc-plugins/index.test.ts
       await page.goto(`${BASE}/dev-overlay-hmr-toggle`);
