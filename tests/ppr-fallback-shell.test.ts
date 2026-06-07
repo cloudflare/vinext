@@ -205,6 +205,28 @@ describe("ppr fallback shell render lifecycle", () => {
     expect(isPprFallbackShellAbortError(null)).toBe(false);
   });
 
+  it("re-schedules warmup cache-ready when a dynamic boundary has no in-scope cache task", () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+
+    expect(state.pendingCacheReadyCleanup).toBeNull();
+
+    // A bare `headers()`/`cookies()` access outside any tracked cache task has
+    // an empty cache-task stack, so `ignoreCacheTask` completes nothing and
+    // cannot drive the settle. The suspense creation itself must re-schedule
+    // the warmup cache-ready settle; previously this only happened in the
+    // final phase, leaving a warmup waiter un-settled.
+    runWithPprFallbackShellState(state, () => {
+      void createPprFallbackShellSuspensePromise("headers");
+    });
+
+    expect(state.pendingCacheReadyCleanup).not.toBeNull();
+
+    state.abortController.abort();
+  });
+
   it("multiple suspense promises in the same warmup phase track correctly", async () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: ["slug"],

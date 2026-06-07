@@ -1,5 +1,5 @@
 import {
-  createPprFallbackShellSuspensePromise,
+  createPprFallbackShellSuspensePromiseForState,
   getPprFallbackShellState,
 } from "./ppr-fallback-shell.js";
 
@@ -209,8 +209,22 @@ export function makeThenableParams<T extends Record<string, unknown>>(
   let fallbackShellPromise: Promise<T> | null = null;
 
   function getFallbackShellPromise(): Promise<T> | null {
-    if (!fallbackShellPromise && fallbackParamNames) {
-      fallbackShellPromise = createPprFallbackShellSuspensePromise<T>("`params`");
+    // `fallbackParamNames` is non-null only when this params object was built
+    // inside a fallback-shell scope that owns one of these keys, so the
+    // originating `fallbackShellState` is captured here rather than re-read
+    // lazily from the ALS store. Capturing keeps fallback-key access suspending
+    // against the shell that produced this object even if the object escapes
+    // the ALS scope before the key is read — without it, an out-of-scope read
+    // would return `null` and silently leak the raw `[slug]` placeholder (and
+    // diverge between the `get` and `getOwnPropertyDescriptor` traps).
+    // Promise creation stays lazy so the dynamic-boundary side effects only
+    // fire on first actual fallback-key access.
+    if (!fallbackParamNames || !fallbackShellState) return null;
+    if (!fallbackShellPromise) {
+      fallbackShellPromise = createPprFallbackShellSuspensePromiseForState<T>(
+        fallbackShellState,
+        "`params`",
+      );
     }
     return fallbackShellPromise;
   }

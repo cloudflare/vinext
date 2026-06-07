@@ -178,16 +178,23 @@ export function trackPprFallbackShellCacheTask<T>(
   });
 }
 
-export function createPprFallbackShellSuspensePromise<T>(expression: string): Promise<T> | null {
-  const state = getPprFallbackShellState();
-  if (state === null) return null;
-
+export function createPprFallbackShellSuspensePromiseForState<T>(
+  state: PprFallbackShellState,
+  expression: string,
+): Promise<T> {
   state.hasDynamicBoundary = true;
   for (const task of pprFallbackShellCacheTaskStackAls.getStore() ?? []) {
     ignoreCacheTask(state, task);
   }
+  // Re-evaluate cache-ready settling even when there is no in-scope cache task
+  // to ignore (e.g. a bare `headers()`/`cookies()` access outside any tracked
+  // cache task). `ignoreCacheTask` only drives `scheduleCacheReadyIfSettled`
+  // when it actually completes a task, so without this call a dynamic boundary
+  // hit with an empty cache-task stack would never re-schedule the warmup
+  // `waitForPprFallbackShellCacheReady` settle. The call is a no-op while
+  // `pendingCacheTasks > 0`, so in-scope work still holds the shell open.
+  scheduleCacheReadyIfSettled(state);
   if (state.phase === "final") {
-    scheduleCacheReadyIfSettled(state);
     scheduleAbortIfReady(state);
   }
   const promise = makeHangingPromise<T>(
@@ -197,6 +204,12 @@ export function createPprFallbackShellSuspensePromise<T>(expression: string): Pr
   );
   promise.catch(noop);
   return promise;
+}
+
+export function createPprFallbackShellSuspensePromise<T>(expression: string): Promise<T> | null {
+  const state = getPprFallbackShellState();
+  if (state === null) return null;
+  return createPprFallbackShellSuspensePromiseForState<T>(state, expression);
 }
 
 export function waitForPprFallbackShellCacheReady(state: PprFallbackShellState): Promise<void> {

@@ -244,6 +244,48 @@ describe("makeThenableParams", () => {
     state.abortController.abort();
   });
 
+  it("suspends on fallback param access even after the params object escapes the shell scope", () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+
+    // Build the params object inside the shell scope, then read the fallback
+    // key after the scope has exited. The object must still suspend against the
+    // shell that produced it instead of silently leaking the `[slug]`
+    // placeholder.
+    const params = runWithPprFallbackShellState(state, () =>
+      makeThenableParams({ locale: "en", slug: "[slug]" }),
+    );
+
+    expect(params.locale).toBe("en");
+
+    let thrownFromGet: unknown;
+    try {
+      Reflect.get(params, "slug");
+    } catch (error) {
+      thrownFromGet = error;
+    }
+    expect(thrownFromGet).toBeDefined();
+    expect(typeof (thrownFromGet as Promise<unknown>).then).toBe("function");
+
+    // The `getOwnPropertyDescriptor` trap must suspend identically — its getter
+    // throws the same hanging promise instead of falling through to `undefined`
+    // — so both traps agree on the out-of-scope path.
+    const descriptor = Object.getOwnPropertyDescriptor(params, "slug");
+    expect(typeof descriptor?.get).toBe("function");
+    let thrownFromDescriptor: unknown;
+    try {
+      descriptor?.get?.();
+    } catch (error) {
+      thrownFromDescriptor = error;
+    }
+    expect(thrownFromDescriptor).toBeDefined();
+    expect(typeof (thrownFromDescriptor as Promise<unknown>).then).toBe("function");
+
+    state.abortController.abort();
+  });
+
   it("Object.keys(params) does not mark dynamic boundary before fallback param access", () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: ["slug"],
