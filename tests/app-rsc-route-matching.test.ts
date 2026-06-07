@@ -322,7 +322,7 @@ describe("App RSC route matching", () => {
             {
               targetPattern: "/hoge",
               sourceMatchPattern: "/foo/bar",
-              slotId: "slot:__page:/foo/bar",
+              slotId: "slot:__vinext_sibling_intercept:/foo/bar",
               interceptLayouts: [],
               page: { default: () => null },
               params: [],

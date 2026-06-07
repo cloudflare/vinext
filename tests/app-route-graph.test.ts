@@ -1413,12 +1413,13 @@ describe("App Router route graph builder", () => {
           expect.objectContaining({
             sourcePattern: "/foo/bar",
             targetPattern: "/hoge",
-            slotId: "slot:__page:/foo/bar",
+            slotId: "slot:__vinext_sibling_intercept:/foo/bar",
           }),
         );
 
-        const bySlotId =
-          graph.routeManifest.segmentGraph.interceptionsBySlotId.get("slot:__page:/foo/bar");
+        const bySlotId = graph.routeManifest.segmentGraph.interceptionsBySlotId.get(
+          "slot:__vinext_sibling_intercept:/foo/bar",
+        );
         expect(bySlotId).toHaveLength(1);
         expect(bySlotId![0]).toMatchObject({
           sourcePattern: "/foo/bar",
