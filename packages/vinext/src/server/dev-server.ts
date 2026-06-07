@@ -395,6 +395,15 @@ export function createSSRHandler(
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
+  // Page route patterns in Next.js bracket format, sorted by specificity
+  // (compareRoutes via pagesRouter). Mirrors the production client entry's
+  // `window.__VINEXT_PAGE_PATTERNS__ = Object.keys(pageLoaders)` so the
+  // `next/navigation` compat hooks (resolvePagesRoutePatternForPath in
+  // shims/router.ts) can resolve a dynamic pattern from a resolved path in
+  // dev exactly as they do in production. Without this, dev would fall back
+  // to `__NEXT_DATA__.page` only — a dev/prod parity gap.
+  const pagePatterns = routes.map((r) => patternToNextFormat(r.pattern));
+
   // Register ALS-backed accessors in the SSR module graph so head and
   // router state are per-request isolated under concurrent load.
   // runner.import() caches internally.
@@ -518,20 +527,14 @@ export function createSSRHandler(
       try {
         await _alsRegistration;
 
-        // Set SSR context for the Pages Router provider so useRouter() returns
-        // the correct URL and params during server-side rendering.
+        // Resolve the Pages Router shim now; the SSR navigation context is
+        // published below (after the page/_app modules load) in a single call
+        // that includes `navigationIsReady` — computed from the loaded modules'
+        // data-fetching exports. Publishing a partial context here first would
+        // be dead work and could expose `navigationIsReady: undefined` (→ true)
+        // to any module-eval that reads it, diverging from the prod handler
+        // which always sets readiness before rendering.
         const routerShim = await importModule(runner, "next/router");
-        if (typeof routerShim.setSSRContext === "function") {
-          routerShim.setSSRContext({
-            pathname: patternToNextFormat(route.pattern),
-            query,
-            asPath: url,
-            locale: locale ?? currentDefaultLocale,
-            locales: i18nConfig?.locales,
-            defaultLocale: currentDefaultLocale,
-            domainLocales,
-          });
-        }
 
         // Set per-request i18n context for Link component locale
         // prop support during SSR.  Use runner.import to set it on
@@ -1342,7 +1345,17 @@ hydrate();
           }
         }
 
-        const allScripts = `${nextDataScript}\n  ${hydrationScript}`;
+        // Expose page route patterns on window before hydration so the
+        // next/navigation compat hooks can resolve a dynamic pattern from a
+        // resolved path, matching the production client entry. Kept in its own
+        // script tag (not folded into __NEXT_DATA__) so the serialized
+        // __NEXT_DATA__ JSON stays a single self-contained object.
+        const pagePatternsScript = createInlineScriptTag(
+          `window.__VINEXT_PAGE_PATTERNS__=${safeJsonStringify(pagePatterns)}`,
+          scriptNonce,
+        );
+
+        const allScripts = `${nextDataScript}\n  ${pagePatternsScript}\n  ${hydrationScript}`;
 
         // Build response headers: start with gSSP headers, then layer on
         // ISR and font preload headers (which take precedence).

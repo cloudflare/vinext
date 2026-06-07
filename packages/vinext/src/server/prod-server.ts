@@ -1170,6 +1170,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // before locating files on disk includes this path plus `_next/static/`.
   const appAssetPathPrefix = assetPrefixPathname(appRouterAssetPrefix);
   const appAssetBase = appRouterBasePath ? `${appRouterBasePath}/` : "/";
+  // Hybrid app/ + pages/ builds need the Pages client-entry globals installed so
+  // Pages fallback routes hydrate. This is intentionally inert for App-only
+  // deployments: there is no Pages client entry or pages manifest, so the
+  // globals resolve to undefined/{} and are only ever read by the Pages renderer
+  // (pages-asset-tags.ts), never the RSC bootstrap path.
   installPagesClientAssetGlobals({
     clientDir,
     assetsSubdir: resolveAssetsDir(appRouterAssetPrefix),

@@ -1155,6 +1155,13 @@ let _cachedReadonlyPagesSearchParamsKey: string | null = null;
 let _cachedReadonlyPagesSearchParams: ReadonlyURLSearchParams | null = null;
 
 function getReadonlyPagesSearchParams(searchParams: URLSearchParams): ReadonlyURLSearchParams {
+  // The per-object WeakMap is the authoritative, concurrency-safe cache (each
+  // request's SSR ctx owns its own URLSearchParams). The string-keyed
+  // `_cachedReadonlyPagesSearchParams` is only a fast-path for repeated
+  // identical query strings. Under concurrent SSR one request can read another
+  // request's string-keyed wrapper, but that is intentionally harmless:
+  // ReadonlyURLSearchParams is immutable and equal-string wrappers are
+  // interchangeable, so sharing them across requests cannot leak state.
   const cached = _readonlyPagesSearchParamsCache.get(searchParams);
   if (cached) return cached;
 

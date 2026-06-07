@@ -768,6 +768,24 @@ describe("Pages Router integration", () => {
     expect(html).toContain("__NEXT_DATA__");
   });
 
+  // Dev/prod parity: the production client entry exposes
+  // `window.__VINEXT_PAGE_PATTERNS__` so the next/navigation compat hooks can
+  // resolve a dynamic route pattern from a resolved path. Dev must expose the
+  // same global (in Next.js bracket format, including dynamic patterns) so the
+  // hooks behave identically in both runtimes.
+  it("exposes __VINEXT_PAGE_PATTERNS__ in dev for next/navigation compat", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    const html = await res.text();
+    // Route patterns contain `]` (e.g. "/posts/[slug]"), so anchor the capture
+    // on the closing `</script>` rather than the first `]`.
+    const match = html.match(/window\.__VINEXT_PAGE_PATTERNS__=(\[.*?\])<\/script>/);
+    expect(match).toBeTruthy();
+    const patterns = JSON.parse(match![1]!) as string[];
+    expect(Array.isArray(patterns)).toBe(true);
+    // pages-basic has dynamic routes — they must be serialized in bracket form.
+    expect(patterns.some((p) => p.includes("["))).toBe(true);
+  });
+
   it("includes the Vite client script for HMR", async () => {
     const res = await fetch(`${baseUrl}/`);
     const html = await res.text();

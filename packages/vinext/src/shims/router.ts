@@ -492,9 +492,15 @@ function _buildClientPagesNavigationContext(
     return _cachedClientPagesNavCtx;
   }
   const searchParams = isReady ? new URLSearchParams(searchString) : new URLSearchParams();
+  // Query-first to stay byte-for-byte identical with the server snapshot
+  // (getPagesNavigationContext) and to match Next.js's `adaptForPathParams`,
+  // which derives Pages path params from `router.query`. `__NEXT_DATA__.query`
+  // is kept current on every client navigation (navigateClient merges route
+  // params into it), so it is the same source the server serialized. The path
+  // extraction is only a fallback for the rare case the query lacks the param.
   const params = isReady
-    ? (extractRouteParamsFromPath(routePattern, resolvedPath) ??
-      getRouteParamsFromQuery(routePattern, nextData?.query ?? {}) ??
+    ? (getRouteParamsFromQuery(routePattern, nextData?.query ?? {}) ??
+      extractRouteParamsFromPath(routePattern, resolvedPath) ??
       {})
     : null;
   const isAutoExportDynamic =
