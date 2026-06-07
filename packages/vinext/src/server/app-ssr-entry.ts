@@ -512,8 +512,7 @@ export async function handleSsr(
 
         return {
           htmlStream: finalStream,
-          metadataReady:
-            options?.waitForAllReady === true ? htmlStream.allReady : Promise.resolve(),
+          metadataReady: Promise.resolve(),
           capturedRscData: options?.capturedRscDataRef?.value ?? null,
         };
       } catch (error) {

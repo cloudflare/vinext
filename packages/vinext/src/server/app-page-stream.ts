@@ -29,6 +29,23 @@ export function isAppSsrRenderResult(value: unknown): value is AppSsrRenderResul
   );
 }
 
+const resolvedMetadataReady = Promise.resolve();
+
+function normalizeAppSsrRenderResult(
+  raw: ReadableStream<Uint8Array> | AppSsrRenderResult,
+  fallbackCapturedRscData: Promise<ArrayBuffer> | null = null,
+): AppSsrRenderResult {
+  if (isAppSsrRenderResult(raw)) {
+    return raw;
+  }
+
+  return {
+    htmlStream: raw,
+    metadataReady: resolvedMetadataReady,
+    capturedRscData: fallbackCapturedRscData,
+  };
+}
+
 export type AppPageSsrHandler = {
   handleSsr: (
     rscStream: ReadableStream<Uint8Array>,
@@ -150,15 +167,7 @@ export async function renderAppPageHtmlStream(
     ssrOptions,
   );
 
-  if (isAppSsrRenderResult(rawResult)) {
-    return rawResult;
-  }
-
-  return {
-    htmlStream: rawResult,
-    metadataReady: Promise.resolve(),
-    capturedRscData: options.capturedRscDataRef?.value ?? null,
-  };
+  return normalizeAppSsrRenderResult(rawResult, options.capturedRscDataRef?.value ?? null);
 }
 
 /**
@@ -253,14 +262,7 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
 ): Promise<AppPageHtmlStreamRecoveryResult> {
   try {
     const rawResult = await options.renderHtmlStream();
-    const result = isAppSsrRenderResult(rawResult)
-      ? rawResult
-      : {
-          htmlStream: rawResult,
-          metadataReady: Promise.resolve(),
-          capturedRscData: null,
-        };
-    const { htmlStream, metadataReady, capturedRscData } = result;
+    const { htmlStream, metadataReady, capturedRscData } = normalizeAppSsrRenderResult(rawResult);
     options.onShellRendered?.();
     return {
       htmlStream,
@@ -274,7 +276,7 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
       return {
         htmlStream: null,
         response: await options.renderSpecialErrorResponse(specialError),
-        metadataReady: Promise.resolve(),
+        metadataReady: resolvedMetadataReady,
         capturedRscData: null,
       };
     }
@@ -284,7 +286,7 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
       return {
         htmlStream: null,
         response: boundaryResponse,
-        metadataReady: Promise.resolve(),
+        metadataReady: resolvedMetadataReady,
         capturedRscData: null,
       };
     }
