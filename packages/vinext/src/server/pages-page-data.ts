@@ -46,17 +46,17 @@ type PagesPagePropsResult = {
   revalidate?: number;
 };
 
-export type PagesMutableGsspResponse = {
+type PagesMutableGsspResponse = {
   headersSent: boolean;
 } & PagesGsspResponse;
 
-export type PagesGsspContextResponse = {
+type PagesGsspContextResponse = {
   req: unknown;
   res: PagesMutableGsspResponse;
   responsePromise: Promise<Response>;
 };
 
-export type PagesPageModule = {
+type PagesPageModule = {
   default?: unknown;
   getStaticPaths?: (context: {
     locales: string[];

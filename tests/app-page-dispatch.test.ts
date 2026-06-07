@@ -44,6 +44,8 @@ import {
   markDynamicUsage,
   markRenderRequestApiUsage,
 } from "../packages/vinext/src/shims/headers.js";
+import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
+import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 
 type TestRoute = {
   __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
@@ -80,25 +82,12 @@ function captureRecord(value: unknown): Record<string, unknown> {
   throw new Error("Expected AppElements record payload");
 }
 
-function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return Boolean(
-    value &&
-    (typeof value === "object" || typeof value === "function") &&
-    "then" in value &&
-    typeof value.then === "function",
-  );
-}
-
-function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
-  return (typeof value === "object" || typeof value === "function") && value !== null;
-}
-
 function isCachedAppPageValue(value: unknown): value is CachedAppPageValue {
-  return isRecord(value) && value.kind === "APP_PAGE";
+  return isUnknownRecord(value) && value.kind === "APP_PAGE";
 }
 
 function isQueryRecord(value: unknown): value is Record<string, string | string[] | undefined> {
-  return isRecord(value);
+  return isUnknownRecord(value);
 }
 
 function isDispatchReactNode(value: unknown): value is React.ReactNode {

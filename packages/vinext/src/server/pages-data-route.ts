@@ -126,3 +126,83 @@ export function buildNextDataNotFoundResponse(): Response {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+// ---------------------------------------------------------------------------
+// normalizePagesDataRequest
+// ---------------------------------------------------------------------------
+
+type NormalizePagesDataRequestResult =
+  | {
+      isDataReq: false;
+      request: Request;
+      normalizedPathname: null;
+      search: "";
+      notFoundResponse: null;
+    }
+  | {
+      isDataReq: false;
+      request: Request;
+      normalizedPathname: null;
+      search: "";
+      notFoundResponse: Response;
+    }
+  | {
+      isDataReq: true;
+      request: Request;
+      normalizedPathname: string;
+      search: string;
+      notFoundResponse: null;
+    };
+
+/**
+ * Detect and normalize `/_next/data/<buildId>/<page>.json` requests in one
+ * place so the Pages Router pipeline and middleware shim do not need to know
+ * about the data-endpoint protocol.
+ *
+ * Returns:
+ * - `isDataReq: false, notFoundResponse: null` — not a data request.
+ * - `isDataReq: false, notFoundResponse: Response` — looks like a data URL but
+ *   the buildId does not match; callers should return `notFoundResponse`
+ *   immediately so stale clients fall back to a hard navigation.
+ * - `isDataReq: true` — valid data request; `request` is re-pointed at the
+ *   normalized page path, `normalizedPathname` carries the bare page path, and
+ *   `search` carries the original query string for callers that need to
+ *   preserve it.
+ *
+ * Extracted from `entries/pages-server-entry.ts` so both `renderPage` and
+ * `runMiddleware` share a single implementation.
+ */
+export function normalizePagesDataRequest(
+  request: Request,
+  buildId: string | null,
+): NormalizePagesDataRequestResult {
+  const reqUrl = new URL(request.url);
+  if (!isNextDataPathname(reqUrl.pathname)) {
+    return {
+      isDataReq: false,
+      request,
+      normalizedPathname: null,
+      search: "",
+      notFoundResponse: null,
+    };
+  }
+  const dataMatch = buildId ? parseNextDataPathname(reqUrl.pathname, buildId) : null;
+  if (!dataMatch) {
+    return {
+      isDataReq: false,
+      request,
+      normalizedPathname: null,
+      search: "",
+      notFoundResponse: buildNextDataNotFoundResponse(),
+    };
+  }
+  const normalizedUrl = new URL(reqUrl);
+  normalizedUrl.pathname = dataMatch.pagePathname;
+  return {
+    isDataReq: true,
+    request: new Request(normalizedUrl, request),
+    normalizedPathname: dataMatch.pagePathname,
+    search: reqUrl.search,
+    notFoundResponse: null,
+  };
+}

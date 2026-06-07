@@ -31,7 +31,7 @@ export type PagesReqResRequest = {
   [Symbol.asyncIterator]: () => AsyncIterator<Uint8Array>;
 };
 
-export type PagesReqResHeaders = {
+type PagesReqResHeaders = {
   [key: string]: string | number | boolean | string[];
 };
 

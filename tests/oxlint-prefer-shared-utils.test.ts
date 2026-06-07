@@ -5,9 +5,11 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const SRC_ROOT = path.resolve(import.meta.dirname, "../packages/vinext/src");
+const TESTS_ROOT = path.resolve(import.meta.dirname);
 
 let fixtureDir: string | undefined;
 let fixtureLinkDir: string | undefined;
+let testFixtureLinkDir: string | undefined;
 
 function createFixtureDir(): string {
   fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-lint-rule-fixtures-"));
@@ -21,6 +23,20 @@ function writeFixture(name: string, source: string): string {
   const file = path.join(dir, name);
   fs.writeFileSync(file, source, "utf-8");
   return path.join(fixtureLinkDir ?? dir, name);
+}
+
+function writeTestFixture(name: string, source: string): string {
+  fixtureDir ??= fs.mkdtempSync(path.join(os.tmpdir(), "vinext-lint-rule-fixtures-"));
+  testFixtureLinkDir ??= path.join(
+    TESTS_ROOT,
+    `__lint_rule_fixtures__-${path.basename(fixtureDir)}`,
+  );
+  if (!fs.existsSync(testFixtureLinkDir)) {
+    fs.symlinkSync(fixtureDir, testFixtureLinkDir, "dir");
+  }
+  const file = path.join(fixtureDir, name);
+  fs.writeFileSync(file, source, "utf-8");
+  return path.join(testFixtureLinkDir, name);
 }
 
 function runLint(files: readonly string[]): { status: number | null; output: string } {
@@ -39,6 +55,10 @@ afterEach(() => {
   if (fixtureLinkDir) {
     fs.rmSync(fixtureLinkDir, { force: true });
     fixtureLinkDir = undefined;
+  }
+  if (testFixtureLinkDir) {
+    fs.rmSync(testFixtureLinkDir, { force: true });
+    testFixtureLinkDir = undefined;
   }
   if (!fixtureDir) return;
   fs.rmSync(fixtureDir, { recursive: true, force: true });
@@ -130,6 +150,25 @@ function findFileWithExts(value) {
     expect(result.output).toContain("Use shared compareStrings");
     expect(result.output).toContain("Use shared compareAppElementsSlotIds");
     expect(result.output).toContain("Use shared findFileWithExts");
+  });
+
+  it("reports local shared-helper definitions in tests", () => {
+    const testHelperFile = writeTestFixture(
+      "copied-record-helper.test.ts",
+      `
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+void isUnknownRecord({});
+`,
+    );
+
+    const result = runLint([testHelperFile]);
+
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain("copied-record-helper.test.ts");
+    expect(result.output).toContain("Use shared isUnknownRecord");
   });
 
   it("allows canonical modules, comments, and ordinary strings", () => {

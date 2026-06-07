@@ -12,7 +12,7 @@ import { findFileWithExts, scanWithExtensions, type ValidFileMatcher } from "./f
 import { validateRoutePatterns } from "./route-validation.js";
 import { compareStrings } from "../utils/compare.js";
 
-export type InterceptingRoute = {
+type InterceptingRoute = {
   /** The interception convention: "." | ".." | "../.." | "..." */
   convention: string;
   /** The URL pattern this intercepts (e.g. "/photos/:id") */
@@ -41,7 +41,7 @@ export type InterceptingRoute = {
   params: string[];
 };
 
-export type ParallelSlot = {
+type ParallelSlot = {
   /** Graph-owned semantic slot identity. Required on AppRouteGraphParallelSlot. */
   id?: string;
   /** Stable slot identity (name + owning directory), used for route serialization keys. */
@@ -185,7 +185,7 @@ export type AppRouteSemanticIds = {
   slots: Readonly<Record<string, string>>;
 };
 
-export type AppRouteGraphParallelSlot = ParallelSlot & {
+type AppRouteGraphParallelSlot = ParallelSlot & {
   id: string;
 };
 
@@ -215,19 +215,19 @@ export type RouteManifestRoute = {
   slotIds: readonly string[];
 };
 
-export type RouteManifestPage = {
+type RouteManifestPage = {
   id: string;
   routeId: string;
   pattern: string;
 };
 
-export type RouteManifestRouteHandler = {
+type RouteManifestRouteHandler = {
   id: string;
   routeId: string;
   pattern: string;
 };
 
-export type RouteManifestLayout = {
+type RouteManifestLayout = {
   id: string;
   treePath: string;
   patternParts: readonly string[];
@@ -235,7 +235,7 @@ export type RouteManifestLayout = {
   rootBoundaryId: RootBoundaryId | null;
 };
 
-export type RouteManifestTemplate = {
+type RouteManifestTemplate = {
   id: string;
   treePath: string;
   rootBoundaryId: RootBoundaryId | null;
@@ -246,7 +246,7 @@ export type RouteManifestTemplate = {
   };
 };
 
-export type RouteManifestSlot = {
+type RouteManifestSlot = {
   id: string;
   key: string;
   name: string;
@@ -258,7 +258,7 @@ export type RouteManifestSlot = {
   hasPage: boolean;
 };
 
-export type RouteManifestDefault = {
+type RouteManifestDefault = {
   id: string;
   slotId: string;
   ownerTreePath: string;
@@ -266,7 +266,7 @@ export type RouteManifestDefault = {
   rootBoundaryId: RootBoundaryId | null;
 };
 
-export type RouteManifestSlotBindingState = "active" | "default" | "unmatched";
+type RouteManifestSlotBindingState = "active" | "default" | "unmatched";
 
 export type RouteManifestSlotBinding = {
   id: string;
@@ -292,9 +292,9 @@ export type RouteManifestInterception = {
   targetRouteId: string | null;
 };
 
-export type RouteManifestBoundaryOutcome = "error" | "forbidden" | "notFound" | "unauthorized";
+type RouteManifestBoundaryOutcome = "error" | "forbidden" | "notFound" | "unauthorized";
 
-export type RouteManifestBoundary = {
+type RouteManifestBoundary = {
   id: string;
   outcome: RouteManifestBoundaryOutcome;
   treePath: string;
