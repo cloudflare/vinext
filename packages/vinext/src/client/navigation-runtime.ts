@@ -16,11 +16,11 @@ export type NavigationRuntimeRscBootstrap = {
   rsc: NavigationRuntimeRscChunk[];
 };
 
-export type NavigationRuntimeKind = "navigate" | "traverse" | "refresh";
+type NavigationRuntimeKind = "navigate" | "traverse" | "refresh";
 
-export type NavigationRuntimeHistoryUpdateMode = "push" | "replace";
+type NavigationRuntimeHistoryUpdateMode = "push" | "replace";
 
-export type NavigationRuntimeTraversalIntent = {
+type NavigationRuntimeTraversalIntent = {
   direction: "back" | "forward" | "unknown";
   historyState: unknown;
   targetHistoryIndex: number | null;

@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["vite/client", "@vitejs/plugin-rsc/types"],
+    "paths": {
+      "@/*": ["./*"]
+    }
+  },
+  "include": ["app", "*.ts", "../../../packages/vinext/src/shims/next-shims.d.ts"]
+}

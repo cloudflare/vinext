@@ -370,6 +370,14 @@ declare global {
       __VINEXT_RSC_COMPATIBILITY_ID?: string;
 
       /**
+       * Build-only coordination variable set by the `vinext build` CLI so that
+       * every vinext() plugin instance in a single build resolves the same RSC
+       * compatibility token (companion to `__VINEXT_SHARED_BUILD_ID`). Never read
+       * by dev or standalone createRscCompatibilityId() resolution.
+       */
+      __VINEXT_SHARED_RSC_COMPATIBILITY_ID?: string;
+
+      /**
        * Deployment ID string injected via Vite `define` when
        * `NEXT_DEPLOYMENT_ID` is present at build time.
        */

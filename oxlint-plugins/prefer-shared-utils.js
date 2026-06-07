@@ -110,7 +110,7 @@ function maskRange(source, start, end) {
   return `${source.slice(0, start)}${" ".repeat(end - start)}${source.slice(end)}`;
 }
 
-function maskCommentsAndQuotedStrings(source) {
+function maskCommentsAndQuotedStrings(source, options = { scanTemplateBodies: true }) {
   let masked = source;
   let i = 0;
   while (i < masked.length) {
@@ -131,14 +131,10 @@ function maskCommentsAndQuotedStrings(source) {
       continue;
     }
     if (current === "`") {
-      // Skip over template literals without masking their contents. The rule
-      // intentionally scans generated source embedded in template strings, so
-      // the body must stay intact. Advancing past the literal here also stops
-      // an apostrophe or `/* */` sequence *inside* the template from being
-      // mistaken for a string/comment opener (which would otherwise mask
-      // across a subsequent helper definition and produce a false negative).
-      // `${...}` interpolations are not parsed as code; they are scanned as
-      // part of the template body, which is acceptable for declaration matching.
+      // Source modules can embed generated source in template strings, so keep
+      // those template bodies scannable there. Test files often contain rule
+      // fixtures as template strings; mask those like ordinary strings so the
+      // lint rule validates the test file itself, not its fixture payloads.
       let end = i + 1;
       while (end < masked.length) {
         if (masked[end] === "\\") {
@@ -150,6 +146,9 @@ function maskCommentsAndQuotedStrings(source) {
           break;
         }
         end += 1;
+      }
+      if (!options.scanTemplateBodies) {
+        masked = maskRange(masked, i, end);
       }
       i = end;
       continue;
@@ -181,6 +180,15 @@ function isCanonicalDefinitionFile(filename, modulePath) {
   return filename.endsWith(`/packages/vinext/src/${modulePath}`);
 }
 
+function isVinextSourceFile(filename) {
+  return filename.includes(VINEXT_SOURCE_SEGMENT);
+}
+
+function isLintedProjectFile(filename) {
+  if (isVinextSourceFile(filename)) return true;
+  return filename.startsWith(`${normalizeFilename(REPO_ROOT)}/tests/`);
+}
+
 function reportIfSharedUtility(context, filename, node, name) {
   const utility = SHARED_UTILS.get(name);
   if (!utility || isCanonicalDefinitionFile(filename, utility.modulePath)) return;
@@ -203,8 +211,10 @@ const rule = {
       Program(node) {
         if (!SHARED_UTILITY_DECLARATION) return;
         const filename = normalizeFilename(context.filename);
-        if (!filename.includes(VINEXT_SOURCE_SEGMENT)) return;
-        const source = maskCommentsAndQuotedStrings(context.sourceCode.getText(node));
+        if (!isLintedProjectFile(filename)) return;
+        const source = maskCommentsAndQuotedStrings(context.sourceCode.getText(node), {
+          scanTemplateBodies: isVinextSourceFile(filename),
+        });
         const reported = new Set();
         for (const match of source.matchAll(SHARED_UTILITY_DECLARATION)) {
           const name = match[1] ?? match[2];

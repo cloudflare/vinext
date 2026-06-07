@@ -33,6 +33,7 @@ import {
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
 import { computeLazyChunks } from "../packages/vinext/src/utils/lazy-chunks.js";
+import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import {
   mergeHeaders,
   resolveStaticAssetSignal,
@@ -56,6 +57,38 @@ function writeFile(dir: string, relativePath: string, content: string): void {
 
 function mkdir(dir: string, relativePath: string): void {
   fs.mkdirSync(path.join(dir, relativePath), { recursive: true });
+}
+
+function readVinextPackageExports(): Record<string, unknown> {
+  const packageJsonPath = path.resolve("packages/vinext/package.json");
+  const parsed: unknown = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
+  if (!isUnknownRecord(parsed) || !isUnknownRecord(parsed.exports)) {
+    throw new Error("packages/vinext/package.json must define an exports object");
+  }
+  return parsed.exports;
+}
+
+function extractVinextImportSubpaths(source: string): string[] {
+  const imports = new Set<string>();
+  const pattern = /\bfrom\s+["']vinext\/([^"']+)["']/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(source)) !== null) {
+    imports.add(`./${match[1]}`);
+  }
+  return [...imports].sort();
+}
+
+function hasPackageExport(exportsMap: Record<string, unknown>, subpath: string): boolean {
+  if (Object.hasOwn(exportsMap, subpath)) return true;
+
+  for (const exportKey of Object.keys(exportsMap)) {
+    if (!exportKey.includes("*")) continue;
+    const [prefix, suffix] = exportKey.split("*");
+    if (prefix === undefined || suffix === undefined) continue;
+    if (subpath.startsWith(prefix) && subpath.endsWith(suffix)) return true;
+  }
+
+  return false;
 }
 
 beforeEach(() => {
@@ -834,6 +867,20 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("transformImage:");
     expect(content).toContain("env.ASSETS.fetch");
     expect(content).toContain("env.IMAGES");
+  });
+
+  it("exports every vinext subpath imported by generated worker entries", () => {
+    const exportsMap = readVinextPackageExports();
+    const generatedImports = [
+      ...extractVinextImportSubpaths(generateAppRouterWorkerEntry()),
+      ...extractVinextImportSubpaths(generatePagesRouterWorkerEntry()),
+    ];
+    const uniqueGeneratedImports = [...new Set(generatedImports)].sort();
+
+    expect(uniqueGeneratedImports.length).toBeGreaterThan(0);
+    expect(
+      uniqueGeneratedImports.filter((subpath) => !hasPackageExport(exportsMap, subpath)),
+    ).toEqual([]);
   });
 
   it("merges middleware and config headers into responses with correct precedence", () => {

@@ -8,8 +8,8 @@
 export const revalidate = 3600; // Long TTL — only invalidated by revalidateTag
 
 async function getTaggedData() {
-  // Use a tagged fetch to demonstrate revalidateTag behavior without depending
-  // on external network availability in CI.
+  // Use a deterministic local fetch so the test exercises tag tracking without
+  // depending on external network availability.
   await fetch("data:application/json,%7B%22ok%22%3Atrue%7D", {
     next: { tags: ["test-data"] },
   });

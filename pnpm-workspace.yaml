@@ -33,7 +33,7 @@ catalog:
   "@takumi-rs/image-response": ^0.72.0
   "@types/mdx": 2.0.13
   "@types/ms": 2.1.0
-  "@types/node": ^25.2.3
+  "@types/node": ^25.9.2
   "@types/react": ^19.2.16
   "@types/react-dom": ^19.2.3
   "@typescript/native-preview": ^7.0.0-dev.20260213.1
@@ -90,7 +90,7 @@ catalog:
   web-vitals: ^4.2.4
   wrangler: ^4.80.0
   zod: 3.24.3
-  knip: ^6.6.2
+  knip: ^6.16.0
 overrides:
   vite: "catalog:"
   vitest: "catalog:"

@@ -7,8 +7,6 @@
 export const revalidate = 3600;
 
 async function getTaggedData() {
-  // Use a tagged fetch to demonstrate revalidateTag behavior without depending
-  // on external network availability in CI.
   await fetch("data:application/json,%7B%22ok%22%3Atrue%7D", {
     next: { tags: ["test-data"] },
   });

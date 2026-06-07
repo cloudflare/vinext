@@ -44,6 +44,8 @@ import {
   markDynamicUsage,
   markRenderRequestApiUsage,
 } from "../packages/vinext/src/shims/headers.js";
+import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
+import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 
 type TestRoute = {
   __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
@@ -80,25 +82,12 @@ function captureRecord(value: unknown): Record<string, unknown> {
   throw new Error("Expected AppElements record payload");
 }
 
-function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return Boolean(
-    value &&
-    (typeof value === "object" || typeof value === "function") &&
-    "then" in value &&
-    typeof value.then === "function",
-  );
-}
-
-function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
-  return (typeof value === "object" || typeof value === "function") && value !== null;
-}
-
 function isCachedAppPageValue(value: unknown): value is CachedAppPageValue {
-  return isRecord(value) && value.kind === "APP_PAGE";
+  return isUnknownRecord(value) && value.kind === "APP_PAGE";
 }
 
 function isQueryRecord(value: unknown): value is Record<string, string | string[] | undefined> {
-  return isRecord(value);
+  return isUnknownRecord(value);
 }
 
 function isDispatchReactNode(value: unknown): value is React.ReactNode {
@@ -330,7 +319,11 @@ function createDispatchOptions(
       return [];
     },
     getNavigationContext() {
-      return { pathname: "/posts/hello" };
+      return {
+        pathname: "/posts/hello",
+        searchParams: new URLSearchParams(),
+        params: { slug: "hello" },
+      };
     },
     getSourceRoute: overrides.getSourceRoute ?? (() => undefined),
     hasGenerateStaticParams: typeof overrides.generateStaticParams === "function",
@@ -1143,5 +1136,63 @@ describe("app page dispatch", () => {
       expect.arrayContaining(["/photos/123", "_N_T_/feed/page"]),
       undefined,
     );
+  });
+
+  it("regenerates stale HTML cache entries with waitForAllReady so suspense fallbacks never leak into the cache", async () => {
+    // Stale-while-revalidate regeneration must await React's `allReady` before
+    // transforming/buffering the HTML stream — same guarantee as the prerender
+    // path. Without `waitForAllReady: true`, Suspense fallback content could be
+    // written to the regenerated cache entry instead of the resolved content.
+    const route = createRoute({ pattern: "/posts/[slug]", routeSegments: ["posts", "[slug]"] });
+    let scheduledRender: unknown = null;
+    const scheduleBackgroundRegeneration: DispatchOptions["scheduleBackgroundRegeneration"] = (
+      _key,
+      renderFn,
+    ) => {
+      scheduledRender = renderFn;
+    };
+    let capturedWaitForAllReady: boolean | undefined;
+    const isrSet = vi.fn(async () => {});
+    const { options } = createDispatchOptions({
+      buildPageElement: async () => React.createElement("main", null, "fresh"),
+      cleanPathname: "/posts/hello",
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          capturedWaitForAllReady = captureOptions?.waitForAllReady;
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>fresh</html>"]);
+        },
+      }),
+      renderToReadableStream() {
+        return createStream(["flight"]);
+      },
+      revalidateSeconds: 60,
+      route,
+      scheduleBackgroundRegeneration,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    await expect(response.text()).resolves.toBe("<html>stale</html>");
+    expect(typeof scheduledRender).toBe("function");
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+
+    await scheduledRender();
+
+    expect(capturedWaitForAllReady).toBe(true);
+    expect(isrSet).toHaveBeenCalled();
   });
 });

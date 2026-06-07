@@ -29,6 +29,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import vm from "node:vm";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { escapeRegExp } from "../packages/vinext/src/utils/regex.js";
 
 const FIXTURE_PREFIX = "vinext-class-integration-";
 
@@ -43,10 +44,6 @@ type BuiltFixture = {
 async function writeFile(file: string, source: string): Promise<void> {
   await fsp.mkdir(path.dirname(file), { recursive: true });
   await fsp.writeFile(file, source, "utf8");
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**

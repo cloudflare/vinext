@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
+import type { NavigationContext } from "vinext/shims/navigation";
 import type { CachedAppPageValue } from "vinext/shims/cache";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
@@ -57,7 +58,6 @@ import type {
   ClientReuseManifestTraceFields,
 } from "./client-reuse-manifest.js";
 import { NO_STORE_CACHE_CONTROL } from "./cache-control.js";
-import { readStreamAsText } from "../utils/text-stream.js";
 import {
   createClientReuseSkipTransportPlan,
   createStaticLayoutClientReuseArtifactCompatibility,
@@ -115,7 +115,7 @@ type RenderAppPageLifecycleOptions = {
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];
-  getNavigationContext: () => unknown;
+  getNavigationContext: () => NavigationContext | null;
   getPageTags: () => string[];
   getRequestCacheLife: () => AppPageRequestCacheLife | null;
   peekRequestCacheLife?: () => AppPageRequestCacheLife | null;
@@ -179,8 +179,6 @@ type RenderAppPageLifecycleOptions = {
   classification?: LayoutClassificationOptions | null;
 };
 
-const textEncoder = new TextEncoder();
-
 function buildResponseTiming(
   options: Pick<RenderAppPageLifecycleOptions, "handlerStart" | "isProduction"> & {
     compileEnd?: number;
@@ -198,18 +196,6 @@ function buildResponseTiming(
     renderEnd: options.renderEnd,
     responseKind: options.responseKind,
   };
-}
-
-function createBufferedHtmlStream(html: string): ReadableStream<Uint8Array> {
-  const encoded = textEncoder.encode(html);
-  return new ReadableStream({
-    start(controller) {
-      if (encoded.byteLength > 0) {
-        controller.enqueue(encoded);
-      }
-      controller.close();
-    },
-  });
 }
 
 function readRequestCacheLifeForPrerender(
@@ -860,6 +846,10 @@ export async function renderAppPageLifecycle(
     throw new Error("[vinext] Expected an HTML stream when no fallback response was returned");
   }
 
+  if (options.isPrerender === true) {
+    await htmlRender.metadataReady;
+  }
+
   // Routes with a route-level Suspense boundary (loading.tsx) skip the page
   // probe — the page render happens once, inside the RSC stream. Mirror
   // Next.js's `app-render.tsx:4293` catch shape: by the time the SSR shell
@@ -899,9 +889,7 @@ export async function renderAppPageLifecycle(
 
   // Eagerly read values that must be captured before the stream is consumed.
   if (options.isPrerender === true) {
-    const bufferedHtml = await readStreamAsText(htmlStream);
-    htmlStream = createBufferedHtmlStream(bufferedHtml);
-    await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
+    await settleCapturedRscRenderForCacheMetadata(htmlRender.capturedRscData);
     ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
       expireSeconds,
       requestCacheLife: readRequestCacheLifeForPrerender(options),

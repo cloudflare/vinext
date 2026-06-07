@@ -1,5 +1,6 @@
 import React, { type ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
+import type { NavigationContext } from "vinext/shims/navigation";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
 import {
   _consumeRequestScopedCacheLife,
@@ -75,7 +76,7 @@ import {
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
-import type { AppPageSsrHandler } from "./app-page-stream.js";
+import { isAppSsrRenderResult, type AppPageSsrHandler } from "./app-page-stream.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
@@ -219,7 +220,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];
-  getNavigationContext: () => unknown;
+  getNavigationContext: () => NavigationContext | null;
   getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
   hasGenerateStaticParams: boolean;
   hasPageDefaultExport: boolean;
@@ -608,7 +609,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             const revalidatedCapturedRscRef: { value: Promise<ArrayBuffer> | null } = {
               value: null,
             };
-            const revalidatedHtmlStream = await revalidatedSsrEntry.handleSsr(
+            const revalidatedHtmlResult = await revalidatedSsrEntry.handleSsr(
               revalidatedRscCapture.ssrStream,
               options.getNavigationContext(),
               {
@@ -620,6 +621,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 basePath: options.basePath,
                 clientTraceMetadata: options.clientTraceMetadata,
                 rootParams: options.rootParams,
+                waitForAllReady: true,
                 ...(revalidatedRscCapture.sideStream
                   ? {
                       sideStream: revalidatedRscCapture.sideStream,
@@ -628,6 +630,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                   : {}),
               },
             );
+            const revalidatedHtmlStream = isAppSsrRenderResult(revalidatedHtmlResult)
+              ? revalidatedHtmlResult.htmlStream
+              : revalidatedHtmlResult;
             const html = await readStreamAsText(revalidatedHtmlStream);
             const rscData = await getCapturedRscDataPromise(revalidatedCapturedRscRef.value);
             const cacheLife = _consumeRequestScopedCacheLife();

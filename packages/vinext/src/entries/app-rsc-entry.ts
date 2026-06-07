@@ -94,6 +94,7 @@ const appHookWarningSuppressionPath = resolveEntryPath(
   import.meta.url,
 );
 const serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
+const appPagesBridgePath = resolveEntryPath("../server/app-pages-bridge.js", import.meta.url);
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -319,7 +320,12 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
-${hasPagesDir ? `// Pages Router routes are loaded lazily from the SSR environment for internal prerender requests.` : ""}
+${
+  hasPagesDir
+    ? `// Pages Router routes are loaded lazily from the SSR environment for internal prerender requests.
+import { renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};`
+    : ""
+}
 
 // Suppress expected "Invalid hook call" dev warning when layout/page
 // components are probed outside React's render cycle. The import patches
@@ -911,43 +917,17 @@ export default __createAppRscHandler({
   ${
     hasPagesDir
       ? `async renderPagesFallback({ isRscRequest, middlewareContext, request, url }) {
-    if (isRscRequest) return null;
-
-    const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-
-    const __pagesRequestHeaders = middlewareContext.requestHeaders
-      ? __buildRequestHeadersFromMiddlewareResponse(request.headers, middlewareContext.requestHeaders)
-      : null;
-    let __pagesRequest = request;
-    if (__pagesRequestHeaders) {
-      const __pagesRequestInit = {
-        method: request.method,
-        headers: __pagesRequestHeaders,
-      };
-      if (request.method !== "GET" && request.method !== "HEAD") {
-        __pagesRequestInit.body = request.body;
-        __pagesRequestInit.duplex = "half";
+    return __renderPagesFallback(
+      { isRscRequest, middlewareContext, request, url },
+      {
+        loadPagesEntry() {
+          return import.meta.viteRsc.loadModule("ssr", "index");
+        },
+        buildRequestHeaders: __buildRequestHeadersFromMiddlewareResponse,
+        decodePathParams: __decodePathParams,
+        applyRouteHandlerMiddlewareContext: __applyRouteHandlerMiddlewareContext,
       }
-      __pagesRequest = new Request(request.url, __pagesRequestInit);
-    }
-
-    const __pagesUrl = __decodePathParams(url.pathname) + (url.search || "");
-    const __pagesPathname = url.pathname;
-    if (__pagesPathname.startsWith("/api/") || __pagesPathname === "/api") {
-      if (typeof __pagesEntry.handleApiRoute !== "function") return null;
-      const __pagesApiResponse = await __pagesEntry.handleApiRoute(__pagesRequest, __pagesUrl);
-      return __applyRouteHandlerMiddlewareContext(__pagesApiResponse, middlewareContext);
-    }
-
-    if (typeof __pagesEntry.renderPage !== "function") return null;
-    const __pagesRes = await __pagesEntry.renderPage(
-      __pagesRequest,
-      __pagesUrl,
-      {},
-      undefined,
-      middlewareContext.requestHeaders,
     );
-    return __pagesRes.status !== 404 ? __pagesRes : null;
   },`
       : ""
   }

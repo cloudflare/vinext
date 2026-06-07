@@ -40,9 +40,9 @@ type ArtifactCompatibilityEnvelopeInput = Readonly<{
   renderEpoch?: string | null;
 }>;
 
-export type ArtifactCompatibilitySet = readonly [string, string, ...string[]];
+type ArtifactCompatibilitySet = readonly [string, string, ...string[]];
 
-export type ArtifactCompatibilityMap = Readonly<{
+type ArtifactCompatibilityMap = Readonly<{
   graphVersions?: readonly ArtifactCompatibilitySet[];
   deploymentVersions?: readonly ArtifactCompatibilitySet[];
   rootBoundaryIds?: readonly ArtifactCompatibilitySet[];

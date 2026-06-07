@@ -6,6 +6,7 @@ import {
   use,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -104,6 +105,7 @@ import {
 import {
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
   VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
+  createBfcacheSegmentStateKeyMap,
   createHistoryStateWithNavigationMetadata,
   createInitialBfcacheIdMap,
   isHistoryStateBfcacheVersionCurrent,
@@ -128,7 +130,7 @@ import {
 import { createPopstateRestoreHandler } from "./app-browser-popstate.js";
 import { DevRecoveryBoundary, RedirectBoundary } from "vinext/shims/error-boundary";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
-import { ElementsContext, Slot } from "vinext/shims/slot";
+import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import type { RouteManifest } from "../routing/app-route-graph.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { createOnUncaughtError } from "./app-browser-error.js";
@@ -1189,13 +1191,26 @@ function BrowserRoot({
       ),
     ),
   );
+  const bfcacheStateKeys = useMemo(
+    () =>
+      createBfcacheSegmentStateKeyMap({
+        elements: treeState.elements,
+        pathname: treeState.navigationSnapshot.pathname,
+      }),
+    [treeState.elements, treeState.navigationSnapshot.pathname],
+  );
+  const stateKeyTree = createElement(
+    BfcacheStateKeyMapContext.Provider,
+    { value: bfcacheStateKeys },
+    routeTree,
+  );
   const bfcacheTree = BfcacheIdMapContext
-    ? createElement(BfcacheIdMapContext.Provider, { value: treeState.bfcacheIds }, routeTree)
-    : routeTree;
+    ? createElement(BfcacheIdMapContext.Provider, { value: treeState.bfcacheIds }, stateKeyTree)
+    : stateKeyTree;
   const redirectedTree = createElement(AppRouterRedirectBridge, null, bfcacheTree);
   const innerTree = AppRouterContext
     ? createElement(AppRouterContext.Provider, { value: appRouterInstance }, redirectedTree)
-    : bfcacheTree;
+    : redirectedTree;
 
   // In dev, wrap the route tree in a top-level recovery boundary. A render
   // error (e.g. a slot's RSC reference rejects) is caught here instead of

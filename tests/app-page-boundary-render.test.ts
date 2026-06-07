@@ -67,7 +67,7 @@ function createCommonOptions() {
       return [".font { font-family: Test; }"];
     },
     getNavigationContext() {
-      return { pathname: "/posts/missing" };
+      return { pathname: "/posts/missing", searchParams: new URLSearchParams(), params: {} };
     },
     isRscRequest: false,
     loadSsrHandler,
