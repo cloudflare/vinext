@@ -222,6 +222,12 @@ test.describe("Next.js compat: hash RSC requests in production", () => {
       await page.goto(`${app.baseUrl}/nextjs-compat/hash-rsc-requests`);
       await waitForAppRouterHydration(page);
       await expect(page.locator("p")).toHaveText("Hash Page");
+      // Wait for all initial network activity (including the query-param link's
+      // viewport prefetch) to settle *before* clearing the tracked RSC requests.
+      // Otherwise the prefetch can land after the clear on slower runtimes
+      // (e.g. WebKit) and be misattributed to the hash-only navigations below.
+      // Mirrors upstream's `waitForIdleNetwork()` in the ported Next.js test.
+      await page.waitForLoadState("networkidle");
       rscRequestUrls.clear();
 
       await checkLink(6, 128);
