@@ -512,6 +512,14 @@ export async function handleSsr(
 
         return {
           htmlStream: finalStream,
+          // `metadataReady` resolves eagerly precisely *because* `allReady` was
+          // already awaited above when `waitForAllReady` is set (the prerender
+          // path). At that point the React tree is fully rendered, so all
+          // render-time metadata (cache life, headers, captured RSC errors) is
+          // already settled and there is nothing left for the lifecycle to wait
+          // on. The promise exists to keep `renderAppPageLifecycle` agnostic to
+          // *where* the blocking happens — do not move the `allReady` await onto
+          // this promise expecting it to be load-bearing in production.
           metadataReady: Promise.resolve(),
           capturedRscData: options?.capturedRscDataRef?.value ?? null,
         };

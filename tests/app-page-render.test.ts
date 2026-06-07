@@ -1081,7 +1081,7 @@ describe("app page render lifecycle", () => {
   it("captures special errors thrown during the full prerender SSR pass and converts them to 307/404 response", async () => {
     const common = createCommonOptions();
     const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
-    let capturedOnError: any = null;
+    let capturedOnError: ((error: unknown, ...args: unknown[]) => void) | null = null;
 
     const response = await renderAppPageLifecycle({
       ...common.options,
