@@ -512,7 +512,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     {
       basePathState,
       clearRequestContext: options.clearRequestContext,
-      request,
+      // Forward the `_rsc`-stripped request so external rewrite proxies never
+      // receive the internal RSC transport query (same invariant as middleware).
+      request: userlandRequest,
       requestContext: postMiddlewareRequestContext,
       rewrites: options.configRewrites.beforeFiles,
     },
@@ -617,7 +619,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       {
         basePathState,
         clearRequestContext: options.clearRequestContext,
-        request,
+        // Forward the `_rsc`-stripped request so external rewrite proxies never
+        // receive the internal RSC transport query (same invariant as middleware).
+        request: userlandRequest,
         requestContext: postMiddlewareRequestContext,
         rewrites: options.configRewrites.afterFiles,
       },
@@ -635,7 +639,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       {
         basePathState,
         clearRequestContext: options.clearRequestContext,
-        request,
+        // Forward the `_rsc`-stripped request so external rewrite proxies never
+        // receive the internal RSC transport query (same invariant as middleware).
+        request: userlandRequest,
         requestContext: postMiddlewareRequestContext,
         rewrites: options.configRewrites.fallback,
       },
