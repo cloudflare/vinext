@@ -1432,9 +1432,6 @@ function getClientParamsSnapshot(): Record<string, string | string[]> | null {
   if (pagesCtx) {
     return pagesCtx.params;
   }
-  if (state && Object.keys(state.clientParams).length > 0) {
-    return state.clientParams;
-  }
   return state?.clientParams ?? _EMPTY_PARAMS;
 }
 

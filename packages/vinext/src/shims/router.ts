@@ -787,7 +787,18 @@ function markPagesRouterReady(): boolean {
 }
 
 function getRouterSnapshot(): ReturnType<typeof getPathnameAndQuery> & { isReady: boolean } {
-  return { ...getPathnameAndQuery(), isReady: isPagesRouterReady() };
+  // On the server, derive `router.isReady` from the SSR navigation-readiness
+  // context (auto-export dynamic / query-string / rewrite-capable routes are
+  // not ready until the client router publishes the live URL). Mirrors Next.js
+  // render.tsx, which serializes the same readiness into `__NEXT_DATA__` so the
+  // client hydrates with the identical value. Returning `true` unconditionally
+  // would render `isReady: true` on the server while the client hydrates with
+  // `isReady: false`, a hydration mismatch for components reading it in JSX.
+  const isReady =
+    typeof window === "undefined"
+      ? (_getSSRContext()?.navigationIsReady ?? true)
+      : isPagesRouterReady();
+  return { ...getPathnameAndQuery(), isReady };
 }
 
 function notifyNextNavigationPagesContext(): void {

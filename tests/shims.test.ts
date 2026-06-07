@@ -12071,6 +12071,52 @@ describe("next/compat/router shim", () => {
     }
   });
 
+  // Regression: `useRouter().isReady` flows through getRouterSnapshot →
+  // PagesRouterProvider. On the server it must reflect the SSR navigation
+  // readiness context, not unconditionally report `true`. Otherwise a pre-ready
+  // route (auto-export dynamic / query string / rewrite-capable build) would
+  // render `isReady: true` on the server while the client hydrates with
+  // `isReady: false`, a hydration mismatch for components reading it in JSX.
+  // Mirrors Next.js render.tsx's server readiness rule.
+  it("useRouter().isReady reflects SSR navigation readiness during server render", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { useRouter, wrapWithRouterContext, setSSRContext } =
+      await import("../packages/vinext/src/shims/router.js");
+
+    function Probe() {
+      return React.createElement("span", null, String(useRouter().isReady));
+    }
+
+    // Pre-ready route: navigationIsReady false → isReady false.
+    setSSRContext({
+      pathname: "/pages-dir/[dynamic]",
+      query: { dynamic: "foobar" },
+      asPath: "/pages-dir/foobar?tab=comments",
+      navigationIsReady: false,
+    });
+    try {
+      const html = renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(html).toBe("<span>false</span>");
+    } finally {
+      setSSRContext(null);
+    }
+
+    // Ready route: navigationIsReady true → isReady true.
+    setSSRContext({
+      pathname: "/blog/[slug]",
+      query: { slug: "hello" },
+      asPath: "/blog/hello",
+      navigationIsReady: true,
+    });
+    try {
+      const html = renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(html).toBe("<span>true</span>");
+    } finally {
+      setSSRContext(null);
+    }
+  });
+
   it("does not defer Pages Router readiness for dynamic getStaticProps routes without search", async () => {
     const { getPagesNavigationIsReadyFromSerializedState } =
       await import("../packages/vinext/src/shims/router.js");
