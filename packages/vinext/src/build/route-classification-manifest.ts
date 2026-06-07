@@ -20,9 +20,9 @@ import type {
 } from "./layout-classification-types.js";
 import { classifyLayoutSegmentConfig } from "./report.js";
 
-export type Layer1Class = "static" | "dynamic";
+type Layer1Class = "static" | "dynamic";
 
-export type RouteManifestEntry = {
+type RouteManifestEntry = {
   /** Route pattern for diagnostics (e.g. "/blog/:slug"). */
   pattern: string;
   /** Absolute file paths for each layout, ordered root → leaf. */

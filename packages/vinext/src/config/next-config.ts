@@ -290,7 +290,7 @@ export type NextConfig = {
   [key: string]: unknown;
 };
 
-export type NextConfigFactory = (
+type NextConfigFactory = (
   phase: string,
   opts: { defaultConfig: NextConfig },
 ) => NextConfig | Promise<NextConfig>;

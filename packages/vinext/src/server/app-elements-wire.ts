@@ -88,7 +88,7 @@ const CACHE_PROOF_REJECTION_CODES = createCacheProofRejectionCodeSet([
   "CP_STATIC_LAYOUT_VARIANT_DIMENSION_UNPROVEN",
 ]);
 
-export type AppElementsSlotBindingState = "active" | "default" | "unmatched";
+type AppElementsSlotBindingState = "active" | "default" | "unmatched";
 
 export type AppElementsSlotBinding = Readonly<{
   activeRouteId?: string | null;

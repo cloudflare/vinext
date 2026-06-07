@@ -35,7 +35,6 @@ function formatNextRedirectDigest(options: { url: string; statusCode: number }):
 }
 
 export type { LayoutFlags };
-export type { ClassificationReason };
 
 /**
  * Marker we tag onto a thrown redirect/notFound error when it originates from

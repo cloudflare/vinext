@@ -1,6 +1,6 @@
 export const NAVIGATION_TRACE_SCHEMA_VERSION = 0;
 
-export type NavigationTraceSchemaVersion = 0;
+type NavigationTraceSchemaVersion = 0;
 
 export const NavigationTraceReasonCodes = {
   cacheProofRejected: "NC_CACHE_REJECT",
@@ -52,7 +52,7 @@ export type NavigationTraceTransactionCode =
 
 export type NavigationTraceCode = NavigationTraceReasonCode | NavigationTraceTransactionCode;
 
-export type NavigationTraceFieldName =
+type NavigationTraceFieldName =
   | "activeNavigationId"
   | "cacheProofCode"
   | "cacheProofMode"
@@ -69,13 +69,13 @@ export type NavigationTraceFieldName =
   | "targetHref"
   | "traverseDirection";
 
-export type NavigationTraceFieldValue = string | number | boolean | null;
+type NavigationTraceFieldValue = string | number | boolean | null;
 
 export type NavigationTraceFields = Readonly<
   Partial<Record<NavigationTraceFieldName, NavigationTraceFieldValue>>
 >;
 
-export type NavigationTraceEntry = Readonly<{
+type NavigationTraceEntry = Readonly<{
   code: NavigationTraceCode;
   fields: NavigationTraceFields;
 }>;
