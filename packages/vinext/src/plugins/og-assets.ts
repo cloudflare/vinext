@@ -41,6 +41,7 @@ import type { Plugin } from "vite";
 import path from "node:path";
 import fs from "node:fs";
 import { createRequire } from "node:module";
+import MagicString from "magic-string";
 
 // ── Plugin factories ──────────────────────────────────────────────────────────
 
@@ -209,6 +210,30 @@ function fallbackUrlRegex(baseName: string): RegExp {
 }
 
 /**
+ * Copy a single root copy of each requested WASM asset from `sourceDir` into
+ * `outDir`, skipping any asset whose source is missing or whose destination
+ * already exists.
+ *
+ * Extracted as a pure, dependency-injected helper so it can be unit-tested
+ * against a temp source directory without depending on the real @vercel/og
+ * install (whose `yoga.wasm` is only materialized as a side effect of the
+ * `vinext:og-font-patch` transform during a build).
+ */
+export function copyMissingOgWasm(opts: {
+  outDir: string;
+  sourceDir: string;
+  assets: readonly string[];
+}): void {
+  for (const asset of opts.assets) {
+    const src = path.join(opts.sourceDir, asset);
+    const dest = path.join(opts.outDir, asset);
+    if (fs.existsSync(src) && !fs.existsSync(dest)) {
+      fs.copyFileSync(src, dest);
+    }
+  }
+}
+
+/**
  * Create the `vinext:og-assets` Vite plugin.
  *
  * Ensures each @vercel/og WASM module (resvg.wasm, yoga.wasm) ships exactly once
@@ -256,26 +281,47 @@ export function createOgAssetsPlugin(): Plugin {
           const emitted = findEmittedWasmAsset(bundle as never, base);
           if (!emitted) continue; // no emitted asset → leave for writeBundle to copy
 
-          const re = fallbackUrlRegex(base);
-          let rewroteAny = false;
           for (const chunk of chunks) {
-            if (!re.test(chunk.code)) continue;
-            re.lastIndex = 0;
+            const re = fallbackUrlRegex(base);
             const chunkDir = path.posix.dirname(chunk.fileName);
             const rel = path.posix.relative(chunkDir, emitted);
             const ref = rel.startsWith(".") ? rel : `./${rel}`;
-            chunk.code = chunk.code.replace(
-              re,
-              (_m, quote: string) => `new URL(${quote}${ref}${quote}, import.meta.url)`,
-            );
-            rewroteAny = true;
+
+            // Use MagicString so the chunk's sourcemap stays in sync with the
+            // edit (offsets after the replacement shift correctly) rather than a
+            // blind string .replace() that would invalidate `chunk.map`.
+            const s = new MagicString(chunk.code);
+            let edited = false;
+            for (const m of chunk.code.matchAll(re)) {
+              const quote = m[1];
+              const start = m.index;
+              s.overwrite(
+                start,
+                start + m[0].length,
+                `new URL(${quote}${ref}${quote}, import.meta.url)`,
+              );
+              edited = true;
+            }
+            if (!edited) continue;
+
+            chunk.code = s.toString();
+            // Only regenerate the map when the chunk already carried one (server
+            // builds usually omit sourcemaps, in which case `chunk.map` is null
+            // and we must not fabricate one). magic-string's SourceMap is
+            // structurally compatible with the bundler's (same fields +
+            // toString/toUrl) but nominally distinct, so cast it.
+            if (chunk.map) {
+              chunk.map = s.generateMap({
+                hires: "boundary",
+                source: chunk.fileName,
+              }) as typeof chunk.map;
+            }
           }
 
           // Even if the fallback reference wasn't found (e.g. unexpected minifier
           // shape), the emitted asset still satisfies the workerd loader, so the
           // root copy is redundant. Mark as deduped to avoid shipping it twice.
           dedupedBases.add(base);
-          void rewroteAny;
         }
       },
     },
@@ -302,19 +348,14 @@ export function createOgAssetsPlugin(): Plugin {
         );
         if (referencedAssets.length === 0) return;
 
-        // Find @vercel/og in node_modules
+        // Find @vercel/og in node_modules. The yoga.wasm source is written
+        // there by the vinext:og-font-patch transform earlier in the build.
         try {
           const require = createRequire(import.meta.url);
           const ogPkgPath = require.resolve("@vercel/og/package.json");
           const ogDistDir = path.join(path.dirname(ogPkgPath), "dist");
 
-          for (const asset of referencedAssets) {
-            const src = path.join(ogDistDir, asset);
-            const dest = path.join(outDir, asset);
-            if (fs.existsSync(src) && !fs.existsSync(dest)) {
-              fs.copyFileSync(src, dest);
-            }
-          }
+          copyMissingOgWasm({ outDir, sourceDir: ogDistDir, assets: referencedAssets });
         } catch {
           // @vercel/og not installed — nothing to copy
         }

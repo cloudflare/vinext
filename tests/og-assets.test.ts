@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import { copyMissingOgWasm } from "../packages/vinext/src/plugins/og-assets.js";
 import type { Plugin } from "vite-plus";
 import fsp from "node:fs/promises";
 import fs from "node:fs";
@@ -104,6 +105,33 @@ describe("vinext:og-assets plugin", () => {
       expect(out).not.toContain('new URL("./yoga.wasm"');
     });
 
+    it("keeps the chunk sourcemap in sync when one is present", () => {
+      const plugin = createOgAssetsPlugin();
+      const generateBundle = unwrapHook(plugin.generateBundle);
+
+      const chunkCode = 'var p=new URL("./yoga.wasm", import.meta.url);';
+      const bundle = makeBundle({ chunkCode, yogaAsset: "_next/static/yoga-CCC.wasm" });
+      // Attach a pre-existing (single-source) map to the chunk.
+      bundle["_next/static/index.edge-AAA.js"].map = {
+        version: 3,
+        file: "index.edge-AAA.js",
+        sources: ["index.edge-AAA.js"],
+        names: [],
+        mappings: "AAAA",
+      };
+
+      generateBundle.call(rscCtx, {}, bundle);
+
+      const chunk = bundle["_next/static/index.edge-AAA.js"];
+      // Code was rewritten…
+      expect(chunk.code).toContain('new URL("./yoga-CCC.wasm", import.meta.url)');
+      // …and the map remains a valid, non-null v3 map (magic-string regenerated).
+      expect(chunk.map).toBeTruthy();
+      expect(chunk.map.version).toBe(3);
+      expect(typeof chunk.map.mappings).toBe("string");
+      expect(chunk.map.mappings.length).toBeGreaterThan(0);
+    });
+
     it("does NOT copy a second root copy when the asset was emitted", async () => {
       const plugin = createOgAssetsPlugin();
       const generateBundle = unwrapHook(plugin.generateBundle);
@@ -134,30 +162,39 @@ describe("vinext:og-assets plugin", () => {
     });
   });
 
-  describe("fallback: no emitted asset", () => {
-    it("copies a single root copy when the bundler did not emit the asset", async () => {
-      const plugin = createOgAssetsPlugin();
-      const generateBundle = unwrapHook(plugin.generateBundle);
-      const writeBundle = unwrapHook(plugin.writeBundle);
-
+  describe("fallback: no emitted asset (copyMissingOgWasm helper)", () => {
+    // Tested via the pure helper with an injected source dir so the assertion
+    // is hermetic — it does not depend on the real @vercel/og install (whose
+    // yoga.wasm only exists as a side effect of the og-font-patch transform).
+    it("copies a single root copy of each referenced asset from the source dir", async () => {
+      const sourceDir = path.join(tmpDir, "src-dist");
       const outDir = path.join(tmpDir, "copied");
+      await fsp.mkdir(sourceDir, { recursive: true });
       await fsp.mkdir(outDir, { recursive: true });
+      await fsp.writeFile(path.join(sourceDir, "resvg.wasm"), Buffer.from([0, 1, 2]));
+      await fsp.writeFile(path.join(sourceDir, "yoga.wasm"), Buffer.from([3, 4, 5]));
 
-      // Chunk references the WASM via the disk fallback but NO emitted asset
-      // exists in the bundle.
-      const chunkCode = [
-        'new URL("./resvg.wasm", import.meta.url);',
-        'new URL("./yoga.wasm", import.meta.url);',
-      ].join("\n");
+      copyMissingOgWasm({ outDir, sourceDir, assets: ["resvg.wasm", "yoga.wasm"] });
 
-      const bundle = makeBundle({ chunkCode });
-
-      generateBundle.call(rscCtx, {}, bundle);
-      await writeBundle.call(rscCtx, { dir: outDir }, bundle);
-
-      // Exactly one root copy of each, sourced from @vercel/og's dist.
       expect(fs.existsSync(path.join(outDir, "resvg.wasm"))).toBe(true);
       expect(fs.existsSync(path.join(outDir, "yoga.wasm"))).toBe(true);
+    });
+
+    it("skips assets missing from the source dir and never overwrites existing destinations", async () => {
+      const sourceDir = path.join(tmpDir, "src-partial");
+      const outDir = path.join(tmpDir, "copied-partial");
+      await fsp.mkdir(sourceDir, { recursive: true });
+      await fsp.mkdir(outDir, { recursive: true });
+      // Only resvg exists in the source; yoga is absent.
+      await fsp.writeFile(path.join(sourceDir, "resvg.wasm"), Buffer.from([9]));
+      // A pre-existing destination must not be overwritten.
+      await fsp.writeFile(path.join(outDir, "resvg.wasm"), Buffer.from([7, 7, 7]));
+
+      copyMissingOgWasm({ outDir, sourceDir, assets: ["resvg.wasm", "yoga.wasm"] });
+
+      // yoga.wasm not copied (no source); resvg.wasm left untouched (1 byte → 3 bytes would mean overwrite).
+      expect(fs.existsSync(path.join(outDir, "yoga.wasm"))).toBe(false);
+      expect(fs.readFileSync(path.join(outDir, "resvg.wasm"))).toEqual(Buffer.from([7, 7, 7]));
     });
   });
 
