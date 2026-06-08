@@ -54,4 +54,18 @@ describe("Next.js compat: require-context", () => {
     // A stateful `g`-flagged `RegExp.test()` would silently drop "./parent/file2.js".
     expect(parseKeys(html, "require-context-keys-global")).toEqual(expectedKeys);
   });
+
+  it("should resolve a module namespace through the context callable", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/require-context");
+    const match = html.match(/<pre id="require-context-file1">([^<]*)<\/pre>/);
+    expect(match).not.toBeNull();
+    expect(match![1]).toBe("file1");
+  });
+
+  it("should throw MODULE_NOT_FOUND for an unknown key", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/require-context");
+    const match = html.match(/<pre id="require-context-missing-code">([^<]*)<\/pre>/);
+    expect(match).not.toBeNull();
+    expect(match![1]).toBe("MODULE_NOT_FOUND");
+  });
 });
