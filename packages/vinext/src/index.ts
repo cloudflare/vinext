@@ -2516,6 +2516,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
               allowedDevOrigins: nextConfig?.allowedDevOrigins,
               bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
+              bodySizeLimitLabel: nextConfig?.serverActionsBodySizeLimitLabel,
               htmlLimitedBots: nextConfig?.htmlLimitedBots,
               clientTraceMetadata: nextConfig?.clientTraceMetadata,
               assetPrefix: nextConfig?.assetPrefix,

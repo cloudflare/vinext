@@ -257,6 +257,7 @@ function createRscOptions(
       return { params: {}, route };
     },
     maxActionBodySize: 1024,
+    maxActionBodySizeLabel: "1kb",
     middlewareHeaders: null,
     middlewareStatus: null,
     mountedSlotsHeader: null,
@@ -422,6 +423,9 @@ describe("app server action execution helpers", () => {
         clearRequestContext: clearContext,
         loadServerAction,
         maxActionBodySize: 10,
+        // Verbatim config string is used in the error message, not a value
+        // reconstructed from the byte count — matches upstream byte-for-byte.
+        maxActionBodySizeLabel: "2mb",
         reportRequestError,
         request: createFetchActionRequest({ "content-length": "11" }),
         renderToReadableStream: renderedModel.capture,
@@ -434,8 +438,9 @@ describe("app server action execution helpers", () => {
     expect(reportRequestError).toHaveBeenCalledTimes(1);
     expect(renderedModel.get().root).toBeUndefined();
     expect(renderedModel.get().returnValue.ok).toBe(false);
+    // Mirrors the upstream e2e log assertion: `Error: Body exceeded 2mb limit`.
     expect((renderedModel.get().returnValue.data as Error).message).toContain(
-      "Body exceeded 10 B limit",
+      "Body exceeded 2mb limit",
     );
     // Stream consumed so clearRequestContext fires after the body drains.
     await response?.text();

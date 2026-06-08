@@ -236,6 +236,8 @@ export type HandleServerActionRscRequestOptions<
   loadServerAction: (actionId: string) => Promise<unknown>;
   matchRoute: (pathname: string) => AppServerActionMatch<TRoute> | null;
   maxActionBodySize: number;
+  /** Verbatim `serverActions.bodySizeLimit` config string (e.g. "2mb") for the body-exceeded error. */
+  maxActionBodySizeLabel: string;
   middlewareHeaders: Headers | null;
   middlewareStatus: number | null | undefined;
   mountedSlotsHeader: string | null;
@@ -404,32 +406,14 @@ function isRequestBodyTooLarge(error: unknown): boolean {
 }
 
 /**
- * Render a byte count back into a human-readable size string for the
- * "Body exceeded {limit} limit" error message, mirroring the configured
- * `serverActions.bodySizeLimit` value (e.g. `2 MB`, `512 kB`). Next.js
- * surfaces the original config string here; vinext only threads the parsed
- * byte limit through to the runtime, so we reconstruct an equivalent label.
- */
-function formatBodySizeLimit(bytes: number): string {
-  const units = ["B", "kB", "MB", "GB"];
-  let value = bytes;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-  const rounded = Number.isInteger(value) ? value : Math.round(value * 100) / 100;
-  return `${rounded} ${units[unitIndex]}`;
-}
-
-/**
  * Build the error thrown when a server-action request body exceeds the
  * configured size limit. Matches Next.js' `Body exceeded {limit} limit.`
- * message + docs link (action-handler.ts), so it reads identically in logs.
+ * message + docs link (action-handler.ts) verbatim — including the original
+ * config string (e.g. "2mb") — so it reads identically in logs.
  */
-function createBodyExceededError(maxBytes: number): Error {
+function createBodyExceededError(limitLabel: string): Error {
   return new Error(
-    `Body exceeded ${formatBodySizeLimit(maxBytes)} limit.\n` +
+    `Body exceeded ${limitLabel} limit.\n` +
       "To configure the body size limit for Server Actions, see: " +
       "https://nextjs.org/docs/app/api-reference/next-config-js/serverActions#bodysizelimit",
   );
@@ -944,7 +928,7 @@ async function renderFetchActionBodyExceededResponse<
     TPage
   >,
 ): Promise<Response> {
-  const error = createBodyExceededError(options.maxActionBodySize);
+  const error = createBodyExceededError(options.maxActionBodySizeLabel);
   console.error("[vinext] Server action error:", error);
   options.reportRequestError(
     normalizeError(error),
