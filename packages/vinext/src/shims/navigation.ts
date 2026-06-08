@@ -1679,6 +1679,11 @@ export async function navigateClientSide(
   scroll: boolean,
   programmaticTransition = false,
 ): Promise<void> {
+  // Reset any link still showing a `useLinkStatus()` pending state that did not
+  // initiate this navigation (e.g. a programmatic router.push or form submit).
+  // A <Link> click registers itself first, so the hook keeps that link pending.
+  getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
+
   // Normalize same-origin absolute URLs to local paths for SPA navigation
   let normalizedHref = href;
   if (isExternalUrl(href)) {
@@ -2563,6 +2568,14 @@ if (!isServer) {
     // runtime is not available). It restores scroll position with microtask-based deferral.
     // App Router scroll restoration is handled in server/app-browser-entry.ts:697
     // with RSC navigation coordination (waits for pending navigation to settle).
+    window.addEventListener("popstate", () => {
+      // Browser back/forward starts a new navigation that the tracked link did
+      // not initiate, so clear any sticky `useLinkStatus()` pending state. Runs
+      // for both routers; the App Router's own popstate handler (in
+      // app-browser-entry.ts) drives scroll restoration and RSC fetching.
+      getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
+    });
+
     window.addEventListener("popstate", (event) => {
       if (!hasAppNavigationRuntime()) {
         commitClientNavigationState();
@@ -2582,6 +2595,9 @@ if (!isServer) {
         url,
       );
       if (state.suppressUrlNotifyCount === 0) {
+        // A raw history.pushState (shallow routing) starts a navigation that did
+        // not go through navigateClientSide; clear any sticky pending link.
+        getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
         commitClientNavigationState();
       }
     };
@@ -2598,6 +2614,7 @@ if (!isServer) {
         url,
       );
       if (state.suppressUrlNotifyCount === 0) {
+        getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
         commitClientNavigationState();
       }
     };

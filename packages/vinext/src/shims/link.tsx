@@ -72,6 +72,12 @@ import {
 } from "./internal/pages-data-target.js";
 import { markAppRouteDetectedOnPrefetch } from "./internal/app-route-detection.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
+import {
+  clearLinkForCurrentNavigation,
+  notifyLinkNavigationStart,
+  setLinkForCurrentNavigation,
+  type PendingLinkSetter,
+} from "./internal/link-status-registry.js";
 
 type NavigateEvent = {
   url: URL;
@@ -148,6 +154,18 @@ const LinkStatusContext = createContext<LinkStatusContextValue>({ pending: false
  */
 export function useLinkStatus(): LinkStatusContextValue {
   return useContext(LinkStatusContext);
+}
+
+// Register the link-status reset hook on the navigation runtime as soon as this
+// module evaluates on the client. `navigateClientSide` calls it at the start of
+// every App Router navigation (including router.push and shallow routing), so a
+// stale link's pending state is cleared even when no <Link> initiated the
+// navigation. The registry itself lives in internal/link-status-registry.ts so
+// it can be unit-tested without rendering a <Link>.
+if (typeof window !== "undefined") {
+  registerNavigationRuntimeFunctions({
+    notifyLinkNavigationStart,
+  });
 }
 
 /** basePath from next.config.js, injected by the plugin at build time */
@@ -758,10 +776,22 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Track pending state for useLinkStatus()
   const [pending, setPending] = useState(false);
   const mountedRef = useRef(true);
+  // Stable setter so the global navigation registry can reset this link's
+  // pending state from another navigation without depending on render identity.
+  const setPendingRef = useRef<PendingLinkSetter | null>(null);
+  if (setPendingRef.current === null) {
+    setPendingRef.current = (next: boolean) => {
+      if (mountedRef.current) setPending(next);
+    };
+  }
   useEffect(() => {
     mountedRef.current = true;
+    const setter = setPendingRef.current;
     return () => {
       mountedRef.current = false;
+      // Drop our setter from the global registry on unmount so a later
+      // navigation never calls into an unmounted component.
+      if (setter) clearLinkForCurrentNavigation(setter);
     };
   }, []);
 
@@ -943,11 +973,17 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // App Router: delegate to navigateClientSide which handles scroll save,
     // hash-only changes, RSC fetch, and two-phase URL commit.
     if (getNavigationRuntime()?.functions.navigate) {
+      const setter = setPendingRef.current;
+      // Register this link as the one driving the current navigation. This
+      // resets any previously-pending link (e.g. a different link clicked
+      // moments earlier) so only the last-clicked link shows a pending state.
+      if (setter) setLinkForCurrentNavigation(setter);
       setPending(true);
       React.startTransition(() => {
         void navigateClientSide(navigateHref, replace ? "replace" : "push", scroll, true).finally(
           () => {
             if (mountedRef.current) setPending(false);
+            if (setter) clearLinkForCurrentNavigation(setter);
           },
         );
       });
