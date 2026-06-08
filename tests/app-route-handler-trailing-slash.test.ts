@@ -81,18 +81,20 @@ describe("App Router route-handler trailingSlash: false (#1827)", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("redirects /runtime/edge/ → /runtime/edge with 308", async () => {
-    const res = await fetch(`${baseUrl}/runtime/edge/`, { redirect: "manual" });
-    expect(res.status).toBe(308);
-    expect(new URL(res.headers.get("location")!, baseUrl).pathname).toBe("/runtime/edge");
-  });
+  it.each(["edge", "node"])(
+    "redirects /runtime/%s/ with 308 and serves the unslashed path",
+    async (runtime) => {
+      const res = await fetch(`${baseUrl}/runtime/${runtime}/`, { redirect: "manual" });
+      expect(res.status).toBe(308);
+      expect(new URL(res.headers.get("location")!, baseUrl).pathname).toBe(`/runtime/${runtime}`);
 
-  it("serves /runtime/edge with 200", async () => {
-    const res = await fetch(`${baseUrl}/runtime/edge`, { redirect: "manual" });
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({
-      url: "/runtime/edge",
-      nextUrl: "/runtime/edge",
-    });
-  }, 30000);
+      const unslashed = await fetch(`${baseUrl}/runtime/${runtime}`, { redirect: "manual" });
+      expect(unslashed.status).toBe(200);
+      await expect(unslashed.json()).resolves.toEqual({
+        url: `/runtime/${runtime}`,
+        nextUrl: `/runtime/${runtime}`,
+      });
+    },
+    30000,
+  );
 });
