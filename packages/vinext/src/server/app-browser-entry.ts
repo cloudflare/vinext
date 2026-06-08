@@ -133,6 +133,8 @@ import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import type { RouteManifest } from "../routing/app-route-graph.js";
 import { stripBasePath } from "../utils/base-path.js";
+import { matchRoutePatternPrefix } from "../routing/route-pattern.js";
+import { splitPathnameForRouteMatch } from "../routing/utils.js";
 import { createOnUncaughtError } from "./app-browser-error.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
 import {
@@ -964,20 +966,38 @@ function getRequestState(
           previousNextUrl: window.location.pathname + window.location.search,
         };
       }
-      // Fallback: send the current pathname as interception context so the
-      // server can check it against interception source patterns even when
-      // the client manifest didn't recognise the pre-middleware target URL
-      // as an interception candidate. Mirrors Next.js sending `Next-URL` on
-      // every RSC navigation — the server's findIntercept is gated on both
-      // source and target matching, so false positives cannot occur.
+      // Fallback: when the current page is a declared interception source (its
+      // URL matches at least one sourcePatternParts in the manifest), send the
+      // current pathname as context so the server can fire interception for
+      // middleware-rewritten targets. The client manifest check above only
+      // matches the pre-middleware target URL against the declared pattern;
+      // when middleware adds a segment (e.g. locale prefix), the pre-rewrite
+      // URL is shorter than the pattern and the match fails. Sending the
+      // current pathname lets the server re-check after applying the rewrite.
       //
-      // Set previousNextUrl so that if the server does fire interception, the
-      // committed history state carries the source URL and back/forward
-      // traversal can restore the intercepted state.
-      const currentHrefForFallback = window.location.pathname + window.location.search;
+      // We gate on "current page is a declared source" rather than always
+      // sending context, to preserve prefetch cache reuse for ordinary
+      // navigations where interception cannot apply.
+      const routeManifest = getBrowserRouteManifest();
+      const currentStripped = stripBasePath(window.location.pathname, __basePath);
+      const isCurrentPageInterceptionSource =
+        routeManifest !== null &&
+        Array.from(routeManifest.segmentGraph.interceptions.values()).some((interception) =>
+          matchRoutePatternPrefix(
+            splitPathnameForRouteMatch(currentStripped),
+            interception.sourcePatternParts,
+          ),
+        );
+      if (isCurrentPageInterceptionSource) {
+        const currentHrefForFallback = window.location.pathname + window.location.search;
+        return {
+          interceptionContext: currentStripped,
+          previousNextUrl: currentHrefForFallback,
+        };
+      }
       return {
-        interceptionContext: stripBasePath(window.location.pathname, __basePath),
-        previousNextUrl: currentHrefForFallback,
+        interceptionContext: null,
+        previousNextUrl: null,
       };
     }
     case "traverse": {
