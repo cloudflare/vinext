@@ -862,6 +862,101 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "turbopack", "request.ts"));
   });
 
+  // Regression test for #1507. Turbopack `resolveAlias` (and webpack
+  // `resolve.alias`) values can be bare package specifiers — e.g. the upstream
+  // esm-externals fixture aliases `preact/compat` -> `react`. Resolving those
+  // against the project root mangled them into bogus `<root>/react` paths,
+  // which broke the production build with "No such file or directory". Bare
+  // specifiers must be left verbatim so Vite re-resolves them via node_modules.
+  it("leaves bare package specifier turbopack aliases verbatim", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default {
+        turbopack: {
+          resolveAlias: {
+            "preact/compat": "react",
+            "@scope/pkg": "@scope/replacement",
+            "subpath": "react/jsx-runtime"
+          }
+        }
+      };`,
+    );
+
+    const rawConfig = await loadNextConfig(tmpDir);
+    const config = await resolveNextConfig(rawConfig, tmpDir);
+
+    // Bare specifiers stay as-is — NOT resolved against tmpDir.
+    expect(config.aliases["preact/compat"]).toBe("react");
+    expect(config.aliases["@scope/pkg"]).toBe("@scope/replacement");
+    expect(config.aliases["subpath"]).toBe("react/jsx-runtime");
+  });
+
+  it("still resolves relative-path turbopack aliases against the project root", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default {
+        turbopack: {
+          resolveAlias: {
+            "current": ".",
+            "parent": "..",
+            "explicit": "./turbo/request.ts",
+            "up": "../shared/request.ts"
+          }
+        }
+      };`,
+    );
+
+    const rawConfig = await loadNextConfig(tmpDir);
+    const config = await resolveNextConfig(rawConfig, tmpDir);
+
+    expect(config.aliases["current"]).toBe(path.resolve(tmpDir, "."));
+    expect(config.aliases["parent"]).toBe(path.resolve(tmpDir, ".."));
+    expect(config.aliases["explicit"]).toBe(path.join(tmpDir, "turbo", "request.ts"));
+    expect(config.aliases["up"]).toBe(path.resolve(tmpDir, "..", "shared", "request.ts"));
+  });
+
+  it("leaves absolute-path turbopack aliases verbatim", async () => {
+    tmpDir = makeTempDir();
+    const absoluteTarget = path.join(tmpDir, "abs", "request.ts");
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default {
+        turbopack: {
+          resolveAlias: {
+            "absolute": ${JSON.stringify(absoluteTarget)}
+          }
+        }
+      };`,
+    );
+
+    const rawConfig = await loadNextConfig(tmpDir);
+    const config = await resolveNextConfig(rawConfig, tmpDir);
+
+    expect(config.aliases["absolute"]).toBe(absoluteTarget);
+  });
+
+  it("leaves bare package specifier webpack aliases verbatim", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = {
+        webpack(config) {
+          config.resolve = config.resolve || {};
+          config.resolve.alias = config.resolve.alias || {};
+          config.resolve.alias["preact/compat"] = "react";
+          return config;
+        }
+      };`,
+    );
+
+    const rawConfig = await loadNextConfig(tmpDir);
+    const config = await resolveNextConfig(rawConfig, tmpDir);
+
+    expect(config.aliases["preact/compat"]).toBe("react");
+  });
+
   it("does not attribute turbopack aliases to webpack support warnings", async () => {
     tmpDir = makeTempDir();
 
