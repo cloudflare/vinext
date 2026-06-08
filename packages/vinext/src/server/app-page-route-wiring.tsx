@@ -817,9 +817,7 @@ export function buildAppPageElements<
 
   let routeChildren: ReactNode = (
     <LayoutSegmentProvider segmentMap={{ children: [] }}>
-      <AppRouterScrollTarget>
-        <Slot id={pageId} />
-      </AppRouterScrollTarget>
+      <Slot id={pageId} />
     </LayoutSegmentProvider>
   );
 
@@ -863,6 +861,16 @@ export function buildAppPageElements<
         </Suspense>
       );
     }
+
+    // Mount the scroll/focus target *outside* the loading Suspense so it does
+    // not suspend with the page content. Next.js places ScrollAndMaybeFocusHandler
+    // above the LoadingBoundary for the same reason: the handler must stay
+    // committed while the loading.js fallback renders, so the default-navigation
+    // scroll fires against the loading boundary's DOM (`should apply scroll when
+    // loading.js is used`) and again when the final content commits — rather than
+    // relying on a raw post-navigation scrollTo fallback that only runs after the
+    // streamed content resolves.
+    routeChildren = <AppRouterScrollTarget>{routeChildren}</AppRouterScrollTarget>;
   }
 
   const lastLayoutErrorModule =
