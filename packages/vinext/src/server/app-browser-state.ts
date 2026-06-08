@@ -514,6 +514,12 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
     options.pending.action.operation.startedVisibleCommitVersion !==
       options.currentState.visibleCommitVersion
   ) {
+    // staleOperation — the navigation that created `pending` started from a
+    // different visibleCommitVersion than the current state. This happens when
+    // a synchronous history snapshot restore (restoreHistoryStateSnapshot, see
+    // app-browser-entry.ts popstate handler) bumps visibleCommitVersion before
+    // an in-flight async RSC traverse resolves. The snapshot restore is the
+    // authoritative commit; the stale async payload is intentionally discarded.
     return {
       disposition: "skip",
       preserveElementIds: [],

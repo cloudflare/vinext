@@ -2350,6 +2350,25 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
       return;
     }
     handlePopstate(event);
+    // Synchronous snapshot restore supersedes the in-flight async RSC traverse.
+    //
+    // handlePopstate calls navigate() which starts an async RSC traversal:
+    // renderNavigationPayload captures startedState (visibleCommitVersion N)
+    // and awaits nextElements, yielding at least one microtask.
+    //
+    // restoreHistoryStateSnapshot runs synchronously (flushSync, no await) in
+    // the same task, commits the cached history snapshot, and bumps
+    // visibleCommitVersion to N+1.
+    //
+    // When the async traverse resolves,
+    // resolvePendingNavigationCommitDispositionDecision sees
+    // startedVisibleCommitVersion (N) !== currentState.visibleCommitVersion
+    // (N+1) and returns staleOperation → no-commit, discarding the fresh
+    // RSC payload in favor of the cached client snapshot.
+    //
+    // This matches Next's in-memory bfcache behaviour (no refetch on back).
+    // The ordering is deterministic only because restoreHistoryStateSnapshot
+    // is synchronous while the async traverse always yields.
     if (restoreHistoryStateSnapshot(event.state)) {
       restoreSynchronousPopstateScrollPosition(
         {
