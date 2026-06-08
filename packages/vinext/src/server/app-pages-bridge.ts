@@ -28,6 +28,14 @@ type RenderPagesFallbackDependencies = {
    * it clears it. Mirrors how App Router route handlers and page renders surface
    * the middleware-enabled draft cookie so the same flow works when the request
    * falls through to a Pages Router route.
+   *
+   * Note: this closes the draft-mode flow for production (Cloudflare Workers /
+   * Node), where middleware runs inline in the same RSC handler context that
+   * builds this fallback. In hybrid *dev*, middleware runs in a separate Vite
+   * Pages SSR runner and `draftMode()` inside middleware is not yet permitted
+   * there (it throws a scope error before any cookie is set), so this getter
+   * returns `null` and no cookie is appended. That dev limitation is pre-existing
+   * and tracked separately from #1520.
    */
   getDraftModeCookieHeader: () => string | null | undefined;
 };
