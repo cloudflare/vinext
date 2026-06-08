@@ -33,6 +33,16 @@ import { normalizeAppPageInterceptionProofPathname } from "./app-page-render-ide
 import type { RenderObservation } from "./cache-proof.js";
 export { normalizeMountedSlotsHeader };
 
+/**
+ * Header set on the internal request that `res.revalidate()` issues to
+ * trigger on-demand ISR regeneration of a Pages Router route. Mirrors Next.js's
+ * `PRERENDER_REVALIDATE_HEADER` (`x-prerender-revalidate`) — see
+ * `.nextjs-ref/packages/next/src/lib/constants.ts`. When the Pages render path
+ * sees this header it re-runs `getStaticProps` with
+ * `revalidateReason: "on-demand"` and refreshes the cache entry.
+ */
+export const PRERENDER_REVALIDATE_HEADER = "x-prerender-revalidate";
+
 export type ISRCacheEntry = {
   value: CacheHandlerValue;
   isStale: boolean;

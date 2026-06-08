@@ -15,6 +15,7 @@ import {
   triggerBackgroundRegeneration,
   setRevalidateDuration,
   getRevalidateDuration,
+  PRERENDER_REVALIDATE_HEADER,
 } from "./isr-cache.js";
 import type { CachedPagesValue } from "vinext/shims/cache";
 import { _runWithCacheState } from "vinext/shims/cache";
@@ -819,7 +820,17 @@ export function createSSRHandler(
           const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
           const cached = await isrGet(cacheKey);
 
+          // On-demand revalidation request (`res.revalidate()` from an API
+          // route sets the `x-prerender-revalidate` header). The cache entry
+          // must be regenerated synchronously with
+          // `revalidateReason: "on-demand"`, so we bypass the fresh/stale
+          // cache-hit short-circuits below and fall through to the miss path.
+          // Mirrors Next.js's `isOnDemandRevalidate` handling in render.tsx.
+          const isOnDemandRevalidate =
+            (req.headers[PRERENDER_REVALIDATE_HEADER] ?? undefined) !== undefined;
+
           if (
+            !isOnDemandRevalidate &&
             cached &&
             !cached.isStale &&
             cached.value.value?.kind === "PAGES" &&
@@ -843,6 +854,7 @@ export function createSSRHandler(
           }
 
           if (
+            !isOnDemandRevalidate &&
             cached &&
             cached.isStale &&
             cached.value.value?.kind === "PAGES" &&
@@ -999,17 +1011,21 @@ export function createSSRHandler(
             return;
           }
 
-          // Cache miss — call getStaticProps normally.
-          // Dev has no build-time prerender phase, so every dev hit is
+          // Cache miss (or on-demand revalidation) — call getStaticProps.
+          // Dev has no build-time prerender phase, so an ordinary miss is
           // treated as a stale-while-revalidate refresh — mirrors Next.js
-          // `render.tsx` (`isBuildTimeSSG ? "build" : "stale"`).
+          // `render.tsx` (`isBuildTimeSSG ? "build" : "stale"`). An on-demand
+          // revalidation request (`res.revalidate()`) instead surfaces as
+          // `revalidateReason: "on-demand"`.
           // See `.nextjs-ref/test/e2e/revalidate-reason/revalidate-reason.test.ts`.
           const context = {
             params: userFacingParams,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
-            revalidateReason: "stale" as const,
+            revalidateReason: (isOnDemandRevalidate ? "on-demand" : "stale") as
+              | "on-demand"
+              | "stale",
           };
           const result = await pageModule.getStaticProps(context);
           if (result && "props" in result) {

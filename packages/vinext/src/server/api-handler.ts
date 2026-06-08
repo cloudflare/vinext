@@ -21,6 +21,7 @@ import {
   resolveBodyParserConfig,
 } from "./pages-body-parser-config.js";
 import { resolveRequestProtocol, resolveRequestHost } from "./proxy-trust.js";
+import { PRERENDER_REVALIDATE_HEADER } from "./isr-cache.js";
 import { NextRequest } from "vinext/shims/server";
 
 /**
@@ -40,6 +41,7 @@ type NextApiResponse = {
   json(data: unknown): void;
   send(data: unknown): void;
   redirect(statusOrUrl: number | string, url?: string): void;
+  revalidate(urlPath: string): Promise<void>;
 } & ServerResponse;
 
 type EdgeApiRouteModule = {
@@ -311,6 +313,34 @@ function enhanceApiObjects(
         this.writeHead(statusOrUrl, { Location: url ?? "" });
       }
       this.end();
+    },
+
+    // `res.revalidate(urlPath)` triggers on-demand ISR regeneration of a Pages
+    // Router route. Mirrors Next.js's api-resolver `revalidate()` helper: it
+    // issues an internal HEAD request to `urlPath` carrying the
+    // `x-prerender-revalidate` header. The dev/prod Pages render path detects
+    // that header and re-runs getStaticProps with
+    // `revalidateReason: "on-demand"`, refreshing the cache entry. See
+    // `.nextjs-ref/packages/next/src/server/api-utils/node/api-resolver.ts`.
+    async revalidate(this: NextApiResponse, urlPath: string) {
+      if (typeof urlPath !== "string" || !urlPath.startsWith("/")) {
+        throw new Error(
+          `Invalid urlPath provided to revalidate(), must be a path e.g. /blog/post-1, received ${urlPath}`,
+        );
+      }
+
+      const proto = resolveRequestProtocol(req);
+      const host = resolveRequestHost(req, "localhost");
+      const target = new URL(urlPath, `${proto}://${host}`);
+
+      const revalidateRes = await fetch(target, {
+        method: "HEAD",
+        headers: { [PRERENDER_REVALIDATE_HEADER]: "1" },
+      });
+
+      if (!revalidateRes.ok && revalidateRes.status !== 404) {
+        throw new Error(`Failed to revalidate ${urlPath}: ${revalidateRes.status}`);
+      }
     },
   });
 
