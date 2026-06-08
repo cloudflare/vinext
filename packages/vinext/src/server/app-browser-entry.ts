@@ -964,9 +964,20 @@ function getRequestState(
           previousNextUrl: window.location.pathname + window.location.search,
         };
       }
+      // Fallback: send the current pathname as interception context so the
+      // server can check it against interception source patterns even when
+      // the client manifest didn't recognise the pre-middleware target URL
+      // as an interception candidate. Mirrors Next.js sending `Next-URL` on
+      // every RSC navigation — the server's findIntercept is gated on both
+      // source and target matching, so false positives cannot occur.
+      //
+      // Set previousNextUrl so that if the server does fire interception, the
+      // committed history state carries the source URL and back/forward
+      // traversal can restore the intercepted state.
+      const currentHrefForFallback = window.location.pathname + window.location.search;
       return {
-        interceptionContext: null,
-        previousNextUrl: null,
+        interceptionContext: stripBasePath(window.location.pathname, __basePath),
+        previousNextUrl: currentHrefForFallback,
       };
     }
     case "traverse": {

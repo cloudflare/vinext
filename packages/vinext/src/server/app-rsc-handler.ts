@@ -31,8 +31,7 @@ import {
 import { pickRootParams, setRootParams, type RootParams } from "vinext/shims/root-params";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
 import { flattenErrorCauses } from "../utils/error-cause.js";
-import { hasBasePath, stripBasePath } from "../utils/base-path.js";
-import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
+import { hasBasePath } from "../utils/base-path.js";
 import { applyAppMiddleware, type AppMiddlewareContext } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
 import { handleAppPrerenderEndpoint } from "./app-prerender-endpoints.js";
@@ -392,7 +391,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const normalized = normalizeRscRequest(request, options.basePath);
   if (normalized instanceof Response) return normalized;
 
-  const { url, isRscRequest, mountedSlotsHeader, renderMode, clientReuseManifest } = normalized;
+  const {
+    url,
+    isRscRequest,
+    interceptionContextHeader,
+    mountedSlotsHeader,
+    renderMode,
+    clientReuseManifest,
+  } = normalized;
   let { pathname, cleanPathname } = normalized;
   // Canonical (external) pathname the user requested. Middleware rewrites and
   // next.config.js rewrites mutate `cleanPathname` so internal route matching
@@ -401,44 +407,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // Matches Next.js: test/e2e/app-dir/hooks/hooks.test.ts —
   //   "should have the canonical url pathname on rewrite"
   const canonicalPathname = cleanPathname;
-
-  // Resolve the effective interception context for this RSC request.
-  //
-  // Primary: the browser-sent X-Vinext-Interception-Context header. The
-  // browser sets this when the client-side manifest declares the current URL
-  // as a valid interception source for the navigation target.
-  //
-  // Fallback (Referer-based): when the primary header is absent and this is
-  // an RSC navigation request, fall back to the same-origin Referer pathname.
-  // This covers the middleware-rewrite scenario: when middleware rewrites the
-  // requested URL (e.g. /foo/p/1 → /en/foo/p/1), the client-side manifest
-  // check sees the pre-rewrite target and may not recognise it as an
-  // interception target. The server-side findIntercept call receives the
-  // post-rewrite URL and can still fire interception when the Referer
-  // (which the browser always sends for same-origin navigations) matches the
-  // declared interception source pattern.
-  //
-  // Security: the Referer is a browser-controlled header; using it only as an
-  // interception source (read-only influence on render path, no credential or
-  // write-path involvement) is safe. The same normalizeInterceptionContextHeader
-  // sanitization applies: null bytes stripped, length capped, must be a
-  // pathname shape. Cross-origin Referers are filtered by the same-origin check.
-  let interceptionContextHeader = normalized.interceptionContextHeader;
-  if (interceptionContextHeader === null && isRscRequest) {
-    const referer = request.headers.get("Referer");
-    if (referer) {
-      try {
-        const refererUrl = new URL(referer);
-        // Same-origin only.
-        if (refererUrl.origin === url.origin) {
-          const refererPathname = stripBasePath(refererUrl.pathname, options.basePath);
-          interceptionContextHeader = normalizeInterceptionContextHeader(refererPathname);
-        }
-      } catch {
-        // Malformed Referer — ignore.
-      }
-    }
-  }
 
   // The request reached this point so it was either under basePath (stripped
   // by normalizeRscRequest) or basePath is empty. In both cases the matcher
