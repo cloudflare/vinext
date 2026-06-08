@@ -156,7 +156,7 @@ vinext({
 
 ### Bug Fixes
 
-**App Router**
+#### App Router
 
 - Fixed static-sibling info inclusion in SSR responses
 - Fixed caching for pages with `revalidate=Infinity` or `revalidate=false`
@@ -176,7 +176,7 @@ vinext({
 - Fixed source identity preservation for intercepted renders
 - Fixed default autoscroll page target behavior
 
-**Pages Router**
+#### Pages Router
 
 - Fixed `Document.getInitialProps` invocation so document props reach SSR
 - Fixed app route detection during prefetch operations
@@ -187,7 +187,7 @@ vinext({
 - Fixed static page responses to return 405 with proper `Allow` header for invalid methods
 - Fixed 404 responses for invalid `_next/static` requests in worker deployment
 
-**General**
+#### General
 
 - Fixed Next.js script stylesheets to emit proper `<link rel="stylesheet">` tags
 - Fixed `unstable_retry` to throw proper Pages Router parity error
