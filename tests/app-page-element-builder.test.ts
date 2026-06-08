@@ -18,6 +18,7 @@ import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
 import { buildPageElements } from "../packages/vinext/src/server/app-page-element-builder.js";
 import type { AppPageBuildRoute } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
+import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -207,6 +208,45 @@ describe("buildPageElements", () => {
     expect(Object.prototype.hasOwnProperty.call(record, APP_ROOT_LAYOUT_KEY)).toBe(true);
     // The element itself is stored under the route ID key.
     expect(record["route:/test"]).toBeDefined();
+  });
+
+  it("surfaces a no-default-export error for a sibling intercept page instead of rendering the source page", async () => {
+    function SourcePage(): React.ReactNode {
+      return React.createElement("div", null, "Source page content");
+    }
+
+    const route = createSyntheticRoute({
+      // The source route has a valid default export, so the dispatch-level
+      // no-export guard passes and the request reaches buildPageElements.
+      page: createSyntheticPageModule(SourcePage),
+      layouts: [],
+      routeSegments: ["photo", "[id]"],
+      pattern: "/photo/[id]",
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({
+        route,
+        routePath: "/photo/42",
+        opts: {
+          interceptSlotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+          // The intercepting page module is missing its `default` export.
+          interceptPage: createSyntheticPageModuleWithoutDefault(),
+          interceptParams: { id: "42" },
+        } as Record<string, unknown>,
+      }),
+    );
+
+    const record = result as Record<string, unknown>;
+    const routeKey = record[APP_ROUTE_KEY] as string;
+    const errorElement = record[routeKey];
+    expect(React.isValidElement(errorElement)).toBe(true);
+
+    const html = await renderNode(errorElement as React.ReactNode);
+    // The error is surfaced explicitly rather than silently falling back to
+    // the source route's page component.
+    expect(html).toContain("Page has no default export");
+    expect(html).not.toContain("Source page content");
   });
 
   it("keeps interception context out of the error payload route ID", async () => {

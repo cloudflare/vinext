@@ -137,7 +137,6 @@ export async function buildPageElements<
   } = pageRequest;
 
   const pageModule: AppPageModule | null | undefined = route.page;
-  const PageComponent = pageModule?.default;
 
   // Sibling intercepts replace the full page — the intercepting page is the
   // effective page module. Slot-based intercepts use a different code path
@@ -147,7 +146,14 @@ export async function buildPageElements<
   const effectivePageModule = isSiblingIntercept
     ? (opts!.interceptPage as AppPageModule | null | undefined)
     : pageModule;
-  const EffectivePageComponent = effectivePageModule?.default ?? PageComponent;
+  // Resolve the component that will actually render. For a sibling intercept
+  // this is the intercepting page's own default export — we deliberately do
+  // NOT fall back to the source route's page component. Silently rendering a
+  // *different* page than the requested intercept is a surprising failure mode;
+  // a missing default export is surfaced as an explicit error below, mirroring
+  // the source/slot no-export handling. For a normal request this is identical
+  // to `pageModule?.default` since `effectivePageModule === pageModule`.
+  const EffectivePageComponent = effectivePageModule?.default;
   const effectiveParams = isSiblingIntercept ? (opts!.interceptParams ?? params) : params;
 
   const hasPageModule = !!pageModule;
@@ -163,7 +169,11 @@ export async function buildPageElements<
     interceptSlotId: isSiblingIntercept ? null : (opts?.interceptSlotId ?? null),
   });
 
-  if (hasPageModule && !PageComponent) {
+  // Surface a clear "no default export" error for whichever page will render:
+  // the source route page on a normal request, or the intercepting page for a
+  // sibling intercept. Without the `isSiblingIntercept` arm, an intercepting
+  // page missing its default export would silently render the source page.
+  if ((hasPageModule || isSiblingIntercept) && !EffectivePageComponent) {
     let noExportRootLayout: string | null = null;
     const noExportLayoutIds =
       route.ids?.layouts ??
