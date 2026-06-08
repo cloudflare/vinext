@@ -367,6 +367,8 @@ function createAppRouteGraphDefaultId(slotId: string): string {
   return `default:${slotId}`;
 }
 
+// "__vinext_"-prefixed names are reserved; user-defined parallel routes can
+// never be named @__vinext_sibling_intercept, making slot-id collisions impossible.
 const SIBLING_INTERCEPT_SLOT_NAME = "__vinext_sibling_intercept";
 function createAppRouteGraphSiblingInterceptSlotId(sourcePattern: string): string {
   return createAppRouteGraphSlotId(SIBLING_INTERCEPT_SLOT_NAME, sourcePattern);

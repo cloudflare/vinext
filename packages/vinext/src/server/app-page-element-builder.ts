@@ -243,9 +243,10 @@ export async function buildPageElements<
   // slot-based path handles this inside buildSlotOverrides/app-page-route-wiring,
   // but sibling intercepts bypass that path entirely. We apply the wrapping here
   // so a layout.tsx adjacent to the (.) / (..) / (...) marker dir is respected.
-  let siblingInterceptElement: ReturnType<typeof createElement> | null = EffectivePageComponent
-    ? createElement(EffectivePageComponent, pageProps)
-    : null;
+  let siblingInterceptElement: ReturnType<typeof createElement> | null =
+    isSiblingIntercept && EffectivePageComponent
+      ? createElement(EffectivePageComponent, pageProps)
+      : null;
   if (isSiblingIntercept && siblingInterceptElement !== null && opts?.interceptLayouts?.length) {
     const siblingThenableParams = makeThenableParams(effectiveParams);
     for (let i = opts.interceptLayouts.length - 1; i >= 0; i--) {
