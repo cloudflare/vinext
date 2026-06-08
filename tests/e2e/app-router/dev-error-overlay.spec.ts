@@ -325,6 +325,8 @@ test.describe("Dev error overlay", () => {
   });
 
   test.describe("HMR updates", () => {
+    test.describe.configure({ mode: "serial" });
+
     test.beforeEach(restoreHmrToggleFiles);
     test.afterEach(restoreHmrToggleFiles);
 
@@ -384,7 +386,12 @@ test.describe("Dev error overlay", () => {
       await expect(page.getByTestId("vinext-dev-error-stack-container")).toBeHidden();
       await expect(page.locator("vite-error-overlay")).toHaveCount(0);
 
+      const waitForCleanRsc = page.waitForResponse(
+        (response) => isAppRouterRscRequestForPath(response.request(), "/dev-overlay-hmr-toggle"),
+        { timeout: 10_000 },
+      );
       await writeFile(SERVER_HMR_TOGGLE_FILE, SERVER_HMR_TOGGLE_CLEAN);
+      await waitForCleanRsc;
       await expect(page.getByTestId("vinext-dev-error-overlay")).toBeHidden({ timeout: 10_000 });
     });
 

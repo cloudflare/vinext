@@ -343,8 +343,8 @@ describe("resolveAppPageInterceptMatch", () => {
     interceptSlotKey: intercept.slotKey,
   });
 
-  it("returns null on non-RSC requests", () => {
-    const result = resolveAppPageInterceptMatch({
+  it("returns null on non-RSC requests", async () => {
+    const result = await resolveAppPageInterceptMatch({
       cleanPathname: "/photos/123",
       currentRoute,
       findIntercept() {
@@ -359,8 +359,8 @@ describe("resolveAppPageInterceptMatch", () => {
     expect(result).toBeNull();
   });
 
-  it("returns null when findIntercept returns nothing", () => {
-    const result = resolveAppPageInterceptMatch({
+  it("returns null when findIntercept returns nothing", async () => {
+    const result = await resolveAppPageInterceptMatch({
       cleanPathname: "/photos/123",
       currentRoute,
       findIntercept: () => null,
@@ -373,8 +373,8 @@ describe("resolveAppPageInterceptMatch", () => {
     expect(result).toBeNull();
   });
 
-  it("returns null when the source route is the current route", () => {
-    const result = resolveAppPageInterceptMatch({
+  it("returns null when the source route is the current route", async () => {
+    const result = await resolveAppPageInterceptMatch({
       cleanPathname: "/photos/123",
       currentRoute,
       findIntercept: () => ({
@@ -392,7 +392,7 @@ describe("resolveAppPageInterceptMatch", () => {
     expect(result).toBeNull();
   });
 
-  it("returns sourceRoute, sourceParams, matchedParams, and interceptOpts when an intercept applies", () => {
+  it("returns sourceRoute, sourceParams, matchedParams, and interceptOpts when an intercept applies", async () => {
     const matchedParams = { id: "123" };
     const intercept = {
       matchedParams,
@@ -401,7 +401,7 @@ describe("resolveAppPageInterceptMatch", () => {
       sourceRouteIndex: 0,
     };
 
-    const result = resolveAppPageInterceptMatch({
+    const result = await resolveAppPageInterceptMatch({
       cleanPathname: "/photos/123",
       currentRoute,
       findIntercept: () => intercept,
@@ -420,11 +420,11 @@ describe("resolveAppPageInterceptMatch", () => {
     expect(result?.interceptOpts).toEqual(toInterceptOpts(intercept));
   });
 
-  it("slices source params down to the source route's declared params", () => {
+  it("slices source params down to the source route's declared params", async () => {
     const categorySourceRoute = { params: ["category"], pattern: "/feed/[category]" };
     const matchedParams = { category: "nature", id: "123" };
 
-    const result = resolveAppPageInterceptMatch({
+    const result = await resolveAppPageInterceptMatch({
       cleanPathname: "/photos/123",
       currentRoute,
       findIntercept: () => ({
@@ -458,8 +458,8 @@ describe("resolveAppPageActionRerenderTarget", () => {
     interceptSlotKey: intercept.slotKey,
   });
 
-  it("falls through to the current route on non-RSC requests", () => {
-    const result = resolveAppPageActionRerenderTarget({
+  it("falls through to the current route on non-RSC requests", async () => {
+    const result = await resolveAppPageActionRerenderTarget({
       cleanPathname: "/photos/123",
       currentParams: { id: "123" },
       currentRoute,
@@ -480,8 +480,8 @@ describe("resolveAppPageActionRerenderTarget", () => {
     });
   });
 
-  it("falls through to the current route when no intercept matches", () => {
-    const result = resolveAppPageActionRerenderTarget({
+  it("falls through to the current route when no intercept matches", async () => {
+    const result = await resolveAppPageActionRerenderTarget({
       cleanPathname: "/photos/123",
       currentParams: { id: "123" },
       currentRoute,
@@ -500,7 +500,7 @@ describe("resolveAppPageActionRerenderTarget", () => {
     });
   });
 
-  it("looks up the intercept once when the source route is the current route", () => {
+  it("looks up the intercept once when the source route is the current route", async () => {
     const findIntercept = vi.fn(() => ({
       matchedParams: { id: "123" },
       page: { default: "modal-page" },
@@ -508,7 +508,7 @@ describe("resolveAppPageActionRerenderTarget", () => {
       sourceRouteIndex: 0,
     }));
 
-    const result = resolveAppPageActionRerenderTarget({
+    const result = await resolveAppPageActionRerenderTarget({
       cleanPathname: "/photos/123",
       currentParams: { id: "123" },
       currentRoute,
@@ -532,8 +532,8 @@ describe("resolveAppPageActionRerenderTarget", () => {
     expect(findIntercept).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves current-route intercept opts when action rerender stays on the direct route", () => {
-    const result = resolveAppPageActionRerenderTarget({
+  it("preserves current-route intercept opts when action rerender stays on the direct route", async () => {
+    const result = await resolveAppPageActionRerenderTarget({
       cleanPathname: "/photos/123",
       currentParams: { id: "123" },
       currentRoute,
@@ -561,8 +561,8 @@ describe("resolveAppPageActionRerenderTarget", () => {
     });
   });
 
-  it("rerenders the intercepted source route when an intercept match applies", () => {
-    const result = resolveAppPageActionRerenderTarget({
+  it("rerenders the intercepted source route when an intercept match applies", async () => {
+    const result = await resolveAppPageActionRerenderTarget({
       cleanPathname: "/photos/123",
       currentParams: { id: "123" },
       currentRoute,

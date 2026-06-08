@@ -268,4 +268,34 @@ test.describe("Next.js compat: useRouter().bfcacheId", () => {
     expect(restoredAfterInvalidation).not.toBe(staleX1BfcacheId);
     await expect(visibleTestId(page, "leaf-input")).toHaveValue("");
   });
+
+  test("preserves restorable client state after a return-value-only server action", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}${ROUTE}/x/1`);
+    await waitForAppRouterHydration(page);
+
+    const x1BfcacheId = await visibleTestId(page, "leaf-bfcache-id").textContent();
+    await visibleTestId(page, "layout-input").fill("return-value-layout-state");
+
+    await revealAndClick(page, `${ROUTE}/x/2`);
+    await expect(visibleTestId(page, "pathname")).toHaveText(`${ROUTE}/x/2`);
+    const x2BfcacheId = await visibleTestId(page, "leaf-bfcache-id").textContent();
+    await expect(visibleTestId(page, "layout-input")).toHaveValue("return-value-layout-state");
+
+    const actionResponse = waitForServerActionResponse(page, `${ROUTE}/x/2`);
+    await visibleTestId(page, "server-action-return-value-only").click();
+    await actionResponse;
+    await expect(visibleTestId(page, "server-action-return-value")).toHaveText("return-value-only");
+
+    await page.goBack();
+    await expect(visibleTestId(page, "pathname")).toHaveText(`${ROUTE}/x/1`);
+    await expect(visibleTestId(page, "leaf-bfcache-id")).toHaveText(x1BfcacheId ?? "");
+    await expect(visibleTestId(page, "layout-input")).toHaveValue("return-value-layout-state");
+
+    await page.goForward();
+    await expect(visibleTestId(page, "pathname")).toHaveText(`${ROUTE}/x/2`);
+    await expect(visibleTestId(page, "leaf-bfcache-id")).toHaveText(x2BfcacheId ?? "");
+    await expect(visibleTestId(page, "layout-input")).toHaveValue("return-value-layout-state");
+  });
 });

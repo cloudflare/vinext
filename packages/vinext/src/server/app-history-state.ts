@@ -19,6 +19,154 @@ export type HistoryTraversalIntent = {
   targetHistoryIndex: number | null;
 };
 
+type HistoryStateSnapshot<TState> = {
+  bfcacheVersion: number;
+  state: TState;
+};
+
+type HistoryStateSnapshotRestoreDecision<TState> =
+  | {
+      kind: "restore";
+      state: TState;
+      targetHistoryIndex: number;
+    }
+  | {
+      kind: "skip";
+      reason: "guarded" | "missing-history-index" | "missing-snapshot" | "stale-bfcache-version";
+      targetHistoryIndex: number | null;
+    };
+
+export class HistoryStateSnapshotCache<TState> {
+  readonly #maxEntries: number;
+  readonly #snapshots = new Map<number, HistoryStateSnapshot<TState>>();
+
+  constructor(options: { maxEntries: number }) {
+    this.#maxEntries = options.maxEntries;
+  }
+
+  clear(): void {
+    this.#snapshots.clear();
+  }
+
+  remember(options: { bfcacheVersion: number; historyIndex: number | null; state: TState }): void {
+    if (options.historyIndex === null) return;
+
+    this.#snapshots.delete(options.historyIndex);
+    this.#snapshots.set(options.historyIndex, {
+      bfcacheVersion: options.bfcacheVersion,
+      state: options.state,
+    });
+
+    if (this.#snapshots.size <= this.#maxEntries) return;
+
+    const oldestIndex = this.#snapshots.keys().next().value;
+    if (typeof oldestIndex === "number") {
+      this.#snapshots.delete(oldestIndex);
+    }
+  }
+
+  resolveRestore(options: {
+    currentBfcacheVersion: number;
+    guarded: boolean;
+    historyState: unknown;
+  }): HistoryStateSnapshotRestoreDecision<TState> {
+    const targetHistoryIndex = readHistoryStateTraversalIndex(options.historyState);
+    if (targetHistoryIndex === null) {
+      return { kind: "skip", reason: "missing-history-index", targetHistoryIndex };
+    }
+
+    const snapshot = this.#snapshots.get(targetHistoryIndex);
+    if (!snapshot) {
+      return { kind: "skip", reason: "missing-snapshot", targetHistoryIndex };
+    }
+    if (options.guarded) {
+      return { kind: "skip", reason: "guarded", targetHistoryIndex };
+    }
+    if (snapshot.bfcacheVersion !== options.currentBfcacheVersion) {
+      this.#snapshots.delete(targetHistoryIndex);
+      return { kind: "skip", reason: "stale-bfcache-version", targetHistoryIndex };
+    }
+
+    return { kind: "restore", state: snapshot.state, targetHistoryIndex };
+  }
+}
+
+export class RestorableClientStateController<TState> {
+  #currentBfcacheVersion: number;
+  #pendingCacheInvalidationGuards = 0;
+  readonly #snapshots: HistoryStateSnapshotCache<TState>;
+
+  constructor(options: { initialHistoryState: unknown; maxHistoryStateSnapshots: number }) {
+    const initialHistoryBfcacheVersion = readHistoryStateBfcacheVersion(
+      options.initialHistoryState,
+    );
+    // A new browser document does not retain Next's in-memory BFCache entries.
+    // Treat bfcache ids persisted by an older document as stale so a hard
+    // reload cannot restore/collide with pre-reload route identities.
+    this.#currentBfcacheVersion =
+      initialHistoryBfcacheVersion === null ? 0 : initialHistoryBfcacheVersion + 1;
+    this.#snapshots = new HistoryStateSnapshotCache<TState>({
+      maxEntries: options.maxHistoryStateSnapshots,
+    });
+  }
+
+  get currentBfcacheVersion(): number {
+    return this.#currentBfcacheVersion;
+  }
+
+  beginCacheInvalidationGuard(): () => void {
+    this.#pendingCacheInvalidationGuards += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#pendingCacheInvalidationGuards = Math.max(0, this.#pendingCacheInvalidationGuards - 1);
+    };
+  }
+
+  isCacheInvalidationGuarded(): boolean {
+    return this.#pendingCacheInvalidationGuards > 0;
+  }
+
+  isCurrentBfcacheVersion(historyState: unknown): boolean {
+    return isHistoryStateBfcacheVersionCurrent(historyState, this.#currentBfcacheVersion);
+  }
+
+  readCurrentBfcacheVersionHistoryIds(historyState: unknown): BfcacheIdMap | null {
+    if (this.isCacheInvalidationGuarded()) return null;
+    const ids = readHistoryStateBfcacheIds(historyState);
+    if (ids === null) return null;
+    return this.isCurrentBfcacheVersion(historyState) ? ids : null;
+  }
+
+  #invalidateBfcacheIds(): void {
+    this.#currentBfcacheVersion += 1;
+  }
+
+  invalidateClientState(): void {
+    this.#snapshots.clear();
+    this.#invalidateBfcacheIds();
+  }
+
+  rememberHistoryStateSnapshot(options: { historyIndex: number | null; state: TState }): void {
+    this.#snapshots.remember({
+      bfcacheVersion: this.#currentBfcacheVersion,
+      historyIndex: options.historyIndex,
+      state: options.state,
+    });
+  }
+
+  resolveHistoryStateSnapshotRestore(
+    historyState: unknown,
+  ): HistoryStateSnapshotRestoreDecision<TState> {
+    return this.#snapshots.resolveRestore({
+      currentBfcacheVersion: this.#currentBfcacheVersion,
+      guarded: this.isCacheInvalidationGuarded(),
+      historyState,
+    });
+  }
+}
+
 function cloneHistoryState(state: unknown): HistoryStateRecord {
   if (!state || typeof state !== "object") {
     return {};

@@ -106,6 +106,7 @@ export type AppRouterAction = {
   previousNextUrl: string | null;
   renderId: number;
   rootLayoutTreePath: string | null;
+  reuseCurrentBfcacheIds: boolean;
   routeId: string;
   skippedLayoutIds: readonly string[];
   slotBindings: readonly AppElementsSlotBinding[];
@@ -326,8 +327,10 @@ export function createNextBfcacheIdMap(options: {
   elements: AppElements;
   nextPathname: string;
   restored?: BfcacheIdMap | null;
+  reuseCurrent?: boolean;
 }): BfcacheIdMap {
-  for (const value of Object.values(options.current)) {
+  const current = options.reuseCurrent === false ? {} : options.current;
+  for (const value of Object.values(current)) {
     rememberBfcacheId(value);
   }
   for (const value of Object.values(options.restored ?? {})) {
@@ -348,7 +351,7 @@ export function createNextBfcacheIdMap(options: {
       metadata: nextMetadata,
       pathname: nextPathname,
     });
-    const currentValue = currentIdentity === nextIdentity ? options.current[id] : undefined;
+    const currentValue = currentIdentity === nextIdentity ? current[id] : undefined;
     // History traversals restore persisted ids first, matching segments keep
     // their current id, and newly-created segments mint a fresh opaque id.
     // Restored ids intentionally win over identity-matching: the target entry's
@@ -511,6 +514,12 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
     options.pending.action.operation.startedVisibleCommitVersion !==
       options.currentState.visibleCommitVersion
   ) {
+    // staleOperation — the navigation that created `pending` started from a
+    // different visibleCommitVersion than the current state. This happens when
+    // a synchronous history snapshot restore (restoreHistoryStateSnapshot, see
+    // app-browser-entry.ts popstate handler) bumps visibleCommitVersion before
+    // an in-flight async RSC traverse resolves. The snapshot restore is the
+    // authoritative commit; the stale async payload is intentionally discarded.
     return {
       disposition: "skip",
       preserveElementIds: [],
@@ -805,6 +814,7 @@ export async function createPendingNavigationCommit(options: {
   previousNextUrl?: string | null;
   renderId: number;
   restoredBfcacheIds?: BfcacheIdMap | null;
+  reuseCurrentBfcacheIds?: boolean;
   type: "navigate" | "replace" | "traverse";
 }): Promise<PendingNavigationCommit> {
   const elements = await options.nextElements;
@@ -829,6 +839,7 @@ export async function createPendingNavigationCommit(options: {
         elements,
         nextPathname: options.navigationSnapshot.pathname,
         restored: options.restoredBfcacheIds,
+        reuseCurrent: options.reuseCurrentBfcacheIds,
       }),
       ...(cacheEntryReuseProof ? { cacheEntryReuseProof } : {}),
       elements,
@@ -846,6 +857,7 @@ export async function createPendingNavigationCommit(options: {
       previousNextUrl,
       renderId: options.renderId,
       rootLayoutTreePath: metadata.rootLayoutTreePath,
+      reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds ?? true,
       routeId: metadata.routeId,
       skippedLayoutIds: metadata.skippedLayoutIds,
       type: options.type,

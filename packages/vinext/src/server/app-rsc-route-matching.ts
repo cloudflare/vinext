@@ -38,6 +38,7 @@ type AppRscInterceptForMatching = {
   sourceMatchPattern?: string;
   interceptLayouts: readonly unknown[];
   page: unknown;
+  __pageLoader?: (() => Promise<unknown>) | null;
   params: readonly string[];
 };
 
@@ -52,6 +53,11 @@ type AppRscSiblingInterceptForMatching = {
   slotId: string | null;
   interceptLayouts: readonly unknown[];
   page: unknown;
+  // Sibling intercept pages are lazy-loaded (manifest emits `page: null` plus a
+  // `__pageLoader`) so the intercepting page's CSS chunk stays isolated in
+  // production, matching slot intercepts (see #1738). The loader is awaited on
+  // demand by resolveAppPageInterceptState / probePage.
+  __pageLoader?: (() => Promise<unknown>) | null;
   params: readonly string[];
 };
 
@@ -75,6 +81,7 @@ type AppRscInterceptLookupEntry = {
   sourceMatchPatternParts: string[] | null;
   interceptLayouts: readonly unknown[];
   page: unknown;
+  __pageLoader?: (() => Promise<unknown>) | null;
   params: readonly string[];
   slotId: string | null;
 };
@@ -229,6 +236,7 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           sourceMatchPatternParts,
           interceptLayouts: intercept.interceptLayouts,
           page: intercept.page,
+          __pageLoader: intercept.__pageLoader,
           params: intercept.params,
         });
       }

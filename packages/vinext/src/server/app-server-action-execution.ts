@@ -1151,7 +1151,7 @@ export async function handleServerActionRscRequest<
     let errorPattern = match ? match.route.pattern : options.cleanPathname;
     if (match) {
       const { route: actionRoute, params: actionParams } = match;
-      const actionRerenderTarget = resolveAppPageActionRerenderTarget({
+      const actionRerenderTarget = await resolveAppPageActionRerenderTarget({
         cleanPathname: options.cleanPathname,
         currentParams: actionParams,
         currentRoute: actionRoute,

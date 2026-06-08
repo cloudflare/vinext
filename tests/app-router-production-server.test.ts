@@ -7,6 +7,64 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import vinext from "../packages/vinext/src/index.js";
 import { APP_FIXTURE_DIR } from "./helpers.js";
 
+function getStylesheetHrefs(html: string): string[] {
+  const hrefs: string[] = [];
+  const linkPattern = /<link\b[^>]*>/g;
+  let linkMatch: RegExpExecArray | null;
+
+  while ((linkMatch = linkPattern.exec(html)) !== null) {
+    const link = linkMatch[0];
+    if (!/\brel=["']stylesheet["']/.test(link)) continue;
+
+    const href = link.match(/\bhref=["']([^"']+)["']/)?.[1];
+    if (href) hrefs.push(href);
+  }
+
+  return hrefs;
+}
+
+async function getLinkedStylesheetText(baseUrl: string, html: string): Promise<string> {
+  return fetchStylesheetText(baseUrl, getStylesheetHrefs(html));
+}
+
+// RSC flight payloads reference CSS chunks as serialized stylesheet hints
+// (e.g. `"href":"/assets/page-XXXX.css"`) rather than HTML `<link>` tags, so
+// the `<link>` parser above does not see them. Pull every `.css` asset path out
+// of the raw payload instead.
+function getFlightStylesheetHrefs(payload: string): string[] {
+  const hrefs = new Set<string>();
+  const cssPattern = /["'](\/[^"']+?\.css)["']/g;
+  let match: RegExpExecArray | null;
+  while ((match = cssPattern.exec(payload)) !== null) {
+    hrefs.add(match[1]);
+  }
+  return [...hrefs];
+}
+
+async function fetchStylesheetText(baseUrl: string, hrefs: string[]): Promise<string> {
+  if (hrefs.length === 0) return "";
+
+  const stylesheets = await Promise.all(
+    hrefs.map(async (href) => {
+      const res = await fetch(new URL(href, baseUrl));
+      expect(res.status).toBe(200);
+      return res.text();
+    }),
+  );
+
+  return stylesheets.join("\n");
+}
+
+function getInlineStyleText(html: string): string {
+  const styles: string[] = [];
+  const stylePattern = /<style[^>]*>([\s\S]*?)<\/style>/g;
+  let match: RegExpExecArray | null;
+  while ((match = stylePattern.exec(html)) !== null) {
+    styles.push(match[1]);
+  }
+  return styles.join("\n");
+}
+
 async function withCountingFetchTarget<T>(
   fn: (targetUrl: string, getRequestCount: () => number) => Promise<T>,
 ): Promise<T> {
@@ -100,6 +158,63 @@ describe("App Router Production server (startProdServer)", () => {
     const html = await res.text();
     expect(html).toContain("Welcome to App Router");
     expect(html).toContain("<script");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/navigation/navigation.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+  //
+  // Next.js route-level global CSS is scoped to the matched App Router route's
+  // CSS chunks. A sibling route that imports `scroll-padding-top: 20px` must not
+  // contribute CSS to this page; otherwise native hash scrolling lands exactly
+  // 20px short, which is what the upstream navigation deploy-suite observed.
+  it("keeps production route-level global CSS isolated between sibling hash routes", async () => {
+    const noOffsetRes = await fetch(`${baseUrl}/nextjs-compat/hash-scroll-css-isolation`);
+    expect(noOffsetRes.status).toBe(200);
+    const noOffsetHtml = await noOffsetRes.text();
+    const noOffsetCss = await getLinkedStylesheetText(baseUrl, noOffsetHtml);
+    expect(noOffsetCss).not.toContain("scroll-padding-top");
+
+    const offsetRes = await fetch(`${baseUrl}/nextjs-compat/hash-scroll-css-isolation-with-offset`);
+    expect(offsetRes.status).toBe(200);
+    const offsetHtml = await offsetRes.text();
+    const offsetCss = await getLinkedStylesheetText(baseUrl, offsetHtml);
+    expect(offsetCss).toContain("scroll-padding-top:20px");
+  });
+
+  it("keeps production route-level global CSS isolated for intercepted modal pages", async () => {
+    // Direct feed visit: the modal page module is lazy, so its CSS must
+    // not be emitted when the intercept is not active.
+    const feedRes = await fetch(`${baseUrl}/feed`);
+    expect(feedRes.status).toBe(200);
+    const feedHtml = await feedRes.text();
+    const feedLinkedCss = await getLinkedStylesheetText(baseUrl, feedHtml);
+    expect(feedLinkedCss).not.toContain("scroll-padding-top");
+    const feedInlineCss = getInlineStyleText(feedHtml);
+    expect(feedInlineCss).not.toContain("scroll-padding-top");
+  });
+
+  it("emits intercepted modal CSS on RSC navigation from feed", async () => {
+    // Positive direction for the lazy intercept-page load: navigating from
+    // /feed to /photos/[id] fires the intercept, so the modal page module — and
+    // therefore its `scroll-padding-top` CSS chunk — must be loaded and
+    // referenced in the flight payload. Without this guard, a regression where
+    // the lazy modal page fails to load its CSS would pass the negative test
+    // above silently. Mirrors the dev-server intercept request shape.
+    const res = await fetch(`${baseUrl}/photos/43.rsc`, {
+      headers: {
+        Accept: "text/x-component",
+        "X-Vinext-Interception-Context": "/feed",
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+
+    const payload = await res.text();
+    // Confirm the intercept actually fired before asserting on its CSS.
+    expect(payload).toContain("photo-modal");
+
+    const interceptCss = await fetchStylesheetText(baseUrl, getFlightStylesheetHrefs(payload));
+    expect(interceptCss).toContain("scroll-padding-top:20px");
   });
 
   it("does not reuse cached HTML across requests with different CSP nonces", async () => {

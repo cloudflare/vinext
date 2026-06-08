@@ -19,7 +19,10 @@ import {
   hydrateRootInTransition,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
-import { createPopstateRestoreHandler } from "../packages/vinext/src/server/app-browser-popstate.js";
+import {
+  createPopstateRestoreHandler,
+  restoreSynchronousPopstateScrollPosition,
+} from "../packages/vinext/src/server/app-browser-popstate.js";
 import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   resolveRscCompatibilityNavigationDecision,
@@ -86,6 +89,10 @@ import {
   type AppRouterState,
   type OperationLane,
 } from "../packages/vinext/src/server/app-browser-state.js";
+import {
+  HistoryStateSnapshotCache,
+  RestorableClientStateController,
+} from "../packages/vinext/src/server/app-history-state.js";
 import { resolveRscRedirectLifecycleHop } from "../packages/vinext/src/server/app-browser-rsc-redirect.js";
 import {
   applyApprovedVisibleCommit,
@@ -1027,6 +1034,127 @@ describe("app browser entry navigation scheduling", () => {
 
     expect(assertNoTransitionOverride).toBeTypeOf("function");
   });
+
+  it("restores visible history snapshots through an approved traversal commit", () => {
+    const currentState = createState({
+      elements: createResolvedElements("route:/scroll-restoration/other", "/"),
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/scroll-restoration/other",
+        {},
+      ),
+      routeId: "route:/scroll-restoration/other",
+      visibleCommitVersion: 7,
+    });
+    const snapshotState = createState({
+      elements: createResolvedElements("route:/scroll-restoration", "/"),
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/scroll-restoration",
+        {},
+      ),
+      routeId: "route:/scroll-restoration",
+      visibleCommitVersion: 2,
+    });
+    const { controller, stateRef } = createControllerHarness(currentState);
+    const navId = controller.beginNavigation();
+
+    const restored = controller.restoreHistorySnapshotVisibleState({
+      navId,
+      state: snapshotState,
+      targetHref: "https://example.com/scroll-restoration",
+    });
+
+    expect(restored).toBe(true);
+    expect(stateRef.current.routeId).toBe("route:/scroll-restoration");
+    expect(stateRef.current.visibleCommitVersion).toBe(8);
+    expect(stateRef.current.activeOperation).toMatchObject({
+      lane: "traverse",
+      startedVisibleCommitVersion: 7,
+      state: "committed",
+      visibleCommitVersion: 8,
+    });
+  });
+
+  it("matches visible history snapshot targets after stripping basePath and canonicalizing search", () => {
+    const currentState = createState({
+      elements: createResolvedElements("route:/scroll-restoration/other", "/"),
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/scroll-restoration/other",
+        {},
+      ),
+      routeId: "route:/scroll-restoration/other",
+      visibleCommitVersion: 7,
+    });
+    const snapshotState = createState({
+      elements: createResolvedElements("route:/scroll-restoration", "/"),
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/scroll-restoration?q=a+b",
+        {},
+      ),
+      routeId: "route:/scroll-restoration",
+      visibleCommitVersion: 2,
+    });
+    const { controller, stateRef } = createControllerHarness(currentState, {
+      basePath: "/docs",
+    });
+    const navId = controller.beginNavigation();
+
+    const restored = controller.restoreHistorySnapshotVisibleState({
+      navId,
+      state: snapshotState,
+      targetHref: "https://example.com/docs/scroll-restoration?q=a%20b",
+    });
+
+    expect(restored).toBe(true);
+    expect(stateRef.current.routeId).toBe("route:/scroll-restoration");
+    expect(stateRef.current.visibleCommitVersion).toBe(8);
+  });
+
+  it("rejects visible history snapshots for stale navigation lifecycles", () => {
+    const currentState = createState({ visibleCommitVersion: 7 });
+    const snapshotState = createState({
+      elements: createResolvedElements("route:/scroll-restoration", "/"),
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/scroll-restoration",
+        {},
+      ),
+      routeId: "route:/scroll-restoration",
+    });
+    const { controller, stateRef } = createControllerHarness(currentState);
+    const staleNavId = controller.beginNavigation();
+    controller.beginNavigation();
+
+    const restored = controller.restoreHistorySnapshotVisibleState({
+      navId: staleNavId,
+      state: snapshotState,
+      targetHref: "https://example.com/scroll-restoration",
+    });
+
+    expect(restored).toBe(false);
+    expect(stateRef.current).toBe(currentState);
+  });
+
+  it("rejects visible history snapshots when the active target does not match", () => {
+    const currentState = createState({ visibleCommitVersion: 7 });
+    const snapshotState = createState({
+      elements: createResolvedElements("route:/scroll-restoration", "/"),
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/scroll-restoration",
+        {},
+      ),
+      routeId: "route:/scroll-restoration",
+    });
+    const { controller, stateRef } = createControllerHarness(currentState);
+    const navId = controller.beginNavigation();
+
+    const restored = controller.restoreHistorySnapshotVisibleState({
+      navId,
+      state: snapshotState,
+      targetHref: "https://example.com/scroll-restoration/other",
+    });
+
+    expect(restored).toBe(false);
+    expect(stateRef.current).toBe(currentState);
+  });
 });
 
 describe("app browser entry state helpers", () => {
@@ -1173,6 +1301,38 @@ describe("app browser entry state helpers", () => {
     expect(pending.action.interception).toEqual(createInterceptionProof("/feed", "/photos/42"));
     expect(pending.action.interceptionContext).toBe("/feed");
     expect(pending.action.previousNextUrl).toBe("/feed");
+  });
+
+  it("mints fresh bfcache ids instead of reusing current ids when requested", async () => {
+    const currentRootLayout = React.createElement("div", null, "current root");
+    const nextRootLayout = React.createElement("div", null, "next root");
+    const currentState = createState({
+      bfcacheIds: {
+        "layout:/": "_b_4_",
+      },
+      elements: createResolvedElements("route:/dashboard", "/", null, {
+        "layout:/": currentRootLayout,
+      }),
+    });
+
+    const pending = await createPendingNavigationCommit({
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      currentState,
+      nextElements: Promise.resolve(
+        createResolvedElements("route:/settings", "/", null, {
+          "layout:/": nextRootLayout,
+        }),
+      ),
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+      operationLane: "traverse",
+      renderId: 1,
+      reuseCurrentBfcacheIds: false,
+      type: "traverse",
+    });
+
+    expect(pending.action.reuseCurrentBfcacheIds).toBe(false);
+    expect(pending.action.bfcacheIds["layout:/"]).toMatch(/^_b_\d+_$/);
+    expect(pending.action.bfcacheIds["layout:/"]).not.toBe("_b_4_");
   });
 
   it("clears previousNextUrl when traversing to a non-intercepted entry", async () => {
@@ -3963,6 +4123,70 @@ describe("app browser entry previousNextUrl helpers", () => {
     });
   });
 
+  it("does not preserve skipped layouts when current bfcache ids are stale", async () => {
+    const rootLayout = React.createElement("div", null, "root layout");
+    const currentState = createState({
+      bfcacheIds: {
+        "layout:/": "_b_4_",
+      },
+      elements: createResolvedElements(
+        "route:/dashboard",
+        "/",
+        null,
+        {
+          "layout:/": rootLayout,
+        },
+        ["layout:/"],
+      ),
+      layoutFlags: {
+        "layout:/": "s",
+      },
+      layoutIds: ["layout:/"],
+    });
+    const pending = await createPendingNavigationCommit({
+      currentState,
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+      nextElements: Promise.resolve(
+        createResolvedElements(
+          "route:/settings",
+          "/",
+          null,
+          {
+            [APP_LAYOUT_FLAGS_KEY]: {},
+            [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/"],
+            "page:/settings": React.createElement("main", null, "settings"),
+          },
+          ["layout:/"],
+        ),
+      ),
+      operationLane: "traverse",
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      renderId: 1,
+      reuseCurrentBfcacheIds: false,
+      type: "traverse",
+    });
+    const approval = approvePendingNavigationCommit({
+      activeNavigationId: 1,
+      currentState,
+      pending,
+      routeManifest: null,
+      startedNavigationId: 1,
+      targetHref: "https://example.com/settings",
+    });
+
+    expect(approval.approvedCommit).not.toBeNull();
+    if (approval.approvedCommit === null) return;
+    expect(approval.decision.preserveElementIds).toEqual(["layout:/"]);
+
+    const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
+
+    expect(Object.hasOwn(nextState.elements, "layout:/")).toBe(false);
+    expect(nextState.elements["page:/settings"]).toBeDefined();
+    expect(nextState.layoutFlags).toEqual({});
+    expect(nextState.bfcacheIds["layout:/"]).toMatch(/^_b_\d+_$/);
+    expect(nextState.bfcacheIds["layout:/"]).not.toBe("_b_4_");
+  });
+
   it("preserves the default parallel slot owned by a skipped slot-owning layout", async () => {
     const rootLayout = React.createElement("div", null, "root layout");
     const dashboardLayout = React.createElement("div", null, "dashboard layout");
@@ -4929,6 +5153,246 @@ describe("app browser entry bfcacheId helpers", () => {
     expect(isHistoryStateBfcacheVersionCurrent(null, 0)).toBe(false);
   });
 
+  it("restores matching history snapshots and evicts the oldest entry", () => {
+    const cache = new HistoryStateSnapshotCache<string>({ maxEntries: 2 });
+    const entry1 = createHistoryStateWithNavigationMetadata(null, {
+      previousNextUrl: null,
+      traversalIndex: 1,
+    });
+    const entry2 = createHistoryStateWithNavigationMetadata(null, {
+      previousNextUrl: null,
+      traversalIndex: 2,
+    });
+    const entry3 = createHistoryStateWithNavigationMetadata(null, {
+      previousNextUrl: null,
+      traversalIndex: 3,
+    });
+
+    cache.remember({ bfcacheVersion: 7, historyIndex: 1, state: "one" });
+    cache.remember({ bfcacheVersion: 7, historyIndex: 2, state: "two" });
+    cache.remember({ bfcacheVersion: 7, historyIndex: 3, state: "three" });
+
+    expect(
+      cache.resolveRestore({
+        currentBfcacheVersion: 7,
+        guarded: false,
+        historyState: entry1,
+      }),
+    ).toEqual({
+      kind: "skip",
+      reason: "missing-snapshot",
+      targetHistoryIndex: 1,
+    });
+    expect(
+      cache.resolveRestore({
+        currentBfcacheVersion: 7,
+        guarded: false,
+        historyState: entry2,
+      }),
+    ).toEqual({
+      kind: "restore",
+      state: "two",
+      targetHistoryIndex: 2,
+    });
+    expect(
+      cache.resolveRestore({
+        currentBfcacheVersion: 7,
+        guarded: false,
+        historyState: entry3,
+      }),
+    ).toEqual({
+      kind: "restore",
+      state: "three",
+      targetHistoryIndex: 3,
+    });
+  });
+
+  it("suppresses history snapshot restore while cache invalidation is guarded", () => {
+    const cache = new HistoryStateSnapshotCache<string>({ maxEntries: 2 });
+    const entry = createHistoryStateWithNavigationMetadata(null, {
+      previousNextUrl: null,
+      traversalIndex: 2,
+    });
+
+    cache.remember({ bfcacheVersion: 7, historyIndex: 2, state: "two" });
+
+    expect(
+      cache.resolveRestore({
+        currentBfcacheVersion: 7,
+        guarded: true,
+        historyState: entry,
+      }),
+    ).toEqual({
+      kind: "skip",
+      reason: "guarded",
+      targetHistoryIndex: 2,
+    });
+    expect(
+      cache.resolveRestore({
+        currentBfcacheVersion: 7,
+        guarded: false,
+        historyState: entry,
+      }),
+    ).toEqual({
+      kind: "restore",
+      state: "two",
+      targetHistoryIndex: 2,
+    });
+  });
+
+  it("deletes stale history snapshots when the bfcache epoch changes", () => {
+    const cache = new HistoryStateSnapshotCache<string>({ maxEntries: 2 });
+    const entry = createHistoryStateWithNavigationMetadata(null, {
+      previousNextUrl: null,
+      traversalIndex: 2,
+    });
+
+    cache.remember({ bfcacheVersion: 7, historyIndex: 2, state: "two" });
+
+    expect(
+      cache.resolveRestore({
+        currentBfcacheVersion: 8,
+        guarded: false,
+        historyState: entry,
+      }),
+    ).toEqual({
+      kind: "skip",
+      reason: "stale-bfcache-version",
+      targetHistoryIndex: 2,
+    });
+    expect(
+      cache.resolveRestore({
+        currentBfcacheVersion: 7,
+        guarded: false,
+        historyState: entry,
+      }),
+    ).toEqual({
+      kind: "skip",
+      reason: "missing-snapshot",
+      targetHistoryIndex: 2,
+    });
+  });
+
+  it("initializes restorable client state with a fresh document bfcache epoch", () => {
+    const initialState = createHistoryStateWithNavigationMetadata(null, {
+      bfcacheIds: { [pageX1Id]: "_b_9_" },
+      bfcacheVersion: 3,
+      previousNextUrl: null,
+    });
+    const controller = new RestorableClientStateController<string>({
+      initialHistoryState: initialState,
+      maxHistoryStateSnapshots: 2,
+    });
+
+    expect(controller.currentBfcacheVersion).toBe(4);
+    expect(controller.readCurrentBfcacheVersionHistoryIds(initialState)).toBeNull();
+
+    const currentState = createHistoryStateWithNavigationMetadata(null, {
+      bfcacheIds: { [pageX1Id]: "_b_10_" },
+      bfcacheVersion: controller.currentBfcacheVersion,
+      previousNextUrl: null,
+    });
+    expect(controller.readCurrentBfcacheVersionHistoryIds(currentState)).toEqual({
+      [pageX1Id]: "_b_10_",
+    });
+  });
+
+  it("keeps bfcache ids and history snapshots behind the same restorable client state guard", () => {
+    const controller = new RestorableClientStateController<string>({
+      initialHistoryState: null,
+      maxHistoryStateSnapshots: 2,
+    });
+    const entry = createHistoryStateWithNavigationMetadata(null, {
+      bfcacheIds: { [pageX1Id]: "_b_9_" },
+      bfcacheVersion: controller.currentBfcacheVersion,
+      previousNextUrl: null,
+      traversalIndex: 2,
+    });
+
+    controller.rememberHistoryStateSnapshot({ historyIndex: 2, state: "two" });
+    const release = controller.beginCacheInvalidationGuard();
+
+    expect(controller.readCurrentBfcacheVersionHistoryIds(entry)).toBeNull();
+    expect(controller.resolveHistoryStateSnapshotRestore(entry)).toEqual({
+      kind: "skip",
+      reason: "guarded",
+      targetHistoryIndex: 2,
+    });
+
+    release();
+
+    expect(controller.readCurrentBfcacheVersionHistoryIds(entry)).toEqual({
+      [pageX1Id]: "_b_9_",
+    });
+    expect(controller.resolveHistoryStateSnapshotRestore(entry)).toEqual({
+      kind: "restore",
+      state: "two",
+      targetHistoryIndex: 2,
+    });
+  });
+
+  it("keeps restorable client state guarded until nested guards are released", () => {
+    const controller = new RestorableClientStateController<string>({
+      initialHistoryState: null,
+      maxHistoryStateSnapshots: 2,
+    });
+    const entry = createHistoryStateWithNavigationMetadata(null, {
+      bfcacheIds: { [pageX1Id]: "_b_9_" },
+      bfcacheVersion: controller.currentBfcacheVersion,
+      previousNextUrl: null,
+      traversalIndex: 2,
+    });
+
+    controller.rememberHistoryStateSnapshot({ historyIndex: 2, state: "two" });
+    const releaseOuter = controller.beginCacheInvalidationGuard();
+    const releaseInner = controller.beginCacheInvalidationGuard();
+
+    releaseOuter();
+    releaseOuter();
+
+    expect(controller.readCurrentBfcacheVersionHistoryIds(entry)).toBeNull();
+    expect(controller.resolveHistoryStateSnapshotRestore(entry)).toEqual({
+      kind: "skip",
+      reason: "guarded",
+      targetHistoryIndex: 2,
+    });
+
+    releaseInner();
+    releaseInner();
+
+    expect(controller.readCurrentBfcacheVersionHistoryIds(entry)).toEqual({
+      [pageX1Id]: "_b_9_",
+    });
+    expect(controller.resolveHistoryStateSnapshotRestore(entry)).toEqual({
+      kind: "restore",
+      state: "two",
+      targetHistoryIndex: 2,
+    });
+  });
+
+  it("invalidates bfcache ids and history snapshots through one restorable client state epoch", () => {
+    const controller = new RestorableClientStateController<string>({
+      initialHistoryState: null,
+      maxHistoryStateSnapshots: 2,
+    });
+    const entry = createHistoryStateWithNavigationMetadata(null, {
+      bfcacheIds: { [pageX1Id]: "_b_9_" },
+      bfcacheVersion: controller.currentBfcacheVersion,
+      previousNextUrl: null,
+      traversalIndex: 2,
+    });
+
+    controller.rememberHistoryStateSnapshot({ historyIndex: 2, state: "two" });
+    controller.invalidateClientState();
+
+    expect(controller.readCurrentBfcacheVersionHistoryIds(entry)).toBeNull();
+    expect(controller.resolveHistoryStateSnapshotRestore(entry)).toEqual({
+      kind: "skip",
+      reason: "missing-snapshot",
+      targetHistoryIndex: 2,
+    });
+  });
+
   it("uses restored history bfcache ids for traversal commits", async () => {
     const currentState = createState({
       bfcacheIds: {
@@ -5009,6 +5473,34 @@ describe("app browser entry bfcacheId helpers", () => {
 });
 
 describe("createPopstateRestoreHandler", () => {
+  it("guards synchronous popstate scroll retry to the active navigation", () => {
+    const scrollState = { __vinext_scrollY: 10 };
+    let activeNavigationId = 3;
+    let consumedNavigationId: number | null = null;
+    let shouldContinue: (() => boolean) | undefined;
+
+    restoreSynchronousPopstateScrollPosition(
+      {
+        getActiveNavigationId: () => activeNavigationId,
+        isCurrentNavigation: (navId) => navId === activeNavigationId,
+        markScrollRestoreConsumed: (navId) => {
+          consumedNavigationId = navId;
+        },
+        restorePopstateScrollPosition: (state, options) => {
+          expect(state).toBe(scrollState);
+          shouldContinue = options?.shouldContinue;
+        },
+      },
+      scrollState,
+    );
+
+    expect(consumedNavigationId).toBe(3);
+    expect(shouldContinue?.()).toBe(true);
+
+    activeNavigationId = 4;
+    expect(shouldContinue?.()).toBe(false);
+  });
+
   it("restores scroll only after the latest popstate navigation commits", async () => {
     const restoreCalls: unknown[] = [];
     const firstNavigation = createDeferred();
@@ -5041,6 +5533,7 @@ describe("createPopstateRestoreHandler", () => {
       setPendingNavigation: (pendingNavigation) => {
         window.__VINEXT_RSC_PENDING__ = pendingNavigation;
       },
+      shouldSkipScrollRestore: () => false,
     });
 
     handler({ state: { __vinext_scrollY: 10 } } as PopStateEvent);
@@ -5086,6 +5579,7 @@ describe("createPopstateRestoreHandler", () => {
       setPendingNavigation: (pendingNavigation) => {
         window.__VINEXT_RSC_PENDING__ = pendingNavigation;
       },
+      shouldSkipScrollRestore: () => false,
     });
 
     handler({ state: { __vinext_scrollY: 10 } } as PopStateEvent);
@@ -5097,6 +5591,46 @@ describe("createPopstateRestoreHandler", () => {
     await Promise.resolve();
 
     expect(restoreCalls).toEqual([]);
+    expect(window.__VINEXT_RSC_PENDING__).toBeNull();
+  });
+
+  it("does not reapply delayed scroll after synchronous popstate restore consumed it", async () => {
+    const restoreCalls: unknown[] = [];
+    const navigation = createDeferred();
+    let activeNavigationId = 0;
+    let synchronouslyRestoredNavigationId: number | null = null;
+
+    stubWindow("https://example.com/feed");
+    window.__VINEXT_RSC_PENDING__ = null;
+
+    const handler = createPopstateRestoreHandler({
+      getActiveNavigationId: () => activeNavigationId,
+      getNavigate: () => {
+        activeNavigationId += 1;
+        return () => navigation.promise;
+      },
+      getPendingNavigation: () => window.__VINEXT_RSC_PENDING__,
+      isCurrentNavigation: (navId) => navId === activeNavigationId,
+      notifyAppRouterTransitionStart: () => {},
+      restorePopstateScrollPosition: (scrollState) => {
+        restoreCalls.push(scrollState);
+      },
+      setPendingNavigation: (pendingNavigation) => {
+        window.__VINEXT_RSC_PENDING__ = pendingNavigation;
+      },
+      shouldSkipScrollRestore: (navId) => synchronouslyRestoredNavigationId === navId,
+    });
+
+    handler({ state: { __vinext_scrollY: 10 } } as PopStateEvent);
+    synchronouslyRestoredNavigationId = activeNavigationId;
+    restoreCalls.push({ __vinext_scrollY: 10, source: "sync" });
+
+    await Promise.resolve();
+    navigation.resolve();
+    await navigation.promise;
+    await Promise.resolve();
+
+    expect(restoreCalls).toEqual([{ __vinext_scrollY: 10, source: "sync" }]);
     expect(window.__VINEXT_RSC_PENDING__).toBeNull();
   });
 });

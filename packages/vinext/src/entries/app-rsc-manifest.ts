@@ -188,14 +188,16 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       if (slot.loadingPath) imports.getImportVar(slot.loadingPath);
       if (slot.errorPath) imports.getImportVar(slot.errorPath);
       for (const ir of slot.interceptingRoutes) {
-        imports.getImportVar(ir.pagePath);
+        imports.getLazyLoaderVar(ir.pagePath);
         for (const layoutPath of ir.layoutPaths) {
           imports.getImportVar(layoutPath);
         }
       }
     }
     for (const ir of route.siblingIntercepts ?? []) {
-      imports.getImportVar(ir.pagePath);
+      // Lazy-load the intercepting page (like slot intercepts) so its CSS chunk
+      // stays isolated in production (#1738). Layouts remain eager.
+      imports.getLazyLoaderVar(ir.pagePath);
       for (const layoutPath of ir.layoutPaths) {
         imports.getImportVar(layoutPath);
       }
@@ -229,7 +231,8 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
       sourceMatchPattern: ${JSON.stringify(ir.sourceMatchPattern)},
       slotId: ${JSON.stringify(ir.slotId ?? null)},
       interceptLayouts: [${ir.layoutPaths.map((l) => imports.getImportVar(l)).join(", ")}],
-      page: ${imports.getImportVar(ir.pagePath)},
+      page: null,
+      __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
       params: ${JSON.stringify(ir.params)},
     }`,
     );
@@ -240,7 +243,8 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
           targetPattern: ${JSON.stringify(ir.targetPattern)},
           sourceMatchPattern: ${JSON.stringify(ir.sourceMatchPattern)},
           interceptLayouts: [${ir.layoutPaths.map((layoutPath) => imports.getImportVar(layoutPath)).join(", ")}],
-          page: ${imports.getImportVar(ir.pagePath)},
+          page: null,
+          __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
           params: ${JSON.stringify(ir.params)},
         }`,
       );

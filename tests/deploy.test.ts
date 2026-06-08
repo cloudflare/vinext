@@ -20,6 +20,7 @@ import {
   isPackageResolvable,
   viteConfigHasCloudflarePlugin,
   viteConfigHasCacheAdapter,
+  workerEntryHasCacheHandler,
   hasWranglerConfig,
   formatMissingCloudflarePluginError,
   formatMissingCacheAdapterError,
@@ -662,13 +663,68 @@ describe("viteConfigHasCacheAdapter", () => {
   });
 });
 
+describe("workerEntryHasCacheHandler", () => {
+  it("detects a setCacheHandler call in worker/index.ts", () => {
+    writeFile(
+      tmpDir,
+      "worker/index.ts",
+      `import { setCacheHandler } from "vinext/shims/cache";
+       setCacheHandler(new KVCacheHandler(env.VINEXT_KV_CACHE));`,
+    );
+    expect(workerEntryHasCacheHandler(tmpDir)).toBe(true);
+  });
+
+  it("detects a setDataCacheHandler call", () => {
+    writeFile(
+      tmpDir,
+      "worker/index.ts",
+      `import { setDataCacheHandler } from "vinext/shims/cache";
+       setDataCacheHandler(handler);`,
+    );
+    expect(workerEntryHasCacheHandler(tmpDir)).toBe(true);
+  });
+
+  it("detects a setCdnCacheAdapter call", () => {
+    writeFile(
+      tmpDir,
+      "worker/index.ts",
+      `import { setCdnCacheAdapter } from "vinext/shims/cdn-cache";
+       setCdnCacheAdapter(adapter);`,
+    );
+    expect(workerEntryHasCacheHandler(tmpDir)).toBe(true);
+  });
+
+  it("detects a setter in worker/index.js", () => {
+    writeFile(
+      tmpDir,
+      "worker/index.js",
+      `setCacheHandler(new KVCacheHandler(env.VINEXT_KV_CACHE));`,
+    );
+    expect(workerEntryHasCacheHandler(tmpDir)).toBe(true);
+  });
+
+  it("returns false when the Worker entry has no cache setter", () => {
+    writeFile(tmpDir, "worker/index.ts", `export default { fetch() {} };`);
+    expect(workerEntryHasCacheHandler(tmpDir)).toBe(false);
+  });
+
+  it("returns false when there is no Worker entry to inspect", () => {
+    expect(workerEntryHasCacheHandler(tmpDir)).toBe(false);
+  });
+});
+
 describe("formatMissingCacheAdapterError", () => {
-  it("names the adapter builders and the KV namespace command", () => {
+  it("names the data adapter builder and the KV namespace command", () => {
     const msg = formatMissingCacheAdapterError({});
     expect(msg).toContain("no cache adapter is configured");
     expect(msg).toContain("kvDataAdapter()");
-    expect(msg).toContain("cdnAdapter()");
     expect(msg).toContain("npx wrangler kv namespace create VINEXT_KV_CACHE");
+  });
+
+  it("no longer references the cdn adapter", () => {
+    const msg = formatMissingCacheAdapterError({});
+    expect(msg).not.toContain("cdnAdapter");
+    expect(msg).not.toContain("cdn-adapter");
   });
 });
 

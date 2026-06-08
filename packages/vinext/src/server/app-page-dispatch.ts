@@ -555,7 +555,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // fresh render; this seed only gets them into the cache read path.
       revalidateSeconds: currentRevalidateSeconds ?? 0,
       renderFreshPageForCache: async () => {
-        const revalidationTarget = resolveAppPageInterceptionRerenderTarget({
+        const revalidationTarget = await resolveAppPageInterceptionRerenderTarget({
           cleanPathname: options.cleanPathname,
           currentParams: options.params,
           currentRoute: route,
