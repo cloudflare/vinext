@@ -900,9 +900,7 @@ describe("App Router Production server (startProdServer)", () => {
     // `$ACTION_1:0` reference payload rather than hardcoding it.
     const refValue = html.match(/name="\$ACTION_[^"]*:0"\s+value="([^"]+)"/)?.[1];
     expect(refValue).toBeDefined();
-    const decoded = refValue!
-      .replace(/&quot;/g, '"')
-      .replace(/&amp;/g, "&");
+    const decoded = refValue!.replace(/&quot;/g, '"').replace(/&amp;/g, "&");
     const actionId = JSON.parse(decoded).id as string;
     expect(actionId).toBeTruthy();
 
