@@ -2,12 +2,11 @@
  * Next.js Compat E2E: useRouter().bfcacheId
  * Ported from: https://github.com/vercel/next.js/blob/56d95137fd6d84f4bc1e5ef2bb31e0136d5fad9c/test/e2e/app-dir/use-router-bfcache-id/use-router-bfcache-id.test.ts
  *
- * Next.js also covers Activity-backed form-state preservation on browser back.
- * Vinext does not implement React Activity yet, so form-state-on-back
- * assertions are intentionally omitted here; these tests focus on bfcacheId
- * identity semantics. Same-segment DOM state preservation (e.g. input values
- * surviving search-param navigation) is tested where it works today without
- * Activity.
+ * Activity-backed form-state preservation needs cacheComponents, so it runs in
+ * the dedicated app-bfcache fixture under the app-router-bfcache Playwright
+ * project (tests/e2e/app-router-bfcache/back-forward-cache.spec.ts), not here.
+ * This spec runs against app-basic and focuses on bfcacheId identity semantics
+ * and routes where userland keys forms by bfcacheId to force fresh-entry reset.
  */
 
 import { test, expect } from "@playwright/test";

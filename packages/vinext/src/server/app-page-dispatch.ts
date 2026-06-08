@@ -1,5 +1,6 @@
 import React, { type ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
+import type { NavigationContext } from "vinext/shims/navigation";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
 import {
   _consumeRequestScopedCacheLife,
@@ -73,8 +74,9 @@ import {
   shouldSuppressLoadingBoundaries,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
+import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
-import type { AppPageSsrHandler } from "./app-page-stream.js";
+import { isAppSsrRenderResult, type AppPageSsrHandler } from "./app-page-stream.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
@@ -117,7 +119,6 @@ type AppPageDispatchIntercept<TPage = unknown> = {
   interceptLayouts?: readonly AppPageModule[] | null;
   matchedParams: AppPageParams;
   page: TPage;
-  __pageLoader?: (() => Promise<TPage>) | null;
   slotId?: string | null;
   slotKey: string;
   sourceRouteIndex: number;
@@ -168,7 +169,6 @@ type AppPageDispatchRoute = {
   unauthorized?: AppPageModule | null;
   unauthorizeds?: readonly (AppPageModule | null | undefined)[];
 };
-type Awaitable<T> = T | Promise<T>;
 
 function resolveAppPageRouteBoundaryModule(
   route: AppPageDispatchRoute,
@@ -205,6 +205,12 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   dynamicConfig?: string;
   dynamicStaleTimeSeconds?: number;
   dynamicParamsConfig?: boolean;
+  /**
+   * Hydrate a source route's lazy page/route-handler modules before reading
+   * `route.page` (e.g. for fetch-cache-mode resolution) on intercept and ISR
+   * revalidation targets obtained via `getSourceRoute`. Idempotent.
+   */
+  ensureRouteLoaded?: (route: TRoute) => unknown;
   fetchCache?: FetchCacheMode | null;
   findIntercept: (pathname: string) => AppPageDispatchIntercept | null;
   formState?: ReactFormState | null;
@@ -214,12 +220,13 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];
-  getNavigationContext: () => unknown;
-  getSourceRoute: (sourceRouteIndex: number) => Awaitable<TRoute | undefined>;
+  getNavigationContext: () => NavigationContext | null;
+  getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
   hasGenerateStaticParams: boolean;
   hasPageDefaultExport: boolean;
   hasPageModule: boolean;
   handlerStart: number;
+  htmlLimitedBots?: string;
   interceptionContext: string | null;
   isEdgeRuntime?: boolean;
   isProgressiveActionRender?: boolean;
@@ -249,6 +256,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     statusCode: number,
     opts: {
       boundaryComponent?: unknown;
+      boundaryModule?: AppPageModule | null;
       layouts?: readonly AppPageModule[];
       matchedParams: AppPageParams;
     },
@@ -375,6 +383,10 @@ function shouldReadAppPageCache(options: {
     (options.isRscRequest || !options.scriptNonce) &&
     (options.revalidateSeconds === null || options.revalidateSeconds > 0)
   );
+}
+
+function hasSearchParams(searchParams: URLSearchParams | null | undefined): boolean {
+  return searchParams !== null && searchParams !== undefined && searchParams.size > 0;
 }
 
 function buildAppPageTags(
@@ -525,6 +537,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     const cachedPageResponse = await readAppPageCacheResponse({
       cleanPathname: options.cleanPathname,
       clearRequestContext: options.clearRequestContext,
+      hasRequestSearchParams: !isForceStatic && hasSearchParams(options.searchParams),
       isEdgeRuntime: options.isEdgeRuntime,
       isRscRequest: options.isRscRequest,
       isrDebug: options.isrDebug,
@@ -559,6 +572,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           },
         });
 
+        // Hydrate the (possibly different) source route before reading its
+        // page module for fetch-cache-mode resolution.
+        await options.ensureRouteLoaded?.(revalidationTarget.route);
         return runAppPageRevalidationContext(
           {
             cleanPathname: options.cleanPathname,
@@ -593,7 +609,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             const revalidatedCapturedRscRef: { value: Promise<ArrayBuffer> | null } = {
               value: null,
             };
-            const revalidatedHtmlStream = await revalidatedSsrEntry.handleSsr(
+            const revalidatedHtmlResult = await revalidatedSsrEntry.handleSsr(
               revalidatedRscCapture.ssrStream,
               options.getNavigationContext(),
               {
@@ -605,6 +621,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 basePath: options.basePath,
                 clientTraceMetadata: options.clientTraceMetadata,
                 rootParams: options.rootParams,
+                waitForAllReady: true,
                 ...(revalidatedRscCapture.sideStream
                   ? {
                       sideStream: revalidatedRscCapture.sideStream,
@@ -613,6 +630,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                   : {}),
               },
             );
+            const revalidatedHtmlStream = isAppSsrRenderResult(revalidatedHtmlResult)
+              ? revalidatedHtmlResult.htmlStream
+              : revalidatedHtmlResult;
             const html = await readStreamAsText(revalidatedHtmlStream);
             const rscData = await getCapturedRscDataPromise(revalidatedCapturedRscRef.value);
             const cacheLife = _consumeRequestScopedCacheLife();
@@ -701,13 +721,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     AppPageDispatchInterceptOptions,
     AppPageElement
   >({
-    buildPageElement(
+    async buildPageElement(
       interceptRoute,
       interceptParams,
       interceptOpts,
       interceptSearchParams,
       interceptLayoutParamAccess,
     ) {
+      // Hydrate the intercept source route before reading its page module.
+      await options.ensureRouteLoaded?.(interceptRoute);
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
       return options.buildPageElement(
         interceptRoute,
@@ -958,11 +980,15 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
       buildRscRedirectFlightStream(options, rscOptions.digest),
     clearRequestContext: options.clearRequestContext,
     getAndClearPendingCookies,
+    serveStreamingMetadata: shouldServeStreamingMetadata(
+      options.request.headers.get("user-agent") ?? "",
+      options.htmlLimitedBots,
+    ),
     isEdgeRuntime: options.isEdgeRuntime,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {
-      const parentBoundary = resolveAppPageParentHttpAccessBoundaryModule({
+      const parentBoundaryModule = resolveAppPageParentHttpAccessBoundaryModule({
         layoutIndex,
         rootForbiddenModule: options.rootForbiddenModule,
         rootNotFoundModule: options.rootNotFoundModule,
@@ -971,16 +997,16 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
         routeNotFoundModules: options.route.notFounds,
         routeUnauthorizedModules: options.route.unauthorizeds,
         statusCode,
-      })?.default;
-      return options.renderHttpAccessFallbackPage(
-        statusCode,
-        {
-          boundaryComponent: parentBoundary,
-          layouts: options.route.layouts.slice(0, layoutIndex),
-          matchedParams: options.params,
-        },
-        null,
-      );
+      });
+      const fallbackOptions: Parameters<typeof options.renderHttpAccessFallbackPage>[1] = {
+        layouts: options.route.layouts.slice(0, layoutIndex),
+        matchedParams: options.params,
+      };
+      if (parentBoundaryModule) {
+        fallbackOptions.boundaryComponent = parentBoundaryModule.default;
+        fallbackOptions.boundaryModule = parentBoundaryModule;
+      }
+      return options.renderHttpAccessFallbackPage(statusCode, fallbackOptions, null);
     },
     request: options.request,
     specialError,
@@ -997,6 +1023,10 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
       buildRscRedirectFlightStream(options, rscOptions.digest),
     clearRequestContext: options.clearRequestContext,
     getAndClearPendingCookies,
+    serveStreamingMetadata: shouldServeStreamingMetadata(
+      options.request.headers.get("user-agent") ?? "",
+      options.htmlLimitedBots,
+    ),
     isEdgeRuntime: options.isEdgeRuntime,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
@@ -1033,22 +1063,17 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
       const useLayoutAlignedBoundary =
         boundaryLayoutIndex !== null &&
         (routeBoundaryModule === null || routeBoundaryModule === parentBoundaryModule);
-      const boundaryComponent = useLayoutAlignedBoundary
-        ? ((parentBoundaryModule as { default?: unknown } | null)?.default ?? undefined)
-        : undefined;
-      const layoutsForBoundary =
-        useLayoutAlignedBoundary && boundaryLayoutIndex !== null
-          ? options.route.layouts.slice(0, boundaryLayoutIndex + 1)
-          : undefined;
-      return options.renderHttpAccessFallbackPage(
-        statusCode,
-        {
-          boundaryComponent,
-          layouts: layoutsForBoundary,
-          matchedParams: options.params,
-        },
-        null,
-      );
+      const fallbackOptions: Parameters<typeof options.renderHttpAccessFallbackPage>[1] = {
+        matchedParams: options.params,
+      };
+      if (useLayoutAlignedBoundary && boundaryLayoutIndex !== null) {
+        fallbackOptions.layouts = options.route.layouts.slice(0, boundaryLayoutIndex + 1);
+        if (parentBoundaryModule) {
+          fallbackOptions.boundaryComponent = parentBoundaryModule.default;
+          fallbackOptions.boundaryModule = parentBoundaryModule;
+        }
+      }
+      return options.renderHttpAccessFallbackPage(statusCode, fallbackOptions, null);
     },
     request: options.request,
     specialError,

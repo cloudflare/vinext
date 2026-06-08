@@ -64,10 +64,6 @@ const appRscRouteMatchingPath = resolveEntryPath(
   "../server/app-rsc-route-matching.js",
   import.meta.url,
 );
-const appRouteModuleLoaderPath = resolveEntryPath(
-  "../server/app-route-module-loader.js",
-  import.meta.url,
-);
 const rscStreamHintsPath = resolveEntryPath("../server/rsc-stream-hints.js", import.meta.url);
 const isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 const thenableParamsShimPath = resolveEntryPath("../shims/thenable-params.js", import.meta.url);
@@ -84,6 +80,10 @@ const appRscErrorHandlerPath = resolveEntryPath(
   import.meta.url,
 );
 const appRequestContextPath = resolveEntryPath("../server/app-request-context.js", import.meta.url);
+const appRouteModuleLoaderPath = resolveEntryPath(
+  "../server/app-route-module-loader.js",
+  import.meta.url,
+);
 const appPrerenderStaticParamsPath = resolveEntryPath(
   "../server/app-prerender-static-params.js",
   import.meta.url,
@@ -94,6 +94,7 @@ const appHookWarningSuppressionPath = resolveEntryPath(
   import.meta.url,
 );
 const serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
+const appPagesBridgePath = resolveEntryPath("../server/app-pages-bridge.js", import.meta.url);
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -287,7 +288,7 @@ import {
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
 import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
-import { probeAppPage as __probeAppPage } from ${JSON.stringify(appPageProbePath)};
+import { buildAppPageProbes as __buildAppPageProbes } from ${JSON.stringify(appPageProbePath)};
 import {
   dispatchAppPage as __dispatchAppPage,
 } from ${JSON.stringify(appPageDispatchPath)};
@@ -304,11 +305,6 @@ import {
   createAppRscRouteMatcher as __createAppRscRouteMatcher,
 } from ${JSON.stringify(appRscRouteMatchingPath)};
 import {
-  createRouteModuleLoader as __createRouteModuleLoader,
-  loadRouteModules as __loadRouteModules,
-  loadRouteMatch as __loadRouteMatch,
-} from ${JSON.stringify(appRouteModuleLoaderPath)};
-import {
   appIsrHtmlKey as __isrHtmlKey,
   appIsrRscKey as __isrRscKey,
   appIsrRouteKey as __isrRouteKey,
@@ -324,7 +320,12 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
-${hasPagesDir ? `// Pages Router routes are loaded lazily from the SSR environment for internal prerender requests.` : ""}
+${
+  hasPagesDir
+    ? `// Pages Router routes are loaded lazily from the SSR environment for internal prerender requests.
+import { renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};`
+    : ""
+}
 
 // Suppress expected "Invalid hook call" dev warning when layout/page
 // components are probed outside React's render cycle. The import patches
@@ -334,10 +335,8 @@ import { suppressHookWarningAls } from ${JSON.stringify(appHookWarningSuppressio
 import { clearAppRequestContext as __clearRequestContext, setAppNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestContextPath)};
 
 __configureMemoryCacheHandler({ cacheMaxMemorySize: ${JSON.stringify(cacheMaxMemorySize)} });
-import {
-  createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver,
-  createLazyGenerateStaticParamsSource as __createLazyGenerateStaticParamsSource,
-} from ${JSON.stringify(appPrerenderStaticParamsPath)};
+import { createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver } from ${JSON.stringify(appPrerenderStaticParamsPath)};
+import { ensureAppRouteModulesLoaded as __ensureRouteLoaded } from ${JSON.stringify(appRouteModuleLoaderPath)};
 import { seedMemoryCacheFromPrerender as __seedMemoryCacheFromPrerender } from ${JSON.stringify(seedCachePath)};
 
 const __draftModeSecret = ${JSON.stringify(draftModeSecret)};
@@ -394,7 +393,7 @@ ${
     : ""
 }
 
-// Build-time layout classification dispatch. Replaced in generateBundle
+// Build-time layout classification dispatch. Replaced in renderChunk
 // with a switch statement that returns a pre-computed per-layout
 // Map<layoutIndex, "static" | "dynamic"> for each route. Until the
 // plugin patches this stub, every route falls back to the Layer 3
@@ -406,7 +405,7 @@ function __VINEXT_CLASS(routeIdx) {
 // Build-time layout classification reasons dispatch. Sibling of
 // __VINEXT_CLASS, returning a per-route Map<layoutIndex, ClassificationReason>
 // that feeds the debug channel when VINEXT_DEBUG_CLASSIFICATION is active.
-// Replaced in generateBundle with a real dispatch table; the stub returns
+// Replaced in renderChunk with a real dispatch table; the stub returns
 // null so the hot path never allocates reason maps when debug is off.
 function __VINEXT_CLASS_REASONS(routeIdx) {
   return null;
@@ -496,6 +495,8 @@ function findIntercept(pathname, sourcePathname = null) {
 }
 
 async function buildPageElements(route, params, routePath, pageRequest, layoutParamAccess) {
+  // Hydrate lazy page/route-handler modules before any synchronous read.
+  await __ensureRouteLoaded(route);
   return __buildPageElements({
     route,
     params,
@@ -565,6 +566,7 @@ ${rootParamNameEntries.join("\n")}
 
 export default __createAppRscHandler({
   basePath: __basePath,
+  ensureRouteLoaded: __ensureRouteLoaded,
   clearRequestContext() {
     __clearRequestContext();
   },
@@ -609,6 +611,7 @@ export default __createAppRscHandler({
     const _asyncRouteParams = makeThenableParams(params);
     return __dispatchAppPage({
       basePath: __basePath,
+      ensureRouteLoaded: __ensureRouteLoaded,
       clientTraceMetadata: __clientTraceMetadata,
       buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams, layoutParamAccess) {
         return buildPageElements(targetRoute, targetParams, cleanPathname, {
@@ -644,12 +647,13 @@ export default __createAppRscHandler({
       getFontStyles: _getSSRFontStyles,
       getNavigationContext: _getNavigationContext,
       getSourceRoute(sourceRouteIndex) {
-        return __loadRouteModules(routes[sourceRouteIndex]);
+        return routes[sourceRouteIndex];
       },
       hasGenerateStaticParams: __generateStaticParams.length > 0,
       hasPageDefaultExport: !!PageComponent,
       hasPageModule: !!route.page,
       handlerStart,
+      htmlLimitedBots: __htmlLimitedBots,
       interceptionContext,
       expireSeconds: __expireTime,
       formState,
@@ -681,11 +685,16 @@ export default __createAppRscHandler({
         });
       },
       probePage() {
-        return __probeAppPage({
+        return Promise.all(__buildAppPageProbes({
+          route,
           pageComponent: PageComponent,
           asyncRouteParams: _asyncRouteParams,
           searchParams,
-        });
+          intercept: findIntercept(cleanPathname, interceptionContext),
+          isRscRequest,
+          matchedParams: params,
+          makeThenableParams,
+        }));
       },
       renderErrorBoundaryPage(renderErr) {
         return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, scriptNonce, middlewareContext, { isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime) });
@@ -794,12 +803,14 @@ export default __createAppRscHandler({
     request,
     searchParams,
   }) {
-    const __actionMatch = await __loadRouteMatch(matchRoute(cleanPathname));
+    const __actionMatch = matchRoute(cleanPathname);
+    if (__actionMatch) await __ensureRouteLoaded(__actionMatch.route);
     const __actionIsEdgeRuntime = __actionMatch
       ? __isEdgeRuntime(__resolveAppPageSegmentConfig({ layouts: __actionMatch.route.layouts, page: __actionMatch.route.page }).runtime)
       : false;
     return __handleServerActionRscRequest({
       actionId,
+      ensureRouteLoaded: __ensureRouteLoaded,
       allowedOrigins: __allowedOrigins,
       basePath: __basePath,
       isEdgeRuntime: __actionIsEdgeRuntime,
@@ -855,12 +866,12 @@ export default __createAppRscHandler({
         return sourceRoute.params;
       },
       getSourceRoute(sourceRouteIndex) {
-        return __loadRouteModules(routes[sourceRouteIndex]);
+        return routes[sourceRouteIndex];
       },
       isRscRequest,
       loadServerAction,
       matchRoute(pathnameToMatch) {
-        return __loadRouteMatch(matchRoute(pathnameToMatch));
+        return matchRoute(pathnameToMatch);
       },
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,
       middlewareHeaders: middlewareContext.headers,
@@ -895,7 +906,6 @@ export default __createAppRscHandler({
   isMiddlewareProxy: ${JSON.stringify(middlewarePath ? isProxyFile(middlewarePath) : false)},
   ${hasPagesDir ? `loadPrerenderPagesRoutes: __loadPrerenderPagesRoutes,` : ""}
   makeThenableParams,
-  loadRouteModules: __loadRouteModules,
   matchRoute,
   metadataRoutes,
   middlewareModule: ${middlewarePath ? "middlewareModule" : "null"},
@@ -907,43 +917,17 @@ export default __createAppRscHandler({
   ${
     hasPagesDir
       ? `async renderPagesFallback({ isRscRequest, middlewareContext, request, url }) {
-    if (isRscRequest) return null;
-
-    const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-
-    const __pagesRequestHeaders = middlewareContext.requestHeaders
-      ? __buildRequestHeadersFromMiddlewareResponse(request.headers, middlewareContext.requestHeaders)
-      : null;
-    let __pagesRequest = request;
-    if (__pagesRequestHeaders) {
-      const __pagesRequestInit = {
-        method: request.method,
-        headers: __pagesRequestHeaders,
-      };
-      if (request.method !== "GET" && request.method !== "HEAD") {
-        __pagesRequestInit.body = request.body;
-        __pagesRequestInit.duplex = "half";
+    return __renderPagesFallback(
+      { isRscRequest, middlewareContext, request, url },
+      {
+        loadPagesEntry() {
+          return import.meta.viteRsc.loadModule("ssr", "index");
+        },
+        buildRequestHeaders: __buildRequestHeadersFromMiddlewareResponse,
+        decodePathParams: __decodePathParams,
+        applyRouteHandlerMiddlewareContext: __applyRouteHandlerMiddlewareContext,
       }
-      __pagesRequest = new Request(request.url, __pagesRequestInit);
-    }
-
-    const __pagesUrl = __decodePathParams(url.pathname) + (url.search || "");
-    const __pagesPathname = url.pathname;
-    if (__pagesPathname.startsWith("/api/") || __pagesPathname === "/api") {
-      if (typeof __pagesEntry.handleApiRoute !== "function") return null;
-      const __pagesApiResponse = await __pagesEntry.handleApiRoute(__pagesRequest, __pagesUrl);
-      return __applyRouteHandlerMiddlewareContext(__pagesApiResponse, middlewareContext);
-    }
-
-    if (typeof __pagesEntry.renderPage !== "function") return null;
-    const __pagesRes = await __pagesEntry.renderPage(
-      __pagesRequest,
-      __pagesUrl,
-      {},
-      undefined,
-      middlewareContext.requestHeaders,
     );
-    return __pagesRes.status !== 404 ? __pagesRes : null;
   },`
       : ""
   }

@@ -94,9 +94,128 @@ describe("pages page data", () => {
     expect(html).toContain('"__vinext":{"hasMiddleware":true}');
   });
 
-  it("returns an HTML 404 when getStaticPaths excludes a dynamic path", async () => {
+  it("returns a notFound signal when getStaticPaths excludes a dynamic HTML path", async () => {
     const result = await resolvePagesPageData(
       createOptions({
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: false,
+              paths: [{ params: { slug: "hello-world" } }],
+            };
+          },
+        },
+        params: { slug: "missing" },
+        query: { slug: "missing" },
+        route: { isDynamic: true },
+        routeUrl: "/posts/missing",
+      }),
+    );
+
+    expect(result).toEqual({ kind: "notFound" });
+  });
+
+  it("runs page getInitialProps with the original request URL and asPath", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        asPath: "/3",
+        createGsspReqRes() {
+          return {
+            req: { url: "/3" },
+            res: {
+              headersSent: false,
+              statusCode: 200,
+              getHeaders() {
+                return {};
+              },
+            },
+            responsePromise: Promise.resolve(new Response("short-circuit", { status: 202 })),
+          };
+        },
+        pageModule: {
+          default: Object.assign(
+            function Page() {
+              return null;
+            },
+            {
+              getInitialProps(context: { req?: { url?: string }; asPath?: string }) {
+                return {
+                  reqUrl: context.req?.url,
+                  asPath: context.asPath,
+                };
+              },
+            },
+          ),
+        },
+        routePattern: "/_error",
+        routeUrl: "/3",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { reqUrl: "/3", asPath: "/3" },
+    });
+  });
+
+  it("preserves getInitialProps this binding via component receiver", async () => {
+    const Page = Object.assign(
+      function Page() {
+        return null;
+      },
+      {
+        value: "ok",
+        getInitialProps(this: { value: string }) {
+          return { value: this.value };
+        },
+      },
+    );
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        createGsspReqRes() {
+          return {
+            req: {},
+            res: {
+              headersSent: false,
+              statusCode: 200,
+              getHeaders() {
+                return {};
+              },
+            },
+            responsePromise: Promise.resolve(new Response("short-circuit", { status: 202 })),
+          };
+        },
+        pageModule: {
+          default: Page,
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { value: "ok" },
+    });
+  });
+
+  it("returns a notFound signal when getServerSideProps returns notFound", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getServerSideProps() {
+            return { notFound: true };
+          },
+        },
+      }),
+    );
+
+    expect(result).toEqual({ kind: "notFound" });
+  });
+
+  it("returns JSON 404 envelope for data requests when getStaticPaths excludes a path", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
         pageModule: {
           async getStaticPaths() {
             return {
@@ -117,7 +236,50 @@ describe("pages page data", () => {
       throw new Error("expected response result");
     }
     expect(result.response.status).toBe(404);
-    await expect(result.response.text()).resolves.toContain("This page could not be found.");
+    expect(result.response.headers.get("content-type")).toBe("application/json");
+    await expect(result.response.text()).resolves.toBe("{}");
+  });
+
+  it("returns JSON 404 envelope for data requests when getStaticProps returns notFound", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        pageModule: {
+          async getStaticProps() {
+            return { notFound: true };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") {
+      throw new Error("expected response result");
+    }
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("content-type")).toBe("application/json");
+    await expect(result.response.text()).resolves.toBe("{}");
+  });
+
+  it("returns JSON 404 envelope for data requests when getServerSideProps returns notFound", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        pageModule: {
+          async getServerSideProps() {
+            return { notFound: true };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") {
+      throw new Error("expected response result");
+    }
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("content-type")).toBe("application/json");
+    await expect(result.response.text()).resolves.toBe("{}");
   });
 
   it("short-circuits getServerSideProps responses after res.end()", async () => {
@@ -149,6 +311,95 @@ describe("pages page data", () => {
             context.res.headersSent = true;
             return {};
           },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") {
+      throw new Error("expected response result");
+    }
+    expect(result.response.status).toBe(202);
+    await expect(result.response.text()).resolves.toBe('{"ok":true}');
+  });
+
+  it("short-circuits getServerSideProps responses when only writableEnded is set", async () => {
+    const responsePromise = Promise.resolve(
+      new Response('{"ok":true}', {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        createGsspReqRes() {
+          const res = {
+            headersSent: false,
+            writableEnded: true,
+            statusCode: 202,
+            getHeaders() {
+              return { "content-type": "application/json" };
+            },
+          };
+          return {
+            req: { method: "GET" },
+            res,
+            responsePromise,
+          };
+        },
+        pageModule: {
+          async getServerSideProps() {
+            return {};
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") {
+      throw new Error("expected response result");
+    }
+    expect(result.response.status).toBe(202);
+    await expect(result.response.text()).resolves.toBe('{"ok":true}');
+  });
+
+  it("short-circuits getInitialProps responses when only writableEnded is set", async () => {
+    const responsePromise = Promise.resolve(
+      new Response('{"ok":true}', {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        createGsspReqRes() {
+          const res = {
+            headersSent: false,
+            writableEnded: true,
+            statusCode: 202,
+            getHeaders() {
+              return { "content-type": "application/json" };
+            },
+          };
+          return {
+            req: {},
+            res,
+            responsePromise,
+          };
+        },
+        pageModule: {
+          default: Object.assign(
+            function Page() {
+              return null;
+            },
+            {
+              getInitialProps() {
+                return {};
+              },
+            },
+          ),
         },
       }),
     );
@@ -611,5 +862,25 @@ describe("pages page data", () => {
     );
 
     expect(received).toBeNull();
+  });
+
+  it("isResponseSent detects both headersSent and writableEnded", async () => {
+    const { isResponseSent } =
+      await import("../packages/vinext/src/server/pages-get-initial-props.js");
+
+    expect(isResponseSent({ headersSent: true })).toBe(true);
+    expect(isResponseSent({ writableEnded: true })).toBe(true);
+    expect(isResponseSent({ headersSent: true, writableEnded: true })).toBe(true);
+    expect(isResponseSent({ headersSent: false })).toBe(false);
+    expect(isResponseSent({ writableEnded: false })).toBe(false);
+    expect(isResponseSent({})).toBe(false);
+    expect(isResponseSent(undefined)).toBe(false);
+    expect(isResponseSent(null)).toBe(false);
+    // The prod PagesReqResResponse type only declares headersSent; the helper
+    // must not throw or treat the absent writableEnded as truthy.
+    const prodShaped: { headersSent: boolean } = { headersSent: false };
+    expect(isResponseSent(prodShaped)).toBe(false);
+    prodShaped.headersSent = true;
+    expect(isResponseSent(prodShaped)).toBe(true);
   });
 });

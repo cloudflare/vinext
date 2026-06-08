@@ -87,21 +87,17 @@ describe("App prerender endpoint helpers", () => {
 
   it("treats lazy missing page generateStaticParams exports as absent", async () => {
     const layoutGenerateStaticParams = vi.fn(() => [{ category: "docs" }]);
-    const missingPageGenerateStaticParams = vi.fn(() =>
-      Symbol.for("vinext.generateStaticParams.missing"),
-    );
+    const loadMissingPageModule = vi.fn(async () => ({ default: () => null }));
     const resolveStaticParams = createAppPrerenderStaticParamsResolver([
       layoutGenerateStaticParams,
-      missingPageGenerateStaticParams,
+      { load: loadMissingPageModule },
     ]);
 
     await expect(resolveStaticParams?.({ params: {} })).resolves.toEqual([{ category: "docs" }]);
-    expect(missingPageGenerateStaticParams).toHaveBeenCalledWith({
-      params: { category: "docs" },
-    });
+    expect(loadMissingPageModule).toHaveBeenCalledTimes(1);
 
     const resolveMissingOnly = createAppPrerenderStaticParamsResolver([
-      missingPageGenerateStaticParams,
+      { load: loadMissingPageModule },
     ]);
     await expect(resolveMissingOnly?.({ params: {} })).resolves.toBeNull();
   });

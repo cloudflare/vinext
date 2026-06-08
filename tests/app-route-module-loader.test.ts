@@ -1,148 +1,117 @@
-import { describe, expect, it, vi } from "vite-plus/test";
-import { createLazyGenerateStaticParamsSource } from "../packages/vinext/src/server/app-prerender-static-params.js";
+import { describe, expect, it, vi } from "vitest";
 import {
-  createRouteModuleLoader,
-  loadRouteMatch,
-  loadRouteModules,
+  ensureAppRouteModulesLoaded,
+  type LazyLoadableRoute,
 } from "../packages/vinext/src/server/app-route-module-loader.js";
 
-type RouteStub = {
-  page: unknown;
-  __pageLoader?: (() => Promise<unknown>) | null;
-};
-
-const MISSING_GENERATE_STATIC_PARAMS = Symbol.for("vinext.generateStaticParams.missing");
-
-describe("createRouteModuleLoader", () => {
-  it("calls the underlying loader once across multiple invocations", async () => {
+describe("ensureAppRouteModulesLoaded", () => {
+  it("returns the route synchronously when there are no lazy thunks (eager route)", () => {
     const pageModule = { default: () => null };
-    const loadModule = vi.fn(() => Promise.resolve(pageModule));
+    const route: LazyLoadableRoute = { page: pageModule };
 
-    const loader = createRouteModuleLoader(loadModule);
+    const result = ensureAppRouteModulesLoaded(route);
 
-    const [first, second, third] = await Promise.all([loader(), loader(), loader()]);
-
-    expect(first).toBe(pageModule);
-    expect(second).toBe(pageModule);
-    expect(third).toBe(pageModule);
-    expect(loadModule).toHaveBeenCalledTimes(1);
+    // No promise — eager routes resolve synchronously.
+    expect(result).toBe(route);
+    expect(route.page).toBe(pageModule);
+    expect(route.__loaded).toBe(true);
   });
 
-  it("propagates rejections from the underlying loader", async () => {
-    const error = new Error("chunk missing");
-    const loader = createRouteModuleLoader(() => Promise.reject(error));
+  it("hydrates a lazy page module onto route.page", async () => {
+    const pageModule = { default: () => null, generateMetadata: () => ({}) };
+    const __loadPage = vi.fn(async () => pageModule);
+    const route: LazyLoadableRoute = { page: null, __loadPage };
 
-    await expect(loader()).rejects.toBe(error);
+    const loaded = await ensureAppRouteModulesLoaded(route);
+
+    expect(loaded).toBe(route);
+    expect(route.page).toBe(pageModule);
+    expect(route.routeHandler).toBeUndefined();
+    expect(__loadPage).toHaveBeenCalledTimes(1);
   });
-});
 
-describe("loadRouteModules", () => {
-  it("awaits the page loader and assigns the result to route.page", async () => {
+  it("hydrates a lazy route-handler module onto route.routeHandler", async () => {
+    const handlerModule = { GET: () => new Response("ok") };
+    const __loadRouteHandler = vi.fn(async () => handlerModule);
+    const route: LazyLoadableRoute = { routeHandler: null, __loadRouteHandler };
+
+    await ensureAppRouteModulesLoaded(route);
+
+    expect(route.routeHandler).toBe(handlerModule);
+  });
+
+  it("loads both page and route handler in parallel", async () => {
     const pageModule = { default: () => null };
-    const route: RouteStub = {
+    const handlerModule = { POST: () => new Response() };
+    const route: LazyLoadableRoute = {
       page: null,
-      __pageLoader: createRouteModuleLoader(() => Promise.resolve(pageModule)),
+      routeHandler: null,
+      __loadPage: async () => pageModule,
+      __loadRouteHandler: async () => handlerModule,
     };
 
-    await loadRouteModules(route);
+    await ensureAppRouteModulesLoaded(route);
 
+    expect(route.page).toBe(pageModule);
+    expect(route.routeHandler).toBe(handlerModule);
+  });
+
+  it("is idempotent: a second call does not re-import", async () => {
+    const pageModule = { default: () => null };
+    const __loadPage = vi.fn(async () => pageModule);
+    const route: LazyLoadableRoute = { page: null, __loadPage };
+
+    await ensureAppRouteModulesLoaded(route);
+    const second = ensureAppRouteModulesLoaded(route);
+
+    // Already loaded → returns the route synchronously (not a promise).
+    expect(second).toBe(route);
+    expect(__loadPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("dedups concurrent calls into a single import", async () => {
+    let resolveImport: (mod: unknown) => void = () => {};
+    const importPromise = new Promise((resolve) => {
+      resolveImport = resolve;
+    });
+    const pageModule = { default: () => null };
+    const __loadPage = vi.fn(() => importPromise);
+    const route: LazyLoadableRoute = { page: null, __loadPage };
+
+    const a = ensureAppRouteModulesLoaded(route);
+    const b = ensureAppRouteModulesLoaded(route);
+
+    // Both callers observe the same in-flight promise.
+    expect(a).toBe(b);
+    resolveImport(pageModule);
+    await Promise.all([a, b]);
+
+    expect(__loadPage).toHaveBeenCalledTimes(1);
     expect(route.page).toBe(pageModule);
   });
 
-  it("dedups concurrent loadRouteModules calls for the same route", async () => {
+  it("does not cache a failed import: re-throws and retries on the next call", async () => {
     const pageModule = { default: () => null };
-    const loadModule = vi.fn(() => Promise.resolve(pageModule));
-    const route: RouteStub = {
-      page: null,
-      __pageLoader: createRouteModuleLoader(loadModule),
-    };
+    const __loadPage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("chunk load failed"))
+      .mockResolvedValueOnce(pageModule);
+    const route: LazyLoadableRoute = { page: null, __loadPage };
 
-    await Promise.all([loadRouteModules(route), loadRouteModules(route), loadRouteModules(route)]);
+    // First call rejects and the rejection propagates to the caller.
+    await expect(ensureAppRouteModulesLoaded(route)).rejects.toThrow("chunk load failed");
+    // The failure is not stuck: state is reset for a retry.
+    expect(route.__loaded).toBeFalsy();
+    expect(route.__loading).toBeNull();
 
-    expect(loadModule).toHaveBeenCalledTimes(1);
+    // Next call retries the import and succeeds.
+    await ensureAppRouteModulesLoaded(route);
     expect(route.page).toBe(pageModule);
+    expect(__loadPage).toHaveBeenCalledTimes(2);
   });
 
-  it("is a no-op on subsequent calls once the route is loaded", async () => {
-    const pageModule = { default: () => null };
-    const loadModule = vi.fn(() => Promise.resolve(pageModule));
-    const route: RouteStub = {
-      page: null,
-      __pageLoader: createRouteModuleLoader(loadModule),
-    };
-
-    await loadRouteModules(route);
-    await loadRouteModules(route);
-
-    expect(loadModule).toHaveBeenCalledTimes(1);
-  });
-
-  it("returns the route unchanged when it has no __pageLoader", async () => {
-    const route: RouteStub = { page: null };
-
-    await expect(loadRouteModules(route)).resolves.toBe(route);
-  });
-
-  it("returns the route unchanged when __pageLoader is not a function", async () => {
-    const route = { page: null, __pageLoader: "not-a-function" };
-
-    await expect(loadRouteModules(route)).resolves.toBe(route);
-  });
-
-  it("leaves route.page untouched if the route has no `page` key", async () => {
-    const pageModule = { default: () => null };
-    const route = { __pageLoader: createRouteModuleLoader(() => Promise.resolve(pageModule)) };
-
-    await loadRouteModules(route);
-
-    expect("page" in route).toBe(false);
-  });
-});
-
-describe("loadRouteMatch", () => {
-  it("returns null when the match is null", async () => {
-    await expect(loadRouteMatch(null)).resolves.toBeNull();
-  });
-
-  it("loads the matched route and returns the match", async () => {
-    const pageModule = { default: () => null };
-    const route: RouteStub = {
-      page: null,
-      __pageLoader: createRouteModuleLoader(() => Promise.resolve(pageModule)),
-    };
-    const match = { route };
-
-    const result = await loadRouteMatch(match);
-
-    expect(result).toBe(match);
-    expect(route.page).toBe(pageModule);
-  });
-});
-
-describe("createLazyGenerateStaticParamsSource", () => {
-  it("delegates to the loaded module's generateStaticParams", async () => {
-    const generateStaticParams = vi.fn(() => [{ slug: "hello" }]);
-    const source = createLazyGenerateStaticParamsSource(async () => ({ generateStaticParams }));
-
-    await expect(source({ params: { category: "docs" } })).resolves.toEqual([{ slug: "hello" }]);
-    expect(generateStaticParams).toHaveBeenCalledWith({ params: { category: "docs" } });
-  });
-
-  it("returns the missing sentinel when the loaded module is null", async () => {
-    const source = createLazyGenerateStaticParamsSource(async () => null);
-
-    await expect(source({ params: {} })).resolves.toBe(MISSING_GENERATE_STATIC_PARAMS);
-  });
-
-  it("returns the missing sentinel when the module has no generateStaticParams export", async () => {
-    const source = createLazyGenerateStaticParamsSource(async () => ({ default: () => null }));
-
-    await expect(source({ params: {} })).resolves.toBe(MISSING_GENERATE_STATIC_PARAMS);
-  });
-
-  it("returns the missing sentinel when generateStaticParams is not a function", async () => {
-    const source = createLazyGenerateStaticParamsSource(async () => ({ generateStaticParams: 42 }));
-
-    await expect(source({ params: {} })).resolves.toBe(MISSING_GENERATE_STATIC_PARAMS);
+  it("tolerates null / undefined routes", () => {
+    expect(ensureAppRouteModulesLoaded(null)).toBeNull();
+    expect(ensureAppRouteModulesLoaded(undefined)).toBeUndefined();
   });
 });

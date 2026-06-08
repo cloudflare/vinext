@@ -13,6 +13,17 @@ function isBuiltAppHandler(value: unknown): value is BuiltAppHandler {
   return typeof value === "function";
 }
 
+/** Concatenate every `.js` file under `dir` (recursively) for substring checks. */
+function readAllJs(dir: string): string {
+  let out = "";
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out += readAllJs(full);
+    else if (entry.name.endsWith(".js")) out += fs.readFileSync(full, "utf-8");
+  }
+  return out;
+}
+
 describe("App Router Production build", () => {
   const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
 
@@ -47,6 +58,114 @@ describe("App Router Production build", () => {
 
     // Asset manifest should be generated
     expect(fs.existsSync(path.join(outDir, "server", "__vite_rsc_assets_manifest.js"))).toBe(true);
+
+    // BUILD_ID must be written to dist/server so post-build tools (TPR,
+    // seed-cache) and the e2e deploy harness can read the build identifier
+    // without parsing the (minified) server bundle. Regression guard: the
+    // vinext:build-id plugin previously used closeBundle, which does not fire
+    // during the multi-environment buildApp() pipeline, so the file was
+    // silently never written for pure App Router apps.
+    const buildIdPath = path.join(outDir, "server", "BUILD_ID");
+    expect(fs.existsSync(buildIdPath)).toBe(true);
+    expect(fs.readFileSync(buildIdPath, "utf-8").trim().length).toBeGreaterThan(0);
+  }, 30000);
+
+  it("adopts __VINEXT_SHARED_BUILD_ID so the runtime and BUILD_ID file agree", async () => {
+    // The `vinext build` CLI resolves the build ID once and shares it via
+    // __VINEXT_SHARED_BUILD_ID so that every plugin instance in a build (App
+    // Router buildApp + the separate hybrid Pages Router vite.build) uses the
+    // same ID. Without it, each instance mints its own random UUID and the
+    // runtime buildId, prerender manifest, and dist/server/BUILD_ID diverge.
+    const sharedBuildId = "shared-test-build-id-1234";
+    const previous = process.env.__VINEXT_SHARED_BUILD_ID;
+    process.env.__VINEXT_SHARED_BUILD_ID = sharedBuildId;
+    try {
+      const builder = await createBuilder({
+        root: APP_FIXTURE_DIR,
+        configFile: false,
+        plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      // The emitted BUILD_ID file uses the shared ID.
+      expect(fs.readFileSync(path.join(outDir, "server", "BUILD_ID"), "utf-8").trim()).toBe(
+        sharedBuildId,
+      );
+      // The shared ID is baked into the App Router runtime bundle (the value
+      // process.env.__VINEXT_BUILD_ID is defined as), so cache keys and data
+      // routes line up with the BUILD_ID file.
+      const rscEntry = fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8");
+      expect(rscEntry).toContain(sharedBuildId);
+    } finally {
+      if (previous === undefined) delete process.env.__VINEXT_SHARED_BUILD_ID;
+      else process.env.__VINEXT_SHARED_BUILD_ID = previous;
+    }
+  }, 30000);
+
+  it("adopts the shared build ID even when generateBuildId is set", async () => {
+    // The shared ID must win over a per-instance generateBuildId, because the
+    // CLI already resolved it through the user's generateBuildId once. A
+    // non-deterministic generateBuildId (e.g. returning null → a fresh random
+    // UUID per instance, per resolveBuildId()) would otherwise re-diverge across
+    // the buildApp() and hybrid Pages vite.build() instances — the exact bug
+    // this coordination exists to prevent.
+    const sharedBuildId = "shared-wins-over-generate-5678";
+    const previous = process.env.__VINEXT_SHARED_BUILD_ID;
+    process.env.__VINEXT_SHARED_BUILD_ID = sharedBuildId;
+    try {
+      const builder = await createBuilder({
+        root: APP_FIXTURE_DIR,
+        configFile: false,
+        // generateBuildId returning null falls back to a random UUID per
+        // instance; the shared ID must still be adopted.
+        plugins: [vinext({ appDir: APP_FIXTURE_DIR, nextConfig: { generateBuildId: () => null } })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      expect(fs.readFileSync(path.join(outDir, "server", "BUILD_ID"), "utf-8").trim()).toBe(
+        sharedBuildId,
+      );
+      const rscEntry = fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8");
+      expect(rscEntry).toContain(sharedBuildId);
+    } finally {
+      if (previous === undefined) delete process.env.__VINEXT_SHARED_BUILD_ID;
+      else process.env.__VINEXT_SHARED_BUILD_ID = previous;
+    }
+  }, 30000);
+
+  it("adopts __VINEXT_SHARED_RSC_COMPATIBILITY_ID across the App Router build", async () => {
+    // Companion to the build-ID coordination: createRscCompatibilityId() mints a
+    // random UUID per plugin instance when no deploymentId is pinned, so a hybrid
+    // app+pages build would otherwise bake two different RSC-compat tokens. The
+    // CLI resolves it once and shares it via __VINEXT_SHARED_RSC_COMPATIBILITY_ID;
+    // the plugin always adopts it when set. Both the App Router server bundle and
+    // the client bundle (which compares its baked token against the server's
+    // X-Vinext-RSC-Compatibility-Id header) must carry the shared value.
+    const sharedCompatId = "shared-rsc-compat-id-9012";
+    const previous = process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID;
+    process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID = sharedCompatId;
+    try {
+      const builder = await createBuilder({
+        root: APP_FIXTURE_DIR,
+        configFile: false,
+        plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      // The compat token is baked via Vite `define`; depending on chunking it
+      // can land in the RSC entry or a shared server/client chunk, so scan the
+      // whole server and client output trees. Both sides must carry the same
+      // adopted token — that is what lets the client reject mismatched RSC
+      // payloads (the X-Vinext-RSC-Compatibility-Id header check).
+      expect(readAllJs(path.join(outDir, "server"))).toContain(sharedCompatId);
+      expect(readAllJs(path.join(outDir, "client"))).toContain(sharedCompatId);
+    } finally {
+      if (previous === undefined) delete process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID;
+      else process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID = previous;
+    }
   }, 30000);
 
   it("builds proxy.ts that reads __filename before redirecting", async () => {

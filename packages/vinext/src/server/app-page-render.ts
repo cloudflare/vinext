@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
+import type { NavigationContext } from "vinext/shims/navigation";
 import type { CachedAppPageValue } from "vinext/shims/cache";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
@@ -114,7 +115,7 @@ type RenderAppPageLifecycleOptions = {
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];
-  getNavigationContext: () => unknown;
+  getNavigationContext: () => NavigationContext | null;
   getPageTags: () => string[];
   getRequestCacheLife: () => AppPageRequestCacheLife | null;
   peekRequestCacheLife?: () => AppPageRequestCacheLife | null;
@@ -840,9 +841,13 @@ export async function renderAppPageLifecycle(
   if (htmlRender.response) {
     return htmlRender.response;
   }
-  const htmlStream = htmlRender.htmlStream;
+  let htmlStream = htmlRender.htmlStream;
   if (!htmlStream) {
     throw new Error("[vinext] Expected an HTML stream when no fallback response was returned");
+  }
+
+  if (options.isPrerender === true) {
+    await htmlRender.metadataReady;
   }
 
   // Routes with a route-level Suspense boundary (loading.tsx) skip the page
@@ -884,7 +889,7 @@ export async function renderAppPageLifecycle(
 
   // Eagerly read values that must be captured before the stream is consumed.
   if (options.isPrerender === true) {
-    await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
+    await settleCapturedRscRenderForCacheMetadata(htmlRender.capturedRscData);
     ({ expireSeconds, revalidateSeconds } = applyRequestCacheLife({
       expireSeconds,
       requestCacheLife: readRequestCacheLifeForPrerender(options),

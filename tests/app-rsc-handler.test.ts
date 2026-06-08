@@ -1,8 +1,11 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   computeRscCacheBustingSearchParam,
   createRscRequestHeaders,
   createRscRequestUrl,
+  VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
@@ -600,6 +603,79 @@ describe("createAppRscHandler", () => {
     );
     expect(middleware).not.toHaveBeenCalled();
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("hides internal RSC cache-busting params from middleware nextUrl", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/navigation/middleware.js
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/navigation/middleware.js
+    const middleware = vi.fn(
+      (_: { nextUrl: URL }) => new Response(null, { headers: { "x-middleware-next": "1" } }),
+    );
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+    const rscUrl = await createRscRequestUrl("/docs/about?tab=latest", headers);
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      middlewareModule: { default: middleware },
+    });
+
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(middleware).toHaveBeenCalledTimes(1);
+    const middlewareRequest = middleware.mock.calls[0]?.[0];
+    expect(middlewareRequest?.nextUrl.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)).toBe(
+      false,
+    );
+    expect(middlewareRequest?.nextUrl.search).toBe("?tab=latest");
+    expect(dispatchMatchedPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides internal RSC cache-busting params from external rewrite proxies", async () => {
+    // The fetch-cache instrumentation captures the real `fetch` at module load
+    // and reinstalls a patched copy during request handling, so a global
+    // `fetch` mock can't intercept the proxied request. Use a real loopback
+    // server as the external rewrite destination and record the URL it
+    // receives — that exercises the full handler -> applyRewrite ->
+    // proxyExternalRequest path without fighting the instrumentation.
+    const receivedUrls: string[] = [];
+    const server = createServer((req, res) => {
+      receivedUrls.push(req.url ?? "");
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("upstream");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+    const upstreamBase = `http://127.0.0.1:${address.port}`;
+
+    try {
+      const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+      const rscUrl = await createRscRequestUrl("/docs/proxy?tab=latest", headers);
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [{ source: "/proxy", destination: `${upstreamBase}/proxy` }],
+          afterFiles: [],
+          fallback: [],
+        },
+        matchRoute: () => null,
+      });
+
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(receivedUrls).toHaveLength(1);
+      const forwardedUrl = new URL(`${upstreamBase}${receivedUrls[0]}`);
+      expect(forwardedUrl.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)).toBe(false);
+      expect(forwardedUrl.searchParams.get("tab")).toBe("latest");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("does not render RSC payloads at HTML URLs marked only by RSC headers", async () => {

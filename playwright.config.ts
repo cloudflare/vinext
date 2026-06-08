@@ -9,6 +9,18 @@ const appRouterServer = {
   timeout: 30_000,
 };
 
+// Dedicated server for BFCache/cacheComponents coverage. cacheComponents is an
+// opt-in semantic mode that retains inactive route trees as hidden Activity DOM.
+// Running it on the shared app-basic fixture would change the DOM contract for
+// every unrelated app-router test, so it gets its own isolated fixture instead.
+const appRouterBfcacheServer = {
+  command: "npx vp dev --port 4183",
+  cwd: "./tests/fixtures/app-bfcache",
+  port: 4183,
+  reuseExistingServer: !process.env.CI,
+  timeout: 30_000,
+};
+
 /**
  * Each project maps to a single webServer. Some browser-specific projects share
  * a server with the base project, and shared servers are de-duped by port.
@@ -51,6 +63,11 @@ const projectServers = {
     testMatch: [appRouterBrowserSpecificTests],
     use: { browserName: "webkit" as const },
     server: null,
+  },
+  "app-router-bfcache": {
+    testDir: "./tests/e2e/app-router-bfcache",
+    use: { baseURL: "http://localhost:4183" },
+    server: appRouterBfcacheServer,
   },
   "cloudflare-pages-router": {
     testDir: "./tests/e2e",

@@ -20,10 +20,12 @@ import type { MetadataFileRoute } from "./metadata-routes.js";
  * `APP_PAGE_METADATA_ERROR_MARKER` symbol. The marker lets downstream special-
  * error handling distinguish a `generateMetadata()` redirect/notFound from a
  * page-component redirect/notFound, which matters because metadata is
- * suspended/streamed in Next.js: its redirects ride inside the flight payload
- * with a 200 status code even for document SSR, whereas page redirects still
- * emit a 307 for SSR. See https://github.com/cloudflare/vinext/issues/1347
- * and Next.js test/e2e/app-dir/metadata-navigation.
+ * suspended/streamed in Next.js. Its redirects no longer become a plain
+ * HTTP 307: RSC navigation rides inside the flight payload (200), streaming
+ * document SSR gets an HTML refresh meta tag (200), and html-limited bots
+ * get a blocking 307 — whereas page redirects still emit a 307 for SSR.
+ * See https://github.com/cloudflare/vinext/issues/1347
+ * and Next.js test/e2e/app-dir/metadata-streaming.
  */
 async function resolveModuleMetadata(
   ...args: Parameters<typeof _resolveModuleMetadata>
@@ -35,7 +37,7 @@ async function resolveModuleMetadata(
   }
 }
 
-type AppPageSearchParams = Record<string, string | string[]>;
+export type AppPageSearchParams = Record<string, string | string[]>;
 
 type AppPageHeadModule = Record<string, unknown>;
 

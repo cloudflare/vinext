@@ -533,8 +533,10 @@ import {
   isOpenRedirectShaped,
   normalizeTrailingSlash,
 } from "vinext/server/request-pipeline";
+import { mergeHeaders } from "vinext/server/worker-utils";
 import { notFoundStaticAssetResponse } from "vinext/server/http-error-responses";
 import { assetPrefixPathname, isNextStaticPath } from "vinext/utils/asset-prefix";
+import { hasBasePath, stripBasePath } from "vinext/utils/base-path";
 import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "vinext/server/pages-i18n";
 import { mergeRewriteQuery } from "vinext/utils/query";
 
@@ -573,16 +575,6 @@ const imageConfig: ImageConfig | undefined = vinextConfig?.images ? {
   contentDispositionType: vinextConfig.images.contentDispositionType,
   contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
 } : undefined;
-
-function hasBasePath(pathname: string, basePath: string): boolean {
-  if (!basePath) return false;
-  return pathname === basePath || pathname.startsWith(basePath + "/");
-}
-
-function stripBasePath(pathname: string, basePath: string): string {
-  if (!hasBasePath(pathname, basePath)) return pathname;
-  return pathname.slice(basePath.length) || "/";
-}
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -945,90 +937,6 @@ export default {
   },
 };
 
-/**
- * Merge middleware/config headers into a response.
- * Response headers take precedence over middleware headers for all headers
- * except Set-Cookie, which is additive (both middleware and response cookies
- * are preserved). Matches the behavior in prod-server.ts. Uses getSetCookie()
- * to preserve multiple Set-Cookie values. Keep this in sync with
- * prod-server.ts and server/worker-utils.ts.
- */
-function mergeHeaders(
-  response: Response,
-  extraHeaders: Record<string, string | string[]>,
-  statusOverride?: number,
-): Response {
-  const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
-  function isVinextStreamedHtmlResponse(response: Response): boolean {
-    return response.__vinextStreamedHtmlResponse === true;
-  }
-  function isContentLengthHeader(name: string): boolean {
-    return name.toLowerCase() === "content-length";
-  }
-  function cancelResponseBody(response: Response): void {
-    const body = response.body;
-    if (!body || body.locked) return;
-    void body.cancel().catch(() => {
-      /* ignore cancellation failures on discarded bodies */
-    });
-  }
-
-  const status = statusOverride ?? response.status;
-  const merged = new Headers();
-  // Middleware/config headers go in first (lower precedence)
-  for (const [k, v] of Object.entries(extraHeaders)) {
-    if (isContentLengthHeader(k)) continue;
-    if (Array.isArray(v)) {
-      for (const item of v) merged.append(k, item);
-    } else {
-      merged.set(k, v);
-    }
-  }
-  // Response headers overlay them (higher precedence), except Set-Cookie
-  // which is additive (both middleware and response cookies should be sent).
-  response.headers.forEach((v, k) => {
-    if (k === "set-cookie") return;
-    merged.set(k, v);
-  });
-  const responseCookies = response.headers.getSetCookie?.() ?? [];
-  for (const cookie of responseCookies) merged.append("set-cookie", cookie);
-
-  const shouldDropBody = NO_BODY_RESPONSE_STATUSES.has(status);
-  const shouldStripStreamLength =
-    isVinextStreamedHtmlResponse(response) && merged.has("content-length");
-
-  if (
-    !Object.keys(extraHeaders).some((key) => !isContentLengthHeader(key)) &&
-    statusOverride === undefined &&
-    !shouldDropBody &&
-    !shouldStripStreamLength
-  ) {
-    return response;
-  }
-
-  if (shouldDropBody) {
-    cancelResponseBody(response);
-    merged.delete("content-encoding");
-    merged.delete("content-length");
-    merged.delete("content-type");
-    merged.delete("transfer-encoding");
-    return new Response(null, {
-      status,
-      statusText: status === response.status ? response.statusText : undefined,
-      headers: merged,
-    });
-  }
-
-  if (shouldStripStreamLength) {
-    merged.delete("content-length");
-  }
-
-  return new Response(response.body, {
-    status,
-    statusText: status === response.status ? response.statusText : undefined,
-    headers: merged,
-  });
-}
 `;
 }
 
@@ -1374,7 +1282,40 @@ function writeGeneratedFiles(files: GeneratedFile[]): void {
 
 // ─── Build ───────────────────────────────────────────────────────────────────
 
-async function runBuild(info: ProjectInfo): Promise<void> {
+/**
+ * Run a function with `process.env.CLOUDFLARE_ENV` set to the given value,
+ * restoring the previous state (whether set or absent) after the function
+ * resolves or throws.
+ *
+ * The `@cloudflare/vite-plugin` reads `CLOUDFLARE_ENV` from `process.env` to
+ * drive the multi-environment merge applied to the emitted `wrangler.json`.
+ * Without this propagation the `--env <name>` CLI flag is silently ignored at
+ * build time and the top-level config is emitted regardless. See issue #1210.
+ *
+ * Passing `undefined` is a no-op; the callback runs with `process.env` untouched.
+ */
+export async function withCloudflareEnv<T>(
+  env: string | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (env === undefined || env === "") {
+    return fn();
+  }
+  const hadPrev = "CLOUDFLARE_ENV" in process.env;
+  const prev = process.env.CLOUDFLARE_ENV;
+  process.env.CLOUDFLARE_ENV = env;
+  try {
+    return await fn();
+  } finally {
+    if (hadPrev) {
+      process.env.CLOUDFLARE_ENV = prev;
+    } else {
+      delete process.env.CLOUDFLARE_ENV;
+    }
+  }
+}
+
+async function runBuild(info: ProjectInfo, env: string | undefined): Promise<void> {
   console.log("\n  Building for Cloudflare Workers...\n");
 
   // Resolve Vite from the project root so that symlinked vinext installs
@@ -1401,8 +1342,10 @@ async function runBuild(info: ProjectInfo): Promise<void> {
   // .wrangler/deploy/config.json. A plain build() call bypasses cloudflare()'s
   // config() hook's builder.buildApp override, so writeBundle never fires on
   // the correct environment name.
-  const builder = await createBuilder({ root: info.root });
-  await builder.buildApp();
+  await withCloudflareEnv(env, async () => {
+    const builder = await createBuilder({ root: info.root });
+    await builder.buildApp();
+  });
 }
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────
@@ -1590,7 +1533,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
 
   // Step 5: Build
   if (!options.skipBuild) {
-    await runBuild(info);
+    // Resolve the env name the same way buildWranglerDeployArgs does, so the
+    // build emits a wrangler.json that matches the env we'll deploy with.
+    const buildEnv = options.env || (options.preview ? "preview" : undefined);
+    await runBuild(info, buildEnv);
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }

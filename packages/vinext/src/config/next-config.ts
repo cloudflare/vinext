@@ -290,7 +290,7 @@ export type NextConfig = {
   [key: string]: unknown;
 };
 
-export type NextConfigFactory = (
+type NextConfigFactory = (
   phase: string,
   opts: { defaultConfig: NextConfig },
 ) => NextConfig | Promise<NextConfig>;
@@ -699,6 +699,9 @@ function cjsGlobalsInjectorPlugin(configPath: string): {
       const filenameLiteral = JSON.stringify(normalizedTarget);
       const dirnameLiteral = JSON.stringify(dirname);
       const requireBaseLiteral = JSON.stringify(path.join(dirname, "package.json"));
+      const hasOwnDirname = /\b(?:const|let|var)\s+__dirname\b/.test(code);
+      const hasOwnFilename = /\b(?:const|let|var)\s+__filename\b/.test(code);
+      const hasOwnRequire = /\b(?:const|let|var)\s+require\b/.test(code);
 
       // Only wire up the wrapper `module` object — and the corresponding
       // named export read by unwrapConfig — when the source statically looks
@@ -716,10 +719,12 @@ function cjsGlobalsInjectorPlugin(configPath: string): {
       // Preamble runs after ESM imports are hoisted; the const bindings shadow
       // any global lookups the source would otherwise perform.
       const preamble =
-        `import { createRequire as __vinextCreateRequire } from "node:module";\n` +
-        `const __filename = ${filenameLiteral};\n` +
-        `const __dirname = ${dirnameLiteral};\n` +
-        `const require = __vinextCreateRequire(${requireBaseLiteral});\n` +
+        (hasOwnRequire
+          ? ""
+          : `import { createRequire as __vinextCreateRequire } from "node:module";\n`) +
+        (hasOwnFilename ? "" : `const __filename = ${filenameLiteral};\n`) +
+        (hasOwnDirname ? "" : `const __dirname = ${dirnameLiteral};\n`) +
+        (hasOwnRequire ? "" : `const require = __vinextCreateRequire(${requireBaseLiteral});\n`) +
         moduleLines;
 
       return {
@@ -1023,6 +1028,27 @@ function resolveDeploymentId(configDeploymentId: unknown): string | undefined {
   }
 
   return deploymentId;
+}
+
+/**
+ * Resolve the App Router RSC compatibility identity for a build.
+ *
+ * This token is baked into the client bundle and echoed by the server in the
+ * `X-Vinext-RSC-Compatibility-Id` response header; browser navigation rejects
+ * RSC payloads whose token differs (deploy skew) without exposing the raw
+ * build ID. When the user pins a `deploymentId` we reuse it (already stable
+ * across plugin instances); otherwise we mint a random UUID.
+ *
+ * NOTE: like `resolveBuildId`, this is non-deterministic in the no-deploymentId
+ * case, so a single `vinext build` that instantiates the plugin more than once
+ * (App Router `buildApp()` + the hybrid Pages Router `vite.build()`) must
+ * resolve it once and share it — see `__VINEXT_SHARED_RSC_COMPATIBILITY_ID`.
+ */
+export function createRscCompatibilityId(
+  nextConfig: Pick<ResolvedNextConfig, "deploymentId">,
+): string {
+  if (nextConfig.deploymentId) return nextConfig.deploymentId;
+  return randomUUID();
 }
 
 /**

@@ -29,7 +29,7 @@ export type OverlayCodeFrame = {
   lines: OverlayCodeFrameLine[];
 };
 
-export type OverlayCodeFrameLine = {
+type OverlayCodeFrameLine = {
   line: number;
   text: string;
   isErrorLine: boolean;

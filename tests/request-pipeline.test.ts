@@ -3,6 +3,7 @@ import {
   applyConfigHeadersToHeaderRecord,
   applyConfigHeadersToResponse,
   cloneRequestWithHeaders,
+  cloneRequestWithUrl,
   createStaticFileSignal,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
@@ -926,5 +927,59 @@ describe("cloneRequestWithHeaders", () => {
     expect(cloned.method).toBe("GET");
     expect(cloned.body).toBeNull();
     expect(cloned.headers.get("accept")).toBe("text/html");
+  });
+});
+
+// ── cloneRequestWithUrl ──────────────────────────────────────────────────
+//
+// Used to hide the internal `_rsc` cache-busting query from userland middleware
+// without dropping Workers `cf` metadata or throwing on bodied requests (which a
+// bare `new Request(url, request)` would do on Node/undici without `duplex`).
+
+describe("cloneRequestWithUrl", () => {
+  it("overrides the URL", () => {
+    const original = new Request("http://localhost/path?_rsc=abc&keep=1");
+    const cloned = cloneRequestWithUrl(original, "http://localhost/path?keep=1");
+    expect(cloned.url).toBe("http://localhost/path?keep=1");
+  });
+
+  it("preserves method and headers", () => {
+    const original = new Request("http://localhost/path?_rsc=abc", {
+      method: "GET",
+      headers: new Headers({ "x-keep": "yes" }),
+    });
+    const cloned = cloneRequestWithUrl(original, "http://localhost/path");
+    expect(cloned.method).toBe("GET");
+    expect(cloned.headers.get("x-keep")).toBe("yes");
+  });
+
+  it("preserves cf property when defined via Object.defineProperty", () => {
+    const original = new Request("http://localhost/path?_rsc=abc");
+    Object.defineProperty(original, "cf", {
+      value: { country: "US" },
+      enumerable: true,
+      configurable: true,
+    });
+    const cloned = cloneRequestWithUrl(original, "http://localhost/path");
+    expect(Reflect.get(cloned, "cf")).toEqual({ country: "US" });
+  });
+
+  it("preserves body readability for streaming requests", async () => {
+    const bodyText = "hello world";
+    const original = new Request("http://localhost/path?_rsc=abc", {
+      method: "POST",
+      body: bodyText,
+    });
+    const cloned = cloneRequestWithUrl(original, "http://localhost/path");
+    expect(cloned.method).toBe("POST");
+    expect(cloned.url).toBe("http://localhost/path");
+    const text = await cloned.text();
+    expect(text).toBe(bodyText);
+  });
+
+  it("preserves redirect mode", () => {
+    const original = new Request("http://localhost/path?_rsc=abc", { redirect: "manual" });
+    const cloned = cloneRequestWithUrl(original, "http://localhost/path");
+    expect(cloned.redirect).toBe("manual");
   });
 });

@@ -132,3 +132,16 @@ export function formatFontClassRule(className: string, style: FontStyle): string
   ];
   return `.${className} { ${declarations.join("; ")}; }\n`;
 }
+
+/**
+ * Determine the MIME type for a font file based on its extension.
+ * Uses endsWith() only to avoid false positives from substring matches
+ * (e.g. ".woff" matching ".woff2").
+ */
+export function getFontMimeType(pathOrUrl: string): string {
+  if (pathOrUrl.endsWith(".woff2")) return "font/woff2";
+  if (pathOrUrl.endsWith(".woff")) return "font/woff";
+  if (pathOrUrl.endsWith(".ttf")) return "font/ttf";
+  if (pathOrUrl.endsWith(".otf")) return "font/opentype";
+  return "font/woff2";
+}

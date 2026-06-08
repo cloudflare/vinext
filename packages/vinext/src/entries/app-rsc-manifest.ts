@@ -84,7 +84,13 @@ function rootRouteBoundaryPath(
 
 type ImportAllocator = {
   getImportVar(filePath: string): string;
-  getLazyImportVar(filePath: string): string;
+  /**
+   * Emit a `const load_N = () => import(path)` lazy loader thunk for a module
+   * that should be code-split out of the RSC entry's top-level evaluation
+   * (page modules of static routes, and all route-handler modules). Returns the
+   * loader variable name. Deduplicated independently of eager imports.
+   */
+  getLazyLoaderVar(filePath: string): string;
   importMap: ReadonlyMap<string, string>;
   imports: string[];
 };
@@ -92,9 +98,9 @@ type ImportAllocator = {
 function createImportAllocator(): ImportAllocator {
   const imports: string[] = [];
   const importMap = new Map<string, string>();
-  const lazyImportMap = new Map<string, string>();
+  const lazyMap = new Map<string, string>();
   let importIdx = 0;
-  let lazyImportIdx = 0;
+  let lazyIdx = 0;
 
   return {
     importMap,
@@ -109,16 +115,20 @@ function createImportAllocator(): ImportAllocator {
       importMap.set(filePath, varName);
       return varName;
     },
-    getLazyImportVar(filePath) {
-      const existing = lazyImportMap.get(filePath);
+    getLazyLoaderVar(filePath) {
+      const existing = lazyMap.get(filePath);
       if (existing) return existing;
 
-      const varName = `lazy_mod_${lazyImportIdx++}`;
+      const varName = `load_${lazyIdx++}`;
       const absPath = normalizePathSeparators(filePath);
-      imports.push(
-        `const ${varName} = __createRouteModuleLoader(() => import(${JSON.stringify(absPath)}));`,
-      );
-      lazyImportMap.set(filePath, varName);
+      // `filePath` is a trusted filesystem-scan result (route.pagePath /
+      // route.routePath), the same input and trust model as the eager
+      // `import * as ${var} from ${JSON.stringify(absPath)}` in getImportVar
+      // above. CodeQL flags the `import()` form as dynamic code construction,
+      // but this is a build-time codegen template with a JSON-encoded absolute
+      // path, not runtime-attacker-controlled input — a false positive.
+      imports.push(`const ${varName} = () => import(${JSON.stringify(absPath)});`);
+      lazyMap.set(filePath, varName);
       return varName;
     },
   };
@@ -126,7 +136,19 @@ function createImportAllocator(): ImportAllocator {
 
 function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): void {
   for (const route of routes) {
-    if (route.routePath) imports.getImportVar(route.routePath);
+    // All page modules are lazy-loaded so route modules — including dynamic
+    // routes and routes nested under a dynamic segment — stay out of the RSC
+    // entry's top-level evaluation. Their generateStaticParams (if any) is
+    // reached via lazy `{ load }` sources in generateStaticParamsMap, resolved
+    // on demand at prerender time.
+    if (route.pagePath) imports.getLazyLoaderVar(route.pagePath);
+    // Route handlers are always lazy: they are never referenced by
+    // generateStaticParamsMap (buildGenerateStaticParamsEntries sources only
+    // from layouts + page, never route.routePath), so unlike dynamic-route
+    // pages they have no module-load-time consumer. (Next.js route handlers can
+    // export generateStaticParams for prerendering, but vinext does not wire
+    // that into the map yet — a separate gap, unaffected by lazy loading.)
+    if (route.routePath) imports.getLazyLoaderVar(route.routePath);
     for (const layout of route.layouts) imports.getImportVar(layout);
     for (const tmpl of route.templates) imports.getImportVar(tmpl);
     if (route.loadingPath) imports.getImportVar(route.loadingPath);
@@ -166,7 +188,7 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       if (slot.loadingPath) imports.getImportVar(slot.loadingPath);
       if (slot.errorPath) imports.getImportVar(slot.errorPath);
       for (const ir of slot.interceptingRoutes) {
-        imports.getLazyImportVar(ir.pagePath);
+        imports.getLazyLoaderVar(ir.pagePath);
         for (const layoutPath of ir.layoutPaths) {
           imports.getImportVar(layoutPath);
         }
@@ -201,8 +223,8 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
           targetPattern: ${JSON.stringify(ir.targetPattern)},
           sourceMatchPattern: ${JSON.stringify(ir.sourceMatchPattern)},
           interceptLayouts: [${ir.layoutPaths.map((layoutPath) => imports.getImportVar(layoutPath)).join(", ")}],
-          __pageLoader: ${imports.getLazyImportVar(ir.pagePath)},
           page: null,
+          __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
           params: ${JSON.stringify(ir.params)},
         }`,
       );
@@ -227,11 +249,15 @@ ${interceptEntries.join(",\n")}
       ep ? imports.getImportVar(ep) : "null",
     );
     const errorVars = (route.errorPaths ?? []).map((ep) => imports.getImportVar(ep));
-    const pageLoaderVar = route.pagePath ? imports.getLazyImportVar(route.pagePath) : "null";
+    // Page and route handler are always lazy-loaded; hydrated onto route.page /
+    // route.routeHandler by ensureAppRouteModulesLoaded before any read.
+    const loadPageField = route.pagePath ? imports.getLazyLoaderVar(route.pagePath) : "null";
+    const loadRouteHandlerField = route.routePath
+      ? imports.getLazyLoaderVar(route.routePath)
+      : "null";
     return `  {
     __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
     __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(${routeIdx}) : null,
-    __pageLoader: ${pageLoaderVar},
     ids: ${JSON.stringify(route.ids ?? null)},
     pattern: ${JSON.stringify(route.pattern)},
     patternParts: ${JSON.stringify(route.patternParts)},
@@ -240,7 +266,9 @@ ${interceptEntries.join(",\n")}
     staticSiblings: ${JSON.stringify(staticSiblings)},
     rootParamNames: ${JSON.stringify(route.rootParamNames ?? [])},
     page: null,
-    routeHandler: ${route.routePath ? imports.getImportVar(route.routePath) : "null"},
+    __loadPage: ${loadPageField},
+    routeHandler: null,
+    __loadRouteHandler: ${loadRouteHandlerField},
     layouts: [${layoutVars.join(", ")}],
     routeSegments: ${JSON.stringify(route.routeSegments)},
     templateTreePositions: ${JSON.stringify(route.templateTreePositions)},
@@ -349,11 +377,13 @@ function buildGenerateStaticParamsEntries(
     }
 
     if (route.pagePath) {
-      const pageLoader = imports.getLazyImportVar(route.pagePath);
+      // Page modules are lazy; the resolver imports them on demand at prerender
+      // time and reads `.generateStaticParams` then (see
+      // createAppPrerenderStaticParamsResolver).
       appendStaticParamSource(
         sourcesByPattern,
         route.pattern,
-        `__createLazyGenerateStaticParamsSource(${pageLoader})`,
+        `{ load: ${imports.getLazyLoaderVar(route.pagePath)} }`,
       );
     }
   }

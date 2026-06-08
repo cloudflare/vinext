@@ -10,7 +10,11 @@ import { generateServerEntry as _generateServerEntry } from "./entries/pages-ser
 import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
 import { appRouteGraph, appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
 import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
-import { buildViteResolveExtensions, createValidFileMatcher } from "./routing/file-matcher.js";
+import {
+  buildViteResolveExtensions,
+  createValidFileMatcher,
+  findFileWithExts,
+} from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
 import { isImageOptimizationPath } from "./server/image-optimization.js";
@@ -34,12 +38,10 @@ import {
   collectRouteClassificationManifest,
   type RouteClassificationManifest,
 } from "./build/route-classification-manifest.js";
-import {
-  planRouteClassificationInjection,
-  type RouteClassificationChunk,
-} from "./build/route-classification-injector.js";
+import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import {
+  createRscCompatibilityId,
   findNextConfigPath,
   loadNextConfig,
   resolveNextConfigInput,
@@ -77,6 +79,7 @@ import {
 } from "./server/instrumentation.js";
 import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { precompressAssets } from "./build/precompress.js";
+import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
@@ -93,6 +96,7 @@ import {
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-request-headers.js";
 import { detectPackageManager } from "./utils/project.js";
+import { isUnknownRecord as isRecord } from "./utils/record.js";
 import { manifestFilesWithBase } from "./utils/manifest-paths.js";
 import { hasBasePath } from "./utils/base-path.js";
 import { mergeRewriteQuery } from "./utils/query.js";
@@ -112,7 +116,7 @@ import {
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
-import { createOgInlineFetchAssetsPlugin, ogAssetsPlugin } from "./plugins/og-assets.js";
+import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
   mergeOptimizeDepsExclude,
@@ -167,6 +171,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
+import { normalizePathSeparators } from "./utils/path.js";
 
 // Install the process-level peer-disconnect backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
@@ -176,12 +181,17 @@ import commonjs from "vite-plugin-commonjs";
 // VINEXT_PRERENDER check. See socket-error-backstop.ts.
 installSocketErrorBackstop();
 
-function createRscCompatibilityId(nextConfig: ResolvedNextConfig): string {
-  if (nextConfig.deploymentId) return nextConfig.deploymentId;
-  return randomUUID();
+type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
+
+function stripViteModuleQuery(id: string): string {
+  const queryIndex = id.search(/[?#]/);
+  return queryIndex === -1 ? id : id.slice(0, queryIndex);
 }
 
-type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
+function isInsideDirectory(dir: string, filePath: string): boolean {
+  const relativePath = path.relative(dir, filePath);
+  return relativePath !== "" && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
+}
 
 // Detect a module-level `"use server"` directive (a Server Actions module).
 // Directives form the leading prologue of string-literal ExpressionStatements,
@@ -317,10 +327,6 @@ function isVinextOgShimImporter(importer: string | undefined): boolean {
 
 function toRelativeFileEntry(root: string, absPath: string): string {
   return path.relative(root, absPath).split(path.sep).join("/");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
@@ -776,14 +782,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const draftModeSecret = randomUUID();
 
   // Build-time layout classification manifest, captured in the RSC virtual
-  // module's load hook and consumed in generateBundle to patch the generated
+  // module's load hook and consumed in renderChunk to patch the generated
   // `__VINEXT_CLASS` stub with a real dispatch table.
   let rscClassificationManifest: RouteClassificationManifest | null = null;
 
   // Resolve shim paths - works both from source (.ts) and built (.js)
   const shimsDir = path.resolve(__dirname, "shims");
 
-  // Shared with the Layer 2 generateBundle hook below. Rolldown stores module
+  // Shared with the Layer 2 renderChunk hook below. Rolldown stores module
   // IDs as canonicalized filesystem paths (fs.realpathSync.native), so we must
   // canonicalize anything we hand to the classifier and anything we ask the
   // module graph for. The shim files exist in the vinext package before plugin
@@ -1195,8 +1201,47 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             rawConfig = await loadNextConfig(root, phase);
           }
           nextConfig = await resolveNextConfig(rawConfig, root);
+
+          // Build-ID coordination across plugin instances.
+          //
+          // A single `vinext build` can instantiate vinext() more than once —
+          // the App Router multi-environment build (createBuilder().buildApp())
+          // and the separate Pages Router SSR build for hybrid app+pages apps
+          // are distinct plugin instances, each resolving its own config. Each
+          // instance runs resolveBuildId() independently, so any non-deterministic
+          // build ID diverges per instance: no `generateBuildId` (random UUID), a
+          // `generateBuildId` that returns `null` (also a random UUID — see
+          // resolveBuildId()), or any side-effecting `generateBuildId`. The result
+          // is that the App Router runtime, the Pages Router runtime, the prerender
+          // manifest, and dist/server/BUILD_ID could each get a different ID.
+          //
+          // The CLI resolves the build ID exactly once via the same
+          // resolveBuildId() (so it already honors the user's generateBuildId,
+          // including the null→UUID fallback) and publishes that authoritative
+          // value via __VINEXT_SHARED_BUILD_ID. We always adopt it when set —
+          // there is no case where a per-instance re-resolution should win over
+          // the single shared value. The env var is only ever set by the build
+          // CLI, so resolveBuildId()'s standalone semantics (dev, tests) are
+          // unchanged.
+          const sharedBuildId = process.env.__VINEXT_SHARED_BUILD_ID;
+          if (sharedBuildId && sharedBuildId.length > 0) {
+            nextConfig = { ...nextConfig, buildId: sharedBuildId };
+          }
         }
-        rscCompatibilityId ??= createRscCompatibilityId(nextConfig);
+        // RSC-compat ID coordination across plugin instances — same rationale as
+        // the build ID above. createRscCompatibilityId() falls back to a random
+        // UUID per instance when no deploymentId is pinned, so a hybrid app+pages
+        // build would otherwise bake two different compatibility tokens. The CLI
+        // resolves it once and publishes it via __VINEXT_SHARED_RSC_COMPATIBILITY_ID;
+        // we always adopt it when set (only the build CLI ever sets it, so dev and
+        // standalone resolution are unchanged).
+        if (rscCompatibilityId === undefined) {
+          const sharedRscCompatibilityId = process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID;
+          rscCompatibilityId =
+            sharedRscCompatibilityId && sharedRscCompatibilityId.length > 0
+              ? sharedRscCompatibilityId
+              : createRscCompatibilityId(nextConfig);
+        }
         fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);
         instrumentationPath = findInstrumentationFile(root, fileMatcher);
         instrumentationClientPath = findInstrumentationClientFile(root, fileMatcher);
@@ -1329,6 +1374,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // enable functional App Shell prefetching.
         // See: https://github.com/vercel/next.js/pull/93997
         defines["process.env.__NEXT_APP_SHELLS"] = JSON.stringify(nextConfig.appShells);
+        // Cache Components — Next.js gates segment Activity BFCache retention
+        // on this build-time flag. Without the flag the active segment renders
+        // in place (unkeyed); enabling it turns on the three-entry inactive
+        // Activity tree cache.
+        // Deliberately string-shaped: `process.env` consumers compare against
+        // "true", so do not simplify this to a boolean define.
+        // See: packages/next/src/client/components/layout-router.tsx
+        defines["process.env.__NEXT_CACHE_COMPONENTS"] = JSON.stringify(
+          String(nextConfig.cacheComponents ?? false),
+        );
 
         // User-defined compile-time constants from `compiler.define` in
         // next.config. Applied to BOTH client and server bundles via Vite's
@@ -2439,12 +2494,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // See https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-not-found
           const globalNotFoundPath = findFileWithExts(appDir, "global-not-found", fileMatcher);
           // Collect Layer 1 (segment config) classifications for all layouts.
-          // Layer 2 (module graph) runs later in generateBundle once Rollup's
+          // Layer 2 (module graph) runs later in renderChunk once Rollup's
           // module info is available.
           // Invariant: rscClassificationManifest must be built from the same
           // `routes` value passed to generateRscEntry below so that layout
           // indices in the manifest correspond 1:1 to the route.layouts arrays
-          // used during codegen. generateBundle clears this after patching.
+          // used during codegen. renderChunk clears this after patching.
           rscClassificationManifest = collectRouteClassificationManifest(routes);
           return generateRscEntry(
             appDir,
@@ -2509,77 +2564,85 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // phase that emits the real RSC entry. We only patch when we actually
       // see the stub in a chunk — the scan phase produces a tiny stub chunk
       // that does not contain our code.
-      generateBundle(_options, bundle) {
-        // Only run in the RSC environment. SSR/client builds never contain
-        // the __VINEXT_CLASS stub so there is nothing to patch there, and
-        // pulling ModuleInfo from the wrong graph would give nonsense results.
-        if (this.environment?.name !== "rsc") return;
-        if (!rscClassificationManifest) return;
+      //
+      // This MUST run in `renderChunk` with `order: "pre"`, NOT in
+      // `generateBundle`: when server environments are minified (the default —
+      // see `vinext:server-minify-defaults`), rolldown's minifier renames the
+      // top-level `__VINEXT_CLASS` function and mangles its `routeIdx`
+      // parameter by the time `generateBundle` runs, so the stub regex would
+      // never match and build-time classification would silently no-op (every
+      // route would fall back to the Layer 3 runtime probe). `renderChunk`
+      // with `order: "pre"` runs before minification, so the stub is still in
+      // its readable form; the patched body is then minified along with the
+      // rest of the chunk, which is fine because the runtime calls the function
+      // by reference rather than by name.
+      renderChunk: {
+        order: "pre",
+        handler(code, chunk) {
+          // Only run in the RSC environment. SSR/client builds never contain
+          // the __VINEXT_CLASS stub so there is nothing to patch there, and
+          // pulling ModuleInfo from the wrong graph would give nonsense
+          // results.
+          if (this.environment?.name !== "rsc") return null;
+          if (!rscClassificationManifest) return null;
+          // Cheap pre-filter: skip chunks that don't mention the stub at all
+          // (e.g. the scan-phase chunk and every non-entry chunk).
+          if (!code.includes("__VINEXT_CLASS")) return null;
 
-        const enableClassificationDebug = Boolean(process.env.VINEXT_DEBUG_CLASSIFICATION);
+          // Patching per-chunk (rather than scanning the whole bundle in
+          // generateBundle) assumes the stub body and its per-route call sites
+          // are emitted into the same chunk. That holds with current codegen:
+          // both live in the single RSC entry module, so they never split
+          // across chunks. If a future codegen change hoisted the call sites
+          // into a separate chunk, this hook would patch the stub but leave the
+          // callers referencing the original — revisit the hook scope then.
 
-        const chunks: RouteClassificationChunk[] = [];
-        const chunksByFileName = new Map<
-          string,
-          Extract<(typeof bundle)[string], { type: "chunk" }>
-        >();
-        for (const chunk of Object.values(bundle)) {
-          if (chunk.type !== "chunk") continue;
-          chunks.push({
-            code: chunk.code,
-            fileName: chunk.fileName,
+          const enableClassificationDebug = Boolean(process.env.VINEXT_DEBUG_CLASSIFICATION);
+
+          // `canonicalize` and `dynamicShimPaths` are hoisted to plugin init
+          // (above) so they are constructed once per plugin instance instead of
+          // on every renderChunk invocation. The macOS realpath quirk
+          // (/var/folders/... → /private/var/folders/...) still applies to
+          // every path we hand to the classifier.
+
+          // Adapter: the classifier in `build/layout-classification.ts` uses
+          // `dynamicImportedIds` (matches the old-Rollup field name we used when
+          // we wrote it). Rolldown's current ModuleInfo exposes it as
+          // `dynamicallyImportedIds` (the new Rollup field name). Keep the
+          // translation in one place so future call sites don't have to remember.
+          const moduleInfo = {
+            getModuleInfo: (moduleId: string) => {
+              const info = this.getModuleInfo(moduleId);
+              if (!info) return null;
+              return {
+                importedIds: info.importedIds ?? [],
+                dynamicImportedIds: info.dynamicallyImportedIds ?? [],
+              };
+            },
+          };
+
+          const patchPlan = planRouteClassificationInjection({
+            canonicalizeLayoutPath: canonicalize,
+            chunks: [{ code, fileName: chunk.fileName }],
+            dynamicShimPaths,
+            enableDebugReasons: enableClassificationDebug,
+            manifest: rscClassificationManifest,
+            moduleInfo,
           });
-          chunksByFileName.set(chunk.fileName, chunk);
-        }
+          if (patchPlan.kind === "skip") return null;
 
-        // `canonicalize` and `dynamicShimPaths` are hoisted to plugin init
-        // (above) so they are constructed once per plugin instance instead of
-        // on every generateBundle invocation. The macOS realpath quirk
-        // (/var/folders/... → /private/var/folders/...) still applies to
-        // every path we hand to the classifier.
+          // Consume the manifest exactly once per RSC entry. Clearing here
+          // prevents a stale manifest from leaking into a subsequent build pass
+          // if the load hook is not re-triggered (e.g., in non-standard rebuild
+          // paths).
+          rscClassificationManifest = null;
 
-        // Adapter: the classifier in `build/layout-classification.ts` uses
-        // `dynamicImportedIds` (matches the old-Rollup field name we used when
-        // we wrote it). Rolldown's current ModuleInfo exposes it as
-        // `dynamicallyImportedIds` (the new Rollup field name). Keep the
-        // translation in one place so future call sites don't have to remember.
-        const moduleInfo = {
-          getModuleInfo: (moduleId: string) => {
-            const info = this.getModuleInfo(moduleId);
-            if (!info) return null;
-            return {
-              importedIds: info.importedIds ?? [],
-              dynamicImportedIds: info.dynamicallyImportedIds ?? [],
-            };
-          },
-        };
-
-        const patchPlan = planRouteClassificationInjection({
-          canonicalizeLayoutPath: canonicalize,
-          chunks,
-          dynamicShimPaths,
-          enableDebugReasons: enableClassificationDebug,
-          manifest: rscClassificationManifest,
-          moduleInfo,
-        });
-        if (patchPlan.kind === "skip") return;
-
-        const target = chunksByFileName.get(patchPlan.fileName);
-        if (!target) {
-          throw new Error(
-            `vinext: build-time classification — patch target ${patchPlan.fileName} disappeared from the RSC bundle`,
-          );
-        }
-        target.code = patchPlan.code;
-
-        // The patched body is longer than the stub, so any existing source map
-        // would be stale. RSC entry source maps are not served or consumed, so
-        // nulling the map is safe and prevents stale-map confusion in tooling.
-        target.map = patchPlan.map;
-        // Consume the manifest exactly once per RSC entry load. Clearing here
-        // prevents a stale manifest from leaking into a subsequent generateBundle
-        // call if the load hook is not re-triggered (e.g., in non-standard rebuild paths).
-        rscClassificationManifest = null;
+          // The patched body is longer than the stub, so any existing source
+          // map would be stale. RSC entry source maps are not served or
+          // consumed, so nulling the map is safe and prevents stale-map
+          // confusion in tooling.
+          return { code: patchPlan.code, map: patchPlan.map };
+        },
       },
     },
     // CSS url() asset parity with Next.js. Build-only and client-scoped: dev CSS
@@ -2606,6 +2669,39 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       configEnvironment(name) {
         if (name !== "client") return null;
         return { build: { assetsInlineLimit: clientAssetsInlineLimit } };
+      },
+    },
+    {
+      // Minify server-side build environments (rsc/ssr and the Cloudflare
+      // worker env) by default. Vite only minifies the `client` environment
+      // out of the box — `build.minify` defaults to `false` for every other
+      // environment — so the deployed worker (dist/server/index.js) and the
+      // SSR renderer (dist/server/ssr/index.js) ship full of readable
+      // identifiers, comments, and whitespace. That bloats raw size (workerd
+      // cold-start parse CPU) and gzip size (counted against the Cloudflare
+      // Workers size limit).
+      //
+      // This is a TRUE DEFAULT that yields to user configuration, NOT a hard
+      // override. `apply: "build"` already scopes it to production builds
+      // (never dev/preview). We then read the *incoming* per-environment
+      // config: Vite seeds each non-client environment's `build` from the
+      // top-level `config.build` before running configEnvironment (see
+      // getDefaultEnvironmentOptions), so `config.build?.minify` here reflects
+      // any explicit setting from the user (top-level OR
+      // `environments.<name>.build.minify`) or an earlier plugin (e.g.
+      // @cloudflare/vite-plugin). If anyone already chose a value — including
+      // `false` — we leave it alone; we only fill in the default when it is
+      // still unset. `minify: true` lets the rolldown/oxc toolchain pick its
+      // native minifier rather than pinning a specific one.
+      name: "vinext:server-minify-defaults",
+      apply: "build",
+
+      configEnvironment(name, config) {
+        // The client env is already minified by Vite's defaults.
+        if (name === "client") return null;
+        // Respect any explicit user/plugin minify choice (including `false`).
+        if (config.build?.minify !== undefined) return null;
+        return { build: { minify: true } };
       },
     },
     {
@@ -3873,26 +3969,72 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (id.startsWith("\0")) return null;
           if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
 
-          const imageImportRe = new RegExp(
-            `import\\s+(\\w+)\\s+from\\s+['"]([^'"]+\\.(${IMAGE_EXTS}))['"];?`,
-            "g",
-          );
-          if (!imageImportRe.test(code)) return null;
+          // The `code` filter above (a regex) only decides whether to invoke
+          // this handler; it can fire on text inside comments, strings, or
+          // template literals. Scanning must therefore be AST-based so we only
+          // rewrite real `import X from '...'` declarations, not text that
+          // merely looks like one. Regex-based scanning generated phantom
+          // variables for commented-out imports, crashing SSR with
+          // `__vinext_img_url_X is not defined`.
+          const imageExtRe = new RegExp(`\\.(${IMAGE_EXTS})$`);
 
-          imageImportRe.lastIndex = 0;
+          // This plugin uses `enforce: "pre"`, so the handler runs on RAW
+          // source — before the JSX/TS transform. `parseAst` defaults to plain
+          // JavaScript and would throw on JSX or TS type annotations, which
+          // would silently skip image transforms for every `.tsx`/`.jsx`/typed
+          // `.ts` file. (The adjacent `use-cache` plugin avoids this by running
+          // after the JSX transform; we can't, since the import must be
+          // rewritten before Vite resolves the asset.)
+          //
+          // Pick the parser language by extension. `.tsx`/`.jsx`/`.js`/`.mjs`
+          // can contain JSX, so parse those as `tsx`. Plain `.ts` files must be
+          // parsed as `ts`: the `tsx` grammar treats `<T>` as the start of a JSX
+          // element, so legitimate TS-only syntax such as angle-bracket casts
+          // (`<Foo>bar`) and non-comma generic arrows (`<T>(x) => x`) would throw
+          // — which the `catch` below would swallow, silently leaving image
+          // imports in those files untransformed.
+          const lang = id.endsWith(".ts") ? "ts" : "tsx";
+          let ast: ReturnType<typeof parseAst>;
+          try {
+            ast = parseAst(code, { lang });
+          } catch {
+            // Unparseable input (e.g. unsupported syntax) — leave untouched.
+            return null;
+          }
 
           const s = new MagicString(code);
           let hasChanges = false;
 
-          let match;
-          while ((match = imageImportRe.exec(code)) !== null) {
-            const [fullMatch, varName, importPath] = match;
-            const matchStart = match.index;
-            const matchEnd = matchStart + fullMatch.length;
+          for (const node of ast.body) {
+            if (node.type !== "ImportDeclaration") continue;
 
-            // Resolve the absolute path of the image
+            const importNode = node as ASTNode & {
+              start: number;
+              end: number;
+              source?: { value?: unknown };
+              specifiers?: Array<{ type?: string; local?: { name?: string } }>;
+            };
+
+            const importPath = importNode.source?.value;
+            if (typeof importPath !== "string") continue;
+            if (!imageExtRe.test(importPath)) continue;
+
+            // Only handle a single default import (`import X from '...'`),
+            // matching the original behavior. Skip named/namespace imports and
+            // side-effect-only imports (`import '...'`).
+            const specifiers = importNode.specifiers ?? [];
+            if (specifiers.length !== 1) continue;
+            const specifier = specifiers[0];
+            if (specifier.type !== "ImportDefaultSpecifier") continue;
+            const varName = specifier.local?.name;
+            if (!varName) continue;
+
+            // Resolve the absolute path of the image. Normalize separators
+            // since the path is embedded in the ESM module specifier below,
+            // which should use forward slashes. fs accepts them on Windows,
+            // so existsSync still works.
             const dir = path.dirname(id);
-            const absImagePath = path.resolve(dir, importPath);
+            const absImagePath = normalizePathSeparators(path.resolve(dir, importPath));
 
             if (!fs.existsSync(absImagePath)) continue;
 
@@ -3907,7 +4049,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               `import ${metaVar} from ${JSON.stringify(absImagePath + "?vinext-meta")};\n` +
               `const ${varName} = { src: ${urlVar}, width: ${metaVar}.width, height: ${metaVar}.height };`;
 
-            s.overwrite(matchStart, matchEnd, replacement);
+            s.overwrite(importNode.start, importNode.end, replacement);
             hasChanges = true;
           }
 
@@ -3923,7 +4065,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Google Fonts import rewrite + self-hosting — see src/plugins/fonts.ts
     createGoogleFontsPlugin(_fontGoogleShimPath, _shimsDir),
     // Local font path resolution — see src/plugins/fonts.ts
-    createLocalFontsPlugin(),
+    createLocalFontsPlugin(_shimsDir),
     // Barrel import optimization:
     // Rewrites `import { Slot } from "radix-ui"` → `import * as Slot from "@radix-ui/react-slot"`
     // for packages listed in optimizePackageImports or DEFAULT_OPTIMIZE_PACKAGES.
@@ -4059,13 +4201,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // support yet. Pages, not-found, loading, error, and default are
             // leaf components with no {children} prop and can be cached directly.
             const isLayoutOrTemplate = /\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id);
+            const modulePath = stripViteModuleQuery(id);
+            const moduleFileName = path.basename(modulePath);
+            const isAppPageModule =
+              hasAppDir &&
+              isInsideDirectory(appDir, modulePath) &&
+              path.parse(moduleFileName).name === "page" &&
+              fileMatcher.extensionRegex.test(moduleFileName);
 
             const runtimeModuleUrl = pathToFileURL(
               resolveShimModulePath(shimsDir, "cache-runtime"),
             ).href;
             const result = transformWrapExport(code, ast, {
-              runtime: (value: string, name: string) =>
-                `(await import(${JSON.stringify(runtimeModuleUrl)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`,
+              runtime: (value: string, name: string) => {
+                const pageOptions =
+                  name === "default" && isAppPageModule ? `, { appPageDefaultExport: true }` : "";
+                return `(await import(${JSON.stringify(runtimeModuleUrl)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)}${pageOptions})`;
+              },
               rejectNonAsyncFunction: false,
               filter: (name: string, meta: { isFunction?: boolean }) => {
                 // Skip non-functions (constants, types, etc.)
@@ -4149,8 +4301,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
     // see src/plugins/og-assets.ts
     createOgInlineFetchAssetsPlugin(),
-    // Copy @vercel/og binary assets to the RSC output directory — see src/plugins/og-assets.ts
-    ogAssetsPlugin,
+    // Dedupe/copy @vercel/og binary WASM assets in the RSC output — see src/plugins/og-assets.ts
+    createOgAssetsPlugin(),
     // Collect SSR/RSC bundle externals and write dist/server/vinext-externals.json.
     // Used by emitStandaloneOutput to determine which packages to copy into
     // standalone/node_modules/ — uses the bundler's own import graph instead of
@@ -4186,18 +4338,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
     // Write BUILD_ID to dist/server/ so post-build tools (TPR, seed-cache) can
     // read the build identifier without depending on the prerender manifest.
-    // Uses closeBundle (not writeBundle) with a one-time write guard so the file
+    // Uses writeBundle (not closeBundle) with a one-time write guard so the file
     // is written exactly once per build regardless of how many environments are
     // active (App Router RSC+SSR+client, Pages Router SSR+client, etc.).
-    // The path is always dist/server/BUILD_ID — derived from root, not from the
-    // per-environment options.dir — so it works for all router types.
+    //
+    // closeBundle does not fire reliably during the multi-environment
+    // createBuilder().buildApp() pipeline used for App Router production builds,
+    // so the file was silently never written for pure App Router apps. writeBundle
+    // fires for every emitted bundle (matching the vinext:image-config plugin
+    // above), so the guard captures the first one. The path is always
+    // dist/server/BUILD_ID — derived from root, not from the per-environment
+    // options.dir — so it works for all router types.
     (() => {
       let buildIdWritten = false;
       return {
         name: "vinext:build-id",
         apply: "build" as const,
         enforce: "post" as const,
-        closeBundle: {
+        writeBundle: {
           sequential: true,
           order: "post" as const,
           handler() {
@@ -4335,6 +4493,29 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // Leave Vite's manifest untouched if parsing fails.
             console.warn("[vinext] Failed to augment SSR manifest:", err);
           }
+        },
+      },
+    },
+    {
+      name: "vinext:next-client-runtime-manifests",
+      apply: "build",
+      enforce: "post",
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        handler(outputOptions: { dir?: string }) {
+          const clientDir = outputOptions.dir;
+          if (!clientDir) return;
+
+          const isClientBuild = this.environment?.name === "client";
+          if (!isClientBuild) return;
+
+          emitNextClientRuntimeManifests({
+            clientDir,
+            assetsSubdir: resolveAssetsDir(nextConfig.assetPrefix),
+            buildId: nextConfig.buildId,
+            rewrites: nextConfig.rewrites,
+          });
         },
       },
     },
@@ -4651,14 +4832,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (!id.includes("@vercel/og") || !id.includes("index.edge.js")) return null;
         let result = code;
 
-        // ── Yoga WASM: dynamic import + inline base64 fallback ──────────────────────
+        // ── Yoga WASM: dynamic import + disk-read fallback ──────────────────────────
         // yoga-layout's emscripten bundle sets H to a data URL containing the yoga WASM,
         // then later calls WebAssembly.instantiate(bytes, imports), which workerd rejects.
         // Emscripten supports a custom h2.instantiateWasm(imports, callback) escape hatch.
         //
         // Strategy: try dynamic import("./yoga.wasm?module") for workerd (pre-compiled
-        // module), fall back to compiling from inline base64 bytes for Node.js.
-        // Yoga WASM is ~70KB so inlining the base64 (~95KB) is acceptable.
+        // module), fall back to reading the .wasm file from disk + WebAssembly.instantiate
+        // for Node.js. We read from disk rather than inlining base64 so the bundle ships
+        // exactly one physical copy of the WASM (the emitted ?module asset); the disk
+        // fallback is wired to that same file by vinext:og-assets. This mirrors the resvg
+        // handling below and keeps the dedup platform-agnostic.
         const YOGA_DATA_URL_RE = /H = "data:application\/octet-stream;base64,([A-Za-z0-9+/]+=*)";/;
         const yogaMatch = YOGA_DATA_URL_RE.exec(result);
         if (yogaMatch) {
@@ -4675,6 +4859,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Patch the loadYoga call site to inject instantiateWasm with universal handler.
           // WebAssembly.instantiate(Module, imports) → Instance (workerd path)
           // WebAssembly.instantiate(bytes, imports)  → { module, instance } (Node.js path)
+          //
+          // Note: new URL("./yoga.wasm", import.meta.url) MUST live inside the Node.js
+          // branch (the else), never at the top level. In workerd, import.meta.url is
+          // "worker" (not a valid URL base), so new URL(..., "worker") throws TypeError.
+          // The else branch only runs on Node.js where the ?module import failed and
+          // import.meta.url is a file:// URL.
           const YOGA_CALL = `yoga_wasm_base64_esm_default()`;
           const YOGA_CALL_PATCHED = [
             `yoga_wasm_base64_esm_default({ instantiateWasm: function(imports, callback) {`,
@@ -4682,17 +4872,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             `    if (mod) {`,
             `      WebAssembly.instantiate(mod, imports).then(function(inst) { callback(inst); });`,
             `    } else {`,
-            `      var b = Buffer.from(__vi_yoga_b64, "base64");`,
-            `      WebAssembly.instantiate(b, imports).then(function(r) { callback(r.instance); });`,
+            `      Promise.all([import("node:fs"), import("node:url")]).then(function(mods) {`,
+            `        var p = mods[1].fileURLToPath(new URL("./yoga.wasm", import.meta.url));`,
+            `        return mods[0].promises.readFile(p).then(function(bytes) {`,
+            `          return WebAssembly.instantiate(bytes, imports).then(function(r) { callback(r.instance); });`,
+            `        });`,
+            `      });`,
             `    }`,
             `  });`,
             `  return {};`,
             `} })`,
           ].join("\n");
           result = result.replace(YOGA_CALL, YOGA_CALL_PATCHED);
-          // Prepend dynamic import with base64 fallback (no static import — Node.js safe)
+          // Prepend dynamic import (no static import — Node.js safe). On Node.js the
+          // ?module import fails and resolves to null, triggering the disk-read fallback.
           const yogaPreamble = [
-            `var __vi_yoga_b64 = ${JSON.stringify(yogaBase64)};`,
             `var __vi_yoga_mod = import("./yoga.wasm?module").then(function(m) { return m.default; }).catch(function() { return null; });`,
           ].join("\n");
           result = yogaPreamble + "\n" + result;
@@ -4922,22 +5116,6 @@ function applyHeaders(
       }
     }
   }
-}
-
-/**
- * Find a file by name (without extension) in a directory.
- * Checks the configured page extensions.
- */
-function findFileWithExts(
-  dir: string,
-  name: string,
-  matcher: ReturnType<typeof createValidFileMatcher>,
-): string | null {
-  for (const ext of matcher.dottedExtensions) {
-    const filePath = path.join(dir, name + ext);
-    if (fs.existsSync(filePath)) return filePath;
-  }
-  return null;
 }
 
 // Public exports for static export

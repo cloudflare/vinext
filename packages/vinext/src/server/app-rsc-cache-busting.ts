@@ -229,6 +229,18 @@ function isRscCacheBustingSearchPair(pair: string): boolean {
   }
 }
 
+/**
+ * Detect the internal RSC cache-busting search param using the same
+ * encoding-aware matching as `stripRscCacheBustingSearchParam`
+ * (`isRscCacheBustingSearchPair`). The two share a single matcher so a guard
+ * built on this helper and the stripper can never disagree on which pairs
+ * count as `_rsc`, including encoded-key edge cases like `%5Frsc`.
+ */
+export function hasRscCacheBustingSearchParam(url: URL): boolean {
+  const rawQuery = url.search.startsWith("?") ? url.search.slice(1) : url.search;
+  return rawQuery.split("&").some((pair) => pair.length > 0 && isRscCacheBustingSearchPair(pair));
+}
+
 export async function computeRscCacheBustingSearchParam(headers: Headers): Promise<string> {
   const input = createCacheBustingInput(headers);
   if (input === null) {

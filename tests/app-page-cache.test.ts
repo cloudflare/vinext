@@ -13,6 +13,11 @@ import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import {
+  buildRenderObservation,
+  buildRenderRequestApiObservations,
+  type RenderObservation,
+} from "../packages/vinext/src/server/cache-proof.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import { withEnvVar } from "./env-test-helpers.js";
 
@@ -35,8 +40,9 @@ function buildCachedAppPageValue(
   html: string,
   rscData?: ArrayBuffer,
   status?: number,
+  renderObservation?: RenderObservation,
 ): CachedAppPageValue {
-  return {
+  const value: CachedAppPageValue = {
     kind: "APP_PAGE",
     html,
     rscData,
@@ -44,6 +50,31 @@ function buildCachedAppPageValue(
     postponed: undefined,
     status,
   };
+  if (renderObservation) {
+    value.renderObservation = renderObservation;
+  }
+  return value;
+}
+
+function buildQueryInvariantRenderObservation(): RenderObservation {
+  return buildRenderObservation({
+    boundaryOutcome: { kind: "success" },
+    cacheability: "public",
+    cacheTags: [],
+    completeness: "complete",
+    dynamicFetches: [],
+    output: {
+      kind: "app-html",
+      renderEpoch: null,
+      rootBoundaryId: null,
+      routeId: "route:/cached",
+    },
+    pathTags: [],
+    requestApis: buildRenderRequestApiObservations({
+      completeness: "complete",
+      observed: [],
+    }),
+  });
 }
 
 describe("app page cache helpers", () => {
@@ -342,6 +373,97 @@ describe("app page cache helpers", () => {
         reason: "served",
       },
     ]);
+  });
+
+  it("treats unproofed cached HIT responses as misses for query-bearing requests", async () => {
+    let didRenderFresh = false;
+    const cacheOutcomes: AppPageCacheOutcomeMetric[] = [];
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/cached",
+      clearRequestContext() {
+        throw new Error("unproofed query cache hit should not clear request context");
+      },
+      hasRequestSearchParams: true,
+      isRscRequest: false,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedAppPageValue("<h1>cached empty query</h1>"));
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet() {},
+      recordCacheOutcome(metric) {
+        cacheOutcomes.push(metric);
+      },
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        didRenderFresh = true;
+        return {
+          html: "<h1>fresh</h1>",
+          rscData: new ArrayBuffer(0),
+          tags: [],
+        };
+      },
+      scheduleBackgroundRegeneration() {
+        throw new Error("should not schedule regeneration");
+      },
+    });
+
+    expect(response).toBeNull();
+    expect(didRenderFresh).toBe(false);
+    expect(cacheOutcomes).toEqual([
+      {
+        artifact: "html",
+        cacheKey: "html:/cached",
+        outcome: "miss",
+        reason: "query-variant-unproven",
+      },
+    ]);
+  });
+
+  it("serves cached HIT responses for query-bearing requests with negative searchParams proof", async () => {
+    let didClearRequestContext = false;
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/cached",
+      clearRequestContext() {
+        didClearRequestContext = true;
+      },
+      hasRequestSearchParams: true,
+      isRscRequest: false,
+      async isrGet() {
+        return buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "<h1>cached</h1>",
+            undefined,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+        );
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet() {},
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        throw new Error("should not render");
+      },
+      scheduleBackgroundRegeneration() {
+        throw new Error("should not schedule regeneration");
+      },
+    });
+
+    expect(response?.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(response?.text()).resolves.toBe("<h1>cached</h1>");
+    expect(didClearRequestContext).toBe(true);
   });
 
   it("returns cached HIT responses when the cache outcome recorder throws", async () => {

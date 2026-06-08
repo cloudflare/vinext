@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { waitForHydration } from "../helpers";
 
 const BASE = "http://localhost:4173";
 
@@ -70,6 +71,7 @@ test.describe("Middleware (Pages Router)", () => {
     // After redirect from /old-page to /about, verify the page is fully functional
     await page.goto(`${BASE}/old-page`);
     await expect(page.locator("h1")).toHaveText("About");
+    await waitForHydration(page);
 
     // The about page should have a link back to home
     const homeLink = page.locator('a[href="/"]');

@@ -74,7 +74,7 @@ export type CommittedOperationRecord = OperationRecordBase & {
   visibleCommitVersion: number;
 };
 
-export type OperationRecord = PendingOperationRecord | CommittedOperationRecord;
+type OperationRecord = PendingOperationRecord | CommittedOperationRecord;
 
 export type AppRouterState = {
   activeOperation: OperationRecord | null;
@@ -126,6 +126,7 @@ export type PendingNavigationCommit = {
 export type AppNavigationPayloadOrigin = Readonly<
   { origin: "fresh" } | { origin: "visited-cache" }
 >;
+type BfcacheStateKeyMap = Readonly<Record<string, string>>;
 
 export const FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN: AppNavigationPayloadOrigin = {
   origin: "fresh",
@@ -292,6 +293,32 @@ export function createInitialBfcacheIdMap(elements: AppElements): BfcacheIdMap {
   return ids;
 }
 
+function normalizeBfcachePathname(pathname: string): string {
+  // Use the route-match normalizer so decoded delimiters like %2F remain data
+  // inside their segment instead of becoming structural path separators.
+  const normalized = normalizePath(normalizePathnameForRouteMatch(pathname));
+  return normalized.length > 1 ? normalized.replace(/\/$/, "") : normalized;
+}
+
+export function createBfcacheSegmentStateKeyMap(options: {
+  elements: AppElements;
+  pathname: string;
+}): BfcacheStateKeyMap {
+  const metadata = readAppElementsMetadata(options.elements);
+  const normalizedPathname = normalizeBfcachePathname(options.pathname);
+  const stateKeys: Record<string, string> = {};
+  for (const id of collectBfcacheSegmentIds(options.elements, metadata)) {
+    const stateKey = createBfcacheSegmentIdentity(id, {
+      metadata,
+      pathname: normalizedPathname,
+    });
+    if (stateKey !== null) {
+      stateKeys[id] = stateKey;
+    }
+  }
+  return stateKeys;
+}
+
 export function createNextBfcacheIdMap(options: {
   current: BfcacheIdMap;
   currentElements: AppElements;
@@ -309,15 +336,17 @@ export function createNextBfcacheIdMap(options: {
 
   const currentMetadata = readAppElementsMetadata(options.currentElements);
   const nextMetadata = readAppElementsMetadata(options.elements);
+  const currentPathname = normalizeBfcachePathname(options.currentPathname);
+  const nextPathname = normalizeBfcachePathname(options.nextPathname);
   const ids: Record<string, string> = {};
   for (const id of collectBfcacheSegmentIds(options.elements, nextMetadata)) {
     const currentIdentity = createBfcacheSegmentIdentity(id, {
       metadata: currentMetadata,
-      pathname: options.currentPathname,
+      pathname: currentPathname,
     });
     const nextIdentity = createBfcacheSegmentIdentity(id, {
       metadata: nextMetadata,
-      pathname: options.nextPathname,
+      pathname: nextPathname,
     });
     const currentValue = currentIdentity === nextIdentity ? options.current[id] : undefined;
     // History traversals restore persisted ids first, matching segments keep

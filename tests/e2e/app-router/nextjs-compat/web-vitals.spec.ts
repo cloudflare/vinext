@@ -7,14 +7,16 @@ import { expect, test } from "@playwright/test";
 import { waitForAppRouterHydration } from "../../helpers";
 
 const BASE = "http://localhost:4174";
-const expectedMetricNames = ["CLS", "FCP", "FID", "INP", "LCP", "TTFB"];
+const expectedMetricNames = ["CLS", "FCP", "FID", "LCP", "TTFB"];
 const expectedMetricNamesKey = expectedMetricNames.join(",");
 
 test.describe("Next.js compat: useReportWebVitals", () => {
   test("reports browser web vitals from next/web-vitals", async ({ page }) => {
     const reportedMetricNames: string[] = [];
+    let eventsCount = 0;
 
     await page.route("https://example.vercel.sh/vitals", async (route) => {
+      eventsCount += 1;
       const body = route.request().postData();
       if (body) {
         const name = new URLSearchParams(body).get("name");
@@ -44,5 +46,9 @@ test.describe("Next.js compat: useReportWebVitals", () => {
     await expect
       .poll(() => [...new Set(reportedMetricNames)].sort().join(","), { timeout: 10_000 })
       .toBe(expectedMetricNamesKey);
+
+    // Mirror Next.js's own useReportWebVitals test, which only asserts a total
+    // event count (CLS/FCP/TTFB/LCP on load, repeated on reload, plus FID).
+    expect(eventsCount).toBeGreaterThanOrEqual(6);
   });
 });

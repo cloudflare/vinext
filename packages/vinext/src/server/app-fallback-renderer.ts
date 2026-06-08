@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { NavigationContext } from "vinext/shims/navigation";
 import type { AppPageParams } from "./app-page-boundary.js";
 import {
   renderAppPageErrorBoundary,
@@ -46,7 +47,7 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
     routePath: string,
   ) => AppPageBoundaryOnError;
   fontProviders: AppFallbackRendererFontProviders;
-  getNavigationContext: () => unknown;
+  getNavigationContext: () => NavigationContext | null;
   globalErrorModule?: TModule | null;
   /**
    * Loader for the user's `app/global-not-found.tsx` module. When provided,
@@ -112,6 +113,7 @@ type AppFallbackRenderer<TModule extends AppPageModule = AppPageModule> = {
     request: Request,
     opts: {
       boundaryComponent?: AppPageComponent | null;
+      boundaryModule?: TModule | null;
       layouts?: readonly (TModule | null | undefined)[] | null;
       matchedParams?: AppPageParams;
     },
@@ -215,6 +217,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         if (globalNotFoundComponent) {
           return renderAppPageHttpAccessFallback({
             boundaryComponent: globalNotFoundComponent,
+            boundaryModule: globalNotFoundModule ?? null,
             buildFontLinkHeader: fontProviders.buildFontLinkHeader,
             clearRequestContext,
             createRscOnErrorHandler(pathname, routePath) {
@@ -251,6 +254,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       return renderAppPageHttpAccessFallback({
         basePath,
         boundaryComponent: opts?.boundaryComponent ?? null,
+        boundaryModule: opts?.boundaryModule ?? null,
         buildFontLinkHeader: fontProviders.buildFontLinkHeader,
         clearRequestContext,
         createRscOnErrorHandler(pathname, routePath) {

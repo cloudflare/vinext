@@ -29,8 +29,8 @@ function entriesFromPackageJson(relativePath: string): string[] {
 export default {
   workspaces: {
     ".": {
-      entry: ["scripts/*.{js,ts}", "tests/**/*.test.ts", "tests/helpers.ts"],
-      project: ["scripts/**/*.{js,ts}", "tests/**/*.{js,ts}", "!tests/fixtures/**"],
+      entry: ["scripts/*.{js,ts,mjs,mts}", "tests/**/*.test.ts", "tests/helpers.ts"],
+      project: ["tests/**/*.{js,ts}", "!tests/fixtures/**"],
     },
     "packages/vinext": {
       entry: [
@@ -104,13 +104,10 @@ export default {
     // probed via require.resolve
     "next-intl",
 
-    // Optional peer dep used by Vite's built-in SCSS preprocessor when the
-    // user installs it. `tests/scss.test.ts` dynamically imports it to skip
-    // the SCSS suite when sass is absent, so we never list it as a hard dep.
+    // Optional/local runtime names consumed dynamically in tests and Vite+
+    // config rather than as normal static imports.
     "sass",
-
-    // vitest reporter used outside CI
-    ...(process.env.CI ? [] : ["agent"]),
+    "agent",
 
     // internal module name, not an actual dependency
     "private-next-instrumentation-client",

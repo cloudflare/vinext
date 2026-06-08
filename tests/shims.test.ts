@@ -27,6 +27,56 @@ describe("vinext next data client helpers", () => {
   });
 });
 
+describe("slot BFCache entry ordering", () => {
+  it("keeps the three most recent state-key entries", async () => {
+    const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
+
+    let order: readonly string[] = [];
+    order = updateBfcacheSlotEntryOrder(order, "one", 3);
+    order = updateBfcacheSlotEntryOrder(order, "two", 3);
+    order = updateBfcacheSlotEntryOrder(order, "three", 3);
+    order = updateBfcacheSlotEntryOrder(order, "four", 3);
+
+    expect(order).toEqual(["four", "three", "two"]);
+  });
+
+  it("moves an existing entry to the front without evicting another entry", async () => {
+    const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
+
+    let order: readonly string[] = [];
+    order = updateBfcacheSlotEntryOrder(order, "one", 3);
+    order = updateBfcacheSlotEntryOrder(order, "two", 3);
+    order = updateBfcacheSlotEntryOrder(order, "three", 3);
+    order = updateBfcacheSlotEntryOrder(order, "one", 3);
+
+    expect(order).toEqual(["one", "three", "two"]);
+  });
+
+  it("keeps a single retained entry when the limit is one", async () => {
+    const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
+
+    expect(updateBfcacheSlotEntryOrder(["one", "two", "three"], "two", 1)).toEqual(["two"]);
+  });
+
+  it("normalizes non-finite or non-positive limits to a single entry", async () => {
+    const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
+
+    expect(updateBfcacheSlotEntryOrder(["one", "two"], "two", Number.NaN)).toEqual(["two"]);
+    expect(updateBfcacheSlotEntryOrder(["one", "two"], "two", 0)).toEqual(["two"]);
+    expect(updateBfcacheSlotEntryOrder(["one", "two"], "two", 1.9)).toEqual(["two"]);
+  });
+
+  it("ignores the active key when scanning the previous order", async () => {
+    const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
+
+    expect(updateBfcacheSlotEntryOrder(["one", "two", "three"], "two", 3)).toEqual([
+      "two",
+      "one",
+      "three",
+    ]);
+  });
+});
+
 describe("next/navigation shim", () => {
   it("exports usePathname, useSearchParams, useParams, useRouter", async () => {
     const nav = await import("../packages/vinext/src/shims/navigation.js");
@@ -359,6 +409,78 @@ describe("next/navigation shim", () => {
         "/current#content",
       );
       expect(scrollIntoView).toHaveBeenCalled();
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      if (previousDocument === undefined) {
+        delete (globalThis as any).document;
+      } else {
+        (globalThis as any).document = previousDocument;
+      }
+      vi.resetModules();
+    }
+  });
+
+  it("treats streamed App Router redirect meta as an MPA navigation", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousDocument = (globalThis as any).document;
+    const location = {
+      href: "http://localhost/redirect/redirect-with-loading",
+      origin: "http://localhost",
+      pathname: "/redirect/redirect-with-loading",
+      search: "",
+      hash: "",
+      assign: vi.fn(),
+      replace: vi.fn(),
+    };
+    const win = {
+      location,
+      history: {
+        state: null,
+        pushState: vi.fn(),
+        replaceState: vi.fn(),
+      },
+      scrollX: 0,
+      scrollY: 0,
+      scrollTo: vi.fn(),
+      addEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    };
+    const getElementById = vi.fn((id: string) => (id === "__next-page-redirect" ? { id } : null));
+    const navigate = vi.fn(async () => {});
+    const navigateExternal = vi.fn(async () => {});
+
+    (globalThis as any).window = win;
+    (globalThis as any).document = {
+      getElementById,
+      getElementsByName: vi.fn(() => []),
+    };
+
+    try {
+      vi.resetModules();
+      const { NAVIGATION_RUNTIME_KEY } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      (win as any)[NAVIGATION_RUNTIME_KEY] = {
+        bootstrap: {
+          routeManifest: null,
+          rsc: undefined,
+        },
+        functions: {
+          navigate,
+          navigateExternal,
+        },
+      };
+      const { navigateClientSide } = await import("../packages/vinext/src/shims/navigation.js");
+
+      await navigateClientSide("/redirect/result", "replace", true, true);
+
+      expect(getElementById).toHaveBeenCalledWith("__next-page-redirect");
+      expect(navigateExternal).toHaveBeenCalledWith("/redirect/result", "replace");
+      expect(navigate).not.toHaveBeenCalled();
+      expect(location.replace).not.toHaveBeenCalled();
     } finally {
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
@@ -4856,6 +4978,263 @@ describe('"use cache" runtime', () => {
     const r3 = await cached({ params: asyncSports });
     expect(r3).toEqual({ section: "sports", data: "data-for-sports" });
     expect(callCount).toBe(2); // Must have called the function again!
+  });
+
+  it("does not read page searchParams while deriving a use cache key", async () => {
+    const { registerCachedFunction, markAppPagePropsForUseCache } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const observeSearchParams = vi.fn();
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<Record<string, unknown>>;
+      }) => {
+        callCount++;
+        const params = await props.params;
+        return { slug: params.slug };
+      },
+      "test:page-props-searchparams",
+    );
+
+    const first = await cached(
+      markAppPagePropsForUseCache({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams(
+          { q: "first" },
+          { observeParamAccess: observeSearchParams },
+        ),
+      }),
+    );
+    expect(first).toEqual({ slug: "same" });
+    expect(callCount).toBe(1);
+    expect(observeSearchParams).not.toHaveBeenCalled();
+
+    const second = await cached(
+      markAppPagePropsForUseCache({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams(
+          { q: "second" },
+          { observeParamAccess: observeSearchParams },
+        ),
+      }),
+    );
+    expect(second).toEqual({ slug: "same" });
+    expect(callCount).toBe(1);
+    expect(observeSearchParams).not.toHaveBeenCalled();
+  });
+
+  it("omits page default export searchParams from use cache keys via transform metadata", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const observeSearchParams = vi.fn();
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<Record<string, unknown>>;
+      }) => {
+        callCount++;
+        const params = await props.params;
+        return { slug: params.slug };
+      },
+      "/fixture/app/cached/page.tsx:default",
+      "",
+      { appPageDefaultExport: true },
+    );
+
+    const first = await cached({
+      params: makeThenableParams({ slug: "same" }),
+      searchParams: makeThenableParams({ q: "first" }, { observeParamAccess: observeSearchParams }),
+    });
+    expect(first).toEqual({ slug: "same" });
+    expect(callCount).toBe(1);
+    expect(observeSearchParams).not.toHaveBeenCalled();
+
+    const second = await cached({
+      params: makeThenableParams({ slug: "same" }),
+      searchParams: makeThenableParams(
+        { q: "second" },
+        { observeParamAccess: observeSearchParams },
+      ),
+    });
+    expect(second).toEqual({ slug: "same" });
+    expect(callCount).toBe(1);
+    expect(observeSearchParams).not.toHaveBeenCalled();
+  });
+
+  it('rejects app page searchParams access inside page default "use cache"', async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const { makeObservedAppPageSearchParamsThenable } =
+      await import("../packages/vinext/src/server/app-page-search-params-observation.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<Record<string, string | string[]>>;
+      }) => {
+        callCount++;
+        const searchParams = await props.searchParams;
+        return { q: searchParams.q };
+      },
+      "/fixture/app/cached/page.tsx:default",
+      "",
+      { appPageDefaultExport: true },
+    );
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeObservedAppPageSearchParamsThenable({ q: "first" }),
+      }),
+    ).rejects.toThrow(/cannot be called inside "use cache"/);
+    expect(callCount).toBe(1);
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeObservedAppPageSearchParamsThenable({ q: "second" }),
+      }),
+    ).rejects.toThrow(/cannot be called inside "use cache"/);
+    expect(callCount).toBe(2);
+  });
+
+  it('does not store a page default "use cache" result after caught searchParams access', async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const { makeObservedAppPageSearchParamsThenable } =
+      await import("../packages/vinext/src/server/app-page-search-params-observation.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<Record<string, string | string[]>>;
+      }) => {
+        callCount++;
+        try {
+          const searchParams = await props.searchParams;
+          return { q: searchParams.q };
+        } catch {
+          return { q: `caught-${callCount}` };
+        }
+      },
+      "/fixture/app/cached/caught/page.tsx:default",
+      "",
+      { appPageDefaultExport: true },
+    );
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeObservedAppPageSearchParamsThenable({ q: "first" }),
+      }),
+    ).rejects.toThrow(/cannot be called inside "use cache"/);
+    expect(callCount).toBe(1);
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeObservedAppPageSearchParamsThenable({ q: "second" }),
+      }),
+    ).rejects.toThrow(/cannot be called inside "use cache"/);
+    expect(callCount).toBe(2);
+  });
+
+  it("does not infer page props from the cache id alone", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<{ q: string }>;
+      }) => {
+        callCount++;
+        const searchParams = await props.searchParams;
+        return { q: searchParams.q };
+      },
+      "/fixture/app/cached/page.tsx:default",
+    );
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams({ q: "first" }),
+      }),
+    ).resolves.toEqual({ q: "first" });
+    expect(callCount).toBe(1);
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams({ q: "second" }),
+      }),
+    ).resolves.toEqual({ q: "second" });
+    expect(callCount).toBe(2);
+  });
+
+  it("keeps arbitrary params/searchParams objects distinct in use cache keys", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<{ q: string }>;
+      }) => {
+        callCount++;
+        const searchParams = await props.searchParams;
+        return { q: searchParams.q };
+      },
+      "test:userland-params-searchparams",
+    );
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams({ q: "first" }),
+      }),
+    ).resolves.toEqual({ q: "first" });
+    expect(callCount).toBe(1);
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams({ q: "second" }),
+      }),
+    ).resolves.toEqual({ q: "second" });
+    expect(callCount).toBe(2);
   });
 
   // -----------------------------------------------------------------------
@@ -10166,20 +10545,28 @@ describe("next/form shim", () => {
     expect(html).toContain("Search");
   });
 
-  it("renders a form with method prop", async () => {
+  it("renders a form with method prop — strips method and warns", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const { default: Form } = await import("../packages/vinext/src/shims/form.js");
 
+    const warnSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const html = renderToStaticMarkup(
       React.createElement(
         Form,
-        { action: "/api/submit", method: "POST" },
+        // Cast to any: testing that a disallowed prop is stripped and warned about
+        { action: "/api/submit", method: "POST" } as any,
         React.createElement("button", { type: "submit" }, "Submit"),
       ),
     );
     expect(html).toContain("<form");
-    expect(html).toContain('method="POST"');
+    // method is a DISALLOWED_FORM_PROP — it must be stripped from the rendered output
+    expect(html).not.toContain('method="POST"');
+    // a dev warning must be emitted
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("<Form> does not support changing `method`"),
+    );
+    warnSpy.mockRestore();
   });
 
   it("renders children inside the form", async () => {

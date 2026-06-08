@@ -254,7 +254,7 @@ function buildCacheKey(prefix: string, pathname: string, suffix?: string): strin
  * Compute an ISR cache key for a given router type and pathname.
  * Long pathnames are hashed to stay within KV key-length limits (512 bytes).
  */
-export function isrCacheKey(router: "pages" | "app", pathname: string, buildId?: string): string {
+export function isrCacheKey(router: string, pathname: string, buildId?: string): string {
   const prefix = buildId ? `${router}:${buildId}` : router;
   return buildCacheKey(prefix, pathname);
 }

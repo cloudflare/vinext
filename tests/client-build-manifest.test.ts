@@ -7,6 +7,11 @@ import {
   findClientEntryFileFromManifest,
   readClientBuildManifest,
 } from "../packages/vinext/src/utils/client-build-manifest.js";
+import {
+  buildNextClientBuildManifestContent,
+  buildNextClientSsgManifestContent,
+  emitNextClientRuntimeManifests,
+} from "../packages/vinext/src/build/next-client-runtime-manifests.js";
 
 describe("client build manifest helpers", () => {
   let tmpDir: string;
@@ -112,5 +117,59 @@ describe("client build manifest helpers", () => {
     });
 
     expect(entry).toBe("cdn/_next/static/vinext-client-entry-5678.js");
+  });
+
+  it("emits Next.js runtime manifests under the configured assets directory and build ID", async () => {
+    emitNextClientRuntimeManifests({
+      clientDir,
+      assetsSubdir: "base/_next/static",
+      buildId: "build-123",
+      rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
+    });
+
+    const buildManifest = await fsp.readFile(
+      path.join(clientDir, "base", "_next", "static", "build-123", "_buildManifest.js"),
+      "utf-8",
+    );
+    expect(buildManifest).toContain("self.__BUILD_MANIFEST = ");
+    expect(buildManifest).toContain("__BUILD_MANIFEST_CB");
+
+    const ssgManifest = await fsp.readFile(
+      path.join(clientDir, "base", "_next", "static", "build-123", "_ssgManifest.js"),
+      "utf-8",
+    );
+    expect(ssgManifest).toBe(buildNextClientSsgManifestContent());
+  });
+
+  it("normalizes rewrites in the Next.js runtime build manifest", () => {
+    const content = buildNextClientBuildManifestContent({
+      beforeFiles: [
+        {
+          source: "/internal/:path*",
+          destination: "/rewritten/:path*",
+          has: [{ type: "header", key: "x-test", value: "1" }],
+        },
+      ],
+      afterFiles: [
+        {
+          source: "/external",
+          destination: "https://example.com/external",
+        },
+      ],
+      fallback: [
+        {
+          source: "/only-without-cookie",
+          destination: "/target",
+          missing: [{ type: "cookie", key: "seen" }],
+        },
+      ],
+    });
+
+    expect(content).toContain('"source":"/internal/:path*"');
+    expect(content).toContain('"destination":"/rewritten/:path*"');
+    expect(content).toContain('"source":"/external"');
+    expect(content).not.toContain("https://example.com/external");
+    expect(content).toContain('"sortedPages":[]');
+    expect(content).not.toContain('"missing"');
   });
 });
