@@ -1203,6 +1203,37 @@ export function viteConfigHasCacheAdapter(root: string): boolean {
 }
 
 /**
+ * Detect whether an existing user-authored Worker entry wires up a cache
+ * backend imperatively via one of the `setCacheHandler` / `setDataCacheHandler`
+ * / `setCdnCacheAdapter` setters. These setters are deprecated in favour of the
+ * declarative `vinext({ cache })` option, but older apps that scaffolded a KV
+ * cache handler into their Worker entry must keep working — so a deploy should
+ * not be blocked when the Worker entry already configures a backend.
+ *
+ * This is a heuristic text scan (it doesn't execute the entry), mirroring
+ * {@link viteConfigHasCacheAdapter}'s leniency: an unreadable Worker entry is
+ * treated as configured so a deploy is never blocked on a false negative. A
+ * missing Worker entry returns false (nothing to inspect — defer to other
+ * checks).
+ */
+export function workerEntryHasCacheHandler(root: string): boolean {
+  const candidates = [path.join(root, "worker", "index.ts"), path.join(root, "worker", "index.js")];
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) continue;
+    let content: string;
+    try {
+      content = fs.readFileSync(candidate, "utf-8");
+    } catch {
+      // unreadable — assume it might be fine
+      return true;
+    }
+    return /\b(?:setCacheHandler|setDataCacheHandler|setCdnCacheAdapter)\s*\(/.test(content);
+  }
+  // No Worker entry on disk — nothing to inspect here.
+  return false;
+}
+
+/**
  * Build the error thrown when an ISR/cached app is deployed without a cache
  * adapter configured in the Vite config. Production deployments need a
  * persistent cache backend; vinext no longer scaffolds one into the Worker
@@ -1214,14 +1245,12 @@ export function formatMissingCacheAdapterError(options: { configFile?: string })
     `[vinext] This app uses ISR / caching but no cache adapter is configured in ${configRef}.\n\n` +
     `  Production deployments need a persistent cache backend. Declare one on the\n` +
     `  vinext() plugin in ${configRef}:\n\n` +
-    `    import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";\n` +
     `    import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";\n\n` +
     `    export default defineConfig({\n` +
     `      plugins: [\n` +
     `        vinext({\n` +
     `          cache: {\n` +
     `            data: kvDataAdapter(), // KV-backed data cache (binding: VINEXT_KV_CACHE)\n` +
-    `            cdn: cdnAdapter(),     // optional: edge-managed page-level ISR\n` +
     `          },\n` +
     `        }),\n` +
     `        cloudflare(),\n` +
@@ -1522,7 +1551,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // no longer scaffolds a KV cache handler into the Worker entry — the backend
   // must be declared via `vinext({ cache })` so deploys don't silently fall
   // back to the in-memory handler (which loses all cached data per isolate).
-  if (info.hasISR && !viteConfigHasCacheAdapter(root)) {
+  //
+  // For backwards compat, older apps that wired a cache backend imperatively in
+  // their Worker entry (setCacheHandler / setDataCacheHandler / setCdnCacheAdapter)
+  // are still considered configured and must not be blocked.
+  if (info.hasISR && !viteConfigHasCacheAdapter(root) && !workerEntryHasCacheHandler(root)) {
     throw new Error(formatMissingCacheAdapterError({}));
   }
 
