@@ -651,19 +651,31 @@ function recordRequestScopedCacheLife(cacheLife: CacheLifeConfig): void {
 }
 
 /**
- * Bubble a `"use cache"` scope's tags up to the surrounding request's collected
- * tags so the enclosing page / route-handler ISR entry carries them. When a
- * cache scope is nested inside another (`parentCtx` present), the tags only need
- * to flow into the parent — `runCachedFunctionWithContext` already merges a
- * child's tags into its parent, and the outermost scope is what records onto the
- * request. This avoids tagging the request with a private/inner-only tag before
- * its parent has decided how to surface it. See issue #1453.
+ * Bubble a `"use cache"` scope's tags toward where they can drive invalidation.
+ *
+ * When this cache is nested inside another (`parentCtx` present), the tags flow
+ * into the parent scope so they end up on the outer cache entry — mirroring
+ * Next.js's `propagateCacheLifeAndTagsToRevalidateStore`. The outermost scope
+ * (no parent) instead records onto the surrounding request's collected tags, so
+ * the enclosing page / route-handler ISR entry carries them and `revalidateTag`
+ * can evict the rendered output (issue #1453).
+ *
+ * Used by both the data cache HIT and MISS paths. On MISS the parent-bubble for
+ * the *executed* scope also happens in `runCachedFunctionWithContext`; this keeps
+ * the HIT path (where that function never runs) correct without dropping a nested
+ * inner entry's stored tags. Deduped to keep tag lists tidy.
  */
 function propagateCacheTagsToRequest(tags: readonly string[] | undefined): void {
   if (!tags || tags.length === 0) return;
-  // A nested cache scope's tags are propagated to its parent scope instead, so
-  // only the outermost `"use cache"` writes onto the request tag list.
-  if (cacheContextStorage.getStore()) return;
+  const parentCtx = cacheContextStorage.getStore();
+  if (parentCtx) {
+    for (const tag of tags) {
+      if (!parentCtx.tags.includes(tag)) {
+        parentCtx.tags.push(tag);
+      }
+    }
+    return;
+  }
   addCollectedRequestTags(tags);
 }
 

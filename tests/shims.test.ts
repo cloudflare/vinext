@@ -4698,6 +4698,44 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(2);
   });
 
+  it("nested cacheTag bubbles to the outer cache entry even when the inner HITs", async () => {
+    // Regression for issue #1453 (nested-HIT path): when an inner "use cache"
+    // function HITs the data cache while nested inside an outer cache that is
+    // being (re)generated, the inner entry's stored tags must bubble into the
+    // outer entry's tags. Otherwise revalidateTag("inner-tag") evicts the inner
+    // entry but leaves the outer page/route-handler ISR entry stale.
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+
+    const inner = registerCachedFunction(async () => {
+      cacheTag("inner-tag");
+      return { inner: true };
+    }, "test:nested-inner");
+
+    const outer = registerCachedFunction(async () => {
+      cacheTag("outer-tag");
+      await inner();
+      return { outer: true };
+    }, "test:nested-outer");
+
+    // Warm the inner entry on its own so the next outer call HITs it.
+    await inner();
+    // Now build the outer entry; its body re-runs `inner()`, which HITs.
+    await outer();
+
+    const outerEntry = await handler.get("use-cache:test:nested-outer");
+    expect(outerEntry?.value).toHaveProperty("kind", "FETCH");
+    if (outerEntry?.value && outerEntry.value.kind === "FETCH") {
+      // The outer entry must carry both its own tag and the nested inner tag.
+      expect(outerEntry.value.tags).toContain("outer-tag");
+      expect(outerEntry.value.tags).toContain("inner-tag");
+    }
+  });
+
   it("private variant uses per-request cache", async () => {
     const { registerCachedFunction, clearPrivateCache } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
