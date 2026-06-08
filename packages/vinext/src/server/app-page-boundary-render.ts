@@ -503,10 +503,12 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
     // boundaries propagate as before.
     //
     // Navigation/HTTP-access signals (redirect(), notFound(), forbidden(),
-    // unauthorized()) thrown from within global-error must still reach their
-    // dedicated handlers, so they are re-thrown rather than degraded to a
-    // built-in 200. This keeps the fallback scoped to genuine render failures
-    // instead of swallowing every error from `renderWith`.
+    // unauthorized()) thrown from within global-error are re-thrown so they
+    // propagate rather than being swallowed into a built-in 200 (degrading a
+    // redirect() to a misleading success page). This keeps the fallback scoped
+    // to genuine render failures instead of catching every error from
+    // `renderWith`. (In this position a re-thrown signal reaches the top-level
+    // handler, the same as before this change — see app-page-request.ts.)
     if (
       errorBoundary.isGlobalError &&
       !isNavigationSignalError(renderError) &&

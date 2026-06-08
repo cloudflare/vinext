@@ -179,7 +179,7 @@ const throwingGlobalErrorModule = {
 
 function SignalThrowingGlobalErrorBoundary(): React.ReactNode {
   // Mimics notFound() called from inside global-error: a navigation signal that
-  // must reach its dedicated handler rather than being degraded to a built-in 200.
+  // must propagate rather than being degraded to a built-in 200.
   const signal = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
   throw signal;
 }
@@ -676,8 +676,8 @@ describe("app page boundary render helpers", () => {
   });
 
   it("re-throws navigation signals from a throwing global-error instead of degrading to the built-in fallback", async () => {
-    // A redirect()/notFound() thrown from inside global-error must propagate to
-    // its dedicated handler, not be swallowed into a built-in default 200.
+    // A redirect()/notFound() thrown from inside global-error must propagate,
+    // not be swallowed into a built-in default 200.
     const common = createCommonOptions();
 
     await expect(
