@@ -60,4 +60,15 @@ test.describe("interception-segments-two-levels-above", () => {
       await expect(page.locator("#intercepted")).toBeVisible();
     }
   });
+
+  test("layout.tsx under the interception marker wraps the intercepted page", async ({ page }) => {
+    await page.goto(FOO_BAR);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#link-hoge");
+    await expect(page.locator("#intercepted")).toBeVisible();
+    // The layout.tsx inside (..)(..)hoge/ must wrap the intercepting page
+    await expect(page.locator("#intercept-layout-wrapper")).toBeVisible();
+    await expect(page.locator("#intercept-layout-wrapper #intercepted")).toBeVisible();
+  });
 });

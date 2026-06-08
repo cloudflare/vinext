@@ -1396,6 +1396,30 @@ describe("App Router route graph builder", () => {
       });
     });
 
+    it("attaches sibling intercept to ancestor route when parent dir has no page.tsx", async () => {
+      // When the marker's immediate parent dir has no page, findOwnerRouteForDir must
+      // walk up to the nearest ancestor that has a route.
+      // Structure: deep/path/(...)target/page.tsx with NO deep/path/page.tsx.
+      // The intercept should attach to the root route ("/") via ancestor walk.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "target/page.tsx", EMPTY_PAGE);
+        // Note: no deep/page.tsx or deep/path/page.tsx — both intermediate dirs are empty
+        await writeAppFile(appDir, "deep/path/(...)target/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+        const intercepts = collectSiblingIntercepts(graph.routes);
+        // Must not be dropped — must attach to some route via ancestor walk
+        expect(intercepts.length).toBeGreaterThan(0);
+        const intercept = intercepts.find((ir) => ir.targetPattern === "/target");
+        expect(intercept).toBeDefined();
+        // The nearest ancestor route with a page is "/" (the root)
+        expect(intercept?.ownerRoute).toBe("/");
+      });
+    });
+
     it("promotes sibling interception into RouteManifest facts", async () => {
       // Sibling intercepts (no @slot) must appear in routeManifest.segmentGraph.interceptions
       // and be accessible via interceptionsBySlotId using the synthetic slot id.

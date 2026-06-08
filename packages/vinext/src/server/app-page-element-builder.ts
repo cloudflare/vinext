@@ -235,8 +235,40 @@ export async function buildPageElements<
       ? "body"
       : "head";
 
+  // For sibling intercepts, wrap the intercepting page in any layouts that
+  // live under the interception marker directory (interceptLayouts). In Next.js
+  // the intercepting route's segment layouts wrap the intercepting page; the
+  // slot-based path handles this inside buildSlotOverrides/app-page-route-wiring,
+  // but sibling intercepts bypass that path entirely. We apply the wrapping here
+  // so a layout.tsx adjacent to the (.) / (..) / (...) marker dir is respected.
+  let siblingInterceptElement: ReturnType<typeof createElement> | null = EffectivePageComponent
+    ? createElement(EffectivePageComponent, pageProps)
+    : null;
+  if (isSiblingIntercept && siblingInterceptElement !== null && opts?.interceptLayouts?.length) {
+    const siblingThenableParams = makeThenableParams(effectiveParams);
+    for (let i = opts.interceptLayouts.length - 1; i >= 0; i--) {
+      const layoutMod = opts.interceptLayouts[i] as AppPageModule | null | undefined;
+      const LayoutComponent = layoutMod?.default;
+      if (LayoutComponent) {
+        // Layout component types vary; cast to any to avoid overload-resolution
+        // issues in createElement while preserving runtime safety.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const LC = LayoutComponent as (props: any) => any;
+        siblingInterceptElement = createElement(
+          LC,
+          { params: siblingThenableParams },
+          siblingInterceptElement,
+        );
+      }
+    }
+  }
+
   return buildAppPageElements({
-    element: EffectivePageComponent ? createElement(EffectivePageComponent, pageProps) : null,
+    element: isSiblingIntercept
+      ? siblingInterceptElement
+      : EffectivePageComponent
+        ? createElement(EffectivePageComponent, pageProps)
+        : null,
     // Fall back to vinext's built-in default global error module so that
     // uncaught client render errors are caught by the route-level
     // <ErrorBoundary> wrapper in app-page-route-wiring.tsx, mirroring
