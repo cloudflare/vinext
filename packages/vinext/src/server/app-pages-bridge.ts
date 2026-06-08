@@ -22,6 +22,14 @@ type RenderPagesFallbackDependencies = {
     response: Response,
     middlewareContext: AppMiddlewareContext,
   ) => Response;
+  /**
+   * Returns the `__prerender_bypass` Set-Cookie header emitted by a
+   * `draftMode().enable()`/`disable()` call inside middleware, if any. Reading
+   * it clears it. Mirrors how App Router route handlers and page renders surface
+   * the middleware-enabled draft cookie so the same flow works when the request
+   * falls through to a Pages Router route.
+   */
+  getDraftModeCookieHeader: () => string | null | undefined;
 };
 
 type RenderPagesFallbackOptions = {
@@ -44,6 +52,7 @@ export async function renderPagesFallback(
     buildRequestHeaders,
     decodePathParams,
     applyRouteHandlerMiddlewareContext,
+    getDraftModeCookieHeader,
   } = dependencies;
 
   if (isRscRequest) return null;
@@ -72,7 +81,11 @@ export async function renderPagesFallback(
   if (pagesPathname.startsWith("/api/") || pagesPathname === "/api") {
     if (typeof pagesEntry.handleApiRoute !== "function") return null;
     const pagesApiResponse = await pagesEntry.handleApiRoute(pagesRequest, pagesUrl);
-    return applyRouteHandlerMiddlewareContext(pagesApiResponse, middlewareContext);
+    const draftCookie = getDraftModeCookieHeader();
+    return applyDraftModeCookie(
+      applyRouteHandlerMiddlewareContext(pagesApiResponse, middlewareContext),
+      draftCookie,
+    );
   }
 
   if (typeof pagesEntry.renderPage !== "function") return null;
@@ -83,5 +96,27 @@ export async function renderPagesFallback(
     undefined,
     middlewareContext.requestHeaders,
   );
-  return pagesRes.status !== 404 ? pagesRes : null;
+  if (pagesRes.status === 404) return null;
+  return applyDraftModeCookie(pagesRes, getDraftModeCookieHeader());
+}
+
+/**
+ * Append a middleware-emitted `__prerender_bypass` Set-Cookie header to a Pages
+ * Router fallback response. Returns the response unchanged when there is no
+ * draft cookie to add. App Router route handlers/page renders surface this same
+ * cookie via `finalizeRouteHandlerResponse`/the page response builder; this
+ * keeps draft-mode parity for requests that fall through to the Pages Router.
+ */
+function applyDraftModeCookie(
+  response: Response,
+  draftCookie: string | null | undefined,
+): Response {
+  if (!draftCookie) return response;
+  const headers = new Headers(response.headers);
+  headers.append("Set-Cookie", draftCookie);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
