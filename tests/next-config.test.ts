@@ -1424,6 +1424,23 @@ describe("resolveNextConfig expireTime", () => {
   });
 });
 
+describe("resolveNextConfig reactMaxHeadersLength", () => {
+  it("defaults to the Next.js default of 6000", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.reactMaxHeadersLength).toBe(6000);
+  });
+
+  it("uses a configured value", async () => {
+    const resolved = await resolveNextConfig({ reactMaxHeadersLength: 400 });
+    expect(resolved.reactMaxHeadersLength).toBe(400);
+  });
+
+  it("preserves 0 (disables emission) rather than falling back to the default", async () => {
+    const resolved = await resolveNextConfig({ reactMaxHeadersLength: 0 });
+    expect(resolved.reactMaxHeadersLength).toBe(0);
+  });
+});
+
 // Ported from Next.js: packages/next/src/server/config.ts:528-531
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/config.ts
 describe("resolveNextConfig basePath → assetPrefix parity fallback", () => {
@@ -1506,6 +1523,7 @@ describe("detectNextIntlConfig", () => {
       enablePrerenderSourceMaps: true,
       appShells: false,
       expireTime: 31_536_000,
+      reactMaxHeadersLength: 6000,
       buildId: "test-build-id",
       deploymentId: undefined,
       sassOptions: null,
