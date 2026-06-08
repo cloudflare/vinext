@@ -1161,6 +1161,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   const appRouterBasePath: string =
     typeof rscModule.__basePath === "string" ? rscModule.__basePath : "";
   const appRouterInlineCss = rscModule.__inlineCss === true;
+  const appRouterHasPagesDir = rscModule.__hasPagesDir === true;
   globalThis.__VINEXT_INLINE_CSS__ = appRouterInlineCss
     ? collectInlineCssManifest(clientDir, appRouterAssetPrefix)
     : undefined;
@@ -1170,17 +1171,14 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // before locating files on disk includes this path plus `_next/static/`.
   const appAssetPathPrefix = assetPrefixPathname(appRouterAssetPrefix);
   const appAssetBase = appRouterBasePath ? `${appRouterBasePath}/` : "/";
-  // Hybrid app/ + pages/ builds need the Pages client-entry globals installed so
-  // Pages fallback routes hydrate. This is intentionally inert for App-only
-  // deployments: there is no Pages client entry or pages manifest, so the
-  // globals resolve to undefined/{} and are only ever read by the Pages renderer
-  // (pages-asset-tags.ts), never the RSC bootstrap path.
-  installPagesClientAssetGlobals({
-    clientDir,
-    assetsSubdir: resolveAssetsDir(appRouterAssetPrefix),
-    assetBase: appAssetBase,
-    clientEntryLookup: "pages-client-entry",
-  });
+  if (appRouterHasPagesDir) {
+    installPagesClientAssetGlobals({
+      clientDir,
+      assetsSubdir: resolveAssetsDir(appRouterAssetPrefix),
+      assetBase: appAssetBase,
+      clientEntryLookup: "pages-client-entry",
+    });
+  }
 
   // Seed the memory cache with pre-rendered routes so the first request to
   // any pre-rendered page is a cache HIT instead of a full re-render.

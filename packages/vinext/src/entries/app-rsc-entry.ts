@@ -523,11 +523,12 @@ const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
 const __expireTime = ${JSON.stringify(expireTime)};
 const __htmlLimitedBots = ${JSON.stringify(htmlLimitedBots)};
 const __clientTraceMetadata = ${JSON.stringify(clientTraceMetadata)};
-// Re-exported for the App Router prod-server to consume at startup —
-// mirrors the embedded \`__basePath\` pattern (and Pages Router's
-// \`vinextConfig\` export). Empty string when unset.
+// Re-exported for the App Router prod-server to consume at startup — mirrors
+// the embedded \`__basePath\` pattern (and Pages Router's \`vinextConfig\`
+// export). Empty string when assetPrefix is unset.
 export const __assetPrefix = ${JSON.stringify(assetPrefix)};
 export const __inlineCss = ${JSON.stringify(inlineCss)};
+export const __hasPagesDir = ${JSON.stringify(hasPagesDir)};
 
 export function seedMemoryCacheFromPrerender(serverDir) {
   return __seedMemoryCacheFromPrerender(serverDir, {
