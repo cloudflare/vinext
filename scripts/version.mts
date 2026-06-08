@@ -27,6 +27,7 @@ import {
   collectReleaseCommits,
   conventionalParts,
   discoverPublishablePackages,
+  loadOverrides,
   releaseRangeStart,
 } from "./create-changeset.mts";
 
@@ -234,6 +235,11 @@ function resolveContributors(from: string, repository: string, commits: Commit[]
 function main(): void {
   const repository = process.env.GITHUB_REPOSITORY || "";
   const packages = discoverPublishablePackages();
+  // Load the same SHA-named changeset overrides the generator uses, so a commit
+  // reclassified there (e.g. feat → fix) lands in the matching changelog section.
+  // Must happen BEFORE `changeset version` below, which consumes and deletes the
+  // `.changeset/<sha>.md` files; the grouping later reads this in-memory copy.
+  const overrides = loadOverrides();
   const before = readVersions(packages);
 
   console.log("[version] Running `changeset version`...");
@@ -255,7 +261,7 @@ function main(): void {
     // before[name] would derive a ref like `v0.0.1` that need not exist — for a
     // brand-new package that throws and yields an empty changelog (see #1759).
     const from = releaseRangeStart(name);
-    const commits = collectReleaseCommits(from, name, packages);
+    const commits = collectReleaseCommits(from, name, packages, overrides);
     const body = groupedChangelogBody(commits);
     const contributors = repository ? resolveContributors(from, repository, commits) : [];
 

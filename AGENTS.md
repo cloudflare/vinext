@@ -335,6 +335,8 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
 
 - **NEVER create changesets manually.** Changesets are generated automatically from Conventional Commits during CI by `scripts/create-changeset.mts` (see `.github/workflows/release.yml`). Do not run `pnpm changeset` or hand-author `.changeset/*.md` files. Instead, write a well-formed Conventional Commit message (e.g. `fix(build): ...`, `feat(router): ...`) and let CI produce the changeset.
 
+- **To retroactively reclassify an already-merged commit, commit a changeset named after its SHA: `.changeset/<sha>.md`.** Because auto-changesets are regenerated from commit subjects every push, you cannot hand-edit them to fix a mislabeled commit. A SHA-named changeset reclassifies that commit to the bump in its frontmatter, overriding the semver bump, the changelog section, and the changelog message: the frontmatter bump sets the section (`patch`→Bug Fixes, `minor`→Features, `major`→Features (breaking); an empty/package-less one drops the commit from the release entirely), and the changeset **body becomes that commit's changelog entry** (leave it empty to keep the original commit subject). The file is a real changeset, so it's consumed and deleted on the next release (no cleanup needed). See `.changeset/README.md` for the full format.
+
 - **PR workflow:**
   1. Create a branch: `git checkout -b fix/descriptive-name`
   2. Make changes and commit

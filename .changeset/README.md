@@ -24,3 +24,55 @@ You can still author changesets by hand. A human-committed `.changeset/*.md` on
 auto-generated ones when the Version PR is built. Add one with `pnpm changeset`
 (or `vp exec changeset`) whenever you want to override or supplement the
 commit-driven bump.
+
+## Retroactively reclassifying a commit (`.changeset/<sha>.md`)
+
+A normal hand-authored changeset can only _raise_ a bump (changesets takes the
+max), so it can't downgrade a commit that already merged. And because the
+auto-changesets are regenerated from commit subjects on every push, you can't
+edit them to fix a mislabeled commit either.
+
+For that, **commit a changeset whose filename is the commit's SHA** —
+`.changeset/<sha>.md`. The release tooling treats that commit as the bump
+declared in the changeset's frontmatter instead of the bump implied by its
+subject, and uses the changeset **body as the commit's changelog entry** —
+overriding the semver bump, the changelog section, **and** the message. This is
+the supported way to, e.g., demote a PR that merged as `feat:` (minor) to a
+`fix:` (patch) and reword it:
+
+```md
+---
+"vinext": patch
+---
+
+correct interception route matching for sibling segments (#1234)
+```
+
+Save that as `.changeset/6005541c0a1b2c3d.md` (use the full commit SHA; a 7+ char
+prefix also works). The body becomes the bullet under **Bug Fixes**:
+`- correct interception route matching for sibling segments (#1234)`.
+
+**How the frontmatter bump maps to a changelog section:**
+
+| Frontmatter bump       | Treated as | Changelog section |
+| ---------------------- | ---------- | ----------------- |
+| `patch`                | `fix`      | Bug Fixes         |
+| `minor`                | `feat`     | Features          |
+| `major`                | `feat!`    | Features          |
+| _(no package / empty)_ | `chore`    | _(dropped)_       |
+
+An empty / package-less SHA-named changeset therefore **suppresses** the commit:
+no release, and it's dropped from the changelog.
+
+Notes:
+
+- The file is a real changeset: `changesets/action` consumes it for the bump and
+  **deletes it on release**, so overrides never accumulate — no cleanup needed.
+- The **body becomes the changelog entry** for that commit, rendered as a plain
+  bullet (replacing the commit subject's description, scope and all). Keep it to
+  one line, lowercase-leading, with the PR ref — matching the other entries. If
+  you leave the body empty, the original commit subject description is kept and
+  only the type is reclassified.
+- Declare the same package(s) the commit touched, at the bump you want.
+- Both `scripts/create-changeset.mts` (the bump) and `scripts/version.mts` (the
+  changelog grouping + message) honor it, keyed off the SHA in the filename.
