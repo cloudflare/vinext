@@ -79,6 +79,7 @@ import {
 } from "./server/instrumentation.js";
 import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { precompressAssets } from "./build/precompress.js";
+import { ensureAssetsIgnore } from "./build/assets-ignore.js";
 import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
@@ -4808,6 +4809,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             fs.mkdirSync(clientDir, { recursive: true });
             fs.writeFileSync(headersPath, headersContent);
           }
+
+          // Keep Vite build metadata (the `.vite/` manifests) out of the
+          // deployed asset bundle. The Cloudflare ASSETS binding serves any
+          // uploaded file matching the request path BEFORE the Worker runs, so
+          // without this the build/SSR manifests would be publicly fetchable at
+          // `/.vite/manifest.json` — leaking the source-file → chunk mapping and
+          // unlinked route paths. The Node prod server blocks `/.vite/` for the
+          // same reason (server/static-file-cache.ts); `.assetsignore` is the
+          // Cloudflare-side equivalent.
+          ensureAssetsIgnore(clientDir);
         },
       },
     },

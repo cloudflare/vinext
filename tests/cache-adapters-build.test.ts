@@ -199,5 +199,17 @@ export default createAdapter;
     // its presence proves the local adapter module was bundled even though the
     // build ran minified (the production default).
     expect(buildOutput).toContain(LOCAL_ADAPTER_MARKER);
+
+    // Security regression: the Cloudflare build must emit a `.assetsignore` that
+    // excludes Vite's `.vite/` build metadata from the deployed asset bundle.
+    // The ASSETS binding serves matching files before the Worker runs, so
+    // without this `/.vite/manifest.json` would be publicly fetchable (it leaks
+    // the source-file → chunk mapping, including unlinked routes). The Node prod
+    // server blocks `/.vite/` for the same reason. Reuses this build to avoid a
+    // second expensive Cloudflare build in CI.
+    const assetsIgnore = fs.readFileSync(path.join(root, "dist/client/.assetsignore"), "utf-8");
+    expect(assetsIgnore.split("\n").map((l) => l.trim())).toContain(".vite");
+    // The manifest exists on disk (the build reads it) but is now excluded.
+    expect(fs.existsSync(path.join(root, "dist/client/.vite/manifest.json"))).toBe(true);
   }, 60_000);
 });
