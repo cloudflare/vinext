@@ -22,8 +22,26 @@ type BrowserPopstateRestoreDeps = {
   shouldSkipScrollRestore: (navId: number) => boolean;
 };
 
+type SynchronousPopstateScrollRestoreDeps = {
+  getActiveNavigationId: () => number;
+  isCurrentNavigation: (navId: number) => boolean;
+  markScrollRestoreConsumed: (navId: number) => void;
+  restorePopstateScrollPosition: RestoreScrollPosition;
+};
+
 function hasSavedScrollPosition(state: unknown): boolean {
   return Boolean(state && typeof state === "object" && "__vinext_scrollY" in state);
+}
+
+export function restoreSynchronousPopstateScrollPosition(
+  deps: SynchronousPopstateScrollRestoreDeps,
+  state: unknown,
+): void {
+  const navId = deps.getActiveNavigationId();
+  deps.markScrollRestoreConsumed(navId);
+  deps.restorePopstateScrollPosition(state, {
+    shouldContinue: () => deps.isCurrentNavigation(navId),
+  });
 }
 
 function scheduleAfterFrame(callback: () => void): void {

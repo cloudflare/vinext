@@ -127,7 +127,10 @@ import {
   isVisitedResponseCacheEntryFresh,
   type VisitedResponseCacheEntry,
 } from "./app-visited-response-cache.js";
-import { createPopstateRestoreHandler } from "./app-browser-popstate.js";
+import {
+  createPopstateRestoreHandler,
+  restoreSynchronousPopstateScrollPosition,
+} from "./app-browser-popstate.js";
 import { DevRecoveryBoundary, RedirectBoundary } from "vinext/shims/error-boundary";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/slot";
@@ -1306,7 +1309,7 @@ function restorePopstateScrollPosition(
   const y = Number(state.__vinext_scrollY);
   const x = "__vinext_scrollX" in state ? Number(state.__vinext_scrollX) : 0;
 
-  retryScrollTo(x, y, { shouldContinue });
+  retryScrollTo(x, y, { minFrames: 1, shouldContinue });
 }
 
 function isSameAppRoutePopstateTarget(href: string): boolean {
@@ -2343,9 +2346,17 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     }
     handlePopstate(event);
     if (restoreHistoryStateSnapshot(event.state)) {
-      synchronousPopstateScrollRestoreNavigationId =
-        browserNavigationController.getActiveNavigationId();
-      restorePopstateScrollPosition(event.state);
+      restoreSynchronousPopstateScrollPosition(
+        {
+          getActiveNavigationId: () => browserNavigationController.getActiveNavigationId(),
+          isCurrentNavigation: (navId) => browserNavigationController.isCurrentNavigation(navId),
+          markScrollRestoreConsumed: (navId) => {
+            synchronousPopstateScrollRestoreNavigationId = navId;
+          },
+          restorePopstateScrollPosition,
+        },
+        event.state,
+      );
     }
   });
 

@@ -19,7 +19,10 @@ import {
   hydrateRootInTransition,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
-import { createPopstateRestoreHandler } from "../packages/vinext/src/server/app-browser-popstate.js";
+import {
+  createPopstateRestoreHandler,
+  restoreSynchronousPopstateScrollPosition,
+} from "../packages/vinext/src/server/app-browser-popstate.js";
 import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   resolveRscCompatibilityNavigationDecision,
@@ -5435,6 +5438,34 @@ describe("app browser entry bfcacheId helpers", () => {
 });
 
 describe("createPopstateRestoreHandler", () => {
+  it("guards synchronous popstate scroll retry to the active navigation", () => {
+    const scrollState = { __vinext_scrollY: 10 };
+    let activeNavigationId = 3;
+    let consumedNavigationId: number | null = null;
+    let shouldContinue: (() => boolean) | undefined;
+
+    restoreSynchronousPopstateScrollPosition(
+      {
+        getActiveNavigationId: () => activeNavigationId,
+        isCurrentNavigation: (navId) => navId === activeNavigationId,
+        markScrollRestoreConsumed: (navId) => {
+          consumedNavigationId = navId;
+        },
+        restorePopstateScrollPosition: (state, options) => {
+          expect(state).toBe(scrollState);
+          shouldContinue = options?.shouldContinue;
+        },
+      },
+      scrollState,
+    );
+
+    expect(consumedNavigationId).toBe(3);
+    expect(shouldContinue?.()).toBe(true);
+
+    activeNavigationId = 4;
+    expect(shouldContinue?.()).toBe(false);
+  });
+
   it("restores scroll only after the latest popstate navigation commits", async () => {
     const restoreCalls: unknown[] = [];
     const firstNavigation = createDeferred();
