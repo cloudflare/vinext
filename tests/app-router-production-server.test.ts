@@ -886,4 +886,39 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).toContain('id="middleware-header">hello-from-middleware<');
     expect(html).toContain('id="cookie-count">0<');
   });
+
+  // Regression for cloudflare/vinext#1480: a node-runtime middleware that
+  // matches the action path and reads the request body on POST (then falls
+  // through with `NextResponse.next()`) must not prevent the server-action
+  // POST from being intercepted and executed. The app-basic middleware matches
+  // `/nextjs-compat/action-node-mw` and consumes the body for POSTs, mirroring
+  // Next.js' `middleware-node.js`. This runs against the production server
+  // because the upstream failure surfaced in the deploy suite.
+  it("dispatches a server action POST under a body-reading node middleware", async () => {
+    const html = await (await fetch(`${baseUrl}/nextjs-compat/action-node-mw`)).text();
+    // Production action ids are hashed; extract the id from the bound form's
+    // `$ACTION_1:0` reference payload rather than hardcoding it.
+    const refValue = html.match(/name="\$ACTION_[^"]*:0"\s+value="([^"]+)"/)?.[1];
+    expect(refValue).toBeDefined();
+    const decoded = refValue!
+      .replace(/&quot;/g, '"')
+      .replace(/&amp;/g, "&");
+    const actionId = JSON.parse(decoded).id as string;
+    expect(actionId).toBeTruthy();
+
+    const res = await fetch(`${baseUrl}/nextjs-compat/action-node-mw.rsc`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+        "x-rsc-action": actionId,
+      },
+      body: JSON.stringify(["world"]),
+    });
+    const text = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-nextjs-action-not-found")).toBeNull();
+    expect(text).not.toContain("Server action not found");
+    expect(text).toContain("echo:world");
+  });
 });
