@@ -413,6 +413,68 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  // Regression for https://github.com/cloudflare/vinext/issues/1535
+  // Ported from Next.js: test/e2e/app-dir/parallel-routes-catchall/
+  // ("should match correctly when defining an explicit slot but no page").
+  describe("explicit slot but no page (issue #1535)", () => {
+    it("falls children through to the sibling catch-all for a slot-only sub-route", async () => {
+      // /baz: @slot/baz/page.tsx exists, but there is no baz/page.tsx and no
+      // root default.tsx. Next.js serves /baz's children from the sibling
+      // [...catchAll]/page.tsx ("main catchall") while the @slot slot renders
+      // @slot/baz/page.tsx ("baz slot"). Without the catch-all children
+      // fallback the synthetic /baz route shadows the catch-all with an empty
+      // children prop and the request hangs.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/foo/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/baz/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/[...catchAll]/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "[...catchAll]/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "foo/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "bar/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const patterns = graph.routes.map((r) => r.pattern).sort();
+
+        // The slot-only sub-route must materialise so @slot/baz wins over the
+        // slot's own catch-all.
+        expect(patterns).toContain("/baz");
+        const baz = findRoute(graph.routes, "/baz");
+
+        // Children fall through to the sibling catch-all (not null → no hang).
+        expect(baz.pagePath).toBe(path.join(appDir, "[...catchAll]/page.tsx"));
+
+        // The @slot slot resolves to the explicit @slot/baz page, not the
+        // slot's catch-all.
+        const slot = baz.parallelSlots.find((s) => s.name === "slot");
+        expect(slot?.pagePath).toBe(path.join(appDir, "@slot/baz/page.tsx"));
+
+        // The top-level catch-all is still present for fully-unmatched paths.
+        expect(patterns).toContain("/:catchAll+");
+      });
+    });
+
+    it("prefers a children default.tsx over the catch-all when both exist", async () => {
+      // When the parent provides a default.tsx for the children slot, it wins
+      // over a sibling catch-all (default.tsx is the canonical children
+      // fallback). This guards the new catch-all fallback from displacing it.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/baz/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "[...catchAll]/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const baz = findRoute(graph.routes, "/baz");
+        expect(baz.pagePath).toBe(path.join(appDir, "default.tsx"));
+      });
+    });
+  });
+
   it("keeps route groups transparent in materialized URL patterns", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);

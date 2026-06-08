@@ -1094,6 +1094,17 @@ function discoverSlotSubRoutes(
     const childrenDefault = findFile(parentPageDir, "default", matcher);
     if (parentRoute.pagePath && !childrenDefault) continue;
 
+    // When a slot sub-route has no children page of its own (no page.tsx for
+    // the sub-path and no default.tsx for the children slot), Next.js falls
+    // the children prop through to a sibling catch-all page at the parent
+    // level. e.g. `@slot/baz/page.tsx` exists but `baz/page.tsx` does not, so
+    // `/baz` is served by `[...catchAll]/page.tsx` for children and by
+    // `@slot/baz/page.tsx` for the slot. Without this, the synthetic sub-route
+    // shadows the catch-all with an empty children prop and the request hangs.
+    // See test/e2e/app-dir/parallel-routes-catchall ("explicit slot but no page").
+    const childrenCatchAll = childrenDefault ? null : findCatchAllPage(parentPageDir, matcher);
+    const childrenFallback = childrenDefault ?? childrenCatchAll;
+
     for (const { rawSegments, converted: convertedSubRoute, slotPages } of subPathMap.values()) {
       const {
         urlSegments: urlParts,
@@ -1140,7 +1151,7 @@ function discoverSlotSubRoutes(
       const newRoute: AppRouteGraphRoute = {
         ids: createAppRouteSemanticIds({
           pattern,
-          pagePath: childrenDefault,
+          pagePath: childrenFallback,
           routePath: null,
           routeSegments: [...parentRoute.routeSegments, ...rawSegments],
           layoutTreePositions: parentRoute.layoutTreePositions,
@@ -1148,7 +1159,9 @@ function discoverSlotSubRoutes(
           slots: subSlots,
         }),
         pattern,
-        pagePath: childrenDefault, // children slot uses parent's default.tsx as page
+        // children slot uses the parent's default.tsx, or — when none exists —
+        // a sibling catch-all page so the slot sub-route still renders children.
+        pagePath: childrenFallback,
         routePath: null,
         layouts: parentRoute.layouts,
         templates: parentRoute.templates,
@@ -1231,6 +1244,38 @@ function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPa
   scan(slotDir);
   perMatcher.set(slotDir, results);
   return results;
+}
+
+/**
+ * Find a sibling catch-all page directly under `dir`, i.e. a `[...slug]` or
+ * `[[...slug]]` directory that contains a `page` file. Returns the absolute
+ * page path, or null when no catch-all sibling exists.
+ *
+ * Used as the children fallback for slot-only sub-routes (an explicit `@slot`
+ * sub-page with no corresponding children page or `default.tsx`): Next.js
+ * serves the children prop from the nearest catch-all, so `/baz` renders
+ * `[...catchAll]/page.tsx` for children while `@slot/baz/page.tsx` fills the
+ * slot. Optional catch-alls (`[[...slug]]`) qualify because they also match a
+ * single extra segment.
+ */
+function findCatchAllPage(dir: string, matcher: ValidFileMatcher): string | null {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const name = entry.name;
+    const isCatchAll =
+      (name.startsWith("[...") && name.endsWith("]")) ||
+      (name.startsWith("[[...") && name.endsWith("]]"));
+    if (!isCatchAll) continue;
+    const page = findFile(path.join(dir, name), "page", matcher);
+    if (page) return page;
+  }
+  return null;
 }
 
 /**
