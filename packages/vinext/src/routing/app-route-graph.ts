@@ -1102,6 +1102,13 @@ function discoverSlotSubRoutes(
     // `@slot/baz/page.tsx` for the slot. Without this, the synthetic sub-route
     // shadows the catch-all with an empty children prop and the request hangs.
     // See test/e2e/app-dir/parallel-routes-catchall ("explicit slot but no page").
+    //
+    // Known limitation: the synthetic route's URL pattern is static (e.g.
+    // `/baz`), so the catch-all children page receives empty params — Next.js
+    // would pass `params.catchAll = ["baz"]`. The route still renders correctly;
+    // only a catch-all children page that *reads* its catch-all param diverges.
+    // Populating that param needs the slot-override style request-time pattern
+    // matching threaded to the children prop; tracked as a follow-up.
     const childrenCatchAll = childrenDefault ? null : findCatchAllPage(parentPageDir, matcher);
     const childrenFallback = childrenDefault ?? childrenCatchAll;
 

@@ -456,6 +456,30 @@ describe("App Router route graph builder", () => {
       });
     });
 
+    it("builds the slot-only catch-all sub-route with a static pattern (documents params limitation)", async () => {
+      // The synthetic /baz route's URL pattern is static, so its catch-all
+      // children page receives empty params at render time (Next.js would pass
+      // params.catchAll = ["baz"]). Lock in the current shape so a future fix
+      // that populates the catch-all param has to update this assertion. See
+      // the "Known limitation" note in discoverSlotSubRoutes.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/baz/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "[...catchAll]/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const baz = findRoute(graph.routes, "/baz");
+
+        expect(baz.pagePath).toBe(path.join(appDir, "[...catchAll]/page.tsx"));
+        // Static pattern → no catch-all param captured for the children page.
+        expect(baz.isDynamic).toBe(false);
+        expect(baz.params).toEqual([]);
+        expect(baz.patternParts).toEqual(["baz"]);
+      });
+    });
+
     it("prefers a children default.tsx over the catch-all when both exist", async () => {
       // When the parent provides a default.tsx for the children slot, it wins
       // over a sibling catch-all (default.tsx is the canonical children
