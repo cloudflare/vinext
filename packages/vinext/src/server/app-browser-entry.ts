@@ -630,7 +630,14 @@ function syncCurrentHistoryStatePreviousNextUrl(
   if (isHistoryStateNavigationMetadataInSync(window.history.state, previousNextUrl, bfcacheIds)) {
     return;
   }
-  window.history.replaceState(nextHistoryState, "", window.location.href);
+  // Retry via the same notify-suppressing path rather than the patched
+  // window.history.replaceState. This is a URL-unchanged metadata sync (refresh
+  // or traversal commit), so it must not run the patched-path side effects —
+  // commitClientNavigationState and notifyLinkNavigationStart — which would
+  // otherwise clear an unrelated <Link>'s useLinkStatus() pending state mid
+  // navigation on Safari. The browser sees the same native replaceState call,
+  // so the retry behaviour is unchanged.
+  replaceHistoryStateWithoutNotify(nextHistoryState, "", window.location.href);
 }
 
 function createActionInitiationSnapshot() {
