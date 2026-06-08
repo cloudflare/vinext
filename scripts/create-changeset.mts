@@ -296,10 +296,12 @@ function firstCommit(): string {
  * frontmatter bump maps to the conventional type used for both bump derivation
  * and changelog grouping (see bumpToOverride). A SHA-named changeset with no
  * package bump *suppresses* the commit (treated as `chore` → no release, dropped
- * from the changelog). The body is a human rationale; like every changeset in
- * this repo it does not appear in the generated changelog (which is rebuilt from
- * commit subjects), so the commit shows under its reclassified heading with its
- * original description.
+ * from the changelog).
+ *
+ * The changeset body *also overrides the commit's changelog message*: when the
+ * body is non-empty it becomes the entry text for that commit (rendered as a
+ * plain bullet, replacing the commit subject's description). An empty body keeps
+ * the original subject description and just reclassifies the type.
  */
 export type CommitOverride = {
   /** Full SHA or an unambiguous prefix (>= MIN_OVERRIDE_SHA_LEN chars) to reclassify. */
@@ -308,6 +310,8 @@ export type CommitOverride = {
   type: string;
   /** Treat the commit as a breaking change (major bump). Defaults to false. */
   breaking?: boolean;
+  /** Changelog entry text from the changeset body; overrides the commit subject. */
+  message?: string;
 };
 
 /** Shortest SHA prefix accepted as a changeset override filename (git's default). */
@@ -343,6 +347,17 @@ export function changesetFrontmatterBump(md: string): Bump | null {
 }
 
 /**
+ * The changeset body (everything after the frontmatter), collapsed to a single
+ * line for use as a changelog bullet, or null when the body is empty. Pure.
+ */
+export function changesetBodyMessage(md: string): string | null {
+  const m = md.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?([\s\S]*)$/);
+  if (!m) return null;
+  const text = m[1].replace(/\s+/g, " ").trim();
+  return text || null;
+}
+
+/**
  * Map an override changeset's frontmatter bump to the conventional type used for
  * both bump derivation and changelog grouping: patch → fix (Bug Fixes), minor →
  * feat (Features), major → feat + breaking. Pure.
@@ -364,11 +379,20 @@ export function findOverride(sha: string, overrides: CommitOverride[]): CommitOv
 
 /**
  * Rewrite a Conventional-Commit subject so its type token becomes `type` (with a
- * `!` breaking marker when asked), preserving scope, description, and any
- * trailing ` (#123)` PR ref. A non-conventional subject is prefixed as-is. Pure.
+ * `!` breaking marker when asked). With no `message`, the scope, description, and
+ * any trailing ` (#123)` PR ref are preserved (a non-conventional subject is
+ * prefixed as-is). With a `message`, it replaces the description and the scope is
+ * dropped, so the changelog renders a plain `- <message>` bullet the author fully
+ * controls. Pure.
  */
-export function rewriteSubjectType(subject: string, type: string, breaking: boolean): string {
+export function rewriteSubjectType(
+  subject: string,
+  type: string,
+  breaking: boolean,
+  message?: string,
+): string {
   const bang = breaking ? "!" : "";
+  if (message != null && message !== "") return `${type}${bang}: ${message}`;
   const parts = conventionalParts(subject);
   if (!parts) return `${type}${bang}: ${subject.trim()}`;
   const scope = parts.scope ? `(${parts.scope})` : "";
@@ -377,18 +401,23 @@ export function rewriteSubjectType(subject: string, type: string, breaking: bool
 
 /**
  * Apply per-commit overrides to a commit list. For each matched commit the
- * subject is rewritten to its overridden type and the body is cleared, so every
- * downstream consumer (bump computation, changeset summary, and the changelog
- * grouping in version.mts) sees one authoritative reclassification — including
- * dropping any stale `BREAKING CHANGE:` footer that would otherwise re-escalate
- * the bump. Unmatched commits pass through untouched. Pure.
+ * subject is rewritten to its overridden type (and message, when the changeset
+ * body provided one) and the body is cleared, so every downstream consumer (bump
+ * computation, changeset summary, and the changelog grouping in version.mts) sees
+ * one authoritative reclassification — including dropping any stale
+ * `BREAKING CHANGE:` footer that would otherwise re-escalate the bump. Unmatched
+ * commits pass through untouched. Pure.
  */
 export function applyOverrides(commits: Commit[], overrides: CommitOverride[]): Commit[] {
   if (overrides.length === 0) return commits;
   return commits.map((c) => {
     const o = findOverride(c.sha, overrides);
     if (!o) return c;
-    return { ...c, subject: rewriteSubjectType(c.subject, o.type, o.breaking === true), body: "" };
+    return {
+      ...c,
+      subject: rewriteSubjectType(c.subject, o.type, o.breaking === true, o.message),
+      body: "",
+    };
   });
 }
 
@@ -405,9 +434,16 @@ export function loadOverrides(dir: string = CHANGESET_DIR): CommitOverride[] {
     if (!entry.isFile()) continue;
     const commit = shaFromChangesetFilename(entry.name);
     if (!commit) continue;
-    const bump = changesetFrontmatterBump(readFileSync(join(dir, entry.name), "utf8"));
+    const md = readFileSync(join(dir, entry.name), "utf8");
+    const bump = changesetFrontmatterBump(md);
     const { type, breaking } = bump ? bumpToOverride(bump) : { type: "chore", breaking: false }; // package-less changeset → suppress
-    overrides.push({ commit, type, ...(breaking ? { breaking: true } : {}) });
+    const message = changesetBodyMessage(md);
+    overrides.push({
+      commit,
+      type,
+      ...(breaking ? { breaking: true } : {}),
+      ...(message ? { message } : {}),
+    });
   }
   return overrides;
 }

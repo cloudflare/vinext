@@ -35,20 +35,22 @@ edit them to fix a mislabeled commit either.
 For that, **commit a changeset whose filename is the commit's SHA** —
 `.changeset/<sha>.md`. The release tooling treats that commit as the bump
 declared in the changeset's frontmatter instead of the bump implied by its
-subject, overriding both the semver bump **and** the changelog section. This is
+subject, and uses the changeset **body as the commit's changelog entry** —
+overriding the semver bump, the changelog section, **and** the message. This is
 the supported way to, e.g., demote a PR that merged as `feat:` (minor) to a
-`fix:` (patch):
+`fix:` (patch) and reword it:
 
 ```md
 ---
 "vinext": patch
 ---
 
-Merged as feat but was only a bug fix in practice (#1234).
+correct interception route matching for sibling segments (#1234)
 ```
 
 Save that as `.changeset/6005541c0a1b2c3d.md` (use the full commit SHA; a 7+ char
-prefix also works).
+prefix also works). The body becomes the bullet under **Bug Fixes**:
+`- correct interception route matching for sibling segments (#1234)`.
 
 **How the frontmatter bump maps to a changelog section:**
 
@@ -66,10 +68,11 @@ Notes:
 
 - The file is a real changeset: `changesets/action` consumes it for the bump and
   **deletes it on release**, so overrides never accumulate — no cleanup needed.
-- The body is a human rationale for the git history. Like every changeset in this
-  repo it does **not** appear in the generated changelog (which is rebuilt from
-  commit subjects), so the commit shows under its reclassified heading with its
-  original subject description.
+- The **body becomes the changelog entry** for that commit, rendered as a plain
+  bullet (replacing the commit subject's description, scope and all). Keep it to
+  one line, lowercase-leading, with the PR ref — matching the other entries. If
+  you leave the body empty, the original commit subject description is kept and
+  only the type is reclassified.
 - Declare the same package(s) the commit touched, at the bump you want.
 - Both `scripts/create-changeset.mts` (the bump) and `scripts/version.mts` (the
-  changelog grouping) honor it, keyed off the SHA in the filename.
+  changelog grouping + message) honor it, keyed off the SHA in the filename.

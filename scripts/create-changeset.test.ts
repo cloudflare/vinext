@@ -8,6 +8,7 @@ import {
   affectedPackages,
   applyOverrides,
   bumpToOverride,
+  changesetBodyMessage,
   changesetFrontmatterBump,
   type Commit,
   type CommitOverride,
@@ -255,6 +256,26 @@ describe("changesetFrontmatterBump", () => {
   });
 });
 
+describe("changesetBodyMessage", () => {
+  it("returns the body after the frontmatter, collapsed to one line", () => {
+    expect(changesetBodyMessage('---\n"vinext": patch\n---\n\nFix the thing (#9).')).toBe(
+      "Fix the thing (#9).",
+    );
+  });
+
+  it("collapses internal whitespace and newlines into single spaces", () => {
+    expect(changesetBodyMessage('---\n"vinext": patch\n---\n\nLine one\nLine two\n\n- a   b')).toBe(
+      "Line one Line two - a b",
+    );
+  });
+
+  it("returns null for an empty body or missing frontmatter", () => {
+    expect(changesetBodyMessage('---\n"vinext": patch\n---\n')).toBeNull();
+    expect(changesetBodyMessage('---\n"vinext": patch\n---\n\n   \n')).toBeNull();
+    expect(changesetBodyMessage("no frontmatter here")).toBeNull();
+  });
+});
+
 describe("bumpToOverride", () => {
   it("maps bump level → conventional type for grouping", () => {
     expect(bumpToOverride("patch")).toEqual({ type: "fix", breaking: false });
@@ -276,9 +297,9 @@ describe("loadOverrides", () => {
     expect(loadOverrides(join(dir, "does-not-exist"))).toEqual([]);
   });
 
-  it("derives overrides from SHA-named changesets and ignores everything else", () => {
-    writeFileSync(join(dir, "6005541.md"), '---\n"vinext": patch\n---\n\nWas only a fix.');
-    writeFileSync(join(dir, "abcdef0123.md"), '---\n"vinext": minor\n---\n');
+  it("derives overrides (type + message) from SHA-named changesets, ignoring everything else", () => {
+    writeFileSync(join(dir, "6005541.md"), '---\n"vinext": patch\n---\n\nWas only a fix (#9).');
+    writeFileSync(join(dir, "abcdef0123.md"), '---\n"vinext": minor\n---\n'); // no body
     writeFileSync(join(dir, "deadbeef.md"), "---\n---\n\nSuppress this one."); // no bump
     writeFileSync(join(dir, "tame-rabbits-sneeze.md"), '---\n"vinext": major\n---\n'); // normal changeset
     writeFileSync(join(dir, "auto-vinext_0.1.0-6005541.md"), '---\n"vinext": minor\n---\n'); // generated
@@ -287,9 +308,16 @@ describe("loadOverrides", () => {
     const overrides = loadOverrides(dir);
     const byCommit = Object.fromEntries(overrides.map((o) => [o.commit, o]));
     expect(Object.keys(byCommit).sort()).toEqual(["6005541", "abcdef0123", "deadbeef"]);
-    expect(byCommit["6005541"]).toEqual({ commit: "6005541", type: "fix" }); // patch → fix
-    expect(byCommit.abcdef0123).toEqual({ commit: "abcdef0123", type: "feat" }); // minor → feat
-    expect(byCommit.deadbeef).toEqual({ commit: "deadbeef", type: "chore" }); // no bump → suppress
+    // patch → fix, body → message
+    expect(byCommit["6005541"]).toEqual({
+      commit: "6005541",
+      type: "fix",
+      message: "Was only a fix (#9).",
+    });
+    expect(byCommit.abcdef0123).toEqual({ commit: "abcdef0123", type: "feat" }); // minor → feat, no body
+    // no bump → suppress (chore). A suppressed commit is dropped from the
+    // changelog, so its body message is irrelevant and not captured.
+    expect(byCommit.deadbeef).toEqual({ commit: "deadbeef", type: "chore" });
   });
 });
 
@@ -331,6 +359,25 @@ describe("rewriteSubjectType", () => {
   it("synthesizes a prefix for a non-conventional subject", () => {
     expect(rewriteSubjectType("just a normal message", "fix", false)).toBe(
       "fix: just a normal message",
+    );
+  });
+
+  it("replaces the description and drops the scope when given a message", () => {
+    expect(
+      rewriteSubjectType(
+        "feat(router): add streaming (#123)",
+        "fix",
+        false,
+        "correct prefetch (#9)",
+      ),
+    ).toBe("fix: correct prefetch (#9)");
+    // message + breaking
+    expect(rewriteSubjectType("feat(api): x", "feat", true, "drop the old API (#9)")).toBe(
+      "feat!: drop the old API (#9)",
+    );
+    // an empty message is ignored (falls back to preserving the subject)
+    expect(rewriteSubjectType("feat(router): add streaming (#123)", "fix", false, "")).toBe(
+      "fix(router): add streaming (#123)",
     );
   });
 });
@@ -389,5 +436,16 @@ describe("applyOverrides", () => {
     const [escalated] = applyOverrides(commits, overrides);
     expect(escalated.subject).toBe("feat!: small thing");
     expect(parseBumpFromSubject(escalated.subject, escalated.body)).toBe("major");
+  });
+
+  it("overrides the changelog message from the changeset body, keeping the demoted bump", () => {
+    const commits = [commit("abc1234", "feat(interception): sibling-style routes (#1804)")];
+    const overrides: CommitOverride[] = [
+      { commit: "abc1234", type: "fix", message: "correct interception route matching (#1804)" },
+    ];
+    const [overridden] = applyOverrides(commits, overrides);
+    // message replaces the description and drops the scope → plain bullet
+    expect(overridden.subject).toBe("fix: correct interception route matching (#1804)");
+    expect(parseBumpFromSubject(overridden.subject, overridden.body)).toBe("patch");
   });
 });
