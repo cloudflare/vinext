@@ -494,13 +494,14 @@ function findIntercept(pathname, sourcePathname = null) {
   return __routeMatcher.findIntercept(pathname, sourcePathname);
 }
 
-async function buildPageElements(route, params, routePath, pageRequest, layoutParamAccess) {
+async function buildPageElements(route, params, routePath, pageRequest, layoutParamAccess, displayPathname = routePath) {
   // Hydrate lazy page/route-handler modules before any synchronous read.
   await __ensureRouteLoaded(route);
   return __buildPageElements({
     route,
     params,
     routePath,
+    displayPathname,
     pageRequest,
     globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
     rootNotFoundModule: ${rootNotFoundVar ? rootNotFoundVar : "null"},
@@ -578,6 +579,7 @@ export default __createAppRscHandler({
   dispatchMatchedPage({
     clientReuseManifest,
     cleanPathname,
+    displayPathname,
     formState,
     actionError,
     actionFailed,
@@ -621,7 +623,7 @@ export default __createAppRscHandler({
           request,
           mountedSlotsHeader,
           renderMode,
-        }, layoutParamAccess);
+        }, layoutParamAccess, displayPathname);
       },
       clientReuseManifest,
       cleanPathname,

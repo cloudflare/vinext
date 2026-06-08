@@ -74,6 +74,7 @@ export type BuildPageElementsOptions<
   route: AppPageBuildRoute<TModule, TErrorModule>;
   params: AppPageParams;
   routePath: string;
+  displayPathname?: string;
   pageRequest: AppPagePageRequest<TModule>;
   /** Root-level global-error.tsx module. Present when the app defines this file. */
   globalErrorModule?: TErrorModule | null;
@@ -119,6 +120,7 @@ export async function buildPageElements<
     route,
     params,
     routePath,
+    displayPathname = routePath,
     pageRequest,
     globalErrorModule,
     rootNotFoundModule,
@@ -150,7 +152,7 @@ export async function buildPageElements<
 
   const hasPageModule = !!pageModule;
   const renderIdentity = createAppPageRenderIdentity({
-    displayPathname: routePath,
+    displayPathname,
     interceptionContext: opts?.interceptionContext ?? null,
     interceptSourceMatchedUrl: opts?.interceptSourceMatchedUrl ?? null,
     // Sibling intercepts are full-page replacements with no slot proof.

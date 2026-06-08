@@ -76,7 +76,10 @@ import {
   type PendingBrowserRouterState,
 } from "./app-browser-navigation-controller.js";
 import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.js";
-import { resolveManifestNavigationInterceptionContext } from "./app-browser-interception-context.js";
+import {
+  resolveManifestNavigationInterceptionContext,
+  resolveMiddlewareRewriteNavigationInterceptionContext,
+} from "./app-browser-interception-context.js";
 import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
@@ -133,8 +136,6 @@ import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import type { RouteManifest } from "../routing/app-route-graph.js";
 import { stripBasePath } from "../utils/base-path.js";
-import { matchRoutePatternPrefix } from "../routing/route-pattern.js";
-import { splitPathnameForRouteMatch } from "../routing/utils.js";
 import { createOnUncaughtError } from "./app-browser-error.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
 import {
@@ -966,8 +967,8 @@ function getRequestState(
           previousNextUrl: window.location.pathname + window.location.search,
         };
       }
-      // Fallback: when the current page is a declared interception source (its
-      // URL matches at least one sourcePatternParts in the manifest), send the
+      // Fallback: when the current page is a declared interception source and
+      // the target URL still matches the declared target prefix, send the
       // current pathname as context so the server can fire interception for
       // middleware-rewritten targets. The client manifest check above only
       // matches the pre-middleware target URL against the declared pattern;
@@ -975,23 +976,20 @@ function getRequestState(
       // URL is shorter than the pattern and the match fails. Sending the
       // current pathname lets the server re-check after applying the rewrite.
       //
-      // We gate on "current page is a declared source" rather than always
-      // sending context, to preserve prefetch cache reuse for ordinary
-      // navigations where interception cannot apply.
-      const routeManifest = getBrowserRouteManifest();
-      const currentStripped = stripBasePath(window.location.pathname, __basePath);
-      const isCurrentPageInterceptionSource =
-        routeManifest !== null &&
-        Array.from(routeManifest.segmentGraph.interceptions.values()).some((interception) =>
-          matchRoutePatternPrefix(
-            splitPathnameForRouteMatch(currentStripped),
-            interception.sourcePatternParts,
-          ),
-        );
-      if (isCurrentPageInterceptionSource) {
+      // We gate on source plus target prefix rather than always sending
+      // context, to preserve prefetch cache reuse for ordinary navigations
+      // where interception cannot apply.
+      const middlewareRewriteInterceptionContext =
+        resolveMiddlewareRewriteNavigationInterceptionContext({
+          basePath: __basePath,
+          currentPathname: window.location.pathname,
+          routeManifest: getBrowserRouteManifest(),
+          targetPathname,
+        });
+      if (middlewareRewriteInterceptionContext !== null) {
         const currentHrefForFallback = window.location.pathname + window.location.search;
         return {
-          interceptionContext: currentStripped,
+          interceptionContext: middlewareRewriteInterceptionContext,
           previousNextUrl: currentHrefForFallback,
         };
       }

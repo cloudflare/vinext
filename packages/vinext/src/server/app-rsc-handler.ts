@@ -116,6 +116,7 @@ function applyMiddlewareContextToResponse(
 type DispatchMatchedPageOptions<TRoute> = {
   clientReuseManifest: ClientReuseManifestParseResult;
   cleanPathname: string;
+  displayPathname: string;
   formState: ReactFormState | null;
   actionError?: unknown;
   actionFailed?: boolean;
@@ -748,6 +749,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const pageResponse = await options.dispatchMatchedPage({
     clientReuseManifest,
     cleanPathname,
+    displayPathname: canonicalPathname,
     formState,
     actionError,
     actionFailed,
