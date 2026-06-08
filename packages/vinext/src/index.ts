@@ -159,6 +159,7 @@ import {
 import { stripServerExports } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
+import { createRequireContextPlugin } from "./plugins/require-context.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import { getViteMajorVersion } from "./utils/vite-version.js";
@@ -4298,6 +4299,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     createImportMetaUrlPlugin({
       getRoot: () => root,
     }),
+    // Expand Webpack's build-time `require.context(...)` into a static module
+    // map backed by `import.meta.glob` — see src/plugins/require-context.ts
+    createRequireContextPlugin(),
     // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
     // see src/plugins/og-assets.ts
     createOgInlineFetchAssetsPlugin(),
