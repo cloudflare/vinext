@@ -1,13 +1,26 @@
-import { describe, expect, it } from "vite-plus/test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   affectedPackages,
+  applyOverrides,
+  bumpToOverride,
+  changesetFrontmatterBump,
+  type Commit,
+  type CommitOverride,
   compareVersions,
   decideGeneration,
+  findOverride,
   latestTagVersionFromTags,
+  loadOverrides,
   maxBump,
   parseBumpFromSubject,
   renderChangeset,
+  rewriteSubjectType,
+  shaFromChangesetFilename,
   TYPE_BUMP,
 } from "./create-changeset.mts";
 
@@ -191,5 +204,190 @@ describe("renderChangeset", () => {
   it("falls back to a placeholder body when there are no summary lines", () => {
     const out = renderChangeset({ vinext: "patch" }, []);
     expect(out).toContain("Automated changeset.");
+  });
+});
+
+describe("shaFromChangesetFilename", () => {
+  it("recognizes a SHA-named changeset (7–40 hex), lowercasing it", () => {
+    expect(shaFromChangesetFilename("6005541.md")).toBe("6005541");
+    expect(shaFromChangesetFilename("ABCDEF0123.md")).toBe("abcdef0123");
+    expect(shaFromChangesetFilename(`${"a".repeat(40)}.md`)).toBe("a".repeat(40));
+  });
+
+  it("ignores normal changesets, generated files, and docs", () => {
+    expect(shaFromChangesetFilename("tame-rabbits-sneeze.md")).toBeNull();
+    expect(shaFromChangesetFilename("auto-vinext_0.1.0-6005541.md")).toBeNull();
+    expect(shaFromChangesetFilename("README.md")).toBeNull();
+    expect(shaFromChangesetFilename("config.json")).toBeNull();
+  });
+
+  it("rejects hex strings outside the 7–40 length window or with non-hex chars", () => {
+    expect(shaFromChangesetFilename("abc12.md")).toBeNull(); // too short
+    expect(shaFromChangesetFilename(`${"a".repeat(41)}.md`)).toBeNull(); // too long
+    expect(shaFromChangesetFilename("abcdefg.md")).toBeNull(); // 'g' is not hex
+  });
+});
+
+describe("changesetFrontmatterBump", () => {
+  it("reads a single declared bump", () => {
+    expect(changesetFrontmatterBump('---\n"vinext": patch\n---\n\nbody')).toBe("patch");
+  });
+
+  it("takes the highest bump across multiple packages", () => {
+    expect(
+      changesetFrontmatterBump('---\n"vinext": patch\n"@vinext/cloudflare": minor\n---\n'),
+    ).toBe("minor");
+  });
+
+  it("tolerates unquoted names and trailing whitespace", () => {
+    expect(changesetFrontmatterBump("---\nvinext: major \n---\n")).toBe("major");
+  });
+
+  it("only scans frontmatter, never the body", () => {
+    expect(changesetFrontmatterBump('---\n"vinext": patch\n---\n\nbumps to minor someday')).toBe(
+      "patch",
+    );
+  });
+
+  it("returns null for a package-less or frontmatter-less changeset (suppression)", () => {
+    expect(changesetFrontmatterBump("---\n---\n\nsuppress this commit")).toBeNull();
+    expect(changesetFrontmatterBump("no frontmatter here")).toBeNull();
+  });
+});
+
+describe("bumpToOverride", () => {
+  it("maps bump level → conventional type for grouping", () => {
+    expect(bumpToOverride("patch")).toEqual({ type: "fix", breaking: false });
+    expect(bumpToOverride("minor")).toEqual({ type: "feat", breaking: false });
+    expect(bumpToOverride("major")).toEqual({ type: "feat", breaking: true });
+  });
+});
+
+describe("loadOverrides", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "vinext-overrides-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns [] when the directory is absent", () => {
+    expect(loadOverrides(join(dir, "does-not-exist"))).toEqual([]);
+  });
+
+  it("derives overrides from SHA-named changesets and ignores everything else", () => {
+    writeFileSync(join(dir, "6005541.md"), '---\n"vinext": patch\n---\n\nWas only a fix.');
+    writeFileSync(join(dir, "abcdef0123.md"), '---\n"vinext": minor\n---\n');
+    writeFileSync(join(dir, "deadbeef.md"), "---\n---\n\nSuppress this one."); // no bump
+    writeFileSync(join(dir, "tame-rabbits-sneeze.md"), '---\n"vinext": major\n---\n'); // normal changeset
+    writeFileSync(join(dir, "auto-vinext_0.1.0-6005541.md"), '---\n"vinext": minor\n---\n'); // generated
+    writeFileSync(join(dir, "README.md"), "# Changesets");
+
+    const overrides = loadOverrides(dir);
+    const byCommit = Object.fromEntries(overrides.map((o) => [o.commit, o]));
+    expect(Object.keys(byCommit).sort()).toEqual(["6005541", "abcdef0123", "deadbeef"]);
+    expect(byCommit["6005541"]).toEqual({ commit: "6005541", type: "fix" }); // patch → fix
+    expect(byCommit.abcdef0123).toEqual({ commit: "abcdef0123", type: "feat" }); // minor → feat
+    expect(byCommit.deadbeef).toEqual({ commit: "deadbeef", type: "chore" }); // no bump → suppress
+  });
+});
+
+describe("findOverride", () => {
+  const overrides: CommitOverride[] = [{ commit: "abc1234", type: "fix" }];
+
+  it("matches an exact SHA case-insensitively", () => {
+    expect(findOverride("abc1234", overrides)?.type).toBe("fix");
+    expect(findOverride("ABC1234", overrides)?.type).toBe("fix");
+  });
+
+  it("matches a full SHA by its stored prefix", () => {
+    expect(findOverride("abc1234def567890", overrides)?.type).toBe("fix");
+  });
+
+  it("returns null when nothing matches", () => {
+    expect(findOverride("def5678", overrides)).toBeNull();
+    // a SHA shorter than the stored prefix is not a prefix match
+    expect(findOverride("abc12", overrides)).toBeNull();
+  });
+});
+
+describe("rewriteSubjectType", () => {
+  it("swaps the type token, preserving scope, description, and PR ref", () => {
+    expect(rewriteSubjectType("feat(router): add streaming (#123)", "fix", false)).toBe(
+      "fix(router): add streaming (#123)",
+    );
+  });
+
+  it("drops a scope-less type cleanly", () => {
+    expect(rewriteSubjectType("feat: add thing", "fix", false)).toBe("fix: add thing");
+  });
+
+  it("adds a breaking marker when asked and drops a stale one when not", () => {
+    expect(rewriteSubjectType("feat(api): change", "fix", true)).toBe("fix(api)!: change");
+    expect(rewriteSubjectType("feat(api)!: change", "fix", false)).toBe("fix(api): change");
+  });
+
+  it("synthesizes a prefix for a non-conventional subject", () => {
+    expect(rewriteSubjectType("just a normal message", "fix", false)).toBe(
+      "fix: just a normal message",
+    );
+  });
+});
+
+describe("applyOverrides", () => {
+  const commit = (sha: string, subject: string, body = ""): Commit => ({
+    sha,
+    subject,
+    body,
+    files: ["packages/vinext/src/index.ts"],
+  });
+
+  it("returns the same list when there are no overrides", () => {
+    const commits = [commit("abc1234", "feat: add thing")];
+    expect(applyOverrides(commits, [])).toBe(commits);
+  });
+
+  it("rewrites a matched commit's subject and leaves others untouched", () => {
+    const commits = [
+      commit("abc1234def", "feat(router): add streaming (#123)"),
+      commit("999aaaa", "fix(link): correct prefetch (#124)"),
+    ];
+    const overrides: CommitOverride[] = [{ commit: "abc1234d", type: "fix" }];
+    const [first, second] = applyOverrides(commits, overrides);
+    expect(first.subject).toBe("fix(router): add streaming (#123)");
+    expect(second.subject).toBe("fix(link): correct prefetch (#124)");
+  });
+
+  it("demotes a feat to a patch bump (the headline use case)", () => {
+    const commits = [commit("abc1234", "feat(router): add streaming (#123)")];
+    const overrides: CommitOverride[] = [{ commit: "abc1234", type: "fix" }];
+    const [demoted] = applyOverrides(commits, overrides);
+    expect(parseBumpFromSubject(demoted.subject, demoted.body)).toBe("patch");
+  });
+
+  it("can suppress a commit entirely by reclassifying it as chore", () => {
+    const commits = [commit("abc1234", "feat: experimental thing")];
+    const overrides: CommitOverride[] = [{ commit: "abc1234", type: "chore" }];
+    const [suppressed] = applyOverrides(commits, overrides);
+    expect(parseBumpFromSubject(suppressed.subject, suppressed.body)).toBeNull();
+  });
+
+  it("clears the body so a stale BREAKING CHANGE footer no longer escalates the bump", () => {
+    const commits = [commit("abc1234", "feat: thing", "body\n\nBREAKING CHANGE: removes API")];
+    // Without the override this would be a major bump.
+    expect(parseBumpFromSubject(commits[0].subject, commits[0].body)).toBe("major");
+    const overrides: CommitOverride[] = [{ commit: "abc1234", type: "fix" }];
+    const [demoted] = applyOverrides(commits, overrides);
+    expect(demoted.body).toBe("");
+    expect(parseBumpFromSubject(demoted.subject, demoted.body)).toBe("patch");
+  });
+
+  it("honors an explicit breaking override (major)", () => {
+    const commits = [commit("abc1234", "fix: small thing")];
+    const overrides: CommitOverride[] = [{ commit: "abc1234", type: "feat", breaking: true }];
+    const [escalated] = applyOverrides(commits, overrides);
+    expect(escalated.subject).toBe("feat!: small thing");
+    expect(parseBumpFromSubject(escalated.subject, escalated.body)).toBe("major");
   });
 });
