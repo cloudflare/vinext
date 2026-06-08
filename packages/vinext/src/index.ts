@@ -89,6 +89,7 @@ import {
   matchHeaders,
   matchRedirect,
   matchRewrite,
+  preserveRedirectDestinationQuery,
   requestContextFromRequest,
   sanitizeDestination,
   type RequestContext,
@@ -3436,6 +3437,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   nextConfig.redirects,
                   preMiddlewareReqCtx,
                   nextConfig.basePath ?? "",
+                  url.includes("?") ? url.slice(url.indexOf("?")) : "",
                 );
                 if (redirected) return;
               }
@@ -4966,6 +4968,7 @@ function applyRedirects(
   redirects: NextRedirect[],
   ctx: RequestContext,
   basePath = "",
+  requestSearch = "",
 ): boolean {
   // Vite strips the basePath before our middleware sees the request, so any
   // pathname we see is implicitly "under basePath" for matching purposes.
@@ -4979,7 +4982,12 @@ function applyRedirects(
         ? basePath + result.destination
         : result.destination,
     );
-    res.writeHead(result.permanent ? 308 : 307, { Location: dest });
+    // Carry the original request query (e.g. the App Router RSC cache-busting
+    // `_rsc` param) onto the redirect Location so the browser's auto-followed
+    // request is still treated as an RSC fetch. Mirrors Next.js
+    // resolve-routes.ts (issue #1529).
+    const location = preserveRedirectDestinationQuery(dest, requestSearch);
+    res.writeHead(result.permanent ? 308 : 307, { Location: location });
     res.end();
     return true;
   }

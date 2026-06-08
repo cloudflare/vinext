@@ -520,6 +520,7 @@ import type { ImageConfig } from "vinext/server/image-optimization";
 import {
   matchRedirect,
   matchRewrite,
+  preserveRedirectDestinationQuery,
   requestContextFromRequest,
   applyMiddlewareRequestHeaders,
   isExternalUrl,
@@ -703,9 +704,14 @@ export default {
               ? basePath + redirect.destination
               : redirect.destination,
           );
+          // Carry the original request query (e.g. the App Router RSC
+          // cache-busting \`_rsc\` param) onto the redirect Location so the
+          // browser's auto-followed request is still treated as an RSC fetch.
+          // Mirrors Next.js resolve-routes.ts (issue #1529).
+          const location = preserveRedirectDestinationQuery(dest, url.search);
           return new Response(null, {
             status: redirect.permanent ? 308 : 307,
-            headers: { Location: dest },
+            headers: { Location: location },
           });
         }
       }

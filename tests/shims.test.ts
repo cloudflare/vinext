@@ -6454,6 +6454,33 @@ describe("middleware bypass prevention", () => {
     expect(rawResult).toBeNull();
   });
 
+  it("preserveRedirectDestinationQuery merges the original request query onto the destination (#1529)", async () => {
+    const { preserveRedirectDestinationQuery } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+
+    // Carries the RSC cache-busting `_rsc` param onto a query-less destination.
+    expect(preserveRedirectDestinationQuery("/dest", "?_rsc=abc123")).toBe("/dest?_rsc=abc123");
+
+    // Merges with a destination that already has its own query; destination
+    // params win on key conflicts (mirrors Next.js + proxyExternalRequest).
+    expect(preserveRedirectDestinationQuery("/dest?from=cfg", "?from=req&_rsc=abc")).toBe(
+      "/dest?from=cfg&_rsc=abc",
+    );
+
+    // No request query → destination untouched.
+    expect(preserveRedirectDestinationQuery("/dest?a=1", "")).toBe("/dest?a=1");
+    expect(preserveRedirectDestinationQuery("/dest", "?")).toBe("/dest");
+
+    // External destinations are returned untouched (no query leak across origins).
+    expect(preserveRedirectDestinationQuery("https://example.com/x", "?_rsc=abc")).toBe(
+      "https://example.com/x",
+    );
+    expect(preserveRedirectDestinationQuery("//evil.com", "?_rsc=abc")).toBe("//evil.com");
+
+    // Preserves a hash fragment on the destination.
+    expect(preserveRedirectDestinationQuery("/dest#frag", "?_rsc=abc")).toBe("/dest?_rsc=abc#frag");
+  });
+
   it("config header matcher works with decoded percent-encoded paths", async () => {
     const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
     const { normalizePath } = await import("../packages/vinext/src/server/normalize-path.js");

@@ -384,6 +384,26 @@ describe("App Router Production server (startProdServer)", () => {
     expect(location).toContain("/about");
   });
 
+  // Issue #1529: an RSC client navigation that hits a next.config.js redirect
+  // must keep the cache-busting `_rsc` query on the redirect Location so the
+  // browser's auto-followed request to the destination is still treated as an
+  // RSC fetch. The vinext client addresses RSC navigations via the `RSC: 1`
+  // header + `?_rsc=` query, so we replicate that request shape here.
+  it("preserves the _rsc query on config-redirect Location for RSC navigations (#1529)", async () => {
+    const res = await fetch(`${baseUrl}/old-about?_rsc=abc123`, {
+      redirect: "manual",
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    expect(res.status).toBe(308);
+    const location = res.headers.get("location");
+    expect(location).toBeTruthy();
+    expect(location).toContain("/about");
+    // The App Router RSC handler canonicalizes the redirect Location by
+    // recomputing the cache-busting `_rsc` param from the request headers
+    // (rather than echoing the literal client value), so assert presence.
+    expect(location).toContain("_rsc");
+  });
+
   it("serves static assets with cache headers", async () => {
     // Find an actual hashed asset from the build (on disk under
     // `_next/static/`, matching `resolveAssetsDir("")`).

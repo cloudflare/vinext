@@ -1170,6 +1170,55 @@ export function isExternalUrl(url: string): boolean {
 }
 
 /**
+ * Merge the original request's query params into a config-redirect
+ * destination, preserving them on the resulting `Location`.
+ *
+ * Next.js carries the original request query across config redirects
+ * (`prepareDestination({ query: parsedUrl.query })` →
+ * `stringifyQuery(...)` in resolve-routes.ts). This matters for App Router
+ * RSC client navigations: the cache-busting `_rsc` query must survive the
+ * redirect so the browser's auto-followed request to the destination is
+ * still treated as an RSC fetch. Dropping it breaks RSC fetch semantics
+ * (issue #1529).
+ *
+ * Destination query params win — a request param is only carried over when
+ * the destination does not already specify that key. Mirrors the merge
+ * semantics in `proxyExternalRequest`. External destinations are returned
+ * untouched (a config redirect to another origin should not leak the
+ * original request's query).
+ */
+export function preserveRedirectDestinationQuery(
+  destination: string,
+  requestSearch: string,
+): string {
+  if (requestSearch === "" || requestSearch === "?" || isExternalUrl(destination)) {
+    return destination;
+  }
+
+  const requestParams = new URLSearchParams(requestSearch);
+  if ([...requestParams.keys()].length === 0) return destination;
+
+  const hashIndex = destination.indexOf("#");
+  const hash = hashIndex === -1 ? "" : destination.slice(hashIndex);
+  const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
+
+  const queryIndex = beforeHash.indexOf("?");
+  const pathPart = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
+  const destQuery = queryIndex === -1 ? "" : beforeHash.slice(queryIndex + 1);
+
+  const merged = new URLSearchParams(destQuery);
+  const destKeys = new Set(merged.keys());
+  for (const [key, value] of requestParams) {
+    if (!destKeys.has(key)) {
+      merged.append(key, value);
+    }
+  }
+
+  const mergedQuery = merged.toString();
+  return mergedQuery === "" ? `${pathPart}${hash}` : `${pathPart}?${mergedQuery}${hash}`;
+}
+
+/**
  * Proxy an incoming request to an external URL and return the upstream response.
  *
  * Used for external rewrites (e.g. `/ph/:path*` → `https://us.i.posthog.com/:path*`).

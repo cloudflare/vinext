@@ -8,6 +8,7 @@ import {
   isExternalUrl,
   matchRedirect,
   matchRewrite,
+  preserveRedirectDestinationQuery,
   proxyExternalRequest,
   requestContextFromRequest,
   sanitizeDestination,
@@ -458,10 +459,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     const destination = sanitizeDestination(
       redirectDestinationWithBasePath(redirect.destination, options.basePath),
     );
+    // For RSC navigations `createRscRedirectLocation` recomputes the
+    // cache-busting `_rsc` param onto the Location. For plain (document)
+    // requests, carry the original request query onto the Location so it
+    // survives the redirect, mirroring Next.js resolve-routes.ts (issue #1529).
     const location =
       isRscRequest && request.headers.get(RSC_HEADER) === "1"
         ? await createRscRedirectLocation(destination, request)
-        : destination;
+        : preserveRedirectDestinationQuery(destination, url.search);
     return new Response(null, {
       status: redirect.permanent ? 308 : 307,
       headers: { Location: location },
