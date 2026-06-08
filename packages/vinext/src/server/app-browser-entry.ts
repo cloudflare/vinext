@@ -298,6 +298,11 @@ let latestRscHmrUpdateId = 0;
 let currentHistoryTraversalIndex: number | null =
   readHistoryStateTraversalIndex(window.history.state) ?? 0;
 let nextHistoryTraversalIndex: number = currentHistoryTraversalIndex;
+// Single-slot latch tracking the navId of the most recent synchronous
+// popstate snapshot restore. activeNavigationId is strictly monotonic, so
+// shouldSkipScrollRestore can only match the most-recently restored
+// navigation. This is intentionally not a per-navigation set — a future
+// asynchronous scroll restore for an older navId is already stale.
 let synchronousPopstateScrollRestoreNavigationId: number | null = null;
 const MAX_HISTORY_STATE_SNAPSHOTS = 50;
 const restorableClientState = new RestorableClientStateController<AppRouterState>({
@@ -1173,6 +1178,13 @@ function BrowserRoot({
     };
   }, [setTreeStateValue]);
 
+  // This effect keys the snapshot by currentHistoryTraversalIndex but only
+  // depends on [treeState]. The ordering works because
+  // commitHistoryTraversalIndex runs inside the navigation commit effect
+  // (before setTreeStateValue fires), so the index is already current when
+  // this layout effect runs for the new treeState. If the commit ordering
+  // ever changes, the snapshot index may not match the traversed history
+  // entry, causing resolveRestore to read the wrong index on back.
   useLayoutEffect(() => {
     restorableClientState.rememberHistoryStateSnapshot({
       historyIndex: currentHistoryTraversalIndex,
@@ -1800,6 +1812,11 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     // Traversal restores history-state ids before identity matching. Any
     // redirect hop that changes currentHref must null this before commit so
     // stale ids from the pre-redirect history entry cannot win.
+    // Both restoredBfcacheIds and reuseCurrentBfcacheIds are snapshotted at
+    // navigation-start. If the bfcache epoch changes or a server-action
+    // guard is released before the async traverse resolves, these captured
+    // values may be stale — consistent with the existing restoredBfcacheIds
+    // pattern, and not a regression.
     let restoredBfcacheIds =
       navigationKind === "traverse"
         ? restorableClientState.readCurrentBfcacheVersionHistoryIds(
