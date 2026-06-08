@@ -104,11 +104,6 @@ export default {
     // probed via require.resolve
     "next-intl",
 
-    // Optional/local runtime names consumed dynamically in tests and Vite+
-    // config rather than as normal static imports.
-    "sass",
-    "agent",
-
     // internal module name, not an actual dependency
     "private-next-instrumentation-client",
 
@@ -120,6 +115,10 @@ export default {
   ignoreBinaries: [
     // workspace's own bin, invoked in CI
     "vinext",
+    // system/user-project binaries invoked by runtime scripts
+    "ps",
+    "eslint",
+    "gh",
   ],
   ignoreFiles: [
     "tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts",
