@@ -753,7 +753,9 @@ describe("generatePagesRouterWorkerEntry", () => {
     const content = generatePagesRouterWorkerEntry();
     // Ordering is now enforced by runPagesRequest (the pipeline owner).
     // The worker entry delegates via runMiddleware dep and runPagesRequest call.
-    expect(content).toContain("runMiddleware: typeof runMiddleware === \"function\" ? runMiddleware : null");
+    expect(content).toContain(
+      'runMiddleware: typeof runMiddleware === "function" ? runMiddleware : null',
+    );
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
@@ -769,15 +771,19 @@ describe("generatePagesRouterWorkerEntry", () => {
     const content = generatePagesRouterWorkerEntry();
     // Middleware redirect handling is now inside runPagesRequest.
     // The worker entry supplies runMiddleware dep and checks result.type.
-    expect(content).toContain("runMiddleware: typeof runMiddleware === \"function\" ? runMiddleware : null");
-    expect(content).toContain("result.type === \"response\"");
+    expect(content).toContain(
+      'runMiddleware: typeof runMiddleware === "function" ? runMiddleware : null',
+    );
+    expect(content).toContain('result.type === "response"');
   });
 
   it("preserves responseHeaders on middleware redirect", () => {
     const content = generatePagesRouterWorkerEntry();
     // responseHeaders handling is now inside runPagesRequest.
     // Verify the worker passes runMiddleware dep (which carries responseHeaders).
-    expect(content).toContain("runMiddleware: typeof runMiddleware === \"function\" ? runMiddleware : null");
+    expect(content).toContain(
+      'runMiddleware: typeof runMiddleware === "function" ? runMiddleware : null',
+    );
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
@@ -785,7 +791,9 @@ describe("generatePagesRouterWorkerEntry", () => {
     const content = generatePagesRouterWorkerEntry();
     // Middleware rewrite handling is now inside runPagesRequest.
     // The worker entry supplies runMiddleware dep and gets a {type:"response"} result.
-    expect(content).toContain("runMiddleware: typeof runMiddleware === \"function\" ? runMiddleware : null");
+    expect(content).toContain(
+      'runMiddleware: typeof runMiddleware === "function" ? runMiddleware : null',
+    );
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
@@ -795,7 +803,9 @@ describe("generatePagesRouterWorkerEntry", () => {
     const content = generatePagesRouterWorkerEntry();
     // External proxy for middleware rewrites is now inside runPagesRequest.
     // The worker entry supplies runMiddleware dep and delegates to the pipeline.
-    expect(content).toContain("runMiddleware: typeof runMiddleware === \"function\" ? runMiddleware : null");
+    expect(content).toContain(
+      'runMiddleware: typeof runMiddleware === "function" ? runMiddleware : null',
+    );
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
@@ -803,7 +813,9 @@ describe("generatePagesRouterWorkerEntry", () => {
     const content = generatePagesRouterWorkerEntry();
     // Access control (continue=false) is now inside runPagesRequest.
     // Worker supplies runMiddleware dep.
-    expect(content).toContain("runMiddleware: typeof runMiddleware === \"function\" ? runMiddleware : null");
+    expect(content).toContain(
+      'runMiddleware: typeof runMiddleware === "function" ? runMiddleware : null',
+    );
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
@@ -821,7 +833,9 @@ describe("generatePagesRouterWorkerEntry", () => {
     // Rewrite handling is now inside runPagesRequest.
     // Worker passes configRewrites dep with all three phases.
     expect(content).toContain("configRewrites,");
-    expect(content).toContain("matchPageRoute: typeof matchPageRoute === \"function\" ? matchPageRoute : null");
+    expect(content).toContain(
+      'matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null',
+    );
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
@@ -859,7 +873,7 @@ describe("generatePagesRouterWorkerEntry", () => {
     // API routing (including locale prefix stripping) is now inside runPagesRequest.
     // Worker supplies handleApi dep that wraps handleApiRoute with ctx.
     // Locale stripping, /api/ prefix check, and ctx forwarding are all inside the owner.
-    expect(content).toContain("handleApi: typeof handleApiRoute === \"function\"");
+    expect(content).toContain('handleApi: typeof handleApiRoute === "function"');
     expect(content).toContain("handleApiRoute(req, apiUrl, ctx)");
     expect(content).toContain("runPagesRequest(request, deps)");
   });
@@ -917,7 +931,7 @@ describe("generatePagesRouterWorkerEntry", () => {
     // mergeHeaders is now called inside runPagesRequest.
     // The worker returns result.response directly from the pipeline result.
     expect(content).toContain("runPagesRequest(request, deps)");
-    expect(content).toContain("result.type === \"response\"");
+    expect(content).toContain('result.type === "response"');
     expect(content).toContain("return result.response");
   });
 
@@ -1069,7 +1083,7 @@ describe("generatePagesRouterWorkerEntry", () => {
     // mergeHeaders (including no-body and streamed content-length guards) is
     // now called inside runPagesRequest. The worker delegates to the pipeline.
     expect(content).toContain("runPagesRequest(request, deps)");
-    expect(content).toContain("result.type === \"response\"");
+    expect(content).toContain('result.type === "response"');
     expect(content).toContain("return result.response");
   });
 
@@ -1108,7 +1122,9 @@ describe("generatePagesRouterWorkerEntry", () => {
     // applyMiddlewareRequestHeaders is now called inside runPagesRequest.
     // The worker entry delegates to the pipeline owner via runPagesRequest.
     expect(content).toContain("runPagesRequest(request, deps)");
-    expect(content).toContain("runMiddleware: typeof runMiddleware === \"function\" ? runMiddleware : null");
+    expect(content).toContain(
+      'runMiddleware: typeof runMiddleware === "function" ? runMiddleware : null',
+    );
   });
 
   it("handles external rewrites via proxyExternalRequest", () => {
@@ -1131,7 +1147,9 @@ describe("generatePagesRouterWorkerEntry", () => {
     // The worker passes isDataReq: false (no buildId normalization) and
     // matchPageRoute dep so the pipeline computes the right behavior.
     expect(content).toContain("isDataReq: false,");
-    expect(content).toContain("matchPageRoute: typeof matchPageRoute === \"function\" ? matchPageRoute : null");
+    expect(content).toContain(
+      'matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null',
+    );
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
@@ -1141,7 +1159,9 @@ describe("generatePagesRouterWorkerEntry", () => {
     // The worker passes configRedirects and runMiddleware deps; ordering is
     // guaranteed by the pipeline owner.
     expect(content).toContain("configRedirects,");
-    expect(content).toContain("runMiddleware: typeof runMiddleware === \"function\" ? runMiddleware : null");
+    expect(content).toContain(
+      'runMiddleware: typeof runMiddleware === "function" ? runMiddleware : null',
+    );
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
