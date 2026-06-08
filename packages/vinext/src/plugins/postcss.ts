@@ -142,6 +142,12 @@ async function resolvePostcssStringPluginsUncached(
     // hook, so a throw here aborts the RSC/SSR/client builds with an opaque
     // error). Fall back to `undefined` so Vite's own postcss-load-config
     // loads and resolves the config relative to the config file instead.
+    //
+    // Note: a single unresolvable entry makes us defer the *entire* config to
+    // Vite (not a per-plugin skip) — the resolved list is only useful if it's
+    // complete, and Vite re-loads the whole config anyway. If the failure was a
+    // genuine plugin-factory error rather than a resolution miss, Vite's loader
+    // re-surfaces it with a clearer message than this opaque build abort.
     return undefined;
   }
 }
