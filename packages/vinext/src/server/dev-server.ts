@@ -16,6 +16,7 @@ import {
   setRevalidateDuration,
   getRevalidateDuration,
   PRERENDER_REVALIDATE_HEADER,
+  isOnDemandRevalidateRequest,
 } from "./isr-cache.js";
 import type { CachedPagesValue } from "vinext/shims/cache";
 import { _runWithCacheState } from "vinext/shims/cache";
@@ -821,13 +822,18 @@ export function createSSRHandler(
           const cached = await isrGet(cacheKey);
 
           // On-demand revalidation request (`res.revalidate()` from an API
-          // route sets the `x-prerender-revalidate` header). The cache entry
-          // must be regenerated synchronously with
-          // `revalidateReason: "on-demand"`, so we bypass the fresh/stale
-          // cache-hit short-circuits below and fall through to the miss path.
-          // Mirrors Next.js's `isOnDemandRevalidate` handling in render.tsx.
-          const isOnDemandRevalidate =
-            (req.headers[PRERENDER_REVALIDATE_HEADER] ?? undefined) !== undefined;
+          // route sets the `x-prerender-revalidate` header to the process
+          // revalidate secret). The cache entry must be regenerated
+          // synchronously with `revalidateReason: "on-demand"`, so we bypass the
+          // fresh/stale cache-hit short-circuits below and fall through to the
+          // miss path. SECURITY: this is authorized by *equality* against the
+          // secret (never header presence) — `isOnDemandRevalidateRequest`
+          // mirrors Next.js's `checkIsOnDemandRevalidate`, so an external client
+          // sending an arbitrary `x-prerender-revalidate` value cannot force
+          // synchronous regeneration (cache-stampede/DoS vector).
+          const isOnDemandRevalidate = isOnDemandRevalidateRequest(
+            req.headers[PRERENDER_REVALIDATE_HEADER],
+          );
 
           if (
             !isOnDemandRevalidate &&

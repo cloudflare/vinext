@@ -4,7 +4,7 @@ import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 import { resolveRequestProtocol, resolveRequestHost } from "./proxy-trust.js";
-import { PRERENDER_REVALIDATE_HEADER } from "./isr-cache.js";
+import { PRERENDER_REVALIDATE_HEADER, getRevalidateSecret } from "./isr-cache.js";
 
 const MAX_PAGES_API_BODY_SIZE = DEFAULT_PAGES_API_BODY_SIZE_LIMIT;
 
@@ -308,8 +308,10 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     // `res.revalidate(urlPath)` triggers on-demand ISR regeneration of a Pages
     // Router route. Mirrors Next.js's api-resolver `revalidate()` helper: it
     // issues an internal HEAD request to `urlPath` carrying the
-    // `x-prerender-revalidate` header, which the Pages render path detects to
-    // re-run getStaticProps with `revalidateReason: "on-demand"` and refresh
+    // `x-prerender-revalidate` header set to the process revalidate secret
+    // (Next.js sends `context.previewModeId` here). The Pages render path
+    // authorizes the request only when that value equals the secret, then
+    // re-runs getStaticProps with `revalidateReason: "on-demand"` and refreshes
     // the cache entry. See
     // `.nextjs-ref/packages/next/src/server/api-utils/node/api-resolver.ts`.
     async revalidate(urlPath) {
@@ -325,7 +327,7 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
 
       const revalidateRes = await fetch(target, {
         method: "HEAD",
-        headers: { [PRERENDER_REVALIDATE_HEADER]: "1" },
+        headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
       });
 
       if (!revalidateRes.ok && revalidateRes.status !== 404) {

@@ -37,11 +37,77 @@ export { normalizeMountedSlotsHeader };
  * Header set on the internal request that `res.revalidate()` issues to
  * trigger on-demand ISR regeneration of a Pages Router route. Mirrors Next.js's
  * `PRERENDER_REVALIDATE_HEADER` (`x-prerender-revalidate`) — see
- * `.nextjs-ref/packages/next/src/lib/constants.ts`. When the Pages render path
- * sees this header it re-runs `getStaticProps` with
- * `revalidateReason: "on-demand"` and refreshes the cache entry.
+ * `.nextjs-ref/packages/next/src/lib/constants.ts`.
+ *
+ * SECURITY: in Next.js this header is NOT a presence flag — it carries the
+ * secret `previewModeId`, and `checkIsOnDemandRevalidate`
+ * (`.nextjs-ref/packages/next/src/server/api-utils/index.ts`) only treats a
+ * request as on-demand revalidation when the value *equals* that secret. If we
+ * gated on presence alone, any external client could send
+ * `x-prerender-revalidate: <anything>` to force synchronous regeneration of any
+ * ISR page, bypassing the fresh/stale cache short-circuits — a
+ * cache-stampede/DoS vector. We therefore validate the value against
+ * {@link getRevalidateSecret} with a constant-time comparison and only the
+ * matching value (sent by our own `res.revalidate()`) is honored.
  */
 export const PRERENDER_REVALIDATE_HEADER = "x-prerender-revalidate";
+
+/**
+ * Per-process secret that authenticates on-demand revalidation requests, the
+ * vinext analog of Next.js's prerender-manifest `previewModeId`. `res.revalidate()`
+ * loops back into the *same* server process via an internal `fetch()`, so a
+ * module-scoped random secret is both sufficient and strictly stronger than a
+ * build-embedded one: it is never written to disk and rotates every process
+ * start. The sender attaches it as the {@link PRERENDER_REVALIDATE_HEADER}
+ * value; the receiver authorizes the request only when the incoming value
+ * equals this secret (see {@link isOnDemandRevalidateRequest}).
+ *
+ * Generated lazily so importing this module never forces crypto work, and only
+ * once per process so the sender and receiver always share the same value.
+ */
+let revalidateSecret: string | undefined;
+
+export function getRevalidateSecret(): string {
+  if (revalidateSecret === undefined) {
+    // 32 random bytes (256 bits) hex-encoded — matches the entropy of vinext's
+    // build-time prerender secret (`index.ts` `randomBytes(32)`). Web Crypto's
+    // `getRandomValues` works in both Node and the Workers/edge runtime that
+    // this cache layer also runs under, unlike `node:crypto`.
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    revalidateSecret = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  return revalidateSecret;
+}
+
+/**
+ * Constant-time string equality. Avoids leaking secret length / prefix via
+ * early-exit timing on the on-demand revalidation auth check. Returns false
+ * for length mismatch (the only safe option without revealing the secret
+ * length, and equality is impossible anyway).
+ */
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
+/**
+ * Authorize an incoming request as an on-demand revalidation trigger. Mirrors
+ * Next.js's `checkIsOnDemandRevalidate`: the {@link PRERENDER_REVALIDATE_HEADER}
+ * value must *equal* the process revalidate secret. Header presence alone is
+ * NOT sufficient — see the security note on {@link PRERENDER_REVALIDATE_HEADER}.
+ */
+export function isOnDemandRevalidateRequest(
+  headerValue: string | string[] | null | undefined,
+): boolean {
+  // Reject arrays (duplicate headers) and absent values outright.
+  if (typeof headerValue !== "string" || headerValue.length === 0) return false;
+  return safeEqual(headerValue, getRevalidateSecret());
+}
 
 export type ISRCacheEntry = {
   value: CacheHandlerValue;

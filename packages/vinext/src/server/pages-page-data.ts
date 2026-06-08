@@ -161,9 +161,11 @@ export type ResolvePagesPageDataOptions = {
    * `renderOpts.isOnDemandRevalidate` flag — see
    * `.nextjs-ref/packages/next/src/server/render.tsx`.
    *
-   * The page handler sets this when the incoming request carries the
-   * `x-prerender-revalidate` header (`PRERENDER_REVALIDATE_HEADER`), which
-   * `res.revalidate()` attaches to its internal revalidation request.
+   * The page handler sets this only when the incoming request's
+   * `x-prerender-revalidate` header (`PRERENDER_REVALIDATE_HEADER`) *equals* the
+   * process revalidate secret that `res.revalidate()` attaches to its internal
+   * request (`isOnDemandRevalidateRequest`). It is never set on mere header
+   * presence — see the security note in `isr-cache.ts`.
    */
   isOnDemandRevalidate?: boolean;
   pageModule: PagesPageModule;
