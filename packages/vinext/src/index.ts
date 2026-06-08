@@ -142,6 +142,7 @@ import {
   createClientOutputConfig,
   createClientCodeSplittingConfig,
   createClientAssetFileNames,
+  createRscFrameworkChunkOutputConfig,
   getClientTreeshakeConfigForVite,
   getBuildBundlerOptions,
   withBuildBundlerOptions,
@@ -2082,6 +2083,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 outDir: options.rscOutDir ?? "dist/server",
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_RSC_ENTRY },
+                  // Split React (and the RSC flight runtime) into a dedicated
+                  // CSS-free "framework" chunk so `app/global-not-found.tsx`
+                  // imports that chunk for its React helpers instead of the RSC
+                  // entry chunk — which carries the root layout's CSS. Without
+                  // this, global-not-found inherits the layout's stylesheet and
+                  // the route-miss 404 document resolves the cascade to the
+                  // layout's rules instead of global-not-found's (issue #1549).
+                  output: createRscFrameworkChunkOutputConfig(viteMajorVersion),
                 }),
               },
             },
