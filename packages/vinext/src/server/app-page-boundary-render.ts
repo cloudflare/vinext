@@ -5,7 +5,8 @@ import { ErrorBoundary, GlobalErrorBoundary } from "vinext/shims/error-boundary"
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import { MetadataHead, ViewportHead } from "vinext/shims/metadata";
 import type { NavigationContext } from "vinext/shims/navigation";
-import type { AppPageFontPreload } from "./app-page-execution.js";
+import { isNavigationSignalError } from "../utils/navigation-signal.js";
+import { resolveAppPageSpecialError, type AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import { resolveAppPageHead } from "./app-page-head.js";
@@ -500,7 +501,17 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
     // document instead of a raw 500. Only the global-error boundary owns the
     // whole document, so this server-side fallback is scoped to it; other
     // boundaries propagate as before.
-    if (errorBoundary.isGlobalError) {
+    //
+    // Navigation/HTTP-access signals (redirect(), notFound(), forbidden(),
+    // unauthorized()) thrown from within global-error must still reach their
+    // dedicated handlers, so they are re-thrown rather than degraded to a
+    // built-in 200. This keeps the fallback scoped to genuine render failures
+    // instead of swallowing every error from `renderWith`.
+    if (
+      errorBoundary.isGlobalError &&
+      !isNavigationSignalError(renderError) &&
+      !resolveAppPageSpecialError(renderError)
+    ) {
       console.error(
         `[vinext] global-error.tsx threw while rendering for ${options.route?.pattern ?? pathname}; falling back to the built-in default global-error:`,
         renderError,
