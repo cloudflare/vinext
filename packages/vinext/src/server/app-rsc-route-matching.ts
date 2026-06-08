@@ -215,6 +215,7 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
             sourceMatchPatternParts,
             interceptLayouts: intercept.interceptLayouts,
             page: intercept.page,
+            __pageLoader: intercept.__pageLoader,
             params: intercept.params,
           });
         }
