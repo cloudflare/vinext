@@ -71,6 +71,7 @@ type DispatchAppRouteHandlerOptions = {
   isrGet: RouteHandlerCacheGetter;
   isrRouteKey: (pathname: string) => string;
   isrSet: RouteHandlerCacheSetter;
+  trailingSlash?: boolean;
   middlewareContext: RouteHandlerMiddlewareContext;
   middlewareRequestHeaders?: Headers | null;
   /**
@@ -198,6 +199,7 @@ export async function dispatchAppRouteHandler(
       getCollectedFetchTags,
       handlerFn: resolvedHandlerFn,
       i18n: options.i18n,
+      trailingSlash: options.trailingSlash,
       isAutoHead,
       isrDebug: options.isrDebug,
       isrGet: options.isrGet,
@@ -255,6 +257,7 @@ export async function dispatchAppRouteHandler(
       handler,
       handlerFn: resolvedHandlerFn,
       i18n: options.i18n,
+      trailingSlash: options.trailingSlash,
       isAutoHead,
       isProduction,
       isrDebug: options.isrDebug,

@@ -750,6 +750,7 @@ export default __createAppRscHandler({
       },
       draftModeSecret: __draftModeSecret,
       i18n: __i18nConfig,
+      trailingSlash: __trailingSlash,
       isrDebug: __isrDebug,
       isrGet: __isrGet,
       isrRouteKey: __isrRouteKey,
