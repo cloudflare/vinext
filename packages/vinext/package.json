@@ -49,6 +49,10 @@
       "types": "./dist/server/request-pipeline.d.ts",
       "import": "./dist/server/request-pipeline.js"
     },
+    "./server/pages-request-pipeline": {
+      "types": "./dist/server/pages-request-pipeline.d.ts",
+      "import": "./dist/server/pages-request-pipeline.js"
+    },
     "./server/app-router-entry": {
       "types": "./dist/server/app-router-entry.d.ts",
       "import": "./dist/server/app-router-entry.js"

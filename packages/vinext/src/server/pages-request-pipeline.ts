@@ -1,0 +1,403 @@
+/**
+ * Pages Router request pipeline — canonical 9-step Next.js execution order.
+ *
+ * This module owns the ordering once so it doesn't have to be copy-pasted
+ * across prod-server.ts (Node), deploy.ts (Cloudflare Worker), and index.ts
+ * (Vite dev middleware).
+ *
+ * Callers supply a `deps` object with injected callbacks:
+ * - Prod/worker callers supply `renderPage`/`handleApi` and get
+ *   `{type:"response"}` back.
+ * - Dev callers omit them and get `{type:"render"|"api"|"next"}` intents
+ *   which they handle themselves (preserving their streaming SSR path).
+ */
+
+import type { NextI18nConfig, NextRedirect, NextRewrite, NextHeader } from "../config/next-config.js";
+import type { BasePathMatchState, RequestContext } from "../config/config-matchers.js";
+import {
+  matchRedirect,
+  matchRewrite,
+  preserveRedirectDestinationQuery,
+  requestContextFromRequest,
+  applyMiddlewareRequestHeaders,
+  isExternalUrl,
+  proxyExternalRequest,
+  sanitizeDestination,
+} from "../config/config-matchers.js";
+import {
+  applyConfigHeadersToHeaderRecord,
+  normalizeTrailingSlash,
+} from "./request-pipeline.js";
+import type { HeaderRecord } from "./request-pipeline.js";
+import { mergeHeaders } from "./worker-utils.js";
+import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pages-i18n.js";
+import { mergeRewriteQuery } from "../utils/query.js";
+import { hasBasePath } from "../utils/base-path.js";
+
+// All "render options" that are passed through to the renderPage callback
+export type PagesRenderOptions = {
+  isDataReq?: boolean;
+  renderErrorPageOnMiss?: boolean;
+};
+
+export type MiddlewareResult = {
+  continue: boolean;
+  redirectUrl?: string;
+  redirectStatus?: number;
+  rewriteUrl?: string;
+  rewriteStatus?: number;
+  status?: number;
+  responseHeaders?: Iterable<[string, string]>;
+  response?: Response;
+  waitUntilPromises?: Promise<unknown>[];
+};
+
+// The deps object injected by each runtime adapter
+export type PagesPipelineDeps = {
+  // Config values
+  basePath: string;
+  trailingSlash: boolean;
+  i18nConfig: NextI18nConfig | null;
+  configRedirects: NextRedirect[];
+  configRewrites: { beforeFiles: NextRewrite[]; afterFiles: NextRewrite[]; fallback: NextRewrite[] };
+  configHeaders: NextHeader[];
+
+  // Pre-computed per-request values (adapter sets these)
+  hadBasePath: boolean;      // adapter computes: !basePath || hasBasePath(originalPathname, basePath)
+  isDataReq: boolean;        // true if this was a /_next/data/ request (already normalized by adapter)
+  isDataRequest: boolean;    // true if x-nextjs-data: 1 header was present (for middleware opts)
+  ctx?: unknown;             // Cloudflare ExecutionContext or undefined (for Node)
+
+  // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
+  matchPageRoute?: ((pathname: string, request: Request) => { route: { isDynamic: boolean } } | null) | null;
+  runMiddleware?: ((request: Request, ctx: unknown, opts: { isDataRequest: boolean }) => Promise<MiddlewareResult>) | null;
+  renderPage?: ((request: Request, resolvedUrl: string, options?: PagesRenderOptions) => Promise<Response>) | null;
+  handleApi?: ((request: Request, apiUrl: string, ctx: unknown) => Promise<Response>) | null;
+};
+
+// The result discriminated union
+export type PagesPipelineResult =
+  | { type: "response"; response: Response }
+  | {
+      type: "render";
+      resolvedUrl: string;
+      renderOptions: PagesRenderOptions | undefined;
+      stagedHeaders: HeaderRecord;
+      middlewareStatus: number | undefined;
+      isDataReq: boolean;
+    }
+  | {
+      type: "api";
+      apiUrl: string;
+      stagedHeaders: HeaderRecord;
+      middlewareStatus: number | undefined;
+    }
+  | { type: "next" }; // dev passthrough (no matching route, has appDir)
+
+/**
+ * Run the Pages Router request pipeline.
+ *
+ * ASSUMPTION: request already has internal headers filtered and basePath stripped.
+ * The adapter is responsible for that pre-processing before calling runPagesRequest.
+ * The adapter also handles: open-redirect guard, _next/static 404, image optimization,
+ * _next/data normalization, Node decode/normalize/400, public-file serving.
+ * runPagesRequest receives a "clean" request with basePath-stripped URL.
+ */
+export async function runPagesRequest(
+  request: Request,
+  deps: PagesPipelineDeps,
+): Promise<PagesPipelineResult> {
+  const {
+    basePath,
+    trailingSlash,
+    i18nConfig,
+    configRedirects,
+    configRewrites,
+    configHeaders,
+    hadBasePath,
+    isDataReq,
+    isDataRequest,
+  } = deps;
+
+  const url = new URL(request.url);
+  let pathname = url.pathname;
+  const search = url.search;
+
+  // Step 1: Reconstruct basePathState
+  const basePathState: BasePathMatchState = { basePath, hadBasePath };
+
+  // Step 2: Trailing-slash normalization
+  {
+    const trailingSlashRedirect = normalizeTrailingSlash(pathname, basePath, trailingSlash, search);
+    if (trailingSlashRedirect) {
+      return { type: "response", response: trailingSlashRedirect };
+    }
+  }
+
+  // Step 3: Build pre-middleware request context
+  const reqCtx: RequestContext = requestContextFromRequest(request);
+  const requestHostname = i18nConfig ? url.hostname : "";
+  const matchPathname = i18nConfig
+    ? normalizeDefaultLocalePathname(pathname, i18nConfig, { hostname: requestHostname })
+    : pathname;
+
+  // Step 4: Config redirects (before middleware)
+  if (configRedirects.length) {
+    const redirect = matchRedirect(matchPathname, configRedirects, reqCtx, basePathState);
+    if (redirect) {
+      // Only prepend basePath when the request was actually under basePath.
+      // Opt-out rules running on out-of-basepath requests must not receive a basePath prefix.
+      const dest = sanitizeDestination(
+        basePath &&
+          hadBasePath &&
+          !isExternalUrl(redirect.destination) &&
+          !hasBasePath(redirect.destination, basePath)
+          ? basePath + redirect.destination
+          : redirect.destination,
+      );
+      const location = preserveRedirectDestinationQuery(dest, search);
+      return {
+        type: "response",
+        response: new Response(null, {
+          status: redirect.permanent ? 308 : 307,
+          headers: { Location: location },
+        }),
+      };
+    }
+  }
+
+  // Step 5: Middleware
+  let resolvedUrl = pathname + search;
+  const middlewareHeaders: HeaderRecord = {};
+  let middlewareStatus: number | undefined;
+
+  if (typeof deps.runMiddleware === "function") {
+    const result = await deps.runMiddleware(request, deps.ctx ?? null, { isDataRequest });
+
+    // Bubble waitUntil promises
+    if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {
+      const ctx = deps.ctx as { waitUntil?: (p: Promise<unknown>) => void } | null | undefined;
+      if (ctx && typeof ctx.waitUntil === "function") {
+        for (const p of result.waitUntilPromises) {
+          ctx.waitUntil(p);
+        }
+      } else {
+        // Node: no ctx.waitUntil — settle promises in the background
+        void Promise.allSettled(result.waitUntilPromises);
+      }
+    }
+
+    if (!result.continue) {
+      if (result.redirectUrl) {
+        const redirectHeaders: Record<string, string | string[]> = {
+          Location: result.redirectUrl,
+        };
+        if (result.responseHeaders) {
+          for (const [key, value] of result.responseHeaders) {
+            const existing = redirectHeaders[key];
+            if (existing === undefined) {
+              redirectHeaders[key] = value;
+            } else if (Array.isArray(existing)) {
+              existing.push(value);
+            } else {
+              redirectHeaders[key] = [existing, value];
+            }
+          }
+        }
+        const headers = new Headers();
+        for (const [k, v] of Object.entries(redirectHeaders)) {
+          if (Array.isArray(v)) {
+            for (const item of v) headers.append(k, item);
+          } else {
+            headers.set(k, v);
+          }
+        }
+        return {
+          type: "response",
+          response: new Response(null, {
+            status: result.redirectStatus ?? 307,
+            headers,
+          }),
+        };
+      }
+      if (result.response) {
+        return { type: "response", response: result.response };
+      }
+    }
+
+    // Collect middleware response headers (Set-Cookie as array, same logic as both prod copies)
+    if (result.responseHeaders) {
+      for (const [key, value] of result.responseHeaders) {
+        if (key === "set-cookie") {
+          const existing = middlewareHeaders[key];
+          if (Array.isArray(existing)) {
+            existing.push(value);
+          } else if (existing) {
+            middlewareHeaders[key] = [existing as string, value];
+          } else {
+            middlewareHeaders[key] = [value];
+          }
+        } else {
+          middlewareHeaders[key] = value;
+        }
+      }
+    }
+
+    if (result.rewriteUrl) {
+      resolvedUrl = result.rewriteUrl;
+    }
+
+    // Reconciled superset: result.status takes priority over result.rewriteStatus
+    middlewareStatus = result.status ?? result.rewriteStatus;
+  }
+
+  // Step 6: Unpack middleware request headers
+  const { postMwReqCtx, request: postMwReq } = applyMiddlewareRequestHeaders(
+    middlewareHeaders,
+    request,
+    { preserveCredentialHeaders: isExternalUrl(resolvedUrl) },
+  );
+  request = postMwReq;
+  let resolvedPathname = resolvedUrl.split("?")[0];
+
+  const matchResolvedPathname = (p: string): string =>
+    i18nConfig
+      ? normalizeDefaultLocalePathname(p, i18nConfig, { hostname: requestHostname })
+      : p;
+
+  // Step 7: Config headers staging
+  if (configHeaders.length) {
+    applyConfigHeadersToHeaderRecord(middlewareHeaders, {
+      configHeaders,
+      pathname: matchPathname,
+      requestContext: reqCtx,
+      basePathState,
+    });
+  }
+
+  // Step 8: External-URL proxy (post-mw rewrite target)
+  if (isExternalUrl(resolvedUrl)) {
+    const proxyResponse = await proxyExternalRequest(request, resolvedUrl);
+    return { type: "response", response: mergeHeaders(proxyResponse, middlewareHeaders, undefined) };
+  }
+
+  // Step 9: beforeFiles rewrites
+  let configRewriteFired = false;
+  if (configRewrites.beforeFiles?.length) {
+    const rewritten = matchRewrite(
+      matchResolvedPathname(resolvedPathname),
+      configRewrites.beforeFiles,
+      postMwReqCtx,
+      basePathState,
+    );
+    if (rewritten) {
+      if (isExternalUrl(rewritten)) {
+        return { type: "response", response: await proxyExternalRequest(request, rewritten) };
+      }
+      resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
+      resolvedPathname = resolvedUrl.split("?")[0];
+      configRewriteFired = true;
+    }
+  }
+
+  // Step 10: Out-of-basePath reject
+  if (basePath && !hadBasePath && !configRewriteFired) {
+    return {
+      type: "response",
+      response: new Response("This page could not be found", {
+        status: 404,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      }),
+    };
+  }
+
+  // Step 11: API routes
+  const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, i18nConfig);
+  const apiLookupPathname = apiLookupUrl.split("?")[0];
+  if (apiLookupPathname.startsWith("/api/") || apiLookupPathname === "/api") {
+    if (typeof deps.handleApi === "function") {
+      const response = await deps.handleApi(request, apiLookupUrl, deps.ctx ?? null);
+      return {
+        type: "response",
+        response: mergeHeaders(response, middlewareHeaders, middlewareStatus),
+      };
+    } else {
+      // dev: emit intent
+      return { type: "api", apiUrl: apiLookupUrl, stagedHeaders: middlewareHeaders, middlewareStatus };
+    }
+  }
+
+  // Step 12: afterFiles rewrites
+  const pageMatch = deps.matchPageRoute ? deps.matchPageRoute(resolvedPathname, request) : null;
+  if ((!pageMatch || pageMatch.route.isDynamic) && configRewrites.afterFiles?.length) {
+    const rewritten = matchRewrite(
+      matchResolvedPathname(resolvedPathname),
+      configRewrites.afterFiles,
+      postMwReqCtx,
+      basePathState,
+    );
+    if (rewritten) {
+      if (isExternalUrl(rewritten)) {
+        return { type: "response", response: await proxyExternalRequest(request, rewritten) };
+      }
+      resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
+      resolvedPathname = resolvedUrl.split("?")[0];
+    }
+  }
+
+  // Step 13: Render + fallback rewrites
+  if (typeof deps.renderPage === "function") {
+    const renderPageMatch = deps.matchPageRoute
+      ? deps.matchPageRoute(resolvedPathname, request)
+      : null;
+    const shouldDeferErrorPageOnMiss = !isDataReq && !!deps.matchPageRoute && !renderPageMatch;
+    const initialRenderOptions: PagesRenderOptions | undefined = shouldDeferErrorPageOnMiss
+      ? { renderErrorPageOnMiss: false }
+      : isDataReq
+        ? { isDataReq: true }
+        : undefined;
+
+    let response = await deps.renderPage(request, resolvedUrl, initialRenderOptions);
+
+    // Fallback rewrites if 404 + deferred
+    let matchedFallbackRewrite = false;
+    if (
+      response.status === 404 &&
+      shouldDeferErrorPageOnMiss &&
+      configRewrites.fallback?.length
+    ) {
+      const fallbackRewrite = matchRewrite(
+        matchResolvedPathname(resolvedPathname),
+        configRewrites.fallback,
+        postMwReqCtx,
+        basePathState,
+      );
+      if (fallbackRewrite) {
+        if (isExternalUrl(fallbackRewrite)) {
+          return { type: "response", response: await proxyExternalRequest(request, fallbackRewrite) };
+        }
+        response = await deps.renderPage(request, mergeRewriteQuery(resolvedUrl, fallbackRewrite));
+        matchedFallbackRewrite = true;
+      }
+    }
+
+    // Deferred 404 re-render
+    if (response.status === 404 && shouldDeferErrorPageOnMiss && !matchedFallbackRewrite) {
+      response = await deps.renderPage(request, resolvedUrl);
+    }
+
+    return {
+      type: "response",
+      response: mergeHeaders(response, middlewareHeaders, middlewareStatus),
+    };
+  }
+  // dev: emit render intent
+  return {
+    type: "render",
+    resolvedUrl,
+    renderOptions: isDataReq ? { isDataReq: true } : undefined,
+    stagedHeaders: middlewareHeaders,
+    middlewareStatus,
+    isDataReq,
+  };
+}
