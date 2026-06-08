@@ -118,8 +118,8 @@ function collectRequireContextCalls(ast: unknown): ParsedCall[] {
     const parsed = parseRequireContextCall(value);
     if (parsed) {
       calls.push(parsed);
-      // Still descend into the arguments in case of nested calls — but the
-      // arguments here are all literals, so there is nothing to find.
+      // A matched call's arguments are all literals (string/boolean/regexp), so
+      // there is nothing further to find inside it — stop descending here.
       return;
     }
     forEachAstChild(value, visit);
@@ -155,10 +155,11 @@ function parseRequireContextCall(node: AstRecord): ParsedCall | null {
   const dir = stringLiteralValue(args[0]);
   if (dir == null || !(dir.startsWith("./") || dir.startsWith("../"))) return null;
 
-  // Second arg: recursive flag. Optional; defaults to false in Webpack, but
-  // when omitted Next.js fixtures still expect recursion to be handled. We only
-  // rewrite when it is a literal boolean (or absent → false).
-  let recursive = false;
+  // Second arg: recursive flag. Optional; Webpack's `require.context` defaults
+  // `useSubdirectories` to `true` when omitted, so we match that to avoid a
+  // silently-shallower key set. We only rewrite when it is a literal boolean
+  // (or absent → true).
+  let recursive = true;
   if (args.length >= 2) {
     const value = booleanLiteralValue(args[1]);
     if (value == null) return null;
@@ -256,7 +257,12 @@ function buildReplacement(call: ParsedCall): string {
   // Eager so the modules resolve synchronously, like Webpack's require.context.
   const glob = `import.meta.glob(${JSON.stringify(globPattern)}, { eager: true })`;
   const base = JSON.stringify(stripTrailingSlash(call.dir));
-  const regexArgs = `${JSON.stringify(call.pattern)}, ${JSON.stringify(call.flags)}`;
+  // Strip the global (`g`) and sticky (`y`) flags: they make `RegExp.test()`
+  // stateful via `lastIndex`, so consecutive membership checks over the sorted
+  // keys would alternate true/false and silently drop matching modules. They
+  // are meaningless for the per-key `.test()` filter Webpack applies.
+  const filterFlags = call.flags.replace(/[gy]/g, "");
+  const regexArgs = `${JSON.stringify(call.pattern)}, ${JSON.stringify(filterFlags)}`;
 
   // The runtime helper below normalises glob keys (which are relative to the
   // current module, e.g. "./grandparent/parent/file1.js") into context keys

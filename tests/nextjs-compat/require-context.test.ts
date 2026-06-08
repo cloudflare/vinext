@@ -34,16 +34,24 @@ describe("Next.js compat: require-context", () => {
     await server?.close();
   });
 
+  const expectedKeys = ["./parent/file1.js", "./parent/file2.js", "./parent2/file3.js"];
+
+  // React HTML-escapes the JSON string in SSR output; decode entities before parsing.
+  function parseKeys(html: string, id: string): unknown {
+    const match = html.match(new RegExp(`<pre id="${id}">([^<]*)</pre>`));
+    expect(match, `missing <pre id="${id}">`).not.toBeNull();
+    const json = match![1].replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+    return JSON.parse(json);
+  }
+
   it("should get correct require context keys when using regex filtering", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/require-context");
-    const match = html.match(/<pre id="require-context-keys">([^<]*)<\/pre>/);
-    expect(match).not.toBeNull();
-    // React HTML-escapes the JSON string in SSR output; decode entities before parsing.
-    const json = match![1].replace(/&quot;/g, '"').replace(/&amp;/g, "&");
-    expect(JSON.parse(json)).toEqual([
-      "./parent/file1.js",
-      "./parent/file2.js",
-      "./parent2/file3.js",
-    ]);
+    expect(parseKeys(html, "require-context-keys")).toEqual(expectedKeys);
+  });
+
+  it("should not drop modules when the filter regexp carries the global flag", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/require-context");
+    // A stateful `g`-flagged `RegExp.test()` would silently drop "./parent/file2.js".
+    expect(parseKeys(html, "require-context-keys-global")).toEqual(expectedKeys);
   });
 });
