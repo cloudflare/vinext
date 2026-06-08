@@ -198,6 +198,12 @@ describe("Next.js compat: global-error", () => {
   // built-in default global-error UI ("This page couldn't load") instead of
   // crashing the request. Vinext must nest the user's global-error inside an
   // outer boundary whose fallback is the default global-error component.
+  //
+  // PORT NOTE: upstream triggers the throw from the client (a `useEffect` in the
+  // global-error component). This HTTP/SSR suite instead has the shared
+  // global-error.tsx throw synchronously during SSR (keyed on the request
+  // pathname — see fixtures/app-basic/app/global-error.tsx) so the built-in
+  // fallback is observable in the server-rendered HTML without a browser.
 
   it("self-throwing global-error renders the built-in default fallback", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-self-throw");

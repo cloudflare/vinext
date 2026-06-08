@@ -267,6 +267,9 @@ export function GlobalErrorBoundary({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  // No `resetKey`: as the outermost root boundary it resets only on pathname
+  // change (the ErrorBoundaryInner default), matching Next.js's RootErrorBoundary
+  // which also has no per-segment reset key.
   return (
     <ErrorBoundaryInner pathname={pathname} fallback={fallback}>
       {children}
