@@ -1127,9 +1127,9 @@ describe("resolveNextConfig serverActionsBodySizeLimit", () => {
   // The verbatim config string drives the "Body exceeded {limit} limit" error
   // message (matching Next.js), so it must be preserved alongside the parsed
   // byte count rather than reconstructed from it.
-  it("preserves the verbatim bodySizeLimit label, defaulting to 1mb", async () => {
+  it("preserves the verbatim bodySizeLimit label, defaulting to Next.js' 1 MB literal", async () => {
     const defaulted = await resolveNextConfig(null);
-    expect(defaulted.serverActionsBodySizeLimitLabel).toBe("1mb");
+    expect(defaulted.serverActionsBodySizeLimitLabel).toBe("1 MB");
 
     const stringLabel = await resolveNextConfig({
       experimental: { serverActions: { bodySizeLimit: "2mb" } },
@@ -1516,7 +1516,7 @@ describe("detectNextIntlConfig", () => {
       optimizePackageImports: [],
       inlineCss: false,
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
-      serverActionsBodySizeLimitLabel: "1mb",
+      serverActionsBodySizeLimitLabel: "1 MB",
       htmlLimitedBots: undefined,
       serverExternalPackages: [],
       cacheHandler: undefined,

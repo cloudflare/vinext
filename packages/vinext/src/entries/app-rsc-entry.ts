@@ -192,7 +192,7 @@ export function generateRscEntry(
   const headers = config?.headers ?? [];
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;
-  const bodySizeLimitLabel = config?.bodySizeLimitLabel ?? "1mb";
+  const bodySizeLimitLabel = config?.bodySizeLimitLabel ?? "1 MB";
   const htmlLimitedBots = config?.htmlLimitedBots;
   const clientTraceMetadata = config?.clientTraceMetadata;
   const assetPrefix = config?.assetPrefix ?? "";
@@ -560,7 +560,7 @@ var __MAX_ACTION_BODY_SIZE = ${JSON.stringify(bodySizeLimit)};
 /**
  * Verbatim serverActions.bodySizeLimit config value (e.g. "2mb"), used in the
  * "Body exceeded {limit} limit" error so the message matches Next.js byte-for-byte.
- * Defaults to "1mb".
+ * Defaults to "1 MB" (Next.js' defaultBodySizeLimit literal).
  */
 var __MAX_ACTION_BODY_SIZE_LABEL = ${JSON.stringify(bodySizeLimitLabel)};
 
