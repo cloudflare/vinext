@@ -38,6 +38,7 @@ import {
   type CacheLifeConfig,
 } from "./cache.js";
 import { VINEXT_RSC_MARKER_HEADER } from "../server/headers.js";
+import { addCollectedRequestTags } from "./fetch-cache.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   isInsideUnifiedScope,
@@ -531,6 +532,11 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     const existing = await handler.get(cacheKey, { kind: "FETCH" });
     if (existing?.value && existing.value.kind === "FETCH" && existing.cacheState !== "stale") {
       try {
+        // Surface the cached entry's tags to the surrounding request so the
+        // enclosing page / route-handler ISR entry carries them even on a data
+        // cache HIT — otherwise `revalidateTag()` could not evict the rendered
+        // output that embeds this cached value (issue #1453).
+        propagateCacheTagsToRequest(existing.value.tags);
         if (rsc && existing.value.data.headers[VINEXT_RSC_MARKER_HEADER] === "1") {
           // RSC-serialized entry: base64 → bytes → stream → deserialize
           const bytes = base64ToUint8(existing.value.data.body);
@@ -556,6 +562,11 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     );
 
     recordRequestScopedCacheLife(effectiveLife);
+    // Bubble the cache scope's tags up to the surrounding request so the
+    // enclosing page / route-handler ISR entry is tagged for on-demand
+    // revalidation (issue #1453). `ctx.tags` already includes any nested
+    // child cache's tags via `runCachedFunctionWithContext`.
+    propagateCacheTagsToRequest(ctx.tags);
     const revalidateSeconds =
       effectiveLife.revalidate ?? cacheLifeProfiles.default.revalidate ?? 900;
 
@@ -637,6 +648,23 @@ function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | un
 
 function recordRequestScopedCacheLife(cacheLife: CacheLifeConfig): void {
   _setRequestScopedCacheLife(cacheLife);
+}
+
+/**
+ * Bubble a `"use cache"` scope's tags up to the surrounding request's collected
+ * tags so the enclosing page / route-handler ISR entry carries them. When a
+ * cache scope is nested inside another (`parentCtx` present), the tags only need
+ * to flow into the parent — `runCachedFunctionWithContext` already merges a
+ * child's tags into its parent, and the outermost scope is what records onto the
+ * request. This avoids tagging the request with a private/inner-only tag before
+ * its parent has decided how to surface it. See issue #1453.
+ */
+function propagateCacheTagsToRequest(tags: readonly string[] | undefined): void {
+  if (!tags || tags.length === 0) return;
+  // A nested cache scope's tags are propagated to its parent scope instead, so
+  // only the outermost `"use cache"` writes onto the request tag list.
+  if (cacheContextStorage.getStore()) return;
+  addCollectedRequestTags(tags);
 }
 
 // ---------------------------------------------------------------------------
@@ -781,6 +809,16 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
   // suppress the throw — see the longer comment below.)
   if (parentCtx) {
     parentCtx.lifeConfigs.push(effectiveLife);
+    // Bubble this inner cache's tags into the parent cache scope so the
+    // outer entry (and ultimately the request) is invalidated when a tag
+    // declared by a nested `"use cache"` is revalidated. Matches Next.js's
+    // `propagateCacheLifeAndTagsToRevalidateStore`. Deduped to keep the
+    // parent's tag list tidy across many nested calls (issue #1453).
+    for (const tag of ctx.tags) {
+      if (!parentCtx.tags.includes(tag)) {
+        parentCtx.tags.push(tag);
+      }
+    }
   }
 
   // Propagate the eager error to the parent if this inner cache resolved

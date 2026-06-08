@@ -576,6 +576,28 @@ export function getCollectedFetchTags(): string[] {
 }
 
 /**
+ * Append cache tags to the current request's collected tags.
+ *
+ * Mirrors Next.js's `propagateCacheLifeAndTagsToRevalidateStore`: tags declared
+ * inside a `"use cache"` function (via `cacheTag()`, persisted on the data cache
+ * entry) must also bubble up to the surrounding page / route-handler ISR entry
+ * so `revalidateTag()` / `revalidatePath()` can evict the rendered output, not
+ * just the inner data cache entry. Without this, a cached `"use cache"` result
+ * keeps being served from a stale page/route entry after its tag is revalidated
+ * (issue #1453). Tags are already encoded by the caller; deduped to match the
+ * tagged-fetch path. A no-op for empty input.
+ */
+export function addCollectedRequestTags(tags: readonly string[]): void {
+  if (tags.length === 0) return;
+  const reqTags = _getState().currentRequestTags;
+  for (const tag of tags) {
+    if (!reqTags.includes(tag)) {
+      reqTags.push(tag);
+    }
+  }
+}
+
+/**
  * Set path-derived implicit tags for fetch cache reads in the current render.
  *
  * These are intentionally not persisted on fetch entries. They mirror Next.js

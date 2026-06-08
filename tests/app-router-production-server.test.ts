@@ -843,6 +843,40 @@ describe("App Router Production server (startProdServer)", () => {
     expect(body).toBe("");
   });
 
+  // Regression for issue #1453 (route-handler revalidate sub-part): a route
+  // handler whose body comes from a `"use cache"` function tagged with
+  // `cacheTag()` must be evictable via `revalidateTag()`. `cacheTag()` tags
+  // declared inside `"use cache"` were attached only to the inner data cache
+  // entry and never propagated to the surrounding route-handler ISR entry, so
+  // `revalidateTag()` left the cached route-handler response in place.
+  // Fixtures: /api/use-cache-tagged (no revalidate window, tagged via
+  // cacheTag("use-cache-rh-tag")) + /api/revalidate-use-cache-rh-tag.
+  it("route handler ISR: revalidateTag evicts a 'use cache' cacheTag()-tagged route handler", async () => {
+    // Cold request populates the cache.
+    const res1 = await fetch(`${baseUrl}/api/use-cache-tagged`);
+    expect(res1.status).toBe(200);
+    expect(res1.headers.get("x-vinext-cache")).toBe("MISS");
+    const body1 = await res1.json();
+
+    // Second request HITs the cache — there is no revalidate window, so the
+    // timestamp is stable until the tag is invalidated.
+    const res2 = await fetch(`${baseUrl}/api/use-cache-tagged`);
+    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
+    const body2 = await res2.json();
+    expect(body2.timestamp).toBe(body1.timestamp);
+
+    // Invalidate the cacheTag declared inside the "use cache" function.
+    const tagRes = await fetch(`${baseUrl}/api/revalidate-use-cache-rh-tag`);
+    expect(tagRes.status).toBe(200);
+    expect(await tagRes.text()).toBe("ok");
+
+    // The next request must miss the cache and produce a fresh timestamp.
+    const res3 = await fetch(`${baseUrl}/api/use-cache-tagged`);
+    expect(res3.headers.get("x-vinext-cache")).toBe("MISS");
+    const body3 = await res3.json();
+    expect(body3.timestamp).not.toBe(body1.timestamp);
+  });
+
   it("middleware request header overrides still apply after middleware calls headers() first", async () => {
     // Regression for a bug where a middleware that reads `next/headers` →
     // `headers()` *before* returning `NextResponse.next({ request: { headers } })`
