@@ -13,9 +13,9 @@
  * falls through (`NextResponse.next()`), the server-action POST must still be
  * dispatched to the action handler and able to read its own body.
  *
- * The app-basic fixture's `middleware.ts` matches `/nextjs-compat/action-node-mw`
- * and consumes the request body on POST before returning `NextResponse.next()`,
- * mirroring `middleware-node.js`.
+ * The app-basic fixture's `middleware.ts` declares `config.runtime = "nodejs"`,
+ * matches `/nextjs-compat/action-node-mw`, and consumes the request body on POST
+ * before returning `NextResponse.next()`, mirroring `middleware-node.js`.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";

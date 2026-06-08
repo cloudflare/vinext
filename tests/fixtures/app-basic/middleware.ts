@@ -333,6 +333,14 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
 }
 
 export const config = {
+  // Declare the Node.js runtime so the `/nextjs-compat/action-node-mw`
+  // server-action regression (cloudflare/vinext#1480) faithfully mirrors
+  // Next.js' `middleware-node.js` fixture (`export const config = { runtime:
+  // 'nodejs' }`). vinext runs all middleware on Node regardless of this value
+  // (see packages/vinext/src/server/middleware.ts), so it is a behavioural
+  // no-op for the other matcher entries — but it guards the named scenario and
+  // documents intent.
+  runtime: "nodejs",
   matcher: [
     "/about",
     "/middleware-redirect",
