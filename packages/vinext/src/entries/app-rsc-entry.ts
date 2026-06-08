@@ -266,6 +266,7 @@ import {
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
   handleServerActionRscRequest as __handleServerActionRscRequest,
+  isProgressiveServerActionRequest as __isProgressiveServerActionRequest,
   readActionBodyWithLimit as __readBodyWithLimit,
   readActionFormDataWithLimit as __readFormDataWithLimit,
 } from ${JSON.stringify(appServerActionExecutionPath)};
@@ -786,7 +787,16 @@ export default __createAppRscHandler({
     // (#1340). Route handlers run after this dispatch and accept raw multipart
     // POSTs, so only flag actual page routes. The __loadPage / __loadRouteHandler
     // markers are static and available before lazy module hydration.
-    const __progressiveActionMatch = matchRoute(cleanPathname);
+    //
+    // Only the progressive (multipart, no actionId) POST path consults
+    // hasPageRoute, so skip the route match entirely for every other request
+    // rather than re-matching on each App Router request.
+    const __isProgressiveAction = __isProgressiveServerActionRequest(
+      request,
+      contentType,
+      actionId,
+    );
+    const __progressiveActionMatch = __isProgressiveAction ? matchRoute(cleanPathname) : null;
     const __hasPageRoute = Boolean(
       __progressiveActionMatch &&
         __progressiveActionMatch.route.__loadPage &&

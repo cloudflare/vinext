@@ -2033,6 +2033,27 @@ describe("App Router integration", () => {
     expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
   });
 
+  it("returns action-not-found for an MPA form POST to a page with no decodable action", async () => {
+    // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
+    // ("should error when triggering an MPA action on an app with no server actions")
+    //
+    // A multipart form POST to a *page* route is always a server-action
+    // attempt. When the body carries no action reference, it must surface as
+    // Next.js' 404 + x-nextjs-action-not-found rather than rendering the page.
+    // This exercises the entry-side route classification (matchRoute +
+    // __loadPage / __loadRouteHandler markers) end-to-end. See issue #1340.
+    const body = new FormData();
+    body.append("test", "value");
+    const res = await fetch(`${baseUrl}/about`, {
+      method: "POST",
+      headers: { Origin: baseUrl, Host: new URL(baseUrl).host },
+      body,
+    });
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await res.text()).toBe("Server action not found.");
+  });
+
   it("rejects cyclic multipart server action payloads before decodeReply", async () => {
     const body = new FormData();
     body.set("0", '["$Q0"]');
