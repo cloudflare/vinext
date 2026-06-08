@@ -189,6 +189,12 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
    * SSR head. Undefined or empty disables emission entirely.
    */
   clientTraceMetadata?: readonly string[];
+  /**
+   * Maximum total length (in characters) of the preload `Link` header emitted
+   * during SSR. `0` disables emission. From `reactMaxHeadersLength` in
+   * `next.config`. Undefined falls back to the React default downstream.
+   */
+  reactMaxHeadersLength?: number;
   buildPageElement: (
     route: TRoute,
     params: AppPageParams,
@@ -620,6 +626,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               {
                 basePath: options.basePath,
                 clientTraceMetadata: options.clientTraceMetadata,
+                reactMaxHeadersLength: options.reactMaxHeadersLength,
                 rootParams: options.rootParams,
                 waitForAllReady: true,
                 ...(revalidatedRscCapture.sideStream
@@ -816,6 +823,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   return renderAppPageLifecycle({
     basePath: options.basePath,
     clientTraceMetadata: options.clientTraceMetadata,
+    reactMaxHeadersLength: options.reactMaxHeadersLength,
     cleanPathname: options.cleanPathname,
     clearRequestContext: options.clearRequestContext,
     consumeDynamicUsage,

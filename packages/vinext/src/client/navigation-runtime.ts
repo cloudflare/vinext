@@ -49,6 +49,14 @@ export type NavigationRuntimeFunctions = {
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
   ) => Promise<void>;
   navigate?: NavigationRuntimeNavigate;
+  /**
+   * Called at the start of every App Router navigation so the <Link> shim can
+   * reset any link that is still showing a `useLinkStatus()` pending state but
+   * is not the one driving this navigation (e.g. a programmatic router.push or
+   * a shallow-routing transition). Registered by shims/link.tsx; decoupled
+   * through the runtime to avoid a circular import with shims/navigation.ts.
+   */
+  notifyLinkNavigationStart?: () => void;
   pingVisibleLinks?: () => void;
 };
 
@@ -102,6 +110,7 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
     isOptionalRuntimeFunction(Reflect.get(value, "commitHashNavigation")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigate")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks"))
   );
 }

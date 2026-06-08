@@ -59,6 +59,7 @@ function makeTestAppRoute(
     isDynamic: pattern.includes(":"),
     params: [],
     rootParamNames: [],
+    siblingIntercepts: [],
   };
 }
 

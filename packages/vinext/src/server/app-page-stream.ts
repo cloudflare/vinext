@@ -22,6 +22,12 @@ export type AppSsrRenderResult = {
   htmlStream: ReadableStream<Uint8Array>;
   metadataReady: Promise<void>;
   capturedRscData: Promise<ArrayBuffer> | null;
+  /**
+   * Preload `Link` header value emitted by React during SSR (via `onHeaders`),
+   * already capped to `reactMaxHeadersLength`. Empty/undefined when React
+   * emitted no preload headers (or emission was disabled with `0`).
+   */
+  linkHeader?: string;
 };
 
 export function isAppSsrRenderResult(value: unknown): value is AppSsrRenderResult {
@@ -47,6 +53,58 @@ function normalizeAppSsrRenderResult(
   };
 }
 
+/**
+ * Combine the React-emitted preload `Link` header with vinext's font preload
+ * `Link` header, capping the result to `reactMaxHeadersLength`.
+ *
+ * React already caps its own portion, but vinext emits font preloads through a
+ * separate channel. Mirroring Next.js — where every preload flows through a
+ * single capped `onHeaders` callback — we cap the *combined* header here,
+ * keeping only whole entries that fit and dropping the rest once the limit is
+ * exceeded. `0` disables emission entirely (matches React); `undefined` falls
+ * back to the React default of 6000.
+ *
+ * React's hints (scripts/modules/styles) come first so that under a tight cap
+ * the render-critical entries survive and trailing font preloads are dropped
+ * first.
+ */
+export function buildAppPageLinkHeader(
+  reactLinkHeader: string | undefined,
+  fontLinkHeader: string | undefined,
+  maxHeadersLength: number | undefined,
+): string {
+  // Matches Next.js's `defaultConfig.reactMaxHeadersLength` (and the SSR
+  // renderer's fallback) so both caps agree when no config value is supplied.
+  const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
+  const limit =
+    typeof maxHeadersLength === "number" ? maxHeadersLength : DEFAULT_REACT_MAX_HEADERS_LENGTH;
+  if (limit <= 0) {
+    return "";
+  }
+
+  const entries: string[] = [];
+  for (const source of [reactLinkHeader, fontLinkHeader]) {
+    if (!source) continue;
+    for (const entry of source.split(", ")) {
+      if (entry.length > 0) {
+        entries.push(entry);
+      }
+    }
+  }
+
+  let header = "";
+  for (const entry of entries) {
+    const next = header.length === 0 ? entry : `${header}, ${entry}`;
+    if (next.length > limit) {
+      // React drops whole entries once the cap is exceeded; do the same.
+      break;
+    }
+    header = next;
+  }
+
+  return header;
+}
+
 export type AppPageSsrHandler = {
   handleSsr: (
     rscStream: ReadableStream<Uint8Array>,
@@ -61,6 +119,12 @@ export type AppPageSsrHandler = {
        * in the SSR head. Sourced from `experimental.clientTraceMetadata`.
        */
       clientTraceMetadata?: readonly string[];
+      /**
+       * Maximum total length (in characters) of the preload `Link` header
+       * emitted during SSR. `0` disables emission. From `reactMaxHeadersLength`
+       * in `next.config`.
+       */
+      reactMaxHeadersLength?: number;
       rootParams?: RootParams;
       sideStream?: ReadableStream<Uint8Array>;
       capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
@@ -85,6 +149,12 @@ type RenderAppPageHtmlStreamOptions = {
    * the SSR head. Undefined or empty disables emission.
    */
   clientTraceMetadata?: readonly string[];
+  /**
+   * Maximum total length (in characters) of the preload `Link` header emitted
+   * during SSR. `0` disables emission. From `reactMaxHeadersLength` in
+   * `next.config`.
+   */
+  reactMaxHeadersLength?: number;
   rootParams?: RootParams;
   ssrHandler: AppPageSsrHandler;
   /** Pre-split side stream for fused embed+capture (#981). When set,
@@ -111,6 +181,8 @@ type AppPageHtmlStreamRecoveryResult = {
   response: Response | null;
   metadataReady: Promise<void>;
   capturedRscData: Promise<ArrayBuffer> | null;
+  /** React-emitted preload `Link` header (already capped). */
+  linkHeader?: string;
 };
 
 type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
@@ -154,6 +226,7 @@ export async function renderAppPageHtmlStream(
     scriptNonce: options.scriptNonce,
     basePath: options.basePath,
     clientTraceMetadata: options.clientTraceMetadata,
+    reactMaxHeadersLength: options.reactMaxHeadersLength,
     rootParams: options.rootParams,
     sideStream: options.sideStream,
     capturedRscDataRef: options.capturedRscDataRef,
@@ -263,13 +336,15 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
 ): Promise<AppPageHtmlStreamRecoveryResult> {
   try {
     const rawResult = await options.renderHtmlStream();
-    const { htmlStream, metadataReady, capturedRscData } = normalizeAppSsrRenderResult(rawResult);
+    const { htmlStream, metadataReady, capturedRscData, linkHeader } =
+      normalizeAppSsrRenderResult(rawResult);
     options.onShellRendered?.();
     return {
       htmlStream,
       response: null,
       metadataReady,
       capturedRscData,
+      linkHeader,
     };
   } catch (error) {
     const specialError = options.resolveSpecialError(error);

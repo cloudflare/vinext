@@ -1,4 +1,8 @@
-import { matchRoutePattern, matchRoutePatternPrefix } from "../routing/route-pattern.js";
+import {
+  matchRoutePattern,
+  matchRoutePatternPrefix,
+  matchRoutePatternWithOptionalDynamicSegments,
+} from "../routing/route-pattern.js";
 import { splitPathnameForRouteMatch } from "../routing/utils.js";
 import type {
   RouteManifest,
@@ -385,8 +389,18 @@ function findRouteManifestInterceptionForProof(
     if (!matchRoutePatternPrefix(sourceParts, interception.sourcePatternParts)) {
       continue;
     }
-    if (matchRoutePattern(targetParts, interception.targetPatternParts) === null) continue;
-    if (interception.targetRouteId !== null && targetRoute?.id !== interception.targetRouteId) {
+    const exactTargetParams = matchRoutePattern(targetParts, interception.targetPatternParts);
+    const allowsMiddlewareRewriteTarget =
+      exactTargetParams === null &&
+      matchRoutePatternWithOptionalDynamicSegments(targetParts, interception.targetPatternParts);
+    if (exactTargetParams === null && !allowsMiddlewareRewriteTarget) {
+      continue;
+    }
+    if (
+      !allowsMiddlewareRewriteTarget &&
+      interception.targetRouteId !== null &&
+      targetRoute?.id !== interception.targetRouteId
+    ) {
       continue;
     }
     return interception;

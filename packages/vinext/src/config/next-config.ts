@@ -224,6 +224,13 @@ export type NextConfig = {
   allowedDevOrigins?: string[];
   /** Maximum age in seconds for stale ISR entries before blocking regeneration. */
   expireTime?: number;
+  /**
+   * Maximum total length (in characters) of the preload `Link` header emitted
+   * during App Router SSR. React drops whole entries once the limit is
+   * exceeded; `0` disables emission entirely. Defaults to 6000.
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/reactMaxHeadersLength
+   */
+  reactMaxHeadersLength?: number;
   /** User agents that require blocking metadata in the initial head. */
   htmlLimitedBots?: RegExp | string;
   /**
@@ -351,8 +358,15 @@ export type ResolvedNextConfig = {
   inlineCss: boolean;
   /** Parsed body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). Defaults to 1MB. */
   serverActionsBodySizeLimit: number;
+  /** Verbatim body size limit config value (e.g. "2mb") for the "Body exceeded {limit} limit" error. Defaults to "1 MB". */
+  serverActionsBodySizeLimitLabel: string;
   /** Route-level expire fallback in seconds for ISR entries with numeric revalidate. */
   expireTime: number;
+  /**
+   * Maximum total length (in characters) of the preload `Link` header emitted
+   * during App Router SSR. `0` disables emission. Defaults to 6000.
+   */
+  reactMaxHeadersLength: number;
   /** Serialized htmlLimitedBots regexp source from next.config. */
   htmlLimitedBots: string | undefined;
   /**
@@ -473,6 +487,13 @@ const CONFIG_FILES = [
   "next.config.cjs",
 ];
 const DEFAULT_EXPIRE_TIME = 31_536_000;
+
+/**
+ * Default cap for the App Router preload `Link` header length, matching the
+ * Next.js `defaultConfig.reactMaxHeadersLength`.
+ * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/reactMaxHeadersLength
+ */
+const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
 
 /**
  * Check whether an error indicates a CJS module was loaded in an ESM context
@@ -1184,7 +1205,9 @@ export async function resolveNextConfig(
       optimizePackageImports: [],
       inlineCss: false,
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      serverActionsBodySizeLimitLabel: "1 MB",
       expireTime: DEFAULT_EXPIRE_TIME,
+      reactMaxHeadersLength: DEFAULT_REACT_MAX_HEADERS_LENGTH,
       htmlLimitedBots: undefined,
       serverExternalPackages: [],
       cacheHandler: undefined,
@@ -1278,9 +1301,19 @@ export async function resolveNextConfig(
   const experimental = readOptionalRecord(config.experimental);
   const serverActionsConfig = readOptionalRecord(experimental?.serverActions);
   const serverActionsAllowedOrigins = readStringArray(serverActionsConfig?.allowedOrigins);
-  const serverActionsBodySizeLimit = parseBodySizeLimit(
-    readOptionalBodySizeLimit(serverActionsConfig?.bodySizeLimit),
+  const serverActionsBodySizeLimitConfig = readOptionalBodySizeLimit(
+    serverActionsConfig?.bodySizeLimit,
   );
+  const serverActionsBodySizeLimit = parseBodySizeLimit(serverActionsBodySizeLimitConfig);
+  // Preserve the verbatim config value (e.g. "2mb") for the "Body exceeded
+  // {limit} limit" error message. Next.js surfaces the original string rather
+  // than a value reconstructed from the parsed byte count, so reusing it keeps
+  // the error/log text byte-identical. When unset, Next.js uses its
+  // `defaultBodySizeLimit = '1 MB'` literal (uppercase, spaced) — mirror it.
+  const serverActionsBodySizeLimitLabel =
+    serverActionsBodySizeLimitConfig === undefined
+      ? "1 MB"
+      : String(serverActionsBodySizeLimitConfig);
 
   // Resolve hashSalt from experimental.outputHashSalt config + NEXT_HASH_SALT env var.
   // Next.js concatenates them: config value first, then env var.
@@ -1455,7 +1488,12 @@ export async function resolveNextConfig(
     optimizePackageImports,
     inlineCss,
     serverActionsBodySizeLimit,
+    serverActionsBodySizeLimitLabel,
     expireTime: typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME,
+    reactMaxHeadersLength:
+      typeof config.reactMaxHeadersLength === "number"
+        ? config.reactMaxHeadersLength
+        : DEFAULT_REACT_MAX_HEADERS_LENGTH,
     htmlLimitedBots,
     serverExternalPackages,
     cacheHandler,
@@ -1510,6 +1548,21 @@ export async function resolveNextConfig(
   return resolved;
 }
 
+/**
+ * Whether an alias target is a relative filesystem path (`./foo`, `../foo`,
+ * or a bare `.`/`..`) that should be resolved against the project root.
+ *
+ * Both Next.js Turbopack `resolveAlias` and webpack `resolve.alias` accept two
+ * kinds of values: relative/absolute file paths AND bare package specifiers
+ * (e.g. `react`, `preact/compat`, `@scope/pkg`). Bare specifiers must be left
+ * verbatim so Vite/Rolldown re-resolves them through node_modules — resolving
+ * them against `root` mangles them into bogus `<root>/react` paths and breaks
+ * the build with "No such file or directory". See cloudflare/vinext#1507.
+ */
+function isRelativeAliasTarget(value: string): boolean {
+  return value === "." || value === ".." || value.startsWith("./") || value.startsWith("../");
+}
+
 function normalizeAliasEntries(
   aliases: Record<string, unknown> | undefined,
   root: string,
@@ -1519,7 +1572,15 @@ function normalizeAliasEntries(
   const normalized: Record<string, string> = {};
   for (const [key, value] of Object.entries(aliases)) {
     if (typeof value !== "string") continue;
-    normalized[key] = path.isAbsolute(value) ? value : path.resolve(root, value);
+    if (path.isAbsolute(value)) {
+      normalized[key] = value;
+    } else if (isRelativeAliasTarget(value)) {
+      normalized[key] = path.resolve(root, value);
+    } else {
+      // Bare package specifier (e.g. `react`, `preact/compat`) — leave as-is so
+      // Vite resolves it through node_modules rather than the filesystem.
+      normalized[key] = value;
+    }
   }
   return normalized;
 }

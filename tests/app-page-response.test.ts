@@ -497,7 +497,7 @@ describe("app page response helpers", () => {
 
     const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
       draftCookie: "__prerender_bypass=token; Path=/",
-      fontLinkHeader: "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
+      linkHeader: "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
       middlewareContext: {
         headers: middlewareHeaders,
         status: 203,

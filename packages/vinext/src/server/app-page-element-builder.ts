@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { resolveActiveParallelRouteHeadInputs, resolveAppPageHead } from "./app-page-head.js";
+import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
 import {
   buildAppPageElements,
   createAppPageTreePath,
@@ -73,6 +74,7 @@ export type BuildPageElementsOptions<
   route: AppPageBuildRoute<TModule, TErrorModule>;
   params: AppPageParams;
   routePath: string;
+  displayPathname?: string;
   pageRequest: AppPagePageRequest<TModule>;
   /** Root-level global-error.tsx module. Present when the app defines this file. */
   globalErrorModule?: TErrorModule | null;
@@ -118,6 +120,7 @@ export async function buildPageElements<
     route,
     params,
     routePath,
+    displayPathname = routePath,
     pageRequest,
     globalErrorModule,
     rootNotFoundModule,
@@ -134,16 +137,43 @@ export async function buildPageElements<
   } = pageRequest;
 
   const pageModule: AppPageModule | null | undefined = route.page;
-  const PageComponent = pageModule?.default;
+
+  // Sibling intercepts replace the full page — the intercepting page is the
+  // effective page module. Slot-based intercepts use a different code path
+  // (buildSlotOverrides) and are unaffected.
+  const isSiblingIntercept =
+    opts?.interceptSlotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY && !!opts?.interceptPage;
+  const effectivePageModule = isSiblingIntercept
+    ? (opts!.interceptPage as AppPageModule | null | undefined)
+    : pageModule;
+  // Resolve the component that will actually render. For a sibling intercept
+  // this is the intercepting page's own default export — we deliberately do
+  // NOT fall back to the source route's page component. Silently rendering a
+  // *different* page than the requested intercept is a surprising failure mode;
+  // a missing default export is surfaced as an explicit error below, mirroring
+  // the source/slot no-export handling. For a normal request this is identical
+  // to `pageModule?.default` since `effectivePageModule === pageModule`.
+  const EffectivePageComponent = effectivePageModule?.default;
+  const effectiveParams = isSiblingIntercept ? (opts!.interceptParams ?? params) : params;
+
   const hasPageModule = !!pageModule;
   const renderIdentity = createAppPageRenderIdentity({
-    displayPathname: routePath,
+    displayPathname,
     interceptionContext: opts?.interceptionContext ?? null,
     interceptSourceMatchedUrl: opts?.interceptSourceMatchedUrl ?? null,
-    interceptSlotId: opts?.interceptSlotId ?? null,
+    // Sibling intercepts are full-page replacements with no slot proof.
+    // Passing null here makes the payload carry interception:null so the
+    // client planner commits the result as a normal navigation rather than
+    // attempting slot-preservation validation (which would fail — the
+    // synthetic __page slot has no real slot binding in the component tree).
+    interceptSlotId: isSiblingIntercept ? null : (opts?.interceptSlotId ?? null),
   });
 
-  if (hasPageModule && !PageComponent) {
+  // Surface a clear "no default export" error for whichever page will render:
+  // the source route page on a normal request, or the intercepting page for a
+  // sibling intercept. Without the `isSiblingIntercept` arm, an intercepting
+  // page missing its default export would silently render the source page.
+  if ((hasPageModule || isSiblingIntercept) && !EffectivePageComponent) {
     let noExportRootLayout: string | null = null;
     const noExportLayoutIds =
       route.ids?.layouts ??
@@ -178,7 +208,7 @@ export async function buildPageElements<
     layoutModules: route.layouts,
     layoutTreePositions: route.layoutTreePositions,
     metadataRoutes,
-    pageModule: route.page ?? null,
+    pageModule: effectivePageModule ?? null,
     parallelRoutes: resolveActiveParallelRouteHeadInputs({
       interceptLayouts: opts?.interceptLayouts ?? null,
       interceptPage: opts?.interceptPage ?? null,
@@ -188,13 +218,13 @@ export async function buildPageElements<
       routeSegments: route.routeSegments ?? [],
       slots: route.slots ?? null,
     }),
-    params,
+    params: effectiveParams,
     routePath: route.pattern,
     routeSegments: route.routeSegments ?? null,
     searchParams,
   });
 
-  const pageProps: Record<string, unknown> = { params: makeThenableParams(params) };
+  const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
   let pageSearchParamsThenable: unknown;
   if (searchParams) {
     const shouldObservePageSearchParamsAccess =
@@ -217,8 +247,41 @@ export async function buildPageElements<
       ? "body"
       : "head";
 
+  // For sibling intercepts, wrap the intercepting page in any layouts that
+  // live under the interception marker directory (interceptLayouts). In Next.js
+  // the intercepting route's segment layouts wrap the intercepting page; the
+  // slot-based path handles this inside buildSlotOverrides/app-page-route-wiring,
+  // but sibling intercepts bypass that path entirely. We apply the wrapping here
+  // so a layout.tsx adjacent to the (.) / (..) / (...) marker dir is respected.
+  let siblingInterceptElement: ReturnType<typeof createElement> | null =
+    isSiblingIntercept && EffectivePageComponent
+      ? createElement(EffectivePageComponent, pageProps)
+      : null;
+  if (isSiblingIntercept && siblingInterceptElement !== null && opts?.interceptLayouts?.length) {
+    const siblingThenableParams = makeThenableParams(effectiveParams);
+    for (let i = opts.interceptLayouts.length - 1; i >= 0; i--) {
+      const layoutMod = opts.interceptLayouts[i] as AppPageModule | null | undefined;
+      const LayoutComponent = layoutMod?.default;
+      if (LayoutComponent) {
+        // Layout component types vary; cast to any to avoid overload-resolution
+        // issues in createElement while preserving runtime safety.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const LC = LayoutComponent as (props: any) => any;
+        siblingInterceptElement = createElement(
+          LC,
+          { params: siblingThenableParams },
+          siblingInterceptElement,
+        );
+      }
+    }
+  }
+
   return buildAppPageElements({
-    element: PageComponent ? createElement(PageComponent, pageProps) : null,
+    element: isSiblingIntercept
+      ? siblingInterceptElement
+      : EffectivePageComponent
+        ? createElement(EffectivePageComponent, pageProps)
+        : null,
     // Fall back to vinext's built-in default global error module so that
     // uncaught client render errors are caught by the route-level
     // <ErrorBoundary> wrapper in app-page-route-wiring.tsx, mirroring
@@ -268,7 +331,12 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
 ): Readonly<Record<string, AppPageSlotOverride<TModule>>> | null {
   const overrides: Record<string, AppPageSlotOverride<TModule>> = {};
 
-  if (opts && opts.interceptSlotKey && opts.interceptPage) {
+  if (
+    opts &&
+    opts.interceptSlotKey &&
+    opts.interceptPage &&
+    opts.interceptSlotKey !== SIBLING_PAGE_INTERCEPT_SLOT_KEY
+  ) {
     overrides[opts.interceptSlotKey] = {
       layoutModules: opts.interceptLayouts || null,
       pageModule: opts.interceptPage,

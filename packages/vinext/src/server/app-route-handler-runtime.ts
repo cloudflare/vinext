@@ -99,6 +99,7 @@ type AppRouteRequestMode = "auto" | "force-static" | "error";
 type TrackedAppRouteRequestOptions = {
   basePath?: string;
   i18n?: NextI18nConfig | null;
+  trailingSlash?: boolean;
   middlewareHeaders?: Headers | null;
   onDynamicAccess?: (access: AppRouteDynamicRequestAccess) => void;
   requestMode?: AppRouteRequestMode;
@@ -117,14 +118,16 @@ function bindMethodIfNeeded<T>(value: T, target: object): T {
 function buildNextConfig(options: TrackedAppRouteRequestOptions): {
   basePath?: string;
   i18n?: NextI18nConfig;
+  trailingSlash?: boolean;
 } | null {
-  if (!options.basePath && !options.i18n) {
+  if (!options.basePath && !options.i18n && !options.trailingSlash) {
     return null;
   }
 
   return {
     basePath: options.basePath,
     i18n: options.i18n ?? undefined,
+    trailingSlash: options.trailingSlash,
   };
 }
 

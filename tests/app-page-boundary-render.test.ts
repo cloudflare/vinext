@@ -169,6 +169,25 @@ const globalErrorModule = {
   default: GlobalErrorBoundary,
 } satisfies TestModule;
 
+function ThrowingGlobalErrorBoundary(): React.ReactNode {
+  throw new Error("global-error boom");
+}
+
+const throwingGlobalErrorModule = {
+  default: ThrowingGlobalErrorBoundary,
+} satisfies TestModule;
+
+function SignalThrowingGlobalErrorBoundary(): React.ReactNode {
+  // Mimics notFound() called from inside global-error: a navigation signal that
+  // must propagate rather than being degraded to a built-in 200.
+  const signal = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
+  throw signal;
+}
+
+const signalThrowingGlobalErrorModule = {
+  default: SignalThrowingGlobalErrorBoundary,
+} satisfies TestModule;
+
 const EMPTY_ROOT_LAYOUTS: readonly TestModule[] = [];
 
 describe("app page boundary render helpers", () => {
@@ -620,5 +639,62 @@ describe("app page boundary render helpers", () => {
     expect(html).not.toContain('data-layout="root"');
     expect(html).not.toContain("Root layout description");
     expect(html).not.toContain('name="viewport"');
+  });
+
+  it("falls back to the built-in default global-error when the user's global-error throws", async () => {
+    // When the resolved global-error boundary itself throws while rendering, the
+    // SSR render rejects; renderAppPageErrorBoundary catches it and re-renders
+    // with the built-in default global-error so the request still produces a
+    // usable document (HTTP 200) instead of a raw 500. Locks in the server-side
+    // retry directly (the integration test in tests/nextjs-compat/global-error
+    // exercises the same path through the dev/preview server). Fixes #1548.
+    const common = createCommonOptions();
+
+    const response = await renderAppPageErrorBoundary<TestModule>({
+      ...common,
+      error: new Error("boom"),
+      globalErrorModule: throwingGlobalErrorModule,
+      matchedParams: { slug: "post" },
+      route: {
+        layouts: [rootLayoutModule],
+        params: { slug: "post" },
+        pattern: "/posts/[slug]",
+      },
+      sanitizeErrorForClient(error: Error) {
+        return error;
+      },
+    });
+
+    expect(response?.status).toBe(200);
+
+    const html = await response?.text();
+    // The built-in default global-error UI from
+    // packages/vinext/src/shims/default-global-error.tsx.
+    expect(html).toContain("This page couldn");
+    // The user's throwing boundary contributed no markup.
+    expect(html).not.toContain("global-error boom");
+  });
+
+  it("re-throws navigation signals from a throwing global-error instead of degrading to the built-in fallback", async () => {
+    // A redirect()/notFound() thrown from inside global-error must propagate,
+    // not be swallowed into a built-in default 200.
+    const common = createCommonOptions();
+
+    await expect(
+      renderAppPageErrorBoundary<TestModule>({
+        ...common,
+        error: new Error("boom"),
+        globalErrorModule: signalThrowingGlobalErrorModule,
+        matchedParams: { slug: "post" },
+        route: {
+          layouts: [rootLayoutModule],
+          params: { slug: "post" },
+          pattern: "/posts/[slug]",
+        },
+        sanitizeErrorForClient(error: Error) {
+          return error;
+        },
+      }),
+    ).rejects.toMatchObject({ digest: "NEXT_NOT_FOUND" });
   });
 });

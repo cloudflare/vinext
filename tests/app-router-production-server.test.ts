@@ -384,6 +384,26 @@ describe("App Router Production server (startProdServer)", () => {
     expect(location).toContain("/about");
   });
 
+  // Issue #1529: an RSC client navigation that hits a next.config.js redirect
+  // must keep the cache-busting `_rsc` query on the redirect Location so the
+  // browser's auto-followed request to the destination is still treated as an
+  // RSC fetch. The vinext client addresses RSC navigations via the `RSC: 1`
+  // header + `?_rsc=` query, so we replicate that request shape here.
+  it("preserves the _rsc query on config-redirect Location for RSC navigations (#1529)", async () => {
+    const res = await fetch(`${baseUrl}/old-about?_rsc=abc123`, {
+      redirect: "manual",
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    expect(res.status).toBe(308);
+    const location = res.headers.get("location");
+    expect(location).toBeTruthy();
+    expect(location).toContain("/about");
+    // The App Router RSC handler canonicalizes the redirect Location by
+    // recomputing the cache-busting `_rsc` param from the request headers
+    // (rather than echoing the literal client value), so assert presence.
+    expect(location).toContain("_rsc");
+  });
+
   it("serves static assets with cache headers", async () => {
     // Find an actual hashed asset from the build (on disk under
     // `_next/static/`, matching `resolveAssetsDir("")`).
@@ -843,6 +863,40 @@ describe("App Router Production server (startProdServer)", () => {
     expect(body).toBe("");
   });
 
+  // Regression for issue #1453 (route-handler revalidate sub-part): a route
+  // handler whose body comes from a `"use cache"` function tagged with
+  // `cacheTag()` must be evictable via `revalidateTag()`. `cacheTag()` tags
+  // declared inside `"use cache"` were attached only to the inner data cache
+  // entry and never propagated to the surrounding route-handler ISR entry, so
+  // `revalidateTag()` left the cached route-handler response in place.
+  // Fixtures: /api/use-cache-tagged (no revalidate window, tagged via
+  // cacheTag("use-cache-rh-tag")) + /api/revalidate-use-cache-rh-tag.
+  it("route handler ISR: revalidateTag evicts a 'use cache' cacheTag()-tagged route handler", async () => {
+    // Cold request populates the cache.
+    const res1 = await fetch(`${baseUrl}/api/use-cache-tagged`);
+    expect(res1.status).toBe(200);
+    expect(res1.headers.get("x-vinext-cache")).toBe("MISS");
+    const body1 = await res1.json();
+
+    // Second request HITs the cache — there is no revalidate window, so the
+    // timestamp is stable until the tag is invalidated.
+    const res2 = await fetch(`${baseUrl}/api/use-cache-tagged`);
+    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
+    const body2 = await res2.json();
+    expect(body2.timestamp).toBe(body1.timestamp);
+
+    // Invalidate the cacheTag declared inside the "use cache" function.
+    const tagRes = await fetch(`${baseUrl}/api/revalidate-use-cache-rh-tag`);
+    expect(tagRes.status).toBe(200);
+    expect(await tagRes.text()).toBe("ok");
+
+    // The next request must miss the cache and produce a fresh timestamp.
+    const res3 = await fetch(`${baseUrl}/api/use-cache-tagged`);
+    expect(res3.headers.get("x-vinext-cache")).toBe("MISS");
+    const body3 = await res3.json();
+    expect(body3.timestamp).not.toBe(body1.timestamp);
+  });
+
   it("middleware request header overrides still apply after middleware calls headers() first", async () => {
     // Regression for a bug where a middleware that reads `next/headers` →
     // `headers()` *before* returning `NextResponse.next({ request: { headers } })`
@@ -885,5 +939,38 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).toContain('id="cookie">null<');
     expect(html).toContain('id="middleware-header">hello-from-middleware<');
     expect(html).toContain('id="cookie-count">0<');
+  });
+
+  // Regression for cloudflare/vinext#1480: a node-runtime middleware that
+  // matches the action path and reads the request body on POST (then falls
+  // through with `NextResponse.next()`) must not prevent the server-action
+  // POST from being intercepted and executed. The app-basic middleware matches
+  // `/nextjs-compat/action-node-mw` and consumes the body for POSTs, mirroring
+  // Next.js' `middleware-node.js`. This runs against the production server
+  // because the upstream failure surfaced in the deploy suite.
+  it("dispatches a server action POST under a body-reading node middleware", async () => {
+    const html = await (await fetch(`${baseUrl}/nextjs-compat/action-node-mw`)).text();
+    // Production action ids are hashed; extract the id from the bound form's
+    // `$ACTION_1:0` reference payload rather than hardcoding it.
+    const refValue = html.match(/name="\$ACTION_[^"]*:0"\s+value="([^"]+)"/)?.[1];
+    expect(refValue).toBeDefined();
+    const decoded = refValue!.replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+    const actionId = JSON.parse(decoded).id as string;
+    expect(actionId).toBeTruthy();
+
+    const res = await fetch(`${baseUrl}/nextjs-compat/action-node-mw.rsc`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+        "x-rsc-action": actionId,
+      },
+      body: JSON.stringify(["world"]),
+    });
+    const text = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-nextjs-action-not-found")).toBeNull();
+    expect(text).not.toContain("Server action not found");
+    expect(text).toContain("echo:world");
   });
 });

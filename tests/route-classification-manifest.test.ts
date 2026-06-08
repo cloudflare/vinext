@@ -25,6 +25,7 @@ type MinimalAppRoute = {
   layouts: string[];
   templates: string[];
   parallelSlots: [];
+  siblingIntercepts: [];
   loadingPath: null;
   errorPath: null;
   layoutErrorPaths: (string | null)[];
@@ -48,6 +49,7 @@ function makeRoute(partial: Partial<MinimalAppRoute> & { layouts: string[] }): M
     routePath: null,
     templates: [],
     parallelSlots: [],
+    siblingIntercepts: [],
     loadingPath: null,
     errorPath: null,
     layoutErrorPaths: partial.layouts.map(() => null),

@@ -1,10 +1,12 @@
 import { Fragment, createElement, type ComponentType, type ReactNode } from "react";
 import { buildClientHookErrorMessage } from "vinext/shims/client-hook-error";
-import { ErrorBoundary } from "vinext/shims/error-boundary";
+import DefaultGlobalError from "vinext/shims/default-global-error";
+import { ErrorBoundary, GlobalErrorBoundary } from "vinext/shims/error-boundary";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import { MetadataHead, ViewportHead } from "vinext/shims/metadata";
 import type { NavigationContext } from "vinext/shims/navigation";
-import type { AppPageFontPreload } from "./app-page-execution.js";
+import { isNavigationSignalError } from "../utils/navigation-signal.js";
+import { resolveAppPageSpecialError, type AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import { resolveAppPageHead } from "./app-page-head.js";
@@ -25,6 +27,13 @@ import { createAppPageLayoutEntries } from "./app-page-route-wiring.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = ComponentType<any>;
+
+// The built-in default global-error component, widened to the loose
+// `AppPageComponent` prop shape used throughout the boundary plumbing. Its own
+// props (`{ error: { digest? }, reset? }`) are narrower than the boundary's
+// `{ error: unknown; reset }` fallback contract, so the cast bridges the
+// contravariant mismatch the same way user global-error components do.
+const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as AppPageComponent;
 type AppPageModule = Record<string, unknown> & {
   default?: AppPageComponent | null | undefined;
 };
@@ -149,10 +158,19 @@ function wrapRenderedBoundaryElement<TModule extends AppPageModule>(
     makeThenableParams: options.makeThenableParams,
     matchedParams: options.matchedParams,
     renderErrorBoundary(GlobalErrorComponent, children) {
-      return createElement(ErrorBoundary, {
-        fallback: GlobalErrorComponent,
+      // Nest the user's global-error inside an outer boundary whose fallback is
+      // the built-in default global-error. If the user's global-error throws
+      // while rendering, React unwinds to this outer boundary and renders the
+      // minimal built-in fallback instead of crashing the request. Matches
+      // Next.js's `RootErrorBoundary errorComponent={DefaultGlobalError}`.
+      return createElement(GlobalErrorBoundary, {
+        fallback: DEFAULT_GLOBAL_ERROR_COMPONENT,
         // oxlint-disable-next-line react/no-children-prop
-        children,
+        children: createElement(ErrorBoundary, {
+          fallback: GlobalErrorComponent,
+          // oxlint-disable-next-line react/no-children-prop
+          children,
+        }),
       });
     },
     renderLayout(LayoutComponent, children, asyncParams) {
@@ -423,37 +441,87 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
     }
   }
 
-  const element = wrapRenderedBoundaryElement({
-    element: createElement(
-      Fragment,
-      null,
-      ...headElements,
-      createElement(errorBoundary.component, {
-        error: errorObject,
-      }),
-    ),
-    globalErrorModule: options.globalErrorModule,
-    includeGlobalErrorBoundary: !errorBoundary.isGlobalError,
-    isRscRequest: options.isRscRequest,
-    layoutModules,
-    layoutTreePositions: options.route?.layoutTreePositions,
-    makeThenableParams: options.makeThenableParams,
-    matchedParams,
-    resolveChildSegments: options.resolveChildSegments,
-    routeSegments: options.route?.routeSegments,
-    skipLayoutWrapping: errorBoundary.isGlobalError,
-  });
+  // Build the boundary element for a given component. When the resolved
+  // boundary IS the global-error (no local error.tsx caught the error), it
+  // renders directly without a surrounding ErrorBoundary; nest it inside
+  // GlobalErrorBoundary so that if the user's global-error.tsx itself throws,
+  // React unwinds (on the client) to the built-in default global-error fallback
+  // instead of leaving the user with a broken boundary. Local error.tsx
+  // boundaries already sit under the global-error boundary added by
+  // wrapAppPageBoundaryElement (includeGlobalErrorBoundary), so they don't need
+  // this extra wrapping. Mirrors Next.js's outer
+  // `RootErrorBoundary errorComponent={DefaultGlobalError}`.
+  const buildElement = (BoundaryComponent: AppPageComponent): ReactNode => {
+    const boundaryElement = createElement(BoundaryComponent, { error: errorObject });
+    return wrapRenderedBoundaryElement({
+      element: createElement(
+        Fragment,
+        null,
+        ...headElements,
+        errorBoundary.isGlobalError
+          ? createElement(GlobalErrorBoundary, {
+              fallback: DEFAULT_GLOBAL_ERROR_COMPONENT,
+              // oxlint-disable-next-line react/no-children-prop
+              children: boundaryElement,
+            })
+          : boundaryElement,
+      ),
+      globalErrorModule: options.globalErrorModule,
+      includeGlobalErrorBoundary: !errorBoundary.isGlobalError,
+      isRscRequest: options.isRscRequest,
+      layoutModules,
+      layoutTreePositions: options.route?.layoutTreePositions,
+      makeThenableParams: options.makeThenableParams,
+      matchedParams,
+      resolveChildSegments: options.resolveChildSegments,
+      routeSegments: options.route?.routeSegments,
+      skipLayoutWrapping: errorBoundary.isGlobalError,
+    });
+  };
 
-  return renderAppPageBoundaryElementResponse({
-    ...options,
-    element,
-    initialDevServerError: rawError,
-    layoutModules,
-    navigationParams: matchedParams,
-    route: options.route,
-    routePattern: options.route?.pattern,
-    status: 200,
-  });
+  const renderWith = (BoundaryComponent: AppPageComponent): Promise<Response> =>
+    renderAppPageBoundaryElementResponse({
+      ...options,
+      element: buildElement(BoundaryComponent),
+      initialDevServerError: rawError,
+      layoutModules,
+      navigationParams: matchedParams,
+      route: options.route,
+      routePattern: options.route?.pattern,
+      status: 200,
+    });
+
+  try {
+    return await renderWith(errorBoundary.component);
+  } catch (renderError) {
+    // The user's global-error.tsx threw while rendering. React's SSR shell
+    // render rejects on a shell-level throw even though an error boundary is
+    // present (the boundary only enables client recovery). Re-render with the
+    // built-in default global-error so the request still produces a usable
+    // document instead of a raw 500. Only the global-error boundary owns the
+    // whole document, so this server-side fallback is scoped to it; other
+    // boundaries propagate as before.
+    //
+    // Navigation/HTTP-access signals (redirect(), notFound(), forbidden(),
+    // unauthorized()) thrown from within global-error are re-thrown so they
+    // propagate rather than being swallowed into a built-in 200 (degrading a
+    // redirect() to a misleading success page). This keeps the fallback scoped
+    // to genuine render failures instead of catching every error from
+    // `renderWith`. (In this position a re-thrown signal reaches the top-level
+    // handler, the same as before this change — see app-page-request.ts.)
+    if (
+      errorBoundary.isGlobalError &&
+      !isNavigationSignalError(renderError) &&
+      !resolveAppPageSpecialError(renderError)
+    ) {
+      console.error(
+        `[vinext] global-error.tsx threw while rendering for ${options.route?.pattern ?? pathname}; falling back to the built-in default global-error:`,
+        renderError,
+      );
+      return renderWith(DEFAULT_GLOBAL_ERROR_COMPONENT);
+    }
+    throw renderError;
+  }
 }
 
 // React client-only hooks that are absent from the `react-server` export

@@ -581,6 +581,49 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  it("preserves the _rsc query on config redirects for .rsc requests without the RSC header (#1529)", async () => {
+    // A `.rsc`-suffixed request is an RSC request even when the `RSC: 1`
+    // header is absent (e.g. a CDN-style or auto-followed fetch). Without the
+    // header the handler can't recompute the cache-busting hash, so the
+    // non-header branch carries the original request query onto the Location
+    // verbatim (mirroring Next.js resolve-routes.ts) rather than dropping it.
+    // (Note: the `.rsc` suffix is not re-applied to the destination, so the
+    // followed request isn't re-detected as RSC purely from `_rsc` — the
+    // guarantee here is query preservation, not RSC re-detection.)
+    const handler = createHandler({
+      configHeaders: [],
+      configRedirects: [{ source: "/old-about", destination: "/about", permanent: true }],
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/old-about.rsc?_rsc=abc123", {
+        headers: { Accept: "text/x-component" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("/docs/about?_rsc=abc123");
+  });
+
+  it("preserves the original request query on config redirects for document requests (#1529)", async () => {
+    // A plain (non-RSC) document request that hits a config redirect must
+    // carry its original query onto the Location, matching Next.js
+    // resolve-routes.ts. The destination's own query wins on key conflicts.
+    const handler = createHandler({
+      configHeaders: [],
+      configRedirects: [{ source: "/old-about", destination: "/about?from=old", permanent: true }],
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/old-about?foo=bar&from=req"),
+      null,
+    );
+
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("/docs/about?from=old&foo=bar");
+  });
+
   it("redirects invalid RSC cache-busting requests before middleware", async () => {
     const middleware = vi.fn(() => new Response("middleware"));
     const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));

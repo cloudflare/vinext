@@ -29,6 +29,7 @@ import {
   type AppPageResponseTiming,
 } from "./app-page-response.js";
 import {
+  buildAppPageLinkHeader,
   createAppPageFontData,
   createAppPageRscErrorTracker,
   deferUntilStreamConsumed,
@@ -105,6 +106,12 @@ type RenderAppPageLifecycleOptions = {
    * Undefined or empty disables emission.
    */
   clientTraceMetadata?: readonly string[];
+  /**
+   * Maximum total length (in characters) of the preload `Link` header emitted
+   * during SSR. `0` disables emission. From `reactMaxHeadersLength` in
+   * `next.config`.
+   */
+  reactMaxHeadersLength?: number;
   cleanPathname: string;
   clearRequestContext: () => void;
   consumeDynamicUsage: () => boolean;
@@ -824,6 +831,7 @@ export async function renderAppPageLifecycle(
         navigationContext: options.getNavigationContext(),
         basePath: options.basePath,
         clientTraceMetadata: options.clientTraceMetadata,
+        reactMaxHeadersLength: options.reactMaxHeadersLength,
         rootParams: options.rootParams,
         formState: options.formState ?? null,
         rscStream: rscForResponse,
@@ -845,6 +853,14 @@ export async function renderAppPageLifecycle(
   if (!htmlStream) {
     throw new Error("[vinext] Expected an HTML stream when no fallback response was returned");
   }
+
+  // Combine React's preload `Link` header (captured via onHeaders during SSR)
+  // with the font preload `Link` header, capped to `reactMaxHeadersLength`.
+  const linkHeader = buildAppPageLinkHeader(
+    htmlRender.linkHeader,
+    fontLinkHeader,
+    options.reactMaxHeadersLength,
+  );
 
   if (options.isPrerender === true) {
     await htmlRender.metadataReady;
@@ -945,7 +961,7 @@ export async function renderAppPageLifecycle(
   if (htmlResponsePolicy.shouldWriteToCache || shouldSpeculativelyWriteCache) {
     const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
       draftCookie,
-      fontLinkHeader,
+      linkHeader,
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareContext: options.middlewareContext,
       policy: htmlResponsePolicy,
@@ -1010,7 +1026,7 @@ export async function renderAppPageLifecycle(
 
   return buildAppPageHtmlResponse(safeHtmlStream, {
     draftCookie,
-    fontLinkHeader,
+    linkHeader,
     isEdgeRuntime: options.isEdgeRuntime,
     middlewareContext: options.middlewareContext,
     policy: htmlResponsePolicy,

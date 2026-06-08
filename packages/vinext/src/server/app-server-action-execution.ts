@@ -183,6 +183,15 @@ export type HandleProgressiveServerActionRequestOptions = {
   decodeFormState: AppServerActionFormStateDecoder;
   getAndClearPendingCookies: () => string[];
   getDraftModeCookieHeader: () => string | null | undefined;
+  /**
+   * Whether the posted-to route resolves to an App Router *page* (as opposed to
+   * a route handler or no match). Multipart form POSTs to a page are always
+   * server-action attempts in Next.js, so a body that decodes to no action must
+   * surface as 404 action-not-found rather than rendering the page. Route
+   * handlers (which run *after* this dispatch in vinext) legitimately receive
+   * raw multipart POSTs, so they must still fall through. See issue #1340.
+   */
+  hasPageRoute: boolean;
   maxActionBodySize: number;
   middlewareHeaders: Headers | null;
   readFormDataWithLimit: ReadFormDataWithLimit;
@@ -236,6 +245,8 @@ export type HandleServerActionRscRequestOptions<
   loadServerAction: (actionId: string) => Promise<unknown>;
   matchRoute: (pathname: string) => AppServerActionMatch<TRoute> | null;
   maxActionBodySize: number;
+  /** Verbatim `serverActions.bodySizeLimit` config string (e.g. "2mb") for the body-exceeded error. */
+  maxActionBodySizeLabel: string;
   middlewareHeaders: Headers | null;
   middlewareStatus: number | null | undefined;
   mountedSlotsHeader: string | null;
@@ -401,6 +412,20 @@ function createServerActionRscResponse(
 
 function isRequestBodyTooLarge(error: unknown): boolean {
   return error instanceof Error && error.message === "Request body too large";
+}
+
+/**
+ * Build the error thrown when a server-action request body exceeds the
+ * configured size limit. Matches Next.js' `Body exceeded {limit} limit.`
+ * message + docs link (action-handler.ts) verbatim — including the original
+ * config string (e.g. "2mb") — so it reads identically in logs.
+ */
+function createBodyExceededError(limitLabel: string): Error {
+  return new Error(
+    `Body exceeded ${limitLabel} limit.\n` +
+      "To configure the body size limit for Server Actions, see: " +
+      "https://nextjs.org/docs/app/api-reference/next-config-js/serverActions#bodysizelimit",
+  );
 }
 
 /**
@@ -757,6 +782,18 @@ export async function handleProgressiveServerActionRequest(
 
     const action = await options.decodeAction(body);
     if (!isAppServerActionFunction(action)) {
+      // A multipart POST to a *page* is always a server-action attempt; a body
+      // that decodes to no action means the referenced action doesn't exist
+      // (e.g. the build has no server actions). Mirror Next.js' 404 +
+      // action-not-found rather than rendering the page. Route handlers run
+      // after this dispatch and legitimately receive raw multipart POSTs, so
+      // fall through for them (and for unmatched routes). See issue #1340.
+      if (options.hasPageRoute) {
+        return createActionNotFoundResponse(null, {
+          clearRequestContext: options.clearRequestContext,
+          getAndClearPendingCookies: options.getAndClearPendingCookies,
+        });
+      }
       return null;
     }
 
@@ -884,6 +921,79 @@ export async function handleProgressiveServerActionRequest(
   }
 }
 
+/**
+ * Render the response for a fetch (client-invoked) server action whose request
+ * body exceeds the configured `serverActions.bodySizeLimit`.
+ *
+ * Next.js does not return a bare 413 here: it throws the body-exceeded error
+ * before the action runs, then — for fetch actions — emits a Flight response
+ * with status 500 carrying the rejected action result, so the nearest client
+ * error boundary catches it (see action-handler.ts, the `isFetchAction` branch
+ * of the generic error path). vinext mirrors that by rendering a Flight stream
+ * with `returnValue: { ok: false }` and no page root (the action never ran, so
+ * nothing was revalidated and the page render is skipped). A bare 413 plain
+ * response would bypass the boundary and surface the wrong status/content-type.
+ */
+async function renderFetchActionBodyExceededResponse<
+  TElement,
+  TRoute extends AppServerActionRoute,
+  TInterceptOpts,
+  TTemporaryReferences,
+  TPage,
+>(
+  options: HandleServerActionRscRequestOptions<
+    TElement,
+    TRoute,
+    TInterceptOpts,
+    TTemporaryReferences,
+    TPage
+  >,
+): Promise<Response> {
+  const error = createBodyExceededError(options.maxActionBodySizeLabel);
+  console.error("[vinext] Server action error:", error);
+  options.reportRequestError(
+    normalizeError(error),
+    {
+      path: options.cleanPathname,
+      method: options.request.method,
+      headers: Object.fromEntries(options.request.headers.entries()),
+    },
+    { routerKind: "App Router", routePath: options.cleanPathname, routeType: "action" },
+  );
+  // Discard any side effects accumulated before the limit was hit.
+  getAndClearActionRevalidationKind();
+  options.getAndClearPendingCookies();
+
+  const returnValue: AppServerActionReturnValue = {
+    ok: false,
+    data: options.sanitizeErrorForClient(error),
+  };
+  const temporaryReferences = options.createTemporaryReferenceSet();
+  const onRenderError = options.createRscOnErrorHandler(
+    options.request,
+    options.cleanPathname,
+    options.cleanPathname,
+  );
+  const rscStream = await options.renderToReadableStream(
+    { returnValue },
+    { temporaryReferences, onError: onRenderError },
+  );
+
+  const headers = new Headers({
+    "Content-Type": VINEXT_RSC_CONTENT_TYPE,
+    Vary: VINEXT_RSC_VARY_HEADER,
+  });
+  applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
+  mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders);
+  applyRscCompatibilityIdHeader(headers);
+
+  return createServerActionRscResponse(
+    rscStream,
+    { status: 500, headers },
+    options.clearRequestContext,
+  );
+}
+
 export async function handleServerActionRscRequest<
   TElement,
   TRoute extends AppServerActionRoute,
@@ -908,8 +1018,7 @@ export async function handleServerActionRscRequest<
 
   const contentLength = parseInt(options.request.headers.get("content-length") || "0", 10);
   if (contentLength > options.maxActionBodySize) {
-    options.clearRequestContext();
-    return payloadTooLargeResponse();
+    return renderFetchActionBodyExceededResponse(options);
   }
 
   try {
@@ -920,8 +1029,7 @@ export async function handleServerActionRscRequest<
         : await options.readBodyWithLimit(options.request, options.maxActionBodySize);
     } catch (error) {
       if (isRequestBodyTooLarge(error)) {
-        options.clearRequestContext();
-        return payloadTooLargeResponse();
+        return renderFetchActionBodyExceededResponse(options);
       }
       throw error;
     }

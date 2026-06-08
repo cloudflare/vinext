@@ -79,7 +79,10 @@ import {
   type PendingBrowserRouterState,
 } from "./app-browser-navigation-controller.js";
 import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.js";
-import { resolveManifestNavigationInterceptionContext } from "./app-browser-interception-context.js";
+import {
+  resolveManifestNavigationInterceptionContext,
+  resolveMiddlewareRewriteNavigationInterceptionContext,
+} from "./app-browser-interception-context.js";
 import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
@@ -630,7 +633,14 @@ function syncCurrentHistoryStatePreviousNextUrl(
   if (isHistoryStateNavigationMetadataInSync(window.history.state, previousNextUrl, bfcacheIds)) {
     return;
   }
-  window.history.replaceState(nextHistoryState, "", window.location.href);
+  // Retry via the same notify-suppressing path rather than the patched
+  // window.history.replaceState. This is a URL-unchanged metadata sync (refresh
+  // or traversal commit), so it must not run the patched-path side effects —
+  // commitClientNavigationState and notifyLinkNavigationStart — which would
+  // otherwise clear an unrelated <Link>'s useLinkStatus() pending state mid
+  // navigation on Safari. The browser sees the same native replaceState call,
+  // so the retry behaviour is unchanged.
+  replaceHistoryStateWithoutNotify(nextHistoryState, "", window.location.href);
 }
 
 function createActionInitiationSnapshot() {
@@ -985,6 +995,32 @@ function getRequestState(
         return {
           interceptionContext: manifestInterceptionContext,
           previousNextUrl: window.location.pathname + window.location.search,
+        };
+      }
+      // Fallback: when the current page is a declared interception source and
+      // the target URL still matches the declared target prefix, send the
+      // current pathname as context so the server can fire interception for
+      // middleware-rewritten targets. The client manifest check above only
+      // matches the pre-middleware target URL against the declared pattern;
+      // when middleware adds a segment (e.g. locale prefix), the pre-rewrite
+      // URL is shorter than the pattern and the match fails. Sending the
+      // current pathname lets the server re-check after applying the rewrite.
+      //
+      // We gate on source plus target prefix rather than always sending
+      // context, to preserve prefetch cache reuse for ordinary navigations
+      // where interception cannot apply.
+      const middlewareRewriteInterceptionContext =
+        resolveMiddlewareRewriteNavigationInterceptionContext({
+          basePath: __basePath,
+          currentPathname: window.location.pathname,
+          routeManifest: getBrowserRouteManifest(),
+          targetPathname,
+        });
+      if (middlewareRewriteInterceptionContext !== null) {
+        const currentHrefForFallback = window.location.pathname + window.location.search;
+        return {
+          interceptionContext: middlewareRewriteInterceptionContext,
+          previousNextUrl: currentHrefForFallback,
         };
       }
       return {

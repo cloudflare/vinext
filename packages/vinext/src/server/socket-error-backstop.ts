@@ -14,9 +14,10 @@
  * `uncaughtException`, where this listener filters it.
  *
  * Filters strictly on peer-disconnect codes (ECONNRESET / EPIPE /
- * ECONNABORTED) and synchronously re-throws everything else,
- * preserving Node's default crash semantics for genuine bugs. This
- * is more conservative than Next.js's equivalent
+ * ECONNABORTED) plus benign static-asset `import()` rejections (see
+ * `isBenignAssetImportError`), and synchronously re-throws everything
+ * else, preserving Node's default crash semantics for genuine bugs.
+ * This is more conservative than Next.js's equivalent
  * (`router-server.ts`'s log-only handler), which silently swallows
  * every uncaught — vinext keeps real bugs surfacing.
  *
@@ -90,6 +91,84 @@ export function peerDisconnectCode(err: unknown): string | undefined {
   return code === "ECONNRESET" || code === "EPIPE" || code === "ECONNABORTED" ? code : undefined;
 }
 
+// Static-asset extensions that a bundled server module may reference via
+// `new URL("./asset", import.meta.url)`. A dynamic `import()` of such a URL
+// can never resolve on Node (these are not ES modules), so when a user module
+// leaves one as a floating side-effect — e.g.
+//   import(new URL("./style.css", import.meta.url).href)
+// — Node throws ERR_UNKNOWN_FILE_EXTENSION (asset present) or
+// ERR_MODULE_NOT_FOUND (asset not co-located with the chunk). Next.js treats
+// these "URL dependency" side-effects as build-safe (the test fixture comment
+// literally reads "it shouldn't break the build"), so the prerender backstop
+// must not crash on them. Kept deliberately narrow: JS/TS module extensions
+// are excluded so a genuine missing-module bug still surfaces as a hard crash.
+const STATIC_ASSET_IMPORT_EXTENSIONS = new Set([
+  ".css",
+  ".scss",
+  ".sass",
+  ".less",
+  ".styl",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".svg",
+  ".webp",
+  ".avif",
+  ".ico",
+  ".bmp",
+  ".woff",
+  ".woff2",
+  ".ttf",
+  ".otf",
+  ".eot",
+  ".txt",
+  ".md",
+  ".csv",
+  ".xml",
+  ".pdf",
+  ".wasm",
+]);
+
+/**
+ * Pure predicate: returns `true` when `err` is a benign failure from a
+ * dynamic `import()` of a static asset URL — the "URL dependency" pattern
+ * that Next.js tolerates at build time. Two shapes are recognised:
+ *
+ *   - `ERR_UNKNOWN_FILE_EXTENSION`: the asset resolved on disk but is not an
+ *     ES module (e.g. a co-located `./style.css`). The error message ends in
+ *     the offending extension in quotes: `... extension ".css" for /path`.
+ *   - `ERR_MODULE_NOT_FOUND`: the asset URL did not resolve (the chunk lives
+ *     in `dist/server/` but the source asset does not). Node attaches the
+ *     unresolved specifier on `err.url`; we match only when it points at a
+ *     static-asset extension.
+ *
+ * Anything outside this allow-list (including missing `.js`/`.mjs`/`.ts`
+ * modules with no extension) returns `false` so real bugs still crash.
+ * Exported for unit testing in isolation.
+ */
+export function isBenignAssetImportError(err: unknown): boolean {
+  if (err === null || typeof err !== "object") return false;
+  const code = (err as { code?: string }).code;
+
+  if (code === "ERR_UNKNOWN_FILE_EXTENSION") {
+    const message = (err as { message?: string }).message ?? "";
+    const match = /extension\s+"([^"]+)"/.exec(message);
+    return match != null && STATIC_ASSET_IMPORT_EXTENSIONS.has(match[1].toLowerCase());
+  }
+
+  if (code === "ERR_MODULE_NOT_FOUND") {
+    const url = (err as { url?: unknown }).url;
+    if (typeof url !== "string") return false;
+    const pathname = url.split("?", 1)[0].split("#", 1)[0];
+    const dot = pathname.lastIndexOf(".");
+    if (dot === -1) return false;
+    return STATIC_ASSET_IMPORT_EXTENSIONS.has(pathname.slice(dot).toLowerCase());
+  }
+
+  return false;
+}
+
 /**
  * Test-only: returns whether the backstop has been installed in this
  * process. Used by the unit test to assert idempotent install via the
@@ -109,7 +188,26 @@ export function installSocketErrorBackstop(): void {
 
   const debug = process.env.VINEXT_DEBUG_SOCKET_ERRORS === "1";
   if (debug) console.warn("[vinext] socket-error backstop installed");
+
+  // A floating `import(new URL("./asset", import.meta.url).href)` in user
+  // module-load code is a "URL dependency" side-effect that Next.js compiles
+  // without crashing. On Node the dynamic import rejects (a static asset is
+  // not an ES module), and because the promise is never awaited the rejection
+  // surfaces as a process-level unhandledRejection/uncaughtException. Absorb
+  // that narrow case in both phases — during prerender (so the build doesn't
+  // fail) and during the running server (so the route can still respond) —
+  // since the rejection is unrelated to any in-flight render or response.
+  const absorbBenignAssetImport = (reason: unknown, kind: string): boolean => {
+    if (!isBenignAssetImportError(reason)) return false;
+    if (debug) {
+      const code = (reason as { code?: string } | null)?.code;
+      console.warn(`[vinext] absorbed ${kind} ${code} (asset URL import)`);
+    }
+    return true;
+  };
+
   process.on("uncaughtException", (err: Error) => {
+    if (absorbBenignAssetImport(err, "uncaughtException")) return;
     if (process.env.VINEXT_PRERENDER === "1") throw err;
     const code = peerDisconnectCode(err);
     if (code) {
@@ -119,6 +217,7 @@ export function installSocketErrorBackstop(): void {
     throw err;
   });
   process.on("unhandledRejection", (reason: unknown) => {
+    if (absorbBenignAssetImport(reason, "unhandledRejection")) return;
     if (process.env.VINEXT_PRERENDER === "1") throw reason;
     const code = peerDisconnectCode(reason);
     if (code) {

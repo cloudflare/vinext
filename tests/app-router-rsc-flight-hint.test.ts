@@ -28,6 +28,7 @@ describe("RSC Flight hint fix", () => {
       isDynamic: false,
       params: [],
       patternParts: ["/"],
+      siblingIntercepts: [],
     };
     const code = generateRscEntry("/tmp/test/app", [route]);
     expect(code).toContain("_renderToReadableStream");

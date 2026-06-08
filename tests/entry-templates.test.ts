@@ -44,6 +44,7 @@ const minimalAppRoutes: AppRoute[] = [
     layoutTreePositions: [0],
     isDynamic: false,
     params: [],
+    siblingIntercepts: [],
   },
   {
     pattern: "/about",
@@ -67,6 +68,7 @@ const minimalAppRoutes: AppRoute[] = [
     layoutTreePositions: [0],
     isDynamic: false,
     params: [],
+    siblingIntercepts: [],
   },
   {
     pattern: "/blog/:slug",
@@ -90,6 +92,7 @@ const minimalAppRoutes: AppRoute[] = [
     layoutTreePositions: [0, 1],
     isDynamic: true,
     params: ["slug"],
+    siblingIntercepts: [],
   },
   {
     pattern: "/dashboard",
@@ -113,6 +116,7 @@ const minimalAppRoutes: AppRoute[] = [
     layoutTreePositions: [0, 1],
     isDynamic: false,
     params: [],
+    siblingIntercepts: [],
   },
 ];
 
@@ -144,6 +148,7 @@ describe("App Router generated manifest construction", () => {
         layoutTreePositions: [0, 1],
         isDynamic: false,
         params: [],
+        siblingIntercepts: [],
       },
       {
         pattern: "/docs/:slug",
@@ -167,6 +172,7 @@ describe("App Router generated manifest construction", () => {
         layoutTreePositions: [0],
         isDynamic: true,
         params: ["slug"],
+        siblingIntercepts: [],
       },
       {
         pattern: "/api",
@@ -190,6 +196,7 @@ describe("App Router generated manifest construction", () => {
         layoutTreePositions: [],
         isDynamic: false,
         params: [],
+        siblingIntercepts: [],
       },
     ]);
 
@@ -264,6 +271,7 @@ describe("App Router generated manifest construction", () => {
         layoutTreePositions: [0],
         isDynamic: false,
         params: [],
+        siblingIntercepts: [],
       },
       {
         ids: {
@@ -325,6 +333,7 @@ describe("App Router generated manifest construction", () => {
         isDynamic: true,
         params: ["id"],
         rootParamNames: ["id"],
+        siblingIntercepts: [],
       },
     ] satisfies AppRoute[];
 
@@ -403,6 +412,7 @@ describe("App Router generated manifest construction", () => {
         layoutTreePositions: [0],
         isDynamic: false,
         params: [],
+        siblingIntercepts: [],
       },
     ] satisfies AppRoute[];
 
@@ -447,6 +457,7 @@ describe("App Router generated manifest construction", () => {
         isDynamic: true,
         params: ["lang", "locale", "slug"],
         rootParamNames: ["lang", "locale"],
+        siblingIntercepts: [],
       },
     ] satisfies AppRoute[];
 
@@ -491,6 +502,7 @@ describe("App Router generated manifest construction", () => {
         isDynamic: true,
         params: ["lang", "section", "slug"],
         rootParamNames: ["lang", "section"],
+        siblingIntercepts: [],
       },
     ] satisfies AppRoute[];
 

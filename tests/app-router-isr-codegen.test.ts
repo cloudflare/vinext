@@ -131,6 +131,7 @@ describe("generateRscEntry ISR code generation", () => {
       templateTreePositions: [],
       unauthorizedPaths: [],
       unauthorizedPath: null,
+      siblingIntercepts: [],
     };
 
     const code = generateRscEntry("/tmp/test/app", [routeWithInterceptLayouts]);
@@ -166,6 +167,7 @@ describe("generateRscEntry ISR code generation", () => {
       templateTreePositions: [],
       unauthorizedPaths: [],
       unauthorizedPath: null,
+      siblingIntercepts: [],
     };
 
     const code = generateRscEntry("/tmp/test/app", [routeWithRootParams]);

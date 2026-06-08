@@ -28,6 +28,7 @@ import { StaticFileCache, CONTENT_TYPES, etagFromFilenameHash } from "./static-f
 import {
   matchRedirect,
   matchRewrite,
+  preserveRedirectDestinationQuery,
   requestContextFromRequest,
   applyMiddlewareRequestHeaders,
   isExternalUrl,
@@ -1707,7 +1708,14 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
               ? basePath + redirect.destination
               : redirect.destination,
           );
-          res.writeHead(redirect.permanent ? 308 : 307, { Location: dest });
+          // Carry the original request query (e.g. the App Router RSC
+          // cache-busting `_rsc` param) onto the redirect Location so the
+          // browser's auto-followed request is still treated as an RSC
+          // fetch. Mirrors Next.js resolve-routes.ts (issue #1529).
+          // `rawQs` already holds the original (un-re-encoded) query string
+          // that `url` was rebuilt from above.
+          const location = preserveRedirectDestinationQuery(dest, rawQs);
+          res.writeHead(redirect.permanent ? 308 : 307, { Location: location });
           res.end();
           return;
         }

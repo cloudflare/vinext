@@ -1356,6 +1356,7 @@ function mockRoute(pattern: string, opts: { pagePath?: string | null } = {}): Ap
       .filter((p) => p.startsWith(":"))
       .map((p) => p.replace(/^:/, "").replace(/[+*]$/, "")),
     patternParts: parts,
+    siblingIntercepts: [],
   };
 }
 

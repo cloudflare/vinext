@@ -404,17 +404,20 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
   });
 
   if (interceptState.kind === "source-route") {
+    const renderRoute = interceptState.sourceRoute;
+    const renderParams = pickRouteParams(
+      interceptState.intercept.matchedParams,
+      options.getRouteParamNames(interceptState.sourceRoute),
+    );
+
     options.setNavigationContext({
       params: interceptState.intercept.matchedParams,
       pathname: options.cleanPathname,
       searchParams: options.searchParams,
     });
     const interceptElement = await options.buildPageElement(
-      interceptState.sourceRoute,
-      pickRouteParams(
-        interceptState.intercept.matchedParams,
-        options.getRouteParamNames(interceptState.sourceRoute),
-      ),
+      renderRoute,
+      renderParams,
       options.toInterceptOpts(interceptState.intercept),
       options.searchParams,
       options.layoutParamAccess,
@@ -422,7 +425,7 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
 
     return {
       interceptOpts: undefined,
-      response: await options.renderInterceptResponse(interceptState.sourceRoute, interceptElement),
+      response: await options.renderInterceptResponse(renderRoute, interceptElement),
     };
   }
 

@@ -194,6 +194,43 @@ module.exports.postcss = true;
     }
   });
 
+  // --- Unresolvable string plugin must not crash the build ---
+  //
+  // Regression for #1509: a CSS-modules + PostCSS app (e.g. a config like
+  // `plugins: ["postcss-nested", ...]`) must not abort the build when a
+  // named plugin can't be resolved from the project root. This config hook
+  // runs once per Vite environment (RSC/SSR/client), so a throw here aborts
+  // the whole build with an opaque error. We fall back to `undefined` and let
+  // Vite's own postcss-load-config resolve the config relative to the config
+  // file instead.
+
+  it("returns undefined (does not throw) when a string plugin can't be resolved", async () => {
+    const dir = await createTmpProject(
+      "postcss.config.cjs",
+      // "missing-postcss-plugin" is not installed in this temp project.
+      `module.exports = { plugins: ["mock-postcss-plugin", "missing-postcss-plugin"] };`,
+    );
+    try {
+      const result = await resolvePostcssStringPlugins(dir);
+      expect(result).toBeUndefined();
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+
+  it("returns undefined when an unresolvable plugin appears in tuple form", async () => {
+    const dir = await createTmpProject(
+      "postcss.config.cjs",
+      `module.exports = { plugins: [["missing-postcss-plugin", { foo: "bar" }]] };`,
+    );
+    try {
+      const result = await resolvePostcssStringPlugins(dir);
+      expect(result).toBeUndefined();
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+
   // --- JSON/YAML configs are skipped ---
 
   it("returns undefined for .postcssrc.json (postcss-load-config handles these)", async () => {
