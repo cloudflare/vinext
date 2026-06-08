@@ -159,7 +159,14 @@ const linkPrefetchRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>
 
 function resolveHref(href: LinkProps["href"]): string {
   if (typeof href === "string") return href;
-  let url = href.pathname ?? "/";
+  // When `pathname` is omitted, leave the base empty so the result is a
+  // query-only href (e.g. `?params=foo`) rather than `/?params=foo`. Mirrors
+  // Next.js's `formatUrl()` (`pathname = urlObj.pathname || ''`) so that a
+  // `<Link href={{ query: {...} }} />` resolves against the *current* path at
+  // navigation time instead of collapsing onto the site root. Defaulting to
+  // "/" here recorded the wrong history entry for shallow links, breaking
+  // back/forward traversal (issue #1540).
+  let url = href.pathname ?? "";
   if (href.query) {
     const params = urlQueryToSearchParams(href.query);
     url = appendSearchParamsToUrl(url, params);
