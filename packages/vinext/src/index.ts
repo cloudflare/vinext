@@ -18,7 +18,7 @@ import {
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
 import { isImageOptimizationPath } from "./server/image-optimization.js";
-import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
+
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
@@ -49,15 +49,11 @@ import {
   type NextConfig,
   type NextConfigInput,
   type ResolvedNextConfig,
-  type NextRedirect,
-  type NextRewrite,
-  type NextHeader,
 } from "./config/next-config.js";
 
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
 import { isNextDataPathname, parseNextDataPathname } from "./server/pages-data-route.js";
 import {
-  MIDDLEWARE_HEADER_PREFIX,
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
   VINEXT_MW_CTX_HEADER,
@@ -84,24 +80,18 @@ import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-mani
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
-import {
-  isExternalUrl,
-  proxyExternalRequest,
-  matchHeaders,
-  matchRedirect,
-  matchRewrite,
-  preserveRedirectDestinationQuery,
-  requestContextFromRequest,
-  sanitizeDestination,
-  type RequestContext,
-} from "./config/config-matchers.js";
+
 import { scanMetadataFiles } from "./server/metadata-routes.js";
-import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-request-headers.js";
+
+import {
+  runPagesRequest,
+  type PagesPipelineDeps,
+  type MiddlewareResult,
+} from "./server/pages-request-pipeline.js";
 import { detectPackageManager } from "./utils/project.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
 import { manifestFilesWithBase } from "./utils/manifest-paths.js";
-import { hasBasePath } from "./utils/base-path.js";
-import { mergeRewriteQuery } from "./utils/query.js";
+
 import {
   ASSET_PREFIX_URL_DIR,
   resolveAssetUrlPrefix,
@@ -3286,6 +3276,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 res.end("Bad Request");
                 return;
               }
+              // Keep url in sync with the normalized pathname so the pipeline
+              // receives the decoded path for config rule matching.
+              {
+                const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+                url = pathname + qs;
+              }
 
               // Strip basePath prefix from URL for route matching.
               // All internal routing uses basePath-free paths.
@@ -3402,49 +3398,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               }
 
               const requestOrigin = `http://${req.headers.host || "localhost"}`;
-              const preMiddlewareReqUrl = new URL(url, requestOrigin);
-              const preMiddlewareReqCtx: RequestContext = requestContextFromRequest(
-                new Request(preMiddlewareReqUrl, {
-                  headers: nodeRequestHeaders,
-                }),
-              );
 
-              // Default-locale path normalisation (issue #1336, item 4).
-              // Next.js prepends `/${defaultLocale}` to every unprefixed
-              // request before any config rule or filesystem match runs so
-              // that locale-aware rules with `:locale` placeholders still
-              // match default-locale URLs. Mirrors resolve-routes.ts.
-              //
-              // `matchPathname` covers pre-middleware matching against the
-              // original pathname. `matchResolvedPathname` is a function form
-              // used by the post-middleware rewrite phases (afterFiles,
-              // fallback) so they pick up the rewritten URL each time — the
-              // same shape as `prod-server.ts` and `deploy.ts`.
-              const matchPathname = nextConfig?.i18n
-                ? normalizeDefaultLocalePathname(pathname, nextConfig.i18n, {
-                    hostname: preMiddlewareReqUrl.hostname,
-                  })
-                : pathname;
-              const matchResolvedPathname = (p: string): string =>
-                nextConfig?.i18n
-                  ? normalizeDefaultLocalePathname(p, nextConfig.i18n, {
-                      hostname: preMiddlewareReqUrl.hostname,
-                    })
-                  : p;
-
-              // Config redirects run before middleware, but still match against
-              // the original normalized pathname and request headers/cookies.
-              if (nextConfig?.redirects.length) {
-                const redirected = applyRedirects(
-                  matchPathname,
-                  res,
-                  nextConfig.redirects,
-                  preMiddlewareReqCtx,
-                  nextConfig.basePath ?? "",
-                  url.includes("?") ? url.slice(url.indexOf("?")) : "",
-                );
-                if (redirected) return;
-              }
+              // Build a Web Request for the pipeline (no body needed — middleware
+              // and SSR each read req directly; pipeline only needs headers/URL).
+              const webRequest = new Request(new URL(url, requestOrigin), {
+                method: req.method ?? "GET",
+                headers: nodeRequestHeaders,
+              });
 
               const applyRequestHeadersToNodeRequest = (nextRequestHeaders: Headers) => {
                 for (const key of Object.keys(req.headers)) {
@@ -3455,242 +3415,141 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }
               };
 
-              let middlewareRequestHeaders: Headers | null = null;
-              let deferredMwResponseHeaders: [string, string][] | null = null;
+              // devRunMiddlewareAdapter: wraps the dev runMiddleware call and
+              // returns a MiddlewareResult. Side-effects needed by App Router
+              // hybrid mode (VINEXT_MW_CTX_HEADER) are applied here as a
+              // side effect so the RSC entry sees them before rendering.
+              const capturedMiddlewarePath = middlewarePath;
+              const devRunMiddlewareAdapter: PagesPipelineDeps["runMiddleware"] =
+                capturedMiddlewarePath
+                  ? async (_request, _ctx, opts) => {
+                      // Only trust X-Forwarded-Proto when behind a trusted proxy
+                      const devTrustProxy =
+                        process.env.VINEXT_TRUST_PROXY === "1" ||
+                        (process.env.VINEXT_TRUSTED_HOSTS ?? "").split(",").some((h) => h.trim());
+                      const rawProto = devTrustProxy
+                        ? String(req.headers["x-forwarded-proto"] || "")
+                            .split(",")[0]
+                            .trim()
+                        : "";
+                      const mwProto =
+                        rawProto === "https" || rawProto === "http" ? rawProto : "http";
+                      const mwOrigin = `${mwProto}://${req.headers.host || "localhost"}`;
+                      const middlewareRequest = new Request(new URL(url, mwOrigin), {
+                        method: req.method,
+                        headers: nodeRequestHeaders,
+                      });
+                      const result = await runMiddleware(
+                        getPagesRunner(),
+                        capturedMiddlewarePath,
+                        middlewareRequest,
+                        nextConfig?.i18n,
+                        nextConfig?.basePath,
+                        nextConfig?.trailingSlash,
+                        opts.isDataRequest,
+                      );
 
-              const applyDeferredMwHeaders = () => {
-                if (deferredMwResponseHeaders) {
-                  for (const [key, value] of deferredMwResponseHeaders) {
+                      // Forward middleware context to the RSC entry so it can
+                      // populate _mwCtx without re-running the middleware function.
+                      // This prevents double execution in hybrid app+pages dev mode.
+                      if (hasAppDir && result.continue) {
+                        const mwCtxEntries: [string, string][] = [];
+                        if (result.responseHeaders) {
+                          for (const [key, value] of result.responseHeaders) {
+                            if (
+                              key !== MIDDLEWARE_NEXT_HEADER &&
+                              key !== MIDDLEWARE_REWRITE_HEADER
+                            ) {
+                              mwCtxEntries.push([key, value]);
+                            }
+                          }
+                        }
+                        const mwStatus = result.status ?? result.rewriteStatus;
+                        req.headers[VINEXT_MW_CTX_HEADER] = JSON.stringify({
+                          h: mwCtxEntries,
+                          s: mwStatus ?? null,
+                          r: result.rewriteUrl ?? null,
+                        });
+                      }
+
+                      return result as unknown as MiddlewareResult;
+                    }
+                  : null;
+
+              // Pre-compute page routes so matchPageRoute can be sync (required by PagesPipelineDeps type).
+              const devPageRoutes = await pagesRouter(
+                pagesDir,
+                nextConfig?.pageExtensions,
+                fileMatcher,
+              );
+
+              const pipelineDeps: PagesPipelineDeps = {
+                basePath: bp,
+                trailingSlash: nextConfig?.trailingSlash ?? false,
+                i18nConfig: nextConfig?.i18n ?? null,
+                configRedirects: nextConfig?.redirects ?? [],
+                configRewrites: nextConfig?.rewrites ?? {
+                  beforeFiles: [],
+                  afterFiles: [],
+                  fallback: [],
+                },
+                configHeaders: nextConfig?.headers ?? [],
+                hadBasePath: true, // Vite strips basePath before our middleware sees the request
+                isDataReq,
+                isDataRequest,
+                runMiddleware: devRunMiddlewareAdapter,
+                matchPageRoute: (resolvedPathname) => {
+                  const m = matchRoute(resolvedPathname, devPageRoutes);
+                  return m ? { route: { isDynamic: m.route.isDynamic } } : null;
+                },
+                // handleApi and renderPage are omitted — pipeline emits intents
+              };
+
+              const pipelineResult = await runPagesRequest(webRequest, pipelineDeps);
+
+              if (pipelineResult.type === "response") {
+                await writeWebResponseToNodeRes(res, pipelineResult.response);
+                return;
+              }
+
+              if (pipelineResult.type === "next") {
+                return next();
+              }
+
+              // For render/api intents: flush staged middleware headers and
+              // apply request header mutations before calling SSR/API handlers.
+              const flushStagedHeaders = () => {
+                for (const [key, value] of Object.entries(pipelineResult.stagedHeaders)) {
+                  if (Array.isArray(value)) {
+                    for (const v of value) res.appendHeader(key, v);
+                  } else {
                     res.appendHeader(key, value);
                   }
                 }
               };
-              const applyMwRequestHeadersForExternalProxy = () => {
-                if (middlewareRequestHeaders) {
-                  applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
-                } else {
-                  delete req.headers[VINEXT_MW_CTX_HEADER];
-                }
+
+              // Apply post-middleware request headers to req.headers so the
+              // SSR/API handler sees middleware-modified cookies/headers.
+              const flushRequestHeaders = () => {
+                applyRequestHeadersToNodeRequest(pipelineResult.requestHeaders);
               };
 
-              // Run middleware.ts if present
-              if (middlewarePath) {
-                // Only trust X-Forwarded-Proto when behind a trusted proxy
-                const devTrustProxy =
-                  process.env.VINEXT_TRUST_PROXY === "1" ||
-                  (process.env.VINEXT_TRUSTED_HOSTS ?? "").split(",").some((h) => h.trim());
-                const rawProto = devTrustProxy
-                  ? String(req.headers["x-forwarded-proto"] || "")
-                      .split(",")[0]
-                      .trim()
-                  : "";
-                const mwProto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
-                const origin = `${mwProto}://${req.headers.host || "localhost"}`;
-                const middlewareRequest = new Request(new URL(url, origin), {
-                  method: req.method,
-                  headers: nodeRequestHeaders,
-                });
-                const result = await runMiddleware(
-                  getPagesRunner(),
-                  middlewarePath,
-                  middlewareRequest,
-                  nextConfig?.i18n,
-                  nextConfig?.basePath,
-                  nextConfig?.trailingSlash,
-                  isDataRequest,
-                );
-
-                // Settle waitUntil promises — no ctx.waitUntil() in dev, but
-                // promises must still run for parity with prod (session sync, telemetry, etc.)
-                if (result.waitUntilPromises?.length) {
-                  void Promise.allSettled(result.waitUntilPromises);
-                }
-
-                if (!result.continue) {
-                  if (result.redirectUrl) {
-                    const redirectHeaders: Record<string, string | string[]> = {
-                      Location: result.redirectUrl,
-                    };
-                    if (result.responseHeaders) {
-                      for (const [key, value] of result.responseHeaders) {
-                        const existing = redirectHeaders[key];
-                        if (existing === undefined) {
-                          redirectHeaders[key] = value;
-                        } else if (Array.isArray(existing)) {
-                          existing.push(value);
-                        } else {
-                          redirectHeaders[key] = [existing, value];
-                        }
-                      }
-                    }
-                    res.writeHead(result.redirectStatus ?? 307, redirectHeaders);
-                    res.end();
-                    return;
-                  }
-                  if (result.response) {
-                    res.statusCode = result.response.status;
-                    for (const [key, value] of result.response.headers) {
-                      res.appendHeader(key, value);
-                    }
-                    const body = Buffer.from(await result.response.arrayBuffer());
-                    res.end(body);
-                    return;
-                  }
-                }
-
-                // Apply middleware response headers. Unpack
-                // x-middleware-request-* headers into req.headers so
-                // config has/missing conditions and downstream handlers
-                // see middleware-modified cookies and headers.
-                if (result.responseHeaders) {
-                  const currentRequestHeaders = new Headers();
-                  for (const [key, value] of Object.entries(req.headers)) {
-                    if (Array.isArray(value)) {
-                      currentRequestHeaders.set(key, value.join(", "));
-                    } else if (value !== undefined) {
-                      currentRequestHeaders.set(key, value);
-                    }
-                  }
-
-                  middlewareRequestHeaders = buildRequestHeadersFromMiddlewareResponse(
-                    currentRequestHeaders,
-                    result.responseHeaders,
-                    {
-                      preserveCredentialHeaders: Boolean(
-                        result.rewriteUrl && isExternalUrl(result.rewriteUrl),
-                      ),
-                    },
-                  );
-
-                  if (middlewareRequestHeaders && !hasAppDir) {
-                    applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
-                  }
-
-                  if (hasAppDir) {
-                    // Hybrid app+pages: defer response headers. They'll be
-                    // applied to res for Pages routes or forwarded to the RSC
-                    // entry (via x-vinext-mw-ctx) for App Router routes.
-                    deferredMwResponseHeaders = [];
-                    for (const [key, value] of result.responseHeaders) {
-                      if (!key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
-                        deferredMwResponseHeaders.push([key, value]);
-                      }
-                    }
-                  } else {
-                    for (const [key, value] of result.responseHeaders) {
-                      if (!key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
-                        res.appendHeader(key, value);
-                      }
-                    }
-                  }
-                }
-
-                // Apply middleware rewrite (URL and optional status code)
-                if (result.rewriteUrl) {
-                  url = result.rewriteUrl;
-                  // Write the rewritten URL back onto req.url so every subsequent
-                  // handler in the connect chain sees the correct path. The local
-                  // `url` variable is only visible within this handler — anything
-                  // further down the chain (Vite's built-in middleware, the
-                  // Cloudflare plugin's handler, or any other connect middleware)
-                  // reads req.url directly. Without this, a middleware rewrite
-                  // would be invisible to those handlers and the original URL
-                  // would be dispatched instead.
-                  req.url = url;
-                }
-                const middlewareStatus = result.status ?? result.rewriteStatus;
-                if (middlewareStatus !== undefined) {
-                  req.__vinextMiddlewareStatus = middlewareStatus;
-                }
-
-                // Forward middleware context to the RSC entry so it can
-                // populate _mwCtx without re-running the middleware function.
-                // This prevents double execution in hybrid app+pages dev mode.
-                if (hasAppDir) {
-                  const mwCtxEntries: [string, string][] = [];
-                  if (result.responseHeaders) {
-                    for (const [key, value] of result.responseHeaders) {
-                      // Exclude control headers that runMiddleware already
-                      // consumed — matches the RSC entry's inline filtering.
-                      if (key !== MIDDLEWARE_NEXT_HEADER && key !== MIDDLEWARE_REWRITE_HEADER) {
-                        mwCtxEntries.push([key, value]);
-                      }
-                    }
-                  }
-                  req.headers[VINEXT_MW_CTX_HEADER] = JSON.stringify({
-                    h: mwCtxEntries,
-                    s: middlewareStatus ?? null,
-                    r: result.rewriteUrl ?? null,
-                  });
-                }
-              }
-
-              // Build request context once for has/missing condition checks
-              // for config rules that execute after middleware (rewrites).
-              // Convert Node.js IncomingMessage headers to a Web Request for
-              // requestContextFromRequest(), which uses the standard Web API.
-              const reqUrl = new URL(url, requestOrigin);
-              const reqCtxHeaders = middlewareRequestHeaders ?? nodeRequestHeaders;
-              const reqCtx: RequestContext = requestContextFromRequest(
-                new Request(reqUrl, { headers: reqCtxHeaders }),
-              );
-
-              // Apply custom headers from next.config.js
-              // Header matching still uses the original normalized pathname and
-              // pre-middleware request state; middleware response headers win
-              // later because they are already on the outgoing response.
-              if (nextConfig?.headers.length) {
-                applyHeaders(matchPathname, res, nextConfig.headers, preMiddlewareReqCtx, bp);
-              }
-
-              // Apply rewrites from next.config.js (beforeFiles)
-              let resolvedUrl = url;
-              if (nextConfig?.rewrites.beforeFiles.length) {
-                const rewritten = applyRewrites(
-                  matchPathname,
-                  nextConfig.rewrites.beforeFiles,
-                  reqCtx,
-                  bp,
-                );
-                if (rewritten) {
-                  // Preserve original query params across the rewrite — Next.js
-                  // semantics: `Object.assign(parsedUrl.query, rewriteQuery)`.
-                  resolvedUrl = mergeRewriteQuery(url, rewritten);
-                }
-              }
-
-              // External rewrite from beforeFiles — proxy to external URL
-              if (isExternalUrl(resolvedUrl)) {
-                applyDeferredMwHeaders();
-                applyMwRequestHeadersForExternalProxy();
-                await proxyExternalRewriteNode(req, res, resolvedUrl);
-                return;
-              }
-
-              // Handle API routes first (pages/api/*).
-              // Strip the i18n locale prefix before the `/api/` check so
-              // `/fr/api/ok` resolves to the `pages/api/ok` handler (Next.js
-              // parity — see base-server.ts's normalizeLocalePath call).
-              const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, nextConfig?.i18n);
-              const resolvedPathname = apiLookupUrl.split("?")[0];
-              if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
+              if (pipelineResult.type === "api") {
                 const apiRoutes = await apiRouter(
                   pagesDir,
                   nextConfig?.pageExtensions,
                   fileMatcher,
                 );
-                const apiMatch = matchRoute(apiLookupUrl, apiRoutes);
-                if (apiMatch) {
-                  applyDeferredMwHeaders();
-                  if (middlewareRequestHeaders) {
-                    applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
-                  }
+                flushStagedHeaders();
+                flushRequestHeaders();
+                if (pipelineResult.middlewareStatus !== undefined) {
+                  req.__vinextMiddlewareStatus = pipelineResult.middlewareStatus;
                 }
                 const handled = await handleApiRoute(
                   getPagesRunner(),
                   req,
                   res,
-                  apiLookupUrl,
+                  pipelineResult.apiUrl,
                   apiRoutes,
                 );
                 if (handled) return;
@@ -3704,91 +3563,36 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 return;
               }
 
-              const routes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
-
-              let match = matchRoute(resolvedUrl.split("?")[0], routes);
-
-              // Apply afterFiles rewrites after non-dynamic page routes have had a
-              // chance to win, but before dynamic route matching.
-              if ((!match || match.route.isDynamic) && nextConfig?.rewrites.afterFiles.length) {
-                const afterRewrite = applyRewrites(
-                  matchResolvedPathname(resolvedUrl.split("?")[0]),
-                  nextConfig.rewrites.afterFiles,
-                  reqCtx,
-                  bp,
+              // pipelineResult.type === "render"
+              {
+                const routes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+                const handler = createSSRHandler(
+                  server,
+                  getPagesRunner(),
+                  routes,
+                  pagesDir,
+                  nextConfig?.i18n,
+                  fileMatcher,
+                  nextConfig?.basePath ?? "",
+                  nextConfig?.trailingSlash ?? false,
+                  middlewarePath !== null,
+                  nextConfig?.clientTraceMetadata,
                 );
-                if (afterRewrite) {
-                  resolvedUrl = mergeRewriteQuery(resolvedUrl, afterRewrite);
-                  match = matchRoute(resolvedUrl.split("?")[0], routes);
+                flushStagedHeaders();
+                flushRequestHeaders();
+                if (pipelineResult.middlewareStatus !== undefined) {
+                  req.__vinextMiddlewareStatus = pipelineResult.middlewareStatus;
                 }
-              }
-
-              // External rewrite from afterFiles — proxy to external URL
-              if (isExternalUrl(resolvedUrl)) {
-                applyDeferredMwHeaders();
-                applyMwRequestHeadersForExternalProxy();
-                await proxyExternalRewriteNode(req, res, resolvedUrl);
-                return;
-              }
-
-              const handler = createSSRHandler(
-                server,
-                getPagesRunner(),
-                routes,
-                pagesDir,
-                nextConfig?.i18n,
-                fileMatcher,
-                nextConfig?.basePath ?? "",
-                nextConfig?.trailingSlash ?? false,
-                middlewarePath !== null,
-                nextConfig?.clientTraceMetadata,
-              );
-              const mwStatus = req.__vinextMiddlewareStatus;
-
-              // Try rendering the resolved URL
-              if (match) {
-                applyDeferredMwHeaders();
-                if (middlewareRequestHeaders) {
-                  applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
-                }
-                await handler(req, res, resolvedUrl, mwStatus, isDataReq);
-                return;
-              }
-
-              // No route matched — try fallback rewrites
-              if (nextConfig?.rewrites.fallback.length) {
-                const fallbackRewrite = applyRewrites(
-                  matchResolvedPathname(resolvedUrl.split("?")[0]),
-                  nextConfig.rewrites.fallback,
-                  reqCtx,
-                  bp,
+                // Update req.url to the resolved URL so SSR sees the post-mw path
+                req.url = pipelineResult.resolvedUrl;
+                await handler(
+                  req,
+                  res,
+                  pipelineResult.resolvedUrl,
+                  req.__vinextMiddlewareStatus,
+                  pipelineResult.isDataReq,
                 );
-                if (fallbackRewrite) {
-                  // External fallback rewrite — proxy to external URL
-                  if (isExternalUrl(fallbackRewrite)) {
-                    applyDeferredMwHeaders();
-                    applyMwRequestHeadersForExternalProxy();
-                    await proxyExternalRewriteNode(req, res, fallbackRewrite);
-                    return;
-                  }
-                  const fallbackMatch = matchRoute(fallbackRewrite.split("?")[0], routes);
-                  if (!fallbackMatch && hasAppDir) {
-                    return next();
-                  }
-                  applyDeferredMwHeaders();
-                  if (middlewareRequestHeaders) {
-                    applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
-                  }
-                  await handler(req, res, fallbackRewrite, mwStatus, isDataReq);
-                  return;
-                }
               }
-
-              // No fallback matched - if app dir exists, let the RSC plugin handle it,
-              // otherwise render via the pages SSR handler (will 404 for unknown routes).
-              if (hasAppDir) return next();
-
-              await handler(req, res, resolvedUrl, mwStatus, isDataReq);
             } catch (e) {
               next(e);
             }
@@ -4975,171 +4779,43 @@ function getNextPublicEnvDefines(): Record<string, string> {
 // divergence that CodeQL flagged as incomplete sanitization).
 
 /**
- * Apply redirect rules from next.config.js.
- * Returns true if a redirect was applied.
+ * Write a Web API Response to a Node.js ServerResponse.
+ * Handles multi-value headers (Set-Cookie) correctly.
  */
-function applyRedirects(
-  pathname: string,
-  // oxlint-disable-next-line typescript/no-explicit-any
-  res: any,
-  redirects: NextRedirect[],
-  ctx: RequestContext,
-  basePath = "",
-  requestSearch = "",
-): boolean {
-  // Vite strips the basePath before our middleware sees the request, so any
-  // pathname we see is implicitly "under basePath" for matching purposes.
-  // Default rules fire as expected; `basePath: false` rules cannot reach the
-  // dev server today because Vite won't proxy out-of-basepath requests.
-  const result = matchRedirect(pathname, redirects, ctx, { basePath, hadBasePath: true });
-  if (result) {
-    // Sanitize to prevent open redirect via protocol-relative URLs
-    const dest = sanitizeDestination(
-      basePath && !isExternalUrl(result.destination) && !hasBasePath(result.destination, basePath)
-        ? basePath + result.destination
-        : result.destination,
-    );
-    // Carry the original request query (e.g. the App Router RSC cache-busting
-    // `_rsc` param) onto the redirect Location so the browser's auto-followed
-    // request is still treated as an RSC fetch. Mirrors Next.js
-    // resolve-routes.ts (issue #1529).
-    const location = preserveRedirectDestinationQuery(dest, requestSearch);
-    res.writeHead(result.permanent ? 308 : 307, { Location: location });
-    res.end();
-    return true;
-  }
-  return false;
-}
-
-/*
- * Converts the Node.js IncomingMessage into a Web Request, calls
- * proxyExternalRequest(), and pipes the response back to the Node.js
- * ServerResponse.
- */
-async function proxyExternalRewriteNode(
-  req: import("node:http").IncomingMessage,
+async function writeWebResponseToNodeRes(
   res: import("node:http").ServerResponse,
-  externalUrl: string,
+  response: Response,
 ): Promise<void> {
-  try {
-    const proto = "http";
-    const host = req.headers.host || "localhost";
-    const origin = `${proto}://${host}`;
-    const method = req.method ?? "GET";
-    const hasBody = method !== "GET" && method !== "HEAD";
-    const init: RequestInit & { duplex?: string } = {
-      method,
-      headers: Object.fromEntries(
-        Object.entries(req.headers)
-          .filter(([, v]) => v !== undefined)
-          .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]),
-      ),
-    };
-    if (hasBody) {
-      const { Readable } = await import("node:stream");
-      init.body = Readable.toWeb(req) as ReadableStream;
-      init.duplex = "half";
+  const nodeHeaders: Record<string, string | string[]> = {};
+  response.headers.forEach((value, key) => {
+    if (key === "set-cookie") return;
+    const existing = nodeHeaders[key];
+    if (existing !== undefined) {
+      nodeHeaders[key] = Array.isArray(existing) ? [...existing, value] : [existing, value];
+    } else {
+      nodeHeaders[key] = value;
     }
-    const webRequest = new Request(new URL(req.url ?? "/", origin), init);
-    const proxyResponse = await proxyExternalRequest(webRequest, externalUrl);
+  });
+  const cookies = response.headers.getSetCookie?.() ?? [];
+  if (cookies.length > 0) nodeHeaders["set-cookie"] = cookies;
 
-    // Preserve multi-value headers (e.g. Set-Cookie) — Object.fromEntries()
-    // would collapse them into a single value.
-    const nodeHeaders: Record<string, string | string[]> = {};
-    proxyResponse.headers.forEach((value, key) => {
-      const existing = nodeHeaders[key];
-      if (existing !== undefined) {
-        nodeHeaders[key] = Array.isArray(existing) ? [...existing, value] : [existing, value];
-      } else {
-        nodeHeaders[key] = value;
-      }
-    });
-    res.writeHead(proxyResponse.status, nodeHeaders);
+  if (response.statusText) {
+    res.writeHead(response.status, response.statusText, nodeHeaders);
+  } else {
+    res.writeHead(response.status, nodeHeaders);
+  }
 
-    if (proxyResponse.body) {
-      const { Readable: ReadableImport } = await import("node:stream");
-      const nodeStream = ReadableImport.fromWeb(
-        proxyResponse.body as import("stream/web").ReadableStream,
-      );
+  if (response.body) {
+    const { Readable } = await import("node:stream");
+    const nodeStream = Readable.fromWeb(response.body as import("stream/web").ReadableStream);
+    await new Promise<void>((resolve, reject) => {
+      nodeStream.on("error", reject);
+      res.on("error", reject);
       nodeStream.pipe(res);
-    } else {
-      res.end();
-    }
-  } catch (e) {
-    console.error("[vinext] External rewrite proxy error:", e);
-    if (!res.headersSent) {
-      res.writeHead(502);
-      res.end("Bad Gateway");
-    }
-  }
-}
-
-/**
- * Apply rewrite rules from next.config.js.
- * Returns the rewritten URL or null if no rewrite matched.
- */
-function applyRewrites(
-  pathname: string,
-  rewrites: NextRewrite[],
-  ctx: RequestContext,
-  basePath = "",
-): string | null {
-  // Vite strips the basePath before our middleware sees the request; see
-  // applyRedirects for rationale.
-  const dest = matchRewrite(pathname, rewrites, ctx, { basePath, hadBasePath: true });
-  if (dest) {
-    // Sanitize to prevent open redirect via protocol-relative URLs
-    return sanitizeDestination(dest);
-  }
-  return null;
-}
-
-/**
- * Apply custom header rules from next.config.js.
- * Middleware headers take precedence: if a header key was already set on the
- * response (by middleware), the config value is skipped for that key.
- */
-function applyHeaders(
-  pathname: string,
-  // oxlint-disable-next-line typescript/no-explicit-any
-  res: any,
-  headers: NextHeader[],
-  ctx: RequestContext,
-  basePath = "",
-): void {
-  // Vite strips the basePath before our middleware sees the request; see
-  // applyRedirects for rationale.
-  const matched = matchHeaders(pathname, headers, ctx, { basePath, hadBasePath: true });
-  for (const header of matched) {
-    // Use append semantics for headers where multiple values must coexist
-    // (Vary, Set-Cookie). Using setHeader() on these would destroy
-    // existing values like "Vary: RSC, Accept".
-    const lk = header.key.toLowerCase();
-    if (lk === "set-cookie") {
-      // Node.js res.getHeader("set-cookie") returns string[] when
-      // multiple Set-Cookie headers have been set. Preserve the array.
-      const existing = res.getHeader(lk);
-      if (Array.isArray(existing)) {
-        res.setHeader(header.key, [...existing, header.value]);
-      } else if (existing) {
-        res.setHeader(header.key, [String(existing), header.value]);
-      } else {
-        res.setHeader(header.key, header.value);
-      }
-    } else if (lk === "vary") {
-      const existing = res.getHeader(lk);
-      if (existing) {
-        res.setHeader(header.key, existing + ", " + header.value);
-      } else {
-        res.setHeader(header.key, header.value);
-      }
-    } else {
-      // Middleware headers take precedence: skip config keys already set by
-      // middleware so middleware always wins over next.config.js headers.
-      if (!res.getHeader(lk)) {
-        res.setHeader(header.key, header.value);
-      }
-    }
+      nodeStream.on("end", resolve);
+    });
+  } else {
+    res.end();
   }
 }
 

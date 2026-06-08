@@ -104,6 +104,8 @@ export type PagesPipelineResult =
       resolvedUrl: string;
       renderOptions: PagesRenderOptions | undefined;
       stagedHeaders: HeaderRecord;
+      /** Post-middleware request headers — dev adapters apply these to req.headers before SSR. */
+      requestHeaders: Headers;
       middlewareStatus: number | undefined;
       isDataReq: boolean;
     }
@@ -111,6 +113,8 @@ export type PagesPipelineResult =
       type: "api";
       apiUrl: string;
       stagedHeaders: HeaderRecord;
+      /** Post-middleware request headers — dev adapters apply these to req.headers before API handler. */
+      requestHeaders: Headers;
       middlewareStatus: number | undefined;
     }
   | { type: "next" }; // dev passthrough (no matching route, has appDir)
@@ -349,6 +353,7 @@ export async function runPagesRequest(
         type: "api",
         apiUrl: apiLookupUrl,
         stagedHeaders: middlewareHeaders,
+        requestHeaders: request.headers,
         middlewareStatus,
       };
     }
@@ -440,12 +445,32 @@ export async function runPagesRequest(
     }
     return { type: "response", response: merged };
   }
-  // dev: emit render intent
+  // dev: apply fallback rewrites eagerly (no renderPage to 404-gate on).
+  // If matchPageRoute says there's no match, try fallback rewrites before
+  // emitting the render intent — the SSR handler writes to res directly so
+  // we cannot inspect its status code after the fact.
+  const devPageMatch = deps.matchPageRoute ? deps.matchPageRoute(resolvedPathname, request) : null;
+  if (!devPageMatch && configRewrites.fallback?.length) {
+    const fallbackRewrite = matchRewrite(
+      matchResolvedPathname(resolvedPathname),
+      configRewrites.fallback,
+      postMwReqCtx,
+      basePathState,
+    );
+    if (fallbackRewrite) {
+      if (isExternalUrl(fallbackRewrite)) {
+        return { type: "response", response: await proxyExternalRequest(request, fallbackRewrite) };
+      }
+      resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
+    }
+  }
+
   return {
     type: "render",
     resolvedUrl,
     renderOptions: isDataReq ? { isDataReq: true } : undefined,
     stagedHeaders: middlewareHeaders,
+    requestHeaders: request.headers,
     middlewareStatus,
     isDataReq,
   };

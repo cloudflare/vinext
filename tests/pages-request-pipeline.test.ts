@@ -35,8 +35,9 @@ function makeMiddleware(result: Partial<MiddlewareResult>) {
 }
 
 function makeRenderPage(status = 200, body = "ok") {
-  return vi.fn(async (_req: Request, _url: string, _opts?: PagesRenderOptions) =>
-    new Response(body, { status }),
+  return vi.fn(
+    async (_req: Request, _url: string, _opts?: PagesRenderOptions) =>
+      new Response(body, { status }),
   );
 }
 
@@ -245,9 +246,9 @@ describe("external proxy", () => {
     const req = makeRequest("/proxy-me");
     // Use fetchMock or just observe isExternalUrl → proxyExternalRequest
     // Since proxyExternalRequest will actually fetch, we mock globalThis.fetch
-    const mockFetch = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response("external response", { status: 200 }),
-    );
+    const mockFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("external response", { status: 200 }));
 
     const result = await runPagesRequest(
       req,
@@ -269,17 +270,15 @@ describe("external proxy", () => {
 describe("beforeFiles rewrites", () => {
   it("beforeFiles external rewrite proxies the request", async () => {
     const req = makeRequest("/proxy-me");
-    const mockFetch = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response("from proxy", { status: 200 }),
-    );
+    const mockFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("from proxy", { status: 200 }));
 
     const result = await runPagesRequest(
       req,
       baseDeps({
         configRewrites: {
-          beforeFiles: [
-            { source: "/proxy-me", destination: "https://example.com/proxied" },
-          ],
+          beforeFiles: [{ source: "/proxy-me", destination: "https://example.com/proxied" }],
           afterFiles: [],
           fallback: [],
         },
@@ -373,11 +372,7 @@ describe("API routes", () => {
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     expect(result.response.status).toBe(200);
-    expect(handleApi).toHaveBeenCalledWith(
-      expect.any(Request),
-      "/api/users",
-      null,
-    );
+    expect(handleApi).toHaveBeenCalledWith(expect.any(Request), "/api/users", null);
   });
 
   it("matches /api exactly", async () => {
@@ -544,9 +539,9 @@ describe("preserveCredentialHeaders", () => {
   it("preserves credential headers when resolvedUrl is external", async () => {
     // When middleware rewrites to an external URL, the Authorization header
     // should be forwarded. We verify by ensuring the pipeline reaches external proxy.
-    const mockFetch = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response("proxied", { status: 200 }),
-    );
+    const mockFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("proxied", { status: 200 }));
 
     const req = makeRequest("/internal", { Authorization: "Bearer token" });
     const result = await runPagesRequest(
