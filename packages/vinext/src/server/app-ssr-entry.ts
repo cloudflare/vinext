@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import { Fragment, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
+import type { RenderToReadableStreamOptions } from "react-dom/server";
 import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
 import clientReferences from "virtual:vite-rsc/client-references";
 import type { NavigationContext } from "vinext/shims/navigation";
@@ -47,6 +48,23 @@ import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/s
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
+
+/**
+ * `@types/react-dom` does not yet type `maxHeadersLength` (it pairs with the
+ * already-typed `onHeaders` to cap the emitted preload `Link` header). React
+ * supports it at runtime, so augment the option type locally.
+ */
+type SsrRenderOptions = RenderToReadableStreamOptions & {
+  maxHeadersLength?: number;
+};
+
+/**
+ * Default cap for the preload `Link` header, matching Next.js's
+ * `defaultConfig.reactMaxHeadersLength`. Used when no config value threads
+ * through (e.g. error-boundary renders) so React's internal cap agrees with
+ * the response-layer combine cap.
+ */
+const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
 
 export type FontPreload = {
   href: string;
@@ -275,6 +293,12 @@ export async function handleSsr(
      * SSR head. Undefined or empty disables emission entirely.
      */
     clientTraceMetadata?: readonly string[];
+    /**
+     * Maximum total length (in characters) of the preload `Link` header React
+     * emits during SSR. `0` disables emission. From `reactMaxHeadersLength` in
+     * `next.config`. Undefined falls back to React's own default.
+     */
+    reactMaxHeadersLength?: number;
     rootParams?: RootParams;
     /** Dev-only: original server error to surface in the browser overlay. */
     initialDevServerError?: unknown;
@@ -421,7 +445,27 @@ export async function handleSsr(
           basePath: options?.basePath,
         });
 
-        const htmlStream = await renderToReadableStream(ssrRoot, {
+        // React emits a preload `Link` header (capped to `maxHeadersLength`)
+        // via `onHeaders`. It fires before the shell resolves, so `linkHeader`
+        // is populated by the time `renderToReadableStream` resolves below.
+        // `0` disables emission entirely — skip the callback so React doesn't
+        // warn about a non-positive `maxHeadersLength`. Fall back to the same
+        // 6000 default the response-layer cap uses (React's own default is
+        // 2000) so both caps agree when no config value threads through.
+        let reactLinkHeader = "";
+        const maxHeadersLength = options?.reactMaxHeadersLength ?? DEFAULT_REACT_MAX_HEADERS_LENGTH;
+        const captureHeaders = maxHeadersLength > 0;
+
+        const ssrRenderOptions: SsrRenderOptions = {
+          onHeaders: captureHeaders
+            ? (headers: Headers) => {
+                const link = headers.get("Link");
+                if (link) {
+                  reactLinkHeader = link;
+                }
+              }
+            : undefined,
+          maxHeadersLength: captureHeaders ? maxHeadersLength : undefined,
           // `bootstrapScriptContent` was previously how vinext injected the
           // dynamic-import call. `bootstrapModules` performs the same work
           // natively (and exposes the URL in the DOM), so passing both would
@@ -455,7 +499,9 @@ export async function handleSsr(
 
             return undefined;
           },
-        });
+        };
+
+        const htmlStream = await renderToReadableStream(ssrRoot, ssrRenderOptions);
 
         // Populated before any SSR request runs: at prod-server startup
         // (prod-server.ts) or via build-time bundle injection (index.ts). Left
@@ -545,6 +591,7 @@ export async function handleSsr(
           // this promise expecting it to be load-bearing in production.
           metadataReady: Promise.resolve(),
           capturedRscData: options?.capturedRscDataRef?.value ?? null,
+          linkHeader: reactLinkHeader,
         };
       } catch (error) {
         cleanup();
