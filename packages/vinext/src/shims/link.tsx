@@ -72,7 +72,7 @@ import {
 } from "./internal/pages-data-target.js";
 import { markAppRouteDetectedOnPrefetch } from "./internal/app-route-detection.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
-import { getCurrentRoutePathnameForWarning } from "./router.js";
+import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-warning.js";
 
 type NavigateEvent = {
   url: URL;

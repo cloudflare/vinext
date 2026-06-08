@@ -9,6 +9,7 @@
  */
 
 import { _registerRouterStateAccessors } from "./router.js";
+import { registerRoutePatternForWarningAccessor } from "./internal/route-pattern-for-warning.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   getRequestContext,
@@ -82,3 +83,9 @@ _registerRouterStateAccessors({
     _getState().ssrContext = ctx;
   },
 });
+
+// Publish the Pages Router SSR route pattern (e.g. `/my/path/[name]`) so the
+// Link shim's repeated-slash warning can report Next.js's `router.pathname`
+// in its "in page: '...'" message without importing router.ts (which would
+// pull a browser-only `installWindowNext()` side effect into the Link bundle).
+registerRoutePatternForWarningAccessor(() => _getState().ssrContext?.pathname ?? null);

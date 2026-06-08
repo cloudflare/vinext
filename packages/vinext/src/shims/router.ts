@@ -459,26 +459,6 @@ export function setSSRContext(ctx: SSRContext | null): void {
   _setSSRContextImpl(ctx);
 }
 
-/**
- * Return the route pattern of the page currently being rendered, for use in
- * Next.js-parity diagnostics such as the "Invalid href ... in page: '...'"
- * warning emitted by the Link shim.
- *
- * Mirrors Next.js's `router.pathname`, which is the *route pattern* (e.g.
- * `/posts/[id]`), not the resolved URL. During Pages Router SSR the route
- * pattern lives on the request-scoped SSR context (`ssrContext.pathname`).
- * On the client (or when no SSR context is available, e.g. App Router) we
- * fall back to `window.location.pathname`, then to `"/"`.
- */
-export function getCurrentRoutePathnameForWarning(): string {
-  if (typeof window === "undefined") {
-    const ssrCtx = _getSSRContext();
-    if (ssrCtx?.pathname) return ssrCtx.pathname;
-    return "/";
-  }
-  return window.location?.pathname ?? "/";
-}
-
 type PagesNavigationContextShape = {
   pathname: string;
   searchParams: URLSearchParams;
