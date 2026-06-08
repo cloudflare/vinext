@@ -167,6 +167,12 @@ function parseRequireContextCall(node: AstRecord): ParsedCall | null {
   }
 
   // Third arg: filter regexp. Optional; defaults to matching every module.
+  // Parity caveat: with no regexp, the underlying `import.meta.glob` only
+  // surfaces files Vite can resolve as modules, so extensionless keys that
+  // Webpack would include can be dropped. Real-world `require.context` usage
+  // almost always passes a regexp, and upstream Next.js's own test for the
+  // extensionless case is disabled (Turbopack-pending), so this is left as a
+  // documented, low-risk divergence rather than worked around.
   let pattern = "";
   let flags = "";
   if (args.length >= 3) {
