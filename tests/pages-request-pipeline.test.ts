@@ -158,6 +158,7 @@ describe("middleware", () => {
       expect.any(Request),
       "/bar",
       undefined,
+      expect.any(Headers),
     );
   });
 
@@ -311,6 +312,7 @@ describe("beforeFiles rewrites", () => {
       expect.any(Request),
       "/to",
       undefined,
+      expect.any(Headers),
     );
   });
 });
@@ -408,6 +410,7 @@ describe("afterFiles rewrites", () => {
       expect.any(Request),
       "/rewritten",
       undefined,
+      expect.any(Headers),
     );
   });
 
@@ -433,6 +436,7 @@ describe("afterFiles rewrites", () => {
       expect.any(Request),
       "/static-page",
       undefined,
+      expect.any(Headers),
     );
   });
 });

@@ -12,7 +12,12 @@
  *   which they handle themselves (preserving their streaming SSR path).
  */
 
-import type { NextI18nConfig, NextRedirect, NextRewrite, NextHeader } from "../config/next-config.js";
+import type {
+  NextI18nConfig,
+  NextRedirect,
+  NextRewrite,
+  NextHeader,
+} from "../config/next-config.js";
 import type { BasePathMatchState, RequestContext } from "../config/config-matchers.js";
 import {
   matchRedirect,
@@ -24,10 +29,7 @@ import {
   proxyExternalRequest,
   sanitizeDestination,
 } from "../config/config-matchers.js";
-import {
-  applyConfigHeadersToHeaderRecord,
-  normalizeTrailingSlash,
-} from "./request-pipeline.js";
+import { applyConfigHeadersToHeaderRecord, normalizeTrailingSlash } from "./request-pipeline.js";
 import type { HeaderRecord } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
 import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pages-i18n.js";
@@ -59,19 +61,38 @@ export type PagesPipelineDeps = {
   trailingSlash: boolean;
   i18nConfig: NextI18nConfig | null;
   configRedirects: NextRedirect[];
-  configRewrites: { beforeFiles: NextRewrite[]; afterFiles: NextRewrite[]; fallback: NextRewrite[] };
+  configRewrites: {
+    beforeFiles: NextRewrite[];
+    afterFiles: NextRewrite[];
+    fallback: NextRewrite[];
+  };
   configHeaders: NextHeader[];
 
   // Pre-computed per-request values (adapter sets these)
-  hadBasePath: boolean;      // adapter computes: !basePath || hasBasePath(originalPathname, basePath)
-  isDataReq: boolean;        // true if this was a /_next/data/ request (already normalized by adapter)
-  isDataRequest: boolean;    // true if x-nextjs-data: 1 header was present (for middleware opts)
-  ctx?: unknown;             // Cloudflare ExecutionContext or undefined (for Node)
+  hadBasePath: boolean; // adapter computes: !basePath || hasBasePath(originalPathname, basePath)
+  isDataReq: boolean; // true if this was a /_next/data/ request (already normalized by adapter)
+  isDataRequest: boolean; // true if x-nextjs-data: 1 header was present (for middleware opts)
+  ctx?: unknown; // Cloudflare ExecutionContext or undefined (for Node)
 
   // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
-  matchPageRoute?: ((pathname: string, request: Request) => { route: { isDynamic: boolean } } | null) | null;
-  runMiddleware?: ((request: Request, ctx: unknown, opts: { isDataRequest: boolean }) => Promise<MiddlewareResult>) | null;
-  renderPage?: ((request: Request, resolvedUrl: string, options?: PagesRenderOptions) => Promise<Response>) | null;
+  matchPageRoute?:
+    | ((pathname: string, request: Request) => { route: { isDynamic: boolean } } | null)
+    | null;
+  runMiddleware?:
+    | ((
+        request: Request,
+        ctx: unknown,
+        opts: { isDataRequest: boolean },
+      ) => Promise<MiddlewareResult>)
+    | null;
+  renderPage?:
+    | ((
+        request: Request,
+        resolvedUrl: string,
+        options?: PagesRenderOptions,
+        stagedHeaders?: Headers,
+      ) => Promise<Response>)
+    | null;
   handleApi?: ((request: Request, apiUrl: string, ctx: unknown) => Promise<Response>) | null;
 };
 
@@ -261,9 +282,7 @@ export async function runPagesRequest(
   let resolvedPathname = resolvedUrl.split("?")[0];
 
   const matchResolvedPathname = (p: string): string =>
-    i18nConfig
-      ? normalizeDefaultLocalePathname(p, i18nConfig, { hostname: requestHostname })
-      : p;
+    i18nConfig ? normalizeDefaultLocalePathname(p, i18nConfig, { hostname: requestHostname }) : p;
 
   // Step 7: Config headers staging
   if (configHeaders.length) {
@@ -278,7 +297,10 @@ export async function runPagesRequest(
   // Step 8: External-URL proxy (post-mw rewrite target)
   if (isExternalUrl(resolvedUrl)) {
     const proxyResponse = await proxyExternalRequest(request, resolvedUrl);
-    return { type: "response", response: mergeHeaders(proxyResponse, middlewareHeaders, undefined) };
+    return {
+      type: "response",
+      response: mergeHeaders(proxyResponse, middlewareHeaders, undefined),
+    };
   }
 
   // Step 9: beforeFiles rewrites
@@ -323,7 +345,12 @@ export async function runPagesRequest(
       };
     } else {
       // dev: emit intent
-      return { type: "api", apiUrl: apiLookupUrl, stagedHeaders: middlewareHeaders, middlewareStatus };
+      return {
+        type: "api",
+        apiUrl: apiLookupUrl,
+        stagedHeaders: middlewareHeaders,
+        middlewareStatus,
+      };
     }
   }
 
@@ -357,15 +384,23 @@ export async function runPagesRequest(
         ? { isDataReq: true }
         : undefined;
 
-    let response = await deps.renderPage(request, resolvedUrl, initialRenderOptions);
+    // Convert staged middleware headers to a Web Headers object for renderPage.
+    // Adapters that need to inject per-request values (e.g. CSP nonces) into the
+    // rendered HTML can access them via this argument.
+    const stagedHeaders = new Headers();
+    for (const [k, v] of Object.entries(middlewareHeaders)) {
+      if (Array.isArray(v)) {
+        for (const item of v) stagedHeaders.append(k, item);
+      } else {
+        stagedHeaders.set(k, v);
+      }
+    }
+
+    let response = await deps.renderPage(request, resolvedUrl, initialRenderOptions, stagedHeaders);
 
     // Fallback rewrites if 404 + deferred
     let matchedFallbackRewrite = false;
-    if (
-      response.status === 404 &&
-      shouldDeferErrorPageOnMiss &&
-      configRewrites.fallback?.length
-    ) {
+    if (response.status === 404 && shouldDeferErrorPageOnMiss && configRewrites.fallback?.length) {
       const fallbackRewrite = matchRewrite(
         matchResolvedPathname(resolvedPathname),
         configRewrites.fallback,
@@ -374,22 +409,36 @@ export async function runPagesRequest(
       );
       if (fallbackRewrite) {
         if (isExternalUrl(fallbackRewrite)) {
-          return { type: "response", response: await proxyExternalRequest(request, fallbackRewrite) };
+          return {
+            type: "response",
+            response: await proxyExternalRequest(request, fallbackRewrite),
+          };
         }
-        response = await deps.renderPage(request, mergeRewriteQuery(resolvedUrl, fallbackRewrite));
+        response = await deps.renderPage(
+          request,
+          mergeRewriteQuery(resolvedUrl, fallbackRewrite),
+          undefined,
+          stagedHeaders,
+        );
         matchedFallbackRewrite = true;
       }
     }
 
     // Deferred 404 re-render
     if (response.status === 404 && shouldDeferErrorPageOnMiss && !matchedFallbackRewrite) {
-      response = await deps.renderPage(request, resolvedUrl);
+      response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
     }
 
-    return {
-      type: "response",
-      response: mergeHeaders(response, middlewareHeaders, middlewareStatus),
-    };
+    const merged = mergeHeaders(response, middlewareHeaders, middlewareStatus);
+    // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
+    // mergeHeaders may create a new Response object (losing non-standard properties),
+    // so we copy the marker from the original render response to the merged one.
+    if (merged !== response) {
+      (merged as { __vinextStreamedHtmlResponse?: boolean }).__vinextStreamedHtmlResponse = (
+        response as { __vinextStreamedHtmlResponse?: boolean }
+      ).__vinextStreamedHtmlResponse;
+    }
+    return { type: "response", response: merged };
   }
   // dev: emit render intent
   return {
