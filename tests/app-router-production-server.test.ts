@@ -24,7 +24,24 @@ function getStylesheetHrefs(html: string): string[] {
 }
 
 async function getLinkedStylesheetText(baseUrl: string, html: string): Promise<string> {
-  const hrefs = getStylesheetHrefs(html);
+  return fetchStylesheetText(baseUrl, getStylesheetHrefs(html));
+}
+
+// RSC flight payloads reference CSS chunks as serialized stylesheet hints
+// (e.g. `"href":"/assets/page-XXXX.css"`) rather than HTML `<link>` tags, so
+// the `<link>` parser above does not see them. Pull every `.css` asset path out
+// of the raw payload instead.
+function getFlightStylesheetHrefs(payload: string): string[] {
+  const hrefs = new Set<string>();
+  const cssPattern = /["'](\/[^"']+?\.css)["']/g;
+  let match: RegExpExecArray | null;
+  while ((match = cssPattern.exec(payload)) !== null) {
+    hrefs.add(match[1]);
+  }
+  return [...hrefs];
+}
+
+async function fetchStylesheetText(baseUrl: string, hrefs: string[]): Promise<string> {
   if (hrefs.length === 0) return "";
 
   const stylesheets = await Promise.all(
@@ -174,6 +191,30 @@ describe("App Router Production server (startProdServer)", () => {
     expect(feedLinkedCss).not.toContain("scroll-padding-top");
     const feedInlineCss = getInlineStyleText(feedHtml);
     expect(feedInlineCss).not.toContain("scroll-padding-top");
+  });
+
+  it("emits intercepted modal CSS on RSC navigation from feed", async () => {
+    // Positive direction for the lazy intercept-page load: navigating from
+    // /feed to /photos/[id] fires the intercept, so the modal page module — and
+    // therefore its `scroll-padding-top` CSS chunk — must be loaded and
+    // referenced in the flight payload. Without this guard, a regression where
+    // the lazy modal page fails to load its CSS would pass the negative test
+    // above silently. Mirrors the dev-server intercept request shape.
+    const res = await fetch(`${baseUrl}/photos/43.rsc`, {
+      headers: {
+        Accept: "text/x-component",
+        "X-Vinext-Interception-Context": "/feed",
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+
+    const payload = await res.text();
+    // Confirm the intercept actually fired before asserting on its CSS.
+    expect(payload).toContain("photo-modal");
+
+    const interceptCss = await fetchStylesheetText(baseUrl, getFlightStylesheetHrefs(payload));
+    expect(interceptCss).toContain("scroll-padding-top:20px");
   });
 
   it("does not reuse cached HTML across requests with different CSP nonces", async () => {
