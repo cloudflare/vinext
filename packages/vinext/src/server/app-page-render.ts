@@ -854,11 +854,11 @@ export async function renderAppPageLifecycle(
     throw new Error("[vinext] Expected an HTML stream when no fallback response was returned");
   }
 
-  // Combine the font preload `Link` header with React's preload `Link` header
-  // (captured via onHeaders during SSR), capped to `reactMaxHeadersLength`.
+  // Combine React's preload `Link` header (captured via onHeaders during SSR)
+  // with the font preload `Link` header, capped to `reactMaxHeadersLength`.
   const linkHeader = buildAppPageLinkHeader(
-    fontLinkHeader,
     htmlRender.linkHeader,
+    fontLinkHeader,
     options.reactMaxHeadersLength,
   );
 
@@ -961,7 +961,7 @@ export async function renderAppPageLifecycle(
   if (htmlResponsePolicy.shouldWriteToCache || shouldSpeculativelyWriteCache) {
     const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
       draftCookie,
-      fontLinkHeader: linkHeader,
+      linkHeader,
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareContext: options.middlewareContext,
       policy: htmlResponsePolicy,
@@ -1026,7 +1026,7 @@ export async function renderAppPageLifecycle(
 
   return buildAppPageHtmlResponse(safeHtmlStream, {
     draftCookie,
-    fontLinkHeader: linkHeader,
+    linkHeader,
     isEdgeRuntime: options.isEdgeRuntime,
     middlewareContext: options.middlewareContext,
     policy: htmlResponsePolicy,

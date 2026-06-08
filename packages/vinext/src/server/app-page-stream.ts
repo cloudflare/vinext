@@ -54,7 +54,7 @@ function normalizeAppSsrRenderResult(
 }
 
 /**
- * Combine vinext's font preload `Link` header with the React-emitted preload
+ * Combine the React-emitted preload `Link` header with vinext's font preload
  * `Link` header, capping the result to `reactMaxHeadersLength`.
  *
  * React already caps its own portion, but vinext emits font preloads through a
@@ -63,10 +63,14 @@ function normalizeAppSsrRenderResult(
  * keeping only whole entries that fit and dropping the rest once the limit is
  * exceeded. `0` disables emission entirely (matches React); `undefined` falls
  * back to the React default of 6000.
+ *
+ * React's hints (scripts/modules/styles) come first so that under a tight cap
+ * the render-critical entries survive and trailing font preloads are dropped
+ * first.
  */
 export function buildAppPageLinkHeader(
-  fontLinkHeader: string | undefined,
   reactLinkHeader: string | undefined,
+  fontLinkHeader: string | undefined,
   maxHeadersLength: number | undefined,
 ): string {
   // Matches Next.js's `defaultConfig.reactMaxHeadersLength` (and the SSR
@@ -79,7 +83,7 @@ export function buildAppPageLinkHeader(
   }
 
   const entries: string[] = [];
-  for (const source of [fontLinkHeader, reactLinkHeader]) {
+  for (const source of [reactLinkHeader, fontLinkHeader]) {
     if (!source) continue;
     for (const entry of source.split(", ")) {
       if (entry.length > 0) {
