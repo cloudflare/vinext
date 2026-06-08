@@ -1712,8 +1712,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           // cache-busting `_rsc` param) onto the redirect Location so the
           // browser's auto-followed request is still treated as an RSC
           // fetch. Mirrors Next.js resolve-routes.ts (issue #1529).
-          const redirectQs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-          const location = preserveRedirectDestinationQuery(dest, redirectQs);
+          // `rawQs` already holds the original (un-re-encoded) query string
+          // that `url` was rebuilt from above.
+          const location = preserveRedirectDestinationQuery(dest, rawQs);
           res.writeHead(redirect.permanent ? 308 : 307, { Location: location });
           res.end();
           return;

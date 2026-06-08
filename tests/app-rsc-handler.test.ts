@@ -583,10 +583,13 @@ describe("createAppRscHandler", () => {
 
   it("preserves the _rsc query on config redirects for .rsc requests without the RSC header (#1529)", async () => {
     // A `.rsc`-suffixed request is an RSC request even when the `RSC: 1`
-    // header is absent (e.g. a CDN-style or auto-followed fetch). The redirect
-    // Location must still carry the cache-busting `_rsc` query so the followed
-    // request is treated as an RSC fetch. The non-header branch preserves the
-    // original request query rather than recomputing the hash.
+    // header is absent (e.g. a CDN-style or auto-followed fetch). Without the
+    // header the handler can't recompute the cache-busting hash, so the
+    // non-header branch carries the original request query onto the Location
+    // verbatim (mirroring Next.js resolve-routes.ts) rather than dropping it.
+    // (Note: the `.rsc` suffix is not re-applied to the destination, so the
+    // followed request isn't re-detected as RSC purely from `_rsc` — the
+    // guarantee here is query preservation, not RSC re-detection.)
     const handler = createHandler({
       configHeaders: [],
       configRedirects: [{ source: "/old-about", destination: "/about", permanent: true }],
