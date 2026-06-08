@@ -1564,6 +1564,10 @@ function registerServerActionCallback(): void {
 
     const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
     if (revalidation !== "none") {
+      // The revalidation header is the server's cache-invalidation signal. Clear
+      // restorable BFCache ids and snapshots before body decoding so no pending
+      // traversal can synchronously restore visible state from the old
+      // client-state epoch.
       clearClientNavigationCaches();
     }
     const invalidResponseError = await readInvalidServerActionResponseError(

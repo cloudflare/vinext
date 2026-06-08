@@ -1074,7 +1074,7 @@ describe("app browser entry navigation scheduling", () => {
     });
   });
 
-  it("matches visible history snapshot targets after stripping basePath", () => {
+  it("matches visible history snapshot targets after stripping basePath and canonicalizing search", () => {
     const currentState = createState({
       elements: createResolvedElements("route:/scroll-restoration/other", "/"),
       navigationSnapshot: createClientNavigationRenderSnapshot(
@@ -1087,7 +1087,7 @@ describe("app browser entry navigation scheduling", () => {
     const snapshotState = createState({
       elements: createResolvedElements("route:/scroll-restoration", "/"),
       navigationSnapshot: createClientNavigationRenderSnapshot(
-        "https://example.com/scroll-restoration",
+        "https://example.com/scroll-restoration?q=a+b",
         {},
       ),
       routeId: "route:/scroll-restoration",
@@ -1101,7 +1101,7 @@ describe("app browser entry navigation scheduling", () => {
     const restored = controller.restoreHistorySnapshotVisibleState({
       navId,
       state: snapshotState,
-      targetHref: "https://example.com/docs/scroll-restoration",
+      targetHref: "https://example.com/docs/scroll-restoration?q=a%20b",
     });
 
     expect(restored).toBe(true);

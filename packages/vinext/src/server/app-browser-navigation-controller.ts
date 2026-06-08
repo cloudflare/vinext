@@ -222,7 +222,8 @@ export function createSnapshotPathAndSearch(snapshot: ClientNavigationRenderSnap
 
 export function createBasePathStrippedPathAndSearch(url: URL, basePath: string): string {
   const pathname = stripBasePath(url.pathname, basePath);
-  return `${pathname}${url.search}`;
+  const query = new URLSearchParams(url.search).toString();
+  return query === "" ? pathname : `${pathname}?${query}`;
 }
 
 function isSnapshotTargetHref(
