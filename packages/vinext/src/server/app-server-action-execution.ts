@@ -183,6 +183,15 @@ export type HandleProgressiveServerActionRequestOptions = {
   decodeFormState: AppServerActionFormStateDecoder;
   getAndClearPendingCookies: () => string[];
   getDraftModeCookieHeader: () => string | null | undefined;
+  /**
+   * Whether the posted-to route resolves to an App Router *page* (as opposed to
+   * a route handler or no match). Multipart form POSTs to a page are always
+   * server-action attempts in Next.js, so a body that decodes to no action must
+   * surface as 404 action-not-found rather than rendering the page. Route
+   * handlers (which run *after* this dispatch in vinext) legitimately receive
+   * raw multipart POSTs, so they must still fall through. See issue #1340.
+   */
+  hasPageRoute: boolean;
   maxActionBodySize: number;
   middlewareHeaders: Headers | null;
   readFormDataWithLimit: ReadFormDataWithLimit;
@@ -757,6 +766,18 @@ export async function handleProgressiveServerActionRequest(
 
     const action = await options.decodeAction(body);
     if (!isAppServerActionFunction(action)) {
+      // A multipart POST to a *page* is always a server-action attempt; a body
+      // that decodes to no action means the referenced action doesn't exist
+      // (e.g. the build has no server actions). Mirror Next.js' 404 +
+      // action-not-found rather than rendering the page. Route handlers run
+      // after this dispatch and legitimately receive raw multipart POSTs, so
+      // fall through for them (and for unmatched routes). See issue #1340.
+      if (options.hasPageRoute) {
+        return createActionNotFoundResponse(null, {
+          clearRequestContext: options.clearRequestContext,
+          getAndClearPendingCookies: options.getAndClearPendingCookies,
+        });
+      }
       return null;
     }
 

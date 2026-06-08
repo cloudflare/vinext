@@ -119,6 +119,7 @@ function createOptions(
     getDraftModeCookieHeader() {
       return null;
     },
+    hasPageRoute: false,
     maxActionBodySize: 1024,
     middlewareHeaders: null,
     async readFormDataWithLimit() {
@@ -787,6 +788,68 @@ describe("app server action execution helpers", () => {
 
     expect(response.status).toBe(404);
     expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
+  // ("should error when triggering an MPA action on an app with no server actions")
+  //
+  // A multipart form POST to a *page* route that decodes to no action at all
+  // (e.g. the build has no server actions, so `decodeAction` returns null
+  // rather than throwing) must surface Next.js' 404 + action-not-found, not
+  // fall through to a 200 page render. The fetch-action variant of this case
+  // (handled via the `Next-Action` header) already worked; the MPA/form-POST
+  // variant did not. See issue #1340.
+  it("returns action-not-found when an MPA action targets a page with no server actions", async () => {
+    const clearContext = vi.fn();
+    const reportedErrors: Error[] = [];
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const response = requireProgressiveActionResponse(
+        await handleProgressiveServerActionRequest(
+          createOptions({
+            clearRequestContext: clearContext,
+            hasPageRoute: true,
+            async decodeAction() {
+              return null;
+            },
+            reportRequestError(error) {
+              reportedErrors.push(error);
+            },
+          }),
+        ),
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
+      expect(await response.text()).toBe("Server action not found.");
+      expect(reportedErrors).toEqual([]);
+      expect(clearContext).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "Failed to find Server Action. This request might be from an older or newer deployment.",
+        ),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  // Route handlers (route.ts) accept raw multipart POSTs that legitimately
+  // decode to no action; those must still fall through to the route-handler
+  // dispatch rather than 404. The page-vs-route distinction comes from the
+  // caller (`hasPageRoute`).
+  it("falls through for multipart posts that decode to no action on a non-page route", async () => {
+    const response = await handleProgressiveServerActionRequest(
+      createOptions({
+        hasPageRoute: false,
+        async decodeAction() {
+          return null;
+        },
+      }),
+    );
+
+    expect(response).toBeNull();
   });
 
   it("returns null for non-fetch RSC action requests", async () => {

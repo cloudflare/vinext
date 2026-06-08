@@ -781,6 +781,17 @@ export default __createAppRscHandler({
     middlewareContext,
     request,
   }) {
+    // A multipart form POST to a page is always a server-action attempt, so a
+    // body that decodes to no action must surface as 404 action-not-found
+    // (#1340). Route handlers run after this dispatch and accept raw multipart
+    // POSTs, so only flag actual page routes. The __loadPage / __loadRouteHandler
+    // markers are static and available before lazy module hydration.
+    const __progressiveActionMatch = matchRoute(cleanPathname);
+    const __hasPageRoute = Boolean(
+      __progressiveActionMatch &&
+        __progressiveActionMatch.route.__loadPage &&
+        !__progressiveActionMatch.route.__loadRouteHandler,
+    );
     return __handleProgressiveServerActionRequest({
       actionId,
       allowedOrigins: __allowedOrigins,
@@ -794,6 +805,7 @@ export default __createAppRscHandler({
       decodeFormState,
       getAndClearPendingCookies,
       getDraftModeCookieHeader,
+      hasPageRoute: __hasPageRoute,
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,
       middlewareHeaders: middlewareContext.headers,
       readFormDataWithLimit: __readFormDataWithLimit,
