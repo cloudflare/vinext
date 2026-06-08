@@ -3,8 +3,7 @@ import { parseCookies } from "../config/config-matchers.js";
 import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
-import { resolveRequestProtocol, resolveRequestHost } from "./proxy-trust.js";
-import { PRERENDER_REVALIDATE_HEADER, getRevalidateSecret } from "./isr-cache.js";
+import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
 
 const MAX_PAGES_API_BODY_SIZE = DEFAULT_PAGES_API_BODY_SIZE_LIMIT;
 
@@ -49,7 +48,7 @@ export type PagesReqResResponse = {
   send: (data: unknown) => void;
   redirect: (statusOrUrl: number | string, url?: string) => void;
   getHeaders: () => PagesReqResHeaders;
-  revalidate: (urlPath: string) => Promise<void>;
+  revalidate: (urlPath: string, opts?: RevalidateOptions) => Promise<void>;
 };
 
 type CreatePagesReqResOptions = {
@@ -306,33 +305,11 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     },
 
     // `res.revalidate(urlPath)` triggers on-demand ISR regeneration of a Pages
-    // Router route. Mirrors Next.js's api-resolver `revalidate()` helper: it
-    // issues an internal HEAD request to `urlPath` carrying the
-    // `x-prerender-revalidate` header set to the process revalidate secret
-    // (Next.js sends `context.previewModeId` here). The Pages render path
-    // authorizes the request only when that value equals the secret, then
-    // re-runs getStaticProps with `revalidateReason: "on-demand"` and refreshes
-    // the cache entry. See
-    // `.nextjs-ref/packages/next/src/server/api-utils/node/api-resolver.ts`.
-    async revalidate(urlPath) {
-      if (typeof urlPath !== "string" || !urlPath.startsWith("/")) {
-        throw new Error(
-          `Invalid urlPath provided to revalidate(), must be a path e.g. /blog/post-1, received ${urlPath}`,
-        );
-      }
-
-      const proto = resolveRequestProtocol(options.request.headers);
-      const host = resolveRequestHost(options.request.headers, "localhost");
-      const target = new URL(urlPath, `${proto}://${host}`);
-
-      const revalidateRes = await fetch(target, {
-        method: "HEAD",
-        headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
-      });
-
-      if (!revalidateRes.ok && revalidateRes.status !== 404) {
-        throw new Error(`Failed to revalidate ${urlPath}: ${revalidateRes.status}`);
-      }
+    // Router route. Delegates to the shared helper so the secret wiring and
+    // success detection stay identical to the prod (`api-handler.ts`) path. See
+    // `pages-revalidate.ts`.
+    async revalidate(urlPath, opts) {
+      await performOnDemandRevalidate(options.request.headers, urlPath, opts);
     },
   };
 

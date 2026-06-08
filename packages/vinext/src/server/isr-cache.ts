@@ -53,6 +53,16 @@ export { normalizeMountedSlotsHeader };
 export const PRERENDER_REVALIDATE_HEADER = "x-prerender-revalidate";
 
 /**
+ * Companion header to {@link PRERENDER_REVALIDATE_HEADER}. When set,
+ * `res.revalidate(path, { unstable_onlyGenerated: true })` only revalidates the
+ * path if it was already generated, and a 404 response counts as a successful
+ * no-op. Mirrors Next.js's `PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER`
+ * (`x-prerender-revalidate-if-generated`) — see
+ * `.nextjs-ref/packages/next/src/lib/constants.ts`.
+ */
+export const PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER = "x-prerender-revalidate-if-generated";
+
+/**
  * Per-process secret that authenticates on-demand revalidation requests, the
  * vinext analog of Next.js's prerender-manifest `previewModeId`. `res.revalidate()`
  * loops back into the *same* server process via an internal `fetch()`, so a
