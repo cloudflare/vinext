@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Request } from "@playwright/test";
-import { waitForHydration } from "../helpers";
+import { disableDevErrorOverlay, waitForHydration } from "../helpers";
 
 const BASE = "http://localhost:4173";
 
@@ -111,6 +111,12 @@ test.describe("pages-router javascript-urls", () => {
     await page.locator("button").click();
     await expectJavascriptUrlBlocked(page, initialUrl, getNavigationRequests);
 
+    // The synchronous `router.push` throw (the #1575 behaviour that surfaces the
+    // console.error) is caught by the dev error overlay, whose backdrop would
+    // otherwise intercept the safe-navigation click below. Suppress it — the
+    // security block has already been asserted above.
+    await disableDevErrorOverlay(page);
+
     await page.locator('a[href="/nextjs-compat/javascript-urls/safe"]').click();
     await expect(page).toHaveURL(`${BASE}/nextjs-compat/javascript-urls/safe`);
   });
@@ -125,6 +131,12 @@ test.describe("pages-router javascript-urls", () => {
 
     await page.locator("button").click();
     await expectJavascriptUrlBlocked(page, initialUrl, getNavigationRequests);
+
+    // The synchronous `router.replace` throw (the #1575 behaviour that surfaces
+    // the console.error) is caught by the dev error overlay, whose backdrop
+    // would otherwise intercept the safe-navigation click below. Suppress it —
+    // the security block has already been asserted above.
+    await disableDevErrorOverlay(page);
 
     await page.locator('a[href="/nextjs-compat/javascript-urls/safe"]').click();
     await expect(page).toHaveURL(`${BASE}/nextjs-compat/javascript-urls/safe`);
