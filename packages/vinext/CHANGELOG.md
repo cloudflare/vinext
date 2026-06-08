@@ -2,6 +2,19 @@
 
 ## 0.1.0
 
+Today's release contains several app router bundling improvements like code splitting and lazy loading for faster cold starts, and minification by default for smaller bundles. Several CLI crashes were fixed for large projects, and more Next.js parity gaps were addressed.
+
+Vinext now supports additional configuration for caching -- the Vite plugin supports a cache object, where adapters for a data cache and a cdn cache can be supplied. The cdn adapter is intended to be used for route-level caching, while the data adapter is used for everything else, and is used for route caching in the absence of a cdn adapter. This is intended to replace manual setup in the Worker.
+
+```ts
+import vinext from "vinext";
+import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+
+vinext({
+  cache: { data: kvDataAdapter() },
+});
+```
+
 ### Features
 
 #### Cache
