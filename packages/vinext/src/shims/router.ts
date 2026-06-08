@@ -492,15 +492,14 @@ function _buildClientPagesNavigationContext(
     return _cachedClientPagesNavCtx;
   }
   const searchParams = isReady ? new URLSearchParams(searchString) : new URLSearchParams();
-  // Query-first to stay byte-for-byte identical with the server snapshot
-  // (getPagesNavigationContext) and to match Next.js's `adaptForPathParams`,
-  // which derives Pages path params from `router.query`. `__NEXT_DATA__.query`
-  // is kept current on every client navigation (navigateClient merges route
-  // params into it), so it is the same source the server serialized. The path
-  // extraction is only a fallback for the rare case the query lacks the param.
+  // The browser URL is the authoritative source after a Pages client
+  // navigation. `__NEXT_DATA__.query` is serialized for the rendered document
+  // and can briefly lag behind the committed history URL while navigation
+  // listeners publish snapshots, so using it first would leak stale params from
+  // the page we just left.
   const params = isReady
-    ? (getRouteParamsFromQuery(routePattern, nextData?.query ?? {}) ??
-      extractRouteParamsFromPath(routePattern, resolvedPath) ??
+    ? (extractRouteParamsFromPath(routePattern, resolvedPath) ??
+      getRouteParamsFromQuery(routePattern, nextData?.query ?? {}) ??
       {})
     : null;
   const isAutoExportDynamic =
@@ -567,8 +566,8 @@ export function getPagesNavigationContext(): PagesNavigationContextShape | null 
     const isReady = ssrCtx.navigationIsReady ?? true;
     const searchParams = isReady ? new URLSearchParams(searchString) : new URLSearchParams();
     const params = isReady
-      ? (getRouteParamsFromQuery(ssrCtx.pathname, ssrCtx.query) ??
-        extractRouteParamsFromPath(ssrCtx.pathname, resolvedPath) ??
+      ? (extractRouteParamsFromPath(ssrCtx.pathname, resolvedPath) ??
+        getRouteParamsFromQuery(ssrCtx.pathname, ssrCtx.query) ??
         {})
       : null;
     const isAutoExportDynamic =

@@ -1526,17 +1526,17 @@ export function useSearchParams(): ReadonlyURLSearchParams {
  */
 export function useParams<
   T extends Record<string, string | string[]> = Record<string, string | string[]>,
->(): T {
+>(): T | null {
   if (isServer) {
     // During SSR for "use client" components, the navigation context may not be set.
     // getServerParamsSnapshot covers both App Router and Pages Router compat.
-    return getServerParamsSnapshot() as T;
+    return getServerParamsSnapshot() as T | null;
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
   const params = React.useSyncExternalStore(
     subscribeToNavigation,
-    getClientParamsSnapshot as () => T,
-    getServerParamsSnapshot as () => T,
+    getClientParamsSnapshot as () => T | null,
+    getServerParamsSnapshot as () => T | null,
   );
   if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
     return renderSnapshot.params as T;

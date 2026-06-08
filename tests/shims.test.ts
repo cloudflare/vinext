@@ -860,6 +860,7 @@ describe("next/navigation shim", () => {
         const pathname = hookMod.usePathname();
         const searchParams = hookMod.useSearchParams();
         const params = hookMod.useParams<{ slug: string }>();
+        if (!params) throw new Error("expected app navigation params");
         return React.createElement(
           "span",
           null,
@@ -945,6 +946,7 @@ describe("next/navigation shim", () => {
       function Probe() {
         const searchParams = hookMod.useSearchParams();
         const params = hookMod.useParams<{ slug: string }>();
+        if (!params) throw new Error("expected app navigation params");
         return React.createElement(
           "span",
           null,
@@ -12066,6 +12068,54 @@ describe("next/compat/router shim", () => {
       // searchParams must also be reference-stable across calls so hook-level
       // snapshots (`pagesCtx.searchParams`) are Object.is-equal between renders.
       expect(first!.searchParams).toBe(second!.searchParams);
+    } finally {
+      setSSRContext(null);
+    }
+  });
+
+  it("client Pages navigation context prefers the current URL over stale __NEXT_DATA__ params", async () => {
+    const { getPagesNavigationContext } = await import("../packages/vinext/src/shims/router.js");
+
+    const previousWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      location: {
+        pathname: "/search-params-pages/bar",
+        search: "",
+        hash: "",
+      },
+      __NEXT_DATA__: {
+        page: "/search-params-pages/[foo]",
+        query: { foo: "foo" },
+        isFallback: false,
+      },
+      __VINEXT_PAGE_LOADERS__: {
+        "/search-params-pages/[foo]": async () => ({ default: () => null }),
+      },
+    };
+
+    try {
+      expect(getPagesNavigationContext()?.params).toEqual({ foo: "bar" });
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("server Pages navigation context prefers the resolved URL over stale query params", async () => {
+    const { getPagesNavigationContext, setSSRContext } =
+      await import("../packages/vinext/src/shims/router.js");
+
+    setSSRContext({
+      pathname: "/search-params-pages/[foo]",
+      query: { foo: "foo" },
+      asPath: "/search-params-pages/bar",
+      navigationIsReady: true,
+    });
+    try {
+      expect(getPagesNavigationContext()?.params).toEqual({ foo: "bar" });
     } finally {
       setSSRContext(null);
     }
