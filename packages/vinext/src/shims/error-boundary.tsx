@@ -248,6 +248,33 @@ export function ErrorBoundary({ fallback, children, resetKey }: ErrorBoundaryPro
 }
 
 // ---------------------------------------------------------------------------
+// GlobalErrorBoundary — outermost root error boundary whose fallback is the
+// built-in default global-error component. It guards the user's
+// `app/global-error.tsx`: if that boundary itself throws while rendering,
+// React unwinds to this outer boundary and renders the minimal built-in
+// fallback UI instead of crashing the whole request.
+//
+// Mirrors Next.js, which nests the user's global-error inside an outer
+// `RootErrorBoundary errorComponent={DefaultGlobalError}`:
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router.tsx
+// ---------------------------------------------------------------------------
+
+export function GlobalErrorBoundary({
+  fallback,
+  children,
+}: {
+  fallback: React.ComponentType<{ error: unknown; reset: () => void }>;
+  children: React.ReactNode;
+}) {
+  const pathname = usePathname();
+  return (
+    <ErrorBoundaryInner pathname={pathname} fallback={fallback}>
+      {children}
+    </ErrorBoundaryInner>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // NotFoundBoundary — catches notFound() on the client and renders not-found.tsx
 // ---------------------------------------------------------------------------
 
