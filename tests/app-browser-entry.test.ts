@@ -1074,6 +1074,41 @@ describe("app browser entry navigation scheduling", () => {
     });
   });
 
+  it("matches visible history snapshot targets after stripping basePath", () => {
+    const currentState = createState({
+      elements: createResolvedElements("route:/scroll-restoration/other", "/"),
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/scroll-restoration/other",
+        {},
+      ),
+      routeId: "route:/scroll-restoration/other",
+      visibleCommitVersion: 7,
+    });
+    const snapshotState = createState({
+      elements: createResolvedElements("route:/scroll-restoration", "/"),
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/scroll-restoration",
+        {},
+      ),
+      routeId: "route:/scroll-restoration",
+      visibleCommitVersion: 2,
+    });
+    const { controller, stateRef } = createControllerHarness(currentState, {
+      basePath: "/docs",
+    });
+    const navId = controller.beginNavigation();
+
+    const restored = controller.restoreHistorySnapshotVisibleState({
+      navId,
+      state: snapshotState,
+      targetHref: "https://example.com/docs/scroll-restoration",
+    });
+
+    expect(restored).toBe(true);
+    expect(stateRef.current.routeId).toBe("route:/scroll-restoration");
+    expect(stateRef.current.visibleCommitVersion).toBe(8);
+  });
+
   it("rejects visible history snapshots for stale navigation lifecycles", () => {
     const currentState = createState({ visibleCommitVersion: 7 });
     const snapshotState = createState({

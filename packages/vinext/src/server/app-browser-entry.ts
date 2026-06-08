@@ -70,8 +70,10 @@ import {
   getVinextBrowserGlobal,
 } from "./app-browser-stream.js";
 import {
-  createAppBrowserNavigationController,
   clearHardNavigationLoopGuard,
+  createAppBrowserNavigationController,
+  createBasePathStrippedPathAndSearch,
+  createSnapshotPathAndSearch,
   type HistoryUpdateMode,
   type NavigationPayloadOutcome,
   type PendingBrowserRouterState,
@@ -223,6 +225,7 @@ function getBrowserRouteManifest(): RouteManifest | null {
 }
 
 const browserNavigationController = createAppBrowserNavigationController({
+  basePath: __basePath,
   getRouteManifest: getBrowserRouteManifest,
   syncHistoryStatePreviousNextUrl: syncCurrentHistoryStatePreviousNextUrl,
 });
@@ -1317,12 +1320,10 @@ function isSameAppRoutePopstateTarget(href: string): boolean {
 
   const target = new URL(href, window.location.origin);
   const routerState = getBrowserRouterState();
-  const targetPathname = stripBasePath(target.pathname, __basePath);
-  const targetSearch = new URLSearchParams(target.search).toString();
-  const currentSearch = routerState.navigationSnapshot.searchParams.toString();
 
   return (
-    targetPathname === routerState.navigationSnapshot.pathname && targetSearch === currentSearch
+    createBasePathStrippedPathAndSearch(target, __basePath) ===
+    createSnapshotPathAndSearch(routerState.navigationSnapshot)
   );
 }
 

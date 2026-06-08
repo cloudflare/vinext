@@ -11,6 +11,7 @@ import {
   type AppRouterScrollIntent,
 } from "vinext/shims/app-router-scroll-state";
 import type { RouteManifest } from "../routing/app-route-graph.js";
+import { stripBasePath } from "../utils/base-path.js";
 import {
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
   createPendingNavigationCommit,
@@ -65,6 +66,7 @@ type SameUrlServerActionLifecycleOptions = {
 };
 
 type BrowserNavigationControllerDeps = {
+  basePath?: string;
   commitClientNavigationState?: typeof commitClientNavigationState;
   performHardNavigation?: (href: string, mode?: HardNavigationMode) => boolean;
   getRouteManifest?: () => RouteManifest | null;
@@ -213,19 +215,28 @@ function performHardNavigationWithLoopGuard(
   return true;
 }
 
-function createSnapshotPathAndSearch(snapshot: ClientNavigationRenderSnapshot): string {
+export function createSnapshotPathAndSearch(snapshot: ClientNavigationRenderSnapshot): string {
   const query = snapshot.searchParams.toString();
   return query === "" ? snapshot.pathname : `${snapshot.pathname}?${query}`;
 }
 
+export function createBasePathStrippedPathAndSearch(url: URL, basePath: string): string {
+  const pathname = stripBasePath(url.pathname, basePath);
+  return `${pathname}${url.search}`;
+}
+
 function isSnapshotTargetHref(
+  basePath: string,
   snapshot: ClientNavigationRenderSnapshot,
   targetHref: string,
 ): boolean {
   try {
     const baseHref = typeof window === "undefined" ? "http://localhost" : window.location.href;
     const targetUrl = new URL(targetHref, baseHref);
-    return `${targetUrl.pathname}${targetUrl.search}` === createSnapshotPathAndSearch(snapshot);
+    return (
+      createBasePathStrippedPathAndSearch(targetUrl, basePath) ===
+      createSnapshotPathAndSearch(snapshot)
+    );
   } catch {
     return false;
   }
@@ -234,6 +245,7 @@ function isSnapshotTargetHref(
 export function createAppBrowserNavigationController(
   deps: BrowserNavigationControllerDeps = {},
 ): BrowserNavigationController {
+  const basePath = deps.basePath ?? "";
   const commitClientNavigationStateImpl =
     deps.commitClientNavigationState ?? commitClientNavigationState;
   const performHardNavigation = deps.performHardNavigation ?? performHardNavigationWithLoopGuard;
@@ -565,7 +577,7 @@ export function createAppBrowserNavigationController(
     state: AppRouterState;
     targetHref: string;
   }): boolean {
-    if (!isSnapshotTargetHref(options.state.navigationSnapshot, options.targetHref)) {
+    if (!isSnapshotTargetHref(basePath, options.state.navigationSnapshot, options.targetHref)) {
       return false;
     }
 
