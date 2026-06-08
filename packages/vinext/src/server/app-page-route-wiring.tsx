@@ -822,6 +822,10 @@ export function buildAppPageElements<
   );
 
   if (isPrefetchLoadingShell) {
+    // A prefetch loading shell is a cached payload, not a committed navigation,
+    // so it intentionally does not mount AppRouterScrollTarget — the scroll/focus
+    // effect belongs to the real render that replaces this shell (handled in the
+    // else branch below).
     if (routeLoadingComponent === null) {
       routeChildren = null;
     } else {
