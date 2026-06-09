@@ -598,6 +598,61 @@ describe("app page execution helpers", () => {
     expect(response.status).toBe(200);
   });
 
+  it("returns HTTP 404 when notFound() is thrown from generateMetadata with serveStreamingMetadata:false (html-limited bot, with fallback)", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
+    //   "should render blocking 404 response status when html limited bots access notFound"
+    //
+    // When serveStreamingMetadata === false (html-limited bots), metadata blocks
+    // the render synchronously. Next.js sets the real HTTP error status in this
+    // path (app-render.tsx ~2845). Mirror the redirect-from-metadata path, which
+    // is already gated on serveStreamingMetadata !== false.
+    const fallbackBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("not-found-boundary-html"));
+        controller.close();
+      },
+    });
+    const fallbackResponse = new Response(fallbackBody, {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      renderFallbackPage: async () => fallbackResponse,
+      request: new Request("https://example.com/async/not-found"),
+      serveStreamingMetadata: false,
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe("not-found-boundary-html");
+  });
+
+  it("returns HTTP 404 when notFound() is thrown from generateMetadata with serveStreamingMetadata:false (html-limited bot, no fallback)", async () => {
+    // Same bot scenario but with no renderFallbackPage (no not-found.tsx).
+    // The plain text fallback must also use the real error status.
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      request: new Request("https://example.com/async/not-found"),
+      serveStreamingMetadata: false,
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(404);
+  });
+
   it("returns the original status for non-metadata http-access-fallback errors", async () => {
     // Page-level notFound() calls (fromMetadata absent/false) must still return
     // the original 404 status — only metadata-originated errors get the 200

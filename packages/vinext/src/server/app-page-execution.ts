@@ -430,8 +430,14 @@ export async function buildAppPageSpecialErrorResponse(
       // Mirrors the redirect-from-metadata path above, which also returns 200.
       // Reference: test/e2e/app-dir/metadata-navigation
       //   "should support notFound in generateMetadata"
+      //
+      // Exception: when serveStreamingMetadata === false (html-limited bots),
+      // metadata blocks the render synchronously. Next.js sets the real HTTP
+      // error status in this case (app-render.tsx ~2845). Mirror by not
+      // overriding the status, symmetrically with the redirect-from-metadata
+      // path which is already gated on serveStreamingMetadata !== false.
       const responseToMerge =
-        options.specialError.fromMetadata === true
+        options.specialError.fromMetadata === true && options.serveStreamingMetadata !== false
           ? new Response(fallbackResponse.body, {
               headers: fallbackResponse.headers,
               status: 200,
@@ -446,8 +452,14 @@ export async function buildAppPageSpecialErrorResponse(
   // When notFound() is thrown from generateMetadata() with no fallback page
   // available, keep the 200 status to stay consistent with the streamed
   // metadata contract (the error is surfaced in the page UI, not the status).
+  // Exception: when serveStreamingMetadata === false (html-limited bots),
+  // metadata blocks the render synchronously — Next.js sets the real HTTP
+  // error status in this case (app-render.tsx ~2845), symmetric with the
+  // redirect-from-metadata path that is already gated on the same flag.
   const responseStatus =
-    options.specialError.fromMetadata === true ? 200 : options.specialError.statusCode;
+    options.specialError.fromMetadata === true && options.serveStreamingMetadata !== false
+      ? 200
+      : options.specialError.statusCode;
   return mergeAppPageSpecialErrorHeaders(
     new Response(getAppPageStatusText(options.specialError.statusCode), {
       status: responseStatus,
