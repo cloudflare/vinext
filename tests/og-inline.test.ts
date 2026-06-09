@@ -77,6 +77,25 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result.code).not.toContain("fetch(");
   });
 
+  it("transforms fetch(new URL(..., import.meta.url)) with ../-relative path", async () => {
+    // Fixtures like og-routes-custom-font and metadata-font use paths such as
+    // "../../../assets/typewr__.ttf" (three levels up from the route file to
+    // the project-root assets/ directory). The plugin must resolve these just
+    // as it does ./-relative paths.
+    const plugin = createOgInlinePlugin();
+    const transform = unwrapHook(plugin.transform);
+    // Module lives at tmpDir/app/app/og/route.tsx → font is three levels up
+    const routeDir = path.join(tmpDir, "app", "app", "og");
+    await fsp.mkdir(routeDir, { recursive: true });
+    const code = `const data = fetch(new URL("../../../noto-sans.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const moduleId = path.join(routeDir, "route.tsx");
+
+    const result = await transform.call(plugin, code, moduleId);
+    expect(result).not.toBeNull();
+    expect(result.code).toContain(fontBase64);
+    expect(result.code).not.toContain("fetch(");
+  });
+
   // ── Pattern 2: readFileSync ──────────────────────────────
 
   it("transforms fs.readFileSync(fileURLToPath(new URL(..., import.meta.url)))", async () => {
@@ -88,6 +107,21 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const result = await transform.call(plugin, code, moduleId);
     expect(result).not.toBeNull();
     // Font contents inlined as base64 and the runtime fs read eliminated.
+    expect(result.code).toContain(fontBase64);
+    expect(result.code).not.toContain("readFileSync");
+  });
+
+  it("transforms fs.readFileSync(fileURLToPath(new URL(..., import.meta.url))) with ../-relative path", async () => {
+    // Same pattern as above but with a ../ path traversal — mirrors metadata-font fixtures.
+    const plugin = createOgInlinePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const routeDir = path.join(tmpDir, "app", "font");
+    await fsp.mkdir(routeDir, { recursive: true });
+    const code = `const buf = fs.readFileSync(fileURLToPath(new URL("../../noto-sans.ttf", import.meta.url)));`;
+    const moduleId = path.join(routeDir, "opengraph-image.tsx");
+
+    const result = await transform.call(plugin, code, moduleId);
+    expect(result).not.toBeNull();
     expect(result.code).toContain(fontBase64);
     expect(result.code).not.toContain("readFileSync");
   });
