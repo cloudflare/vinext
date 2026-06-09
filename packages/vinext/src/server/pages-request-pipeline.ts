@@ -94,6 +94,14 @@ export type PagesPipelineDeps = {
       ) => Promise<Response>)
     | null;
   handleApi?: ((request: Request, apiUrl: string, ctx: unknown) => Promise<Response>) | null;
+  /**
+   * Optional override for proxying external rewrite destinations.
+   * When supplied, the pipeline calls this instead of proxyExternalRequest(currentRequest, url).
+   * Receives the pipeline's current request (with post-middleware headers applied) and the
+   * external target URL. Dev adapters supply this to forward the original Node req body
+   * (which is not included in the pipeline's body-less Web Request).
+   */
+  proxyExternal?: ((currentRequest: Request, externalUrl: string) => Promise<Response>) | null;
 };
 
 // The result discriminated union
@@ -143,6 +151,14 @@ export async function runPagesRequest(
     isDataReq,
     isDataRequest,
   } = deps;
+
+  // Proxy helper: use deps.proxyExternal when supplied (dev adapter forwards
+  // Node req body), otherwise fall back to proxyExternalRequest(currentReq, url).
+  // Accepts a snapshot of the current request so post-middleware headers are included.
+  const proxyExternal = (currentReq: Request, externalUrl: string): Promise<Response> =>
+    deps.proxyExternal
+      ? deps.proxyExternal(currentReq, externalUrl)
+      : proxyExternalRequest(currentReq, externalUrl);
 
   const url = new URL(request.url);
   let pathname = url.pathname;
@@ -300,7 +316,7 @@ export async function runPagesRequest(
 
   // Step 8: External-URL proxy (post-mw rewrite target)
   if (isExternalUrl(resolvedUrl)) {
-    const proxyResponse = await proxyExternalRequest(request, resolvedUrl);
+    const proxyResponse = await proxyExternal(request, resolvedUrl);
     return {
       type: "response",
       response: mergeHeaders(proxyResponse, middlewareHeaders, undefined),
@@ -318,7 +334,7 @@ export async function runPagesRequest(
     );
     if (rewritten) {
       if (isExternalUrl(rewritten)) {
-        return { type: "response", response: await proxyExternalRequest(request, rewritten) };
+        return { type: "response", response: await proxyExternal(request, rewritten) };
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       resolvedPathname = resolvedUrl.split("?")[0];
@@ -370,7 +386,7 @@ export async function runPagesRequest(
     );
     if (rewritten) {
       if (isExternalUrl(rewritten)) {
-        return { type: "response", response: await proxyExternalRequest(request, rewritten) };
+        return { type: "response", response: await proxyExternal(request, rewritten) };
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       resolvedPathname = resolvedUrl.split("?")[0];
@@ -416,7 +432,7 @@ export async function runPagesRequest(
         if (isExternalUrl(fallbackRewrite)) {
           return {
             type: "response",
-            response: await proxyExternalRequest(request, fallbackRewrite),
+            response: await proxyExternal(request, fallbackRewrite),
           };
         }
         response = await deps.renderPage(
@@ -459,7 +475,7 @@ export async function runPagesRequest(
     );
     if (fallbackRewrite) {
       if (isExternalUrl(fallbackRewrite)) {
-        return { type: "response", response: await proxyExternalRequest(request, fallbackRewrite) };
+        return { type: "response", response: await proxyExternal(request, fallbackRewrite) };
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
     }

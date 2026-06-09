@@ -88,6 +88,7 @@ import {
   type PagesPipelineDeps,
   type MiddlewareResult,
 } from "./server/pages-request-pipeline.js";
+import { proxyExternalRequest } from "./config/config-matchers.js";
 import { detectPackageManager } from "./utils/project.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
 import { manifestFilesWithBase } from "./utils/manifest-paths.js";
@@ -3399,10 +3400,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
               const requestOrigin = `http://${req.headers.host || "localhost"}`;
 
-              // Build a Web Request for the pipeline (no body needed — middleware
-              // and SSR each read req directly; pipeline only needs headers/URL).
+              // Build a Web Request for the pipeline (no body — middleware and
+              // SSR read req directly). The pipeline only needs the body when
+              // proxying external rewrites; that case is handled via
+              // proxyNodeReqExternal in pipelineDeps below.
+              const method = req.method ?? "GET";
               const webRequest = new Request(new URL(url, requestOrigin), {
-                method: req.method ?? "GET",
+                method,
                 headers: nodeRequestHeaders,
               });
 
@@ -3502,6 +3506,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   const m = matchRoute(resolvedPathname, devPageRoutes);
                   return m ? { route: { isDynamic: m.route.isDynamic } } : null;
                 },
+                // Dev adapter: forward body from the Node req when proxying
+                // external rewrite targets. The pipeline's webRequest is
+                // body-less; this override builds a proper request using the
+                // pipeline's current headers (post-middleware) + Node req body.
+                proxyExternal: async (currentRequest: Request, externalUrl: string) => {
+                  const externalMethod = req.method ?? "GET";
+                  const hasBody = externalMethod !== "GET" && externalMethod !== "HEAD";
+                  const externalInit: RequestInit & { duplex?: string } = {
+                    method: externalMethod,
+                    // Use the pipeline's current request headers (post-middleware)
+                    headers: currentRequest.headers,
+                  };
+                  if (hasBody) {
+                    const { Readable } = await import("node:stream");
+                    externalInit.body = Readable.toWeb(req) as ReadableStream;
+                    externalInit.duplex = "half";
+                  }
+                  const reqWithBody = new Request(new URL(url, requestOrigin), externalInit);
+                  return proxyExternalRequest(reqWithBody, externalUrl);
+                },
                 // handleApi and renderPage are omitted — pipeline emits intents
               };
 
@@ -3566,6 +3590,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // pipelineResult.type === "render"
               {
                 const routes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+                // Hybrid app+pages dev: if the resolved URL matches no pages route
+                // and an app/ dir exists, defer to the RSC plugin (app routes live
+                // there). Mirrors the original hasAppDir fallthrough gates that the
+                // refactor centralised into the pipeline owner.
+                const renderMatch = matchRoute(pipelineResult.resolvedUrl.split("?")[0], routes);
+                if (!renderMatch && hasAppDir) {
+                  return next();
+                }
                 const handler = createSSRHandler(
                   server,
                   getPagesRunner(),
