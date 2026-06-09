@@ -1839,7 +1839,8 @@ async function performNavigation(
   //     return new Promise(() => {})
   //   }
   const _appPath = getLocalPathname(resolved);
-  if (_appPath !== null && (getPagesRouterComponentsMap()[_appPath] as any)?.__appRouter) {
+  const _appPathEntry = _appPath !== null ? getPagesRouterComponentsMap()[_appPath] : undefined;
+  if (_appPathEntry !== undefined && "__appRouter" in _appPathEntry && _appPathEntry.__appRouter) {
     if (mode === "push") window.location.assign(full);
     else window.location.replace(full);
     return new Promise<boolean>(() => {});
