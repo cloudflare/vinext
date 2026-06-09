@@ -31,9 +31,23 @@
 
 import { workUnitAsyncStorage } from "vinext/shims/internal/work-unit-async-storage";
 
-// Keep track of tracers we have already wrapped to avoid double-wrapping on
-// repeated calls (e.g. hot-module replacement in dev).
-let tracerProviderExtended = false;
+// Track which provider objects have already been extended so that if the
+// registered provider is swapped out (e.g. during testing or HMR), the new
+// provider gets wrapped.  Using a WeakSet mirrors the upstream approach for
+// per-tracer deduplication and is safer than a module-level boolean which
+// would leave a replaced provider unwrapped forever.
+const extendedProviders = new WeakSet<object>();
+
+// Symbol used by registerCachedFunction (cache-runtime.ts) to tag "use cache"
+// wrapper functions.  Keeping the check inline here avoids importing the full
+// cache-runtime module (which carries many heavy deps) into this lightweight
+// server helper.
+const USE_CACHE_FUNCTION_SYMBOL = Symbol.for("vinext.useCacheFunction");
+
+function isUseCacheFn(fn: unknown): boolean {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return typeof fn === "function" && (fn as any)[USE_CACHE_FUNCTION_SYMBOL] === true;
+}
 
 /**
  * Extend the registered OTel tracer provider so that `startSpan` and
@@ -47,31 +61,37 @@ let tracerProviderExtended = false;
  * Must only be called in Node.js environments (not Edge runtime).
  */
 export function extendTracerProviderForCacheComponents(): void {
-  if (tracerProviderExtended) return;
-
-  let api: {
-    trace: {
-      getTracerProvider(): {
-        getTracer: (...args: unknown[]) => unknown;
-      };
-    };
-  };
+  let api:
+    | {
+        trace: {
+          getTracerProvider(): {
+            getTracer: (...args: unknown[]) => unknown;
+          };
+        };
+      }
+    | undefined;
 
   try {
-    // Prefer the user's installed @opentelemetry/api so that the tracer
-    // instance matches the one used by the rest of their telemetry pipeline.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    api = require("@opentelemetry/api");
+    // Use globalThis.require so the call is safe in ESM Worker bundles where
+    // bare `require` is undefined.  This matches the pattern used by
+    // client-trace-metadata.ts for the same optional dependency.
+    const req = (globalThis as { require?: (id: string) => unknown }).require;
+    if (typeof req === "function") {
+      api = req("@opentelemetry/api") as typeof api;
+    }
   } catch {
     // @opentelemetry/api is not installed — OTel is not in use; no-op.
     return;
   }
 
+  if (!api) return;
+
   const provider = api.trace.getTracerProvider();
   if (!provider || typeof provider.getTracer !== "function") return;
 
-  // Mark as extended before patching to guard against re-entrant calls.
-  tracerProviderExtended = true;
+  // Already extended this exact provider object — skip.
+  if (extendedProviders.has(provider as object)) return;
+  extendedProviders.add(provider as object);
 
   const originalGetTracer = provider.getTracer.bind(provider);
   // Track wrapped tracer instances so we never double-wrap.
@@ -125,6 +145,16 @@ export function extendTracerProviderForCacheComponents(): void {
 
         if (fnIdx > 0) {
           const originalFn = startActiveSpanArgs[fnIdx];
+          // Warn when the user passes a "use cache" function directly to
+          // startActiveSpan.  A cached function receives a Span argument on
+          // every invocation which means the argument changes every time the
+          // span is created, leading to cache misses on every call.  This
+          // mirrors the upstream warning in instrumentation-node-extensions.ts.
+          if (isUseCacheFn(originalFn)) {
+            console.error(
+              "A Cache Function (`use cache`) was passed to startActiveSpan which means it will receive a Span argument with a possibly random ID on every invocation leading to cache misses. Provide a wrapping function around the Cache Function that does not forward the Span argument to avoid this issue.",
+            );
+          }
           // Re-enter the work unit store inside the callback so that the
           // callback runs with the correct request context (e.g. headers(),
           // cookies(), io() work correctly inside the span body).

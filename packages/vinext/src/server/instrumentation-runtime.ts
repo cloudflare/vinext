@@ -71,8 +71,8 @@ export async function ensureInstrumentationRegistered(
     // Without this, spans created during prerender / fallback-resume phases
     // would inherit the frozen prerender work unit store, causing span IDs to
     // be reused across requests or not generated at all.
-    // Mirrors Next.js's extendInstrumentationAfterRegistration() in
-    // packages/next/src/server/lib/router-utils/instrumentation-globals.external.ts.
+    // Mirrors Next.js's afterRegistration() in
+    // packages/next/src/server/lib/router-utils/instrumentation-node-extensions.ts.
     extendTracerProviderForCacheComponents();
 
     // Store the onRequestError handler on globalThis so it is visible to
