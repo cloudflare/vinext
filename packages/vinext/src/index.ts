@@ -109,6 +109,7 @@ import {
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
+import { createEdgeAssetImportMetaUrlPlugin } from "./plugins/edge-asset-import-meta-url.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
@@ -4291,6 +4292,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
     // see src/plugins/og-assets.ts
     createOgInlineFetchAssetsPlugin(),
+    // Inline assets referenced via `new URL("./asset", import.meta.url)` in
+    // the bundled worker build as `data:` URLs so edge routes can fetch them —
+    // see src/plugins/edge-asset-import-meta-url.ts and #1824. Scoped to the
+    // Cloudflare/Nitro worker target (where import.meta.url is "worker"); the
+    // getter reads the flags set in the `config` hook above, which runs before
+    // the plugin's `applyToEnvironment` gate.
+    //
+    // MUST run AFTER `vinext:og-inline-fetch-assets`: that plugin matches the
+    // verbatim `fetch(new URL(...)).then(r => r.arrayBuffer())` pattern. If we
+    // rewrote the inner `new URL(...)` to a data URL first, the OG inliner
+    // would no longer match and @vercel/og font inlining would silently
+    // change shape. Both plugins are `enforce: "pre"`, so array order here is
+    // what sequences them.
+    createEdgeAssetImportMetaUrlPlugin({
+      isWorkerTarget: () => hasCloudflarePlugin || hasNitroPlugin,
+    }),
     // Dedupe/copy @vercel/og binary WASM assets in the RSC output — see src/plugins/og-assets.ts
     createOgAssetsPlugin(),
     // Collect SSR/RSC bundle externals and write dist/server/vinext-externals.json.
