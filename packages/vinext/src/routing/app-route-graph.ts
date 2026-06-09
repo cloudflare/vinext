@@ -1173,7 +1173,16 @@ function discoverSlotSubRoutes(
             `You cannot have two routes that resolve to the same path ("${pattern}").`,
           );
         }
-        applySlotSubPages(existingRoute, slotPages, rawSegments);
+        // When urlParts is empty, all sub-segments are URL-invisible (e.g. route
+        // groups like "(group)"). The slot page is at the same URL level as the
+        // parent route, so discoverParallelSlots already assigned it with the
+        // correct empty routeSegments. Calling applySlotSubPages here would
+        // overwrite routeSegments with the raw filesystem segments (e.g.
+        // ["(group)"]), making useSelectedLayoutSegment return the route-group
+        // name rather than null.
+        if (urlParts.length > 0) {
+          applySlotSubPages(existingRoute, slotPages, rawSegments);
+        }
         continue;
       }
 
@@ -1972,6 +1981,38 @@ function patternsStructurallyEquivalent(a: readonly string[], b: readonly string
 }
 
 /**
+ * Find a page file at the root URL level of a parallel slot directory, including
+ * through transparent route-group subdirectories (e.g. `@slot/(group)/page.tsx`
+ * is equivalent to `@slot/page.tsx` since `(group)` is invisible in the URL).
+ *
+ * Returns the absolute page path, or null if no root-level page is found.
+ *
+ * Only descends into route-group directories (those whose name starts with `(`
+ * and ends with `)`). Dynamic segments, regular named dirs, and `@slot` dirs
+ * are not transparent and are therefore not searched.
+ */
+function findSlotRootPage(slotDir: string, matcher: ValidFileMatcher): string | null {
+  // Fast path: direct page.tsx at slot root.
+  const directPage = findFile(slotDir, "page", matcher);
+  if (directPage) return directPage;
+
+  // Walk route-group subdirectories (transparent in the URL).
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(slotDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (!entry.name.startsWith("(") || !entry.name.endsWith(")")) continue;
+    const found = findSlotRootPage(path.join(slotDir, entry.name), matcher);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
  * Discover parallel route slots (@team, @analytics, etc.) in a directory.
  * Returns a ParallelSlot for each @-prefixed subdirectory that has a page or default component.
  */
@@ -1997,7 +2038,10 @@ function discoverParallelSlots(
     const slotName = entry.name.slice(1); // "@team" -> "team"
     const slotDir = path.join(dir, entry.name);
 
-    const pagePath = findFile(slotDir, "page", matcher);
+    // A slot page may live inside a route-group subdirectory of the slot
+    // (e.g. @slot/(group)/page.tsx). Route groups are transparent in the URL,
+    // so that page still represents the slot's root-level content.
+    const pagePath = findSlotRootPage(slotDir, matcher);
     const defaultPath = findFile(slotDir, "default", matcher);
     const interceptingRoutes = discoverInterceptingRoutes(slotDir, dir, appDir, matcher);
 

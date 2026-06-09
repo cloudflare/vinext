@@ -499,6 +499,40 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  // Ported from Next.js: test/e2e/app-dir/catchall-parallel-routes-group/
+  it("discovers a parallel slot page inside a route group (catchall-parallel-routes-group)", async () => {
+    // Fixture mirrors the e2e test:
+    //   app/[...catchAll]/layout.tsx  — layout with `slot` prop
+    //   app/[...catchAll]/page.tsx    — children page
+    //   app/[...catchAll]/@slot/layout.tsx
+    //   app/[...catchAll]/@slot/(group)/page.tsx  ← page inside route group
+    //
+    // The slot has NO direct page.tsx at the @slot root; the page lives inside
+    // a transparent route-group directory. discoverParallelSlots must still
+    // find and include the slot so it renders correctly.
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[...catchAll]/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "[...catchAll]/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[...catchAll]/@slot/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "[...catchAll]/@slot/(group)/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const catchAll = findRoute(graph.routes, "/:catchAll+");
+
+      // The slot must be present and resolve to the page inside the route group.
+      expect(catchAll.parallelSlots).toHaveLength(1);
+      expect(catchAll.parallelSlots[0]).toMatchObject({
+        name: "slot",
+        pagePath: path.join(appDir, "[...catchAll]/@slot/(group)/page.tsx"),
+        hasPage: true,
+        // The route group is transparent in the URL, so routeSegments is empty.
+        routeSegments: [],
+      });
+    });
+  });
+
   it("keeps route groups transparent in materialized URL patterns", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
