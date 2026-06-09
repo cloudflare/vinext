@@ -42,6 +42,7 @@ import {
   type PagesPipelineDeps,
   type PagesRenderOptions,
 } from "./pages-request-pipeline.js";
+import { mergeHeaders } from "./worker-utils.js";
 import {
   isNextDataPathname,
   parseNextDataPathname,
@@ -245,11 +246,6 @@ function nodeHeadersToWebHeaders(headersRecord: IncomingMessage["headers"]): Hea
 
 const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
 
-function hasHeader(headersRecord: Record<string, string | string[]>, name: string): boolean {
-  const target = name.toLowerCase();
-  return Object.keys(headersRecord).some((key) => key.toLowerCase() === target);
-}
-
 function omitHeadersCaseInsensitive(
   headersRecord: Record<string, string | string[]>,
   names: readonly string[],
@@ -270,16 +266,6 @@ function matchesIfNoneMatchHeader(ifNoneMatch: string | undefined, etag: string)
     .split(",")
     .map((value) => value.trim())
     .some((value) => value === etag);
-}
-
-function stripHeaders(
-  headersRecord: Record<string, string | string[]>,
-  names: readonly string[],
-): void {
-  const targets = new Set(names.map((name) => name.toLowerCase()));
-  for (const key of Object.keys(headersRecord)) {
-    if (targets.has(key.toLowerCase())) delete headersRecord[key];
-  }
 }
 
 function isNoBodyResponseStatus(status: number): boolean {
@@ -315,56 +301,19 @@ function logProdServerStarted(host: string, port: number, purpose: ProdServerOpt
 /**
  * Merge middleware/config headers and an optional status override into a new
  * Web Response while preserving the original body stream when allowed.
- * Keep this in sync with server/worker-utils.ts and the generated copy in
- * deploy.ts.
+ *
+ * This is the canonical {@link mergeHeaders} (server/worker-utils.ts) with the
+ * arguments in (headers, response) order. The request path now calls
+ * `runPagesRequest`, which uses `mergeHeaders` directly; this wrapper is retained
+ * only for its existing tests and any external callers, so there is a single
+ * implementation to keep in sync. (deploy.ts still emits its own generated copy.)
  */
 function mergeWebResponse(
   middlewareHeaders: Record<string, string | string[]>,
   response: Response,
   statusOverride?: number,
 ): Response {
-  const filteredMiddlewareHeaders = omitHeadersCaseInsensitive(middlewareHeaders, [
-    "content-length",
-  ]);
-  const status = statusOverride ?? response.status;
-  const mergedHeaders = mergeResponseHeaders(filteredMiddlewareHeaders, response);
-  const shouldDropBody = isNoBodyResponseStatus(status);
-  const shouldStripStreamLength =
-    isVinextStreamedHtmlResponse(response) && hasHeader(mergedHeaders, "content-length");
-
-  if (
-    !Object.keys(filteredMiddlewareHeaders).length &&
-    statusOverride === undefined &&
-    !shouldDropBody &&
-    !shouldStripStreamLength
-  ) {
-    return response;
-  }
-
-  if (shouldDropBody) {
-    cancelResponseBody(response);
-    stripHeaders(mergedHeaders, [
-      "content-encoding",
-      "content-length",
-      "content-type",
-      "transfer-encoding",
-    ]);
-    return new Response(null, {
-      status,
-      statusText: status === response.status ? response.statusText : undefined,
-      headers: toWebHeaders(mergedHeaders),
-    });
-  }
-
-  if (shouldStripStreamLength) {
-    stripHeaders(mergedHeaders, ["content-length"]);
-  }
-
-  return new Response(response.body, {
-    status,
-    statusText: status === response.status ? response.statusText : undefined,
-    headers: toWebHeaders(mergedHeaders),
-  });
+  return mergeHeaders(response, middlewareHeaders, statusOverride);
 }
 
 /**
@@ -1642,6 +1591,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         isDataReq,
         isDataRequest,
         ctx: undefined, // Node has no ExecutionContext
+        // Raw query from req.url so redirect Locations aren't re-encoded by URL parsing.
+        rawSearch: rawQs,
         matchPageRoute: matchPageRoute ?? null,
         runMiddleware: typeof runMiddleware === "function" ? runMiddleware : null,
         renderPage:
@@ -1695,18 +1646,18 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       if (result.type === "response") {
         const { response } = result;
         const shouldStream = isVinextStreamedHtmlResponse(response);
-        if (shouldStream || !response.body) {
+        // Passthrough responses (middleware short-circuits, external proxies, redirects)
+        // carry no defaultContentType — send them verbatim without injecting a
+        // Content-Type, matching the pre-refactor behavior. Only buffered render/api
+        // responses below apply a Content-Type fallback.
+        if (shouldStream || !response.body || result.defaultContentType === undefined) {
           await sendWebResponse(response, req, res, compress);
           return;
         }
 
         const responseBody = Buffer.from(await response.arrayBuffer());
-        // API routes may return arbitrary data (JSON, binary, etc.), so default to
-        // application/octet-stream rather than text/html when the handler set no
-        // explicit Content-Type. Page renders default to text/html.
-        const ct =
-          response.headers.get("content-type") ??
-          (result.isApiResponse ? "application/octet-stream" : "text/html");
+        // render → text/html, api → application/octet-stream (set by the pipeline).
+        const ct = response.headers.get("content-type") ?? result.defaultContentType;
         const responseHeaders: Record<string, string | string[]> = {};
         response.headers.forEach((v, k) => {
           if (k === "set-cookie") return;

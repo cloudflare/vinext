@@ -177,6 +177,8 @@ describe("middleware", () => {
     if (result.type !== "response") return;
     expect(result.response).toBe(middlewareResponse);
     expect(result.response.status).toBe(403);
+    // Passthrough response: no content-type default → Node sends it verbatim.
+    expect(result.defaultContentType).toBeUndefined();
   });
 
   // 18. middlewareStatus reconciliation: result.status takes priority over result.rewriteStatus
@@ -373,16 +375,16 @@ describe("API routes", () => {
     if (result.type !== "response") return;
     expect(result.response.status).toBe(200);
     expect(handleApi).toHaveBeenCalledWith(expect.any(Request), "/api/users", null);
-    // Tagged as API so Node callers default a missing content-type to octet-stream.
-    expect(result.isApiResponse).toBe(true);
+    // API responses default a missing content-type to octet-stream, not text/html.
+    expect(result.defaultContentType).toBe("application/octet-stream");
   });
 
-  it("does not tag page renders as API responses", async () => {
+  it("tags page renders with a text/html content-type default", async () => {
     const req = makeRequest("/page");
     const result = await runPagesRequest(req, baseDeps({ renderPage: makeRenderPage(200) }));
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
-    expect(result.isApiResponse).toBeFalsy();
+    expect(result.defaultContentType).toBe("text/html");
   });
 
   it("matches /api exactly", async () => {
@@ -597,7 +599,7 @@ describe("deferred error page re-render on 404", () => {
     // Worker scenario: it never normalizes /_next/data paths (isDataReq stays
     // false) but flags the request via the x-nextjs-data header (isDataRequest).
     // A data-request miss must render once directly, not defer + run fallback.
-    const renderPage = vi.fn(async () => new Response("not found", { status: 404 }));
+    const renderPage = makeRenderPage(404, "not found");
     const fallback = [{ source: "/missing-page", destination: "/fallback" }];
     const req = makeRequest("/missing-page");
     const result = await runPagesRequest(

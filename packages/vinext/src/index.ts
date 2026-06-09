@@ -3501,6 +3501,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 hadBasePath: true, // Vite strips basePath before our middleware sees the request
                 isDataReq,
                 isDataRequest,
+                // Raw query so redirect Locations aren't re-encoded by URL parsing.
+                rawSearch: url.includes("?") ? url.slice(url.indexOf("?")) : "",
                 runMiddleware: devRunMiddlewareAdapter,
                 matchPageRoute: (resolvedPathname) => {
                   const m = matchRoute(resolvedPathname, devPageRoutes);

@@ -73,6 +73,11 @@ export type PagesPipelineDeps = {
   isDataReq: boolean; // true if this was a /_next/data/ request (already normalized by adapter)
   isDataRequest: boolean; // true if x-nextjs-data: 1 header was present (for middleware opts)
   ctx?: unknown; // Cloudflare ExecutionContext or undefined (for Node)
+  // Raw, un-re-encoded query string (incl. leading "?") for building redirect Location
+  // headers. Node adapters that build the Web Request from a raw req.url string should
+  // pass it so the redirect query isn't re-encoded by URL parsing (e.g. a literal "#"
+  // would otherwise be truncated as a fragment). Falls back to url.search when omitted.
+  rawSearch?: string;
 
   // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
   matchPageRoute?:
@@ -118,9 +123,13 @@ export type PagesPipelineDeps = {
 
 // The result discriminated union
 export type PagesPipelineResult =
-  // `isApiResponse` lets Node callers pick the right body content-type fallback
-  // (API responses default to application/octet-stream, pages to text/html).
-  | { type: "response"; response: Response; isApiResponse?: boolean }
+  // `defaultContentType` is the Content-Type a buffering caller (Node) should apply
+  // when the response carries none: "text/html" for page renders,
+  // "application/octet-stream" for API routes (arbitrary data). It is left UNSET for
+  // passthrough responses (middleware short-circuits, external proxies, redirects),
+  // which Node sends verbatim without injecting a Content-Type — matching the
+  // pre-refactor behavior.
+  | { type: "response"; response: Response; defaultContentType?: string }
   // `handled`: an adapter-supplied callback (e.g. Node public-file serving) already
   // wrote the response to its own output; the adapter should just return.
   | { type: "handled" }
@@ -217,7 +226,9 @@ export async function runPagesRequest(
           ? basePath + redirect.destination
           : redirect.destination,
       );
-      const location = preserveRedirectDestinationQuery(dest, search);
+      // Use the raw query (when the adapter supplies it) so the redirect Location
+      // isn't re-encoded by URL parsing; fall back to the parsed search otherwise.
+      const location = preserveRedirectDestinationQuery(dest, deps.rawSearch ?? search);
       return {
         type: "response",
         response: new Response(null, {
@@ -403,9 +414,9 @@ export async function runPagesRequest(
       const response = await deps.handleApi(request, apiLookupUrl, deps.ctx ?? null);
       return {
         type: "response",
-        // Tag as API so Node callers default a missing content-type to
-        // application/octet-stream (arbitrary data) rather than text/html.
-        isApiResponse: true,
+        // API routes return arbitrary data; default a missing content-type to
+        // application/octet-stream (not text/html) to avoid content sniffing.
+        defaultContentType: "application/octet-stream",
         response: mergeHeaders(response, middlewareHeaders, middlewareStatus),
       };
     } else {
@@ -422,6 +433,9 @@ export async function runPagesRequest(
 
   // Step 12: afterFiles rewrites
   const pageMatch = deps.matchPageRoute ? deps.matchPageRoute(resolvedPathname, request) : null;
+  // matchPageRoute is a route-table scan; only re-run it below if afterFiles
+  // actually rewrote resolvedPathname (the common case leaves it unchanged).
+  let resolvedPathnameChanged = false;
   if ((!pageMatch || pageMatch.route.isDynamic) && configRewrites.afterFiles?.length) {
     const rewritten = matchRewrite(
       matchResolvedPathname(resolvedPathname),
@@ -436,14 +450,18 @@ export async function runPagesRequest(
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       resolvedPathname = resolvedUrl.split("?")[0];
+      resolvedPathnameChanged = true;
     }
   }
 
   // Step 13: Render + fallback rewrites
   if (typeof deps.renderPage === "function") {
-    const renderPageMatch = deps.matchPageRoute
-      ? deps.matchPageRoute(resolvedPathname, request)
-      : null;
+    // Reuse the Step 12 match unless afterFiles changed the pathname.
+    const renderPageMatch = resolvedPathnameChanged
+      ? deps.matchPageRoute
+        ? deps.matchPageRoute(resolvedPathname, request)
+        : null
+      : pageMatch;
     // A data request must not defer-render the error page or run fallback rewrites.
     // Node/dev signal this via `isDataReq` (set when a `/_next/data/` path is
     // normalized); the worker never normalizes those paths (no buildId at request
@@ -513,13 +531,19 @@ export async function runPagesRequest(
         response as { __vinextStreamedHtmlResponse?: boolean }
       ).__vinextStreamedHtmlResponse;
     }
-    return { type: "response", response: merged };
+    // Page renders default a missing content-type to text/html.
+    return { type: "response", response: merged, defaultContentType: "text/html" };
   }
   // dev: apply fallback rewrites eagerly (no renderPage to 404-gate on).
   // If matchPageRoute says there's no match, try fallback rewrites before
   // emitting the render intent — the SSR handler writes to res directly so
   // we cannot inspect its status code after the fact.
-  const devPageMatch = deps.matchPageRoute ? deps.matchPageRoute(resolvedPathname, request) : null;
+  // Reuse the Step 12 match unless afterFiles changed the pathname.
+  const devPageMatch = resolvedPathnameChanged
+    ? deps.matchPageRoute
+      ? deps.matchPageRoute(resolvedPathname, request)
+      : null
+    : pageMatch;
   if (!devPageMatch && configRewrites.fallback?.length) {
     const fallbackRewrite = matchRewrite(
       matchResolvedPathname(resolvedPathname),
