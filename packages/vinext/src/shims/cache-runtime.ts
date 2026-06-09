@@ -638,18 +638,6 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 /** @internal Symbol used to identify "use cache" wrapper functions. */
 const USE_CACHE_FUNCTION_SYMBOL = Symbol.for("vinext.useCacheFunction");
 
-/**
- * Returns true when `fn` is a function wrapped by `registerCachedFunction`
- * (i.e. the result of a `"use cache"` directive).  Used by the OTel tracer
- * extension to emit a warning when a cached function is passed as the callback
- * to `tracer.startActiveSpan()`, which would cause a cache miss on every
- * invocation because the Span argument changes each time.
- */
-export function isUseCacheFunction(fn: unknown): boolean {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return typeof fn === "function" && (fn as any)[USE_CACHE_FUNCTION_SYMBOL] === true;
-}
-
 function throwPrivateUseCacheInsidePublicUseCacheError(): never {
   const error = new Error(
     '"use cache: private" must not be used within "use cache". It can only be nested inside of another "use cache: private".',
