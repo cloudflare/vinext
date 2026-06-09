@@ -334,7 +334,7 @@ export function _registerStateAccessors(accessors: _StateAccessors): void {
 // ---------------------------------------------------------------------------
 
 type PagesNavigationContext = {
-  pathname: string;
+  pathname: string | null;
   searchParams: URLSearchParams;
   params: Record<string, string | string[]> | null;
 };
