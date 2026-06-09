@@ -608,6 +608,17 @@ export function setCurrentFetchSoftTags(tags: string[]): void {
   _getState().currentFetchSoftTags = [...tags];
 }
 
+/**
+ * Read the path-derived soft tags for the current render.
+ *
+ * Used by the "use cache" runtime to pass soft tags to the cache handler
+ * so that `revalidatePath()` invalidates "use cache" entries during the
+ * affected route's next request, even when the entry carries no hard tags.
+ */
+export function getCurrentFetchSoftTags(): string[] {
+  return _getState().currentFetchSoftTags;
+}
+
 export function setCurrentFetchCacheMode(mode: FetchCacheMode | null): void {
   _getState().currentFetchCacheMode = mode;
 }

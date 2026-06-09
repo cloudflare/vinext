@@ -38,7 +38,7 @@ import {
   type CacheLifeConfig,
 } from "./cache.js";
 import { VINEXT_RSC_MARKER_HEADER } from "../server/headers.js";
-import { addCollectedRequestTags } from "./fetch-cache.js";
+import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   isInsideUnifiedScope,
@@ -528,8 +528,13 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     // Shared cache ("use cache" / "use cache: remote")
     const handler = getDataCacheHandler();
 
-    // Check cache — deserialize via RSC stream when available, JSON otherwise
-    const existing = await handler.get(cacheKey, { kind: "FETCH" });
+    // Check cache — deserialize via RSC stream when available, JSON otherwise.
+    // Pass soft tags so that revalidatePath() / revalidateTag() invalidation
+    // applies to "use cache" entries even when the entry carries no hard tags.
+    // The soft tags are path-derived implicit tags set by the enclosing route
+    // handler or page dispatch — see setCurrentFetchSoftTags in fetch-cache.ts.
+    const softTags = getCurrentFetchSoftTags();
+    const existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
     if (existing?.value && existing.value.kind === "FETCH" && existing.cacheState !== "stale") {
       try {
         // Surface the cached entry's tags to the surrounding request so the
