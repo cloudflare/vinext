@@ -490,6 +490,7 @@ export function createPagesPageHandler(
           err,
           applyRequestContexts: applySSRContext,
           buildId,
+          deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
           createGsspReqRes() {
             return createPagesReqRes({ body: undefined, query, request, url: routeUrl });
           },

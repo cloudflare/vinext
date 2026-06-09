@@ -821,6 +821,131 @@ describe("pages page data", () => {
     );
   });
 
+  // ── x-nextjs-deployment-id header ─────────────────────────────────────────
+  // Mirrors Next.js pages-handler.ts: set x-nextjs-deployment-id on ALL
+  // `_next/data` exits (success, redirect, notFound) for deployment-skew
+  // protection. Fixes #1829.
+
+  it("includes x-nextjs-deployment-id on notFound data response when deploymentId is set", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        deploymentId: "test-deploy-abc",
+        pageModule: {
+          async getServerSideProps() {
+            return { notFound: true };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response");
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("x-nextjs-deployment-id")).toBe("test-deploy-abc");
+  });
+
+  it("includes x-nextjs-deployment-id on notFound data response from getStaticProps", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        deploymentId: "test-deploy-abc",
+        pageModule: {
+          async getStaticProps() {
+            return { notFound: true };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response");
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("x-nextjs-deployment-id")).toBe("test-deploy-abc");
+  });
+
+  it("includes x-nextjs-deployment-id on notFound data response from getStaticPaths exclusion", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        deploymentId: "test-deploy-abc",
+        pageModule: {
+          async getStaticPaths() {
+            return { fallback: false, paths: [{ params: { slug: "known" } }] };
+          },
+        },
+        params: { slug: "unknown" },
+        query: { slug: "unknown" },
+        route: { isDynamic: true },
+        routeUrl: "/posts/unknown",
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response");
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("x-nextjs-deployment-id")).toBe("test-deploy-abc");
+  });
+
+  it("includes x-nextjs-deployment-id on redirect data response from getServerSideProps", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        deploymentId: "test-deploy-abc",
+        pageModule: {
+          async getServerSideProps() {
+            return { redirect: { destination: "/new-page", permanent: false } };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response");
+    expect(result.response.status).toBe(200);
+    expect(result.response.headers.get("x-nextjs-deployment-id")).toBe("test-deploy-abc");
+    const body = (await result.response.json()) as { pageProps: Record<string, unknown> };
+    expect(body.pageProps.__N_REDIRECT).toBe("/new-page");
+  });
+
+  it("includes x-nextjs-deployment-id on redirect data response from getStaticProps", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        deploymentId: "test-deploy-abc",
+        pageModule: {
+          async getStaticProps() {
+            return { redirect: { destination: "/new-page", permanent: false } };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response");
+    expect(result.response.status).toBe(200);
+    expect(result.response.headers.get("x-nextjs-deployment-id")).toBe("test-deploy-abc");
+    const body = (await result.response.json()) as { pageProps: Record<string, unknown> };
+    expect(body.pageProps.__N_REDIRECT).toBe("/new-page");
+  });
+
+  it("omits x-nextjs-deployment-id on redirect/notFound data responses when deploymentId is not set", async () => {
+    const notFoundResult = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        // deploymentId intentionally omitted
+        pageModule: {
+          async getServerSideProps() {
+            return { notFound: true };
+          },
+        },
+      }),
+    );
+    expect(notFoundResult.kind).toBe("response");
+    if (notFoundResult.kind !== "response") throw new Error("expected response");
+    expect(notFoundResult.response.headers.get("x-nextjs-deployment-id")).toBeNull();
+  });
+
   // Redirect and notFound short-circuits must continue to work even if the
   // page also returns `props` — mirrors Next.js, which only validates when
   // !metadata.isRedirect && !metadata.isNotFound.

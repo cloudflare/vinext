@@ -397,3 +397,133 @@ describe("createPagesPageHandler — SSR context", () => {
     expect(ctx.pathname).toBe("/about");
   });
 });
+
+// ---------------------------------------------------------------------------
+// x-nextjs-deployment-id header — _next/data success / redirect / notFound
+// ---------------------------------------------------------------------------
+
+describe("createPagesPageHandler — x-nextjs-deployment-id", () => {
+  const DEPLOYMENT_ID = "prod-deploy-xyz";
+
+  it("sets x-nextjs-deployment-id on _next/data success response when env var is set", async () => {
+    const savedId = process.env.__VINEXT_DEPLOYMENT_ID;
+    process.env.__VINEXT_DEPLOYMENT_ID = DEPLOYMENT_ID;
+    try {
+      const routes = [makeRoute("/about")];
+      const handler = createPagesPageHandler(
+        makeOpts({
+          pageRoutes: routes,
+          matchRoute: (url, r) => {
+            const route = r.find((rt) => rt.pattern === url.split("?")[0]);
+            return route ? { route, params: {} } : null;
+          },
+        }),
+      );
+      const dataUrl = "/_next/data/test-build-id/about.json";
+      const res = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-nextjs-deployment-id")).toBe(DEPLOYMENT_ID);
+    } finally {
+      if (savedId === undefined) {
+        delete process.env.__VINEXT_DEPLOYMENT_ID;
+      } else {
+        process.env.__VINEXT_DEPLOYMENT_ID = savedId;
+      }
+    }
+  });
+
+  it("sets x-nextjs-deployment-id on _next/data redirect response when env var is set", async () => {
+    const savedId = process.env.__VINEXT_DEPLOYMENT_ID;
+    process.env.__VINEXT_DEPLOYMENT_ID = DEPLOYMENT_ID;
+    try {
+      const routes = [
+        makeRoute("/about", {
+          ...makePageModule(),
+          getServerSideProps: async () => ({
+            redirect: { destination: "/new-about", permanent: false },
+          }),
+        }),
+      ];
+      const handler = createPagesPageHandler(
+        makeOpts({
+          pageRoutes: routes,
+          matchRoute: (url, r) => {
+            const route = r.find((rt) => rt.pattern === url.split("?")[0]);
+            return route ? { route, params: {} } : null;
+          },
+        }),
+      );
+      const dataUrl = "/_next/data/test-build-id/about.json";
+      const res = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      expect(res.headers.get("x-nextjs-deployment-id")).toBe(DEPLOYMENT_ID);
+      const body = (await res.json()) as { pageProps: Record<string, unknown> };
+      expect(body.pageProps.__N_REDIRECT).toBe("/new-about");
+    } finally {
+      if (savedId === undefined) {
+        delete process.env.__VINEXT_DEPLOYMENT_ID;
+      } else {
+        process.env.__VINEXT_DEPLOYMENT_ID = savedId;
+      }
+    }
+  });
+
+  it("sets x-nextjs-deployment-id on _next/data notFound response when env var is set", async () => {
+    const savedId = process.env.__VINEXT_DEPLOYMENT_ID;
+    process.env.__VINEXT_DEPLOYMENT_ID = DEPLOYMENT_ID;
+    try {
+      const routes = [
+        makeRoute("/about", {
+          ...makePageModule(),
+          getServerSideProps: async () => ({ notFound: true }),
+        }),
+      ];
+      const handler = createPagesPageHandler(
+        makeOpts({
+          pageRoutes: routes,
+          matchRoute: (url, r) => {
+            const route = r.find((rt) => rt.pattern === url.split("?")[0]);
+            return route ? { route, params: {} } : null;
+          },
+        }),
+      );
+      const dataUrl = "/_next/data/test-build-id/about.json";
+      const res = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+      expect(res.status).toBe(404);
+      expect(res.headers.get("x-nextjs-deployment-id")).toBe(DEPLOYMENT_ID);
+    } finally {
+      if (savedId === undefined) {
+        delete process.env.__VINEXT_DEPLOYMENT_ID;
+      } else {
+        process.env.__VINEXT_DEPLOYMENT_ID = savedId;
+      }
+    }
+  });
+
+  it("omits x-nextjs-deployment-id on _next/data responses when no deployment env var is set", async () => {
+    const savedVinext = process.env.__VINEXT_DEPLOYMENT_ID;
+    const savedNext = process.env.NEXT_DEPLOYMENT_ID;
+    delete process.env.__VINEXT_DEPLOYMENT_ID;
+    delete process.env.NEXT_DEPLOYMENT_ID;
+    try {
+      const routes = [makeRoute("/about")];
+      const handler = createPagesPageHandler(
+        makeOpts({
+          pageRoutes: routes,
+          matchRoute: (url, r) => {
+            const route = r.find((rt) => rt.pattern === url.split("?")[0]);
+            return route ? { route, params: {} } : null;
+          },
+        }),
+      );
+      const dataUrl = "/_next/data/test-build-id/about.json";
+      const res = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-nextjs-deployment-id")).toBeNull();
+    } finally {
+      if (savedVinext !== undefined) process.env.__VINEXT_DEPLOYMENT_ID = savedVinext;
+      if (savedNext !== undefined) process.env.NEXT_DEPLOYMENT_ID = savedNext;
+    }
+  });
+});

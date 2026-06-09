@@ -18,6 +18,7 @@ import {
   loadPagesGetInitialProps,
 } from "./pages-get-initial-props.js";
 import { buildNextDataJsonResponse } from "./pages-data-route.js";
+import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 
 type PagesRedirectResult = {
@@ -170,6 +171,13 @@ export type ResolvePagesPageDataOptions = {
    * presence — see the security note in `isr-cache.ts`.
    */
   isOnDemandRevalidate?: boolean;
+  /**
+   * The deployment ID used for deployment-skew protection. When set, it is
+   * included as `x-nextjs-deployment-id` on all `_next/data` responses
+   * (success, redirect, notFound). Mirrors Next.js pages-handler.ts behavior.
+   * Typically sourced from `process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID`.
+   */
+  deploymentId?: string;
   pageModule: PagesPageModule;
   params: Record<string, unknown>;
   query: Record<string, unknown>;
@@ -220,23 +228,29 @@ type ResolvePagesPageDataResult =
   | ResolvePagesPageDataResponseResult
   | ResolvePagesPageDataNotFoundResult;
 
-function buildPagesDataNotFoundResponse(): Response {
+function buildPagesDataNotFoundResponse(deploymentId?: string): Response {
   // Matches Next.js: `/_next/data/<buildId>/<page>.json` 404 responses use
   // application/json with an empty object body so clients can call
   // `res.json()` without throwing before inspecting the status code.
+  // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on all
+  // `_next/data` notFound exits so the client can detect a new deployment.
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (deploymentId) {
+    headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+  }
   return new Response("{}", {
     status: 404,
-    headers: { "Content-Type": "application/json" },
+    headers,
   });
 }
 
 function buildPagesNotFoundResult(
-  options: Pick<ResolvePagesPageDataOptions, "isDataReq">,
+  options: Pick<ResolvePagesPageDataOptions, "isDataReq" | "deploymentId">,
 ): ResolvePagesPageDataResponseResult | ResolvePagesPageDataNotFoundResult {
   if (options.isDataReq) {
     return {
       kind: "response",
-      response: buildPagesDataNotFoundResponse(),
+      response: buildPagesDataNotFoundResponse(options.deploymentId),
     };
   }
 
@@ -272,18 +286,25 @@ function buildPagesRedirectResponse(
   redirect: PagesRedirectResult,
   options: Pick<
     ResolvePagesPageDataOptions,
-    "isDataReq" | "sanitizeDestination" | "safeJsonStringify"
+    "isDataReq" | "sanitizeDestination" | "safeJsonStringify" | "deploymentId"
   >,
 ): Response {
   const destination = options.sanitizeDestination(redirect.destination);
 
   if (options.isDataReq) {
+    // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on all
+    // `_next/data` redirect exits for deployment-skew protection.
+    const init: ResponseInit & { headers: Record<string, string> } = { headers: {} };
+    if (options.deploymentId) {
+      init.headers[NEXTJS_DEPLOYMENT_ID_HEADER] = options.deploymentId;
+    }
     return buildNextDataJsonResponse(
       {
         __N_REDIRECT: destination,
         __N_REDIRECT_STATUS: resolvePagesRedirectStatus(redirect),
       },
       options.safeJsonStringify,
+      init,
     );
   }
 
