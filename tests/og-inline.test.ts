@@ -121,6 +121,41 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result.code).not.toContain("fetch(");
   });
 
+  it("transforms a block-body .then() callback whose return ends with a semicolon", async () => {
+    // Formatters terminate a block-body `return` with a semicolon:
+    //   .then((res) => {
+    //     return res.arrayBuffer();
+    //   })
+    // The block-body alternative must tolerate the `;` before `}` (and a trailing
+    // comma). Without `;?` this stayed a runtime fetch → "Invalid URL" on Workers.
+    const plugin = createOgInlinePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `const font = await fetch(new URL("./noto-sans.ttf", import.meta.url)).then((res) => {`,
+      `  return res.arrayBuffer();`,
+      `});`,
+    ].join("\n");
+    const moduleId = path.join(tmpDir, "og.tsx");
+
+    const result = await transform.call(plugin, code, moduleId);
+    expect(result).not.toBeNull();
+    expect(result.code).toContain(fontBase64);
+    expect(result.code).not.toContain("fetch(");
+  });
+
+  it("transforms a function-expression .then() callback whose return ends with a semicolon", async () => {
+    // Same as above but with a `function (res) { ... }` callback instead of an arrow.
+    const plugin = createOgInlinePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = `const font = await fetch(new URL("./noto-sans.ttf", import.meta.url)).then(function (res) { return res.arrayBuffer(); });`;
+    const moduleId = path.join(tmpDir, "og.tsx");
+
+    const result = await transform.call(plugin, code, moduleId);
+    expect(result).not.toBeNull();
+    expect(result.code).toContain(fontBase64);
+    expect(result.code).not.toContain("fetch(");
+  });
+
   // ── Pattern 2: readFileSync ──────────────────────────────
 
   it("transforms fs.readFileSync(fileURLToPath(new URL(..., import.meta.url)))", async () => {
