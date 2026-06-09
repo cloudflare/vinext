@@ -51,7 +51,8 @@ export function isPagesStreamingBot(userAgent: string): boolean {
 
 // ---------------------------------------------------------------------------
 // ETag generation — FNV-1a 52-bit, matching Next.js's generateETag() in
-// packages/next/src/server/lib/etag.ts. Both produce a weak ETag by default.
+// packages/next/src/server/lib/etag.ts. Both produce a strong ETag (no W/
+// prefix) when weak=false, which is the default Next.js uses at runtime.
 // ---------------------------------------------------------------------------
 
 function fnv1a52(str: string): number {
@@ -98,9 +99,11 @@ export function generatePagesETag(payload: string): string {
  */
 export function etagMatches(etag: string, ifNoneMatch: string): boolean {
   if (ifNoneMatch === "*") return true;
-  // Normalise: strip the W/ prefix for comparison, matching Next.js
-  // `packages/next/src/server/send-payload.ts` which calls `etag`
-  // (the `etag` npm package) with `weak: true` by default.
+  // Normalise: strip the W/ prefix for comparison. Next.js's
+  // `sendEtagResponse` (packages/next/src/server/send-payload.ts) uses the
+  // `fresh` package, which treats a weak token in `If-None-Match` as matching
+  // the corresponding strong ETag and vice versa (RFC 7232 §3.2 weak
+  // comparison). We replicate that behaviour here.
   const normalize = (t: string) => t.replace(/^W\//, "");
   const etagNorm = normalize(etag.trim());
   for (const token of ifNoneMatch.split(",")) {
@@ -219,6 +222,13 @@ type RenderPagesPageResponseOptions = {
    * Only evaluated on bot/buffered responses that carry an ETag.
    */
   ifNoneMatch?: string;
+  /**
+   * The incoming request's `Cache-Control` header value. When the value
+   * contains `no-cache`, the 304 short-circuit is skipped and a full 200
+   * response is always returned — mirroring the `fresh` package used by
+   * Next.js's `sendEtagResponse`.
+   */
+  requestCacheControl?: string;
 };
 
 function buildPagesFontHeadHtml(
@@ -689,7 +699,8 @@ export async function renderPagesPageResponse(
     const fullHtml = await readStreamAsText(compositeStream);
     const etag = generatePagesETag(fullHtml);
     responseHeaders.set("ETag", etag);
-    if (options.ifNoneMatch && etagMatches(etag, options.ifNoneMatch)) {
+    const noCacheRequested = /(?:^|,)\s*no-cache\s*(?:,|$)/.test(options.requestCacheControl ?? "");
+    if (!noCacheRequested && options.ifNoneMatch && etagMatches(etag, options.ifNoneMatch)) {
       return new Response(null, {
         status: 304,
         headers: responseHeaders,

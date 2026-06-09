@@ -195,19 +195,25 @@ export type ResolvePagesPageDataOptions = {
   nextData?: PagesNextDataExtras;
   /**
    * The request's User-Agent string. When this matches a known crawler/bot
-   * pattern, ISR cache-HIT responses receive an ETag header for consistency
-   * with the fresh-MISS path (which also attaches an ETag for bot UAs via
-   * `renderPagesPageResponse`). See the divergence note in
+   * pattern, ISR cache-HIT and cache-STALE responses receive an ETag header
+   * for consistency with the fresh-MISS path (which also attaches an ETag for
+   * bot UAs via `renderPagesPageResponse`). See the divergence note in
    * `pages-page-response.ts` for why UA-gating is used instead of Next.js's
    * `isDynamic` check.
    */
   userAgent?: string;
   /**
    * The incoming request's `If-None-Match` header value. When the cached HTML
-   * ETag matches (weak-ETag semantics), the ISR cache-HIT response is a
-   * `304 Not Modified` with no body.
+   * ETag matches (weak-ETag semantics), the ISR cache-HIT or cache-STALE
+   * response is a `304 Not Modified` with no body.
    */
   ifNoneMatch?: string;
+  /**
+   * The incoming request's `Cache-Control` header value. When it contains
+   * `no-cache`, the 304 short-circuit is skipped and a full response is
+   * returned — mirroring the `fresh` package used by Next.js.
+   */
+  requestCacheControl?: string;
 };
 
 type ResolvePagesPageDataRenderResult = {
@@ -385,6 +391,39 @@ function buildPagesCacheResponse(
     status: status ?? 200,
     headers,
   });
+}
+
+/**
+ * For bot / crawler UAs, attach an ETag to a cached ISR response (HIT or
+ * STALE) so it is consistent with the fresh-MISS path, then check for a
+ * matching `If-None-Match`. When the check passes — and the request did NOT
+ * carry `Cache-Control: no-cache` — returns a 304 response; otherwise returns
+ * `null` so the caller can return the full response.
+ *
+ * Extracted to avoid duplicating the same three-line block across the HIT and
+ * STALE branches.
+ */
+function applyBotETagAndCheck(
+  cachedResponse: Response,
+  html: string,
+  options: Pick<ResolvePagesPageDataOptions, "userAgent" | "ifNoneMatch" | "requestCacheControl">,
+): ResolvePagesPageDataResponseResult | null {
+  if (!options.userAgent || !isPagesStreamingBot(options.userAgent)) {
+    return null;
+  }
+  const etag = generatePagesETag(html);
+  cachedResponse.headers.set("ETag", etag);
+  const noCacheRequested = /(?:^|,)\s*no-cache\s*(?:,|$)/.test(options.requestCacheControl ?? "");
+  if (!noCacheRequested && options.ifNoneMatch && etagMatches(etag, options.ifNoneMatch)) {
+    return {
+      kind: "response",
+      response: new Response(null, {
+        status: 304,
+        headers: cachedResponse.headers,
+      }),
+    };
+  }
+  return null;
 }
 
 function rewritePagesCachedHtml(
@@ -588,20 +627,9 @@ export async function resolvePagesPageData(
       // Bot / crawler ETag consistency: attach an ETag to cache-HIT responses
       // for bot UAs so they are consistent with fresh-MISS bot responses (which
       // also carry an ETag via `renderPagesPageResponse`). When the incoming
-      // `If-None-Match` matches, return 304 (mirrors `sendEtagResponse`).
-      if (options.userAgent && isPagesStreamingBot(options.userAgent)) {
-        const etag = generatePagesETag(cachedValue.html);
-        hitResponse.headers.set("ETag", etag);
-        if (options.ifNoneMatch && etagMatches(etag, options.ifNoneMatch)) {
-          return {
-            kind: "response",
-            response: new Response(null, {
-              status: 304,
-              headers: hitResponse.headers,
-            }),
-          };
-        }
-      }
+      // `If-None-Match` matches (and no `Cache-Control: no-cache`), return 304.
+      const hitBotResult = applyBotETagAndCheck(hitResponse, cachedValue.html, options);
+      if (hitBotResult) return hitBotResult;
       return {
         kind: "response",
         response: hitResponse,
@@ -669,17 +697,22 @@ export async function resolvePagesPageData(
         },
       );
 
+      const staleResponse = buildPagesCacheResponse(
+        cachedValue.html,
+        "STALE",
+        options.fontLinkHeader,
+        undefined,
+        options.expireSeconds,
+        cached.value.cacheControl,
+        cachedValue.status,
+      );
+      // Bot / crawler ETag consistency: same as the HIT branch — attach an
+      // ETag to STALE responses for bot UAs and honour If-None-Match / 304.
+      const staleBotResult = applyBotETagAndCheck(staleResponse, cachedValue.html, options);
+      if (staleBotResult) return staleBotResult;
       return {
         kind: "response",
-        response: buildPagesCacheResponse(
-          cachedValue.html,
-          "STALE",
-          options.fontLinkHeader,
-          undefined,
-          options.expireSeconds,
-          cached.value.cacheControl,
-          cachedValue.status,
-        ),
+        response: staleResponse,
       };
     }
 
