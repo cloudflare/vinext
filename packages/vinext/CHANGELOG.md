@@ -1,5 +1,48 @@
 # vinext
 
+## 0.1.1
+
+### Bug Fixes
+
+#### App Router
+
+- match Pages navigation params in hybrid builds (#1741)
+- include route pattern in repeated-slash Link warning (#1554) (#1855)
+- scroll to top with hoisted children and loading.js (#1368) (#1857)
+- resolve explicit parallel slot with no page (#1535) (#1852)
+- propagate "use cache" tags to route-handler ISR entries (#1453) (#1848)
+- resolve query-only Link href against current path (#1540) (#1844)
+- render built-in fallback when global-error.tsx throws (#1548) (#1837)
+- clear useLinkStatus pending after interrupted navigation (#1527) (#1839)
+- respect reactMaxHeadersLength for preload Link header (#1552) (#1841)
+- preserve \_rsc query across redirects (#1529) (#1838)
+- apply trailingSlash to route handler request URL (#1827) (#1835)
+- restore scroll snapshots on back (#1743)
+- isolate page CSS chunks in production (#1738)
+
+#### Build
+
+- correct CSS ordering for global-not-found (#1549) (#1858)
+- exclude Vite build manifests from Cloudflare asset uploads (#1850)
+- don't crash on benign floating asset-import errors (#1510) (#1846)
+- expand require.context into import.meta.glob map (#1501) (#1836)
+- don't path-resolve bare specifier aliases for esmExternals (#1507) (#1843)
+- don't crash build when a PostCSS string plugin can't be resolved (#1509) (#1840)
+
+#### Misc
+
+- **Pages Router:** pass revalidateReason "on-demand" to gsp/gssp (#1462) (#1856)
+- **Actions:** return 404 for MPA action on app with no server actions (#1340) (#1853)
+- **Routing:** propagate middleware draft cookie to pages/api fallback (#1520) (#1845)
+- **Actions:** enforce serverActions.bodySizeLimit on fetch actions (#1828) (#1834)
+- support sibling-style interception routes (#1804)
+
+### Contributors
+
+- @Divkix
+- @james-elicx
+- @NathanDrake2406
+
 ## 0.1.0
 
 Today's release contains several app router bundling improvements like code splitting and lazy loading for faster cold starts, and minification by default for smaller bundles. Several CLI crashes were fixed for large projects, and more Next.js parity gaps were addressed.
