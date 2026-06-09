@@ -2390,6 +2390,41 @@ const Router: typeof RouterMethods & Omit<NextRouter, keyof typeof RouterMethods
     },
   }) as typeof RouterMethods & Omit<NextRouter, keyof typeof RouterMethods>;
 
+// Deprecated event property bridging: when userland code does
+// `Router.onRouteChangeComplete = handler` (the legacy Next.js pattern),
+// the handler must be called whenever the corresponding event fires.
+//
+// For each known router event, register a listener that reads the deprecated
+// `on<EventName>` property off the singleton and calls it if present.
+//
+// Ported from Next.js: packages/next/src/client/router.ts (lines 105–124).
+// The reference implementation wraps this in `singletonRouter.ready()` so it
+// runs after the router instance is created; vinext's routerEvents is a module-
+// level singleton that exists from the start, so we can register directly.
+const _deprecatedRouterEvents = [
+  "routeChangeStart",
+  "beforeHistoryChange",
+  "routeChangeComplete",
+  "routeChangeError",
+  "hashChangeStart",
+  "hashChangeComplete",
+] as const;
+
+for (const event of _deprecatedRouterEvents) {
+  const eventField = `on${event.charAt(0).toUpperCase()}${event.substring(1)}` as string;
+  routerEvents.on(event, (...args: unknown[]) => {
+    const handler = (Router as Record<string, unknown>)[eventField];
+    if (typeof handler === "function") {
+      try {
+        (handler as (...a: unknown[]) => void)(...args);
+      } catch (err) {
+        console.error(`Error when running the Router event: ${eventField}`);
+        console.error(err instanceof Error ? `${err.message}\n${err.stack}` : String(err));
+      }
+    }
+  });
+}
+
 // Expose `window.next.router` for Next.js parity. Pages Router test suites,
 // userland scripts, and third-party libraries reach for this global directly
 // (e.g. `window.next.router.push(...)`, `window.next.router.events.on(...)`,
