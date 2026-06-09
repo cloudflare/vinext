@@ -5,8 +5,8 @@
  * Router route. It mirrors Next.js's api-resolver `revalidate()` helper
  * (`.nextjs-ref/packages/next/src/server/api-utils/node/api-resolver.ts`): it
  * issues an internal `HEAD` request to `urlPath` carrying the
- * `x-prerender-revalidate` header set to the process revalidate secret (Next.js
- * sends `context.previewModeId` here). The dev/prod Pages render path
+ * `x-prerender-revalidate` header set to the build-time revalidate secret
+ * (Next.js sends `context.previewModeId` here). The dev/prod Pages render path
  * authorizes the request only when that value *equals* the secret
  * (`isOnDemandRevalidateRequest`), then re-runs getStaticProps with
  * `revalidateReason: "on-demand"` and refreshes the cache entry.

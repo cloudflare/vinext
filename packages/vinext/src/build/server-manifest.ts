@@ -21,3 +21,19 @@ export function readPrerenderSecret(serverDir: string): string | undefined {
   const manifest = readJsonFile<{ prerenderSecret?: string }>(manifestPath);
   return manifest?.prerenderSecret;
 }
+
+/**
+ * Read the on-demand revalidation secret from `vinext-server.json` in
+ * `serverDir`.
+ *
+ * This is the value baked (server-only) into every server bundle via the
+ * `__VINEXT_REVALIDATE_SECRET` define, persisted here so the Node/prod-server
+ * path (which loads the bundle from disk) and any tooling that needs the secret
+ * can recover it without re-deriving it. Returns `undefined` if the file does
+ * not exist or cannot be parsed.
+ */
+export function readRevalidateSecret(serverDir: string): string | undefined {
+  const manifestPath = path.join(serverDir, "vinext-server.json");
+  const manifest = readJsonFile<{ revalidateSecret?: string }>(manifestPath);
+  return manifest?.revalidateSecret;
+}

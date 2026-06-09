@@ -3896,13 +3896,30 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     {
       name: "vinext:compiler-define-server",
       configEnvironment(name) {
-        if (Object.keys(nextConfig.compilerDefineServer).length === 0) return null;
+        const serverDefines: Record<string, string> = { ...nextConfig.compilerDefineServer };
+
+        // On-demand ISR revalidation secret — baked SERVER-ONLY (never into the
+        // client bundle) so every server bundle, and therefore every Workers
+        // isolate, shares the exact same value. This makes `res.revalidate()`'s
+        // cross-isolate loopback authenticate correctly where a per-process
+        // random secret would mismatch. Generated once per build by the
+        // `vinext build` CLI (see __VINEXT_SHARED_REVALIDATE_SECRET) and read at
+        // runtime by `getRevalidateSecret()` in `server/isr-cache.ts`. Absent in
+        // dev (no CLI build step) — the runtime then falls back to a
+        // process-shared dev secret, which is correct since dev is single-process.
+        const sharedRevalidateSecret = process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
+        if (sharedRevalidateSecret && name !== "client") {
+          serverDefines["process.env.__VINEXT_REVALIDATE_SECRET"] =
+            JSON.stringify(sharedRevalidateSecret);
+        }
+
+        if (Object.keys(serverDefines).length === 0) return null;
         // The client environment is never given the server-only defines.
         // All other environments (rsc, ssr, custom worker envs, etc.) are
         // server-side per Vite's `consumer: "server"` default and receive
         // the substitutions.
         if (name === "client") return null;
-        return { define: { ...nextConfig.compilerDefineServer } };
+        return { define: serverDefines };
       },
     },
     // Local image import transform:
@@ -4399,6 +4416,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // the file last.
     (() => {
       const prerenderSecret = randomBytes(32).toString("hex");
+      // On-demand ISR revalidation secret persisted alongside the prerender
+      // secret for diagnostics/tooling parity. Prefer the build-CLI's shared
+      // value (so the manifest matches the secret baked server-only via `define`
+      // into every isolate via __VINEXT_REVALIDATE_SECRET); fall back to a fresh
+      // per-build secret for standalone vite.build invocations that don't go
+      // through the CLI. The runtime authenticates against the baked `define`,
+      // not this file — both Workers isolates and the Node prod-server run the
+      // bundle, which already carries the inlined constant — so this field exists
+      // purely so the active secret is recoverable from disk (see
+      // `readRevalidateSecret` in server-manifest.ts).
+      const revalidateSecret =
+        process.env.__VINEXT_SHARED_REVALIDATE_SECRET ?? randomBytes(32).toString("hex");
       return {
         name: "vinext:server-manifest",
         apply: "build" as const,
@@ -4415,7 +4444,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const outDir = options.dir;
             if (!outDir) return;
 
-            const manifest = { prerenderSecret };
+            const manifest = { prerenderSecret, revalidateSecret };
             fs.writeFileSync(path.join(outDir, "vinext-server.json"), JSON.stringify(manifest));
           },
         },

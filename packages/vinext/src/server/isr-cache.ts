@@ -47,8 +47,9 @@ export { normalizeMountedSlotsHeader };
  * `x-prerender-revalidate: <anything>` to force synchronous regeneration of any
  * ISR page, bypassing the fresh/stale cache short-circuits — a
  * cache-stampede/DoS vector. We therefore validate the value against
- * {@link getRevalidateSecret} with a constant-time comparison and only the
- * matching value (sent by our own `res.revalidate()`) is honored.
+ * {@link getRevalidateSecret} (a build-time secret shared across all Workers
+ * isolates) with a constant-time comparison, and only the matching value (sent
+ * by our own `res.revalidate()`) is honored.
  */
 export const PRERENDER_REVALIDATE_HEADER = "x-prerender-revalidate";
 
@@ -63,31 +64,47 @@ export const PRERENDER_REVALIDATE_HEADER = "x-prerender-revalidate";
 export const PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER = "x-prerender-revalidate-if-generated";
 
 /**
- * Per-process secret that authenticates on-demand revalidation requests, the
- * vinext analog of Next.js's prerender-manifest `previewModeId`. `res.revalidate()`
- * loops back into the *same* server process via an internal `fetch()`, so a
- * module-scoped random secret is both sufficient and strictly stronger than a
- * build-embedded one: it is never written to disk and rotates every process
- * start. The sender attaches it as the {@link PRERENDER_REVALIDATE_HEADER}
- * value; the receiver authorizes the request only when the incoming value
- * equals this secret (see {@link isOnDemandRevalidateRequest}).
+ * Build-time secret that authenticates on-demand revalidation requests, the
+ * vinext analog of Next.js's prerender-manifest `previewModeId`.
  *
- * Generated lazily so importing this module never forces crypto work, and only
- * once per process so the sender and receiver always share the same value.
+ * `res.revalidate()` loops back into the server via an internal `fetch()`. On
+ * Cloudflare Workers that loopback can land on a *different* isolate than the
+ * sender, so a per-process random secret would mismatch across isolates and
+ * false-reject legitimate revalidations (and, symmetrically, two isolates with
+ * independently-rolled secrets could never agree). The fix mirrors Next.js's
+ * `previewModeId`: the secret is generated once at BUILD time and baked
+ * (server-only — never into the client bundle) into every server bundle via the
+ * `__VINEXT_REVALIDATE_SECRET` Vite `define`, so it is byte-for-byte identical in
+ * every isolate. See `vinext build` CLI (`__VINEXT_SHARED_REVALIDATE_SECRET`) and
+ * the `vinext:compiler-define-server` plugin. The sender attaches it as the
+ * {@link PRERENDER_REVALIDATE_HEADER} value; the receiver authorizes a request
+ * only when the incoming value equals this secret (see
+ * {@link isOnDemandRevalidateRequest}).
+ *
+ * Dev mode has no build step (the define is absent), so we fall back to a
+ * lazily-generated random secret. Dev runs in a single process, so a
+ * module-scoped value is shared by sender and receiver there — no regression.
  */
-let revalidateSecret: string | undefined;
+let devRevalidateSecret: string | undefined;
 
 export function getRevalidateSecret(): string {
-  if (revalidateSecret === undefined) {
-    // 32 random bytes (256 bits) hex-encoded — matches the entropy of vinext's
-    // build-time prerender secret (`index.ts` `randomBytes(32)`). Web Crypto's
-    // `getRandomValues` works in both Node and the Workers/edge runtime that
-    // this cache layer also runs under, unlike `node:crypto`.
+  // Production: the build baked the shared secret into every server bundle.
+  // `process.env.__VINEXT_REVALIDATE_SECRET` is statically inlined by Vite's
+  // `define`, so this is a constant string identical across all isolates.
+  const baked = process.env.__VINEXT_REVALIDATE_SECRET;
+  if (baked) return baked;
+
+  // Dev/standalone fallback: no build-time define. Generate a single
+  // process-shared secret lazily — sufficient because there is exactly one dev
+  // process, so sender and receiver always read the same value. 32 random bytes
+  // (256 bits) hex-encoded, matching the build-time secret's entropy. Web
+  // Crypto's `getRandomValues` works in both Node and the Workers/edge runtime.
+  if (devRevalidateSecret === undefined) {
     const bytes = new Uint8Array(32);
     crypto.getRandomValues(bytes);
-    revalidateSecret = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    devRevalidateSecret = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
   }
-  return revalidateSecret;
+  return devRevalidateSecret;
 }
 
 /**
