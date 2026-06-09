@@ -422,14 +422,35 @@ export async function buildAppPageSpecialErrorResponse(
   if (options.renderFallbackPage) {
     const fallbackResponse = await options.renderFallbackPage(options.specialError.statusCode);
     if (fallbackResponse) {
-      return mergeAppPageSpecialErrorHeaders(fallbackResponse, options.middlewareContext);
+      // When notFound() / forbidden() / unauthorized() is thrown from
+      // generateMetadata(), Next.js treats the error as a suspended metadata
+      // result — the not-found UI is rendered through the React boundary
+      // client-side while the HTTP response itself stays 200. Mirror that
+      // behavior by overriding the rendered boundary response status to 200.
+      // Mirrors the redirect-from-metadata path above, which also returns 200.
+      // Reference: test/e2e/app-dir/metadata-navigation
+      //   "should support notFound in generateMetadata"
+      const responseToMerge =
+        options.specialError.fromMetadata === true
+          ? new Response(fallbackResponse.body, {
+              headers: fallbackResponse.headers,
+              status: 200,
+              statusText: fallbackResponse.statusText,
+            })
+          : fallbackResponse;
+      return mergeAppPageSpecialErrorHeaders(responseToMerge, options.middlewareContext);
     }
   }
 
   options.clearRequestContext();
+  // When notFound() is thrown from generateMetadata() with no fallback page
+  // available, keep the 200 status to stay consistent with the streamed
+  // metadata contract (the error is surfaced in the page UI, not the status).
+  const responseStatus =
+    options.specialError.fromMetadata === true ? 200 : options.specialError.statusCode;
   return mergeAppPageSpecialErrorHeaders(
     new Response(getAppPageStatusText(options.specialError.statusCode), {
-      status: options.specialError.statusCode,
+      status: responseStatus,
     }),
     options.middlewareContext,
   );
