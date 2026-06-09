@@ -308,12 +308,12 @@ function resolveShimModulePath(shimsDir: string, moduleName: string): string {
   // JavaScript. Check .ts first to avoid an extra stat in development.
   const candidates = [".ts", ".tsx", ".js"];
   for (const ext of candidates) {
-    const candidate = path.join(shimsDir, `${moduleName}${ext}`);
+    const candidate = path.posix.join(shimsDir, `${moduleName}${ext}`);
     if (fs.existsSync(candidate)) {
       return candidate;
     }
   }
-  return path.join(shimsDir, `${moduleName}.js`);
+  return path.posix.join(shimsDir, `${moduleName}.js`);
 }
 
 function isVercelOgImport(id: string): boolean {
