@@ -28,6 +28,7 @@ describe("renderPagesFallback", () => {
         headers: mergedHeaders,
       });
     },
+    getDraftModeCookieHeader: (): string | null | undefined => null,
   };
 
   it("returns null for RSC requests and does not call the Pages loader", async () => {
@@ -196,6 +197,76 @@ describe("renderPagesFallback", () => {
     expect(renderPage.mock.calls[0][1]).toBe("/about us?foo=bar");
     expect(res).not.toBeNull();
     expect(await res!.text()).toBe("page-response");
+  });
+
+  it("appends the middleware draft cookie to an API fallback response (#1520)", async () => {
+    const handleApiRoute = vi.fn((_req: Request, _url: string) => new Response("api-response"));
+    const deps = {
+      ...defaultDeps,
+      loadPagesEntry: () => ({ handleApiRoute }) as PagesEntry,
+      getDraftModeCookieHeader: () => "__prerender_bypass=secret; Path=/; HttpOnly",
+    };
+
+    const request = new Request("http://localhost/api/draft");
+    const url = new URL("http://localhost/api/draft");
+
+    const res = await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: null, status: null },
+        request,
+        url,
+      },
+      deps,
+    );
+
+    expect(res).not.toBeNull();
+    const setCookies = res!.headers.getSetCookie();
+    expect(setCookies.some((c) => c.includes("__prerender_bypass"))).toBe(true);
+  });
+
+  it("does not append a draft cookie when middleware did not enable draft mode", async () => {
+    const handleApiRoute = vi.fn((_req: Request, _url: string) => new Response("api-response"));
+    const deps = {
+      ...defaultDeps,
+      loadPagesEntry: () => ({ handleApiRoute }) as PagesEntry,
+      getDraftModeCookieHeader: () => null,
+    };
+
+    const res = await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: null, status: null },
+        request: new Request("http://localhost/api/draft"),
+        url: new URL("http://localhost/api/draft"),
+      },
+      deps,
+    );
+
+    expect(res).not.toBeNull();
+    expect(res!.headers.has("set-cookie")).toBe(false);
+  });
+
+  it("appends the middleware draft cookie to a renderPage fallback response (#1520)", async () => {
+    const renderPage = vi.fn((_req: Request, _url: string) => new Response("page-response"));
+    const deps = {
+      ...defaultDeps,
+      loadPagesEntry: () => ({ renderPage }) as PagesEntry,
+      getDraftModeCookieHeader: () => "__prerender_bypass=secret; Path=/; HttpOnly",
+    };
+
+    const res = await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: null, status: null },
+        request: new Request("http://localhost/page"),
+        url: new URL("http://localhost/page"),
+      },
+      deps,
+    );
+
+    expect(res).not.toBeNull();
+    expect(res!.headers.getSetCookie().some((c) => c.includes("__prerender_bypass"))).toBe(true);
   });
 
   it("returns null when Pages renderPage returns 404 status", async () => {

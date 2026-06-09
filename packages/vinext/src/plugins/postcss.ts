@@ -112,27 +112,42 @@ async function resolvePostcssStringPluginsUncached(
 
   // Resolve string plugin names to actual plugin functions
   const req = createRequire(path.join(projectRoot, "package.json"));
-  const resolved = await Promise.all(
-    config.plugins.filter(Boolean).map(async (plugin: unknown) => {
-      if (typeof plugin === "string") {
-        const resolved = req.resolve(plugin);
-        const mod = await import(pathToFileURL(resolved).href);
-        const fn = mod.default ?? mod;
-        // If the export is a function, call it to get the plugin instance
-        return typeof fn === "function" ? fn() : fn;
-      }
-      // Array tuple form: ["plugin-name", { options }]
-      if (Array.isArray(plugin) && typeof plugin[0] === "string") {
-        const [name, options] = plugin;
-        const resolved = req.resolve(name);
-        const mod = await import(pathToFileURL(resolved).href);
-        const fn = mod.default ?? mod;
-        return typeof fn === "function" ? fn(options) : fn;
-      }
-      // Already a function or plugin object — pass through
-      return plugin;
-    }),
-  );
-
-  return { plugins: resolved };
+  try {
+    const resolved = await Promise.all(
+      config.plugins.filter(Boolean).map(async (plugin: unknown) => {
+        if (typeof plugin === "string") {
+          const resolved = req.resolve(plugin);
+          const mod = await import(pathToFileURL(resolved).href);
+          const fn = mod.default ?? mod;
+          // If the export is a function, call it to get the plugin instance
+          return typeof fn === "function" ? fn() : fn;
+        }
+        // Array tuple form: ["plugin-name", { options }]
+        if (Array.isArray(plugin) && typeof plugin[0] === "string") {
+          const [name, options] = plugin;
+          const resolved = req.resolve(name);
+          const mod = await import(pathToFileURL(resolved).href);
+          const fn = mod.default ?? mod;
+          return typeof fn === "function" ? fn(options) : fn;
+        }
+        // Already a function or plugin object — pass through
+        return plugin;
+      }),
+    );
+    return { plugins: resolved };
+  } catch {
+    // A plugin name failed to resolve or load (e.g. it isn't installed at
+    // `projectRoot`, or resolves differently than postcss-load-config would).
+    // Don't crash the whole build (every Vite environment runs this config
+    // hook, so a throw here aborts the RSC/SSR/client builds with an opaque
+    // error). Fall back to `undefined` so Vite's own postcss-load-config
+    // loads and resolves the config relative to the config file instead.
+    //
+    // Note: a single unresolvable entry makes us defer the *entire* config to
+    // Vite (not a per-plugin skip) — the resolved list is only useful if it's
+    // complete, and Vite re-loads the whole config anyway. If the failure was a
+    // genuine plugin-factory error rather than a resolution miss, Vite's loader
+    // re-surfaces it with a clearer message than this opaque build abort.
+    return undefined;
+  }
 }

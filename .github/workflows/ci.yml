@@ -278,6 +278,10 @@ jobs:
             label: app-router 2/3
             shardIndex: 2
             shardTotal: 3
+          - project: app-router-bfcache
+            label: app-router-bfcache
+            shardIndex: 1
+            shardTotal: 1
           - project: app-router
             label: app-router 3/3
             shardIndex: 3

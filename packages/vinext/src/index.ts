@@ -79,6 +79,7 @@ import {
 } from "./server/instrumentation.js";
 import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { precompressAssets } from "./build/precompress.js";
+import { ensureAssetsIgnore } from "./build/assets-ignore.js";
 import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
@@ -89,6 +90,7 @@ import {
   matchHeaders,
   matchRedirect,
   matchRewrite,
+  preserveRedirectDestinationQuery,
   requestContextFromRequest,
   sanitizeDestination,
   type RequestContext,
@@ -170,6 +172,7 @@ import {
 import { stripServerExports } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
+import { createRequireContextPlugin } from "./plugins/require-context.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import { getViteMajorVersion } from "./utils/vite-version.js";
@@ -1393,6 +1396,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // enable functional App Shell prefetching.
         // See: https://github.com/vercel/next.js/pull/93997
         defines["process.env.__NEXT_APP_SHELLS"] = JSON.stringify(nextConfig.appShells);
+        // Cache Components — Next.js gates segment Activity BFCache retention
+        // on this build-time flag. Without the flag the active segment renders
+        // in place (unkeyed); enabling it turns on the three-entry inactive
+        // Activity tree cache.
+        // Deliberately string-shaped: `process.env` consumers compare against
+        // "true", so do not simplify this to a boolean define.
+        // See: packages/next/src/client/components/layout-router.tsx
+        defines["process.env.__NEXT_CACHE_COMPONENTS"] = JSON.stringify(
+          String(nextConfig.cacheComponents ?? false),
+        );
 
         // User-defined compile-time constants from `compiler.define` in
         // next.config. Applied to BOTH client and server bundles via Vite's
@@ -2527,10 +2540,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
               allowedDevOrigins: nextConfig?.allowedDevOrigins,
               bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
+              bodySizeLimitLabel: nextConfig?.serverActionsBodySizeLimitLabel,
               htmlLimitedBots: nextConfig?.htmlLimitedBots,
               clientTraceMetadata: nextConfig?.clientTraceMetadata,
               assetPrefix: nextConfig?.assetPrefix,
               expireTime: nextConfig?.expireTime,
+              reactMaxHeadersLength: nextConfig?.reactMaxHeadersLength,
               cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
               inlineCss: nextConfig?.inlineCss,
               i18n: nextConfig?.i18n,
@@ -3474,6 +3489,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   nextConfig.redirects,
                   preMiddlewareReqCtx,
                   nextConfig.basePath ?? "",
+                  url.includes("?") ? url.slice(url.indexOf("?")) : "",
                 );
                 if (redirected) return;
               }
@@ -4339,6 +4355,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     createImportMetaUrlPlugin({
       getRoot: () => root,
     }),
+    // Expand Webpack's build-time `require.context(...)` into a static module
+    // map backed by `import.meta.glob` — see src/plugins/require-context.ts
+    createRequireContextPlugin(),
     // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
     // see src/plugins/og-assets.ts
     createOgInlineFetchAssetsPlugin(),
@@ -4876,6 +4895,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             fs.mkdirSync(clientDir, { recursive: true });
             fs.writeFileSync(headersPath, headersContent);
           }
+
+          // Keep Vite build metadata (the `.vite/` manifests) out of the
+          // deployed asset bundle. The Cloudflare ASSETS binding serves any
+          // uploaded file matching the request path BEFORE the Worker runs, so
+          // without this the build/SSR manifests would be publicly fetchable at
+          // `/.vite/manifest.json` — leaking the source-file → chunk mapping and
+          // unlinked route paths. The Node prod server blocks `/.vite/` for the
+          // same reason (server/static-file-cache.ts); `.assetsignore` is the
+          // Cloudflare-side equivalent.
+          ensureAssetsIgnore(clientDir);
         },
       },
     },
@@ -5034,6 +5063,7 @@ function applyRedirects(
   redirects: NextRedirect[],
   ctx: RequestContext,
   basePath = "",
+  requestSearch = "",
 ): boolean {
   // Vite strips the basePath before our middleware sees the request, so any
   // pathname we see is implicitly "under basePath" for matching purposes.
@@ -5047,7 +5077,12 @@ function applyRedirects(
         ? basePath + result.destination
         : result.destination,
     );
-    res.writeHead(result.permanent ? 308 : 307, { Location: dest });
+    // Carry the original request query (e.g. the App Router RSC cache-busting
+    // `_rsc` param) onto the redirect Location so the browser's auto-followed
+    // request is still treated as an RSC fetch. Mirrors Next.js
+    // resolve-routes.ts (issue #1529).
+    const location = preserveRedirectDestinationQuery(dest, requestSearch);
+    res.writeHead(result.permanent ? 308 : 307, { Location: location });
     res.end();
     return true;
   }

@@ -45,6 +45,7 @@ export default {
         "src/server/app-page-dispatch.ts",
         "src/server/app-page-head.ts",
         "src/server/app-prerender-static-params.ts",
+        "src/server/app-route-module-loader.ts",
         // Client-side instrumentation bundle: loaded as a side-effect module
         // by the generated hydration entries (import "vinext/instrumentation-client"),
         // so its public surface (clientInstrumentationHooks, getClientInstrumentationHooks)
@@ -102,6 +103,12 @@ export default {
 
     // probed via require.resolve
     "next-intl",
+
+    // Optional peer dependency probed by tests/scss.test.ts.
+    "sass",
+
+    // Vite+ reporter name used outside CI in vite.config.ts.
+    "agent",
 
     // internal module name, not an actual dependency
     "private-next-instrumentation-client",

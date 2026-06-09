@@ -23,6 +23,7 @@ import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import { isProxyFile } from "../server/middleware.js";
 
 const DEFAULT_EXPIRE_TIME = 31_536_000;
+const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
 
 // Pre-computed absolute paths for generated-code imports. The virtual RSC
 // entry can't use relative imports (it has no real file location), so we
@@ -114,6 +115,8 @@ type AppRouterConfig = {
   allowedDevOrigins?: string[];
   /** Body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). */
   bodySizeLimit?: number;
+  /** Verbatim body size limit config value (e.g. "2mb") for the "Body exceeded {limit} limit" error. */
+  bodySizeLimitLabel?: string;
   /** Serialized next.config htmlLimitedBots regexp source. */
   htmlLimitedBots?: string;
   /**
@@ -133,6 +136,11 @@ type AppRouterConfig = {
   assetPrefix?: string;
   /** Route-level expire fallback in seconds for ISR entries with numeric revalidate. */
   expireTime?: number;
+  /**
+   * Maximum total length (in characters) of the preload `Link` header emitted
+   * during App Router SSR. `0` disables emission. Defaults to 6000.
+   */
+  reactMaxHeadersLength?: number;
   /** Maximum in-memory cache size in bytes. 0 disables the default memory cache. */
   cacheMaxMemorySize?: number;
   /** Inline app CSS into production HTML (from experimental.inlineCss). */
@@ -190,10 +198,12 @@ export function generateRscEntry(
   const headers = config?.headers ?? [];
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;
+  const bodySizeLimitLabel = config?.bodySizeLimitLabel ?? "1 MB";
   const htmlLimitedBots = config?.htmlLimitedBots;
   const clientTraceMetadata = config?.clientTraceMetadata;
   const assetPrefix = config?.assetPrefix ?? "";
   const expireTime = config?.expireTime ?? DEFAULT_EXPIRE_TIME;
+  const reactMaxHeadersLength = config?.reactMaxHeadersLength ?? DEFAULT_REACT_MAX_HEADERS_LENGTH;
   const cacheMaxMemorySize = config?.cacheMaxMemorySize;
   const inlineCss = config?.inlineCss === true;
   const i18nConfig = config?.i18n ?? null;
@@ -266,6 +276,7 @@ import {
 import {
   handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,
   handleServerActionRscRequest as __handleServerActionRscRequest,
+  isProgressiveServerActionRequest as __isProgressiveServerActionRequest,
   readActionBodyWithLimit as __readBodyWithLimit,
   readActionFormDataWithLimit as __readFormDataWithLimit,
 } from ${JSON.stringify(appServerActionExecutionPath)};
@@ -494,13 +505,14 @@ function findIntercept(pathname, sourcePathname = null) {
   return __routeMatcher.findIntercept(pathname, sourcePathname);
 }
 
-async function buildPageElements(route, params, routePath, pageRequest, layoutParamAccess) {
+async function buildPageElements(route, params, routePath, pageRequest, layoutParamAccess, displayPathname = routePath) {
   // Hydrate lazy page/route-handler modules before any synchronous read.
   await __ensureRouteLoaded(route);
   return __buildPageElements({
     route,
     params,
     routePath,
+    displayPathname,
     pageRequest,
     globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
     rootNotFoundModule: ${rootNotFoundVar ? rootNotFoundVar : "null"},
@@ -523,9 +535,10 @@ const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
 const __expireTime = ${JSON.stringify(expireTime)};
 const __htmlLimitedBots = ${JSON.stringify(htmlLimitedBots)};
 const __clientTraceMetadata = ${JSON.stringify(clientTraceMetadata)};
-// Re-exported for the App Router prod-server to consume at startup — mirrors
-// the embedded \`__basePath\` pattern (and Pages Router's \`vinextConfig\`
-// export). Empty string when assetPrefix is unset.
+const __reactMaxHeadersLength = ${JSON.stringify(reactMaxHeadersLength)};
+// Re-exported for the App Router prod-server to consume at startup —
+// mirrors the embedded \`__basePath\` pattern (and Pages Router's
+// \`vinextConfig\` export). Empty string when unset.
 export const __assetPrefix = ${JSON.stringify(assetPrefix)};
 export const __inlineCss = ${JSON.stringify(inlineCss)};
 export const __hasPagesDir = ${JSON.stringify(hasPagesDir)};
@@ -555,6 +568,13 @@ ${generateDevOriginCheckCode(config?.allowedDevOrigins)}
  */
 var __MAX_ACTION_BODY_SIZE = ${JSON.stringify(bodySizeLimit)};
 
+/**
+ * Verbatim serverActions.bodySizeLimit config value (e.g. "2mb"), used in the
+ * "Body exceeded {limit} limit" error so the message matches Next.js byte-for-byte.
+ * Defaults to "1 MB" (Next.js' defaultBodySizeLimit literal).
+ */
+var __MAX_ACTION_BODY_SIZE_LABEL = ${JSON.stringify(bodySizeLimitLabel)};
+
 // Map from route pattern to generateStaticParams function.
 // Used by the prerender phase to enumerate dynamic route URLs without
 // loading route modules via the dev server.
@@ -579,6 +599,7 @@ export default __createAppRscHandler({
   dispatchMatchedPage({
     clientReuseManifest,
     cleanPathname,
+    displayPathname,
     formState,
     actionError,
     actionFailed,
@@ -614,6 +635,7 @@ export default __createAppRscHandler({
       basePath: __basePath,
       ensureRouteLoaded: __ensureRouteLoaded,
       clientTraceMetadata: __clientTraceMetadata,
+      reactMaxHeadersLength: __reactMaxHeadersLength,
       buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams, layoutParamAccess) {
         return buildPageElements(targetRoute, targetParams, cleanPathname, {
           opts: targetOpts,
@@ -622,7 +644,7 @@ export default __createAppRscHandler({
           request,
           mountedSlotsHeader,
           renderMode,
-        }, layoutParamAccess);
+        }, layoutParamAccess, displayPathname);
       },
       clientReuseManifest,
       cleanPathname,
@@ -685,13 +707,23 @@ export default __createAppRscHandler({
           route,
         });
       },
-      probePage() {
+      async probePage() {
+        const __probeIntercept = findIntercept(cleanPathname, interceptionContext);
+        // The intercepting-route page module is lazy (page: null + __pageLoader).
+        // Resolve it before probing so buildAppPageProbes inspects the real page
+        // component for dynamic bailout — matching the render path, which also
+        // awaits __pageLoader (resolveAppPageInterceptState). Without this the
+        // intercept probe branch silently inspects an undefined component and
+        // never observes the page's searchParams/headers access.
+        if (__probeIntercept && __probeIntercept.__pageLoader && __probeIntercept.page == null) {
+          __probeIntercept.page = await __probeIntercept.__pageLoader();
+        }
         return Promise.all(__buildAppPageProbes({
           route,
           pageComponent: PageComponent,
           asyncRouteParams: _asyncRouteParams,
           searchParams,
-          intercept: findIntercept(cleanPathname, interceptionContext),
+          intercept: __probeIntercept,
           isRscRequest,
           matchedParams: params,
           makeThenableParams,
@@ -741,6 +773,7 @@ export default __createAppRscHandler({
       },
       draftModeSecret: __draftModeSecret,
       i18n: __i18nConfig,
+      trailingSlash: __trailingSlash,
       isrDebug: __isrDebug,
       isrGet: __isrGet,
       isrRouteKey: __isrRouteKey,
@@ -772,6 +805,26 @@ export default __createAppRscHandler({
     middlewareContext,
     request,
   }) {
+    // A multipart form POST to a page is always a server-action attempt, so a
+    // body that decodes to no action must surface as 404 action-not-found
+    // (#1340). Route handlers run after this dispatch and accept raw multipart
+    // POSTs, so only flag actual page routes. The __loadPage / __loadRouteHandler
+    // markers are static and available before lazy module hydration.
+    //
+    // Only the progressive (multipart, no actionId) POST path consults
+    // hasPageRoute, so skip the route match entirely for every other request
+    // rather than re-matching on each App Router request.
+    const __isProgressiveAction = __isProgressiveServerActionRequest(
+      request,
+      contentType,
+      actionId,
+    );
+    const __progressiveActionMatch = __isProgressiveAction ? matchRoute(cleanPathname) : null;
+    const __hasPageRoute = Boolean(
+      __progressiveActionMatch &&
+        __progressiveActionMatch.route.__loadPage &&
+        !__progressiveActionMatch.route.__loadRouteHandler,
+    );
     return __handleProgressiveServerActionRequest({
       actionId,
       allowedOrigins: __allowedOrigins,
@@ -785,6 +838,7 @@ export default __createAppRscHandler({
       decodeFormState,
       getAndClearPendingCookies,
       getDraftModeCookieHeader,
+      hasPageRoute: __hasPageRoute,
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,
       middlewareHeaders: middlewareContext.headers,
       readFormDataWithLimit: __readFormDataWithLimit,
@@ -875,6 +929,7 @@ export default __createAppRscHandler({
         return matchRoute(pathnameToMatch);
       },
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,
+      maxActionBodySizeLabel: __MAX_ACTION_BODY_SIZE_LABEL,
       middlewareHeaders: middlewareContext.headers,
       middlewareStatus: middlewareContext.status,
       mountedSlotsHeader,
@@ -927,6 +982,7 @@ export default __createAppRscHandler({
         buildRequestHeaders: __buildRequestHeadersFromMiddlewareResponse,
         decodePathParams: __decodePathParams,
         applyRouteHandlerMiddlewareContext: __applyRouteHandlerMiddlewareContext,
+        getDraftModeCookieHeader,
       }
     );
   },`

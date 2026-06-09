@@ -188,10 +188,18 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       if (slot.loadingPath) imports.getImportVar(slot.loadingPath);
       if (slot.errorPath) imports.getImportVar(slot.errorPath);
       for (const ir of slot.interceptingRoutes) {
-        imports.getImportVar(ir.pagePath);
+        imports.getLazyLoaderVar(ir.pagePath);
         for (const layoutPath of ir.layoutPaths) {
           imports.getImportVar(layoutPath);
         }
+      }
+    }
+    for (const ir of route.siblingIntercepts ?? []) {
+      // Lazy-load the intercepting page (like slot intercepts) so its CSS chunk
+      // stays isolated in production (#1738). Layouts remain eager.
+      imports.getLazyLoaderVar(ir.pagePath);
+      for (const layoutPath of ir.layoutPaths) {
+        imports.getImportVar(layoutPath);
       }
     }
   }
@@ -216,6 +224,18 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
     const unauthorizedVars = (route.unauthorizedPaths ?? []).map((up) =>
       up ? imports.getImportVar(up) : "null",
     );
+    const siblingInterceptEntries = (route.siblingIntercepts ?? []).map(
+      (ir) => `    {
+      convention: ${JSON.stringify(ir.convention)},
+      targetPattern: ${JSON.stringify(ir.targetPattern)},
+      sourceMatchPattern: ${JSON.stringify(ir.sourceMatchPattern)},
+      slotId: ${JSON.stringify(ir.slotId ?? null)},
+      interceptLayouts: [${ir.layoutPaths.map((l) => imports.getImportVar(l)).join(", ")}],
+      page: null,
+      __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
+      params: ${JSON.stringify(ir.params)},
+    }`,
+    );
     const slotEntries = route.parallelSlots.map((slot) => {
       const interceptEntries = slot.interceptingRoutes.map(
         (ir) => `        {
@@ -223,7 +243,8 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
           targetPattern: ${JSON.stringify(ir.targetPattern)},
           sourceMatchPattern: ${JSON.stringify(ir.sourceMatchPattern)},
           interceptLayouts: [${ir.layoutPaths.map((layoutPath) => imports.getImportVar(layoutPath)).join(", ")}],
-          page: ${imports.getImportVar(ir.pagePath)},
+          page: null,
+          __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
           params: ${JSON.stringify(ir.params)},
         }`,
       );
@@ -279,6 +300,9 @@ ${interceptEntries.join(",\n")}
     slots: {
 ${slotEntries.join(",\n")}
     },
+    siblingIntercepts: [
+${siblingInterceptEntries.join(",\n")}
+    ],
     loading: ${route.loadingPath ? imports.getImportVar(route.loadingPath) : "null"},
     error: ${route.errorPath ? imports.getImportVar(route.errorPath) : "null"},
     notFound: ${route.notFoundPath ? imports.getImportVar(route.notFoundPath) : "null"},

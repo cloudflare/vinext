@@ -72,11 +72,16 @@ describe("Link rendering", () => {
     expect(html).toContain('href="/search?q=test"');
   });
 
-  it("renders object href with only query (defaults to /)", () => {
+  it("renders object href with only query as a relative query href", () => {
+    // An href object without a `pathname` must resolve as a query-only href
+    // (e.g. `?tab=settings`) so the browser/router applies it against the
+    // *current* path, mirroring Next.js's `formatUrl()` (`pathname || ''`).
+    // Collapsing onto the root (`/?tab=settings`) recorded the wrong history
+    // entry for shallow links and broke back/forward traversal (issue #1540).
     const html = ReactDOMServer.renderToString(
       React.createElement(Link, { href: { query: { tab: "settings" } } }, "Settings"),
     );
-    expect(html).toContain('href="/?tab=settings"');
+    expect(html).toContain('href="?tab=settings"');
   });
 
   it("renders with as prop overriding href", () => {
@@ -431,6 +436,16 @@ describe("Link resolveHref", () => {
       React.createElement(Link, { href: { pathname: "/dashboard" } }, "x"),
     );
     expect(html).toContain('href="/dashboard"');
+  });
+
+  it("object href with only query resolves as a relative query href", () => {
+    // No `pathname` -> query-only href (not rooted at `/`), so the router
+    // resolves it against the current path. Mirrors Next.js's `formatUrl()`
+    // (`pathname = urlObj.pathname || ''`). Regression guard for issue #1540.
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: { query: { page: "2", sort: "name" } } }, "x"),
+    );
+    expect(html).toMatch(/href="\?page=2&(?:amp;)?sort=name"/);
   });
 });
 

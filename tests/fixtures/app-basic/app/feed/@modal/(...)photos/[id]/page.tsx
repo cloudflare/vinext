@@ -3,6 +3,7 @@ import { getPhotoLikes } from "./actions";
 import { PhotoModalBfcacheProbe } from "./bfcache-probe";
 import { LikeButton } from "./like-button";
 import { PhotoModalRefreshButton } from "./refresh-button";
+import "./global.css";
 
 // Intercepting route: renders when navigating from /feed to /photos/[id].
 // Shows a modal version of the photo instead of the full page.

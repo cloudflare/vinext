@@ -2,12 +2,11 @@
  * Next.js Compat E2E: useRouter().bfcacheId
  * Ported from: https://github.com/vercel/next.js/blob/56d95137fd6d84f4bc1e5ef2bb31e0136d5fad9c/test/e2e/app-dir/use-router-bfcache-id/use-router-bfcache-id.test.ts
  *
- * Next.js also covers Activity-backed form-state preservation on browser back.
- * Vinext does not implement React Activity yet, so form-state-on-back
- * assertions are intentionally omitted here; these tests focus on bfcacheId
- * identity semantics. Same-segment DOM state preservation (e.g. input values
- * surviving search-param navigation) is tested where it works today without
- * Activity.
+ * Activity-backed form-state preservation needs cacheComponents, so it runs in
+ * the dedicated app-bfcache fixture under the app-router-bfcache Playwright
+ * project (tests/e2e/app-router-bfcache/back-forward-cache.spec.ts), not here.
+ * This spec runs against app-basic and focuses on bfcacheId identity semantics
+ * and routes where userland keys forms by bfcacheId to force fresh-entry reset.
  */
 
 import { test, expect } from "@playwright/test";
@@ -268,5 +267,35 @@ test.describe("Next.js compat: useRouter().bfcacheId", () => {
     expect(restoredAfterInvalidation).toMatch(/^_b_\d+_$/);
     expect(restoredAfterInvalidation).not.toBe(staleX1BfcacheId);
     await expect(visibleTestId(page, "leaf-input")).toHaveValue("");
+  });
+
+  test("preserves restorable client state after a return-value-only server action", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}${ROUTE}/x/1`);
+    await waitForAppRouterHydration(page);
+
+    const x1BfcacheId = await visibleTestId(page, "leaf-bfcache-id").textContent();
+    await visibleTestId(page, "layout-input").fill("return-value-layout-state");
+
+    await revealAndClick(page, `${ROUTE}/x/2`);
+    await expect(visibleTestId(page, "pathname")).toHaveText(`${ROUTE}/x/2`);
+    const x2BfcacheId = await visibleTestId(page, "leaf-bfcache-id").textContent();
+    await expect(visibleTestId(page, "layout-input")).toHaveValue("return-value-layout-state");
+
+    const actionResponse = waitForServerActionResponse(page, `${ROUTE}/x/2`);
+    await visibleTestId(page, "server-action-return-value-only").click();
+    await actionResponse;
+    await expect(visibleTestId(page, "server-action-return-value")).toHaveText("return-value-only");
+
+    await page.goBack();
+    await expect(visibleTestId(page, "pathname")).toHaveText(`${ROUTE}/x/1`);
+    await expect(visibleTestId(page, "leaf-bfcache-id")).toHaveText(x1BfcacheId ?? "");
+    await expect(visibleTestId(page, "layout-input")).toHaveValue("return-value-layout-state");
+
+    await page.goForward();
+    await expect(visibleTestId(page, "pathname")).toHaveText(`${ROUTE}/x/2`);
+    await expect(visibleTestId(page, "leaf-bfcache-id")).toHaveText(x2BfcacheId ?? "");
+    await expect(visibleTestId(page, "layout-input")).toHaveValue("return-value-layout-state");
   });
 });

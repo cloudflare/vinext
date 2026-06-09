@@ -70,7 +70,8 @@ type BuildAppPageRscResponseOptions = {
 
 type BuildAppPageHtmlResponseOptions = {
   draftCookie?: string | null;
-  fontLinkHeader?: string;
+  /** Combined preload `Link` header value (React hints + font preloads), already capped. */
+  linkHeader?: string;
   isEdgeRuntime?: boolean;
   middlewareContext: AppPageMiddlewareContext;
   policy: AppPageResponsePolicy;
@@ -306,8 +307,8 @@ export function buildAppPageHtmlResponse(
   if (options.draftCookie) {
     headers.append("Set-Cookie", options.draftCookie);
   }
-  if (options.fontLinkHeader) {
-    headers.set("Link", options.fontLinkHeader);
+  if (options.linkHeader) {
+    headers.set("Link", options.linkHeader);
   }
 
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);

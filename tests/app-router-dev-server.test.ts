@@ -1188,6 +1188,23 @@ describe("App Router integration", () => {
     expect(location).toContain("/about");
   });
 
+  // Issue #1529: an RSC client navigation that hits a next.config.js redirect
+  // must keep the cache-busting `_rsc` query on the redirect Location so the
+  // browser's auto-followed request to the destination is still treated as an
+  // RSC fetch. The vinext client addresses RSC navigations via the `RSC: 1`
+  // header + `?_rsc=` query (not a `.rsc` suffix), so we replicate that shape.
+  it("preserves the _rsc query on config-redirect Location for RSC navigations (#1529)", async () => {
+    const res = await fetch(`${baseUrl}/old-about?_rsc=abc123`, {
+      redirect: "manual",
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    expect(res.status).toBe(308);
+    const location = res.headers.get("location");
+    expect(location).toBeTruthy();
+    expect(location).toContain("/about");
+    expect(location).toContain("_rsc=abc123");
+  });
+
   // Ported from Next.js: test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
   //
@@ -2031,6 +2048,27 @@ describe("App Router integration", () => {
     });
     expect(res.status).toBe(404);
     expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
+  });
+
+  it("returns action-not-found for an MPA form POST to a page with no decodable action", async () => {
+    // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
+    // ("should error when triggering an MPA action on an app with no server actions")
+    //
+    // A multipart form POST to a *page* route is always a server-action
+    // attempt. When the body carries no action reference, it must surface as
+    // Next.js' 404 + x-nextjs-action-not-found rather than rendering the page.
+    // This exercises the entry-side route classification (matchRoute +
+    // __loadPage / __loadRouteHandler markers) end-to-end. See issue #1340.
+    const body = new FormData();
+    body.append("test", "value");
+    const res = await fetch(`${baseUrl}/about`, {
+      method: "POST",
+      headers: { Origin: baseUrl, Host: new URL(baseUrl).host },
+      body,
+    });
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await res.text()).toBe("Server action not found.");
   });
 
   it("rejects cyclic multipart server action payloads before decodeReply", async () => {

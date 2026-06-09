@@ -27,6 +27,56 @@ describe("vinext next data client helpers", () => {
   });
 });
 
+describe("slot BFCache entry ordering", () => {
+  it("keeps the three most recent state-key entries", async () => {
+    const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
+
+    let order: readonly string[] = [];
+    order = updateBfcacheSlotEntryOrder(order, "one", 3);
+    order = updateBfcacheSlotEntryOrder(order, "two", 3);
+    order = updateBfcacheSlotEntryOrder(order, "three", 3);
+    order = updateBfcacheSlotEntryOrder(order, "four", 3);
+
+    expect(order).toEqual(["four", "three", "two"]);
+  });
+
+  it("moves an existing entry to the front without evicting another entry", async () => {
+    const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
+
+    let order: readonly string[] = [];
+    order = updateBfcacheSlotEntryOrder(order, "one", 3);
+    order = updateBfcacheSlotEntryOrder(order, "two", 3);
+    order = updateBfcacheSlotEntryOrder(order, "three", 3);
+    order = updateBfcacheSlotEntryOrder(order, "one", 3);
+
+    expect(order).toEqual(["one", "three", "two"]);
+  });
+
+  it("keeps a single retained entry when the limit is one", async () => {
+    const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
+
+    expect(updateBfcacheSlotEntryOrder(["one", "two", "three"], "two", 1)).toEqual(["two"]);
+  });
+
+  it("normalizes non-finite or non-positive limits to a single entry", async () => {
+    const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
+
+    expect(updateBfcacheSlotEntryOrder(["one", "two"], "two", Number.NaN)).toEqual(["two"]);
+    expect(updateBfcacheSlotEntryOrder(["one", "two"], "two", 0)).toEqual(["two"]);
+    expect(updateBfcacheSlotEntryOrder(["one", "two"], "two", 1.9)).toEqual(["two"]);
+  });
+
+  it("ignores the active key when scanning the previous order", async () => {
+    const { updateBfcacheSlotEntryOrder } = await import("../packages/vinext/src/shims/slot.js");
+
+    expect(updateBfcacheSlotEntryOrder(["one", "two", "three"], "two", 3)).toEqual([
+      "two",
+      "one",
+      "three",
+    ]);
+  });
+});
+
 describe("next/navigation shim", () => {
   it("exports usePathname, useSearchParams, useParams, useRouter", async () => {
     const nav = await import("../packages/vinext/src/shims/navigation.js");
@@ -4733,6 +4783,44 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(2);
   });
 
+  it("nested cacheTag bubbles to the outer cache entry even when the inner HITs", async () => {
+    // Regression for issue #1453 (nested-HIT path): when an inner "use cache"
+    // function HITs the data cache while nested inside an outer cache that is
+    // being (re)generated, the inner entry's stored tags must bubble into the
+    // outer entry's tags. Otherwise revalidateTag("inner-tag") evicts the inner
+    // entry but leaves the outer page/route-handler ISR entry stale.
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+
+    const inner = registerCachedFunction(async () => {
+      cacheTag("inner-tag");
+      return { inner: true };
+    }, "test:nested-inner");
+
+    const outer = registerCachedFunction(async () => {
+      cacheTag("outer-tag");
+      await inner();
+      return { outer: true };
+    }, "test:nested-outer");
+
+    // Warm the inner entry on its own so the next outer call HITs it.
+    await inner();
+    // Now build the outer entry; its body re-runs `inner()`, which HITs.
+    await outer();
+
+    const outerEntry = await handler.get("use-cache:test:nested-outer");
+    expect(outerEntry?.value).toHaveProperty("kind", "FETCH");
+    if (outerEntry?.value && outerEntry.value.kind === "FETCH") {
+      // The outer entry must carry both its own tag and the nested inner tag.
+      expect(outerEntry.value.tags).toContain("outer-tag");
+      expect(outerEntry.value.tags).toContain("inner-tag");
+    }
+  });
+
   it("private variant uses per-request cache", async () => {
     const { registerCachedFunction, clearPrivateCache } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
@@ -6489,6 +6577,33 @@ describe("middleware bypass prevention", () => {
     expect(rawResult).toBeNull();
   });
 
+  it("preserveRedirectDestinationQuery merges the original request query onto the destination (#1529)", async () => {
+    const { preserveRedirectDestinationQuery } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+
+    // Carries the RSC cache-busting `_rsc` param onto a query-less destination.
+    expect(preserveRedirectDestinationQuery("/dest", "?_rsc=abc123")).toBe("/dest?_rsc=abc123");
+
+    // Merges with a destination that already has its own query; destination
+    // params win on key conflicts (mirrors Next.js + proxyExternalRequest).
+    expect(preserveRedirectDestinationQuery("/dest?from=cfg", "?from=req&_rsc=abc")).toBe(
+      "/dest?from=cfg&_rsc=abc",
+    );
+
+    // No request query → destination untouched.
+    expect(preserveRedirectDestinationQuery("/dest?a=1", "")).toBe("/dest?a=1");
+    expect(preserveRedirectDestinationQuery("/dest", "?")).toBe("/dest");
+
+    // External destinations are returned untouched (no query leak across origins).
+    expect(preserveRedirectDestinationQuery("https://example.com/x", "?_rsc=abc")).toBe(
+      "https://example.com/x",
+    );
+    expect(preserveRedirectDestinationQuery("//evil.com", "?_rsc=abc")).toBe("//evil.com");
+
+    // Preserves a hash fragment on the destination.
+    expect(preserveRedirectDestinationQuery("/dest#frag", "?_rsc=abc")).toBe("/dest?_rsc=abc#frag");
+  });
+
   it("config header matcher works with decoded percent-encoded paths", async () => {
     const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
     const { normalizePath } = await import("../packages/vinext/src/server/normalize-path.js");
@@ -6601,6 +6716,7 @@ describe("double-encoded path handling in middleware", () => {
         unauthorizedPaths: [],
         unauthorizedPath: null,
         parallelSlots: [],
+        siblingIntercepts: [],
       },
     ]);
     expect(code).toContain("createAppRscRouteMatcher as __createAppRscRouteMatcher");

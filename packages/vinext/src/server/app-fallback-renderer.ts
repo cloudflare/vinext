@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { NavigationContext } from "vinext/shims/navigation";
 import type { AppPageParams } from "./app-page-boundary.js";
 import {
   renderAppPageErrorBoundary,
@@ -46,7 +47,7 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
     routePath: string,
   ) => AppPageBoundaryOnError;
   fontProviders: AppFallbackRendererFontProviders;
-  getNavigationContext: () => unknown;
+  getNavigationContext: () => NavigationContext | null;
   globalErrorModule?: TModule | null;
   /**
    * Loader for the user's `app/global-not-found.tsx` module. When provided,

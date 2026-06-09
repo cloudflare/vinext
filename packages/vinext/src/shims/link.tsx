@@ -72,6 +72,13 @@ import {
 } from "./internal/pages-data-target.js";
 import { markAppRouteDetectedOnPrefetch } from "./internal/app-route-detection.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
+import {
+  clearLinkForCurrentNavigation,
+  notifyLinkNavigationStart,
+  setLinkForCurrentNavigation,
+  type PendingLinkSetter,
+} from "./internal/link-status-registry.js";
+import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-warning.js";
 
 type NavigateEvent = {
   url: URL;
@@ -150,6 +157,18 @@ export function useLinkStatus(): LinkStatusContextValue {
   return useContext(LinkStatusContext);
 }
 
+// Register the link-status reset hook on the navigation runtime as soon as this
+// module evaluates on the client. `navigateClientSide` calls it at the start of
+// every App Router navigation (including router.push and shallow routing), so a
+// stale link's pending state is cleared even when no <Link> initiated the
+// navigation. The registry itself lives in internal/link-status-registry.ts so
+// it can be unit-tested without rendering a <Link>.
+if (typeof window !== "undefined") {
+  registerNavigationRuntimeFunctions({
+    notifyLinkNavigationStart,
+  });
+}
+
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 /** trailingSlash from next.config.js, injected by the plugin at build time */
@@ -159,7 +178,14 @@ const linkPrefetchRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>
 
 function resolveHref(href: LinkProps["href"]): string {
   if (typeof href === "string") return href;
-  let url = href.pathname ?? "/";
+  // When `pathname` is omitted, leave the base empty so the result is a
+  // query-only href (e.g. `?params=foo`) rather than `/?params=foo`. Mirrors
+  // Next.js's `formatUrl()` (`pathname = urlObj.pathname || ''`) so that a
+  // `<Link href={{ query: {...} }} />` resolves against the *current* path at
+  // navigation time instead of collapsing onto the site root. Defaulting to
+  // "/" here recorded the wrong history entry for shallow links, breaking
+  // back/forward traversal (issue #1540).
+  let url = href.pathname ?? "";
   if (href.query) {
     const params = urlQueryToSearchParams(href.query);
     url = appendSearchParamsToUrl(url, params);
@@ -200,10 +226,12 @@ function normalizeRepeatedSlashes(url: string): string {
  * `resolveHref`. We mirror that behaviour (no dedup) for exact parity.
  *
  * Note: Next.js uses `router.pathname` (the route pattern, e.g.
- * `/posts/[id]`) for the "in page" segment of the message. We do not have
- * cheap access to the route pattern from inside the Link shim, so we
- * fall back to `window.location.pathname` (or `"/"` during SSR). The text
- * is cosmetic and is not asserted by the Next.js compat test.
+ * `/posts/[id]`) for the "in page" segment of the message. The Next.js
+ * compat test asserts this exact text (`in page: '/my/path/[name]'`), so we
+ * source it from the current render's route pattern via
+ * `getCurrentRoutePathnameForWarning()`: the Pages Router SSR context's route
+ * pattern on the server, `window.location.pathname` on the client, falling
+ * back to `"/"`.
  */
 function warnAndNormalizeRepeatedSlashesInHref(urlAsString: string): string {
   // Protocol-relative URLs (e.g. "//example.com/path") are treated by vinext
@@ -223,8 +251,7 @@ function warnAndNormalizeRepeatedSlashesInHref(urlAsString: string): string {
   const urlParts = urlAsStringNoProto.split("?", 1);
   if (!(urlParts[0] || "").match(/(\/\/|\\)/)) return urlAsString;
 
-  const pathname =
-    typeof window !== "undefined" && window.location ? window.location.pathname : "/";
+  const pathname = getCurrentRoutePathnameForWarning();
   console.error(
     `Invalid href '${urlAsString}' passed to next/router in page: '${pathname}'. Repeated forward-slashes (//) or backslashes \\ are not valid in the href.`,
   );
@@ -758,10 +785,22 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Track pending state for useLinkStatus()
   const [pending, setPending] = useState(false);
   const mountedRef = useRef(true);
+  // Stable setter so the global navigation registry can reset this link's
+  // pending state from another navigation without depending on render identity.
+  const setPendingRef = useRef<PendingLinkSetter | null>(null);
+  if (setPendingRef.current === null) {
+    setPendingRef.current = (next: boolean) => {
+      if (mountedRef.current) setPending(next);
+    };
+  }
   useEffect(() => {
     mountedRef.current = true;
+    const setter = setPendingRef.current;
     return () => {
       mountedRef.current = false;
+      // Drop our setter from the global registry on unmount so a later
+      // navigation never calls into an unmounted component.
+      if (setter) clearLinkForCurrentNavigation(setter);
     };
   }, []);
 
@@ -943,11 +982,17 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // App Router: delegate to navigateClientSide which handles scroll save,
     // hash-only changes, RSC fetch, and two-phase URL commit.
     if (getNavigationRuntime()?.functions.navigate) {
+      const setter = setPendingRef.current;
+      // Register this link as the one driving the current navigation. This
+      // resets any previously-pending link (e.g. a different link clicked
+      // moments earlier) so only the last-clicked link shows a pending state.
+      if (setter) setLinkForCurrentNavigation(setter);
       setPending(true);
       React.startTransition(() => {
         void navigateClientSide(navigateHref, replace ? "replace" : "push", scroll, true).finally(
           () => {
             if (mountedRef.current) setPending(false);
+            if (setter) clearLinkForCurrentNavigation(setter);
           },
         );
       });

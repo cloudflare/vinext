@@ -413,6 +413,92 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  // Regression for https://github.com/cloudflare/vinext/issues/1535
+  // Ported from Next.js: test/e2e/app-dir/parallel-routes-catchall/
+  // ("should match correctly when defining an explicit slot but no page").
+  describe("explicit slot but no page (issue #1535)", () => {
+    it("falls children through to the sibling catch-all for a slot-only sub-route", async () => {
+      // /baz: @slot/baz/page.tsx exists, but there is no baz/page.tsx and no
+      // root default.tsx. Next.js serves /baz's children from the sibling
+      // [...catchAll]/page.tsx ("main catchall") while the @slot slot renders
+      // @slot/baz/page.tsx ("baz slot"). Without the catch-all children
+      // fallback the synthetic /baz route shadows the catch-all with an empty
+      // children prop and the request hangs.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/foo/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/baz/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/[...catchAll]/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "[...catchAll]/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "foo/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "bar/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const patterns = graph.routes.map((r) => r.pattern).sort();
+
+        // The slot-only sub-route must materialise so @slot/baz wins over the
+        // slot's own catch-all.
+        expect(patterns).toContain("/baz");
+        const baz = findRoute(graph.routes, "/baz");
+
+        // Children fall through to the sibling catch-all (not null → no hang).
+        expect(baz.pagePath).toBe(path.join(appDir, "[...catchAll]/page.tsx"));
+
+        // The @slot slot resolves to the explicit @slot/baz page, not the
+        // slot's catch-all.
+        const slot = baz.parallelSlots.find((s) => s.name === "slot");
+        expect(slot?.pagePath).toBe(path.join(appDir, "@slot/baz/page.tsx"));
+
+        // The top-level catch-all is still present for fully-unmatched paths.
+        expect(patterns).toContain("/:catchAll+");
+      });
+    });
+
+    it("builds the slot-only catch-all sub-route with a static pattern (documents params limitation)", async () => {
+      // The synthetic /baz route's URL pattern is static, so its catch-all
+      // children page receives empty params at render time (Next.js would pass
+      // params.catchAll = ["baz"]). Lock in the current shape so a future fix
+      // that populates the catch-all param has to update this assertion. See
+      // the "Known limitation" note in discoverSlotSubRoutes.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/baz/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "[...catchAll]/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const baz = findRoute(graph.routes, "/baz");
+
+        expect(baz.pagePath).toBe(path.join(appDir, "[...catchAll]/page.tsx"));
+        // Static pattern → no catch-all param captured for the children page.
+        expect(baz.isDynamic).toBe(false);
+        expect(baz.params).toEqual([]);
+        expect(baz.patternParts).toEqual(["baz"]);
+      });
+    });
+
+    it("prefers a children default.tsx over the catch-all when both exist", async () => {
+      // When the parent provides a default.tsx for the children slot, it wins
+      // over a sibling catch-all (default.tsx is the canonical children
+      // fallback). This guards the new catch-all fallback from displacing it.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@slot/baz/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "[...catchAll]/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const baz = findRoute(graph.routes, "/baz");
+        expect(baz.pagePath).toBe(path.join(appDir, "default.tsx"));
+      });
+    });
+  });
+
   it("keeps route groups transparent in materialized URL patterns", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
@@ -1062,6 +1148,28 @@ describe("App Router route graph builder", () => {
       return out;
     }
 
+    function collectSiblingIntercepts(routes: readonly AppRouteGraphRoute[]) {
+      const out: Array<{
+        ownerRoute: string;
+        targetPattern: string;
+        sourceMatchPattern: string;
+        convention: string;
+        params: string[];
+      }> = [];
+      for (const route of routes) {
+        for (const ir of (route as any).siblingIntercepts ?? []) {
+          out.push({
+            ownerRoute: route.pattern,
+            targetPattern: ir.targetPattern,
+            sourceMatchPattern: ir.sourceMatchPattern,
+            convention: ir.convention,
+            params: ir.params,
+          });
+        }
+      }
+      return out;
+    }
+
     it("computes `/` for root-level (.) slot", async () => {
       // Mirrors test/e2e/app-dir/parallel-routes-and-interception-basepath.
       await withTempApp(async (appDir) => {
@@ -1256,13 +1364,10 @@ describe("App Router route graph builder", () => {
       });
     });
 
-    it("ignores interception marker directories that live outside a parallel slot", async () => {
+    it("registers `(..)` sibling interception for showcase catchall outside a parallel slot", async () => {
       // Ported from Next.js: test/e2e/app-dir/interception-routes-multiple-catchall
-      // and test/e2e/app-dir/interception-segments-two-levels-above. Next.js
-      // allows interception marker directories anywhere — they should not be
-      // treated as standalone routes (the marker is not a real URL segment),
-      // so the build must not register `/templates/(..)showcase` as a page
-      // and must not throw while validating its pattern.
+      // The marker at templates/(..)showcase is a sibling (no @slot). Build must not
+      // register it as a literal route, AND must register it as a sibling intercept.
       await withTempApp(async (appDir) => {
         await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
         await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
@@ -1275,19 +1380,32 @@ describe("App Router route graph builder", () => {
         const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
         const patterns = graph.routes.map((route) => route.pattern);
 
-        // The marker directory itself is not a route — it must never surface
-        // as `/templates/(..)showcase` or similar.
         for (const pattern of patterns) {
           expect(pattern).not.toMatch(/\(\.{1,3}\)/);
         }
+
+        const intercepts = collectSiblingIntercepts(graph.routes);
+        // (..) from templates/ climbs 1 visible segment → target /showcase
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/showcase",
+            sourceMatchPattern: "/templates",
+            convention: "..",
+          }),
+        );
+        // Also the catchAll page registers a sibling intercept for /showcase/:catchAll+
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/showcase/:catchAll+",
+            sourceMatchPattern: "/templates",
+            convention: "..",
+          }),
+        );
       });
     });
 
-    it("ignores `(..)(..)` interception marker outside a parallel slot", async () => {
+    it("registers `(..)(..)` sibling interception outside a parallel slot", async () => {
       // Ported from Next.js: test/e2e/app-dir/interception-segments-two-levels-above
-      // app/foo/bar/(..)(..)hoge/page.tsx is a sibling-style interception
-      // marker (no @slot). Build must not throw and must not register a
-      // route with the literal marker in its pattern.
       await withTempApp(async (appDir) => {
         await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
         await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
@@ -1301,12 +1419,19 @@ describe("App Router route graph builder", () => {
         for (const pattern of patterns) {
           expect(pattern).not.toMatch(/\(\.{1,3}\)/);
         }
+
+        const intercepts = collectSiblingIntercepts(graph.routes);
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/hoge",
+            sourceMatchPattern: "/foo/bar",
+            convention: "../..",
+          }),
+        );
       });
     });
 
-    it("ignores `(.)` same-level interception marker outside a parallel slot", async () => {
-      // Coverage for the same-level marker — sibling of a regular route,
-      // not inside a `@slot`. Must not register `/gallery/(.)photo` as a page.
+    it("registers `(.)` sibling interception outside a parallel slot", async () => {
       await withTempApp(async (appDir) => {
         await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
         await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
@@ -1319,13 +1444,20 @@ describe("App Router route graph builder", () => {
         for (const pattern of patterns) {
           expect(pattern).not.toMatch(/\(\.{1,3}\)/);
         }
+
+        const intercepts = collectSiblingIntercepts(graph.routes);
+        // (.) resolves relative to the marker's parent dir (gallery/), so target = /gallery/photo
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/gallery/photo",
+            sourceMatchPattern: "/gallery",
+            convention: ".",
+          }),
+        );
       });
     });
 
-    it("ignores `(...)` root interception marker outside a parallel slot", async () => {
-      // Coverage for the root marker — `(...)` always resolves against the
-      // app root, so the marker must be stripped even when buried deep in
-      // the filesystem tree.
+    it("registers `(...)` sibling root interception outside a parallel slot", async () => {
       await withTempApp(async (appDir) => {
         await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
         await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
@@ -1338,6 +1470,71 @@ describe("App Router route graph builder", () => {
         for (const pattern of patterns) {
           expect(pattern).not.toMatch(/\(\.{1,3}\)/);
         }
+
+        const intercepts = collectSiblingIntercepts(graph.routes);
+        expect(intercepts).toContainEqual(
+          expect.objectContaining({
+            targetPattern: "/target",
+            sourceMatchPattern: "/deep/path",
+            convention: "...",
+          }),
+        );
+      });
+    });
+
+    it("attaches sibling intercept to ancestor route when parent dir has no page.tsx", async () => {
+      // When the marker's immediate parent dir has no page, findOwnerRouteForDir must
+      // walk up to the nearest ancestor that has a route.
+      // Structure: deep/path/(...)target/page.tsx with NO deep/path/page.tsx.
+      // The intercept should attach to the root route ("/") via ancestor walk.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "target/page.tsx", EMPTY_PAGE);
+        // Note: no deep/page.tsx or deep/path/page.tsx — both intermediate dirs are empty
+        await writeAppFile(appDir, "deep/path/(...)target/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+
+        const intercepts = collectSiblingIntercepts(graph.routes);
+        // Must not be dropped — must attach to some route via ancestor walk
+        expect(intercepts.length).toBeGreaterThan(0);
+        const intercept = intercepts.find((ir) => ir.targetPattern === "/target");
+        expect(intercept).toBeDefined();
+        // The nearest ancestor route with a page is "/" (the root)
+        expect(intercept?.ownerRoute).toBe("/");
+      });
+    });
+
+    it("promotes sibling interception into RouteManifest facts", async () => {
+      // Sibling intercepts (no @slot) must appear in routeManifest.segmentGraph.interceptions
+      // and be accessible via interceptionsBySlotId using the synthetic slot id.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "hoge/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "foo/bar/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "foo/bar/(..)(..)hoge/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const facts = Array.from(graph.routeManifest.segmentGraph.interceptions.values());
+
+        expect(facts).toContainEqual(
+          expect.objectContaining({
+            sourcePattern: "/foo/bar",
+            targetPattern: "/hoge",
+            slotId: "slot:__vinext_sibling_intercept:/foo/bar",
+          }),
+        );
+
+        const bySlotId = graph.routeManifest.segmentGraph.interceptionsBySlotId.get(
+          "slot:__vinext_sibling_intercept:/foo/bar",
+        );
+        expect(bySlotId).toHaveLength(1);
+        expect(bySlotId![0]).toMatchObject({
+          sourcePattern: "/foo/bar",
+          targetPattern: "/hoge",
+        });
       });
     });
   });

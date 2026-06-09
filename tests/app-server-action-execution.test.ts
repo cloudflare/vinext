@@ -119,6 +119,7 @@ function createOptions(
     getDraftModeCookieHeader() {
       return null;
     },
+    hasPageRoute: false,
     maxActionBodySize: 1024,
     middlewareHeaders: null,
     async readFormDataWithLimit() {
@@ -141,6 +142,36 @@ function requireProgressiveActionResponse(result: ProgressiveActionRequestResult
   }
 
   throw new Error(`Expected progressive action response, received ${result?.kind ?? "null"}`);
+}
+
+type CapturedActionModel = {
+  returnValue: { ok: boolean; data: unknown };
+  root?: string;
+};
+
+/**
+ * Captures the model passed to `renderToReadableStream` and exposes it as a
+ * non-nullable value, sidestepping the `let model: T | null` control-flow
+ * narrowing that trips the typechecker when the model is only assigned inside
+ * the callback.
+ */
+function captureRenderedModel() {
+  let captured: CapturedActionModel | null = null;
+  return {
+    capture: (model: {
+      returnValue: unknown;
+      root?: string;
+    }): ReadableStream<Uint8Array> | null => {
+      captured = model as CapturedActionModel;
+      return new Response("flight-error").body;
+    },
+    get: (): CapturedActionModel => {
+      if (!captured) {
+        throw new Error("renderToReadableStream was not called");
+      }
+      return captured;
+    },
+  };
 }
 
 function createFetchActionRequest(headers?: HeadersInit): Request {
@@ -227,6 +258,7 @@ function createRscOptions(
       return { params: {}, route };
     },
     maxActionBodySize: 1024,
+    maxActionBodySizeLabel: "1kb",
     middlewareHeaders: null,
     middlewareStatus: null,
     mountedSlotsHeader: null,
@@ -374,6 +406,67 @@ describe("app server action execution helpers", () => {
     expect(streamLimitResponse.status).toBe(413);
     expect(await streamLimitResponse.text()).toBe("Payload Too Large");
     expect(clearContext).toHaveBeenCalledTimes(2);
+  });
+
+  // Issue #1828 — for fetch (client-invoked) actions, an oversized body must not
+  // be rejected with a bare 413. Next.js returns a 500 Flight response carrying
+  // the rejected action result so the nearest client error boundary catches it.
+  // We mirror that: status 500, RSC content-type, no page root in the model, the
+  // body-exceeded error embedded in returnValue, and the action never loaded.
+  it("renders a 500 Flight error for oversized fetch action bodies via content-length (#1828)", async () => {
+    const clearContext = vi.fn();
+    const loadServerAction = vi.fn();
+    const reportRequestError = vi.fn();
+    const renderedModel = captureRenderedModel();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        clearRequestContext: clearContext,
+        loadServerAction,
+        maxActionBodySize: 10,
+        // Verbatim config string is used in the error message, not a value
+        // reconstructed from the byte count — matches upstream byte-for-byte.
+        maxActionBodySizeLabel: "2mb",
+        reportRequestError,
+        request: createFetchActionRequest({ "content-length": "11" }),
+        renderToReadableStream: renderedModel.capture,
+      }),
+    );
+
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("content-type")).toBe("text/x-component");
+    expect(loadServerAction).not.toHaveBeenCalled();
+    expect(reportRequestError).toHaveBeenCalledTimes(1);
+    expect(renderedModel.get().root).toBeUndefined();
+    expect(renderedModel.get().returnValue.ok).toBe(false);
+    // Mirrors the upstream e2e log assertion: `Error: Body exceeded 2mb limit`.
+    expect((renderedModel.get().returnValue.data as Error).message).toContain(
+      "Body exceeded 2mb limit",
+    );
+    // Stream consumed so clearRequestContext fires after the body drains.
+    await response?.text();
+    expect(clearContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders a 500 Flight error for oversized fetch action bodies via stream limit (#1828)", async () => {
+    const loadServerAction = vi.fn();
+    const renderedModel = captureRenderedModel();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        loadServerAction,
+        readBodyWithLimit() {
+          throw new Error("Request body too large");
+        },
+        renderToReadableStream: renderedModel.capture,
+      }),
+    );
+
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("content-type")).toBe("text/x-component");
+    expect(loadServerAction).not.toHaveBeenCalled();
+    expect(renderedModel.get().returnValue.ok).toBe(false);
+    expect((renderedModel.get().returnValue.data as Error).message).toContain("Body exceeded");
   });
 
   it("rejects malformed action payloads before decoding the action", async () => {
@@ -787,6 +880,68 @@ describe("app server action execution helpers", () => {
 
     expect(response.status).toBe(404);
     expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
+  // ("should error when triggering an MPA action on an app with no server actions")
+  //
+  // A multipart form POST to a *page* route that decodes to no action at all
+  // (e.g. the build has no server actions, so `decodeAction` returns null
+  // rather than throwing) must surface Next.js' 404 + action-not-found, not
+  // fall through to a 200 page render. The fetch-action variant of this case
+  // (handled via the `Next-Action` header) already worked; the MPA/form-POST
+  // variant did not. See issue #1340.
+  it("returns action-not-found when an MPA action targets a page with no server actions", async () => {
+    const clearContext = vi.fn();
+    const reportedErrors: Error[] = [];
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const response = requireProgressiveActionResponse(
+        await handleProgressiveServerActionRequest(
+          createOptions({
+            clearRequestContext: clearContext,
+            hasPageRoute: true,
+            async decodeAction() {
+              return null;
+            },
+            reportRequestError(error) {
+              reportedErrors.push(error);
+            },
+          }),
+        ),
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
+      expect(await response.text()).toBe("Server action not found.");
+      expect(reportedErrors).toEqual([]);
+      expect(clearContext).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "Failed to find Server Action. This request might be from an older or newer deployment.",
+        ),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  // Route handlers (route.ts) accept raw multipart POSTs that legitimately
+  // decode to no action; those must still fall through to the route-handler
+  // dispatch rather than 404. The page-vs-route distinction comes from the
+  // caller (`hasPageRoute`).
+  it("falls through for multipart posts that decode to no action on a non-page route", async () => {
+    const response = await handleProgressiveServerActionRequest(
+      createOptions({
+        hasPageRoute: false,
+        async decodeAction() {
+          return null;
+        },
+      }),
+    );
+
+    expect(response).toBeNull();
   });
 
   it("returns null for non-fetch RSC action requests", async () => {

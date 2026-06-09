@@ -151,11 +151,17 @@ function reduceApprovedVisibleCommitState(
   switch (action.type) {
     case "traverse":
     case "navigate": {
+      const preserveElementIds = action.reuseCurrentBfcacheIds
+        ? commit.decision.preserveElementIds
+        : [];
+      const preservePreviousSlotIds = action.reuseCurrentBfcacheIds
+        ? commit.decision.preservePreviousSlotIds
+        : [];
       const mergedElements = mergeElements(state.elements, action.elements, {
-        clearAbsentSlots: action.type === "traverse",
-        preserveAbsentSlots: commit.decision.preserveAbsentSlots,
-        preserveElementIds: commit.decision.preserveElementIds,
-        preservePreviousSlotIds: commit.decision.preservePreviousSlotIds,
+        clearAbsentSlots: action.type === "traverse" || !action.reuseCurrentBfcacheIds,
+        preserveAbsentSlots: action.reuseCurrentBfcacheIds && commit.decision.preserveAbsentSlots,
+        preserveElementIds,
+        preservePreviousSlotIds,
       });
       return commitVisibleRouterState(
         state,
@@ -163,16 +169,12 @@ function reduceApprovedVisibleCommitState(
           bfcacheIds: preserveBfcacheIdsForMergedElements({
             elements: mergedElements,
             next: action.bfcacheIds,
-            previous: state.bfcacheIds,
+            previous: action.reuseCurrentBfcacheIds ? state.bfcacheIds : {},
           }),
           elements: mergedElements,
           interception: action.interception,
           interceptionContext: action.interceptionContext,
-          layoutFlags: mergeLayoutFlags(
-            state.layoutFlags,
-            action.layoutFlags,
-            commit.decision.preserveElementIds,
-          ),
+          layoutFlags: mergeLayoutFlags(state.layoutFlags, action.layoutFlags, preserveElementIds),
           layoutIds: action.layoutIds,
           navigationSnapshot: action.navigationSnapshot,
           previousNextUrl: action.previousNextUrl,
@@ -183,7 +185,7 @@ function reduceApprovedVisibleCommitState(
             state.slotBindings,
             action.slotBindings,
             action.layoutIds,
-            commit.decision.preservePreviousSlotIds,
+            preservePreviousSlotIds,
           ),
         },
         action.operation,

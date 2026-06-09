@@ -34,6 +34,7 @@ type ReadAppRouteHandlerCacheOptions = {
   getCollectedFetchTags: () => string[];
   handlerFn: AppRouteHandlerFunction;
   i18n?: NextI18nConfig | null;
+  trailingSlash?: boolean;
   isAutoHead: boolean;
   isrDebug?: AppRouteDebugLogger;
   isrGet: RouteHandlerCacheGetter;
@@ -112,6 +113,7 @@ export async function readAppRouteHandlerCacheResponse(
             dynamicConfig: options.dynamicConfig,
             handlerFn: options.handlerFn,
             i18n: options.i18n,
+            trailingSlash: options.trailingSlash,
             markDynamicUsage: options.markDynamicUsage,
             params: options.params === null ? null : makeThenableParams(options.params),
             request: new Request(options.requestUrl, { method: "GET" }),

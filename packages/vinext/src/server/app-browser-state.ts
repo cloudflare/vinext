@@ -106,6 +106,7 @@ export type AppRouterAction = {
   previousNextUrl: string | null;
   renderId: number;
   rootLayoutTreePath: string | null;
+  reuseCurrentBfcacheIds: boolean;
   routeId: string;
   skippedLayoutIds: readonly string[];
   slotBindings: readonly AppElementsSlotBinding[];
@@ -126,6 +127,7 @@ export type PendingNavigationCommit = {
 export type AppNavigationPayloadOrigin = Readonly<
   { origin: "fresh" } | { origin: "visited-cache" }
 >;
+type BfcacheStateKeyMap = Readonly<Record<string, string>>;
 
 export const FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN: AppNavigationPayloadOrigin = {
   origin: "fresh",
@@ -292,6 +294,32 @@ export function createInitialBfcacheIdMap(elements: AppElements): BfcacheIdMap {
   return ids;
 }
 
+function normalizeBfcachePathname(pathname: string): string {
+  // Use the route-match normalizer so decoded delimiters like %2F remain data
+  // inside their segment instead of becoming structural path separators.
+  const normalized = normalizePath(normalizePathnameForRouteMatch(pathname));
+  return normalized.length > 1 ? normalized.replace(/\/$/, "") : normalized;
+}
+
+export function createBfcacheSegmentStateKeyMap(options: {
+  elements: AppElements;
+  pathname: string;
+}): BfcacheStateKeyMap {
+  const metadata = readAppElementsMetadata(options.elements);
+  const normalizedPathname = normalizeBfcachePathname(options.pathname);
+  const stateKeys: Record<string, string> = {};
+  for (const id of collectBfcacheSegmentIds(options.elements, metadata)) {
+    const stateKey = createBfcacheSegmentIdentity(id, {
+      metadata,
+      pathname: normalizedPathname,
+    });
+    if (stateKey !== null) {
+      stateKeys[id] = stateKey;
+    }
+  }
+  return stateKeys;
+}
+
 export function createNextBfcacheIdMap(options: {
   current: BfcacheIdMap;
   currentElements: AppElements;
@@ -299,8 +327,10 @@ export function createNextBfcacheIdMap(options: {
   elements: AppElements;
   nextPathname: string;
   restored?: BfcacheIdMap | null;
+  reuseCurrent?: boolean;
 }): BfcacheIdMap {
-  for (const value of Object.values(options.current)) {
+  const current = options.reuseCurrent === false ? {} : options.current;
+  for (const value of Object.values(current)) {
     rememberBfcacheId(value);
   }
   for (const value of Object.values(options.restored ?? {})) {
@@ -309,17 +339,19 @@ export function createNextBfcacheIdMap(options: {
 
   const currentMetadata = readAppElementsMetadata(options.currentElements);
   const nextMetadata = readAppElementsMetadata(options.elements);
+  const currentPathname = normalizeBfcachePathname(options.currentPathname);
+  const nextPathname = normalizeBfcachePathname(options.nextPathname);
   const ids: Record<string, string> = {};
   for (const id of collectBfcacheSegmentIds(options.elements, nextMetadata)) {
     const currentIdentity = createBfcacheSegmentIdentity(id, {
       metadata: currentMetadata,
-      pathname: options.currentPathname,
+      pathname: currentPathname,
     });
     const nextIdentity = createBfcacheSegmentIdentity(id, {
       metadata: nextMetadata,
-      pathname: options.nextPathname,
+      pathname: nextPathname,
     });
-    const currentValue = currentIdentity === nextIdentity ? options.current[id] : undefined;
+    const currentValue = currentIdentity === nextIdentity ? current[id] : undefined;
     // History traversals restore persisted ids first, matching segments keep
     // their current id, and newly-created segments mint a fresh opaque id.
     // Restored ids intentionally win over identity-matching: the target entry's
@@ -482,6 +514,12 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
     options.pending.action.operation.startedVisibleCommitVersion !==
       options.currentState.visibleCommitVersion
   ) {
+    // staleOperation — the navigation that created `pending` started from a
+    // different visibleCommitVersion than the current state. This happens when
+    // a synchronous history snapshot restore (restoreHistoryStateSnapshot, see
+    // app-browser-entry.ts popstate handler) bumps visibleCommitVersion before
+    // an in-flight async RSC traverse resolves. The snapshot restore is the
+    // authoritative commit; the stale async payload is intentionally discarded.
     return {
       disposition: "skip",
       preserveElementIds: [],
@@ -776,6 +814,7 @@ export async function createPendingNavigationCommit(options: {
   previousNextUrl?: string | null;
   renderId: number;
   restoredBfcacheIds?: BfcacheIdMap | null;
+  reuseCurrentBfcacheIds?: boolean;
   type: "navigate" | "replace" | "traverse";
 }): Promise<PendingNavigationCommit> {
   const elements = await options.nextElements;
@@ -800,6 +839,7 @@ export async function createPendingNavigationCommit(options: {
         elements,
         nextPathname: options.navigationSnapshot.pathname,
         restored: options.restoredBfcacheIds,
+        reuseCurrent: options.reuseCurrentBfcacheIds,
       }),
       ...(cacheEntryReuseProof ? { cacheEntryReuseProof } : {}),
       elements,
@@ -817,6 +857,7 @@ export async function createPendingNavigationCommit(options: {
       previousNextUrl,
       renderId: options.renderId,
       rootLayoutTreePath: metadata.rootLayoutTreePath,
+      reuseCurrentBfcacheIds: options.reuseCurrentBfcacheIds ?? true,
       routeId: metadata.routeId,
       skippedLayoutIds: metadata.skippedLayoutIds,
       type: options.type,

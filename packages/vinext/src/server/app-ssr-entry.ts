@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import { Fragment, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
+import type { RenderToReadableStreamOptions } from "react-dom/server";
 import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
 import clientReferences from "virtual:vite-rsc/client-references";
 import type { NavigationContext } from "vinext/shims/navigation";
@@ -42,11 +43,28 @@ import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
-import { createInitialBfcacheIdMap } from "./app-browser-state.js";
-import { ElementsContext, Slot } from "vinext/shims/slot";
+import { createBfcacheSegmentStateKeyMap, createInitialBfcacheIdMap } from "./app-browser-state.js";
+import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
+
+/**
+ * `@types/react-dom` does not yet type `maxHeadersLength` (it pairs with the
+ * already-typed `onHeaders` to cap the emitted preload `Link` header). React
+ * supports it at runtime, so augment the option type locally.
+ */
+type SsrRenderOptions = RenderToReadableStreamOptions & {
+  maxHeadersLength?: number;
+};
+
+/**
+ * Default cap for the preload `Link` header, matching Next.js's
+ * `defaultConfig.reactMaxHeadersLength`. Used when no config value threads
+ * through (e.g. error-boundary renders) so React's internal cap agrees with
+ * the response-layer combine cap.
+ */
+const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
 
 export type FontPreload = {
   href: string;
@@ -212,7 +230,7 @@ function buildModulePreloadHtml(bootstrapModuleUrl?: string, nonce?: string): st
 }
 
 function buildHeadInjectionHtml(
-  navContext: NavigationContext | null,
+  navContext: NavigationContext,
   bootstrapModuleUrl: string | undefined,
   formState: ReactFormState | null,
   insertedHTML: string,
@@ -220,11 +238,11 @@ function buildHeadInjectionHtml(
   scriptNonce?: string,
 ): string {
   const navPayload = {
-    pathname: navContext?.pathname ?? "/",
-    searchParams: navContext?.searchParams ? [...navContext.searchParams.entries()] : [],
+    pathname: navContext.pathname,
+    searchParams: [...navContext.searchParams.entries()],
   };
   const rscMetadataScript = createInlineScriptTag(
-    createNavigationRuntimeRscMetadataScript(navContext?.params ?? {}, navPayload),
+    createNavigationRuntimeRscMetadataScript(navContext.params, navPayload),
     scriptNonce,
   );
   const formStateScript =
@@ -242,6 +260,17 @@ function buildHeadInjectionHtml(
     insertedHTML +
     fontHTML
   );
+}
+
+function requireNavigationContext(navContext: NavigationContext | null): NavigationContext {
+  if (!navContext) {
+    // Guaranteed by the RSC handler (app-rsc-handler.ts) before every main
+    // render and by the ISR/revalidation path (app-page-dispatch.ts). Fallback
+    // boundary renderers synthesize one (app-page-boundary-render.ts) when
+    // request scope is gone.
+    throw new Error("App SSR requires navigation context for BFCache state keys");
+  }
+  return navContext;
 }
 
 export async function handleSsr(
@@ -264,6 +293,12 @@ export async function handleSsr(
      * SSR head. Undefined or empty disables emission entirely.
      */
     clientTraceMetadata?: readonly string[];
+    /**
+     * Maximum total length (in characters) of the preload `Link` header React
+     * emits during SSR. `0` disables emission. From `reactMaxHeadersLength` in
+     * `next.config`. Undefined falls back to React's own default.
+     */
+    reactMaxHeadersLength?: number;
     rootParams?: RootParams;
     /** Dev-only: original server error to surface in the browser overlay. */
     initialDevServerError?: unknown;
@@ -274,11 +309,11 @@ export async function handleSsr(
   },
 ): Promise<AppSsrRenderResult> {
   return runWithNavigationContext(async () => {
+    const ssrNavigationContext = requireNavigationContext(navContext);
+
     await clientReferencePreloader.preload();
 
-    if (navContext) {
-      setNavigationContext(navContext);
-    }
+    setNavigationContext(ssrNavigationContext);
 
     clearServerInsertedHTML();
 
@@ -322,6 +357,18 @@ export async function handleSsr(
             { value: elements },
             createReactElement(Slot, { id: metadata.routeId }),
           );
+          const stateKeyTree = createReactElement(
+            BfcacheStateKeyMapContext.Provider,
+            {
+              value: createBfcacheSegmentStateKeyMap({
+                elements,
+                // Normalized inside the function to match the client navigation
+                // snapshot pathname (SSR/client Activity key parity).
+                pathname: ssrNavigationContext.pathname,
+              }),
+            },
+            routeTree,
+          );
           // During SSR we only provide the id *map*, seeded entirely with the
           // INITIAL_BFCACHE_ID sentinel. BfcacheSlotBoundary may still publish a
           // BfcacheSegmentIdContext value here, but every map entry is the "0"
@@ -332,9 +379,9 @@ export async function handleSsr(
             ? createReactElement(
                 BfcacheIdMapContext.Provider,
                 { value: createInitialBfcacheIdMap(elements) },
-                routeTree,
+                stateKeyTree,
               )
-            : routeTree;
+            : stateKeyTree;
         }
 
         const flightRootElement = createReactElement(VinextFlightRoot);
@@ -398,7 +445,27 @@ export async function handleSsr(
           basePath: options?.basePath,
         });
 
-        const htmlStream = await renderToReadableStream(ssrRoot, {
+        // React emits a preload `Link` header (capped to `maxHeadersLength`)
+        // via `onHeaders`. It fires before the shell resolves, so `linkHeader`
+        // is populated by the time `renderToReadableStream` resolves below.
+        // `0` disables emission entirely — skip the callback so React doesn't
+        // warn about a non-positive `maxHeadersLength`. Fall back to the same
+        // 6000 default the response-layer cap uses (React's own default is
+        // 2000) so both caps agree when no config value threads through.
+        let reactLinkHeader = "";
+        const maxHeadersLength = options?.reactMaxHeadersLength ?? DEFAULT_REACT_MAX_HEADERS_LENGTH;
+        const captureHeaders = maxHeadersLength > 0;
+
+        const ssrRenderOptions: SsrRenderOptions = {
+          onHeaders: captureHeaders
+            ? (headers: Headers) => {
+                const link = headers.get("Link");
+                if (link) {
+                  reactLinkHeader = link;
+                }
+              }
+            : undefined,
+          maxHeadersLength: captureHeaders ? maxHeadersLength : undefined,
           // `bootstrapScriptContent` was previously how vinext injected the
           // dynamic-import call. `bootstrapModules` performs the same work
           // natively (and exposes the URL in the DOM), so passing both would
@@ -432,7 +499,9 @@ export async function handleSsr(
 
             return undefined;
           },
-        });
+        };
+
+        const htmlStream = await renderToReadableStream(ssrRoot, ssrRenderOptions);
 
         // Populated before any SSR request runs: at prod-server startup
         // (prod-server.ts) or via build-time bundle injection (index.ts). Left
@@ -471,7 +540,7 @@ export async function handleSsr(
 
           didInjectHeadHTML = true;
           return buildHeadInjectionHtml(
-            navContext,
+            ssrNavigationContext,
             bootstrapModuleUrl,
             options?.formState ?? null,
             insertedHTML + errorMetaHTML + getTraceMetaHTML() + initialDevServerErrorHTML,
@@ -522,6 +591,7 @@ export async function handleSsr(
           // this promise expecting it to be load-bearing in production.
           metadataReady: Promise.resolve(),
           capturedRscData: options?.capturedRscDataRef?.value ?? null,
+          linkHeader: reactLinkHeader,
         };
       } catch (error) {
         cleanup();

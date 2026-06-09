@@ -1,5 +1,6 @@
 import React, { type ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
+import type { NavigationContext } from "vinext/shims/navigation";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
 import {
   _consumeRequestScopedCacheLife,
@@ -188,6 +189,12 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
    * SSR head. Undefined or empty disables emission entirely.
    */
   clientTraceMetadata?: readonly string[];
+  /**
+   * Maximum total length (in characters) of the preload `Link` header emitted
+   * during SSR. `0` disables emission. From `reactMaxHeadersLength` in
+   * `next.config`. Undefined falls back to the React default downstream.
+   */
+  reactMaxHeadersLength?: number;
   buildPageElement: (
     route: TRoute,
     params: AppPageParams,
@@ -219,7 +226,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];
-  getNavigationContext: () => unknown;
+  getNavigationContext: () => NavigationContext | null;
   getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
   hasGenerateStaticParams: boolean;
   hasPageDefaultExport: boolean;
@@ -554,7 +561,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // fresh render; this seed only gets them into the cache read path.
       revalidateSeconds: currentRevalidateSeconds ?? 0,
       renderFreshPageForCache: async () => {
-        const revalidationTarget = resolveAppPageInterceptionRerenderTarget({
+        const revalidationTarget = await resolveAppPageInterceptionRerenderTarget({
           cleanPathname: options.cleanPathname,
           currentParams: options.params,
           currentRoute: route,
@@ -619,6 +626,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               {
                 basePath: options.basePath,
                 clientTraceMetadata: options.clientTraceMetadata,
+                reactMaxHeadersLength: options.reactMaxHeadersLength,
                 rootParams: options.rootParams,
                 waitForAllReady: true,
                 ...(revalidatedRscCapture.sideStream
@@ -815,6 +823,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   return renderAppPageLifecycle({
     basePath: options.basePath,
     clientTraceMetadata: options.clientTraceMetadata,
+    reactMaxHeadersLength: options.reactMaxHeadersLength,
     cleanPathname: options.cleanPathname,
     clearRequestContext: options.clearRequestContext,
     consumeDynamicUsage,

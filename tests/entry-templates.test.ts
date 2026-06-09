@@ -44,6 +44,7 @@ const minimalAppRoutes: AppRoute[] = [
     layoutTreePositions: [0],
     isDynamic: false,
     params: [],
+    siblingIntercepts: [],
   },
   {
     pattern: "/about",
@@ -67,6 +68,7 @@ const minimalAppRoutes: AppRoute[] = [
     layoutTreePositions: [0],
     isDynamic: false,
     params: [],
+    siblingIntercepts: [],
   },
   {
     pattern: "/blog/:slug",
@@ -90,6 +92,7 @@ const minimalAppRoutes: AppRoute[] = [
     layoutTreePositions: [0, 1],
     isDynamic: true,
     params: ["slug"],
+    siblingIntercepts: [],
   },
   {
     pattern: "/dashboard",
@@ -113,6 +116,7 @@ const minimalAppRoutes: AppRoute[] = [
     layoutTreePositions: [0, 1],
     isDynamic: false,
     params: [],
+    siblingIntercepts: [],
   },
 ];
 
@@ -144,6 +148,7 @@ describe("App Router generated manifest construction", () => {
         layoutTreePositions: [0, 1],
         isDynamic: false,
         params: [],
+        siblingIntercepts: [],
       },
       {
         pattern: "/docs/:slug",
@@ -167,6 +172,7 @@ describe("App Router generated manifest construction", () => {
         layoutTreePositions: [0],
         isDynamic: true,
         params: ["slug"],
+        siblingIntercepts: [],
       },
       {
         pattern: "/api",
@@ -190,6 +196,7 @@ describe("App Router generated manifest construction", () => {
         layoutTreePositions: [],
         isDynamic: false,
         params: [],
+        siblingIntercepts: [],
       },
     ]);
 
@@ -264,6 +271,7 @@ describe("App Router generated manifest construction", () => {
         layoutTreePositions: [0],
         isDynamic: false,
         params: [],
+        siblingIntercepts: [],
       },
       {
         ids: {
@@ -325,6 +333,7 @@ describe("App Router generated manifest construction", () => {
         isDynamic: true,
         params: ["id"],
         rootParamNames: ["id"],
+        siblingIntercepts: [],
       },
     ] satisfies AppRoute[];
 
@@ -337,8 +346,8 @@ describe("App Router generated manifest construction", () => {
     const imports = manifest.imports.join("\n");
     expect(imports.match(/\/tmp\/test\/app\/layout\.tsx/g)).toHaveLength(1);
     // All page modules are lazy loaders (including the dynamic "/dashboard/:id"
-    // page); only shared modules (layouts/templates/boundaries/intercepts) and
-    // global-error stay eager `import * as`.
+    // page and intercepting pages); only shared modules
+    // (layouts/templates/boundaries) and global-error stay eager `import * as`.
     expect(imports).toContain('const load_0 = () => import("/tmp/test/app/page.tsx");');
     expect(imports).toContain(
       'const load_1 = () => import("/tmp/test/app/dashboard/[id]/page.tsx");',
@@ -347,15 +356,15 @@ describe("App Router generated manifest construction", () => {
       'const load_2 = () => import("/tmp/test/app/dashboard/[id]/route.ts");',
     );
     expect(imports).toContain(
-      'import * as mod_14 from "/tmp/test/app/dashboard/@modal/(.)photos/[photoId]/page.tsx";',
+      'const load_3 = () => import("/tmp/test/app/dashboard/@modal/(.)photos/[photoId]/page.tsx");',
     );
-    expect(imports).toContain('import * as mod_16 from "/tmp/test/app/global-error.tsx";');
+    expect(imports).toContain('import * as mod_15 from "/tmp/test/app/global-error.tsx";');
 
     expect(manifest.rootNotFoundVar).toBe("mod_1");
     expect(manifest.rootForbiddenVar).toBe("mod_2");
     expect(manifest.rootUnauthorizedVar).toBe("mod_3");
     expect(manifest.rootLayoutVars).toEqual(["mod_0"]);
-    expect(manifest.globalErrorVar).toBe("mod_16");
+    expect(manifest.globalErrorVar).toBe("mod_15");
 
     const dynamicRouteEntry = manifest.routeEntries[1];
     expect(dynamicRouteEntry).toContain('"route":"route:/dashboard/:id"');
@@ -370,8 +379,9 @@ describe("App Router generated manifest construction", () => {
     expect(dynamicRouteEntry).toContain("__loadRouteHandler: load_2");
     expect(dynamicRouteEntry).toContain("layouts: [mod_0, mod_4]");
     expect(dynamicRouteEntry).toContain('"modal:/tmp/test/app/dashboard/@modal": {');
-    expect(dynamicRouteEntry).toContain("interceptLayouts: [mod_15]");
-    expect(dynamicRouteEntry).toContain("page: mod_14");
+    expect(dynamicRouteEntry).toContain("interceptLayouts: [mod_14]");
+    expect(dynamicRouteEntry).toContain("page: null");
+    expect(dynamicRouteEntry).toContain("__pageLoader: load_3");
     expect(dynamicRouteEntry).toContain('params: ["photoId"]');
     expect(manifest.generateStaticParamsEntries).toEqual([
       '  "/dashboard/:id": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["id"]),',
@@ -402,6 +412,7 @@ describe("App Router generated manifest construction", () => {
         layoutTreePositions: [0],
         isDynamic: false,
         params: [],
+        siblingIntercepts: [],
       },
     ] satisfies AppRoute[];
 
@@ -446,6 +457,7 @@ describe("App Router generated manifest construction", () => {
         isDynamic: true,
         params: ["lang", "locale", "slug"],
         rootParamNames: ["lang", "locale"],
+        siblingIntercepts: [],
       },
     ] satisfies AppRoute[];
 
@@ -490,6 +502,7 @@ describe("App Router generated manifest construction", () => {
         isDynamic: true,
         params: ["lang", "section", "slug"],
         rootParamNames: ["lang", "section"],
+        siblingIntercepts: [],
       },
     ] satisfies AppRoute[];
 

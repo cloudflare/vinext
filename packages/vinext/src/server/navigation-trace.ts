@@ -50,7 +50,7 @@ export type NavigationTraceReasonCode =
 export type NavigationTraceTransactionCode =
   (typeof NavigationTraceTransactionCodes)[keyof typeof NavigationTraceTransactionCodes];
 
-export type NavigationTraceCode = NavigationTraceReasonCode | NavigationTraceTransactionCode;
+type NavigationTraceCode = NavigationTraceReasonCode | NavigationTraceTransactionCode;
 
 type NavigationTraceFieldName =
   | "activeNavigationId"

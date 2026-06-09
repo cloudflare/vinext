@@ -319,7 +319,11 @@ function createDispatchOptions(
       return [];
     },
     getNavigationContext() {
-      return { pathname: "/posts/hello" };
+      return {
+        pathname: "/posts/hello",
+        searchParams: new URLSearchParams(),
+        params: { slug: "hello" },
+      };
     },
     getSourceRoute: overrides.getSourceRoute ?? (() => undefined),
     hasGenerateStaticParams: typeof overrides.generateStaticParams === "function",
