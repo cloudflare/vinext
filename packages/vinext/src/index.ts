@@ -56,6 +56,7 @@ import { isNextDataPathname, parseNextDataPathname } from "./server/pages-data-r
 import {
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
+  NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_MW_CTX_HEADER,
   VINEXT_TIMING_HEADER,
 } from "./server/headers.js";
@@ -3407,7 +3408,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   // Stale buildId or malformed path. Return a JSON 404 here
                   // (matching the prod-server path) so clients hard-navigate
                   // instead of trying to parse Vite's HTML 404 as JSON.
-                  res.writeHead(404, { "Content-Type": "application/json" });
+                  // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
+                  // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.
+                  const deploymentId =
+                    process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
+                  const notFoundHeaders: Record<string, string> = {
+                    "Content-Type": "application/json",
+                  };
+                  if (deploymentId) notFoundHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+                  res.writeHead(404, notFoundHeaders);
                   res.end("{}");
                   return;
                 }

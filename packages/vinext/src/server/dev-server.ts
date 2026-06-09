@@ -512,7 +512,12 @@ export function createSSRHandler(
       if (isDataReq) {
         // Stale client requested data for a page that no longer exists.
         // Emit a JSON 404 so the client hard-navigates (matches Next.js).
-        res.writeHead(404, { "Content-Type": "application/json" });
+        // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
+        // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.
+        const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
+        const notFoundHeaders: Record<string, string> = { "Content-Type": "application/json" };
+        if (deploymentId) notFoundHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+        res.writeHead(404, notFoundHeaders);
         res.end("{}");
         return;
       }
