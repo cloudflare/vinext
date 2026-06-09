@@ -191,10 +191,14 @@ export type NavigationContext = {
 
 const _READONLY_SEARCH_PARAMS = Symbol("vinext.navigation.readonlySearchParams");
 const _READONLY_SEARCH_PARAMS_SOURCE = Symbol("vinext.navigation.readonlySearchParamsSource");
+const _READONLY_SEARCH_PARAMS_SOURCE_KEY = Symbol(
+  "vinext.navigation.readonlySearchParamsSourceKey",
+);
 
 type NavigationContextWithReadonlyCache = NavigationContext & {
   [_READONLY_SEARCH_PARAMS]?: ReadonlyURLSearchParams;
   [_READONLY_SEARCH_PARAMS_SOURCE]?: URLSearchParams;
+  [_READONLY_SEARCH_PARAMS_SOURCE_KEY]?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -251,6 +255,12 @@ function _getClientHydrationContext(): NavigationContext | null | undefined {
 
 function _setClientHydrationContext(ctx: NavigationContext | null): void {
   (globalThis as _GlobalWithHydrationContext)[_GLOBAL_HYDRATION_CONTEXT_KEY] = ctx;
+}
+
+function clearClientHydrationContext(): void {
+  if (typeof window !== "undefined") {
+    _setClientHydrationContext(null);
+  }
 }
 
 let _serverContext: NavigationContext | null = null;
@@ -324,16 +334,18 @@ export function _registerStateAccessors(accessors: _StateAccessors): void {
 // ---------------------------------------------------------------------------
 
 type PagesNavigationContext = {
-  pathname: string;
+  pathname: string | null;
   searchParams: URLSearchParams;
-  params: Record<string, string | string[]>;
+  params: Record<string, string | string[]> | null;
 };
 
 const PAGES_NAVIGATION_ACCESSOR_KEY = Symbol.for(
   "vinext.navigation.pagesNavigationContextAccessor",
 );
+const PAGES_NAVIGATION_NOTIFY_KEY = Symbol.for("vinext.navigation.pagesNavigationNotify");
 type _GlobalWithPagesAccessor = typeof globalThis & {
   [PAGES_NAVIGATION_ACCESSOR_KEY]?: () => PagesNavigationContext | null;
+  [PAGES_NAVIGATION_NOTIFY_KEY]?: () => void;
 };
 
 function _getPagesNavigationContext(): PagesNavigationContext | null {
@@ -1130,10 +1142,43 @@ function notifyNavigationListeners(): void {
   for (const fn of state.listeners) fn();
 }
 
+if (!isServer) {
+  (globalThis as _GlobalWithPagesAccessor)[PAGES_NAVIGATION_NOTIFY_KEY] = notifyNavigationListeners;
+}
+
 // Cached URLSearchParams, pathname, etc. for referential stability
 // useSyncExternalStore compares snapshots with Object.is — avoid creating
 // new instances on every render (infinite re-renders).
 let _cachedEmptyServerSearchParams: ReadonlyURLSearchParams | null = null;
+const _readonlyPagesSearchParamsCache = new WeakMap<URLSearchParams, ReadonlyURLSearchParams>();
+let _cachedReadonlyPagesSearchParamsKey: string | null = null;
+let _cachedReadonlyPagesSearchParams: ReadonlyURLSearchParams | null = null;
+
+function getReadonlyPagesSearchParams(searchParams: URLSearchParams): ReadonlyURLSearchParams {
+  // Two-level cache. The per-object WeakMap gives referential stability for a
+  // single URLSearchParams instance across renders. The string-keyed slot is
+  // also load-bearing: across the Pages Router pre-ready → ready transition the
+  // context swaps in a NEW URLSearchParams object even when the query string is
+  // unchanged, and returning the same wrapper for an equal string keeps
+  // `useSearchParams()` Object.is-stable so a `[searchParams]` effect does not
+  // re-fire spuriously. Under concurrent SSR one request can read another
+  // request's string-keyed wrapper, but that is harmless: ReadonlyURLSearchParams
+  // is immutable and equal-string wrappers are interchangeable.
+  const cached = _readonlyPagesSearchParamsCache.get(searchParams);
+  if (cached) return cached;
+
+  const key = searchParams.toString();
+  if (_cachedReadonlyPagesSearchParamsKey === key && _cachedReadonlyPagesSearchParams) {
+    _readonlyPagesSearchParamsCache.set(searchParams, _cachedReadonlyPagesSearchParams);
+    return _cachedReadonlyPagesSearchParams;
+  }
+
+  const readonly = new ReadonlyURLSearchParams(searchParams);
+  _readonlyPagesSearchParamsCache.set(searchParams, readonly);
+  _cachedReadonlyPagesSearchParamsKey = key;
+  _cachedReadonlyPagesSearchParams = readonly;
+  return readonly;
+}
 
 /**
  * Get cached pathname snapshot for useSyncExternalStore.
@@ -1143,7 +1188,9 @@ let _cachedEmptyServerSearchParams: ReadonlyURLSearchParams | null = null;
  * External pushState/replaceState while URL notifications are suppressed won't
  * be visible until the next commit.
  */
-function getPathnameSnapshot(): string {
+function getPathnameSnapshot(): string | null {
+  const pagesCtx = _getPagesNavigationContext();
+  if (pagesCtx) return pagesCtx.pathname;
   return getClientNavigationState()?.cachedPathname ?? "/";
 }
 
@@ -1158,6 +1205,13 @@ let _cachedEmptyClientSearchParams: ReadonlyURLSearchParams | null = null;
  * be visible until the next commit.
  */
 function getSearchParamsSnapshot(): ReadonlyURLSearchParams {
+  if (_getServerContext()) return getServerSearchParamsSnapshot();
+
+  const pagesCtx = _getPagesNavigationContext();
+  if (pagesCtx) {
+    return getReadonlyPagesSearchParams(pagesCtx.searchParams);
+  }
+
   const cached = getClientNavigationState()?.cachedReadonlySearchParams;
   if (cached) return cached;
   if (_cachedEmptyClientSearchParams === null) {
@@ -1197,7 +1251,7 @@ function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
     // .nextjs-ref/packages/next/src/shared/lib/router/adapters.tsx
     const pagesCtx = _getPagesNavigationContext();
     if (pagesCtx) {
-      return new ReadonlyURLSearchParams(pagesCtx.searchParams);
+      return getReadonlyPagesSearchParams(pagesCtx.searchParams);
     }
     if (_cachedEmptyServerSearchParams === null) {
       _cachedEmptyServerSearchParams = new ReadonlyURLSearchParams();
@@ -1209,8 +1263,17 @@ function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
   const cached = ctx[_READONLY_SEARCH_PARAMS];
   const cachedSource = ctx[_READONLY_SEARCH_PARAMS_SOURCE];
 
-  // Return cached wrapper if source hasn't changed
+  // Fast path: identical source object — reuse the wrapper without serializing.
   if (cached && cachedSource === source) {
+    return cached;
+  }
+
+  // The source object can change identity while keeping the same value (e.g. a
+  // hydration-cloned URLSearchParams). Serialize only when the identity check
+  // misses, then compare against the cached value key before rebuilding.
+  const sourceKey = source.toString();
+  if (cached && ctx[_READONLY_SEARCH_PARAMS_SOURCE_KEY] === sourceKey) {
+    ctx[_READONLY_SEARCH_PARAMS_SOURCE] = source;
     return cached;
   }
 
@@ -1218,6 +1281,7 @@ function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
   const readonly = new ReadonlyURLSearchParams(source);
   ctx[_READONLY_SEARCH_PARAMS] = readonly;
   ctx[_READONLY_SEARCH_PARAMS_SOURCE] = source;
+  ctx[_READONLY_SEARCH_PARAMS_SOURCE_KEY] = sourceKey;
 
   return readonly;
 }
@@ -1373,24 +1437,27 @@ export function clearPendingPathname(navId: number): void {
   }
 }
 
-function getClientParamsSnapshot(): Record<string, string | string[]> {
+function getClientParamsSnapshot(): Record<string, string | string[]> | null {
   const state = getClientNavigationState();
+  const ctx = _getServerContext();
+  if (ctx) return ctx.params;
+
   const pagesCtx = _getPagesNavigationContext();
-  if (pagesCtx) return pagesCtx.params;
-  if (state && Object.keys(state.clientParams).length > 0) {
-    return state.clientParams;
+  if (pagesCtx) {
+    return pagesCtx.params;
   }
   return state?.clientParams ?? _EMPTY_PARAMS;
 }
 
-function getServerParamsSnapshot(): Record<string, string | string[]> {
+function getServerParamsSnapshot(): Record<string, string | string[]> | null {
   const ctx = _getServerContext();
   if (ctx) return ctx.params;
   // No App Router navigation context — fall back to Pages Router state.
   // See `adaptForPathParams` in Next.js's pages-router adapter:
   // .nextjs-ref/packages/next/src/shared/lib/router/adapters.tsx
   const pagesCtx = _getPagesNavigationContext();
-  return pagesCtx?.params ?? _EMPTY_PARAMS;
+  if (pagesCtx) return pagesCtx.params;
+  return _EMPTY_PARAMS;
 }
 
 function subscribeToNavigation(cb: () => void): () => void {
@@ -1408,22 +1475,24 @@ function subscribeToNavigation(cb: () => void): () => void {
  * Returns the current pathname.
  * Server: from request context. Client: from window.location.
  */
-export function usePathname(): string {
+export function usePathname(): string | null {
   if (isServer) {
     // During SSR of "use client" components, the navigation context may not be set.
     // Return a safe fallback — the client will hydrate with the real value.
     const ctx = _getServerContext();
     if (ctx) return ctx.pathname;
     // Pages Router compat shim: derive pathname from the Pages Router state.
-    return _getPagesNavigationContext()?.pathname ?? "/";
+    const pagesCtx = _getPagesNavigationContext();
+    return pagesCtx ? pagesCtx.pathname : "/";
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
   // Client-side: use the hook system for reactivity
-  const pathname = React.useSyncExternalStore(
-    subscribeToNavigation,
-    getPathnameSnapshot,
-    () => _getServerContext()?.pathname ?? _getPagesNavigationContext()?.pathname ?? "/",
-  );
+  const pathname = React.useSyncExternalStore(subscribeToNavigation, getPathnameSnapshot, () => {
+    const ctx = _getServerContext();
+    if (ctx) return ctx.pathname;
+    const pagesCtx = _getPagesNavigationContext();
+    return pagesCtx ? pagesCtx.pathname : "/";
+  });
   // Prefer the render snapshot during an active navigation transition so
   // hooks return the pending URL, not the stale committed one. After commit,
   // fall through to useSyncExternalStore so user pushState/replaceState
@@ -1464,17 +1533,17 @@ export function useSearchParams(): ReadonlyURLSearchParams {
  */
 export function useParams<
   T extends Record<string, string | string[]> = Record<string, string | string[]>,
->(): T {
+>(): T | null {
   if (isServer) {
     // During SSR for "use client" components, the navigation context may not be set.
     // getServerParamsSnapshot covers both App Router and Pages Router compat.
-    return getServerParamsSnapshot() as T;
+    return getServerParamsSnapshot() as T | null;
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
   const params = React.useSyncExternalStore(
     subscribeToNavigation,
-    getClientParamsSnapshot as () => T,
-    getServerParamsSnapshot as () => T,
+    getClientParamsSnapshot as () => T | null,
+    getServerParamsSnapshot as () => T | null,
   );
   if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
     return renderSnapshot.params as T;
@@ -1542,11 +1611,13 @@ export function commitClientNavigationState(
   }
 
   const urlChanged = syncCommittedUrlStateFromLocation();
+  let paramsChanged = false;
   if (state.pendingClientParams !== null && state.pendingClientParamsJson !== null) {
     state.clientParams = state.pendingClientParams;
     state.clientParamsJson = state.pendingClientParamsJson;
     state.pendingClientParams = null;
     state.pendingClientParamsJson = null;
+    paramsChanged = true;
   }
   // Clear pending pathname when navigation commits, but only if:
   // - The navId matches the one that set pendingPathname
@@ -1562,6 +1633,10 @@ export function commitClientNavigationState(
   }
   const shouldNotify = urlChanged || state.hasPendingNavigationUpdate;
   state.hasPendingNavigationUpdate = false;
+
+  if (urlChanged || paramsChanged) {
+    clearClientHydrationContext();
+  }
 
   if (shouldNotify) {
     notifyNavigationListeners();

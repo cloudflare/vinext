@@ -541,6 +541,7 @@ const __reactMaxHeadersLength = ${JSON.stringify(reactMaxHeadersLength)};
 // \`vinextConfig\` export). Empty string when unset.
 export const __assetPrefix = ${JSON.stringify(assetPrefix)};
 export const __inlineCss = ${JSON.stringify(inlineCss)};
+export const __hasPagesDir = ${JSON.stringify(hasPagesDir)};
 
 export function seedMemoryCacheFromPrerender(serverDir) {
   return __seedMemoryCacheFromPrerender(serverDir, {

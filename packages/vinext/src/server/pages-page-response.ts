@@ -22,6 +22,18 @@ type PagesFontPreload = {
   type: string;
 };
 
+/**
+ * The `__NEXT_DATA__` fields beyond the always-present core that the Pages
+ * renderer serializes: the `__vinext` block plus the readiness flags
+ * (gssp/gsp/gip/appGip/autoExport/isExperimentalCompile) the client uses to
+ * recompute the initial `router.isReady`. Shared by every render path
+ * (initial, ISR regeneration) so they emit identical readiness state.
+ */
+export type PagesNextDataExtras = Pick<
+  VinextNextData,
+  "__vinext" | "appGip" | "autoExport" | "gip" | "gsp" | "gssp" | "isExperimentalCompile"
+>;
+
 export type PagesI18nRenderContext = {
   locale?: string;
   locales?: string[];
@@ -99,6 +111,7 @@ type RenderPagesPageResponseOptions = {
   scriptNonce?: string;
   statusCode?: number;
   vinext?: VinextNextData["__vinext"];
+  nextData?: PagesNextDataExtras;
 };
 
 function buildPagesFontHeadHtml(
@@ -136,6 +149,7 @@ export function buildPagesNextDataScript(
     | "routePattern"
     | "safeJsonStringify"
     | "scriptNonce"
+    | "nextData"
   > & {
     vinext?: VinextNextData["__vinext"];
   },
@@ -148,6 +162,14 @@ export function buildPagesNextDataScript(
     isFallback: options.isFallback === true,
   };
 
+  if (options.nextData) {
+    for (const [key, value] of Object.entries(options.nextData)) {
+      if (value !== undefined) {
+        nextDataPayload[key] = value;
+      }
+    }
+  }
+
   if (options.i18n.locales) {
     nextDataPayload.locale = options.i18n.locale;
     nextDataPayload.locales = options.i18n.locales;
@@ -156,7 +178,10 @@ export function buildPagesNextDataScript(
   }
 
   if (options.vinext) {
-    nextDataPayload.__vinext = options.vinext;
+    nextDataPayload.__vinext = {
+      ...options.nextData?.__vinext,
+      ...options.vinext,
+    };
   }
 
   const localeGlobals = options.i18n.locales
@@ -360,6 +385,7 @@ export async function renderPagesPageResponse(
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
     scriptNonce: options.scriptNonce,
+    nextData: options.nextData,
     vinext: options.vinext,
   });
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";

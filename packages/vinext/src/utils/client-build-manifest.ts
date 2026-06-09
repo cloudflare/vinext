@@ -6,7 +6,8 @@ import { isUnknownRecord } from "./record.js";
 
 type ClientBuildManifest = Record<string, BuildManifestChunk>;
 
-const CLIENT_ENTRY_MARKERS = ["vinext-client-entry", "vinext-app-browser-entry"] as const;
+const PAGES_CLIENT_ENTRY_MARKERS = ["vinext-client-entry"];
+const CLIENT_ENTRY_MARKERS = [...PAGES_CLIENT_ENTRY_MARKERS, "vinext-app-browser-entry"];
 
 export function readClientBuildManifest(manifestPath: string): ClientBuildManifest | undefined {
   if (!fs.existsSync(manifestPath)) return undefined;
@@ -44,17 +45,34 @@ export function findClientEntryFileFromManifest(
   buildManifest: ClientBuildManifest,
   assetBase: string,
 ): string | undefined {
+  return findEntryFileFromManifest(buildManifest, assetBase, CLIENT_ENTRY_MARKERS, true);
+}
+
+export function findPagesClientEntryFileFromManifest(
+  buildManifest: ClientBuildManifest,
+  assetBase: string,
+): string | undefined {
+  return findEntryFileFromManifest(buildManifest, assetBase, PAGES_CLIENT_ENTRY_MARKERS, false);
+}
+
+function findEntryFileFromManifest(
+  buildManifest: ClientBuildManifest,
+  assetBase: string,
+  markers: string[],
+  fallbackToFirstEntry: boolean,
+): string | undefined {
   const entries = Object.values(buildManifest).filter((entry) => entry.isEntry && entry.file);
   // A client build can emit more than one `isEntry` chunk (e.g. the client
   // entry plus instrumentation or middleware entries), and the manifest's
   // iteration order is not guaranteed to surface the client entry first.
-  // Prefer the chunk whose file carries a known client-entry marker — matching
-  // the precise on-disk scan in findClientEntryFileInAssetsDir — and only fall
-  // back to the first entry when nothing is marked.
-  const markedEntry = entries.find((entry) =>
-    CLIENT_ENTRY_MARKERS.some((marker) => entry.file.includes(marker)),
-  );
-  const chosen = markedEntry ?? entries[0];
+  // Prefer marker order over manifest order so hybrid app+pages builds use the
+  // Pages entry for the Pages renderer even if the App entry appears first.
+  for (const marker of markers) {
+    const markedEntry = entries.find((entry) => entry.file.includes(marker));
+    if (markedEntry) return manifestFileWithBase(markedEntry.file, assetBase);
+  }
+
+  const chosen = fallbackToFirstEntry ? entries[0] : undefined;
 
   return chosen ? manifestFileWithBase(chosen.file, assetBase) : undefined;
 }
@@ -63,16 +81,17 @@ function findClientEntryFileInAssetsDir(options: {
   clientDir: string;
   assetsSubdir: string;
   assetBase: string;
+  markers: string[];
 }): string | undefined {
   const assetsDir = path.join(options.clientDir, options.assetsSubdir);
   if (!fs.existsSync(assetsDir)) return undefined;
 
-  const entry = fs
-    .readdirSync(assetsDir)
-    .find(
-      (file) =>
-        CLIENT_ENTRY_MARKERS.some((marker) => file.includes(marker)) && file.endsWith(".js"),
-    );
+  const files = fs.readdirSync(assetsDir);
+  let entry: string | undefined;
+  for (const marker of options.markers) {
+    entry = files.find((file) => file.includes(marker) && file.endsWith(".js"));
+    if (entry) break;
+  }
 
   return entry
     ? manifestFileWithBase(`${options.assetsSubdir}/${entry}`, options.assetBase)
@@ -88,7 +107,21 @@ export function findClientEntryFile(options: {
   return (
     (options.buildManifest
       ? findClientEntryFileFromManifest(options.buildManifest, options.assetBase)
-      : undefined) ?? findClientEntryFileInAssetsDir(options)
+      : undefined) ?? findClientEntryFileInAssetsDir({ ...options, markers: CLIENT_ENTRY_MARKERS })
+  );
+}
+
+export function findPagesClientEntryFile(options: {
+  buildManifest?: ClientBuildManifest;
+  clientDir: string;
+  assetsSubdir: string;
+  assetBase: string;
+}): string | undefined {
+  return (
+    (options.buildManifest
+      ? findPagesClientEntryFileFromManifest(options.buildManifest, options.assetBase)
+      : undefined) ??
+    findClientEntryFileInAssetsDir({ ...options, markers: PAGES_CLIENT_ENTRY_MARKERS })
   );
 }
 

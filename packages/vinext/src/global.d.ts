@@ -378,6 +378,29 @@ declare global {
       __VINEXT_SHARED_RSC_COMPATIBILITY_ID?: string;
 
       /**
+       * Build-time secret that authenticates on-demand ISR revalidation
+       * requests (the vinext analog of Next.js's prerender-manifest
+       * `previewModeId`). Injected via a SERVER-ONLY Vite `define` so it is
+       * baked identically into every server bundle — and therefore shared by
+       * every Workers isolate — without ever reaching the client bundle. A
+       * per-process random secret would mismatch across isolates because
+       * `res.revalidate()`'s loopback `fetch()` can land on a different isolate;
+       * a build-baked constant is the same in all of them.
+       * `undefined` unless set during `vinext build` (so dev, and any non-CLI
+       * build, omit it — see `getRevalidateSecret`'s single-process fallback).
+       */
+      __VINEXT_REVALIDATE_SECRET?: string;
+
+      /**
+       * Build-only coordination variable set by the `vinext build` CLI so that
+       * every vinext() plugin instance in a single build (App Router buildApp +
+       * the separate hybrid Pages Router vite.build) bakes the same revalidate
+       * secret. Companion to `__VINEXT_SHARED_BUILD_ID`; never read by dev or
+       * standalone code paths.
+       */
+      __VINEXT_SHARED_REVALIDATE_SECRET?: string;
+
+      /**
        * Deployment ID string injected via Vite `define` when
        * `NEXT_DEPLOYMENT_ID` is present at build time.
        */

@@ -21,6 +21,7 @@ import {
   resolveBodyParserConfig,
 } from "./pages-body-parser-config.js";
 import { resolveRequestProtocol, resolveRequestHost } from "./proxy-trust.js";
+import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
 import { NextRequest } from "vinext/shims/server";
 
 /**
@@ -40,6 +41,7 @@ type NextApiResponse = {
   json(data: unknown): void;
   send(data: unknown): void;
   redirect(statusOrUrl: number | string, url?: string): void;
+  revalidate(urlPath: string, opts?: RevalidateOptions): Promise<void>;
 } & ServerResponse;
 
 type EdgeApiRouteModule = {
@@ -311,6 +313,14 @@ function enhanceApiObjects(
         this.writeHead(statusOrUrl, { Location: url ?? "" });
       }
       this.end();
+    },
+
+    // `res.revalidate(urlPath)` triggers on-demand ISR regeneration of a Pages
+    // Router route. Delegates to the shared helper so the secret wiring and
+    // success detection stay identical to the dev/Node-compat path. See
+    // `pages-revalidate.ts`.
+    async revalidate(this: NextApiResponse, urlPath: string, opts?: RevalidateOptions) {
+      await performOnDemandRevalidate(req, urlPath, opts);
     },
   });
 

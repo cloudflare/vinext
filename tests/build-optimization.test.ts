@@ -16,6 +16,9 @@ import {
   createClientManualChunks,
   clientTreeshakeConfig,
   getClientTreeshakeConfigForVite,
+  createRscFrameworkChunkOutputConfig,
+  RSC_FRAMEWORK_CHUNK_TEST,
+  isRscFrameworkModule,
 } from "../packages/vinext/src/build/client-build-config.js";
 import { computeLazyChunks } from "../packages/vinext/src/utils/lazy-chunks.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
@@ -983,6 +986,60 @@ describe("treeshake config integration", () => {
       );
 
       expect(resultNoCf.environments.client.build.manifest).toBeUndefined();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("App Router client env also emits the Pages client entry when pages/ exists", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-hybrid-entry-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "legacy.tsx"),
+      `export default function Legacy() { return <h1>Legacy</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const result = await (mainPlugin as any).config(
+        {
+          root: tmpDir,
+          build: {},
+          plugins: [],
+        },
+        { command: "build" },
+      );
+
+      expect(result.environments.client.build.manifest).toBe(true);
+      expect(result.environments.client.build.ssrManifest).toBe(true);
+      expect(getEnvBuildBundlerOptions(result.environments.client).input).toEqual({
+        index: "virtual:vinext-app-browser-entry",
+        "vinext-client-entry": "virtual:vinext-client-entry",
+      });
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -2165,5 +2222,77 @@ describe("getClientTreeshakeConfigForVite", () => {
     expect(config10).toEqual({
       moduleSideEffects: "no-external",
     });
+  });
+});
+
+// ─── createRscFrameworkChunkOutputConfig ──────────────────────────────────────
+
+describe("createRscFrameworkChunkOutputConfig", () => {
+  it("returns manualChunks for Vite 7 (Rollup) routing framework modules to 'framework'", () => {
+    const config = createRscFrameworkChunkOutputConfig(7);
+    expect(config).not.toHaveProperty("codeSplitting");
+    expect(config).toHaveProperty("manualChunks");
+    const manualChunks = (config as { manualChunks: (id: string) => string | undefined })
+      .manualChunks;
+    expect(manualChunks("/app/node_modules/react/index.js")).toBe("framework");
+    expect(manualChunks("/app/node_modules/react-server-dom-webpack/client.js")).toBe("framework");
+    // Non-framework node_modules and local files are left to the default algo.
+    expect(manualChunks("/app/node_modules/react-icons/lib/index.js")).toBeUndefined();
+    expect(manualChunks("/app/src/page.tsx")).toBeUndefined();
+  });
+
+  it("returns codeSplitting for Vite 8+ (Rolldown), not the deprecated advancedChunks", () => {
+    const config = createRscFrameworkChunkOutputConfig(8);
+    expect(config).not.toHaveProperty("advancedChunks");
+    expect(config).not.toHaveProperty("manualChunks");
+    expect(config).toEqual({
+      codeSplitting: {
+        groups: [{ name: "framework", test: RSC_FRAMEWORK_CHUNK_TEST }],
+      },
+    });
+
+    // Vite 9+ uses the same Rolldown shape.
+    expect(createRscFrameworkChunkOutputConfig(9)).toEqual({
+      codeSplitting: {
+        groups: [{ name: "framework", test: RSC_FRAMEWORK_CHUNK_TEST }],
+      },
+    });
+  });
+});
+
+// ─── RSC framework package matching (single source of truth) ──────────────────
+
+describe("RSC framework package matching", () => {
+  const matching = [
+    "/app/node_modules/react/index.js",
+    "/app/node_modules/react-dom/server.js",
+    "/app/node_modules/scheduler/index.js",
+    "/app/node_modules/react-server-dom-webpack/client.js",
+    // pnpm-style nested path.
+    "/app/node_modules/.pnpm/react@19.0.0/node_modules/react/index.js",
+  ];
+  const notMatching = [
+    "/app/node_modules/react-icons/lib/index.js",
+    "/app/node_modules/@react-aria/utils/dist/index.js",
+    "/app/node_modules/@react-aria/focus/dist/index.js",
+    "/app/src/components/react-thing.tsx",
+  ];
+
+  it("RSC_FRAMEWORK_CHUNK_TEST matches framework packages only", () => {
+    for (const id of matching) {
+      expect(RSC_FRAMEWORK_CHUNK_TEST.test(id)).toBe(true);
+    }
+    for (const id of notMatching) {
+      expect(RSC_FRAMEWORK_CHUNK_TEST.test(id)).toBe(false);
+    }
+  });
+
+  it("isRscFrameworkModule matches framework packages only", () => {
+    for (const id of matching) {
+      expect(isRscFrameworkModule(id)).toBe(true);
+    }
+    for (const id of notMatching) {
+      expect(isRscFrameworkModule(id)).toBe(false);
+    }
   });
 });

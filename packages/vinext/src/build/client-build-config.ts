@@ -159,6 +159,69 @@ export function createClientCodeSplittingConfig(
 }
 
 /**
+ * Matches React framework packages (and the RSC flight runtime) inside
+ * `node_modules`. Used to split them into a dedicated "framework" chunk in the
+ * RSC server build.
+ *
+ * Why the RSC build needs this: without an explicit framework chunk, the
+ * bundler colocates React into whichever chunk first reaches it — typically the
+ * RSC entry chunk, which also carries the root layout's CSS. Modules that only
+ * import React for runtime helpers (notably `app/global-not-found.tsx`, which
+ * replaces the root layout for route-miss 404s) then import that entry chunk
+ * and inherit the root layout's CSS in their `serverResources` metadata. The
+ * 404 document ends up linking the layout's stylesheet last, so the layout's
+ * rules win the cascade over global-not-found's — the bug tracked in
+ * https://github.com/cloudflare/vinext/issues/1549.
+ *
+ * Splitting React into its own (CSS-free) chunk means global-not-found imports
+ * the framework chunk instead of the layout-bearing entry chunk, so it no
+ * longer inherits the root layout's CSS. The match list mirrors the client
+ * build's `framework` chunk, plus `react-server-dom-webpack` for the RSC flight
+ * runtime that the server environment bundles.
+ *
+ * Uses `[\\/]` rather than `/` for the path separator so it matches on Windows
+ * too, per the rolldown `codeSplitting` docs.
+ */
+const FRAMEWORK_PACKAGES = ["react", "react-dom", "scheduler", "react-server-dom-webpack"] as const;
+
+/**
+ * Regex matching any {@link FRAMEWORK_PACKAGES} package inside `node_modules`.
+ * Derived from the package list so the regex and {@link isRscFrameworkModule}
+ * predicate can't drift.
+ */
+export const RSC_FRAMEWORK_CHUNK_TEST = new RegExp(
+  `[\\\\/]node_modules[\\\\/](${FRAMEWORK_PACKAGES.join("|")})[\\\\/]`,
+);
+
+export function isRscFrameworkModule(id: string): boolean {
+  if (!id.includes("node_modules")) return false;
+  const pkg = getPackageName(id);
+  return pkg !== null && (FRAMEWORK_PACKAGES as readonly string[]).includes(pkg);
+}
+
+/**
+ * Output config that isolates React (and the RSC flight runtime) into a
+ * dedicated "framework" chunk in the RSC server build. Returns the bundler-
+ * appropriate shape: rolldown's `codeSplitting` for Vite 8+, Rollup's
+ * `manualChunks` for Vite 7. See {@link RSC_FRAMEWORK_CHUNK_TEST} for the
+ * motivation (issue #1549).
+ */
+export function createRscFrameworkChunkOutputConfig(viteMajorVersion: number) {
+  if (viteMajorVersion >= 8) {
+    return {
+      codeSplitting: {
+        groups: [{ name: "framework", test: RSC_FRAMEWORK_CHUNK_TEST }],
+      },
+    };
+  }
+  return {
+    manualChunks(id: string): string | undefined {
+      return isRscFrameworkModule(id) ? "framework" : undefined;
+    },
+  };
+}
+
+/**
  * Rollup treeshake configuration for production client builds.
  *
  * Uses the 'recommended' preset as a safe base, then overrides

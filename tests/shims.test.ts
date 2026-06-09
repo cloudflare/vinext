@@ -546,7 +546,7 @@ describe("next/navigation shim", () => {
       );
 
       const readHookValues = () => {
-        let pathname = "";
+        let pathname: string | null = "";
         let search = "";
         function Probe() {
           pathname = navigation.usePathname();
@@ -910,6 +910,7 @@ describe("next/navigation shim", () => {
         const pathname = hookMod.usePathname();
         const searchParams = hookMod.useSearchParams();
         const params = hookMod.useParams<{ slug: string }>();
+        if (!params) throw new Error("expected app navigation params");
         return React.createElement(
           "span",
           null,
@@ -932,6 +933,90 @@ describe("next/navigation shim", () => {
         delete globalRecord[accessorsKey];
       } else {
         globalRecord[accessorsKey] = previousAccessors;
+      }
+      if (previousHydration === undefined) {
+        delete globalRecord[hydrationKey];
+      } else {
+        globalRecord[hydrationKey] = previousHydration;
+      }
+    }
+  });
+
+  it("keeps explicit app navigation context ahead of globally installed Pages compat state", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const previousWindow = globalThis.window;
+    const accessorKey = Symbol.for("vinext.navigation.pagesNavigationContextAccessor");
+    const hydrationKey = Symbol.for("vinext.navigation.clientHydrationContext");
+    const globalRecord = globalThis as Record<PropertyKey, unknown>;
+    const previousAccessor = globalRecord[accessorKey];
+    const previousHydration = globalRecord[hydrationKey];
+
+    try {
+      delete globalRecord[hydrationKey];
+      globalRecord[accessorKey] = () => ({
+        pathname: "/pages/[slug]",
+        searchParams: new URLSearchParams("from=pages"),
+        params: { slug: "pages" },
+      });
+      (globalThis as any).window = {
+        addEventListener() {},
+        dispatchEvent() {
+          return true;
+        },
+        history: {
+          pushState() {},
+          replaceState() {},
+        },
+        location: {
+          href: "http://localhost/app/alpha?from=app",
+          origin: "http://localhost",
+          pathname: "/app/alpha",
+          search: "?from=app",
+        },
+        removeEventListener() {},
+      };
+
+      const setterPath =
+        "../packages/vinext/src/shims/navigation.js?app-context-setter=pages-fallback";
+      const hookPath = "../packages/vinext/src/shims/navigation.js?app-context-hook=pages-fallback";
+      const setterMod = (await import(
+        setterPath
+      )) as typeof import("../packages/vinext/src/shims/navigation.js");
+      const hookMod = (await import(
+        hookPath
+      )) as typeof import("../packages/vinext/src/shims/navigation.js");
+
+      setterMod.setNavigationContext({
+        pathname: "/app/alpha",
+        searchParams: new URLSearchParams("from=app"),
+        params: { slug: "app" },
+      });
+
+      function Probe() {
+        const searchParams = hookMod.useSearchParams();
+        const params = hookMod.useParams<{ slug: string }>();
+        if (!params) throw new Error("expected app navigation params");
+        return React.createElement(
+          "span",
+          null,
+          `${searchParams.get("from") ?? ""}|${params.slug ?? ""}`,
+        );
+      }
+
+      expect(renderToStaticMarkup(React.createElement(Probe))).toBe("<span>app|app</span>");
+
+      setterMod.setNavigationContext(null);
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      if (previousAccessor === undefined) {
+        delete globalRecord[accessorKey];
+      } else {
+        globalRecord[accessorKey] = previousAccessor;
       }
       if (previousHydration === undefined) {
         delete globalRecord[hydrationKey];
@@ -12068,30 +12153,173 @@ describe("next/compat/router shim", () => {
   // and may re-render until it stabilizes. `useParams`/`useSearchParams`/
   // `usePathname` from `next/navigation` derive their server snapshot from
   // `getPagesNavigationContext()`, so its SSR-side return value must be
-  // reference-stable within a single request.
-  it("getPagesNavigationContext returns the same reference for repeated SSR calls in one request", async () => {
+  // reference-stable within a single request. Dynamic params and search params
+  // intentionally follow the Pages Router pre-ready snapshot here so SSR and
+  // client hydration agree before the queued ready notification publishes live
+  // values.
+  it("getPagesNavigationContext returns stable pre-ready SSR snapshots in one request", async () => {
     const { getPagesNavigationContext, setSSRContext } =
       await import("../packages/vinext/src/shims/router.js");
 
     setSSRContext({
       pathname: "/pages-dir/[dynamic]",
       query: { dynamic: "foobar" },
-      asPath: "/pages-dir/foobar",
+      asPath: "/pages-dir/foobar?tab=comments",
+      navigationIsReady: false,
+      nextData: {
+        props: {},
+        page: "/pages-dir/[dynamic]",
+        query: { dynamic: "foobar", tab: "comments" },
+        autoExport: true,
+      },
     });
     try {
       const first = getPagesNavigationContext();
       const second = getPagesNavigationContext();
       expect(first).not.toBeNull();
       expect(first).toBe(second);
-      expect(first!.params).toEqual({ dynamic: "foobar" });
-      // params and searchParams must also be reference-stable across calls so
-      // hook-level snapshots (`pagesCtx.params`, `pagesCtx.searchParams`) are
-      // Object.is-equal between renders.
-      expect(first!.params).toBe(second!.params);
+      expect(first!.pathname).toBeNull();
+      expect(first!.params).toBeNull();
+      expect(first!.searchParams.toString()).toBe("");
+      // searchParams must also be reference-stable across calls so hook-level
+      // snapshots (`pagesCtx.searchParams`) are Object.is-equal between renders.
       expect(first!.searchParams).toBe(second!.searchParams);
     } finally {
       setSSRContext(null);
     }
+  });
+
+  it("client Pages navigation context prefers the current URL over stale __NEXT_DATA__ params", async () => {
+    const { getPagesNavigationContext } = await import("../packages/vinext/src/shims/router.js");
+
+    const previousWindow = (globalThis as any).window;
+    (globalThis as any).window = {
+      location: {
+        pathname: "/search-params-pages/bar",
+        search: "",
+        hash: "",
+      },
+      __NEXT_DATA__: {
+        page: "/search-params-pages/[foo]",
+        query: { foo: "foo" },
+        isFallback: false,
+      },
+      __VINEXT_PAGE_LOADERS__: {
+        "/search-params-pages/[foo]": async () => ({ default: () => null }),
+      },
+    };
+
+    try {
+      expect(getPagesNavigationContext()?.params).toEqual({ foo: "bar" });
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("server Pages navigation context prefers the resolved URL over stale query params", async () => {
+    const { getPagesNavigationContext, setSSRContext } =
+      await import("../packages/vinext/src/shims/router.js");
+
+    setSSRContext({
+      pathname: "/search-params-pages/[foo]",
+      query: { foo: "foo" },
+      asPath: "/search-params-pages/bar",
+      navigationIsReady: true,
+    });
+    try {
+      expect(getPagesNavigationContext()?.params).toEqual({ foo: "bar" });
+    } finally {
+      setSSRContext(null);
+    }
+  });
+
+  // Regression: `useRouter().isReady` flows through getRouterSnapshot →
+  // PagesRouterProvider. On the server it must reflect the SSR navigation
+  // readiness context, not unconditionally report `true`. Otherwise a pre-ready
+  // route (auto-export dynamic / query string / rewrite-capable build) would
+  // render `isReady: true` on the server while the client hydrates with
+  // `isReady: false`, a hydration mismatch for components reading it in JSX.
+  // Mirrors Next.js render.tsx's server readiness rule.
+  it("useRouter().isReady reflects SSR navigation readiness during server render", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { useRouter, wrapWithRouterContext, setSSRContext } =
+      await import("../packages/vinext/src/shims/router.js");
+
+    function Probe() {
+      return React.createElement("span", null, String(useRouter().isReady));
+    }
+
+    // Pre-ready route: navigationIsReady false → isReady false.
+    setSSRContext({
+      pathname: "/pages-dir/[dynamic]",
+      query: { dynamic: "foobar" },
+      asPath: "/pages-dir/foobar?tab=comments",
+      navigationIsReady: false,
+    });
+    try {
+      const html = renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(html).toBe("<span>false</span>");
+    } finally {
+      setSSRContext(null);
+    }
+
+    // Ready route: navigationIsReady true → isReady true.
+    setSSRContext({
+      pathname: "/blog/[slug]",
+      query: { slug: "hello" },
+      asPath: "/blog/hello",
+      navigationIsReady: true,
+    });
+    try {
+      const html = renderToStaticMarkup(wrapWithRouterContext(React.createElement(Probe)));
+      expect(html).toBe("<span>true</span>");
+    } finally {
+      setSSRContext(null);
+    }
+  });
+
+  it("does not defer Pages Router readiness for dynamic getStaticProps routes without search", async () => {
+    const { getPagesNavigationIsReadyFromSerializedState } =
+      await import("../packages/vinext/src/shims/router.js");
+
+    expect(
+      getPagesNavigationIsReadyFromSerializedState("/nav-compat-gsp/[slug]", "", {
+        props: {},
+        page: "/nav-compat-gsp/[slug]",
+        query: { slug: "foobar" },
+        gsp: true,
+      }),
+    ).toBe(true);
+    expect(
+      getPagesNavigationIsReadyFromSerializedState("/nav-compat/[slug]", "", {
+        props: {},
+        page: "/nav-compat/[slug]",
+        query: { slug: "foobar" },
+        autoExport: true,
+      }),
+    ).toBe(false);
+    expect(
+      getPagesNavigationIsReadyFromSerializedState("/nav-compat-gsp/[slug]", "?q=pages", {
+        props: {},
+        page: "/nav-compat-gsp/[slug]",
+        query: { slug: "foobar", q: "pages" },
+        gsp: true,
+      }),
+    ).toBe(false);
+    expect(
+      getPagesNavigationIsReadyFromSerializedState("/search-params-static-rewrites", "", {
+        props: {},
+        page: "/search-params-static-rewrites",
+        query: {},
+        autoExport: true,
+        __vinext: { hasRewrites: true },
+      }),
+    ).toBe(false);
   });
 
   it("preserves route param arrays, repeated search params, and hash in client router state", async () => {

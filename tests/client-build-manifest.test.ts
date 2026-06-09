@@ -5,6 +5,8 @@ import path from "node:path";
 import {
   findClientEntryFile,
   findClientEntryFileFromManifest,
+  findPagesClientEntryFile,
+  findPagesClientEntryFileFromManifest,
   readClientBuildManifest,
 } from "../packages/vinext/src/utils/client-build-manifest.js";
 import {
@@ -12,6 +14,12 @@ import {
   buildNextClientSsgManifestContent,
   emitNextClientRuntimeManifests,
 } from "../packages/vinext/src/build/next-client-runtime-manifests.js";
+import {
+  findClientEntryFileFromVinextManifest,
+  findPagesClientEntryFileFromVinextManifest,
+  readClientEntryManifest,
+  VINEXT_CLIENT_ENTRY_MANIFEST,
+} from "../packages/vinext/src/utils/client-entry-manifest.js";
 
 describe("client build manifest helpers", () => {
   let tmpDir: string;
@@ -87,6 +95,60 @@ describe("client build manifest helpers", () => {
     );
 
     expect(entry).toBe("_next/static/vinext-client-entry-abcd.js");
+  });
+
+  it("prefers the Pages client entry over the App browser entry in hybrid manifests", () => {
+    const entry = findClientEntryFileFromManifest(
+      {
+        "virtual:vinext-app-browser-entry": {
+          file: "_next/static/vinext-app-browser-entry-0001.js",
+          isEntry: true,
+        },
+        "virtual:vinext-client-entry": {
+          file: "_next/static/vinext-client-entry-abcd.js",
+          isEntry: true,
+        },
+      },
+      "/",
+    );
+
+    expect(entry).toBe("_next/static/vinext-client-entry-abcd.js");
+  });
+
+  it("finds only the Pages client entry when requested for Pages fallback rendering", () => {
+    const manifest = {
+      "virtual:vinext-app-browser-entry": {
+        file: "_next/static/vinext-app-browser-entry-0001.js",
+        isEntry: true,
+      },
+      "virtual:vinext-client-entry": {
+        file: "_next/static/vinext-client-entry-abcd.js",
+        isEntry: true,
+      },
+    };
+
+    expect(findPagesClientEntryFileFromManifest(manifest, "/")).toBe(
+      "_next/static/vinext-client-entry-abcd.js",
+    );
+  });
+
+  it("reads vinext's entry manifest for hashed client entry names", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, VINEXT_CLIENT_ENTRY_MANIFEST),
+      JSON.stringify({
+        appBrowserEntry: "_next/static/index-app.js",
+        pagesClientEntry: "_next/static/index-pages.js",
+      }),
+    );
+
+    const manifest = readClientEntryManifest(clientDir);
+
+    expect(findClientEntryFileFromVinextManifest(manifest, "/docs/")).toBe(
+      "docs/_next/static/index-pages.js",
+    );
+    expect(findPagesClientEntryFileFromVinextManifest(manifest, "/")).toBe(
+      "_next/static/index-pages.js",
+    );
   });
 
   it("falls back to the on-disk assets directory when the manifest has no entry", async () => {
@@ -171,5 +233,34 @@ describe("client build manifest helpers", () => {
     expect(content).not.toContain("https://example.com/external");
     expect(content).toContain('"sortedPages":[]');
     expect(content).not.toContain('"missing"');
+  });
+
+  it("prefers the Pages client entry over the App browser entry in on-disk fallback lookup", async () => {
+    const assetsSubdir = "_next/static";
+    await fsp.mkdir(path.join(clientDir, assetsSubdir), { recursive: true });
+    await fsp.writeFile(path.join(clientDir, assetsSubdir, "vinext-app-browser-entry-1234.js"), "");
+    await fsp.writeFile(path.join(clientDir, assetsSubdir, "vinext-client-entry-5678.js"), "");
+
+    const entry = findClientEntryFile({
+      clientDir,
+      assetsSubdir,
+      assetBase: "/",
+    });
+
+    expect(entry).toBe("_next/static/vinext-client-entry-5678.js");
+  });
+
+  it("does not return the App browser entry for Pages fallback lookup", async () => {
+    const assetsSubdir = "_next/static";
+    await fsp.mkdir(path.join(clientDir, assetsSubdir), { recursive: true });
+    await fsp.writeFile(path.join(clientDir, assetsSubdir, "vinext-app-browser-entry-1234.js"), "");
+
+    const entry = findPagesClientEntryFile({
+      clientDir,
+      assetsSubdir,
+      assetBase: "/",
+    });
+
+    expect(entry).toBeUndefined();
   });
 });

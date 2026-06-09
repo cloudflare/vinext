@@ -220,7 +220,7 @@ import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML, setDocumentInitialHead } from "next/head";
 import { flushPreloads } from "next/dynamic";
-import { setSSRContext, wrapWithRouterContext } from "next/router";
+import { setSSRContext, wrapWithRouterContext, getPagesNavigationIsReadyFromSerializedState } from "next/router";
 import { _runWithCacheState, configureMemoryCacheHandler as __configureMemoryCacheHandler } from "next/cache";
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import { runWithPrivateCache } from "vinext/cache-runtime";
@@ -364,9 +364,17 @@ const _renderPage = __createPagesPageHandler({
   buildId,
   hasMiddleware: __hasMiddleware,
   appAssetPath: _appAssetPath,
+  hasRewrites:
+    vinextConfig.rewrites.beforeFiles.length > 0 ||
+    vinextConfig.rewrites.afterFiles.length > 0 ||
+    vinextConfig.rewrites.fallback.length > 0,
 
   // next/*-derived closures
   setSSRContext: typeof setSSRContext === "function" ? setSSRContext : null,
+  getPagesNavigationIsReadyFromSerializedState:
+    typeof getPagesNavigationIsReadyFromSerializedState === "function"
+      ? getPagesNavigationIsReadyFromSerializedState
+      : null,
   setI18nContext: typeof setI18nContext === "function" ? setI18nContext : null,
   wrapWithRouterContext: typeof wrapWithRouterContext === "function" ? wrapWithRouterContext : null,
   resetSSRHead: typeof resetSSRHead === "function" ? resetSSRHead : undefined,

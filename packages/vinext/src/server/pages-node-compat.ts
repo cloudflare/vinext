@@ -3,6 +3,7 @@ import { parseCookies } from "../config/config-matchers.js";
 import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
+import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
 
 const MAX_PAGES_API_BODY_SIZE = DEFAULT_PAGES_API_BODY_SIZE_LIMIT;
 
@@ -47,6 +48,7 @@ export type PagesReqResResponse = {
   send: (data: unknown) => void;
   redirect: (statusOrUrl: number | string, url?: string) => void;
   getHeaders: () => PagesReqResHeaders;
+  revalidate: (urlPath: string, opts?: RevalidateOptions) => Promise<void>;
 };
 
 type CreatePagesReqResOptions = {
@@ -300,6 +302,14 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
         headers["set-cookie"] = setCookieHeaders;
       }
       return headers;
+    },
+
+    // `res.revalidate(urlPath)` triggers on-demand ISR regeneration of a Pages
+    // Router route. Delegates to the shared helper so the secret wiring and
+    // success detection stay identical to the prod (`api-handler.ts`) path. See
+    // `pages-revalidate.ts`.
+    async revalidate(urlPath, opts) {
+      await performOnDemandRevalidate(options.request.headers, urlPath, opts);
     },
   };
 

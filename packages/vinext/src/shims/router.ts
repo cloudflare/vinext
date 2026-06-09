@@ -416,6 +416,8 @@ type SSRContext = {
   pathname: string;
   query: Record<string, string | string[]>;
   asPath: string;
+  navigationIsReady?: boolean;
+  nextData?: VinextNextData;
   locale?: string;
   locales?: string[];
   defaultLocale?: string;
@@ -460,9 +462,14 @@ export function setSSRContext(ctx: SSRContext | null): void {
 }
 
 type PagesNavigationContextShape = {
-  pathname: string;
+  pathname: string | null;
   searchParams: URLSearchParams;
-  params: Record<string, string | string[]>;
+  params: Record<string, string | string[]> | null;
+};
+
+const PAGES_NAVIGATION_NOTIFY_KEY = Symbol.for("vinext.navigation.pagesNavigationNotify");
+type PagesNavigationNotifyGlobal = typeof globalThis & {
+  [PAGES_NAVIGATION_NOTIFY_KEY]?: () => void;
 };
 
 // Client-only cache for snapshot stability. useSyncExternalStore compares
@@ -477,14 +484,33 @@ function _buildClientPagesNavigationContext(
   routePattern: string,
   resolvedPath: string,
   searchString: string,
+  isReady: boolean,
+  nextData: VinextNextData | undefined,
 ): PagesNavigationContextShape {
-  const cacheKey = `${routePattern}|${resolvedPath}|${searchString}`;
+  const cacheKey = `${isReady ? "1" : "0"}|${routePattern}|${resolvedPath}|${searchString}`;
   if (_cachedClientPagesNavCtxKey === cacheKey && _cachedClientPagesNavCtx) {
     return _cachedClientPagesNavCtx;
   }
-  const searchParams = new URLSearchParams(searchString);
-  const params = routePattern ? (extractRouteParamsFromPath(routePattern, resolvedPath) ?? {}) : {};
-  const ctx: PagesNavigationContextShape = { pathname: resolvedPath, searchParams, params };
+  const searchParams = isReady ? new URLSearchParams(searchString) : new URLSearchParams();
+  // The browser URL is the authoritative source after a Pages client
+  // navigation. `__NEXT_DATA__.query` is serialized for the rendered document
+  // and can briefly lag behind the committed history URL while navigation
+  // listeners publish snapshots, so using it first would leak stale params from
+  // the page we just left.
+  const params = isReady
+    ? (extractRouteParamsFromPath(routePattern, resolvedPath) ??
+      getRouteParamsFromQuery(routePattern, nextData?.query ?? {}) ??
+      {})
+    : null;
+  const isAutoExportDynamic =
+    nextData?.autoExport === true && extractRouteParamNames(routePattern).length > 0;
+  const pathname = resolvePagesNavigationPathname(
+    resolvedPath,
+    nextData?.isFallback === true,
+    isAutoExportDynamic,
+    isReady,
+  );
+  const ctx: PagesNavigationContextShape = { pathname, searchParams, params };
   _cachedClientPagesNavCtx = ctx;
   _cachedClientPagesNavCtxKey = cacheKey;
   return ctx;
@@ -529,32 +555,54 @@ export function getPagesNavigationContext(): PagesNavigationContextShape | null 
     const cached = _ssrPagesNavCtxCache.get(ssrCtx);
     if (cached) return cached;
     // ssrCtx.pathname is the route pattern (e.g. "/blog/[slug]").
-    // ssrCtx.asPath is the resolved URL with query string. For useSearchParams
-    // we want only the URL search string; for useParams we want only the
-    // dynamic route params.
-    let searchParams: URLSearchParams;
+    // ssrCtx.asPath is the resolved URL with query string. Match the initial
+    // Pages Router readiness phase so server HTML and the client hydration
+    // snapshot agree before the queued ready notification publishes live values.
+    let searchString = "";
     let resolvedPath: string;
     try {
       const url = new URL(ssrCtx.asPath, "http://_");
-      searchParams = url.searchParams;
+      searchString = url.search;
       resolvedPath = url.pathname;
     } catch {
-      searchParams = new URLSearchParams();
       resolvedPath = ssrCtx.pathname;
     }
-    const params = extractRouteParamsFromPath(ssrCtx.pathname, resolvedPath) ?? {};
-    const ctx: PagesNavigationContextShape = { pathname: resolvedPath, searchParams, params };
+    const isReady = ssrCtx.navigationIsReady ?? true;
+    const searchParams = isReady ? new URLSearchParams(searchString) : new URLSearchParams();
+    const params = isReady
+      ? (extractRouteParamsFromPath(ssrCtx.pathname, resolvedPath) ??
+        getRouteParamsFromQuery(ssrCtx.pathname, ssrCtx.query) ??
+        {})
+      : null;
+    const isAutoExportDynamic =
+      ssrCtx.nextData?.autoExport === true && extractRouteParamNames(ssrCtx.pathname).length > 0;
+    const pathname = resolvePagesNavigationPathname(
+      resolvedPath,
+      ssrCtx.isFallback === true,
+      isAutoExportDynamic,
+      isReady,
+    );
+    const ctx: PagesNavigationContextShape = { pathname, searchParams, params };
     _ssrPagesNavCtxCache.set(ssrCtx, ctx);
     return ctx;
   }
 
-  // Client: derive from window.location + __NEXT_DATA__. __NEXT_DATA__.page
-  // is the route pattern that was matched; navigateClient() keeps it in sync
-  // with the visible URL on every client-side navigation. Cached so
-  // useSyncExternalStore sees a stable snapshot between renders.
+  // Client: derive from window.location + __NEXT_DATA__ only while the
+  // active document is owned by the Pages Router. App Router documents also
+  // carry __NEXT_DATA__, so treating that alone as a Pages signal would let
+  // compat fallback state shadow App Router navigation snapshots.
+  if (!isPagesRouterDocumentActive()) return null;
   const resolvedPath = stripBasePath(window.location.pathname, __basePath);
-  const pattern = window.__NEXT_DATA__?.page ?? "";
-  return _buildClientPagesNavigationContext(pattern, resolvedPath, window.location.search);
+  const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
+  const pattern = resolvePagesRoutePatternForPath(nextData?.page, resolvedPath);
+  if (!pattern) return null;
+  return _buildClientPagesNavigationContext(
+    pattern,
+    resolvedPath,
+    window.location.search,
+    isPagesRouterReady(),
+    nextData,
+  );
 }
 
 /**
@@ -580,6 +628,57 @@ function extractRouteParamNames(pattern: string): string[] {
   return names;
 }
 
+/**
+ * Resolve the `pathname` snapshot for the Pages Router navigation context.
+ * Shared by the client and SSR branches of `getPagesNavigationContext` so both
+ * runtimes derive identical null-ness — diverging here would reintroduce a
+ * hydration mismatch. Returns `null` for a `getStaticPaths` fallback shell or a
+ * pre-ready auto-export dynamic route (the live path is published once the
+ * client router becomes ready).
+ */
+function resolvePagesNavigationPathname(
+  resolvedPath: string,
+  isFallback: boolean,
+  isAutoExportDynamic: boolean,
+  isReady: boolean,
+): string | null {
+  return isFallback || (isAutoExportDynamic && !isReady) ? null : resolvedPath;
+}
+
+// Single-slot memo for the client pattern scan. `window.__VINEXT_PAGE_PATTERNS__`
+// is static after load, so the resolved pattern is a pure function of
+// (nextDataPage, resolvedPath). Caching avoids an O(routes) scan on every
+// useSyncExternalStore snapshot read (getPathname/getSearchParams/getParams),
+// which run repeatedly per render. Browser-only (one request at a time).
+let _cachedPagesRoutePatternKey: string | null = null;
+let _cachedPagesRoutePattern: string | undefined;
+
+function resolvePagesRoutePatternForPath(
+  nextDataPage: string | undefined,
+  resolvedPath: string,
+): string | undefined {
+  if (nextDataPage && extractRouteParamNames(nextDataPage).length > 0) {
+    return nextDataPage;
+  }
+
+  const cacheKey = `${nextDataPage ?? ""}|${resolvedPath}`;
+  if (_cachedPagesRoutePatternKey === cacheKey) {
+    return _cachedPagesRoutePattern;
+  }
+
+  let resolved: string | undefined = nextDataPage;
+  for (const pattern of window.__VINEXT_PAGE_PATTERNS__ ?? []) {
+    if (matchRoutePattern(splitPathSegments(resolvedPath), routePatternParts(pattern))) {
+      resolved = pattern;
+      break;
+    }
+  }
+
+  _cachedPagesRoutePatternKey = cacheKey;
+  _cachedPagesRoutePattern = resolved;
+  return resolved;
+}
+
 type RouteQueryNextData = {
   page?: string;
   query?: Record<string, string | string[] | undefined>;
@@ -590,6 +689,28 @@ function extractRouteParamsFromPath(
   pathname: string,
 ): Record<string, string | string[]> | null {
   return matchRoutePattern(splitPathSegments(pathname), routePatternParts(pattern));
+}
+
+function getRouteParamsFromQuery(
+  pattern: string,
+  query: Record<string, string | string[]>,
+): Record<string, string | string[]> | null {
+  const names = extractRouteParamNames(pattern);
+  if (names.length === 0) return null;
+
+  const params: Record<string, string | string[]> = {};
+  let hasParam = false;
+  for (const name of names) {
+    const value = query[name];
+    if (typeof value === "string") {
+      params[name] = value;
+      hasParam = true;
+    } else if (Array.isArray(value)) {
+      params[name] = [...value];
+      hasParam = true;
+    }
+  }
+  return hasParam ? params : null;
 }
 
 function getRouteQueryFromNextData(
@@ -649,6 +770,89 @@ function getPathnameAndQuery(): {
   // asPath uses the resolved browser path, not the route pattern
   const asPath = resolvedPath + window.location.search + window.location.hash;
   return { pathname, query, asPath };
+}
+
+export function getPagesNavigationIsReadyFromSerializedState(
+  routePattern: string | undefined,
+  searchString: string,
+  nextData?: VinextNextData,
+): boolean {
+  if (!routePattern) return true;
+
+  // Mirrors the Pages Router constructor's initial `isReady` predicate:
+  // data-driven pages are ready immediately, while auto-exported dynamic
+  // routes, query-string URLs, and rewrite-capable builds wait for the client
+  // router to publish the live URL state. Dynamic route shape alone is not a
+  // delayed case; Next gates that branch on `__NEXT_DATA__.autoExport`.
+  if (
+    nextData?.gssp === true ||
+    nextData?.gip === true ||
+    nextData?.isExperimentalCompile === true ||
+    (nextData?.appGip === true && nextData.gsp !== true)
+  ) {
+    return true;
+  }
+
+  const autoExportDynamic =
+    nextData?.autoExport === true && extractRouteParamNames(routePattern).length > 0;
+  const hasSearch = searchString.length > 0;
+  const hasRewrites = nextData?.__vinext?.hasRewrites === true;
+  return !autoExportDynamic && !hasSearch && !hasRewrites;
+}
+
+function shouldDeferInitialPagesRouterReady(): boolean {
+  if (typeof window === "undefined") return false;
+  const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
+  if (!nextData) return false;
+
+  return !getPagesNavigationIsReadyFromSerializedState(
+    nextData.page,
+    window.location.search,
+    nextData,
+  );
+}
+
+let _pagesRouterReady =
+  typeof window === "undefined" ? true : !shouldDeferInitialPagesRouterReady();
+
+function isPagesRouterReady(): boolean {
+  // `_pagesRouterReady` initializes to `true` on the server and is only ever
+  // flipped on the client, so this reads correctly in both environments.
+  return _pagesRouterReady;
+}
+
+function isPagesRouterDocumentActive(): boolean {
+  if (typeof window === "undefined") return true;
+  if (window.__VINEXT_PAGE_LOADERS__) return true;
+  if (window.next?.appDir === true) return false;
+  if (window.next?.router) return true;
+  return Boolean(window.__VINEXT_APP__ || window.__VINEXT_APP_LOADER__);
+}
+
+function markPagesRouterReady(): boolean {
+  if (typeof window === "undefined" || _pagesRouterReady) return false;
+  _pagesRouterReady = true;
+  return true;
+}
+
+function getRouterSnapshot(): ReturnType<typeof getPathnameAndQuery> & { isReady: boolean } {
+  // On the server, derive `router.isReady` from the SSR navigation-readiness
+  // context (auto-export dynamic / query-string / rewrite-capable routes are
+  // not ready until the client router publishes the live URL). Mirrors Next.js
+  // render.tsx, which serializes the same readiness into `__NEXT_DATA__` so the
+  // client hydrates with the identical value. Returning `true` unconditionally
+  // would render `isReady: true` on the server while the client hydrates with
+  // `isReady: false`, a hydration mismatch for components reading it in JSX.
+  const isReady =
+    typeof window === "undefined"
+      ? (_getSSRContext()?.navigationIsReady ?? true)
+      : isPagesRouterReady();
+  return { ...getPathnameAndQuery(), isReady };
+}
+
+function notifyNextNavigationPagesContext(): void {
+  const notify = (globalThis as PagesNavigationNotifyGlobal)[PAGES_NAVIGATION_NOTIFY_KEY];
+  notify?.();
 }
 
 /**
@@ -1392,6 +1596,7 @@ function buildRouterValue(
   pathname: string,
   query: Record<string, string | string[]>,
   asPath: string,
+  isReady: boolean,
   methods: {
     push: NextRouter["push"];
     replace: NextRouter["replace"];
@@ -1425,7 +1630,7 @@ function buildRouterValue(
     locales,
     defaultLocale,
     domainLocales,
-    isReady: true,
+    isReady,
     isPreview: false,
     isFallback:
       typeof window !== "undefined"
@@ -1450,6 +1655,7 @@ function stripHash(url: string): string {
 
 /** Notify in-page listeners (e.g. useRouter hooks) that navigation occurred. */
 function dispatchNavigateEvent(): void {
+  notifyNextNavigationPagesContext();
   window.dispatchEvent(new CustomEvent("vinext:navigate"));
 }
 
@@ -1706,7 +1912,7 @@ export function useRouter(): NextRouter {
 }
 
 function PagesRouterProvider({ children }: { children: ReactNode }): ReactElement {
-  const [{ pathname, query, asPath }, setState] = useState(getPathnameAndQuery);
+  const [{ pathname, query, asPath, isReady }, setState] = useState(getRouterSnapshot);
 
   // Popstate is handled by the Pages Router client entry via
   // installPagesRouterRuntime() so beforePopState() is consistently enforced
@@ -1715,15 +1921,25 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
   // vinext:navigate listener.
   useEffect(() => {
     const onNavigate = ((_e: CustomEvent) => {
-      setState(getPathnameAndQuery());
+      setState(getRouterSnapshot());
     }) as EventListener;
     window.addEventListener("vinext:navigate", onNavigate);
-    return () => window.removeEventListener("vinext:navigate", onNavigate);
+    let cancelled = false;
+    const readyTimer = window.setTimeout(() => {
+      if (cancelled || !markPagesRouterReady()) return;
+      setState(getRouterSnapshot());
+      notifyNextNavigationPagesContext();
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(readyTimer);
+      window.removeEventListener("vinext:navigate", onNavigate);
+    };
   }, []);
 
   const router = useMemo(
     (): NextRouter =>
-      buildRouterValue(pathname, query, asPath, {
+      buildRouterValue(pathname, query, asPath, isReady, {
         push: Router.push,
         replace: Router.replace,
         back: Router.back,
@@ -1731,7 +1947,7 @@ function PagesRouterProvider({ children }: { children: ReactNode }): ReactElemen
         prefetch: Router.prefetch,
         beforePopState: Router.beforePopState,
       }),
-    [pathname, query, asPath],
+    [pathname, query, asPath, isReady],
   );
 
   const appRouter = useMemo(
@@ -2158,7 +2374,12 @@ const Router: typeof RouterMethods & Omit<NextRouter, keyof typeof RouterMethods
         return (window.__NEXT_DATA__ as VinextNextData | undefined)?.domainLocales;
       },
     },
-    isReady: { enumerable: true, value: true, writable: false },
+    isReady: {
+      enumerable: true,
+      get(): boolean {
+        return isPagesRouterReady();
+      },
+    },
     isPreview: { enumerable: true, value: false, writable: false },
     isFallback: {
       enumerable: true,

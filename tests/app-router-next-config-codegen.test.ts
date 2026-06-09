@@ -136,6 +136,16 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     );
   });
 
+  it("exports whether the App Router build includes Pages Router routes", () => {
+    const appOnlyCode = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+    const hybridCode = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      hasPagesDir: true,
+    });
+
+    expect(appOnlyCode).toContain("export const __hasPagesDir = false;");
+    expect(hybridCode).toContain("export const __hasPagesDir = true;");
+  });
+
   it("re-exports Pages API handling from the hybrid SSR entry", () => {
     // Ported from Next.js: test/e2e/og-api/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/og-api/index.test.ts

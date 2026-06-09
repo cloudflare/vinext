@@ -169,7 +169,7 @@ declare module "next/navigation" {
     refresh(): void;
     prefetch(href: string, options?: { onInvalidate?: () => void }): void;
   };
-  export function usePathname(): string;
+  export function usePathname(): string | null;
   export class ReadonlyURLSearchParams extends URLSearchParams {
     append(name: string, value: string): never;
     delete(name: string, value?: string): never;
@@ -179,7 +179,7 @@ declare module "next/navigation" {
   export function useSearchParams(): ReadonlyURLSearchParams;
   export function useParams<
     T extends Record<string, string | string[]> = Record<string, string | string[]>,
-  >(): T;
+  >(): T | null;
   export function useSelectedLayoutSegment(parallelRoutesKey?: string): string | null;
   export function useSelectedLayoutSegments(parallelRoutesKey?: string): string[];
   export function useServerInsertedHTML(callback: () => unknown): void;

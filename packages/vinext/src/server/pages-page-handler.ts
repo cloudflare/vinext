@@ -21,6 +21,7 @@ import { resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { renderPagesPageResponse } from "./pages-page-response.js";
+import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
 import {
@@ -29,7 +30,14 @@ import {
   normalizePagesDataRequest,
 } from "./pages-data-route.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
-import { isrGet, isrSet, isrCacheKey, triggerBackgroundRegeneration } from "./isr-cache.js";
+import {
+  isrGet,
+  isrSet,
+  isrCacheKey,
+  triggerBackgroundRegeneration,
+  PRERENDER_REVALIDATE_HEADER,
+  isOnDemandRevalidateRequest,
+} from "./isr-cache.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { reportRequestError } from "./instrumentation.js";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
@@ -98,11 +106,25 @@ export type CreatePagesPageHandlerOptions = {
   hasMiddleware: boolean;
   /** Absolute file path of `pages/_app` (or null). Used for manifest lookup. */
   appAssetPath: string | null;
+  /** Whether next.config rewrites are configured (gates Pages router readiness). */
+  hasRewrites: boolean;
 
   // ── next/*-derived closures ──────────────────────────────────────────────
 
   /** `setSSRContext` from `next/router`. */
   setSSRContext: ((ctx: Record<string, unknown> | null) => void) | null;
+  /**
+   * `getPagesNavigationIsReadyFromSerializedState` from `next/router`. Decides
+   * the initial `router.isReady` value for the Pages Router navigation
+   * compat hooks (mirrors Next.js's Pages adapter readiness gate).
+   */
+  getPagesNavigationIsReadyFromSerializedState:
+    | ((
+        routePattern: string | undefined,
+        searchString: string,
+        nextData?: Record<string, unknown>,
+      ) => boolean)
+    | null;
   /** `setI18nContext` from `vinext/i18n-context`. */
   setI18nContext: ((ctx: Record<string, unknown>) => void) | null;
   /** `wrapWithRouterContext` from `next/router`. */
@@ -205,7 +227,9 @@ export function createPagesPageHandler(
     buildId,
     hasMiddleware,
     appAssetPath,
+    hasRewrites,
     setSSRContext,
+    getPagesNavigationIsReadyFromSerializedState,
     setI18nContext,
     wrapWithRouterContext,
     resetSSRHead,
@@ -363,16 +387,37 @@ export function createPagesPageHandler(
           renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
         const query = mergeRouteParamsIntoQuery(parseQuery(routeUrl), params);
 
-        function applySSRContext(): void {
+        // Model Pages Router readiness for `next/navigation` compat hooks. The
+        // serialized `__NEXT_DATA__` flags (gssp/gsp/gip/appGip/autoExport) plus
+        // the configured-rewrites flag decide the initial `router.isReady` value,
+        // mirroring Next.js's Pages adapter. See server/render.tsx readiness rule.
+        const pageModule = route.module;
+        const pagesNextData = buildPagesReadinessNextData({
+          pageModule,
+          appComponent: AppComponent as { getInitialProps?: unknown } | null,
+          hasRewrites,
+        });
+        const navigationIsReady =
+          typeof getPagesNavigationIsReadyFromSerializedState === "function"
+            ? getPagesNavigationIsReadyFromSerializedState(
+                routePattern,
+                new URL(renderAsPath ?? routeUrl, "http://_").search,
+                pagesNextData,
+              )
+            : true;
+
+        function applySSRContext(extra?: Record<string, unknown>): void {
           if (typeof setSSRContext === "function") {
             setSSRContext({
               pathname: routePattern,
               query,
               asPath: renderAsPath ?? routeUrl,
+              navigationIsReady,
               locale,
               locales: i18nConfig ? i18nConfig.locales : undefined,
               defaultLocale: currentDefaultLocale,
               domainLocales,
+              ...extra,
             });
           }
           if (i18nConfig && typeof setI18nContext === "function") {
@@ -386,9 +431,8 @@ export function createPagesPageHandler(
           }
         }
 
-        applySSRContext();
+        applySSRContext({ nextData: pagesNextData });
 
-        const pageModule = route.module;
         const PageComponent = pageModule.default as ComponentType | undefined;
         if (!PageComponent) {
           return new Response("Page has no default export", { status: 500 });
@@ -413,6 +457,15 @@ export function createPagesPageHandler(
 
         const pageModuleUrl = resolveClientModuleUrl(manifest, route.filePath);
         const appModuleUrl = resolveClientModuleUrl(manifest, appAssetPath);
+        const serializedPagesNextData = {
+          ...pagesNextData,
+          __vinext: {
+            ...pagesNextData.__vinext,
+            pageModuleUrl,
+            appModuleUrl,
+            hasMiddleware,
+          },
+        };
         const scriptNonce = getScriptNonceFromHeaderSources(request.headers, middlewareHeaders);
 
         // Build font Link header early — available for ISR cached responses too.
@@ -451,6 +504,18 @@ export function createPagesPageHandler(
           expireSeconds: vinextConfig.expireTime,
           isBuildTimePrerendering:
             typeof process !== "undefined" && process.env && process.env.VINEXT_PRERENDER === "1",
+          // `res.revalidate()` issues an internal request carrying the
+          // `x-prerender-revalidate` header set to the process revalidate
+          // secret; treat it as an on-demand revalidation so getStaticProps
+          // sees `revalidateReason: "on-demand"` and the cache entry is
+          // regenerated synchronously. SECURITY: authorized by *equality*
+          // against the secret (never presence) — `isOnDemandRevalidateRequest`
+          // mirrors Next.js's `checkIsOnDemandRevalidate`, preventing an
+          // external client from forcing synchronous regeneration via an
+          // arbitrary header value (cache-stampede/DoS vector).
+          isOnDemandRevalidate: isOnDemandRevalidateRequest(
+            request.headers.get(PRERENDER_REVALIDATE_HEADER),
+          ),
           pageModule,
           params,
           query,
@@ -473,7 +538,8 @@ export function createPagesPageHandler(
           scriptNonce,
           statusCode: renderStatusCode,
           triggerBackgroundRegeneration,
-          vinext: { pageModuleUrl, appModuleUrl, hasMiddleware },
+          vinext: serializedPagesNextData.__vinext,
+          nextData: serializedPagesNextData,
         });
 
         if (pageDataResult.kind === "notFound") {
@@ -507,6 +573,7 @@ export function createPagesPageHandler(
             pathname: routePattern,
             query,
             asPath: renderAsPath ?? routeUrl,
+            navigationIsReady: false,
             locale,
             locales: i18nConfig ? i18nConfig.locales : undefined,
             defaultLocale: currentDefaultLocale,
@@ -602,7 +669,7 @@ export function createPagesPageHandler(
           safeJsonStringify,
           scriptNonce,
           statusCode: renderStatusCode,
-          vinext: { pageModuleUrl, appModuleUrl, hasMiddleware },
+          nextData: serializedPagesNextData,
         });
       } catch (e) {
         console.error("[vinext] SSR error:", e);

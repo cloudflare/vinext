@@ -21,6 +21,7 @@ import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   detectPackageManager,
   ensureViteConfigCompatibility,
@@ -471,6 +472,20 @@ async function buildApp() {
   // adoption site). Reuses deploymentId when set (already stable across
   // instances).
   process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID = createRscCompatibilityId(resolvedNextConfig);
+
+  // On-demand ISR revalidation secret — the vinext analog of Next.js's
+  // prerender-manifest `previewModeId`. `res.revalidate()` loops back into the
+  // server via an internal `fetch()`; on Cloudflare Workers that loopback can
+  // land on a *different* isolate than the sender, so a per-process random
+  // secret would mismatch and false-reject legitimate revalidations. We instead
+  // generate one 256-bit secret here, once per build, and bake it (server-only)
+  // into every server bundle via Vite `define` so all isolates share the exact
+  // same value. Resolved once and shared across plugin instances exactly like
+  // __VINEXT_SHARED_BUILD_ID so a hybrid app+pages build bakes a single secret.
+  // A fresh secret per build means it rotates with every deployment.
+  if (!process.env.__VINEXT_SHARED_REVALIDATE_SECRET) {
+    process.env.__VINEXT_SHARED_REVALIDATE_SECRET = randomBytes(32).toString("hex");
+  }
 
   const outputMode = resolvedNextConfig.output;
   const distDir = path.resolve(root, "dist");

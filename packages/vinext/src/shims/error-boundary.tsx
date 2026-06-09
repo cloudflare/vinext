@@ -23,22 +23,22 @@ type RedirectBoundaryState = {
 };
 
 type ErrorBoundaryInnerProps = {
-  pathname: string;
+  pathname: string | null;
 } & ErrorBoundaryProps;
 
 export type ErrorBoundaryState = {
   error: CapturedError | null;
-  previousPathname: string;
+  previousPathname: string | null;
   previousResetKey: string | null;
 };
 
 type BoundaryResetProps = {
-  pathname: string;
+  pathname: string | null;
   resetKey?: string | null;
 };
 
 type BoundaryResetState = {
-  previousPathname: string;
+  previousPathname: string | null;
   previousResetKey: string | null;
 };
 
@@ -288,12 +288,12 @@ type NotFoundBoundaryProps = {
 };
 
 type NotFoundBoundaryInnerProps = {
-  pathname: string;
+  pathname: string | null;
 } & NotFoundBoundaryProps;
 
 type NotFoundBoundaryState = {
   notFound: boolean;
-  previousPathname: string;
+  previousPathname: string | null;
   previousResetKey: string | null;
 };
 
@@ -373,12 +373,12 @@ type ForbiddenBoundaryProps = {
 };
 
 type ForbiddenBoundaryInnerProps = {
-  pathname: string;
+  pathname: string | null;
 } & ForbiddenBoundaryProps;
 
 type ForbiddenBoundaryState = {
   forbidden: boolean;
-  previousPathname: string;
+  previousPathname: string | null;
   previousResetKey: string | null;
 };
 
@@ -445,12 +445,12 @@ type UnauthorizedBoundaryProps = {
 };
 
 type UnauthorizedBoundaryInnerProps = {
-  pathname: string;
+  pathname: string | null;
 } & UnauthorizedBoundaryProps;
 
 type UnauthorizedBoundaryState = {
   unauthorized: boolean;
-  previousPathname: string;
+  previousPathname: string | null;
   previousResetKey: string | null;
 };
 

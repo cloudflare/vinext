@@ -57,8 +57,18 @@ import {
 } from "../utils/asset-prefix.js";
 import { computeLazyChunks } from "../utils/lazy-chunks.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
-import { findClientEntryFile, readClientBuildManifest } from "../utils/client-build-manifest.js";
+import {
+  findClientEntryFile,
+  findPagesClientEntryFile,
+  readClientBuildManifest,
+} from "../utils/client-build-manifest.js";
+import {
+  findClientEntryFileFromVinextManifest,
+  findPagesClientEntryFileFromVinextManifest,
+  readClientEntryManifest,
+} from "../utils/client-entry-manifest.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
+import { isUnknownRecord } from "../utils/record.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { collectInlineCssManifest } from "../build/inline-css.js";
 import { readPrerenderSecret } from "../build/server-manifest.js";
@@ -967,6 +977,78 @@ export function resolveAppRouterAssetPath(
   return null;
 }
 
+type PagesClientEntryLookup = "any-client-entry" | "pages-client-entry";
+
+function isSsrManifest(value: unknown): value is Record<string, string[]> {
+  if (!isUnknownRecord(value)) return false;
+  return Object.values(value).every(
+    (files) =>
+      Array.isArray(files) && files.every((file): file is string => typeof file === "string"),
+  );
+}
+
+function readSsrManifest(clientDir: string): Record<string, string[]> {
+  const manifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
+  if (!fs.existsSync(manifestPath)) return {};
+
+  // A malformed manifest degrades to "no SSR manifest" (modulepreload hints are
+  // skipped) rather than aborting server startup — matching the previous
+  // tolerant behavior. The build is the source of truth; a corrupt file here is
+  // a build problem, not a reason to take the whole server down.
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+  } catch (error) {
+    console.warn(`[vinext] Ignoring unparseable SSR manifest at ${manifestPath}:`, error);
+    return {};
+  }
+
+  if (!isSsrManifest(parsed)) {
+    console.warn(`[vinext] Ignoring SSR manifest with unexpected shape at ${manifestPath}`);
+    return {};
+  }
+  return parsed;
+}
+
+function installPagesClientAssetGlobals(options: {
+  clientDir: string;
+  assetsSubdir: string;
+  assetBase: string;
+  clientEntryLookup: PagesClientEntryLookup;
+}): Record<string, string[]> {
+  const ssrManifest = readSsrManifest(options.clientDir);
+  globalThis.__VINEXT_SSR_MANIFEST__ =
+    Object.keys(ssrManifest).length > 0 ? ssrManifest : undefined;
+
+  const buildManifest = readClientBuildManifest(
+    path.join(options.clientDir, ".vite", "manifest.json"),
+  );
+  const clientEntryManifest = readClientEntryManifest(options.clientDir);
+  const entryOptions = {
+    clientDir: options.clientDir,
+    assetsSubdir: options.assetsSubdir,
+    assetBase: options.assetBase,
+    ...(buildManifest ? { buildManifest } : {}),
+  };
+  globalThis.__VINEXT_CLIENT_ENTRY__ =
+    options.clientEntryLookup === "pages-client-entry"
+      ? (findPagesClientEntryFileFromVinextManifest(clientEntryManifest, options.assetBase) ??
+        findPagesClientEntryFile(entryOptions))
+      : (findClientEntryFileFromVinextManifest(clientEntryManifest, options.assetBase) ??
+        findClientEntryFile(entryOptions));
+
+  if (buildManifest) {
+    const lazyChunks = computeLazyChunks(buildManifest).map((file) =>
+      manifestFileWithBase(file, options.assetBase),
+    );
+    globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks.length > 0 ? lazyChunks : undefined;
+  } else {
+    globalThis.__VINEXT_LAZY_CHUNKS__ = undefined;
+  }
+
+  return ssrManifest;
+}
+
 /**
  * Start the App Router production server.
  *
@@ -1019,7 +1101,10 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // continue to work with the historical asset layout.
   const appRouterAssetPrefix: string =
     typeof rscModule.__assetPrefix === "string" ? rscModule.__assetPrefix : "";
+  const appRouterBasePath: string =
+    typeof rscModule.__basePath === "string" ? rscModule.__basePath : "";
   const appRouterInlineCss = rscModule.__inlineCss === true;
+  const appRouterHasPagesDir = rscModule.__hasPagesDir === true;
   globalThis.__VINEXT_INLINE_CSS__ = appRouterInlineCss
     ? collectInlineCssManifest(clientDir, appRouterAssetPrefix)
     : undefined;
@@ -1028,6 +1113,15 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // no prefix is configured). The URL prefix the prod-server needs to strip
   // before locating files on disk includes this path plus `_next/static/`.
   const appAssetPathPrefix = assetPrefixPathname(appRouterAssetPrefix);
+  const appAssetBase = appRouterBasePath ? `${appRouterBasePath}/` : "/";
+  if (appRouterHasPagesDir) {
+    installPagesClientAssetGlobals({
+      clientDir,
+      assetsSubdir: resolveAssetsDir(appRouterAssetPrefix),
+      assetBase: appAssetBase,
+      clientEntryLookup: "pages-client-entry",
+    });
+  }
 
   // Seed the memory cache with pre-rendered routes so the first request to
   // any pre-rendered page is a cache HIT instead of a full re-render.
@@ -1343,36 +1437,15 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
     : undefined;
 
-  // Load the SSR manifest (maps module URLs to client asset URLs)
-  let ssrManifest: Record<string, string[]> = {};
-  const manifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
-  if (fs.existsSync(manifestPath)) {
-    ssrManifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
-  }
-
-  // Load the build manifest to expose the Pages Router client entry and compute
-  // lazy chunks. Prerendered HTML is rendered through this Node server too, so
-  // it needs the same client-entry global that Cloudflare builds inject into
-  // the Worker entry at build time.
-  const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
-  const buildManifest = readClientBuildManifest(buildManifestPath);
-  // findClientEntryFile handles a missing manifest by skipping the manifest
-  // lookup and going straight to the on-disk fallback, so the call is the same
-  // either way — only the lazy-chunk computation needs the manifest.
-  globalThis.__VINEXT_CLIENT_ENTRY__ = findClientEntryFile({
-    buildManifest,
+  // Load client asset metadata used by the Pages renderer. Prerendered HTML is
+  // rendered through this Node server too, so it needs the same globals that
+  // Cloudflare builds inject into the Worker entry at build time.
+  const ssrManifest = installPagesClientAssetGlobals({
     clientDir,
     assetsSubdir: resolveAssetsDir(assetPrefix),
     assetBase,
+    clientEntryLookup: "any-client-entry",
   });
-  if (buildManifest) {
-    const lazyChunks = computeLazyChunks(buildManifest).map((file) =>
-      manifestFileWithBase(file, assetBase),
-    );
-    globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks.length > 0 ? lazyChunks : undefined;
-  } else {
-    globalThis.__VINEXT_LAZY_CHUNKS__ = undefined;
-  }
 
   // Build the static file metadata cache at startup (same as App Router).
   const staticCache = await StaticFileCache.create(clientDir);

@@ -25,6 +25,7 @@ export type SSRContext = {
   pathname: string;
   query: Record<string, string | string[]>;
   asPath: string;
+  navigationIsReady?: boolean;
   locale?: string;
   locales?: string[];
   defaultLocale?: string;

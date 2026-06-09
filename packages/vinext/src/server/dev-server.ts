@@ -15,6 +15,8 @@ import {
   triggerBackgroundRegeneration,
   setRevalidateDuration,
   getRevalidateDuration,
+  PRERENDER_REVALIDATE_HEADER,
+  isOnDemandRevalidateRequest,
 } from "./isr-cache.js";
 import type { CachedPagesValue } from "vinext/shims/cache";
 import { _runWithCacheState } from "vinext/shims/cache";
@@ -47,6 +49,7 @@ import {
   resolvePagesI18nRequest,
 } from "./pages-i18n.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
+import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import {
@@ -385,6 +388,7 @@ export function createSSRHandler(
   basePath = "",
   trailingSlash = false,
   hasMiddleware = false,
+  hasRewrites = false,
   /**
    * Allow-list of OpenTelemetry propagation keys to emit as `<meta>` tags
    * in the SSR head. Sourced from `experimental.clientTraceMetadata` in
@@ -393,6 +397,15 @@ export function createSSRHandler(
   clientTraceMetadata?: readonly string[],
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
+
+  // Page route patterns in Next.js bracket format, sorted by specificity
+  // (compareRoutes via pagesRouter). Mirrors the production client entry's
+  // `window.__VINEXT_PAGE_PATTERNS__ = Object.keys(pageLoaders)` so the
+  // `next/navigation` compat hooks (resolvePagesRoutePatternForPath in
+  // shims/router.ts) can resolve a dynamic pattern from a resolved path in
+  // dev exactly as they do in production. Without this, dev would fall back
+  // to `__NEXT_DATA__.page` only — a dev/prod parity gap.
+  const pagePatterns = routes.map((r) => patternToNextFormat(r.pattern));
 
   // Register ALS-backed accessors in the SSR module graph so head and
   // router state are per-request isolated under concurrent load.
@@ -517,20 +530,14 @@ export function createSSRHandler(
       try {
         await _alsRegistration;
 
-        // Set SSR context for the Pages Router provider so useRouter() returns
-        // the correct URL and params during server-side rendering.
+        // Resolve the Pages Router shim now; the SSR navigation context is
+        // published below (after the page/_app modules load) in a single call
+        // that includes `navigationIsReady` — computed from the loaded modules'
+        // data-fetching exports. Publishing a partial context here first would
+        // be dead work and could expose `navigationIsReady: undefined` (→ true)
+        // to any module-eval that reads it, diverging from the prod handler
+        // which always sets readiness before rendering.
         const routerShim = await importModule(runner, "next/router");
-        if (typeof routerShim.setSSRContext === "function") {
-          routerShim.setSSRContext({
-            pathname: patternToNextFormat(route.pattern),
-            query,
-            asPath: url,
-            locale: locale ?? currentDefaultLocale,
-            locales: i18nConfig?.locales,
-            defaultLocale: currentDefaultLocale,
-            domainLocales,
-          });
-        }
 
         // Set per-request i18n context for Link component locale
         // prop support during SSR.  Use runner.import to set it on
@@ -555,6 +562,46 @@ export function createSSRHandler(
         // Load the page module through Vite's SSR pipeline
         // This gives us HMR and transform support for free
         const pageModule = await importModule(runner, route.filePath);
+        // Try to load _app.tsx if it exists. This happens before the readiness
+        // predicate so app-level getInitialProps participates in the same
+        // initial Pages Router state as the client __NEXT_DATA__ payload.
+        // oxlint-disable-next-line typescript/no-explicit-any
+        let AppComponent: any = null;
+        const appPath = path.join(pagesDir, "_app");
+        if (findFileWithExtensions(appPath, matcher)) {
+          try {
+            const appModule = await importModule(runner, appPath);
+            AppComponent = appModule.default ?? null;
+          } catch {
+            // _app exists but failed to load
+          }
+        }
+        const pagesNextData = buildPagesReadinessNextData({
+          pageModule,
+          appComponent: AppComponent,
+          hasRewrites,
+        });
+        const navigationIsReady =
+          typeof routerShim.getPagesNavigationIsReadyFromSerializedState === "function"
+            ? routerShim.getPagesNavigationIsReadyFromSerializedState(
+                patternToNextFormat(route.pattern),
+                new URL(url, "http://_").search,
+                pagesNextData,
+              )
+            : true;
+        if (typeof routerShim.setSSRContext === "function") {
+          routerShim.setSSRContext({
+            pathname: patternToNextFormat(route.pattern),
+            query,
+            asPath: url,
+            navigationIsReady,
+            nextData: pagesNextData,
+            locale: locale ?? currentDefaultLocale,
+            locales: i18nConfig?.locales,
+            defaultLocale: currentDefaultLocale,
+            domainLocales,
+          });
+        }
         // Mark end of compile phase: everything from here is rendering.
         _compileEnd = now();
 
@@ -673,6 +720,7 @@ export function createSSRHandler(
                 pathname: patternToNextFormat(route.pattern),
                 query,
                 asPath: url,
+                navigationIsReady: false,
                 locale: locale ?? currentDefaultLocale,
                 locales: i18nConfig?.locales,
                 defaultLocale: currentDefaultLocale,
@@ -819,7 +867,22 @@ export function createSSRHandler(
           const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
           const cached = await isrGet(cacheKey);
 
+          // On-demand revalidation request (`res.revalidate()` from an API
+          // route sets the `x-prerender-revalidate` header to the process
+          // revalidate secret). The cache entry must be regenerated
+          // synchronously with `revalidateReason: "on-demand"`, so we bypass the
+          // fresh/stale cache-hit short-circuits below and fall through to the
+          // miss path. SECURITY: this is authorized by *equality* against the
+          // secret (never header presence) — `isOnDemandRevalidateRequest`
+          // mirrors Next.js's `checkIsOnDemandRevalidate`, so an external client
+          // sending an arbitrary `x-prerender-revalidate` value cannot force
+          // synchronous regeneration (cache-stampede/DoS vector).
+          const isOnDemandRevalidate = isOnDemandRevalidateRequest(
+            req.headers[PRERENDER_REVALIDATE_HEADER],
+          );
+
           if (
+            !isOnDemandRevalidate &&
             cached &&
             !cached.isStale &&
             cached.value.value?.kind === "PAGES" &&
@@ -843,6 +906,7 @@ export function createSSRHandler(
           }
 
           if (
+            !isOnDemandRevalidate &&
             cached &&
             cached.isStale &&
             cached.value.value?.kind === "PAGES" &&
@@ -887,6 +951,7 @@ export function createSSRHandler(
                           pathname: patternToNextFormat(route.pattern),
                           query,
                           asPath: url,
+                          navigationIsReady,
                           locale: locale ?? currentDefaultLocale,
                           locales: i18nConfig?.locales,
                           defaultLocale: currentDefaultLocale,
@@ -946,6 +1011,15 @@ export function createSSRHandler(
                           ? "/" + path.relative(viteRoot, path.join(pagesDir, "_app"))
                           : path.join(pagesDir, "_app")
                         : null;
+                      const freshPagesNextData = {
+                        ...pagesNextData,
+                        __vinext: {
+                          ...pagesNextData.__vinext,
+                          pageModuleUrl: regenPageUrl,
+                          appModuleUrl: regenAppUrl,
+                          hasMiddleware,
+                        },
+                      };
 
                       const freshNextData = `<script>window.__NEXT_DATA__ = ${safeJsonStringify({
                         props: { pageProps: freshProps },
@@ -957,11 +1031,7 @@ export function createSSRHandler(
                         locales: i18nConfig?.locales,
                         defaultLocale: currentDefaultLocale,
                         domainLocales,
-                        __vinext: {
-                          pageModuleUrl: regenPageUrl,
-                          appModuleUrl: regenAppUrl,
-                          hasMiddleware,
-                        },
+                        ...freshPagesNextData,
                       })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}</script>`;
 
                       const hydrationMatch = cachedHtml.match(
@@ -999,17 +1069,21 @@ export function createSSRHandler(
             return;
           }
 
-          // Cache miss — call getStaticProps normally.
-          // Dev has no build-time prerender phase, so every dev hit is
+          // Cache miss (or on-demand revalidation) — call getStaticProps.
+          // Dev has no build-time prerender phase, so an ordinary miss is
           // treated as a stale-while-revalidate refresh — mirrors Next.js
-          // `render.tsx` (`isBuildTimeSSG ? "build" : "stale"`).
+          // `render.tsx` (`isBuildTimeSSG ? "build" : "stale"`). An on-demand
+          // revalidation request (`res.revalidate()`) instead surfaces as
+          // `revalidateReason: "on-demand"`.
           // See `.nextjs-ref/test/e2e/revalidate-reason/revalidate-reason.test.ts`.
           const context = {
             params: userFacingParams,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
-            revalidateReason: "stale" as const,
+            revalidateReason: (isOnDemandRevalidate ? "on-demand" : "stale") as
+              | "on-demand"
+              | "stale",
           };
           const result = await pageModule.getStaticProps(context);
           if (result && "props" in result) {
@@ -1097,19 +1171,6 @@ export function createSSRHandler(
           res.end(JSON.stringify({ pageProps }));
           _renderEnd = now();
           return;
-        }
-
-        // Try to load _app.tsx if it exists
-        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-        let AppComponent: any = null;
-        const appPath = path.join(pagesDir, "_app");
-        if (findFileWithExtensions(appPath, matcher)) {
-          try {
-            const appModule = await importModule(runner, appPath);
-            AppComponent = appModule.default ?? null;
-          } catch {
-            // _app exists but failed to load
-          }
         }
 
         // React and ReactDOMServer are imported at the top level as native Node
@@ -1205,6 +1266,15 @@ export function createSSRHandler(
         const appModuleUrl = AppComponent
           ? "/" + path.relative(viteRoot, path.join(pagesDir, "_app"))
           : null;
+        const serializedPagesNextData = {
+          ...pagesNextData,
+          __vinext: {
+            ...pagesNextData.__vinext,
+            pageModuleUrl,
+            appModuleUrl,
+            hasMiddleware,
+          },
+        };
 
         // Hydration entry: inline script that imports the page and hydrates.
         // Stores the React root and page loader for client-side navigation.
@@ -1271,12 +1341,7 @@ hydrate();
             locales: i18nConfig?.locales,
             defaultLocale: currentDefaultLocale,
             domainLocales,
-            // Include module URLs so client navigation can import pages directly
-            __vinext: {
-              pageModuleUrl,
-              appModuleUrl,
-              hasMiddleware,
-            },
+            ...serializedPagesNextData,
           })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}`,
           scriptNonce,
         );
@@ -1294,7 +1359,17 @@ hydrate();
           }
         }
 
-        const allScripts = `${nextDataScript}\n  ${hydrationScript}`;
+        // Expose page route patterns on window before hydration so the
+        // next/navigation compat hooks can resolve a dynamic pattern from a
+        // resolved path, matching the production client entry. Kept in its own
+        // script tag (not folded into __NEXT_DATA__) so the serialized
+        // __NEXT_DATA__ JSON stays a single self-contained object.
+        const pagePatternsScript = createInlineScriptTag(
+          `window.__VINEXT_PAGE_PATTERNS__=${safeJsonStringify(pagePatterns)}`,
+          scriptNonce,
+        );
+
+        const allScripts = `${nextDataScript}\n  ${pagePatternsScript}\n  ${hydrationScript}`;
 
         // Build response headers: start with gSSP headers, then layer on
         // ISR and font preload headers (which take precedence).
