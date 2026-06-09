@@ -18,6 +18,8 @@
  *   - `packages/next/src/server/render.tsx` — JSON envelope emission (`isNextDataRequest`).
  */
 
+import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
+
 const NEXT_DATA_PREFIX = "/_next/data/";
 const NEXT_DATA_SUFFIX = ".json";
 
@@ -121,10 +123,16 @@ export function buildNextDataJsonResponse(
  * before checking the status code.
  */
 export function buildNextDataNotFoundResponse(): Response {
-  return new Response("{}", {
-    status: 404,
-    headers: { "Content-Type": "application/json" },
-  });
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  // Mirror Next.js pages-handler.ts: always include x-nextjs-deployment-id so
+  // the client router can detect a new deployment and trigger a hard navigation
+  // instead of silently rendering stale data (deployment-skew protection).
+  // Fixes #1829.
+  const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
+  if (deploymentId) {
+    headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+  }
+  return new Response("{}", { status: 404, headers });
 }
 
 // ---------------------------------------------------------------------------

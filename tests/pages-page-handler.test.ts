@@ -526,4 +526,46 @@ describe("createPagesPageHandler — x-nextjs-deployment-id", () => {
       if (savedNext !== undefined) process.env.NEXT_DEPLOYMENT_ID = savedNext;
     }
   });
+
+  it("sets x-nextjs-deployment-id on _next/data wrong-buildId 404 response", async () => {
+    const savedId = process.env.__VINEXT_DEPLOYMENT_ID;
+    process.env.__VINEXT_DEPLOYMENT_ID = DEPLOYMENT_ID;
+    try {
+      const handler = createPagesPageHandler(makeOpts());
+      const badUrl = "/_next/data/stale-build-id/about.json";
+      const res = await handler(makeRequest(badUrl), badUrl, null, null, null);
+      expect(res.status).toBe(404);
+      expect(res.headers.get("x-nextjs-deployment-id")).toBe(DEPLOYMENT_ID);
+    } finally {
+      if (savedId === undefined) {
+        delete process.env.__VINEXT_DEPLOYMENT_ID;
+      } else {
+        process.env.__VINEXT_DEPLOYMENT_ID = savedId;
+      }
+    }
+  });
+
+  it("sets x-nextjs-deployment-id on _next/data route-miss 404 response", async () => {
+    const savedId = process.env.__VINEXT_DEPLOYMENT_ID;
+    process.env.__VINEXT_DEPLOYMENT_ID = DEPLOYMENT_ID;
+    try {
+      // Handler with no routes for /unknown — will hit the route-miss data exit.
+      const handler = createPagesPageHandler(
+        makeOpts({
+          pageRoutes: [makeRoute("/about")],
+          matchRoute: () => null, // always misses
+        }),
+      );
+      const dataUrl = "/_next/data/test-build-id/unknown.json";
+      const res = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+      expect(res.status).toBe(404);
+      expect(res.headers.get("x-nextjs-deployment-id")).toBe(DEPLOYMENT_ID);
+    } finally {
+      if (savedId === undefined) {
+        delete process.env.__VINEXT_DEPLOYMENT_ID;
+      } else {
+        process.env.__VINEXT_DEPLOYMENT_ID = savedId;
+      }
+    }
+  });
 });
