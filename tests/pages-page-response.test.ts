@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   renderPagesPageResponse,
   isPagesStreamingBot,
+  generatePagesETag,
+  etagMatches,
 } from "../packages/vinext/src/server/pages-page-response.js";
+import { resolvePagesPageData } from "../packages/vinext/src/server/pages-page-data.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -749,6 +752,198 @@ describe("pages page response", () => {
         .__vinextStreamedHtmlResponse,
     ).toBe(true);
     expect(response.headers.get("etag")).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // If-None-Match / 304 handling and ISR cache-HIT ETag
+  // ---------------------------------------------------------------------------
+
+  it("returns 304 when If-None-Match matches ETag on bot response (fresh-MISS path)", async () => {
+    const common = createCommonOptions();
+
+    // First request: compute the ETag from a full bot render.
+    const firstResponse = await renderPagesPageResponse({
+      ...common.options,
+      userAgent: "Googlebot",
+    });
+    const etag = firstResponse.headers.get("etag");
+    expect(etag).toBeTruthy();
+
+    // Second request: send If-None-Match matching the ETag.
+    const common2 = createCommonOptions();
+    const notModifiedResponse = await renderPagesPageResponse({
+      ...common2.options,
+      userAgent: "Googlebot",
+      ifNoneMatch: etag as string,
+    });
+
+    expect(notModifiedResponse.status).toBe(304);
+    // 304 must have no body.
+    const body = await notModifiedResponse.text();
+    expect(body).toBe("");
+    // ETag header still present on 304.
+    expect(notModifiedResponse.headers.get("etag")).toBe(etag);
+  });
+
+  it("returns 200 + ETag when If-None-Match does not match on bot response", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      userAgent: "Googlebot",
+      ifNoneMatch: '"stale-etag-that-wont-match"',
+    });
+
+    expect(response.status).toBe(200);
+    const etag = response.headers.get("etag");
+    expect(etag).toBeTruthy();
+    expect(etag).not.toBe('"stale-etag-that-wont-match"');
+    const html = await response.text();
+    expect(html).toContain("live-body");
+  });
+
+  it("ignores If-None-Match for non-bot UAs (never 304)", async () => {
+    const common = createCommonOptions();
+    // Get a bot ETag first.
+    const botResponse = await renderPagesPageResponse({
+      ...common.options,
+      userAgent: "Googlebot",
+    });
+    const etag = botResponse.headers.get("etag") as string;
+
+    // Non-bot with same ETag — must NOT get a 304.
+    const common2 = createCommonOptions();
+    const browserResponse = await renderPagesPageResponse({
+      ...common2.options,
+      userAgent: "Mozilla/5.0 Chrome/120",
+      ifNoneMatch: etag,
+    });
+
+    expect(browserResponse.status).toBe(200);
+    expect(browserResponse.headers.get("etag")).toBeNull();
+  });
+
+  it("ETag weak-comparison: W/ prefix is ignored when matching If-None-Match", async () => {
+    expect(etagMatches('"abc123"', 'W/"abc123"')).toBe(true);
+    expect(etagMatches('W/"abc123"', '"abc123"')).toBe(true);
+    expect(etagMatches('"abc123"', '"abc123"')).toBe(true);
+    expect(etagMatches('"abc123"', '"other"')).toBe(false);
+    expect(etagMatches('"abc123"', "*")).toBe(true);
+  });
+
+  it("attaches ETag to ISR cache-HIT response for bot UAs", async () => {
+    // Build a fake cached ISR entry and confirm that cache-HIT + bot UA yields ETag.
+    const cachedHtml =
+      '<!DOCTYPE html><html><head></head><body><div id="__next"><p>cached</p></div>' +
+      "<script>window.__NEXT_DATA__ = {}</script></body></html>";
+    const expectedEtag = generatePagesETag(cachedHtml);
+
+    const isrGetMock = vi.fn(async () => ({
+      isStale: false,
+      value: {
+        value: {
+          kind: "PAGES" as const,
+          html: cachedHtml,
+          pageData: {},
+          headers: undefined,
+          status: 200,
+        },
+        cacheControl: { revalidate: 60, expire: undefined },
+      },
+    }));
+
+    const result = await resolvePagesPageData({
+      applyRequestContexts: vi.fn(),
+      buildId: "build-123",
+      isDataReq: false,
+      createGsspReqRes: vi.fn() as never,
+      createPageElement: vi.fn(),
+      fontLinkHeader: "",
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en" },
+      isrCacheKey: (_router: string, pathname: string) => `pages:${pathname}`,
+      isrGet: isrGetMock as never,
+      isrSet: vi.fn(async () => {}),
+      expireSeconds: undefined,
+      pageModule: {
+        // getStaticProps triggers the ISR cache lookup path
+        getStaticProps: vi.fn(async () => ({ props: {}, revalidate: 60 })),
+      },
+      params: {},
+      query: {},
+      route: { isDynamic: false },
+      routePattern: "/posts",
+      routeUrl: "/posts",
+      runInFreshUnifiedContext: async (cb) => cb(),
+      safeJsonStringify: JSON.stringify,
+      sanitizeDestination: (d) => d,
+      triggerBackgroundRegeneration: vi.fn(),
+      renderIsrPassToStringAsync: vi.fn(async () => "<p>cached</p>"),
+      userAgent: "Googlebot",
+    });
+
+    expect(result.kind).toBe("response");
+    if (result.kind === "response") {
+      expect(result.response.headers.get("etag")).toBe(expectedEtag);
+      expect(result.response.status).toBe(200);
+    }
+  });
+
+  it("returns 304 on ISR cache-HIT when bot If-None-Match matches", async () => {
+    const cachedHtml =
+      '<!DOCTYPE html><html><head></head><body><div id="__next"><p>cached</p></div>' +
+      "<script>window.__NEXT_DATA__ = {}</script></body></html>";
+    const expectedEtag = generatePagesETag(cachedHtml);
+
+    const isrGetMock = vi.fn(async () => ({
+      isStale: false,
+      value: {
+        value: {
+          kind: "PAGES" as const,
+          html: cachedHtml,
+          pageData: {},
+          headers: undefined,
+          status: 200,
+        },
+        cacheControl: { revalidate: 60, expire: undefined },
+      },
+    }));
+
+    const result = await resolvePagesPageData({
+      applyRequestContexts: vi.fn(),
+      buildId: "build-123",
+      isDataReq: false,
+      createGsspReqRes: vi.fn() as never,
+      createPageElement: vi.fn(),
+      fontLinkHeader: "",
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en" },
+      isrCacheKey: (_router: string, pathname: string) => `pages:${pathname}`,
+      isrGet: isrGetMock as never,
+      isrSet: vi.fn(async () => {}),
+      expireSeconds: undefined,
+      pageModule: {
+        getStaticProps: vi.fn(async () => ({ props: {}, revalidate: 60 })),
+      },
+      params: {},
+      query: {},
+      route: { isDynamic: false },
+      routePattern: "/posts",
+      routeUrl: "/posts",
+      runInFreshUnifiedContext: async (cb) => cb(),
+      safeJsonStringify: JSON.stringify,
+      sanitizeDestination: (d) => d,
+      triggerBackgroundRegeneration: vi.fn(),
+      renderIsrPassToStringAsync: vi.fn(async () => "<p>cached</p>"),
+      userAgent: "Googlebot",
+      ifNoneMatch: expectedEtag,
+    });
+
+    expect(result.kind).toBe("response");
+    if (result.kind === "response") {
+      expect(result.response.status).toBe(304);
+      const body = await result.response.text();
+      expect(body).toBe("");
+      expect(result.response.headers.get("etag")).toBe(expectedEtag);
+    }
   });
 
   // Edge case: `renderPage` is called but the underlying stream render throws.

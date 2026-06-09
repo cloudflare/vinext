@@ -85,8 +85,28 @@ function fnv1a52(str: string): number {
   return (v3 & 15) * 281474976710656 + v2 * 4294967296 + v1 * 65536 + (v0 ^ (v3 >> 4));
 }
 
-function generatePagesETag(payload: string): string {
+export function generatePagesETag(payload: string): string {
   return '"' + fnv1a52(payload).toString(36) + payload.length.toString(36) + '"';
+}
+
+/**
+ * Mirrors Next.js `sendEtagResponse` semantics (weak/strong comparison).
+ *
+ * A weak ETag `W/"..."` matches both `W/"..."` and `"..."` in `If-None-Match`.
+ * A strong ETag `"..."` only matches the same strong token.
+ * `*` always matches.
+ */
+export function etagMatches(etag: string, ifNoneMatch: string): boolean {
+  if (ifNoneMatch === "*") return true;
+  // Normalise: strip the W/ prefix for comparison, matching Next.js
+  // `packages/next/src/server/send-payload.ts` which calls `etag`
+  // (the `etag` npm package) with `weak: true` by default.
+  const normalize = (t: string) => t.replace(/^W\//, "");
+  const etagNorm = normalize(etag.trim());
+  for (const token of ifNoneMatch.split(",")) {
+    if (normalize(token.trim()) === etagNorm) return true;
+  }
+  return false;
 }
 
 type PagesFontPreload = {
@@ -192,6 +212,13 @@ type RenderPagesPageResponseOptions = {
    * normal), which is the correct behaviour for non-HTML requests and tests.
    */
   userAgent?: string;
+  /**
+   * The incoming request's `If-None-Match` header value. When set and the
+   * computed ETag matches (weak-ETag semantics, mirroring Next.js's
+   * `sendEtagResponse`), a `304 Not Modified` is returned with an empty body.
+   * Only evaluated on bot/buffered responses that carry an ETag.
+   */
+  ifNoneMatch?: string;
 };
 
 function buildPagesFontHeadHtml(
@@ -640,9 +667,21 @@ export async function renderPagesPageResponse(
   // Bot / crawler path: buffer the complete HTML, emit as a single chunk, and
   // attach an ETag. Bots (Googlebot, Google-PageRenderer, etc.) cannot parse
   // incrementally-streamed HTML — metadata tags pushed after the initial <head>
-  // flush are invisible to them. Mirrors Next.js's Pages Router behaviour where
-  // `!result.isDynamic` causes the HTML to be sent as a static string with an ETag
-  // (see packages/next/src/server/send-payload.ts).
+  // flush are invisible to them.
+  //
+  // INTENTIONAL DIVERGENCE FROM NEXT.JS: Next.js gates this buffering/ETag on
+  // `!result.isDynamic` (i.e., only static/ISR pages get it, not GSSP pages).
+  // Vinext instead gates on the crawler User-Agent — buffering ALL bot requests
+  // regardless of whether the route uses getServerSideProps or getStaticProps.
+  // This is deliberate: edge-runtime streaming is unreliable for bots on any
+  // route type, so the UA check is the correct signal here. See also the ISR
+  // cache-HIT path in `pages-page-data.ts` which applies the same UA gate for
+  // consistent ETag coverage on cached responses.
+  //
+  // When the incoming `If-None-Match` header matches the computed ETag, return
+  // `304 Not Modified` with no body (mirrors Next.js `sendEtagResponse`
+  // semantics in packages/next/src/server/send-payload.ts, with weak-ETag
+  // comparison per RFC 7232 §3.2).
   //
   // NOTE: This check is intentionally placed after the Cache-Control / header
   // setup above so bot responses still carry the correct cache semantics.
@@ -650,6 +689,12 @@ export async function renderPagesPageResponse(
     const fullHtml = await readStreamAsText(compositeStream);
     const etag = generatePagesETag(fullHtml);
     responseHeaders.set("ETag", etag);
+    if (options.ifNoneMatch && etagMatches(etag, options.ifNoneMatch)) {
+      return new Response(null, {
+        status: 304,
+        headers: responseHeaders,
+      });
+    }
     return new Response(fullHtml, {
       status: finalStatus,
       headers: responseHeaders,

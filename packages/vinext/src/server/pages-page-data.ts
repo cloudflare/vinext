@@ -8,6 +8,9 @@ import { buildCacheStateHeaders } from "./cache-headers.js";
 import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import {
   buildPagesNextDataScript,
+  etagMatches,
+  generatePagesETag,
+  isPagesStreamingBot,
   type PagesGsspResponse,
   type PagesI18nRenderContext,
   type PagesNextDataExtras,
@@ -190,6 +193,21 @@ export type ResolvePagesPageDataOptions = {
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
   vinext?: VinextNextData["__vinext"];
   nextData?: PagesNextDataExtras;
+  /**
+   * The request's User-Agent string. When this matches a known crawler/bot
+   * pattern, ISR cache-HIT responses receive an ETag header for consistency
+   * with the fresh-MISS path (which also attaches an ETag for bot UAs via
+   * `renderPagesPageResponse`). See the divergence note in
+   * `pages-page-response.ts` for why UA-gating is used instead of Next.js's
+   * `isDynamic` check.
+   */
+  userAgent?: string;
+  /**
+   * The incoming request's `If-None-Match` header value. When the cached HTML
+   * ETag matches (weak-ETag semantics), the ISR cache-HIT response is a
+   * `304 Not Modified` with no body.
+   */
+  ifNoneMatch?: string;
 };
 
 type ResolvePagesPageDataRenderResult = {
@@ -558,17 +576,35 @@ export async function resolvePagesPageData(
       !options.scriptNonce &&
       !options.isDataReq
     ) {
+      const hitResponse = buildPagesCacheResponse(
+        cachedValue.html,
+        "HIT",
+        options.fontLinkHeader,
+        undefined,
+        options.expireSeconds,
+        cached.value.cacheControl,
+        cachedValue.status,
+      );
+      // Bot / crawler ETag consistency: attach an ETag to cache-HIT responses
+      // for bot UAs so they are consistent with fresh-MISS bot responses (which
+      // also carry an ETag via `renderPagesPageResponse`). When the incoming
+      // `If-None-Match` matches, return 304 (mirrors `sendEtagResponse`).
+      if (options.userAgent && isPagesStreamingBot(options.userAgent)) {
+        const etag = generatePagesETag(cachedValue.html);
+        hitResponse.headers.set("ETag", etag);
+        if (options.ifNoneMatch && etagMatches(etag, options.ifNoneMatch)) {
+          return {
+            kind: "response",
+            response: new Response(null, {
+              status: 304,
+              headers: hitResponse.headers,
+            }),
+          };
+        }
+      }
       return {
         kind: "response",
-        response: buildPagesCacheResponse(
-          cachedValue.html,
-          "HIT",
-          options.fontLinkHeader,
-          undefined,
-          options.expireSeconds,
-          cached.value.cacheControl,
-          cachedValue.status,
-        ),
+        response: hitResponse,
       };
     }
 

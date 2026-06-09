@@ -540,6 +540,8 @@ export function createPagesPageHandler(
           triggerBackgroundRegeneration,
           vinext: serializedPagesNextData.__vinext,
           nextData: serializedPagesNextData,
+          userAgent: request.headers.get("user-agent") ?? undefined,
+          ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
         });
 
         if (pageDataResult.kind === "notFound") {
@@ -671,6 +673,7 @@ export function createPagesPageHandler(
           statusCode: renderStatusCode,
           nextData: serializedPagesNextData,
           userAgent: request.headers.get("user-agent") ?? undefined,
+          ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
         });
       } catch (e) {
         console.error("[vinext] SSR error:", e);
