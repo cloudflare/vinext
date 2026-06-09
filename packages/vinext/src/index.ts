@@ -4847,9 +4847,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       load: {
-        filter: { id: /^\0vinext-wasm-module:/ },
+        // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
+        filter: { id: /^\u0000vinext-wasm-module:/ },
         handler(id: string) {
-          const filePath = id.replace(/^\0vinext-wasm-module:/, "");
+          // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
+          const filePath = id.replace(/^\u0000vinext-wasm-module:/, "");
           let bytes: Buffer;
           try {
             bytes = fs.readFileSync(filePath);
