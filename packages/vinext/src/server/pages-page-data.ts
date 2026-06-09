@@ -10,6 +10,7 @@ import {
   buildPagesNextDataScript,
   type PagesGsspResponse,
   type PagesI18nRenderContext,
+  type PagesNextDataExtras,
 } from "./pages-page-response.js";
 import {
   hasPagesGetInitialProps,
@@ -114,6 +115,7 @@ type RenderPagesIsrHtmlOptions = {
   routePattern: string;
   safeJsonStringify: (value: unknown) => string;
   vinext?: VinextNextData["__vinext"];
+  nextData?: PagesNextDataExtras;
 };
 
 export type ResolvePagesPageDataOptions = {
@@ -186,6 +188,7 @@ export type ResolvePagesPageDataOptions = {
   ) => void;
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
   vinext?: VinextNextData["__vinext"];
+  nextData?: PagesNextDataExtras;
 };
 
 type ResolvePagesPageDataRenderResult = {
@@ -409,6 +412,10 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
     params: options.params,
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
+    // Serialize the same readiness flags (gssp/gsp/autoExport/…) the initial
+    // render emits, so the regenerated HTML hydrates with the identical initial
+    // `router.isReady` the server computed instead of a flag-less fallback.
+    nextData: options.nextData,
     vinext: options.vinext,
   });
 
@@ -597,6 +604,7 @@ export async function resolvePagesPageData(
                 renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
                 routePattern: options.routePattern,
                 safeJsonStringify: options.safeJsonStringify,
+                nextData: options.nextData,
                 vinext: options.vinext,
               });
 

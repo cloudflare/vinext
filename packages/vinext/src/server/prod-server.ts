@@ -1055,15 +1055,21 @@ function readSsrManifest(clientDir: string): Record<string, string[]> {
   const manifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
   if (!fs.existsSync(manifestPath)) return {};
 
+  // A malformed manifest degrades to "no SSR manifest" (modulepreload hints are
+  // skipped) rather than aborting server startup — matching the previous
+  // tolerant behavior. The build is the source of truth; a corrupt file here is
+  // a build problem, not a reason to take the whole server down.
   let parsed: unknown;
   try {
     parsed = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
   } catch (error) {
-    throw new Error(`Failed to parse SSR manifest at ${manifestPath}`, { cause: error });
+    console.warn(`[vinext] Ignoring unparseable SSR manifest at ${manifestPath}:`, error);
+    return {};
   }
 
   if (!isSsrManifest(parsed)) {
-    throw new Error(`Invalid SSR manifest at ${manifestPath}`);
+    console.warn(`[vinext] Ignoring SSR manifest with unexpected shape at ${manifestPath}`);
+    return {};
   }
   return parsed;
 }

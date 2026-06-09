@@ -1151,30 +1151,18 @@ if (!isServer) {
 // new instances on every render (infinite re-renders).
 let _cachedEmptyServerSearchParams: ReadonlyURLSearchParams | null = null;
 const _readonlyPagesSearchParamsCache = new WeakMap<URLSearchParams, ReadonlyURLSearchParams>();
-let _cachedReadonlyPagesSearchParamsKey: string | null = null;
-let _cachedReadonlyPagesSearchParams: ReadonlyURLSearchParams | null = null;
 
 function getReadonlyPagesSearchParams(searchParams: URLSearchParams): ReadonlyURLSearchParams {
-  // The per-object WeakMap is the authoritative, concurrency-safe cache (each
-  // request's SSR ctx owns its own URLSearchParams). The string-keyed
-  // `_cachedReadonlyPagesSearchParams` is only a fast-path for repeated
-  // identical query strings. Under concurrent SSR one request can read another
-  // request's string-keyed wrapper, but that is intentionally harmless:
-  // ReadonlyURLSearchParams is immutable and equal-string wrappers are
-  // interchangeable, so sharing them across requests cannot leak state.
+  // The per-object WeakMap is the authoritative cache: the Pages navigation
+  // context (client single-slot / per-request SSR WeakMap) owns a stable
+  // URLSearchParams instance, so the same object is queried across renders and
+  // hits here. Keying on the object (not the serialized string) keeps this
+  // concurrency-safe under SSR — wrappers are never shared between requests.
   const cached = _readonlyPagesSearchParamsCache.get(searchParams);
   if (cached) return cached;
 
-  const key = searchParams.toString();
-  if (_cachedReadonlyPagesSearchParamsKey === key && _cachedReadonlyPagesSearchParams) {
-    _readonlyPagesSearchParamsCache.set(searchParams, _cachedReadonlyPagesSearchParams);
-    return _cachedReadonlyPagesSearchParams;
-  }
-
   const readonly = new ReadonlyURLSearchParams(searchParams);
   _readonlyPagesSearchParamsCache.set(searchParams, readonly);
-  _cachedReadonlyPagesSearchParamsKey = key;
-  _cachedReadonlyPagesSearchParams = readonly;
   return readonly;
 }
 

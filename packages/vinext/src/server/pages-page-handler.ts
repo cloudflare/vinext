@@ -520,6 +520,7 @@ export function createPagesPageHandler(
           statusCode: renderStatusCode,
           triggerBackgroundRegeneration,
           vinext: serializedPagesNextData.__vinext,
+          nextData: serializedPagesNextData,
         });
 
         if (pageDataResult.kind === "notFound") {

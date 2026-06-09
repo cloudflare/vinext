@@ -816,7 +816,9 @@ let _pagesRouterReady =
   typeof window === "undefined" ? true : !shouldDeferInitialPagesRouterReady();
 
 function isPagesRouterReady(): boolean {
-  return typeof window === "undefined" || _pagesRouterReady;
+  // `_pagesRouterReady` initializes to `true` on the server and is only ever
+  // flipped on the client, so this reads correctly in both environments.
+  return _pagesRouterReady;
 }
 
 function isPagesRouterDocumentActive(): boolean {

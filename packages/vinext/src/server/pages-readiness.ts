@@ -1,3 +1,6 @@
+import type { VinextNextData } from "../client/vinext-next-data.js";
+import type { PagesPageModule } from "./pages-page-data.js";
+
 /**
  * Shared Pages Router readiness modeling.
  *
@@ -9,30 +12,25 @@
  * `shims/router.ts`.
  */
 
-/** Page or `_app` module shape carrying optional data-fetching exports. */
-type PagesDataFetchingModule = {
-  getServerSideProps?: unknown;
-  getStaticProps?: unknown;
-  default?: unknown;
-};
-
-export type PagesReadinessNextData = {
-  gssp: boolean;
-  gsp: boolean;
-  gip: boolean;
-  appGip: boolean;
-  autoExport: boolean;
-  __vinext: { hasRewrites: boolean };
+/**
+ * The serialized readiness flags (gssp/gsp/gip/appGip/autoExport +
+ * `__vinext.hasRewrites`) that gate the initial Pages Router `router.isReady`.
+ * The field names/types are projected from the canonical `VinextNextData` so
+ * this stays in lockstep with the `__NEXT_DATA__` shape it feeds into.
+ */
+export type PagesReadinessNextData = Pick<
+  VinextNextData,
+  "gssp" | "gsp" | "gip" | "appGip" | "autoExport"
+> & {
+  __vinext: Pick<NonNullable<VinextNextData["__vinext"]>, "hasRewrites">;
 };
 
 /**
- * Build the serialized `__NEXT_DATA__` readiness flags
- * (gssp/gsp/gip/appGip/autoExport + `__vinext.hasRewrites`) that gate the
- * initial Pages Router `router.isReady` value for the `next/navigation` compat
- * hooks. Shared by the dev and production Pages render paths.
+ * Build the readiness flags for a Pages Router render. Shared by the dev and
+ * production Pages render paths.
  */
 export function buildPagesReadinessNextData(options: {
-  pageModule: PagesDataFetchingModule;
+  pageModule: PagesPageModule;
   appComponent: { getInitialProps?: unknown } | null | undefined;
   hasRewrites: boolean;
 }): PagesReadinessNextData {

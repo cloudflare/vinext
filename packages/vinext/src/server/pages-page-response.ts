@@ -22,6 +22,18 @@ type PagesFontPreload = {
   type: string;
 };
 
+/**
+ * The `__NEXT_DATA__` fields beyond the always-present core that the Pages
+ * renderer serializes: the `__vinext` block plus the readiness flags
+ * (gssp/gsp/gip/appGip/autoExport/isExperimentalCompile) the client uses to
+ * recompute the initial `router.isReady`. Shared by every render path
+ * (initial, ISR regeneration) so they emit identical readiness state.
+ */
+export type PagesNextDataExtras = Pick<
+  VinextNextData,
+  "__vinext" | "appGip" | "autoExport" | "gip" | "gsp" | "gssp" | "isExperimentalCompile"
+>;
+
 export type PagesI18nRenderContext = {
   locale?: string;
   locales?: string[];
@@ -99,10 +111,7 @@ type RenderPagesPageResponseOptions = {
   scriptNonce?: string;
   statusCode?: number;
   vinext?: VinextNextData["__vinext"];
-  nextData?: Pick<
-    VinextNextData,
-    "__vinext" | "appGip" | "autoExport" | "gip" | "gsp" | "gssp" | "isExperimentalCompile"
-  >;
+  nextData?: PagesNextDataExtras;
 };
 
 function buildPagesFontHeadHtml(
