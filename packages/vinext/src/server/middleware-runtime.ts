@@ -17,7 +17,7 @@ import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
-import { stripBasePath } from "../utils/base-path.js";
+import { addBasePathToPathname, stripBasePath } from "../utils/base-path.js";
 
 export type MiddlewareModule = Record<string, unknown>;
 
@@ -198,9 +198,19 @@ function createNextRequest(
   // Middleware gets an isolated body branch; downstream routing keeps owning
   // the original request body.
   let mwRequest = request.body && !request.bodyUsed ? request.clone() : request;
-  if (normalizedPathname !== url.pathname) {
+  // NextURL._stripBasePath only recognises basePath when the URL's pathname
+  // actually starts with the basePath prefix. normalizedPathname may already
+  // be basePath-stripped (App Router passes cleanPathname), so we re-add the
+  // basePath prefix here to mirror the un-stripped URL that Next.js's
+  // middleware adapter always receives. NextURL will strip it back during
+  // construction, and request.nextUrl.basePath will correctly reflect the
+  // configured value for in-basePath requests.
+  const mwPathname = basePath
+    ? addBasePathToPathname(normalizedPathname, basePath)
+    : normalizedPathname;
+  if (mwPathname !== url.pathname) {
     const mwUrl = new URL(url);
-    mwUrl.pathname = normalizedPathname;
+    mwUrl.pathname = mwPathname;
     mwRequest = new Request(mwUrl, mwRequest);
   }
 

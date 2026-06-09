@@ -8314,7 +8314,7 @@ describe("NextURL basePath and locale properties", () => {
 
   it("href includes basePath prefix", async () => {
     const { NextURL } = await import("../packages/vinext/src/shims/server.js");
-    const url = new NextURL("http://localhost/dashboard", undefined, {
+    const url = new NextURL("http://localhost/app/dashboard", undefined, {
       basePath: "/app",
     });
     expect(url.pathname).toBe("/dashboard");
@@ -8323,7 +8323,7 @@ describe("NextURL basePath and locale properties", () => {
 
   it("href includes both basePath and locale prefix", async () => {
     const { NextURL } = await import("../packages/vinext/src/shims/server.js");
-    const url = new NextURL("http://localhost/fr/about", undefined, {
+    const url = new NextURL("http://localhost/app/fr/about", undefined, {
       basePath: "/app",
       ...i18nConfig,
     });
@@ -8371,7 +8371,7 @@ describe("NextURL basePath and locale properties", () => {
 
   it("basePath setter to empty string clears basePath", async () => {
     const { NextURL } = await import("../packages/vinext/src/shims/server.js");
-    const url = new NextURL("http://localhost/dashboard", undefined, {
+    const url = new NextURL("http://localhost/app/dashboard", undefined, {
       basePath: "/app",
     });
     expect(url.basePath).toBe("/app");
@@ -8437,7 +8437,7 @@ describe("NextURL basePath and locale properties", () => {
 
   it("searchParams mutations are reflected in href with basePath and locale", async () => {
     const { NextURL } = await import("../packages/vinext/src/shims/server.js");
-    const url = new NextURL("http://localhost/fr/about", undefined, {
+    const url = new NextURL("http://localhost/app/fr/about", undefined, {
       basePath: "/app",
       ...i18nConfig,
     });
@@ -8449,7 +8449,7 @@ describe("NextURL basePath and locale properties", () => {
 
   it("clone() preserves locale, basePath, and config through constructor", async () => {
     const { NextURL } = await import("../packages/vinext/src/shims/server.js");
-    const url = new NextURL("http://localhost/fr/about", undefined, {
+    const url = new NextURL("http://localhost/app/fr/about", undefined, {
       basePath: "/app",
       ...i18nConfig,
     });
@@ -8468,7 +8468,7 @@ describe("NextURL basePath and locale properties", () => {
 
   it("NextRequest passes basePath and i18n config through to nextUrl", async () => {
     const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-    const req = new NextRequest("http://localhost/fr/dashboard", {
+    const req = new NextRequest("http://localhost/app/fr/dashboard", {
       nextConfig: {
         basePath: "/app",
         i18n: {
@@ -8486,7 +8486,7 @@ describe("NextURL basePath and locale properties", () => {
 
   it("NextRequest.url reflects the normalized nextUrl href", async () => {
     const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-    const req = new NextRequest("http://localhost/fr/dashboard?tab=settings", {
+    const req = new NextRequest("http://localhost/app/fr/dashboard?tab=settings", {
       nextConfig: {
         basePath: "/app",
         i18n: { locales: ["en", "fr"], defaultLocale: "en" },
@@ -8502,7 +8502,7 @@ describe("NextURL basePath and locale properties", () => {
     process.env.__NEXT_NO_MIDDLEWARE_URL_NORMALIZE = "1";
     try {
       const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-      const req = new NextRequest("http://localhost/fr/dashboard?tab=settings", {
+      const req = new NextRequest("http://localhost/app/fr/dashboard?tab=settings", {
         nextConfig: {
           basePath: "/app",
           i18n: { locales: ["en", "fr"], defaultLocale: "en" },
@@ -8510,7 +8510,7 @@ describe("NextURL basePath and locale properties", () => {
       });
 
       expect(req.nextUrl.href).toBe("http://localhost/app/fr/dashboard?tab=settings");
-      expect(req.url).toBe("http://localhost/fr/dashboard?tab=settings");
+      expect(req.url).toBe("http://localhost/app/fr/dashboard?tab=settings");
     } finally {
       if (previous === undefined) {
         delete process.env.__NEXT_NO_MIDDLEWARE_URL_NORMALIZE;
@@ -8537,7 +8537,7 @@ describe("NextURL basePath and locale properties", () => {
 
   it("NextRequest.url normalizes Request input through nextUrl", async () => {
     const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-    const raw = new Request("http://localhost/fr/dashboard?tab=settings");
+    const raw = new Request("http://localhost/app/fr/dashboard?tab=settings");
     const req = new NextRequest(raw, {
       nextConfig: {
         basePath: "/app",
@@ -8609,7 +8609,7 @@ describe("NextURL trailingSlash policy", () => {
 
   it("applies trailingSlash with basePath", async () => {
     const { NextURL } = await import("../packages/vinext/src/shims/server.js");
-    const url = new NextURL("http://localhost/dashboard", undefined, {
+    const url = new NextURL("http://localhost/app/dashboard", undefined, {
       basePath: "/app",
       nextConfig: { trailingSlash: true },
     });

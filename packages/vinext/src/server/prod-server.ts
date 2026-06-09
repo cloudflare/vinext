@@ -48,7 +48,7 @@ import {
   parseNextDataPathname,
   buildNextDataNotFoundResponse,
 } from "./pages-data-route.js";
-import { hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
   ASSET_PREFIX_URL_DIR,
   assetPrefixPathname,
@@ -1679,7 +1679,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
                 let mwRequest = request;
                 if (hadBasePath && basePath) {
                   const mwUrl = new URL(request.url);
-                  mwUrl.pathname = basePath + (mwUrl.pathname === "/" ? "" : mwUrl.pathname);
+                  mwUrl.pathname = addBasePathToPathname(mwUrl.pathname, basePath);
                   mwRequest = new Request(mwUrl, request);
                 }
                 return runMiddleware(mwRequest, ctx, opts);

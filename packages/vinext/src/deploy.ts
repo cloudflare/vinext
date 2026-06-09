@@ -522,7 +522,7 @@ import type { ImageConfig } from "vinext/server/image-optimization";
 import { cloneRequestWithHeaders, filterInternalHeaders, isOpenRedirectShaped } from "vinext/server/request-pipeline";
 import { notFoundStaticAssetResponse } from "vinext/server/http-error-responses";
 import { assetPrefixPathname, isNextStaticPath } from "vinext/utils/asset-prefix";
-import { hasBasePath, stripBasePath } from "vinext/utils/base-path";
+import { addBasePathToPathname, hasBasePath, stripBasePath } from "vinext/utils/base-path";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { renderPage, handleApiRoute, runMiddleware, vinextConfig, matchPageRoute } from "virtual:vinext-server-entry";
@@ -658,7 +658,7 @@ export default {
                 let mwReq = req;
                 if (hadBasePath && basePath) {
                   const mwUrl = new URL(req.url);
-                  mwUrl.pathname = basePath + (mwUrl.pathname === "/" ? "" : mwUrl.pathname);
+                  mwUrl.pathname = addBasePathToPathname(mwUrl.pathname, basePath);
                   mwReq = new Request(mwUrl, req);
                 }
                 return runMiddleware(mwReq, ctx, opts);
