@@ -140,7 +140,7 @@ import {
   VINEXT_CLIENT_ENTRY_MANIFEST,
 } from "./utils/client-entry-manifest.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
-import { buildSassPreprocessorOptions } from "./plugins/sass.js";
+import { buildSassPreprocessorOptions, createSassTildeImporter } from "./plugins/sass.js";
 import {
   createClientManualChunks,
   createClientOutputConfig,
@@ -1960,25 +1960,43 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // `css.*`, so we merge them into a single `css` object rather
           // than emitting `{ css: ... }` twice (the second would clobber
           // the first).
-          ...(postcssOverride || sassPreprocessorOptions
-            ? {
-                css: {
-                  ...(postcssOverride ? { postcss: postcssOverride } : {}),
-                  ...(sassPreprocessorOptions
-                    ? {
-                        preprocessorOptions: {
-                          // Apply the same options to both `.scss` and `.sass`
-                          // entry points. Next.js's sass-loader rule matches
-                          // /\.s[ca]ss$/, so a single `sassOptions` block
-                          // covers both syntaxes there too.
-                          scss: sassPreprocessorOptions,
-                          sass: sassPreprocessorOptions,
-                        },
-                      }
-                    : {}),
-                },
-              }
-            : {}),
+          //
+          // The tilde importer is ALWAYS injected so that SCSS files can use
+          // webpack-style `~pkg/file` (node_modules) and `~/path` (root)
+          // imports that Next.js (sass-loader) supports out of the box.
+          // See: test/e2e/app-dir/scss/npm-import-tilde and #1825.
+          css: {
+            ...(postcssOverride ? { postcss: postcssOverride } : {}),
+            preprocessorOptions: (() => {
+              // Tilde importer: strip the leading ~ and resolve the rest
+              // either from node_modules (~pkg/...) or project root (~/).
+              // Placed first so it runs before Vite's own internal importer,
+              // which is appended at the end of `importers[]` by the vite:css
+              // plugin (vite/src/node/plugins/css.ts makeScssWorker).
+              const tildeImporter = createSassTildeImporter(root);
+
+              // Base options shared by both .scss and .sass preprocessors.
+              const baseOpts = {
+                ...sassPreprocessorOptions,
+                // Merge user-supplied importers (from sassOptions) with the
+                // tilde importer. Tilde goes first so it gets first crack at
+                // ~ prefixed URLs; other importers follow; Vite's own internal
+                // importer is appended last by the vite:css plugin.
+                importers: [
+                  tildeImporter,
+                  ...((sassPreprocessorOptions?.importers as unknown[]) ?? []),
+                ],
+              };
+
+              return {
+                // Apply the same options to both `.scss` and `.sass` entry
+                // points. Next.js's sass-loader rule matches /\.s[ca]ss$/,
+                // so a single `sassOptions` block covers both syntaxes there.
+                scss: baseOpts,
+                sass: baseOpts,
+              };
+            })(),
+          },
         };
 
         // Collect user-provided ssr.external so we can propagate it into
