@@ -187,6 +187,17 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "root-layout-redirect": {
+    testDir: "./tests/e2e/root-layout-redirect",
+    use: { baseURL: "http://localhost:4184" },
+    server: {
+      command: "npx vp dev --port 4184",
+      cwd: "./tests/fixtures/root-layout-redirect",
+      port: 4184,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+  },
 };
 
 type ProjectName = keyof typeof projectServers;
