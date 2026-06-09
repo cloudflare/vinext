@@ -373,12 +373,72 @@ describe("API routes", () => {
     if (result.type !== "response") return;
     expect(result.response.status).toBe(200);
     expect(handleApi).toHaveBeenCalledWith(expect.any(Request), "/api/users", null);
+    // Tagged as API so Node callers default a missing content-type to octet-stream.
+    expect(result.isApiResponse).toBe(true);
+  });
+
+  it("does not tag page renders as API responses", async () => {
+    const req = makeRequest("/page");
+    const result = await runPagesRequest(req, baseDeps({ renderPage: makeRenderPage(200) }));
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.isApiResponse).toBeFalsy();
   });
 
   it("matches /api exactly", async () => {
     const req = makeRequest("/api");
     const result = await runPagesRequest(req, baseDeps());
     expect(result.type).toBe("api");
+  });
+});
+
+// Public-directory static file serving (Node prod only, post-middleware).
+describe("serveStaticFile", () => {
+  it("returns {type:'handled'} when serveStaticFile serves the request", async () => {
+    const renderPage = makeRenderPage(200);
+    const serveStaticFile = vi.fn(async () => true);
+    const req = makeRequest("/favicon.ico");
+    const result = await runPagesRequest(req, baseDeps({ serveStaticFile, renderPage }));
+    expect(result.type).toBe("handled");
+    // The static file short-circuits — the renderer is never invoked.
+    expect(renderPage).not.toHaveBeenCalled();
+  });
+
+  it("falls through to render when serveStaticFile returns false", async () => {
+    const renderPage = makeRenderPage(200);
+    const serveStaticFile = vi.fn(async () => false);
+    const req = makeRequest("/page");
+    const result = await runPagesRequest(req, baseDeps({ serveStaticFile, renderPage }));
+    expect(serveStaticFile).toHaveBeenCalledTimes(1);
+    expect(result.type).toBe("response");
+    expect(renderPage).toHaveBeenCalled();
+  });
+
+  it("passes the original (pre-rewrite) pathname and staged headers", async () => {
+    const serveStaticFile = vi.fn(async () => true);
+    const middleware = makeMiddleware({ responseHeaders: [["set-cookie", "a=1"]] });
+    const req = makeRequest("/robots.txt");
+    await runPagesRequest(req, baseDeps({ serveStaticFile, runMiddleware: middleware }));
+    expect(serveStaticFile).toHaveBeenCalledWith("/robots.txt", { "set-cookie": ["a=1"] });
+  });
+
+  it("runs after middleware — a middleware redirect wins over a public file", async () => {
+    const serveStaticFile = vi.fn(async () => true);
+    const middleware = makeMiddleware({
+      continue: false,
+      redirectUrl: "/elsewhere",
+      redirectStatus: 307,
+    });
+    const req = makeRequest("/favicon.ico");
+    const result = await runPagesRequest(
+      req,
+      baseDeps({ serveStaticFile, runMiddleware: middleware }),
+    );
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(307);
+    expect(result.response.headers.get("Location")).toBe("/elsewhere");
+    expect(serveStaticFile).not.toHaveBeenCalled();
   });
 });
 

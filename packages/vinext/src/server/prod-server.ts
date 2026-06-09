@@ -1658,9 +1658,39 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             ? (request: Request, apiUrl: string) =>
                 handleApi(request, apiUrl, createNodeExecutionContext())
             : null,
+        // ── 5b. Serve public-directory static files (post-middleware) ──
+        // Public files (favicon.ico, robots.txt, anything under public/) are served
+        // after middleware so middleware can intercept or redirect them, and before
+        // rewrites so a real public file wins over a fallback rewrite. Build assets
+        // (/_next/static/*) were already served above. Middleware response headers
+        // (including next.config headers staged by the pipeline) are passed through so
+        // Set-Cookie / security headers from middleware are included in the response.
+        serveStaticFile: async (requestPathname, stagedHeaders) => {
+          if (
+            requestPathname === "/" ||
+            requestPathname.startsWith("/api/") ||
+            requestPathname.startsWith(`/${ASSET_PREFIX_URL_DIR}/`)
+          ) {
+            return false;
+          }
+          return tryServeStatic(
+            req,
+            res,
+            clientDir,
+            requestPathname,
+            compress,
+            staticCache,
+            stagedHeaders,
+          );
+        },
       };
 
       const result = await runPagesRequest(webRequest, deps);
+
+      if (result.type === "handled") {
+        // serveStaticFile already wrote the response to `res`.
+        return;
+      }
 
       if (result.type === "response") {
         const { response } = result;
@@ -1671,7 +1701,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         }
 
         const responseBody = Buffer.from(await response.arrayBuffer());
-        const ct = response.headers.get("content-type") ?? "text/html";
+        // API routes may return arbitrary data (JSON, binary, etc.), so default to
+        // application/octet-stream rather than text/html when the handler set no
+        // explicit Content-Type. Page renders default to text/html.
+        const ct =
+          response.headers.get("content-type") ??
+          (result.isApiResponse ? "application/octet-stream" : "text/html");
         const responseHeaders: Record<string, string | string[]> = {};
         response.headers.forEach((v, k) => {
           if (k === "set-cookie") return;

@@ -102,11 +102,28 @@ export type PagesPipelineDeps = {
    * (which is not included in the pipeline's body-less Web Request).
    */
   proxyExternal?: ((currentRequest: Request, externalUrl: string) => Promise<Response>) | null;
+  /**
+   * Optional public-directory static file server (Node prod only).
+   * Called post-middleware (so middleware can intercept/redirect public files) with the
+   * original basePath-stripped pathname and the staged middleware response headers.
+   * The callback writes the file to its own output (Node `res`) and resolves `true` when
+   * it served the request; the pipeline then returns `{ type: "handled" }`. Resolves `false`
+   * to fall through to rewrites/render. Worker/dev adapters omit this — their public files
+   * are served by the asset binding / Vite respectively.
+   */
+  serveStaticFile?:
+    | ((requestPathname: string, stagedHeaders: HeaderRecord) => Promise<boolean>)
+    | null;
 };
 
 // The result discriminated union
 export type PagesPipelineResult =
-  | { type: "response"; response: Response }
+  // `isApiResponse` lets Node callers pick the right body content-type fallback
+  // (API responses default to application/octet-stream, pages to text/html).
+  | { type: "response"; response: Response; isApiResponse?: boolean }
+  // `handled`: an adapter-supplied callback (e.g. Node public-file serving) already
+  // wrote the response to its own output; the adapter should just return.
+  | { type: "handled" }
   | {
       type: "render";
       resolvedUrl: string;
@@ -125,7 +142,11 @@ export type PagesPipelineResult =
       requestHeaders: Headers;
       middlewareStatus: number | undefined;
     }
-  | { type: "next" }; // dev passthrough (no matching route, has appDir)
+  // Reserved: `runPagesRequest` does not currently emit `{ type: "next" }`. The dev
+  // hybrid app+pages passthrough is decided in the dev adapter (index.ts) from the
+  // `render`/`api` intent via `hasAppDir`, not here. Kept as forward-compat surface
+  // for a future pipeline-level passthrough; prod/worker adapters never observe it.
+  | { type: "next" };
 
 /**
  * Run the Pages Router request pipeline.
@@ -315,12 +336,32 @@ export async function runPagesRequest(
   }
 
   // Step 8: External-URL proxy (post-mw rewrite target)
+  //
+  // Intentional asymmetry: ONLY the post-middleware rewrite path merges the staged
+  // middleware headers into the proxied response (`mergeHeaders(...)`). The
+  // beforeFiles/afterFiles/fallback external rewrite paths below return the bare
+  // `proxyExternal(...)` response without merging. Both the pre-refactor prod and
+  // worker copies agreed on this, so it is preserved deliberately — do not "fix" the
+  // bare returns into merges without first confirming the originals.
   if (isExternalUrl(resolvedUrl)) {
     const proxyResponse = await proxyExternal(request, resolvedUrl);
     return {
       type: "response",
       response: mergeHeaders(proxyResponse, middlewareHeaders, undefined),
     };
+  }
+
+  // Step 8b: Public-directory static files (post-middleware, Node prod only).
+  // Served after middleware so middleware can intercept/redirect public files, and
+  // before rewrites so a real public file wins over a fallback rewrite — matching the
+  // pre-refactor prod-server ordering. Only Node supplies `serveStaticFile`; the
+  // callback owns the path guards (skip "/", "/api/", and the asset-prefix dir) and
+  // writes directly to Node `res`, so a `true` result means the response is already sent.
+  if (deps.serveStaticFile) {
+    const served = await deps.serveStaticFile(pathname, middlewareHeaders);
+    if (served) {
+      return { type: "handled" };
+    }
   }
 
   // Step 9: beforeFiles rewrites
@@ -334,6 +375,7 @@ export async function runPagesRequest(
     );
     if (rewritten) {
       if (isExternalUrl(rewritten)) {
+        // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
         return { type: "response", response: await proxyExternal(request, rewritten) };
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
@@ -361,6 +403,9 @@ export async function runPagesRequest(
       const response = await deps.handleApi(request, apiLookupUrl, deps.ctx ?? null);
       return {
         type: "response",
+        // Tag as API so Node callers default a missing content-type to
+        // application/octet-stream (arbitrary data) rather than text/html.
+        isApiResponse: true,
         response: mergeHeaders(response, middlewareHeaders, middlewareStatus),
       };
     } else {
@@ -386,6 +431,7 @@ export async function runPagesRequest(
     );
     if (rewritten) {
       if (isExternalUrl(rewritten)) {
+        // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
         return { type: "response", response: await proxyExternal(request, rewritten) };
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
@@ -430,6 +476,7 @@ export async function runPagesRequest(
       );
       if (fallbackRewrite) {
         if (isExternalUrl(fallbackRewrite)) {
+          // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
           return {
             type: "response",
             response: await proxyExternal(request, fallbackRewrite),
@@ -475,6 +522,7 @@ export async function runPagesRequest(
     );
     if (fallbackRewrite) {
       if (isExternalUrl(fallbackRewrite)) {
+        // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
         return { type: "response", response: await proxyExternal(request, fallbackRewrite) };
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);

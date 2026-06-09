@@ -3540,6 +3540,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 return next();
               }
 
+              // The dev adapter never supplies `serveStaticFile` (Vite serves public
+              // files), so the pipeline never returns `handled` here. Narrow it out so
+              // the render/api branches below see only the intent variants.
+              if (pipelineResult.type === "handled") {
+                return;
+              }
+
               // For render/api intents: flush staged middleware headers and
               // apply request header mutations before calling SSR/API handlers.
               const flushStagedHeaders = () => {
@@ -3564,10 +3571,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   nextConfig?.pageExtensions,
                   fileMatcher,
                 );
-                flushStagedHeaders();
-                flushRequestHeaders();
-                if (pipelineResult.middlewareStatus !== undefined) {
-                  req.__vinextMiddlewareStatus = pipelineResult.middlewareStatus;
+                // Only flush staged middleware headers / mutate req.headers when a
+                // pages API route actually matches — mirroring the original
+                // `if (apiMatch)` gate. On a miss we must NOT touch res or req.headers
+                // before falling through to next(): an unconditional flushRequestHeaders()
+                // deletes all req.headers and repopulates them from the body-less pipeline
+                // request, wiping the hybrid app+pages middleware context
+                // (VINEXT_MW_CTX_HEADER, set on req.headers) that the app RSC plugin reads.
+                const apiMatch = matchRoute(pipelineResult.apiUrl, apiRoutes);
+                if (apiMatch) {
+                  flushStagedHeaders();
+                  flushRequestHeaders();
+                  if (pipelineResult.middlewareStatus !== undefined) {
+                    req.__vinextMiddlewareStatus = pipelineResult.middlewareStatus;
+                  }
                 }
                 const handled = await handleApiRoute(
                   getPagesRunner(),
