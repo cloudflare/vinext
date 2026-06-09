@@ -538,8 +538,14 @@ const RESOLVED_INSTRUMENTATION_CLIENT = `\0${VIRTUAL_INSTRUMENTATION_CLIENT}.mjs
  *  Shared between the Rolldown hook filter and the transform handler regex. */
 const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
 
-/** Absolute path to vinext's shims directory, used by clientManualChunks. */
-const _shimsDir = path.resolve(__dirname, "shims") + "/";
+/**
+ * Absolute path to vinext's shims directory, with a trailing slash. Normalized
+ * to forward slashes because it is prefix-matched against Vite module ids (which
+ * Vite always normalizes to forward slashes) in the font plugins and
+ * clientManualChunks — a raw path.resolve value has backslashes on Windows and
+ * the `id.startsWith(_shimsDir)` checks would never match.
+ */
+const _shimsDir = normalizePathSeparators(path.resolve(__dirname, "shims")) + "/";
 const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
 
 function isValidExportIdentifier(name: string): boolean {
