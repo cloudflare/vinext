@@ -4836,6 +4836,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // intercept first in the registration order.
           if (hasCloudflarePlugin) return null;
 
+          // Skip imports originating from @vercel/og — vinext:og-font-patch
+          // converts those to dynamic imports whose .catch() fallback reads from
+          // disk on Node.js.  If we intercept them here and inline the bytes as
+          // base64, the dynamic import succeeds on Node.js too, defeating the
+          // fallback, causing the ~1.3 MB resvg WASM to be shipped twice, and
+          // breaking findEmittedWasmAsset dedup in vinext:og-assets.
+          const importerPath = importer
+            ? (importer.startsWith("\0") ? importer.slice(1) : importer).split("?")[0]
+            : "";
+          if (importerPath.includes("@vercel/og")) return null;
+
           // Let Vite's resolver find the absolute path (it handles
           // relative specifiers, tsconfig paths, etc.), then strip the
           // ?module query so the result is a real file path.
@@ -4857,13 +4868,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             bytes = fs.readFileSync(filePath);
           } catch {
             this.error(`[vinext] Could not read WASM file: ${filePath}`);
-            return null;
           }
           // Inline the WASM binary as a base64 string and compile it at
           // module initialisation time.  atob() is available on Node 16+,
           // browsers, and workerd. Top-level await is valid because
           // Vite/Rolldown always emits ESM output for SSR/server builds.
-          const base64 = bytes.toString("base64");
+          const base64 = bytes!.toString("base64");
           return [
             `const _b64 = ${JSON.stringify(base64)};`,
             `const _buf = Uint8Array.from(atob(_b64), c => c.charCodeAt(0));`,
