@@ -48,7 +48,7 @@ import {
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
 
-export type IsrDisposition = "HIT" | "STALE" | "MISS";
+type IsrDisposition = "HIT" | "STALE" | "MISS";
 
 export type IsrDecision = {
   disposition: IsrDisposition;
@@ -67,7 +67,7 @@ export type IsrDecision = {
  * - `"dev"`: like `"pages"`, but `revalidate=0`/`Infinity` guards are absent
  *   (dev never caches when revalidate=0 and never has Infinity entries in practice).
  */
-export type IsrPolicyKind = "app-page" | "app-route" | "pages" | "dev";
+type IsrPolicyKind = "app-page" | "app-route" | "pages" | "dev";
 
 type DecideIsrOptions = {
   /**
