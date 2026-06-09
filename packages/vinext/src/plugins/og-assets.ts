@@ -111,10 +111,18 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
 
       // Pattern 1 — edge build: fetch(new URL("./file", import.meta.url)).then((res) => res.arrayBuffer())
       // Supports both ./-relative and ../-relative paths (e.g. "../../../assets/font.ttf").
+      // The trailing `,?` before each `.then(...)` close paren tolerates the trailing
+      // comma that formatters (Prettier `trailingComma: "all"`, oxfmt) emit when the
+      // call is wrapped across multiple lines — without it, formatted source such as
+      //   .then((res) =>
+      //     res.arrayBuffer(),
+      //   )
+      // would not match and the asset would be left as a runtime fetch (which throws
+      // "Invalid URL" on Workers, where import.meta.url is "worker").
       // Replace with an inline IIFE that decodes the asset as base64 and returns Promise<ArrayBuffer>.
       if (code.includes("fetch(")) {
         const fetchPattern =
-          /fetch\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*\}?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*\))/g;
+          /fetch\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*\}?\s*,?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*,?\s*\))/g;
 
         for (const match of code.matchAll(fetchPattern)) {
           const fullMatch = match[0];

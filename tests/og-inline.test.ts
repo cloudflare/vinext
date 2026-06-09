@@ -96,6 +96,31 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result.code).not.toContain("fetch(");
   });
 
+  it("transforms fetch().then() that a formatter wrapped across lines with a trailing comma", async () => {
+    // Real-world regression: formatters (Prettier `trailingComma: "all"`, oxfmt)
+    // wrap a long fetch().then() across multiple lines and add a trailing comma:
+    //   const font = await fetch(new URL("../../../assets/noto-sans.ttf", import.meta.url)).then(
+    //     (res) => res.arrayBuffer(),
+    //   );
+    // The earlier regex only matched the single-line, comma-less form, so formatted
+    // source was left as a runtime fetch — which throws "Invalid URL" on Workers
+    // (import.meta.url === "worker") and returns a 500. See the /api/og-custom-font
+    // e2e in tests/e2e/og-image.spec.ts.
+    const plugin = createOgInlinePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `const font = await fetch(new URL("./noto-sans.ttf", import.meta.url)).then((res) =>`,
+      `  res.arrayBuffer(),`,
+      `);`,
+    ].join("\n");
+    const moduleId = path.join(tmpDir, "og.tsx");
+
+    const result = await transform.call(plugin, code, moduleId);
+    expect(result).not.toBeNull();
+    expect(result.code).toContain(fontBase64);
+    expect(result.code).not.toContain("fetch(");
+  });
+
   // ── Pattern 2: readFileSync ──────────────────────────────
 
   it("transforms fs.readFileSync(fileURLToPath(new URL(..., import.meta.url)))", async () => {
