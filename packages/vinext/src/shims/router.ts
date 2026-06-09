@@ -47,7 +47,7 @@ import {
   getWindowOrigin,
   withBasePath,
 } from "./url-utils.js";
-import { stripBasePath } from "../utils/base-path.js";
+import { stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
 import {
   addLocalePrefix,
   getDomainLocaleUrl,
@@ -1838,9 +1838,16 @@ async function performNavigation(
   //     handleHardNavigation({ url: as, router: this })
   //     return new Promise(() => {})
   //   }
-  const _appPath = getLocalPathname(resolved);
-  const _appPathEntry = _appPath !== null ? getPagesRouterComponentsMap()[_appPath] : undefined;
-  if (_appPathEntry !== undefined && "__appRouter" in _appPathEntry && _appPathEntry.__appRouter) {
+  //
+  // Key normalisation: strip trailing slash so the lookup always matches the
+  // canonical key written by markAppRouteDetectedOnPrefetch, regardless of
+  // whether trailingSlash:true added a slash to `resolved` above (line 1797).
+  // Mirrors Next.js: removeTrailingSlash(removeBasePath(pathname)) at line 1442.
+  const appPath = getLocalPathname(resolved);
+  const appPathNorm = appPath !== null ? removeTrailingSlash(appPath) : null;
+  const appPathEntry =
+    appPathNorm !== null ? getPagesRouterComponentsMap()[appPathNorm] : undefined;
+  if (appPathEntry !== undefined && "__appRouter" in appPathEntry && appPathEntry.__appRouter) {
     if (mode === "push") window.location.assign(full);
     else window.location.replace(full);
     return new Promise<boolean>(() => {});
