@@ -191,11 +191,16 @@ const projectServers = {
     testDir: "./tests/e2e/root-layout-redirect",
     use: { baseURL: "http://localhost:4184" },
     server: {
-      command: "npx vp dev --port 4184",
+      // Build vinext CLI, then build the fixture, then start the production
+      // server. This exercises prodOnCaughtError (the fixed code path) rather
+      // than devOnCaughtError, which already filtered navigation-signal errors
+      // before this PR.
+      command:
+        "npx tsc -p ../../../packages/vinext/tsconfig.json && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4184",
       cwd: "./tests/fixtures/root-layout-redirect",
       port: 4184,
       reuseExistingServer: !process.env.CI,
-      timeout: 30_000,
+      timeout: 60_000,
     },
   },
 };

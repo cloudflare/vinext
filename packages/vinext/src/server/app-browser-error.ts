@@ -1,3 +1,5 @@
+import { isNavigationSignalError } from "../utils/navigation-signal.js";
+
 // Build the onUncaughtError handler for hydrateRoot. When a render error
 // tears down the tree without an error boundary catching, the
 // NavigationCommitSignal layout effect never runs, so the URL update for
@@ -26,20 +28,6 @@ export function createOnUncaughtError(
   };
 }
 
-// Inline digest classifier — mirrors isNavigationSignalError in
-// utils/navigation-signal.ts without importing it, so this file stays a
-// plain JS module with no cross-package dependencies that could pull in
-// unexpected code in production bundles.
-function isNavigationSignalDigest(error: unknown): boolean {
-  if (!error || typeof error !== "object" || !("digest" in error)) return false;
-  const digest = String((error as { digest: unknown }).digest);
-  return (
-    digest === "NEXT_NOT_FOUND" ||
-    digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;") ||
-    digest.startsWith("NEXT_REDIRECT;")
-  );
-}
-
 // Production onCaughtError handler for hydrateRoot. React calls this for
 // every error caught by an error boundary. Navigation sentinel errors
 // (redirect(), notFound(), forbidden(), unauthorized()) are intentionally
@@ -52,7 +40,7 @@ function isNavigationSignalDigest(error: unknown): boolean {
 // All other caught errors are logged to console.error, preserving React's
 // default behavior.
 export function prodOnCaughtError(error: unknown, errorInfo: { componentStack?: string }): void {
-  if (isNavigationSignalDigest(error)) return;
+  if (isNavigationSignalError(error)) return;
   console.error(error);
   if (errorInfo?.componentStack) {
     console.error("The above error occurred in a React component:\n" + errorInfo.componentStack);
