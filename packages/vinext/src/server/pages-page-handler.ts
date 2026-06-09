@@ -670,6 +670,7 @@ export function createPagesPageHandler(
           scriptNonce,
           statusCode: renderStatusCode,
           nextData: serializedPagesNextData,
+          userAgent: request.headers.get("user-agent") ?? undefined,
         });
       } catch (e) {
         console.error("[vinext] SSR error:", e);

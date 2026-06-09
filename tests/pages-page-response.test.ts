@@ -1,6 +1,9 @@
 import React from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { renderPagesPageResponse } from "../packages/vinext/src/server/pages-page-response.js";
+import {
+  renderPagesPageResponse,
+  isPagesStreamingBot,
+} from "../packages/vinext/src/server/pages-page-response.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -100,6 +103,45 @@ function createCommonOptions() {
     },
   };
 }
+
+describe("isPagesStreamingBot", () => {
+  it("detects Googlebot as a streaming bot", () => {
+    expect(isPagesStreamingBot("Googlebot")).toBe(true);
+    expect(isPagesStreamingBot("Googlebot/2.1")).toBe(true);
+  });
+
+  it("does not match Googlebot suffixed variants (Googlebot-Image etc.)", () => {
+    // Googlebot-Image executes no JS so streaming is safe; the regex only
+    // blocks the main Googlebot (and the Google-* prefix bots below).
+    expect(isPagesStreamingBot("Googlebot-Image/1.0")).toBe(false);
+    expect(isPagesStreamingBot("Googlebot-News")).toBe(false);
+  });
+
+  it("detects Google-PageRenderer via the HTML_LIMITED_BOT_UA_RE", () => {
+    expect(
+      isPagesStreamingBot(
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36 Google-PageRenderer Google (+https://developers.google.com/+/web/snippet/)",
+      ),
+    ).toBe(true);
+  });
+
+  it("detects other known HTML-limited bots", () => {
+    expect(isPagesStreamingBot("Bingbot/2.0")).toBe(true);
+    expect(isPagesStreamingBot("facebookexternalhit/1.1")).toBe(true);
+    expect(isPagesStreamingBot("Twitterbot/1.0")).toBe(true);
+    expect(isPagesStreamingBot("Slackbot-LinkExpanding 1.0")).toBe(true);
+  });
+
+  it("returns false for normal browser User-Agents", () => {
+    expect(
+      isPagesStreamingBot(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+      ),
+    ).toBe(false);
+    expect(isPagesStreamingBot("curl/7.88.1")).toBe(false);
+    expect(isPagesStreamingBot("")).toBe(false);
+  });
+});
 
 describe("pages page response", () => {
   it("renders the document shell, merges gSSP headers, and marks streamed HTML responses", async () => {
@@ -624,6 +666,89 @@ describe("pages page response", () => {
     expect(html).toContain("live-body");
     expect(html).not.toContain("enhanced");
     expect(enhancePageElement).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Bot / crawler buffering (streaming-ssr-edge compat)
+  // ---------------------------------------------------------------------------
+
+  // Mirrors the Next.js test: "should not stream to crawlers or google pagerender bot"
+  // from test/e2e/streaming-ssr-edge/streaming-ssr-edge.test.ts.
+  // When the UA is Googlebot the response must be fully buffered (single chunk)
+  // and carry an ETag header.
+  it("buffers the response for Googlebot and attaches an ETag", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      userAgent: "Googlebot",
+    });
+
+    // Bot responses are NOT streamed — they are plain Responses, not the
+    // marked PagesStreamedHtmlResponse shape.
+    expect(
+      (response as Response & { __vinextStreamedHtmlResponse?: boolean })
+        .__vinextStreamedHtmlResponse,
+    ).toBeUndefined();
+
+    const etag = response.headers.get("etag");
+    expect(etag).toBeDefined();
+    expect(typeof etag).toBe("string");
+    expect((etag as string).length).toBeGreaterThan(0);
+
+    const html = await response.text();
+    expect(html).toContain("live-body");
+    expect(html).toContain("window.__NEXT_DATA__");
+  });
+
+  it("buffers the response for Google-PageRenderer and attaches an ETag", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      userAgent:
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36 Google-PageRenderer Google (+https://developers.google.com/+/web/snippet/)",
+    });
+
+    const etag = response.headers.get("etag");
+    expect(etag).toBeDefined();
+    expect(typeof etag).toBe("string");
+
+    const html = await response.text();
+    expect(html).toContain("live-body");
+  });
+
+  it("does not buffer the response for a normal browser UA", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    });
+
+    // Normal browsers still get the streaming response marker.
+    expect(
+      (response as Response & { __vinextStreamedHtmlResponse?: boolean })
+        .__vinextStreamedHtmlResponse,
+    ).toBe(true);
+    // No ETag on streaming responses.
+    expect(response.headers.get("etag")).toBeNull();
+  });
+
+  it("does not buffer when userAgent is omitted", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      // userAgent intentionally not provided
+    });
+
+    expect(
+      (response as Response & { __vinextStreamedHtmlResponse?: boolean })
+        .__vinextStreamedHtmlResponse,
+    ).toBe(true);
+    expect(response.headers.get("etag")).toBeNull();
   });
 
   // Edge case: `renderPage` is called but the underlying stream render throws.

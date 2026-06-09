@@ -17,6 +17,78 @@ import {
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
 
+// ---------------------------------------------------------------------------
+// Bot / crawler detection for Pages Router edge-runtime SSR
+//
+// Mirrors Next.js's packages/next/src/shared/lib/router/utils/html-bots.ts
+// and is-bot.ts. These bots cannot parse streamed HTML correctly (they may
+// read metadata only from the initial <head> flush), so we buffer the full
+// response and emit it in a single chunk, identical to the Node.js path.
+// ---------------------------------------------------------------------------
+
+/**
+ * Crawlers that cannot handle streamed HTML: they read metadata only from
+ * the first network chunk, so streaming would give them an incomplete <head>.
+ * Pattern sourced from Next.js html-bots.ts (updated to match the canary).
+ */
+const HTML_LIMITED_BOT_UA_RE =
+  /[\w-]+-Google|Google-[\w-]+|Chrome-Lighthouse|Slurp|DuckDuckBot|baiduspider|yandex|sogou|bitlybot|tumblr|vkShare|quora link preview|redditbot|ia_archiver|Bingbot|BingPreview|applebot|facebookexternalhit|facebookcatalog|Twitterbot|LinkedInBot|Slackbot|Discordbot|WhatsApp|SkypeUriPreview|Yeti|googleweblight/i;
+
+/**
+ * Googlebot (the main search crawler) executes JavaScript via a headless
+ * browser, so it too cannot safely handle mid-stream HTML mutations.
+ * Matches "Googlebot" but NOT suffixed variants like "Googlebot-Image".
+ */
+const HEADLESS_BROWSER_BOT_UA_RE = /Googlebot(?!-)|Googlebot$/i;
+
+/**
+ * Returns true when the User-Agent belongs to a bot or crawler that cannot
+ * reliably consume a streamed HTML response.
+ */
+export function isPagesStreamingBot(userAgent: string): boolean {
+  return HEADLESS_BROWSER_BOT_UA_RE.test(userAgent) || HTML_LIMITED_BOT_UA_RE.test(userAgent);
+}
+
+// ---------------------------------------------------------------------------
+// ETag generation — FNV-1a 52-bit, matching Next.js's generateETag() in
+// packages/next/src/server/lib/etag.ts. Both produce a weak ETag by default.
+// ---------------------------------------------------------------------------
+
+function fnv1a52(str: string): number {
+  const len = str.length;
+  let i = 0,
+    t0 = 0,
+    v0 = 0x2325,
+    t1 = 0,
+    v1 = 0x8422,
+    t2 = 0,
+    v2 = 0x9ce4,
+    t3 = 0,
+    v3 = 0xcbf2;
+
+  while (i < len) {
+    v0 ^= str.charCodeAt(i++);
+    t0 = v0 * 435;
+    t1 = v1 * 435;
+    t2 = v2 * 435;
+    t3 = v3 * 435;
+    t2 += v0 << 8;
+    t3 += v1 << 8;
+    t1 += t0 >>> 16;
+    v0 = t0 & 65535;
+    t2 += t1 >>> 16;
+    v1 = t1 & 65535;
+    v3 = (t3 + (t2 >>> 16)) & 65535;
+    v2 = t2 & 65535;
+  }
+
+  return (v3 & 15) * 281474976710656 + v2 * 4294967296 + v1 * 65536 + (v0 ^ (v3 >> 4));
+}
+
+function generatePagesETag(payload: string): string {
+  return '"' + fnv1a52(payload).toString(36) + payload.length.toString(36) + '"';
+}
+
 type PagesFontPreload = {
   href: string;
   type: string;
@@ -112,6 +184,14 @@ type RenderPagesPageResponseOptions = {
   statusCode?: number;
   vinext?: VinextNextData["__vinext"];
   nextData?: PagesNextDataExtras;
+  /**
+   * The request's User-Agent string (from `request.headers.get('user-agent')`).
+   * When this matches a known crawler / bot pattern, the response is fully
+   * buffered before sending so bots receive a single complete HTML chunk with
+   * an ETag header. Omitting this field disables bot-detection (streaming as
+   * normal), which is the correct behaviour for non-HTML requests and tests.
+   */
+  userAgent?: string;
 };
 
 function buildPagesFontHeadHtml(
@@ -555,6 +635,25 @@ export async function renderPagesPageResponse(
   }
   if (options.fontLinkHeader) {
     responseHeaders.set("Link", options.fontLinkHeader);
+  }
+
+  // Bot / crawler path: buffer the complete HTML, emit as a single chunk, and
+  // attach an ETag. Bots (Googlebot, Google-PageRenderer, etc.) cannot parse
+  // incrementally-streamed HTML — metadata tags pushed after the initial <head>
+  // flush are invisible to them. Mirrors Next.js's Pages Router behaviour where
+  // `!result.isDynamic` causes the HTML to be sent as a static string with an ETag
+  // (see packages/next/src/server/send-payload.ts).
+  //
+  // NOTE: This check is intentionally placed after the Cache-Control / header
+  // setup above so bot responses still carry the correct cache semantics.
+  if (options.userAgent && isPagesStreamingBot(options.userAgent)) {
+    const fullHtml = await readStreamAsText(compositeStream);
+    const etag = generatePagesETag(fullHtml);
+    responseHeaders.set("ETag", etag);
+    return new Response(fullHtml, {
+      status: finalStatus,
+      headers: responseHeaders,
+    });
   }
 
   const response: PagesStreamedHtmlResponse = Object.assign(
