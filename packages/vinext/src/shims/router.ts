@@ -1828,6 +1828,23 @@ async function performNavigation(
     return true;
   }
 
+  // If this destination was detected as an App Router route during prefetch,
+  // skip the Pages Router SPA fetch and do an immediate hard navigation.
+  // The Pages Router client-side stack cannot render App Router pages; a hard
+  // navigation lets the browser bootstrap the App Router runtime from scratch.
+  //
+  // Mirrors Next.js: packages/next/src/shared/lib/router/router.ts:1448-1453
+  //   if ((this.components[pathname] as any)?.__appRouter) {
+  //     handleHardNavigation({ url: as, router: this })
+  //     return new Promise(() => {})
+  //   }
+  const _appPath = getLocalPathname(resolved);
+  if (_appPath !== null && (getPagesRouterComponentsMap()[_appPath] as any)?.__appRouter) {
+    if (mode === "push") window.location.assign(full);
+    else window.location.replace(full);
+    return new Promise<boolean>(() => {});
+  }
+
   if (mode === "push") saveScrollPosition();
   routerEvents.emit("routeChangeStart", resolved, { shallow });
   routerEvents.emit("beforeHistoryChange", resolved, { shallow });
