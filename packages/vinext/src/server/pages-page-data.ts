@@ -3,7 +3,8 @@ import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
 import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache";
-import { applyCdnResponseHeaders, buildCachedRevalidateCacheControl } from "./cache-control.js";
+import { applyCdnResponseHeaders } from "./cache-control.js";
+import { decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
 import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
 import {
@@ -341,23 +342,23 @@ function buildPagesCacheResponse(
   // Legacy cache entries written before cacheControl metadata existed can still
   // hit this path without a persisted revalidate value; keep the historic
   // 60-second fallback for that migration window.
-  const effectiveRevalidateSeconds = cacheControl?.revalidate ?? revalidateSeconds ?? 60;
-  const effectiveExpireSeconds =
-    cacheControl === undefined ? undefined : (cacheControl.expire ?? expireSeconds);
+  const effectiveRevalidateSeconds = revalidateSeconds ?? 60;
   // HIT/STALE served from the origin store: route the cache header through the
   // CDN adapter (default: identical single Cache-Control). Edge adapters never
   // reach this path because their get() returns null.
+  const { cacheControl: cacheControlHeader } = decideIsr({
+    hasUsableValue: true,
+    isStale: cacheState === "STALE",
+    kind: "pages",
+    revalidateSeconds: effectiveRevalidateSeconds,
+    expireSeconds,
+    cacheControlMeta: cacheControl,
+  });
   const headers = new Headers({
     "Content-Type": "text/html",
     ...buildCacheStateHeaders(cacheState),
   });
-  applyCdnResponseHeaders(headers, {
-    cacheControl: buildCachedRevalidateCacheControl(
-      cacheState,
-      effectiveRevalidateSeconds,
-      effectiveExpireSeconds,
-    ),
-  });
+  applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader });
 
   if (fontLinkHeader) {
     headers.set("Link", fontLinkHeader);

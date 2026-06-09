@@ -44,6 +44,7 @@ import { createRequestContext, runWithRequestContext } from "vinext/shims/unifie
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js";
+import { ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -606,8 +607,7 @@ export function createPagesPageHandler(
               }
             }
             if (!hasUserCacheControl) {
-              init.headers["Cache-Control"] =
-                "private, no-cache, no-store, max-age=0, must-revalidate";
+              init.headers["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
             }
           }
           return buildNextDataJsonResponse(pageProps, safeJsonStringify, init);

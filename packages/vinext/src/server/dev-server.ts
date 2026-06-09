@@ -8,6 +8,12 @@ import { importModule, reportRequestError } from "./instrumentation.js";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
 import {
+  decideIsr,
+  buildMissIsrCacheControl,
+  ISR_NEVER_CACHE_CONTROL,
+  ISR_NO_STORE_CACHE_CONTROL,
+} from "./isr-decision.js";
+import {
   isrGet,
   isrSet,
   isrCacheKey,
@@ -833,8 +839,7 @@ export function createSSRHandler(
             (k) => k.toLowerCase() === "cache-control",
           );
           if (!hasUserCacheControl) {
-            gsspExtraHeaders["Cache-Control"] =
-              "private, no-cache, no-store, max-age=0, must-revalidate";
+            gsspExtraHeaders["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
           }
         }
         // Collect font preloads early so ISR cached responses can include
@@ -894,10 +899,16 @@ export function createSSRHandler(
             const cachedHtml = cachedPage.html;
             const transformedHtml = await server.transformIndexHtml(url, cachedHtml);
             const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
+            const { cacheControl: hitCacheControl } = decideIsr({
+              hasUsableValue: true,
+              isStale: false,
+              kind: "dev",
+              revalidateSeconds: revalidateSecs,
+            });
             const hitHeaders: Record<string, string> = {
               "Content-Type": "text/html",
               ...buildCacheStateHeaders("HIT"),
-              "Cache-Control": `s-maxage=${revalidateSecs}, stale-while-revalidate`,
+              "Cache-Control": hitCacheControl,
             };
             if (earlyFontLinkHeader) hitHeaders["Link"] = earlyFontLinkHeader;
             res.writeHead(200, hitHeaders);
@@ -1058,10 +1069,19 @@ export function createSSRHandler(
             );
 
             const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
+            // Deliberate parity fix: dev STALE now emits s-maxage=0, stale-while-revalidate
+            // matching prod Pages Router and the canonical buildCachedRevalidateCacheControl
+            // helper. Previously emitted s-maxage=<secs> which was a dev/prod divergence.
+            const { cacheControl: staleCacheControl } = decideIsr({
+              hasUsableValue: true,
+              isStale: true,
+              kind: "dev",
+              revalidateSeconds: revalidateSecs,
+            });
             const staleHeaders: Record<string, string> = {
               "Content-Type": "text/html",
               ...buildCacheStateHeaders("STALE"),
-              "Cache-Control": `s-maxage=${revalidateSecs}, stale-while-revalidate`,
+              "Cache-Control": staleCacheControl,
             };
             if (earlyFontLinkHeader) staleHeaders["Link"] = earlyFontLinkHeader;
             res.writeHead(200, staleHeaders);
@@ -1378,10 +1398,9 @@ hydrate();
         };
         if (isrRevalidateSeconds) {
           if (scriptNonce) {
-            extraHeaders["Cache-Control"] = "no-store, must-revalidate";
+            extraHeaders["Cache-Control"] = ISR_NO_STORE_CACHE_CONTROL;
           } else {
-            extraHeaders["Cache-Control"] =
-              `s-maxage=${isrRevalidateSeconds}, stale-while-revalidate`;
+            extraHeaders["Cache-Control"] = buildMissIsrCacheControl(isrRevalidateSeconds);
             Object.assign(extraHeaders, buildCacheStateHeaders("MISS"));
           }
         }

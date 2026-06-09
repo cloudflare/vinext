@@ -3,7 +3,12 @@ import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { CachedPagesValue } from "vinext/shims/cache";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { applyCdnResponseHeaders, buildRevalidateCacheControl } from "./cache-control.js";
+import { applyCdnResponseHeaders } from "./cache-control.js";
+import {
+  buildMissIsrCacheControl,
+  ISR_NEVER_CACHE_CONTROL,
+  ISR_NO_STORE_CACHE_CONTROL,
+} from "./isr-decision.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
@@ -532,7 +537,7 @@ export async function renderPagesPageResponse(
   const userSetCacheControl = responseHeaders.has("Cache-Control");
 
   if (options.scriptNonce) {
-    responseHeaders.set("Cache-Control", "no-store, must-revalidate");
+    responseHeaders.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);
   } else if (options.isrRevalidateSeconds) {
     // Fresh ISR (MISS) response: route through the CDN adapter so edge adapters
     // emit CDN-Cache-Control + a path-based Cache-Tag (matching revalidatePath,
@@ -540,10 +545,7 @@ export async function renderPagesPageResponse(
     const isrPathname = options.routeUrl.split("?")[0];
     const stem = isrPathname.endsWith("/") ? isrPathname.slice(0, -1) : isrPathname;
     applyCdnResponseHeaders(responseHeaders, {
-      cacheControl: buildRevalidateCacheControl(
-        options.isrRevalidateSeconds,
-        options.expireSeconds,
-      ),
+      cacheControl: buildMissIsrCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
       tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
     });
     setCacheStateHeaders(responseHeaders, "MISS");
@@ -551,7 +553,7 @@ export async function renderPagesPageResponse(
     // Default for getServerSideProps responses, matching Next.js
     // pages-handler.ts (revalidate: 0 → getCacheControlHeader). Without this,
     // CDNs and browsers could cache per-request gssp responses.
-    responseHeaders.set("Cache-Control", "private, no-cache, no-store, max-age=0, must-revalidate");
+    responseHeaders.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
   }
   if (options.fontLinkHeader) {
     responseHeaders.set("Link", options.fontLinkHeader);
