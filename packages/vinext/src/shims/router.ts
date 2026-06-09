@@ -2401,7 +2401,10 @@ const Router: typeof RouterMethods & Omit<NextRouter, keyof typeof RouterMethods
 // The reference implementation wraps this in `singletonRouter.ready()` so it
 // runs after the router instance is created; vinext's routerEvents is a module-
 // level singleton that exists from the start, so we can register directly.
-const _deprecatedRouterEvents = [
+// Registering unconditionally at module load (without a client-only guard) is
+// safe here because every routerEvents.emit() call is already gated behind
+// typeof window checks, so these listeners never fire in SSR contexts.
+const deprecatedRouterEvents = [
   "routeChangeStart",
   "beforeHistoryChange",
   "routeChangeComplete",
@@ -2410,8 +2413,8 @@ const _deprecatedRouterEvents = [
   "hashChangeComplete",
 ] as const;
 
-for (const event of _deprecatedRouterEvents) {
-  const eventField = `on${event.charAt(0).toUpperCase()}${event.substring(1)}` as string;
+for (const event of deprecatedRouterEvents) {
+  const eventField = `on${event.charAt(0).toUpperCase()}${event.substring(1)}`;
   routerEvents.on(event, (...args: unknown[]) => {
     const handler = (Router as Record<string, unknown>)[eventField];
     if (typeof handler === "function") {

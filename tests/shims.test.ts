@@ -14808,6 +14808,92 @@ describe("Pages Router concurrent navigation", () => {
   });
 });
 
+describe("deprecated Router.on<Event> property bridge", () => {
+  // These tests verify that assigning a function to a deprecated property such
+  // as `Router.onRouteChangeComplete` causes that function to be invoked when
+  // the corresponding event fires via Router.events.emit().  The bridge is the
+  // code added in fix/with-router-deprecated-nav-events.
+
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it("Router.onRouteChangeComplete is called when routeChangeComplete fires", async () => {
+    const routerModule = await import("../packages/vinext/src/shims/router.js");
+    const Router = routerModule.default;
+
+    const calls: unknown[][] = [];
+    (Router as any).onRouteChangeComplete = (...args: unknown[]) => {
+      calls.push(args);
+    };
+
+    try {
+      Router.events.emit("routeChangeComplete", "/test-path", { shallow: false });
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0][0]).toBe("/test-path");
+    } finally {
+      delete (Router as any).onRouteChangeComplete;
+    }
+  });
+
+  it("Router.onRouteChangeStart is called when routeChangeStart fires", async () => {
+    const routerModule = await import("../packages/vinext/src/shims/router.js");
+    const Router = routerModule.default;
+
+    const calls: unknown[][] = [];
+    (Router as any).onRouteChangeStart = (...args: unknown[]) => {
+      calls.push(args);
+    };
+
+    try {
+      Router.events.emit("routeChangeStart", "/start-path", { shallow: false });
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0][0]).toBe("/start-path");
+    } finally {
+      delete (Router as any).onRouteChangeStart;
+    }
+  });
+
+  it("emitting an event with no on<Event> handler assigned does not throw", async () => {
+    const routerModule = await import("../packages/vinext/src/shims/router.js");
+    const Router = routerModule.default;
+
+    // Ensure no handler is set
+    delete (Router as any).onRouteChangeComplete;
+
+    expect(() => {
+      Router.events.emit("routeChangeComplete", "/no-handler", { shallow: false });
+    }).not.toThrow();
+  });
+
+  it("previously-cleared on<Event> handler is not called after removal", async () => {
+    const routerModule = await import("../packages/vinext/src/shims/router.js");
+    const Router = routerModule.default;
+
+    const calls: unknown[][] = [];
+    (Router as any).onRouteChangeComplete = (...args: unknown[]) => {
+      calls.push(args);
+    };
+
+    // Fire once — should be called
+    Router.events.emit("routeChangeComplete", "/first", { shallow: false });
+    expect(calls).toHaveLength(1);
+
+    // Clear the handler
+    delete (Router as any).onRouteChangeComplete;
+
+    // Fire again — should NOT be called
+    Router.events.emit("routeChangeComplete", "/second", { shallow: false });
+    expect(calls).toHaveLength(1);
+  });
+});
+
 describe("Pages Router _next/data client navigation", () => {
   // These tests exercise the JSON path in navigateClient: when
   // `__VINEXT_PAGE_LOADERS__` is populated (prod-style hydration), navigation
