@@ -504,8 +504,12 @@ function _buildClientPagesNavigationContext(
     : null;
   const isAutoExportDynamic =
     nextData?.autoExport === true && extractRouteParamNames(routePattern).length > 0;
-  const pathname =
-    nextData?.isFallback === true || (isAutoExportDynamic && !isReady) ? null : resolvedPath;
+  const pathname = resolvePagesNavigationPathname(
+    resolvedPath,
+    nextData?.isFallback === true,
+    isAutoExportDynamic,
+    isReady,
+  );
   const ctx: PagesNavigationContextShape = { pathname, searchParams, params };
   _cachedClientPagesNavCtx = ctx;
   _cachedClientPagesNavCtxKey = cacheKey;
@@ -572,8 +576,12 @@ export function getPagesNavigationContext(): PagesNavigationContextShape | null 
       : null;
     const isAutoExportDynamic =
       ssrCtx.nextData?.autoExport === true && extractRouteParamNames(ssrCtx.pathname).length > 0;
-    const pathname =
-      ssrCtx.isFallback === true || (isAutoExportDynamic && !isReady) ? null : resolvedPath;
+    const pathname = resolvePagesNavigationPathname(
+      resolvedPath,
+      ssrCtx.isFallback === true,
+      isAutoExportDynamic,
+      isReady,
+    );
     const ctx: PagesNavigationContextShape = { pathname, searchParams, params };
     _ssrPagesNavCtxCache.set(ssrCtx, ctx);
     return ctx;
@@ -620,6 +628,31 @@ function extractRouteParamNames(pattern: string): string[] {
   return names;
 }
 
+/**
+ * Resolve the `pathname` snapshot for the Pages Router navigation context.
+ * Shared by the client and SSR branches of `getPagesNavigationContext` so both
+ * runtimes derive identical null-ness — diverging here would reintroduce a
+ * hydration mismatch. Returns `null` for a `getStaticPaths` fallback shell or a
+ * pre-ready auto-export dynamic route (the live path is published once the
+ * client router becomes ready).
+ */
+function resolvePagesNavigationPathname(
+  resolvedPath: string,
+  isFallback: boolean,
+  isAutoExportDynamic: boolean,
+  isReady: boolean,
+): string | null {
+  return isFallback || (isAutoExportDynamic && !isReady) ? null : resolvedPath;
+}
+
+// Single-slot memo for the client pattern scan. `window.__VINEXT_PAGE_PATTERNS__`
+// is static after load, so the resolved pattern is a pure function of
+// (nextDataPage, resolvedPath). Caching avoids an O(routes) scan on every
+// useSyncExternalStore snapshot read (getPathname/getSearchParams/getParams),
+// which run repeatedly per render. Browser-only (one request at a time).
+let _cachedPagesRoutePatternKey: string | null = null;
+let _cachedPagesRoutePattern: string | undefined;
+
 function resolvePagesRoutePatternForPath(
   nextDataPage: string | undefined,
   resolvedPath: string,
@@ -628,13 +661,22 @@ function resolvePagesRoutePatternForPath(
     return nextDataPage;
   }
 
+  const cacheKey = `${nextDataPage ?? ""}|${resolvedPath}`;
+  if (_cachedPagesRoutePatternKey === cacheKey) {
+    return _cachedPagesRoutePattern;
+  }
+
+  let resolved: string | undefined = nextDataPage;
   for (const pattern of window.__VINEXT_PAGE_PATTERNS__ ?? []) {
     if (matchRoutePattern(splitPathSegments(resolvedPath), routePatternParts(pattern))) {
-      return pattern;
+      resolved = pattern;
+      break;
     }
   }
 
-  return nextDataPage;
+  _cachedPagesRoutePatternKey = cacheKey;
+  _cachedPagesRoutePattern = resolved;
+  return resolved;
 }
 
 type RouteQueryNextData = {

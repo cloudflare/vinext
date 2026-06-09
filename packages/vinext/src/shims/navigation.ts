@@ -1260,12 +1260,17 @@ function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
   const source = ctx.searchParams;
   const cached = ctx[_READONLY_SEARCH_PARAMS];
   const cachedSource = ctx[_READONLY_SEARCH_PARAMS_SOURCE];
-  const sourceKey = source.toString();
-  const cachedSourceKey = ctx[_READONLY_SEARCH_PARAMS_SOURCE_KEY];
 
-  // Return the cached wrapper when the source object, or an equivalent
-  // hydration-cloned source value, has not changed.
-  if (cached && (cachedSource === source || cachedSourceKey === sourceKey)) {
+  // Fast path: identical source object — reuse the wrapper without serializing.
+  if (cached && cachedSource === source) {
+    return cached;
+  }
+
+  // The source object can change identity while keeping the same value (e.g. a
+  // hydration-cloned URLSearchParams). Serialize only when the identity check
+  // misses, then compare against the cached value key before rebuilding.
+  const sourceKey = source.toString();
+  if (cached && ctx[_READONLY_SEARCH_PARAMS_SOURCE_KEY] === sourceKey) {
     ctx[_READONLY_SEARCH_PARAMS_SOURCE] = source;
     return cached;
   }

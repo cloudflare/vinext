@@ -47,6 +47,7 @@ import {
   resolvePagesI18nRequest,
 } from "./pages-i18n.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
+import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import {
@@ -573,20 +574,11 @@ export function createSSRHandler(
             // _app exists but failed to load
           }
         }
-        const hasPageGssp = typeof pageModule.getServerSideProps === "function";
-        const hasPageGsp = typeof pageModule.getStaticProps === "function";
-        const hasPageGip = typeof pageModule.default?.getInitialProps === "function";
-        const hasAppGip = typeof AppComponent?.getInitialProps === "function";
-        const pagesNextData = {
-          gssp: hasPageGssp,
-          gsp: hasPageGsp,
-          gip: hasPageGip,
-          appGip: hasAppGip,
-          autoExport: !hasPageGssp && !hasPageGsp && !hasPageGip && !hasAppGip,
-          __vinext: {
-            hasRewrites,
-          },
-        };
+        const pagesNextData = buildPagesReadinessNextData({
+          pageModule,
+          appComponent: AppComponent,
+          hasRewrites,
+        });
         const navigationIsReady =
           typeof routerShim.getPagesNavigationIsReadyFromSerializedState === "function"
             ? routerShim.getPagesNavigationIsReadyFromSerializedState(

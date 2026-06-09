@@ -21,6 +21,7 @@ import { resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { renderPagesPageResponse } from "./pages-page-response.js";
+import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
 import {
@@ -384,24 +385,11 @@ export function createPagesPageHandler(
         // the configured-rewrites flag decide the initial `router.isReady` value,
         // mirroring Next.js's Pages adapter. See server/render.tsx readiness rule.
         const pageModule = route.module;
-        const hasPageGssp = typeof pageModule.getServerSideProps === "function";
-        const hasPageGsp = typeof pageModule.getStaticProps === "function";
-        const hasPageGip =
-          typeof (pageModule.default as { getInitialProps?: unknown } | undefined)
-            ?.getInitialProps === "function";
-        const hasAppGip =
-          typeof (AppComponent as { getInitialProps?: unknown } | null)?.getInitialProps ===
-          "function";
-        const pagesNextData = {
-          gssp: hasPageGssp,
-          gsp: hasPageGsp,
-          gip: hasPageGip,
-          appGip: hasAppGip,
-          autoExport: !hasPageGssp && !hasPageGsp && !hasPageGip && !hasAppGip,
-          __vinext: {
-            hasRewrites,
-          },
-        };
+        const pagesNextData = buildPagesReadinessNextData({
+          pageModule,
+          appComponent: AppComponent as { getInitialProps?: unknown } | null,
+          hasRewrites,
+        });
         const navigationIsReady =
           typeof getPagesNavigationIsReadyFromSerializedState === "function"
             ? getPagesNavigationIsReadyFromSerializedState(
