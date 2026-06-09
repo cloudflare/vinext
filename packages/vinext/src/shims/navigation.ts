@@ -1151,18 +1151,32 @@ if (!isServer) {
 // new instances on every render (infinite re-renders).
 let _cachedEmptyServerSearchParams: ReadonlyURLSearchParams | null = null;
 const _readonlyPagesSearchParamsCache = new WeakMap<URLSearchParams, ReadonlyURLSearchParams>();
+let _cachedReadonlyPagesSearchParamsKey: string | null = null;
+let _cachedReadonlyPagesSearchParams: ReadonlyURLSearchParams | null = null;
 
 function getReadonlyPagesSearchParams(searchParams: URLSearchParams): ReadonlyURLSearchParams {
-  // The per-object WeakMap is the authoritative cache: the Pages navigation
-  // context (client single-slot / per-request SSR WeakMap) owns a stable
-  // URLSearchParams instance, so the same object is queried across renders and
-  // hits here. Keying on the object (not the serialized string) keeps this
-  // concurrency-safe under SSR — wrappers are never shared between requests.
+  // Two-level cache. The per-object WeakMap gives referential stability for a
+  // single URLSearchParams instance across renders. The string-keyed slot is
+  // also load-bearing: across the Pages Router pre-ready → ready transition the
+  // context swaps in a NEW URLSearchParams object even when the query string is
+  // unchanged, and returning the same wrapper for an equal string keeps
+  // `useSearchParams()` Object.is-stable so a `[searchParams]` effect does not
+  // re-fire spuriously. Under concurrent SSR one request can read another
+  // request's string-keyed wrapper, but that is harmless: ReadonlyURLSearchParams
+  // is immutable and equal-string wrappers are interchangeable.
   const cached = _readonlyPagesSearchParamsCache.get(searchParams);
   if (cached) return cached;
 
+  const key = searchParams.toString();
+  if (_cachedReadonlyPagesSearchParamsKey === key && _cachedReadonlyPagesSearchParams) {
+    _readonlyPagesSearchParamsCache.set(searchParams, _cachedReadonlyPagesSearchParams);
+    return _cachedReadonlyPagesSearchParams;
+  }
+
   const readonly = new ReadonlyURLSearchParams(searchParams);
   _readonlyPagesSearchParamsCache.set(searchParams, readonly);
+  _cachedReadonlyPagesSearchParamsKey = key;
+  _cachedReadonlyPagesSearchParams = readonly;
   return readonly;
 }
 
