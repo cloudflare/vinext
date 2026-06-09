@@ -16,6 +16,9 @@ import {
   createClientManualChunks,
   clientTreeshakeConfig,
   getClientTreeshakeConfigForVite,
+  createRscFrameworkChunkOutputConfig,
+  RSC_FRAMEWORK_CHUNK_TEST,
+  isRscFrameworkModule,
 } from "../packages/vinext/src/build/client-build-config.js";
 import { computeLazyChunks } from "../packages/vinext/src/utils/lazy-chunks.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
@@ -2165,5 +2168,77 @@ describe("getClientTreeshakeConfigForVite", () => {
     expect(config10).toEqual({
       moduleSideEffects: "no-external",
     });
+  });
+});
+
+// ─── createRscFrameworkChunkOutputConfig ──────────────────────────────────────
+
+describe("createRscFrameworkChunkOutputConfig", () => {
+  it("returns manualChunks for Vite 7 (Rollup) routing framework modules to 'framework'", () => {
+    const config = createRscFrameworkChunkOutputConfig(7);
+    expect(config).not.toHaveProperty("codeSplitting");
+    expect(config).toHaveProperty("manualChunks");
+    const manualChunks = (config as { manualChunks: (id: string) => string | undefined })
+      .manualChunks;
+    expect(manualChunks("/app/node_modules/react/index.js")).toBe("framework");
+    expect(manualChunks("/app/node_modules/react-server-dom-webpack/client.js")).toBe("framework");
+    // Non-framework node_modules and local files are left to the default algo.
+    expect(manualChunks("/app/node_modules/react-icons/lib/index.js")).toBeUndefined();
+    expect(manualChunks("/app/src/page.tsx")).toBeUndefined();
+  });
+
+  it("returns codeSplitting for Vite 8+ (Rolldown), not the deprecated advancedChunks", () => {
+    const config = createRscFrameworkChunkOutputConfig(8);
+    expect(config).not.toHaveProperty("advancedChunks");
+    expect(config).not.toHaveProperty("manualChunks");
+    expect(config).toEqual({
+      codeSplitting: {
+        groups: [{ name: "framework", test: RSC_FRAMEWORK_CHUNK_TEST }],
+      },
+    });
+
+    // Vite 9+ uses the same Rolldown shape.
+    expect(createRscFrameworkChunkOutputConfig(9)).toEqual({
+      codeSplitting: {
+        groups: [{ name: "framework", test: RSC_FRAMEWORK_CHUNK_TEST }],
+      },
+    });
+  });
+});
+
+// ─── RSC framework package matching (single source of truth) ──────────────────
+
+describe("RSC framework package matching", () => {
+  const matching = [
+    "/app/node_modules/react/index.js",
+    "/app/node_modules/react-dom/server.js",
+    "/app/node_modules/scheduler/index.js",
+    "/app/node_modules/react-server-dom-webpack/client.js",
+    // pnpm-style nested path.
+    "/app/node_modules/.pnpm/react@19.0.0/node_modules/react/index.js",
+  ];
+  const notMatching = [
+    "/app/node_modules/react-icons/lib/index.js",
+    "/app/node_modules/@react-aria/utils/dist/index.js",
+    "/app/node_modules/@react-aria/focus/dist/index.js",
+    "/app/src/components/react-thing.tsx",
+  ];
+
+  it("RSC_FRAMEWORK_CHUNK_TEST matches framework packages only", () => {
+    for (const id of matching) {
+      expect(RSC_FRAMEWORK_CHUNK_TEST.test(id)).toBe(true);
+    }
+    for (const id of notMatching) {
+      expect(RSC_FRAMEWORK_CHUNK_TEST.test(id)).toBe(false);
+    }
+  });
+
+  it("isRscFrameworkModule matches framework packages only", () => {
+    for (const id of matching) {
+      expect(isRscFrameworkModule(id)).toBe(true);
+    }
+    for (const id of notMatching) {
+      expect(isRscFrameworkModule(id)).toBe(false);
+    }
   });
 });

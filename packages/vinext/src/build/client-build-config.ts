@@ -180,33 +180,36 @@ export function createClientCodeSplittingConfig(
  * runtime that the server environment bundles.
  *
  * Uses `[\\/]` rather than `/` for the path separator so it matches on Windows
- * too, per the rolldown `advancedChunks` docs.
+ * too, per the rolldown `codeSplitting` docs.
  */
-const RSC_FRAMEWORK_CHUNK_TEST =
-  /[\\/]node_modules[\\/](react|react-dom|scheduler|react-server-dom-webpack)[\\/]/;
+const FRAMEWORK_PACKAGES = ["react", "react-dom", "scheduler", "react-server-dom-webpack"] as const;
 
-function isRscFrameworkModule(id: string): boolean {
+/**
+ * Regex matching any {@link FRAMEWORK_PACKAGES} package inside `node_modules`.
+ * Derived from the package list so the regex and {@link isRscFrameworkModule}
+ * predicate can't drift.
+ */
+export const RSC_FRAMEWORK_CHUNK_TEST = new RegExp(
+  `[\\\\/]node_modules[\\\\/](${FRAMEWORK_PACKAGES.join("|")})[\\\\/]`,
+);
+
+export function isRscFrameworkModule(id: string): boolean {
   if (!id.includes("node_modules")) return false;
   const pkg = getPackageName(id);
-  return (
-    pkg === "react" ||
-    pkg === "react-dom" ||
-    pkg === "scheduler" ||
-    pkg === "react-server-dom-webpack"
-  );
+  return pkg !== null && (FRAMEWORK_PACKAGES as readonly string[]).includes(pkg);
 }
 
 /**
  * Output config that isolates React (and the RSC flight runtime) into a
  * dedicated "framework" chunk in the RSC server build. Returns the bundler-
- * appropriate shape: rolldown's `advancedChunks` for Vite 8+, Rollup's
+ * appropriate shape: rolldown's `codeSplitting` for Vite 8+, Rollup's
  * `manualChunks` for Vite 7. See {@link RSC_FRAMEWORK_CHUNK_TEST} for the
  * motivation (issue #1549).
  */
 export function createRscFrameworkChunkOutputConfig(viteMajorVersion: number) {
   if (viteMajorVersion >= 8) {
     return {
-      advancedChunks: {
+      codeSplitting: {
         groups: [{ name: "framework", test: RSC_FRAMEWORK_CHUNK_TEST }],
       },
     };
