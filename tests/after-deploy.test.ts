@@ -147,9 +147,9 @@ describe("after() in deploy mode — Pages Router worker entry", () => {
     expect(content).toContain("handleApiRoute(req, apiUrl, ctx)");
   });
 
-  it("forwards ctx to renderPage so page renders can call after()", () => {
+  it("forwards ctx and staged middleware headers to renderPage so page renders can call after() and apply CSP nonces", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("renderPage(req, resolvedUrl, null, ctx, undefined, options)");
+    expect(content).toContain("renderPage(req, resolvedUrl, null, ctx, stagedHeaders, options)");
   });
 });
 

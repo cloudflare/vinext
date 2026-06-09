@@ -444,7 +444,14 @@ export async function runPagesRequest(
     const renderPageMatch = deps.matchPageRoute
       ? deps.matchPageRoute(resolvedPathname, request)
       : null;
-    const shouldDeferErrorPageOnMiss = !isDataReq && !!deps.matchPageRoute && !renderPageMatch;
+    // A data request must not defer-render the error page or run fallback rewrites.
+    // Node/dev signal this via `isDataReq` (set when a `/_next/data/` path is
+    // normalized); the worker never normalizes those paths (no buildId at request
+    // scope), so it relies on the `x-nextjs-data: 1` header captured as `isDataRequest`.
+    // Gate on both so the worker matches the pre-refactor behavior (it previously gated
+    // on the header). No-op for Node/dev, where a data request already has isDataReq=true.
+    const shouldDeferErrorPageOnMiss =
+      !isDataReq && !isDataRequest && !!deps.matchPageRoute && !renderPageMatch;
     const initialRenderOptions: PagesRenderOptions | undefined = shouldDeferErrorPageOnMiss
       ? { renderErrorPageOnMiss: false }
       : isDataReq

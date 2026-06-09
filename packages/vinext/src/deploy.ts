@@ -651,7 +651,8 @@ export default {
         matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,
         runMiddleware: typeof runMiddleware === "function" ? runMiddleware : null,
         renderPage: typeof renderPage === "function"
-          ? (req, resolvedUrl, options) => renderPage(req, resolvedUrl, null, ctx, undefined, options)
+          ? (req, resolvedUrl, options, stagedHeaders) =>
+              renderPage(req, resolvedUrl, null, ctx, stagedHeaders, options)
           : null,
         handleApi: typeof handleApiRoute === "function"
           ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx)

@@ -592,6 +592,29 @@ describe("deferred error page re-render on 404", () => {
     // Second call should NOT have renderErrorPageOnMiss: false
     expect(renderPage.mock.calls[1][2]).toBeUndefined();
   });
+
+  it("does not defer or run fallback rewrites for a data request (x-nextjs-data, worker path)", async () => {
+    // Worker scenario: it never normalizes /_next/data paths (isDataReq stays
+    // false) but flags the request via the x-nextjs-data header (isDataRequest).
+    // A data-request miss must render once directly, not defer + run fallback.
+    const renderPage = vi.fn(async () => new Response("not found", { status: 404 }));
+    const fallback = [{ source: "/missing-page", destination: "/fallback" }];
+    const req = makeRequest("/missing-page");
+    const result = await runPagesRequest(
+      req,
+      baseDeps({
+        isDataReq: false,
+        isDataRequest: true,
+        matchPageRoute: vi.fn().mockReturnValue(null), // no page match
+        configRewrites: { beforeFiles: [], afterFiles: [], fallback },
+        renderPage,
+      }),
+    );
+    expect(result.type).toBe("response");
+    // Rendered exactly once with no defer option, and the fallback never fired.
+    expect(renderPage).toHaveBeenCalledTimes(1);
+    expect(renderPage.mock.calls[0][2]).toBeUndefined();
+  });
 });
 
 // 19. preserveCredentialHeaders: isExternalUrl(resolvedUrl) → passed to applyMiddlewareRequestHeaders
