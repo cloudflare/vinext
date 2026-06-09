@@ -26,7 +26,6 @@ import {
   buildSassPreprocessorOptions,
   createSassTildeImporter,
 } from "../packages/vinext/src/plugins/sass.js";
-import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // The vinext config hook mutates process.env.NODE_ENV as a side effect.
@@ -143,10 +142,7 @@ describe("createSassTildeImporter", () => {
     await fsp.mkdir(path.join(tmpRoot, "node_modules", "mypkg"), { recursive: true });
     await fsp.writeFile(path.join(tmpRoot, "node_modules", "mypkg", "index.scss"), "");
     await fsp.mkdir(path.join(tmpRoot, "node_modules", "@scope", "pkg"), { recursive: true });
-    await fsp.writeFile(
-      path.join(tmpRoot, "node_modules", "@scope", "pkg", "styles.scss"),
-      "",
-    );
+    await fsp.writeFile(path.join(tmpRoot, "node_modules", "@scope", "pkg", "styles.scss"), "");
     // Create styles/variables.scss for root-relative resolution
     await fsp.mkdir(path.join(tmpRoot, "styles"), { recursive: true });
     await fsp.writeFile(path.join(tmpRoot, "styles", "variables.scss"), "$color: red;");
@@ -265,8 +261,10 @@ describe("vinext config hook threads sassOptions into css.preprocessorOptions", 
     const opts = (css as any)?.preprocessorOptions;
     expect(opts).toBeDefined();
     // oxlint-disable-next-line typescript/no-explicit-any
-    expect((opts?.scss?.importers as any[]).length).toBeGreaterThanOrEqual(1);
+    const scssImporters: any[] = opts.scss.importers;
+    expect(scssImporters.length).toBeGreaterThanOrEqual(1);
     // oxlint-disable-next-line typescript/no-explicit-any
-    expect((opts?.sass?.importers as any[]).length).toBeGreaterThanOrEqual(1);
+    const sassImporters: any[] = opts.sass.importers;
+    expect(sassImporters.length).toBeGreaterThanOrEqual(1);
   }, 15000);
 });
