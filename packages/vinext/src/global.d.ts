@@ -386,7 +386,8 @@ declare global {
        * per-process random secret would mismatch across isolates because
        * `res.revalidate()`'s loopback `fetch()` can land on a different isolate;
        * a build-baked constant is the same in all of them.
-       * `undefined` in dev mode (see `getRevalidateSecret`'s dev fallback).
+       * `undefined` unless set during `vinext build` (so dev, and any non-CLI
+       * build, omit it — see `getRevalidateSecret`'s single-process fallback).
        */
       __VINEXT_REVALIDATE_SECRET?: string;
 

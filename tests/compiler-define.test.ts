@@ -9,7 +9,7 @@
  * Ported from Next.js: test/e2e/define/define.test.ts
  * https://github.com/vercel/next.js/blob/canary/test/e2e/define/define.test.ts
  */
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import os from "node:os";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -228,6 +228,13 @@ describe("compiler.define forwarding to Vite", () => {
     expect(mainPlugin).toBeDefined();
     expect(serverDefinePlugin).toBeDefined();
 
+    // Explicitly clear the build-time revalidate secret env var so the hook has
+    // no `defineServer` entries AND no baked revalidate-secret define — only
+    // then is the truly-empty no-op path exercised. (Without this the test would
+    // silently depend on the env var happening to be unset in the test process.)
+    const prev = process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
+    delete process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
+
     const tmpDir = await setupTmpProject(`export default {};`);
     try {
       await mainPlugin!.config!(
@@ -237,7 +244,71 @@ describe("compiler.define forwarding to Vite", () => {
       const rscResult = serverDefinePlugin!.configEnvironment!("rsc", {}, { command: "build" });
       expect(rscResult).toBeNull();
     } finally {
+      if (prev === undefined) delete process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
+      else process.env.__VINEXT_SHARED_REVALIDATE_SECRET = prev;
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
+  }, 15000);
+});
+
+describe("build-time revalidate secret define (security: server-only)", () => {
+  // The on-demand ISR revalidation secret is baked into server bundles via a
+  // SERVER-ONLY define so all Workers isolates share it. The whole security
+  // model depends on it NEVER reaching the client bundle — a leak would ship the
+  // secret to every browser and re-open the cache-stampede/DoS vector that the
+  // equality check exists to prevent. These tests pin that invariant.
+  const TEST_SECRET = "a".repeat(64);
+  let prevSecret: string | undefined;
+
+  beforeEach(() => {
+    prevSecret = process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
+    process.env.__VINEXT_SHARED_REVALIDATE_SECRET = TEST_SECRET;
+  });
+
+  afterEach(() => {
+    if (prevSecret === undefined) delete process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
+    else process.env.__VINEXT_SHARED_REVALIDATE_SECRET = prevSecret;
+  });
+
+  async function getServerDefinePlugin(): Promise<VinextPlugin> {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext() as VinextPlugin[];
+    const mainPlugin = plugins.find(
+      (p) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    const serverDefinePlugin = plugins.find((p) => p.name === "vinext:compiler-define-server");
+    expect(mainPlugin).toBeDefined();
+    expect(serverDefinePlugin).toBeDefined();
+    const tmpDir = await setupTmpProject(`export default {};`);
+    try {
+      // `config` must run first so the plugin reads nextConfig.
+      await mainPlugin!.config!(
+        { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
+        { command: "build" },
+      );
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+    return serverDefinePlugin!;
+  }
+
+  it("bakes the secret into server environments (rsc, ssr)", async () => {
+    const serverDefinePlugin = await getServerDefinePlugin();
+    for (const env of ["rsc", "ssr"]) {
+      const result = serverDefinePlugin.configEnvironment!(env, {}, { command: "build" });
+      expect(result?.define?.["process.env.__VINEXT_REVALIDATE_SECRET"]).toBe(
+        JSON.stringify(TEST_SECRET),
+      );
+    }
+  }, 15000);
+
+  it("NEVER bakes the secret into the client environment", async () => {
+    const serverDefinePlugin = await getServerDefinePlugin();
+    const clientResult = serverDefinePlugin.configEnvironment!("client", {}, { command: "build" });
+    // The client env returns null outright — no define object at all — so the
+    // secret cannot reach the browser bundle. Assert both the null return and
+    // (defensively) the absence of the key in any returned define.
+    expect(clientResult).toBeNull();
+    expect(clientResult?.define?.["process.env.__VINEXT_REVALIDATE_SECRET"]).toBeUndefined();
   }, 15000);
 });

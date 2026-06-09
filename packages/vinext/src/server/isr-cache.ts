@@ -81,9 +81,10 @@ export const PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER = "x-prerender-revalidat
  * only when the incoming value equals this secret (see
  * {@link isOnDemandRevalidateRequest}).
  *
- * Dev mode has no build step (the define is absent), so we fall back to a
- * lazily-generated random secret. Dev runs in a single process, so a
- * module-scoped value is shared by sender and receiver there — no regression.
+ * When the build-time define is absent — dev mode, and any path that doesn't
+ * run through `vinext build` — we fall back to a lazily-generated random secret.
+ * Those paths are single-process, so a module-scoped value is shared by sender
+ * and receiver there — no regression.
  */
 let devRevalidateSecret: string | undefined;
 
