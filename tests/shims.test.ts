@@ -8178,12 +8178,26 @@ describe("NextURL basePath and locale properties", () => {
     expect(url.basePath).toBe("");
   });
 
-  it("basePath returns the configured value", async () => {
+  it("basePath is empty when URL does not start with the configured prefix", async () => {
+    // Matches Next.js getNextPathnameInfo behavior: basePath is only set when
+    // the URL's pathname actually starts with the configured basePath prefix.
+    // This is critical for middleware "absolute path" support — middleware
+    // receiving a request without the basePath prefix should see basePath === "".
     const { NextURL } = await import("../packages/vinext/src/shims/server.js");
     const url = new NextURL("http://localhost/dashboard", undefined, {
       basePath: "/app",
     });
+    expect(url.basePath).toBe("");
+  });
+
+  it("basePath is set when URL starts with the configured prefix", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/app/dashboard", undefined, {
+      basePath: "/app",
+    });
     expect(url.basePath).toBe("/app");
+    // pathname is stripped of the basePath prefix
+    expect(url.pathname).toBe("/dashboard");
   });
 
   it("basePath setter normalizes leading slash", async () => {
@@ -8193,9 +8207,20 @@ describe("NextURL basePath and locale properties", () => {
     expect(url.basePath).toBe("/app");
   });
 
-  it("basePath is preserved through clone()", async () => {
+  it("basePath is empty in clone when URL does not have the prefix", async () => {
+    // When the URL doesn't have the basePath prefix, basePath is cleared during
+    // construction, and the clone reflects that empty basePath.
     const { NextURL } = await import("../packages/vinext/src/shims/server.js");
     const url = new NextURL("http://localhost/dashboard", undefined, {
+      basePath: "/docs",
+    });
+    const cloned = url.clone();
+    expect(cloned.basePath).toBe("");
+  });
+
+  it("basePath is preserved through clone() when URL has the prefix", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/docs/page", undefined, {
       basePath: "/docs",
     });
     const cloned = url.clone();

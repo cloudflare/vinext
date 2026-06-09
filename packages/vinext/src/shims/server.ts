@@ -19,7 +19,7 @@ import { serializeSetCookie, validateCookieName } from "./internal/cookie-serial
 import { parseCookieHeader } from "./internal/parse-cookie-header.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
-import { stripBasePath } from "../utils/base-path.js";
+import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 
 // ---------------------------------------------------------------------------
 // Inlined cache-scope guard for after()
@@ -329,9 +329,20 @@ export class NextURL {
     }
   }
 
-  /** Strip basePath prefix from the internal pathname. */
+  /** Strip basePath prefix from the internal pathname.
+   * Mirrors Next.js's getNextPathnameInfo: basePath is only considered active
+   * when the URL's pathname actually starts with the configured basePath prefix.
+   * If the pathname is outside the basePath, _basePath is cleared to "" so that
+   * request.nextUrl.basePath reflects the actual URL rather than the config value.
+   * This matches the Next.js behavior tested by middleware-base-path's
+   * "should execute from absolute paths" case.
+   */
   private _stripBasePath(): void {
     if (!this._basePath) return;
+    if (!hasBasePath(this._url.pathname, this._basePath)) {
+      this._basePath = "";
+      return;
+    }
     this._url.pathname = stripBasePath(this._url.pathname, this._basePath);
   }
 

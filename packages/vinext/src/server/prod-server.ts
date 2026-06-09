@@ -1667,7 +1667,24 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         // Raw query from req.url so redirect Locations aren't re-encoded by URL parsing.
         rawSearch: rawQs,
         matchPageRoute: matchPageRoute ?? null,
-        runMiddleware: typeof runMiddleware === "function" ? runMiddleware : null,
+        // Pass the original (pre-basePath-stripping) URL to middleware so that
+        // request.nextUrl.basePath reflects whether the URL actually had the
+        // basePath prefix. This matches Next.js behavior where the middleware
+        // adapter receives the un-stripped URL. Middleware for "absolute paths"
+        // (requests without the basePath prefix) sees nextUrl.basePath === "" so
+        // it can redirect them into the basePath (see middleware-base-path e2e test).
+        runMiddleware:
+          typeof runMiddleware === "function"
+            ? (request: Request, ctx: unknown, opts: { isDataRequest: boolean }) => {
+                let mwRequest = request;
+                if (hadBasePath && basePath) {
+                  const mwUrl = new URL(request.url);
+                  mwUrl.pathname = basePath + (mwUrl.pathname === "/" ? "" : mwUrl.pathname);
+                  mwRequest = new Request(mwUrl, request);
+                }
+                return runMiddleware(mwRequest, ctx, opts);
+              }
+            : null,
         renderPage:
           typeof renderPage === "function"
             ? (

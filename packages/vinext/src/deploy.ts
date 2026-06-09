@@ -649,7 +649,21 @@ export default {
         isDataRequest,
         ctx,
         matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,
-        runMiddleware: typeof runMiddleware === "function" ? runMiddleware : null,
+        // Pass the original (pre-basePath-stripping) URL to middleware so that
+        // request.nextUrl.basePath reflects whether the URL actually had the
+        // basePath prefix. Matches Next.js behavior and the prod-server.ts equivalent.
+        runMiddleware:
+          typeof runMiddleware === "function"
+            ? (req: Request, ctx: unknown, opts: { isDataRequest: boolean }) => {
+                let mwReq = req;
+                if (hadBasePath && basePath) {
+                  const mwUrl = new URL(req.url);
+                  mwUrl.pathname = basePath + (mwUrl.pathname === "/" ? "" : mwUrl.pathname);
+                  mwReq = new Request(mwUrl, req);
+                }
+                return runMiddleware(mwReq, ctx, opts);
+              }
+            : null,
         renderPage: typeof renderPage === "function"
           ? (req, resolvedUrl, options, stagedHeaders) =>
               renderPage(req, resolvedUrl, null, ctx, stagedHeaders, options)
