@@ -972,6 +972,9 @@ importers:
       magic-string:
         specifier: 'catalog:'
         version: 0.30.21
+      postcss:
+        specifier: 'catalog:'
+        version: 8.5.10
       vite:
         specifier: npm:@voidzero-dev/vite-plus-core@0.1.24
         version: '@voidzero-dev/vite-plus-core@0.1.24(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0)'

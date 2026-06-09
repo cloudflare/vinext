@@ -141,6 +141,7 @@ import {
 } from "./utils/client-entry-manifest.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import { buildSassPreprocessorOptions } from "./plugins/sass.js";
+import { createCssModulesPreprocessingLoader } from "./plugins/css-modules-preprocess.js";
 import {
   createClientManualChunks,
   createClientOutputConfig,
@@ -794,6 +795,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasNitroPlugin = false;
   let rscCompatibilityId: string | undefined;
   const draftModeSecret = randomUUID();
+
+  // Resolved Vite config, captured in `configResolved`. Read at runtime
+  // by the custom `postcss-modules` Loader (see
+  // `createCssModulesPreprocessingLoader`) so it can invoke Vite's
+  // `preprocessCSS` with the same preprocessor options as the rest of
+  // the pipeline. Lives in the plugin closure so the Loader class can
+  // be constructed up front in `config()` and still pick up the
+  // resolved config later.
+  let resolvedViteConfig: import("vite").ResolvedConfig | undefined;
+  const getResolvedConfig = () => resolvedViteConfig;
 
   // Build-time layout classification manifest, captured in the RSC virtual
   // module's load hook and consumed in renderChunk to patch the generated
@@ -1608,6 +1619,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Reference: packages/next/src/build/webpack/config/blocks/css/index.ts
         const sassPreprocessorOptions = buildSassPreprocessorOptions(nextConfig.sassOptions);
 
+        // Only install our `css.modules.Loader` (which fixes #1343) when the
+        // user has not supplied their own. Vite's config merge does a shallow
+        // merge on `css.modules`, so an explicit user Loader would otherwise
+        // be silently overridden. Detect the `false` form (CSS modules
+        // disabled) too — wiring up a Loader in that case is pointless.
+        const userCssModules = config.css?.modules;
+        // oxlint-disable-next-line typescript/no-explicit-any
+        const userSuppliedLoader = !!(userCssModules && (userCssModules as any).Loader);
+        const installCssModulesLoader = userCssModules !== false && !userSuppliedLoader;
+        if (userSuppliedLoader) {
+          // Warn so users who set a custom Loader know they have opted out
+          // of the SCSS `composes` preprocessor fix. (See #1343.) We avoid
+          // throwing because power-user setups may deliberately want to
+          // bring their own postcss-modules Loader.
+          console.warn(
+            "[vinext] css.modules.Loader is set in your config — vinext's SCSS preprocessor for `composes ... from './x.module.scss'` is disabled. " +
+              "If you import .scss CSS modules via composes, ensure your Loader preprocesses them or you will hit lightningcss minify errors. See https://github.com/cloudflare/vinext/issues/1343.",
+          );
+        }
+
         // Auto-inject @mdx-js/rollup when MDX files exist and no MDX plugin is
         // already configured. Applies remark/rehype plugins from next.config.
         hasUserMdxPlugin = pluginsFlat.some(
@@ -1976,9 +2007,48 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                         },
                       }
                     : {}),
+                  // Custom Loader that preprocesses .scss/.sass/.less/.styl
+                  // files before postcss-modules sees them. Fixes #1343:
+                  // without it, the default `FileSystemLoader` reads raw
+                  // SCSS for `composes: foo from './other.module.scss'`
+                  // and lets Sass variables leak into the final bundle,
+                  // breaking Vite 8's lightningcss minifier (the server-
+                  // environment default) with "Invalid empty selector".
+                  // See packages/vinext/src/plugins/css-modules-preprocess.ts.
+                  //
+                  // We skip this when the user has supplied their own
+                  // `css.modules.Loader` or disabled CSS modules entirely
+                  // (`css.modules: false`). See `installCssModulesLoader`
+                  // above.
+                  //
+                  // `Loader` is a documented postcss-modules option that
+                  // Vite passes through verbatim, but Vite's TypeScript
+                  // `CSSModulesOptions` interface doesn't declare it. The
+                  // cast tells TS the extra key is intentional.
+                  ...(installCssModulesLoader
+                    ? {
+                        modules: {
+                          Loader: createCssModulesPreprocessingLoader(getResolvedConfig),
+                          // oxlint-disable-next-line typescript/no-explicit-any
+                        } as any,
+                      }
+                    : {}),
                 },
               }
-            : {}),
+            : installCssModulesLoader
+              ? {
+                  // No PostCSS/sass overrides — still install our Loader
+                  // so SCSS `composes` works for projects that don't
+                  // otherwise customise CSS preprocessing. See note above
+                  // on the cast and the user-supplied-Loader guard.
+                  css: {
+                    modules: {
+                      Loader: createCssModulesPreprocessingLoader(getResolvedConfig),
+                      // oxlint-disable-next-line typescript/no-explicit-any
+                    } as any,
+                  },
+                }
+              : {}),
         };
 
         // Collect user-provided ssr.external so we can propagate it into
@@ -2300,6 +2370,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       configResolved(config) {
+        // Capture the resolved Vite config for the custom
+        // `css.modules.Loader` (see `createCssModulesPreprocessingLoader`).
+        // The Loader needs access to `css.preprocessorOptions` /
+        // `sassOptions` when invoking `preprocessCSS`, but it's
+        // constructed during `config()` (before this hook fires), so we
+        // hand it a getter that closes over this variable.
+        resolvedViteConfig = config;
+
         // When the user sets `ssr.external: true`, strip React entries from
         // `environments.ssr.resolve.noExternal`. @vitejs/plugin-rsc populates
         // this list via crawlFrameworkPkgs, but `noExternal` overrides
