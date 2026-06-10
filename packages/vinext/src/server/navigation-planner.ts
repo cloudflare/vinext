@@ -314,6 +314,8 @@ function createRscFetchResultHardNavigationDecision(options: {
       options.reasonCode,
       createRscFetchResultTraceFields(options.facts, {
         ...(options.redirectSignal !== undefined ? { redirectSignal: options.redirectSignal } : {}),
+        // Terminal redirects report the depth that was evaluated; followed
+        // redirects report the next depth that the executor should request.
         redirectDepth: options.facts.redirectDepth,
         targetHref: options.url,
       }),
