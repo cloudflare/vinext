@@ -356,6 +356,7 @@ const _renderPage = __createPagesPageHandler({
   i18nConfig,
   vinextConfig: {
     basePath: vinextConfig.basePath,
+    assetPrefix: vinextConfig.assetPrefix,
     trailingSlash: vinextConfig.trailingSlash,
     expireTime: vinextConfig.expireTime,
     clientTraceMetadata: vinextConfig.clientTraceMetadata,

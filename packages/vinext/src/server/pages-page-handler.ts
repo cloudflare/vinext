@@ -77,6 +77,7 @@ type I18nConfig = {
 
 type VinextConfigSubset = {
   basePath: string;
+  assetPrefix: string;
   trailingSlash: boolean;
   expireTime?: number;
   clientTraceMetadata?: readonly string[];
@@ -455,8 +456,18 @@ export function createPagesPageHandler(
           if (methodResponse) return methodResponse;
         }
 
-        const pageModuleUrl = resolveClientModuleUrl(manifest, route.filePath);
-        const appModuleUrl = resolveClientModuleUrl(manifest, appAssetPath);
+        const pageModuleUrl = resolveClientModuleUrl(
+          manifest,
+          route.filePath,
+          vinextConfig.basePath,
+          vinextConfig.assetPrefix,
+        );
+        const appModuleUrl = resolveClientModuleUrl(
+          manifest,
+          appAssetPath,
+          vinextConfig.basePath,
+          vinextConfig.assetPrefix,
+        );
         const serializedPagesNextData = {
           ...pagesNextData,
           __vinext: {
@@ -624,6 +635,8 @@ export function createPagesPageHandler(
           moduleIds: pageModuleIds,
           scriptNonce,
           disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
+          basePath: vinextConfig.basePath,
+          assetPrefix: vinextConfig.assetPrefix,
         });
 
         return await renderPagesPageResponse({

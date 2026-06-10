@@ -57,6 +57,7 @@ function makeOpts(
     i18nConfig: null,
     vinextConfig: {
       basePath: "",
+      assetPrefix: "",
       trailingSlash: false,
       disableOptimizedLoading: true,
     },
