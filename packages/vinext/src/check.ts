@@ -6,6 +6,7 @@
  */
 
 import { detectPackageManager } from "./utils/project.js";
+import { normalizePathSeparators } from "./utils/path.js";
 import { parseAst, type ESTree } from "vite";
 import fs from "node:fs";
 import path from "node:path";
@@ -317,7 +318,10 @@ function findSourceFiles(
 
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
+    // Forward slashes so downstream substring checks (e.g. `f.includes("/api/")`)
+    // and reported paths are consistent across platforms — path.join yields
+    // backslashes on Windows, which would break those checks.
+    const fullPath = normalizePathSeparators(path.join(dir, entry.name));
     if (entry.isDirectory()) {
       if (
         entry.name === "node_modules" ||
@@ -592,7 +596,7 @@ export function scanImports(root: string): CheckItem[] {
         // Normalize: next/font/google -> next/font/google
         const normalized = mod === "next" ? "next" : mod;
         if (!importUsage.has(normalized)) importUsage.set(normalized, []);
-        const relFile = path.relative(root, file);
+        const relFile = normalizePathSeparators(path.relative(root, file));
         const usedInFiles = importUsage.get(normalized) ?? [];
         if (!usedInFiles.includes(relFile)) {
           usedInFiles.push(relFile);
@@ -1047,7 +1051,7 @@ export function checkConventions(root: string): CheckItem[] {
   const cjsGlobalFiles: string[] = [];
   for (const file of allSourceFiles) {
     const content = fs.readFileSync(file, "utf-8");
-    const rel = path.relative(root, file);
+    const rel = normalizePathSeparators(path.relative(root, file));
 
     if (viewTransitionRegex.test(content)) {
       viewTransitionFiles.push(rel);
