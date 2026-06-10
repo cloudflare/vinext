@@ -394,6 +394,7 @@ function findObjectProperty(node: unknown, name: string): AstRecord | null {
 
 function dynamicLoaderNode(firstArg: unknown): unknown {
   if (!isRecord(firstArg) || getString(firstArg, "type") !== "ObjectExpression") return firstArg;
+  // Fallback to "modules" matches Next.js's react-loadable babel plugin behavior
   const loaderProperty =
     findObjectProperty(firstArg, "loader") ?? findObjectProperty(firstArg, "modules");
   return loaderProperty?.value;

@@ -1104,8 +1104,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       assetBase: appAssetBase,
       clientEntryLookup: "pages-client-entry",
     });
+  } else {
+    installClientBuildManifestGlobals(clientDir, appAssetBase, appRouterAssetPrefix);
   }
-  installClientBuildManifestGlobals(clientDir, appAssetBase, appRouterAssetPrefix);
 
   // Seed the memory cache with pre-rendered routes so the first request to
   // any pre-rendered page is a cache HIT instead of a full re-render.
