@@ -164,8 +164,8 @@ export type FlightResultV0 = {
   targetSnapshot: RouteSnapshotV0;
 };
 
-export type RscFetchResultSource = "cached" | "live";
-export type RscRedirectSignal = "response-url" | "streamed-header";
+type RscFetchResultSource = "cached" | "live";
+type RscRedirectSignal = "response-url" | "streamed-header";
 
 export type RscFetchResultFactsV0 = {
   source: RscFetchResultSource;
@@ -183,14 +183,14 @@ export type RscFetchResultFactsV0 = {
   streamedRedirectTarget: string | null;
 };
 
-export type RscRedirectFollowV0 = {
+type RscRedirectFollowV0 = {
   href: string;
   historyUpdateMode: "push" | "replace";
   previousNextUrl: string | null;
   redirectDepth: number;
 };
 
-export type RscFetchResultHardNavReason =
+type RscFetchResultHardNavReason =
   | "invalidRscPayload"
   | "rscCompatibilityMismatch"
   | "externalRedirectTarget"
