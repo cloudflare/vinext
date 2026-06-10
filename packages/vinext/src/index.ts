@@ -4814,6 +4814,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // resolveId handler ensures this path only runs in Node.js environments
     // where WebAssembly.compile() from bytes is permitted.
     //
+    // NOTE: the gating assumption is "no @cloudflare/vite-plugin", not
+    // "Node.js target". The two can diverge: e.g. Nitro's edge presets
+    // (Cloudflare, Deno Deploy) don't register the Cloudflare vite-plugin, so
+    // this plugin would intercept `.wasm?module` there and the emitted
+    // `WebAssembly.compile(bytes)` would be rejected at runtime by workerd.
+    // If that combination ever needs support, the gate must consider the
+    // target runtime rather than (only) plugin presence.
+    //
     // NOTE: `hasCloudflarePlugin` is set in the `config` hook (after this
     // plugins array is constructed), so we cannot use it as a spread guard
     // here. We check it inside the hook handlers instead, where it reflects
@@ -4846,6 +4854,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // base64, the dynamic import succeeds on Node.js too, defeating the
           // fallback, causing the ~1.3 MB resvg WASM to be shipped twice, and
           // breaking findEmittedWasmAsset dedup in vinext:og-assets.
+          // The substring predicate deliberately mirrors the
+          // vinext:og-font-patch transform filter (`id.includes("@vercel/og")`
+          // below) — the two must never diverge, or an id matched by the
+          // font-patch transform could slip past this guard and reintroduce
+          // the double-shipped-WASM bug.
           const importerPath = importer
             ? (importer.startsWith("\0") ? importer.slice(1) : importer).split("?")[0]
             : "";
