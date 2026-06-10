@@ -360,7 +360,9 @@ async function buildExportMapFromFile(
   >();
   const localDeclarations = new Set<string>();
 
-  const fileDir = path.dirname(filePath);
+  // filePath is already normalized POSIX (every producer normalizes), so
+  // path.posix.dirname is safe.
+  const fileDir = path.posix.dirname(filePath);
 
   /**
    * Normalize a source specifier: resolve relative paths to absolute so that
@@ -368,9 +370,7 @@ async function buildExportMapFromFile(
    * Bare package specifiers (e.g. "@radix-ui/react-slot") are returned unchanged.
    */
   function normalizeSource(source: string): string {
-    return source.startsWith(".")
-      ? path.resolve(fileDir, source).split(path.sep).join("/")
-      : source;
+    return source.startsWith(".") ? path.posix.join(fileDir, source) : source;
   }
 
   function recordLocalDeclaration(node: DeclarationNode | null | undefined): void {
@@ -448,7 +448,7 @@ async function buildExportMapFromFile(
         } else {
           // export * from "./sub" — wildcard: recursively merge sub-module exports
           if (rawSource.startsWith(".")) {
-            const subPath = path.resolve(fileDir, rawSource).split(path.sep).join("/");
+            const subPath = path.posix.join(fileDir, rawSource);
             // Try with the path as-is first, then with common extensions.
             // Includes TypeScript-first (.ts/.tsx/.cts/.mts) and JSX (.jsx) extensions
             // for TypeScript-first internal libraries and monorepo packages that may
