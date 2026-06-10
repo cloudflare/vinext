@@ -154,16 +154,11 @@ import {
   createRscRequestUrl,
   createServerActionRequestUrl,
   getVinextRscCompatibilityId,
-  resolveHardNavigationTargetFromRscResponse,
   resolveRscCompatibilityNavigationDecision,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
 import { APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI } from "./app-rsc-render-mode.js";
-import {
-  MAX_RSC_REDIRECT_DEPTH,
-  resolveRscRedirectLifecycleHop,
-} from "./app-browser-rsc-redirect.js";
 import {
   createOptimisticRouteTemplate,
   getOptimisticPrefetchSourceKey,
@@ -180,6 +175,7 @@ import {
   VINEXT_RSC_REDIRECT_HEADER,
 } from "./headers.js";
 import { removeStylesheetLinksCoveredByInlineCss } from "./app-inline-css-client.js";
+import { navigationPlanner } from "./navigation-planner.js";
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 
@@ -1733,42 +1729,38 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
               navigationKind,
             );
         if (cachedRoute) {
-          const compatibilityDecision = resolveRscCompatibilityNavigationDecision({
+          const cachedFetchDecision = navigationPlanner.classifyRscFetchResult({
             clientCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
+            compatibilityIdHeader: cachedRoute.response.compatibilityIdHeader ?? null,
             currentHref,
-            origin: window.location.origin,
-            responseCompatibilityId: cachedRoute.response.compatibilityIdHeader,
-            responseUrl: cachedRoute.response.url,
-          });
-          if (compatibilityDecision.kind === "hard-navigate") {
-            performHardNavigationForScrollIntent(compatibilityDecision.hardNavigationTarget);
-            return;
-          }
-          const cachedRedirectDecision = resolveRscRedirectLifecycleHop({
-            currentHref,
-            historyUpdateMode: currentHistoryMode ?? "replace",
+            effectiveHistoryUpdateMode: currentHistoryMode ?? "replace",
+            hasBody: true,
+            isRscContentType: true,
             origin: window.location.origin,
             redirectDepth: redirectCount,
             requestPreviousNextUrl,
+            responseOk: true,
             responseUrl: cachedRoute.response.url,
+            source: "cached",
+            streamedRedirectTarget: null,
           });
-          if (cachedRedirectDecision.kind === "terminal-hard-navigation") {
-            if (cachedRedirectDecision.reason === "maxRedirectsExceeded") {
+          if (cachedFetchDecision.kind === "hardNavigate") {
+            if (cachedFetchDecision.reason === "redirectDepthExhausted") {
               console.error(
                 "[vinext] Too many RSC redirects — aborting navigation to prevent infinite loop.",
               );
             }
-            performHardNavigationForScrollIntent(cachedRedirectDecision.href);
+            performHardNavigationForScrollIntent(cachedFetchDecision.url);
             return;
           }
-          if (cachedRedirectDecision.kind === "follow") {
+          if (cachedFetchDecision.kind === "followRedirect") {
             if (navigationKind === "traverse") {
               restoredBfcacheIds = null;
             }
-            currentHref = cachedRedirectDecision.href;
-            currentHistoryMode = cachedRedirectDecision.historyUpdateMode;
-            currentPrevNextUrl = cachedRedirectDecision.previousNextUrl;
-            redirectCount = cachedRedirectDecision.redirectDepth;
+            currentHref = cachedFetchDecision.redirect.href;
+            currentHistoryMode = cachedFetchDecision.redirect.historyUpdateMode;
+            currentPrevNextUrl = cachedFetchDecision.redirect.previousNextUrl;
+            redirectCount = cachedFetchDecision.redirect.redirectDepth;
             continue;
           }
           // Check stale-navigation before and after createFromFetch. The pre-check
@@ -1923,125 +1915,51 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
-        // Any response that isn't a valid RSC payload (non-ok status,
-        // missing/rewritten Content-Type, or missing body) means the server
-        // returned something we cannot parse — typically an HTML error page
-        // or a proxy-rewritten response. Parsing such a body as an RSC stream
-        // throws a cryptic "Connection closed" error. Match Next.js behavior
-        // (fetch-server-response.ts:211, `!isFlightResponse || !res.ok || !res.body`):
-        // hard-navigate to the response URL so the server can render the correct
-        // error page as HTML. The outer finally handles
-        // settlePendingBrowserRouterState and clearPendingPathname on this
-        // return path.
-        //
-        // Prefer the post-redirect response URL over `currentHref`: on a
-        // redirect chain like `/old` → 307 → `/new` → 500, the browser's
-        // fetch already followed the redirect, so `navResponse.url` is the
-        // failing `/new` destination. Hard-navigating there directly avoids
-        // bouncing off `/old` just to re-follow the same 307, which would
-        // flash the wrong URL in the address bar and mis-key analytics.
-        // Matches Next.js' `doMpaNavigation(responseUrl.toString())`. Falls
-        // back to `currentHref` when no response URL is available.
         const navContentType = navResponse.headers.get("content-type") ?? "";
-        const isRscResponse = navContentType.startsWith("text/x-component");
-        if (!navResponse.ok || !isRscResponse || !navResponse.body) {
-          const responseUrl = navResponseUrl ?? navResponse.url;
-          performHardNavigationForScrollIntent(
-            resolveHardNavigationTargetFromRscResponse(
-              responseUrl,
-              currentHref,
-              window.location.origin,
-            ),
-          );
-          return;
-        }
-
-        const compatibilityDecision = resolveRscCompatibilityNavigationDecision({
+        const liveFetchDecision = navigationPlanner.classifyRscFetchResult({
           clientCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
+          compatibilityIdHeader: navResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
           currentHref,
-          origin: window.location.origin,
-          responseCompatibilityId: navResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
-          responseUrl: navResponseUrl ?? navResponse.url,
-        });
-        if (compatibilityDecision.kind === "hard-navigate") {
-          performHardNavigationForScrollIntent(compatibilityDecision.hardNavigationTarget);
-          return;
-        }
-
-        const redirectDecision = resolveRscRedirectLifecycleHop({
-          currentHref,
-          historyUpdateMode: currentHistoryMode ?? "replace",
+          effectiveHistoryUpdateMode: currentHistoryMode ?? "replace",
+          hasBody: navResponse.body !== null,
+          isRscContentType: navContentType.startsWith(VINEXT_RSC_CONTENT_TYPE),
           origin: window.location.origin,
           redirectDepth: redirectCount,
           requestPreviousNextUrl,
+          responseOk: navResponse.ok,
           responseUrl: navResponseUrl ?? navResponse.url,
+          source: "live",
+          streamedRedirectTarget: navResponse.headers.get(VINEXT_RSC_REDIRECT_HEADER),
         });
-
-        if (redirectDecision.kind === "terminal-hard-navigation") {
-          if (redirectDecision.reason === "maxRedirectsExceeded") {
+        if (liveFetchDecision.kind === "hardNavigate") {
+          if (liveFetchDecision.discardBody) {
+            void navResponse.body?.cancel().catch(() => {});
+          }
+          if (liveFetchDecision.reason === "redirectDepthExhausted") {
             console.error(
               "[vinext] Too many RSC redirects — aborting navigation to prevent infinite loop.",
             );
           }
-          performHardNavigationForScrollIntent(redirectDecision.href);
+          if (liveFetchDecision.reason === "streamedRedirectLoop") {
+            console.error(
+              "[vinext] RSC streamed redirect resolved to the current URL — aborting navigation to prevent infinite loop.",
+            );
+          }
+          performHardNavigationForScrollIntent(liveFetchDecision.url);
           return;
         }
 
-        if (redirectDecision.kind === "follow") {
-          // Server-side redirect: keep the redirect chain inside this operation
-          // and defer URL/history mutation to the eventual approved commit.
-          // This keeps isPending true across all hops and avoids publishing a
-          // destination URL before its RSC payload is lifecycle-approved.
-          // Traverse restored ids belong to the history entry being traversed
-          // to. Once a server redirect changes the target href, those ids no
-          // longer describe the redirected payload and must not win over fresh
-          // segment identities.
-          if (navigationKind === "traverse") {
-            restoredBfcacheIds = null;
-          }
-          currentHref = redirectDecision.href;
-          currentHistoryMode = redirectDecision.historyUpdateMode;
-          currentPrevNextUrl = redirectDecision.previousNextUrl;
-          redirectCount = redirectDecision.redirectDepth;
-          continue;
-        }
-
-        // RSC redirect encoded as 200 + flight payload (the server's response
-        // for `redirect()` thrown from a server component during RSC rendering;
-        // see issue #1347 and `buildAppPageSpecialErrorResponse`). The flight
-        // body carries the canonical `NEXT_REDIRECT;...` digest for clients
-        // that decode it through React's RedirectBoundary, but vinext's
-        // browser-navigation loop catches it ahead of decode via this
-        // side-channel header so the redirect-following loop above can drain
-        // the body and continue without bouncing through the catch path.
-        // Reusing the same loop variables keeps `pendingRouterState` and the
-        // outer `useTransition` pending state continuous across the hop —
-        // matching the pre-1347 fetch-auto-follow-307 behavior.
-        const flightRedirectTarget = navResponse.headers.get(VINEXT_RSC_REDIRECT_HEADER);
-        if (flightRedirectTarget) {
-          // Drain the response body so the underlying connection is released.
-          // We do this best-effort: the destination's `.rsc` fetch on the next
-          // loop iteration will replace this response entirely.
-          void navResponse.body?.cancel().catch(() => {});
-          const resolvedTarget = new URL(flightRedirectTarget, window.location.origin);
-          if (resolvedTarget.origin !== window.location.origin) {
-            performHardNavigationForScrollIntent(resolvedTarget.href);
-            return;
-          }
-          if (redirectCount >= MAX_RSC_REDIRECT_DEPTH) {
-            console.error(
-              "[vinext] Too many RSC redirects — aborting navigation to prevent infinite loop.",
-            );
-            performHardNavigationForScrollIntent(resolvedTarget.href);
-            return;
+        if (liveFetchDecision.kind === "followRedirect") {
+          if (liveFetchDecision.discardBody) {
+            void navResponse.body?.cancel().catch(() => {});
           }
           if (navigationKind === "traverse") {
             restoredBfcacheIds = null;
           }
-          currentHref = `${resolvedTarget.pathname}${resolvedTarget.search}${resolvedTarget.hash}`;
-          currentHistoryMode = currentHistoryMode ?? "replace";
-          currentPrevNextUrl = requestPreviousNextUrl;
-          redirectCount += 1;
+          currentHref = liveFetchDecision.redirect.href;
+          currentHistoryMode = liveFetchDecision.redirect.historyUpdateMode;
+          currentPrevNextUrl = liveFetchDecision.redirect.previousNextUrl;
+          redirectCount = liveFetchDecision.redirect.redirectDepth;
           continue;
         }
 
