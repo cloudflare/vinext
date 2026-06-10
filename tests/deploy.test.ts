@@ -842,7 +842,7 @@ describe("generatePagesRouterWorkerEntry", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("basePath");
     expect(content).toContain(
-      'import { hasBasePath, stripBasePath } from "vinext/utils/base-path"',
+      'import { addBasePathToPathname, hasBasePath, stripBasePath } from "vinext/utils/base-path"',
     );
     expect(content).toContain("const stripped = stripBasePath(pathname, basePath);");
     // After stripping, a new request with the stripped URL must be created

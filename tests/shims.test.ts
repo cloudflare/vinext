@@ -8207,6 +8207,27 @@ describe("NextURL basePath and locale properties", () => {
     expect(url.basePath).toBe("/app");
   });
 
+  it("href reassignment re-derives basePath from the configured value", async () => {
+    // Next.js's NextURL.analyze() re-runs getNextPathnameInfo on every href
+    // set, so basePath toggles based on whether the new pathname carries the
+    // configured prefix.
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard", undefined, {
+      basePath: "/app",
+    });
+    expect(url.basePath).toBe("");
+
+    // Moving inside the basePath re-activates it from the configured value.
+    url.href = "http://localhost/app/settings";
+    expect(url.basePath).toBe("/app");
+    expect(url.pathname).toBe("/settings");
+
+    // Moving back outside the basePath clears it again.
+    url.href = "http://localhost/elsewhere";
+    expect(url.basePath).toBe("");
+    expect(url.pathname).toBe("/elsewhere");
+  });
+
   it("basePath is empty in clone when URL does not have the prefix", async () => {
     // When the URL doesn't have the basePath prefix, basePath is cleared during
     // construction, and the clone reflects that empty basePath.

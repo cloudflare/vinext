@@ -17,7 +17,7 @@ import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
-import { addBasePathToPathname, stripBasePath } from "../utils/base-path.js";
+import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 
 export type MiddlewareModule = Record<string, unknown>;
 
@@ -45,6 +45,19 @@ type MiddlewareConfigExport = {
 type ExecuteMiddlewareOptions = {
   basePath?: string;
   filePath?: string;
+  /**
+   * Whether the incoming request was inside the configured basePath. Drives
+   * the `nextUrl.basePath` the middleware observes: in-basePath requests are
+   * re-prefixed so NextURL reports the configured basePath, while
+   * out-of-basePath ("absolute path") requests stay un-prefixed so middleware
+   * sees `nextUrl.basePath === ""` (Next.js `getNextPathnameInfo` semantics —
+   * see test/e2e/middleware-base-path "should execute from absolute paths").
+   * When omitted it is derived from the request URL, which is correct for the
+   * Pages prod/deploy adapters because they pass the original (un-stripped)
+   * URL. Callers that pass an already-stripped URL (dev server, App Router)
+   * must set this explicitly.
+   */
+  hadBasePath?: boolean;
   i18nConfig?: NextI18nConfig | null;
   includeErrorDetails?: boolean;
   /**
@@ -193,6 +206,7 @@ function createNextRequest(
   i18nConfig?: NextI18nConfig | null,
   basePath?: string,
   trailingSlash?: boolean,
+  hadBasePath?: boolean,
 ): NextRequest {
   const url = new URL(request.url);
   // Middleware gets an isolated body branch; downstream routing keeps owning
@@ -200,14 +214,18 @@ function createNextRequest(
   let mwRequest = request.body && !request.bodyUsed ? request.clone() : request;
   // NextURL._stripBasePath only recognises basePath when the URL's pathname
   // actually starts with the basePath prefix. normalizedPathname may already
-  // be basePath-stripped (App Router passes cleanPathname), so we re-add the
+  // be basePath-stripped (App Router passes cleanPathname, the dev server
+  // receives Vite-stripped URLs), so for in-basePath requests we re-add the
   // basePath prefix here to mirror the un-stripped URL that Next.js's
   // middleware adapter always receives. NextURL will strip it back during
   // construction, and request.nextUrl.basePath will correctly reflect the
-  // configured value for in-basePath requests.
-  const mwPathname = basePath
-    ? addBasePathToPathname(normalizedPathname, basePath)
-    : normalizedPathname;
+  // configured value. Out-of-basePath ("absolute path") requests must stay
+  // un-prefixed so the middleware observes nextUrl.basePath === "" (Next.js
+  // getNextPathnameInfo semantics).
+  const mwPathname =
+    basePath && hadBasePath
+      ? addBasePathToPathname(normalizedPathname, basePath)
+      : normalizedPathname;
   if (mwPathname !== url.pathname) {
     const mwUrl = new URL(url);
     mwUrl.pathname = mwPathname;
@@ -241,6 +259,15 @@ export async function executeMiddleware(
     return { continue: false, response: normalizedPathname };
   }
 
+  // Default: derive in-basePath state from the request URL. The Pages
+  // prod/deploy adapters pass the original URL — prefixed for in-basePath
+  // requests, bare for out-of-basePath requests — so the URL itself is the
+  // source of truth. Callers that pass pre-stripped URLs (dev server, App
+  // Router) override this with an explicit `hadBasePath: true`.
+  const hadBasePath =
+    options.hadBasePath ??
+    (!options.basePath || hasBasePath(new URL(options.request.url).pathname, options.basePath));
+
   // Matcher patterns use basePath-stripped paths (e.g. /about, not /root/about),
   // matching Next.js behavior where the matcher is evaluated against the path
   // without the basePath prefix. When normalizedPathname was explicitly provided
@@ -269,6 +296,7 @@ export async function executeMiddleware(
     options.i18nConfig,
     options.basePath,
     options.trailingSlash,
+    hadBasePath,
   );
   const fetchEvent = new NextFetchEvent({ page: matchPathname });
 
