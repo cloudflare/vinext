@@ -582,17 +582,19 @@ async function buildExportMapFromFile(
  * Handles: `export * as X from`, `export { A } from`, `import * as X; export { X }`,
  * and `export * from "./sub"` (recursively resolves wildcard re-exports).
  *
- * Returns null if the entry cannot be resolved, the file cannot be read, or
- * the file has a parse error. Returns an empty map if the file is valid but
- * exports nothing.
+ * Returns null if `entryPath` is empty, the file cannot be read, or the file
+ * has a parse error. Returns an empty map if the file is valid but exports
+ * nothing.
+ *
+ * @param entryPath - Pre-resolved absolute path to the barrel entry file (the
+ *   caller owns entry resolution + its caching), or null when it could not be
+ *   resolved.
  */
 export async function buildBarrelExportMap(
-  packageName: string,
-  resolveEntry: (pkg: string) => string | null,
+  entryPath: string | null,
   readFile: (filepath: string) => Promise<string | null>,
   cache?: Map<string, BarrelExportMap>,
 ): Promise<BarrelExportMap | null> {
-  const entryPath = resolveEntry(packageName);
   if (!entryPath) return null;
 
   const exportMapCache = cache ?? new Map<string, BarrelExportMap>();
@@ -763,10 +765,7 @@ export function createOptimizeImportsPlugin(
             entryPathCache.set(cacheKey, barrelEntry ?? null);
           }
           const exportMap = await buildBarrelExportMap(
-            importSource,
-            // Entry already resolved above via entryPathCache; the callback is a
-            // no-op resolver that simply returns the pre-resolved barrelEntry.
-            () => barrelEntry ?? null,
+            barrelEntry,
             readFileSafe,
             barrelCaches.exportMapCache,
           );
