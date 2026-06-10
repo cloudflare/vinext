@@ -18,7 +18,7 @@
 //   tests/fixtures/app-basic/pages/pages-to-app/[slug].tsx  (Pages Router, GSSP)
 //   tests/fixtures/app-basic/app/about/page.tsx             (App Router)
 import { test, expect } from "@playwright/test";
-import { waitForHydration } from "../helpers";
+import { waitForHydration, waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 
@@ -38,9 +38,11 @@ test.describe("pages-to-app-routing: navigate from Pages Router to App Router vi
 
     // Clicking the link must navigate to the App Router /about page.
     // Because /about is an App Router route, a hard navigation is triggered;
-    // we wait for the new DOM to settle.
+    // wait for App Router hydration to make the App Router landing explicit
+    // rather than only asserting on the new DOM.
     await page.click("#to-about-link");
-    await expect(page.locator("#app-page")).toHaveText("About", { timeout: 10_000 });
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#app-page")).toHaveText("About");
     expect(page.url()).toContain("/about");
   });
 });

@@ -188,11 +188,11 @@ describe("Pages Router records app routes as detected on prefetch", () => {
     // 2. Navigate — the fast-path must invoke window.location.assign.
     //    We don't await the returned Promise because the fast-path returns a
     //    never-resolving Promise (matching Next.js's own "freeze" pattern).
+    //    There is no `await` between performNavigation entry and the
+    //    fast-path return, so `assign` must have fired synchronously by the
+    //    time `push()` returns — assert immediately to pin that synchronicity
+    //    (the hard navigation must not lose a race against the SPA path).
     void Router.push("/about");
-
-    // Give the microtask queue one tick to run the async preamble of
-    // performNavigation before it hits the fast-path check.
-    await Promise.resolve();
 
     expect(fakeWindow.location.assign).toHaveBeenCalledWith(expect.stringContaining("/about"));
   });
