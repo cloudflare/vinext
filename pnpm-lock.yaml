@@ -1119,6 +1119,18 @@ importers:
         specifier: 'catalog:'
         version: 0.1.24(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.6(@voidzero-dev/vite-plus-test@0.1.24))(@voidzero-dev/vite-plus-core@0.1.24(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0))(esbuild@0.27.3)(jiti@2.7.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0)
 
+  tests/fixtures/babel-flowtype:
+    devDependencies:
+      '@babel/core':
+        specifier: 7.29.0
+        version: 7.29.0
+      '@babel/plugin-syntax-jsx':
+        specifier: 7.29.7
+        version: 7.29.7(@babel/core@7.29.0)
+      '@babel/preset-flow':
+        specifier: 7.29.7
+        version: 7.29.7(@babel/core@7.29.0)
+
   tests/fixtures/cf-app-basic:
     dependencies:
       '@cloudflare/vite-plugin':
@@ -1542,6 +1554,10 @@ packages:
     peerDependencies:
       '@babel/core': ^7.0.0
 
+  '@babel/helper-plugin-utils@7.29.7':
+    resolution: {integrity: sha512-G7sHYigPY17oO5SYWnfD/0MTBwVR781S/JI643e/JhUYgVgWE/61SoW3NH9KWUKyKq5LVh3npif99Wkt6j86Jw==}
+    engines: {node: '>=6.9.0'}
+
   '@babel/helper-string-parser@7.27.1':
     resolution: {integrity: sha512-qMlSxKbpRlAridDExk92nSobyDdpPijUq2DW6oDnUqd0iOGxmQjyqhMIihI9+zv4LPyZdRje2cavWPbCbWm3eA==}
     engines: {node: '>=6.9.0'}
@@ -1554,6 +1570,10 @@ packages:
     resolution: {integrity: sha512-YvjJow9FxbhFFKDSuFnVCe2WxXk1zWc22fFePVNEaWJEu8IrZVlda6N0uHwzZrUM1il7NC9Mlp4MaJYbYd9JSg==}
     engines: {node: '>=6.9.0'}
 
+  '@babel/helper-validator-option@7.29.7':
+    resolution: {integrity: sha512-N9ZErrD+yW5geCDtBqnOoxmR8+tNKiGuxKlDpuJxfsqpa2dFcexaziGAE/qoHLiDDreVNMupxGmSoNlyvsA3gw==}
+    engines: {node: '>=6.9.0'}
+
   '@babel/helpers@7.29.2':
     resolution: {integrity: sha512-HoGuUs4sCZNezVEKdVcwqmZN8GoHirLUcLaYVNBK2J0DadGtdcqgr3BCbvH8+XUo4NGjNl3VOtSjEKNzqfFgKw==}
     engines: {node: '>=6.9.0'}
@@ -1562,6 +1582,30 @@ packages:
     resolution: {integrity: sha512-b3ctpQwp+PROvU/cttc4OYl4MzfJUWy6FZg+PMXfzmt/+39iHVF0sDfqay8TQM3JA2EUOyKcFZt75jWriQijsA==}
     engines: {node: '>=6.0.0'}
     hasBin: true
+
+  '@babel/plugin-syntax-flow@7.29.7':
+    resolution: {integrity: sha512-ajMX6QPcyomotqwpzhkYGxcK2i/us0rs1Qo9QvUpa+Fca0FTmqrzKrctoIYLMxcOhGZldGT/BAVkRGTWBiR8gQ==}
+    engines: {node: '>=6.9.0'}
+    peerDependencies:
+      '@babel/core': ^7.0.0-0
+
+  '@babel/plugin-syntax-jsx@7.29.7':
+    resolution: {integrity: sha512-TSu8+mHCoEaaCDEZ0I3+6mvTBYR4PCxQwf2z9/r5Tbztv6NaLR3B9thGTTxX2WGuGHJqRiAbKPeGTJ5XWXVg6A==}
+    engines: {node: '>=6.9.0'}
+    peerDependencies:
+      '@babel/core': ^7.0.0-0
+
+  '@babel/plugin-transform-flow-strip-types@7.29.7':
+    resolution: {integrity: sha512-wRHeUjUjCZnMHmiO5bRgjFLcoEh7JyTdByOW11ahhwNa4V0bmeGEaIvt51yq0zQp2yWIpqfxXXPyUP6GFJZHOQ==}
+    engines: {node: '>=6.9.0'}
+    peerDependencies:
+      '@babel/core': ^7.0.0-0
+
+  '@babel/preset-flow@7.29.7':
+    resolution: {integrity: sha512-KYIRV0BuaN68CDdsqFkAD7MU7yipUqQNuNElwATdxaIdpTjhvtY82QvkBJs7zV3Evxj2jFAAZ1iO8nyy0nhjqA==}
+    engines: {node: '>=6.9.0'}
+    peerDependencies:
+      '@babel/core': ^7.0.0-0
 
   '@babel/runtime@7.29.2':
     resolution: {integrity: sha512-JiDShH45zKHWyGe4ZNVRrCjBz8Nh9TMmZG1kh4QTK8hCBTWBi8Da+i7s1fJw7/lYpM4ccepSNfqzZ/QvABBi5g==}
@@ -7184,11 +7228,15 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  '@babel/helper-plugin-utils@7.29.7': {}
+
   '@babel/helper-string-parser@7.27.1': {}
 
   '@babel/helper-validator-identifier@7.28.5': {}
 
   '@babel/helper-validator-option@7.27.1': {}
+
+  '@babel/helper-validator-option@7.29.7': {}
 
   '@babel/helpers@7.29.2':
     dependencies:
@@ -7198,6 +7246,29 @@ snapshots:
   '@babel/parser@7.29.3':
     dependencies:
       '@babel/types': 7.29.0
+
+  '@babel/plugin-syntax-flow@7.29.7(@babel/core@7.29.0)':
+    dependencies:
+      '@babel/core': 7.29.0
+      '@babel/helper-plugin-utils': 7.29.7
+
+  '@babel/plugin-syntax-jsx@7.29.7(@babel/core@7.29.0)':
+    dependencies:
+      '@babel/core': 7.29.0
+      '@babel/helper-plugin-utils': 7.29.7
+
+  '@babel/plugin-transform-flow-strip-types@7.29.7(@babel/core@7.29.0)':
+    dependencies:
+      '@babel/core': 7.29.0
+      '@babel/helper-plugin-utils': 7.29.7
+      '@babel/plugin-syntax-flow': 7.29.7(@babel/core@7.29.0)
+
+  '@babel/preset-flow@7.29.7(@babel/core@7.29.0)':
+    dependencies:
+      '@babel/core': 7.29.0
+      '@babel/helper-plugin-utils': 7.29.7
+      '@babel/helper-validator-option': 7.29.7
+      '@babel/plugin-transform-flow-strip-types': 7.29.7(@babel/core@7.29.0)
 
   '@babel/runtime@7.29.2': {}
 

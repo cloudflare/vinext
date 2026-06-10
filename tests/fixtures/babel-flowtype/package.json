@@ -1,0 +1,10 @@
+{
+  "name": "babel-flowtype-fixture",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@babel/core": "7.29.0",
+    "@babel/plugin-syntax-jsx": "7.29.7",
+    "@babel/preset-flow": "7.29.7"
+  }
+}

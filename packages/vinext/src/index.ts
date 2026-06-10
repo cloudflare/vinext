@@ -1,5 +1,5 @@
 import type { Plugin, PluginOption, UserConfig, ViteDevServer } from "vite";
-import { loadEnv, parseAst, transformWithOxc } from "vite";
+import { loadEnv, parseAst } from "vite";
 import {
   pagesRouter,
   apiRouter,
@@ -178,6 +178,7 @@ import fs from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 import { normalizePathSeparators } from "./utils/path.js";
+import { transformJsxInJs } from "./utils/flow-babel.js";
 
 // Install the process-level peer-disconnect backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
@@ -1094,15 +1095,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }
               }
 
-              const result = await transformWithOxc(code, id, {
-                lang: "jsx",
-                jsx: { runtime: "automatic" as const },
-                sourcemap: true,
-              });
-              return {
-                code: result.code,
-                map: result.map,
-              };
+              // Compile JSX with OXC — routing files that carry a leading
+              // `// @flow` or `/* @flow */` pragma through the project's
+              // @babel/core first, since OXC cannot parse Flow type syntax.
+              // See transformJsxInJs in utils/flow-babel.ts for the full
+              // pipeline, including the actionable "install @babel/core"
+              // error when Babel is missing but the file has Flow syntax.
+              return transformJsxInJs(code, cleanId, root);
             },
           } satisfies Plugin,
         ]

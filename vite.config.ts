@@ -24,7 +24,12 @@ export default defineConfig({
     semi: true,
     singleQuote: false,
     trailingComma: "all",
-    ignorePatterns: ["tests/fixtures/ecosystem/**", "examples/**"],
+    ignorePatterns: [
+      "tests/fixtures/ecosystem/**",
+      // Flow type syntax is not parseable by the formatter.
+      "tests/fixtures/babel-flowtype/pages/**",
+      "examples/**",
+    ],
   },
   lint: {
     ignorePatterns: [
