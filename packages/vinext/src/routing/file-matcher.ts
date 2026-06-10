@@ -98,7 +98,7 @@ export function findFileWithExts(
   matcher: ValidFileMatcher,
 ): string | null {
   for (const ext of matcher.dottedExtensions) {
-    const filePath = path.join(dir, name + ext);
+    const filePath = path.posix.join(dir, name + ext);
     if (existsSync(filePath)) return filePath;
   }
   return null;

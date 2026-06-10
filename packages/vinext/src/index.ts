@@ -1132,7 +1132,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       enforce: "pre",
 
       async config(config, env) {
-        root = config.root ?? process.cwd();
+        root = normalizePathSeparators(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         const shouldEnableNativeTsconfigPaths =
           viteMajorVersion >= 8 && userResolve?.tsconfigPaths === undefined;
@@ -1170,27 +1170,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // If not provided, auto-detect: check root first, then src/ subdirectory.
         let baseDir: string;
         if (options.appDir) {
-          baseDir = path.isAbsolute(options.appDir)
+          const dir = path.isAbsolute(options.appDir)
             ? options.appDir
             : path.resolve(root, options.appDir);
+          baseDir = normalizePathSeparators(dir);
         } else {
           // Auto-detect: prefer root-level app/ and pages/, fall back to src/
-          const hasRootApp = fs.existsSync(path.join(root, "app"));
-          const hasRootPages = fs.existsSync(path.join(root, "pages"));
-          const hasSrcApp = fs.existsSync(path.join(root, "src", "app"));
-          const hasSrcPages = fs.existsSync(path.join(root, "src", "pages"));
+          const hasRootApp = fs.existsSync(path.posix.join(root, "app"));
+          const hasRootPages = fs.existsSync(path.posix.join(root, "pages"));
+          const hasSrcApp = fs.existsSync(path.posix.join(root, "src", "app"));
+          const hasSrcPages = fs.existsSync(path.posix.join(root, "src", "pages"));
 
           if (hasRootApp || hasRootPages) {
             baseDir = root;
           } else if (hasSrcApp || hasSrcPages) {
-            baseDir = path.join(root, "src");
+            baseDir = path.posix.join(root, "src");
           } else {
             baseDir = root;
           }
         }
 
-        pagesDir = path.join(baseDir, "pages");
-        appDir = path.join(baseDir, "app");
+        pagesDir = path.posix.join(baseDir, "pages");
+        appDir = path.posix.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
 

@@ -72,23 +72,21 @@ export async function generateServerEntry(
   // (e.g. global stylesheets imported by `_app.tsx`) alongside the page's
   // own assets. Without this, `_app`-imported CSS is emitted by Vite but
   // never `<link>`ed from the rendered HTML — see LHF-5 cluster.
-  const appAssetPathJson =
-    appFilePath !== null ? JSON.stringify(normalizePathSeparators(appFilePath)) : "null";
+  const appAssetPathJson = appFilePath !== null ? JSON.stringify(appFilePath) : "null";
   const appImportCode =
     appFilePath !== null
-      ? `import { default as AppComponent } from ${JSON.stringify(normalizePathSeparators(appFilePath))};`
+      ? `import { default as AppComponent } from ${JSON.stringify(appFilePath)};`
       : `const AppComponent = null;`;
 
   const docImportCode =
     docFilePath !== null
-      ? `import { default as DocumentComponent } from ${JSON.stringify(normalizePathSeparators(docFilePath))};`
+      ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath)};`
       : `const DocumentComponent = null;`;
 
-  const errorAssetPathJson =
-    errorFilePath !== null ? JSON.stringify(normalizePathSeparators(errorFilePath)) : "null";
+  const errorAssetPathJson = errorFilePath !== null ? JSON.stringify(errorFilePath) : "null";
   const errorImportCode =
     errorFilePath !== null
-      ? `import * as ErrorPageModule from ${JSON.stringify(normalizePathSeparators(errorFilePath))};`
+      ? `import * as ErrorPageModule from ${JSON.stringify(errorFilePath)};`
       : `const ErrorPageModule = null;`;
 
   // Serialize i18n config for embedding in the server entry
