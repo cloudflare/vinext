@@ -13,9 +13,17 @@ export type KvDataAdapterOptions = {
 };
 
 /**
- * Config-time builder: returns a serializable descriptor whose `adapter` is the
- * absolute path to the runtime factory. Safe to call from vite.config — it
- * never instantiates the KV handler or reads a binding.
+ * Cloudflare KV data cache.
+ *
+ * A KV namespace must be configured in your Wrangler config for this to work.
+ * ```jsonc
+ * // wrangler.jsonc
+ * {
+ *   "kv_namespaces": [
+ *     { "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }
+ *   ]
+ * }
+ * ```
  */
 export function kvDataAdapter(options?: KvDataAdapterOptions) {
   if (options?.binding !== undefined && typeof options.binding !== "string") {
