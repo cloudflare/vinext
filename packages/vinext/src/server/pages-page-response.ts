@@ -102,7 +102,7 @@ export function etagMatches(etag: string, ifNoneMatch: string): boolean {
   // Normalise: strip the W/ prefix for comparison. Next.js's
   // `sendEtagResponse` (packages/next/src/server/send-payload.ts) uses the
   // `fresh` package, which treats a weak token in `If-None-Match` as matching
-  // the corresponding strong ETag and vice versa (RFC 7232 §3.2 weak
+  // the corresponding strong ETag and vice versa (RFC 7232 §2.3.2 weak
   // comparison). We replicate that behaviour here.
   const normalize = (t: string) => t.replace(/^W\//, "");
   const etagNorm = normalize(etag.trim());
@@ -691,7 +691,7 @@ export async function renderPagesPageResponse(
   // When the incoming `If-None-Match` header matches the computed ETag, return
   // `304 Not Modified` with no body (mirrors Next.js `sendEtagResponse`
   // semantics in packages/next/src/server/send-payload.ts, with weak-ETag
-  // comparison per RFC 7232 §3.2).
+  // comparison per RFC 7232 §2.3.2).
   //
   // NOTE: This check is intentionally placed after the Cache-Control / header
   // setup above so bot responses still carry the correct cache semantics.
