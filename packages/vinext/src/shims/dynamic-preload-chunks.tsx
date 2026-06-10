@@ -69,10 +69,10 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
   const nonce = useScriptNonce();
   // Defensive guard matching Next.js's <PreloadChunks> `typeof window` check:
   // this component only does work during SSR. The runtime global is server-only
-  // today (so the client already returns null via the empty map), so this is
-  // belt-and-suspenders that also future-proofs against any client-side leak of
-  // the preload map. Placed AFTER the (unconditional) hook to keep hook order
-  // stable across renders.
+  // today (so on the client the map is absent/undefined and we already return
+  // null), so this is belt-and-suspenders that also future-proofs against any
+  // client-side leak of the preload map. Placed AFTER the (unconditional) hook
+  // to keep hook order stable across renders.
   if (typeof window !== "undefined") return null;
   const files = resolveDynamicPreloadFiles(props.moduleIds);
   if (files.length === 0) return null;
@@ -94,13 +94,13 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
     }
 
     if (href.endsWith(".js") && typeof ReactDOM.preload === "function") {
+      // Pass `nonce` directly (React omits the attribute when it is undefined),
+      // matching the stylesheet branch above.
       const preloadOptions: ReactDOM.PreloadOptions = {
         as: "script",
         fetchPriority: "low",
+        nonce,
       };
-      if (nonce !== undefined) {
-        preloadOptions.nonce = nonce;
-      }
       ReactDOM.preload(href, preloadOptions);
     }
   }

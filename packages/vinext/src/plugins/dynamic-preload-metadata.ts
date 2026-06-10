@@ -482,7 +482,10 @@ function cleanResolvedId(id: string): string {
 
 // `toManifestModuleId` runs once per resolved specifier but `root` is constant
 // for the whole build, so memoise its realpath instead of stat-ing the FS on
-// every call.
+// every call. The cache intentionally lives for the process lifetime: it is
+// keyed by absolute root path and a root's realpath is stable for any realistic
+// build/dev session (the only staleness would be swapping a root symlink target
+// mid-process, which does not happen).
 const rootRealpathCache = new Map<string, string | null>();
 function cachedRootRealpath(root: string): string | null {
   if (!rootRealpathCache.has(root)) {

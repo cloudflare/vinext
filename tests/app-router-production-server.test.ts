@@ -271,10 +271,13 @@ describe("App Router Production server (startProdServer)", () => {
   //
   // Next.js parity: <PreloadChunks> is a 'use client' component, so it renders
   // in the SSR pass and the preload links carry the nonce regardless of whether
-  // the dynamic() call site is a Server or Client Component. vinext's
-  // DynamicPreloadChunks is NOT 'use client', so for a Server-Component call
-  // site it renders in the RSC environment where useScriptNonce() returns
-  // undefined.
+  // the dynamic() call site is a Server or Client Component. vinext matches
+  // this: DynamicPreloadChunks is ALSO a 'use client' component (see
+  // shims/dynamic-preload-chunks.tsx), so it renders in the SSR pass — where
+  // withScriptNonce installs the provider — and the nonce is applied even for a
+  // Server-Component call site. This test guards exactly that. (Before that fix
+  // it was rendered in the RSC environment, where useScriptNonce() returns
+  // undefined and the nonce was dropped.)
   it("preloads next/dynamic chunks with the CSP nonce when the call site is a Server Component", async () => {
     const res = await fetch(`${baseUrl}/nextjs-compat/dynamic/rsc-imports-client?csp-nonce=1`);
     expect(res.status).toBe(200);
@@ -362,12 +365,16 @@ describe("App Router Production server (startProdServer)", () => {
 
     // The DynamicPreloadChunks signature is rel="preload" as="script"
     // fetchPriority="low" — route bootstrap uses modulepreload instead, so this
-    // matches only dynamic-boundary preloads.
+    // matches only dynamic-boundary preloads. Match the attribute name
+    // case-INSENSITIVELY: React currently serializes the `fetchPriority` prop
+    // verbatim (camelCase), but if it ever lowercased it to `fetchpriority` a
+    // case-sensitive matcher would match nothing and this negative assertion
+    // would pass vacuously even if a preload leaked.
     const dynamicScriptPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
       (tag) =>
-        /\brel="preload"/.test(tag) &&
-        /\bas="script"/.test(tag) &&
-        /\bfetchPriority="low"/.test(tag),
+        /\brel="preload"/i.test(tag) &&
+        /\bas="script"/i.test(tag) &&
+        /\bfetchpriority="low"/i.test(tag),
     );
     expect(dynamicScriptPreloads).toEqual([]);
   });
@@ -452,7 +459,7 @@ describe("App Router Production server (startProdServer)", () => {
       // use that signal to avoid matching route bootstrap modulepreload links.
       const dynamicScriptPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
         (tag) =>
-          tag.includes('fetchPriority="low"') &&
+          /\bfetchpriority="low"/i.test(tag) &&
           tag.includes('nonce="vinext-test-nonce"') &&
           tag.includes("/_next/static/chunks/"),
       );
@@ -551,7 +558,7 @@ describe("App Router Production server (startProdServer)", () => {
       const html = await res.text();
       const dynamicScriptPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
         (tag) =>
-          tag.includes('fetchPriority="low"') &&
+          /\bfetchpriority="low"/i.test(tag) &&
           tag.includes('nonce="vinext-test-nonce"') &&
           tag.includes("https://cdn.example.com/_next/static/chunks/"),
       );

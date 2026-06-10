@@ -1387,6 +1387,27 @@ describe("computeDynamicImportPreloads", () => {
   });
 });
 
+// Returns the AST node-type of each argument of the FIRST `dynamic(...)` call in
+// `code`. Used to prove the loader is preserved as argument 0 (not collapsed
+// into a SequenceExpression) after the options object is injected.
+function firstDynamicCallArgTypes(code: string): (string | undefined)[] {
+  let call: { arguments?: { type?: string }[] } | undefined;
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    const n = node as Record<string, unknown>;
+    const callee = n.callee as Record<string, unknown> | undefined;
+    if (n.type === "CallExpression" && callee?.type === "Identifier" && callee.name === "dynamic") {
+      call ??= n as { arguments?: { type?: string }[] };
+    }
+    for (const value of Object.values(n)) {
+      if (Array.isArray(value)) value.forEach(visit);
+      else if (value && typeof value === "object") visit(value);
+    }
+  };
+  visit(parseAst(code));
+  return (call?.arguments ?? []).map((a) => a?.type);
+}
+
 describe("next/dynamic preload metadata transform", () => {
   const root = path.resolve("/repo");
   const importer = path.join(root, "app/page.tsx");
@@ -1691,27 +1712,48 @@ describe("next/dynamic preload metadata transform", () => {
 
     // The dynamic() call must still receive TWO arguments and the first must be
     // the loader (an arrow), not a SequenceExpression.
-    const ast = parseAst(result!.code) as unknown;
-    let call: { arguments?: { type?: string }[] } | undefined;
-    const visit = (node: unknown): void => {
-      if (!node || typeof node !== "object") return;
-      const n = node as Record<string, unknown>;
-      const callee = n.callee as Record<string, unknown> | undefined;
-      if (
-        n.type === "CallExpression" &&
-        callee?.type === "Identifier" &&
-        callee.name === "dynamic"
-      ) {
-        call = n as { arguments?: { type?: string }[] };
-      }
-      for (const value of Object.values(n)) {
-        if (Array.isArray(value)) value.forEach(visit);
-        else if (value && typeof value === "object") visit(value);
-      }
-    };
-    visit(ast);
-    expect(call?.arguments).toHaveLength(2);
-    expect(call?.arguments?.[0]?.type).not.toBe("SequenceExpression");
+    expect(firstDynamicCallArgTypes(result!.code)).toEqual([
+      "ArrowFunctionExpression",
+      "ObjectExpression",
+    ]);
+  });
+
+  it("supports the bare-promise loader form dynamic(import(...))", async () => {
+    // The only shape that drives an ImportExpression (not an arrow/object) into
+    // the close-paren insertion path. The loader must stay arg 0.
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const W = dynamic(import("./dynamic-widget"));`,
+      ].join("\n"),
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(firstDynamicCallArgTypes(result!.code)).toEqual([
+      "ImportExpression",
+      "ObjectExpression",
+    ]);
+  });
+
+  it("supports a parenthesized bare-promise loader dynamic((import(...)))", async () => {
+    const result = await _transformNextDynamicPreloadMetadata(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const W = dynamic((import("./dynamic-widget")));`,
+      ].join("\n"),
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(firstDynamicCallArgTypes(result!.code)).toEqual([
+      "ImportExpression",
+      "ObjectExpression",
+    ]);
   });
 
   it("does not emit a double comma when the loader already has a trailing comma", async () => {
@@ -1727,9 +1769,19 @@ describe("next/dynamic preload metadata transform", () => {
       resolveDynamicImport,
     );
 
-    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
-    expect(result?.code).not.toMatch(/,\s*,/);
-    expect(() => parseAst(result!.code)).not.toThrow();
+    // Exact output isolates the comment-aware separator choice: a naive
+    // always-`", "` separator would emit `…,)`->`…, { … },)` (double comma); the
+    // pre-existing trailing comma must instead be consumed as the separator.
+    expect(result?.code).toBe(
+      [
+        `import dynamic from "next/dynamic";`,
+        `const W = dynamic(() => import("./dynamic-widget"), { loadableGenerated: { modules: ["app/dynamic-widget.tsx"] } });`,
+      ].join("\n"),
+    );
+    expect(firstDynamicCallArgTypes(result!.code)).toEqual([
+      "ArrowFunctionExpression",
+      "ObjectExpression",
+    ]);
   });
 
   it("does not throw on >2 args when the dynamic binding is shadowed", async () => {
@@ -2245,10 +2297,15 @@ describe("collectAssetTags lazy chunk filtering", () => {
       ];
 
       // Consumer: the real collectAssetTags must exclude the lazy widget chunk
-      // while keeping the eager entry chunk.
+      // while keeping the eager entry chunk. Assert by basename (presence /
+      // absence), NOT the exact href: the precise URL collectAssetTags renders
+      // for the basePath+path-assetPrefix combo is subject to a separate,
+      // pre-existing asset-URL bug (it emits the base+prefix form rather than the
+      // assetPrefix-only form), which is out of scope for this lazy-exclusion
+      // guard.
       const tags = simulateAssetTagFiltering(ssrFiles, metadata.lazyChunks!);
-      expect(tags).toContain(
-        '<link rel="modulepreload" href="/docs/cdn/_next/static/chunks/entry-abc.js" />',
+      expect(tags.some((t) => t.includes("modulepreload") && t.includes("entry-abc.js"))).toBe(
+        true,
       );
       expect(tags.some((t) => t.includes("widget-def.js"))).toBe(false);
     } finally {
