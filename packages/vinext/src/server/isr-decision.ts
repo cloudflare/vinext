@@ -1,10 +1,13 @@
 /**
- * Centralised ISR cache-decision module.
+ * Centralised ISR `Cache-Control` derivation module.
  *
- * The HIT/STALE/MISS disposition, the `scheduleRegeneration` flag, and the
- * `Cache-Control` string are all derived here. No caller may produce these
- * values independently — every ISR code path (app-page, app-route, pages,
- * dev-server) routes through `decideIsr`.
+ * `decideIsr` is the single place that maps (router kind, hit/stale,
+ * revalidate/expire metadata) → the exact `Cache-Control` string to stamp on
+ * an ISR response. Every ISR code path (app-page, app-route, pages,
+ * dev-server) routes through it.
+ *
+ * `disposition` and `scheduleRegeneration` are informational fields for
+ * callers that want them; all current callers only read `cacheControl`.
  *
  * ## Equivalence table
  *
@@ -140,10 +143,7 @@ function buildCacheControl(
 }
 
 /**
- * Make the ISR cache policy decision.
- *
- * Returns the disposition, whether the caller must schedule a background
- * regeneration, and the exact `Cache-Control` string to apply to the response.
+ * Derive the `Cache-Control` string for an ISR response.
  *
  * Content guards (kind mismatch, query-variant-unproven, empty body) are the
  * caller's responsibility and must happen *before* this call. `hasUsableValue`
@@ -154,8 +154,9 @@ export function decideIsr(options: DecideIsrOptions): IsrDecision {
     return { disposition: "MISS", scheduleRegeneration: false, cacheControl: "" };
   }
 
+  const { effectiveRevalidate, effectiveExpire } = resolveRevalidate(options);
+
   if (!options.isStale) {
-    const { effectiveRevalidate, effectiveExpire } = resolveRevalidate(options);
     return {
       disposition: "HIT",
       scheduleRegeneration: false,
@@ -164,7 +165,6 @@ export function decideIsr(options: DecideIsrOptions): IsrDecision {
   }
 
   // Stale: serve + schedule regen.
-  const { effectiveRevalidate, effectiveExpire } = resolveRevalidate(options);
   return {
     disposition: "STALE",
     scheduleRegeneration: true,
