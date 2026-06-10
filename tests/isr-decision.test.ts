@@ -10,10 +10,9 @@ import {
 // ─── MISS ────────────────────────────────────────────────────────────────────
 
 describe("decideIsr — MISS", () => {
-  it("returns MISS when hasUsableValue is false", () => {
+  it("returns MISS when cacheState is MISS", () => {
     const d = decideIsr({
-      hasUsableValue: false,
-      isStale: false,
+      cacheState: "MISS",
       kind: "app-page",
       revalidateSeconds: 60,
     });
@@ -22,10 +21,9 @@ describe("decideIsr — MISS", () => {
     expect(d.cacheControl).toBe("");
   });
 
-  it("returns MISS even if isStale is true when hasUsableValue is false", () => {
+  it("returns MISS for MISS cacheState regardless of route kind", () => {
     const d = decideIsr({
-      hasUsableValue: false,
-      isStale: true,
+      cacheState: "MISS",
       kind: "pages",
       revalidateSeconds: 60,
     });
@@ -39,8 +37,7 @@ describe("decideIsr — MISS", () => {
 describe("decideIsr — HIT", () => {
   it("app-page HIT without expire: unbounded SWR", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: false,
+      cacheState: "HIT",
       kind: "app-page",
       revalidateSeconds: 60,
     });
@@ -53,8 +50,7 @@ describe("decideIsr — HIT", () => {
     // expireSeconds is only a fallback for cacheControlMeta. Without metadata,
     // the expire ceiling is unknown and the unbounded form is used.
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: false,
+      cacheState: "HIT",
       kind: "app-page",
       revalidateSeconds: 60,
       expireSeconds: 300,
@@ -64,8 +60,7 @@ describe("decideIsr — HIT", () => {
 
   it("app-page HIT with cacheControlMeta including expire: finite SWR window", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: false,
+      cacheState: "HIT",
       kind: "app-page",
       revalidateSeconds: 60,
       expireSeconds: 300,
@@ -76,8 +71,7 @@ describe("decideIsr — HIT", () => {
 
   it("app-page HIT: prefers cacheControlMeta revalidate over route default", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: false,
+      cacheState: "HIT",
       kind: "app-page",
       revalidateSeconds: 60,
       cacheControlMeta: { revalidate: 30 },
@@ -87,8 +81,7 @@ describe("decideIsr — HIT", () => {
 
   it("app-page HIT: cacheControlMeta expire overrides route expireSeconds", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: false,
+      cacheState: "HIT",
       kind: "app-page",
       revalidateSeconds: 60,
       expireSeconds: 999,
@@ -99,8 +92,7 @@ describe("decideIsr — HIT", () => {
 
   it("app-page HIT: cacheControlMeta present but no expire — expireSeconds used as fallback", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: false,
+      cacheState: "HIT",
       kind: "app-page",
       revalidateSeconds: 60,
       expireSeconds: 300,
@@ -111,8 +103,7 @@ describe("decideIsr — HIT", () => {
 
   it("pages HIT without cacheControlMeta: unbounded SWR", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: false,
+      cacheState: "HIT",
       kind: "pages",
       revalidateSeconds: 60,
     });
@@ -121,8 +112,7 @@ describe("decideIsr — HIT", () => {
 
   it("pages HIT with cacheControlMeta and expire: finite SWR window", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: false,
+      cacheState: "HIT",
       kind: "pages",
       revalidateSeconds: 60,
       cacheControlMeta: { revalidate: 60, expire: 300 },
@@ -132,8 +122,7 @@ describe("decideIsr — HIT", () => {
 
   it("app-route HIT finite revalidate (no metadata): uses route policy, unbounded SWR", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: false,
+      cacheState: "HIT",
       kind: "app-route",
       revalidateSeconds: 60,
     });
@@ -142,8 +131,7 @@ describe("decideIsr — HIT", () => {
 
   it("app-route HIT revalidate=0: emits NEVER_CACHE_CONTROL", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: false,
+      cacheState: "HIT",
       kind: "app-route",
       revalidateSeconds: 0,
     });
@@ -152,8 +140,7 @@ describe("decideIsr — HIT", () => {
 
   it("app-route HIT revalidate=Infinity: emits STATIC_CACHE_CONTROL", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: false,
+      cacheState: "HIT",
       kind: "app-route",
       revalidateSeconds: Infinity,
     });
@@ -162,8 +149,7 @@ describe("decideIsr — HIT", () => {
 
   it("app-route HIT: cacheControlMeta revalidate=0 wins over route default", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: false,
+      cacheState: "HIT",
       kind: "app-route",
       revalidateSeconds: 60,
       cacheControlMeta: { revalidate: 0 },
@@ -173,8 +159,7 @@ describe("decideIsr — HIT", () => {
 
   it("dev HIT: unbounded SWR (no special gates)", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: false,
+      cacheState: "HIT",
       kind: "dev",
       revalidateSeconds: 60,
     });
@@ -188,8 +173,7 @@ describe("decideIsr — HIT", () => {
 describe("decideIsr — STALE", () => {
   it("app-page STALE without expire: s-maxage=0 (canonical STALE fallback)", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: true,
+      cacheState: "STALE",
       kind: "app-page",
       revalidateSeconds: 60,
     });
@@ -200,8 +184,7 @@ describe("decideIsr — STALE", () => {
 
   it("app-page STALE with cacheControlMeta and expire: uses route policy (same as HIT)", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: true,
+      cacheState: "STALE",
       kind: "app-page",
       revalidateSeconds: 60,
       cacheControlMeta: { revalidate: 60, expire: 300 },
@@ -211,8 +194,7 @@ describe("decideIsr — STALE", () => {
 
   it("app-page STALE: scheduleRegeneration is true", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: true,
+      cacheState: "STALE",
       kind: "app-page",
       revalidateSeconds: 60,
     });
@@ -221,8 +203,7 @@ describe("decideIsr — STALE", () => {
 
   it("pages STALE without expire: s-maxage=0", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: true,
+      cacheState: "STALE",
       kind: "pages",
       revalidateSeconds: 60,
     });
@@ -231,8 +212,7 @@ describe("decideIsr — STALE", () => {
 
   it("pages STALE with cacheControlMeta and expire: finite SWR window", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: true,
+      cacheState: "STALE",
       kind: "pages",
       revalidateSeconds: 15,
       cacheControlMeta: { revalidate: 15, expire: 300 },
@@ -242,8 +222,7 @@ describe("decideIsr — STALE", () => {
 
   it("app-route STALE revalidate=0: NEVER_CACHE_CONTROL", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: true,
+      cacheState: "STALE",
       kind: "app-route",
       revalidateSeconds: 0,
     });
@@ -252,8 +231,7 @@ describe("decideIsr — STALE", () => {
 
   it("app-route STALE revalidate=Infinity: STATIC_CACHE_CONTROL", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: true,
+      cacheState: "STALE",
       kind: "app-route",
       revalidateSeconds: Infinity,
     });
@@ -262,8 +240,7 @@ describe("decideIsr — STALE", () => {
 
   it("app-route STALE finite (no cacheControlMeta): s-maxage=0 (STALE fallback, expire unknown)", () => {
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: true,
+      cacheState: "STALE",
       kind: "app-route",
       revalidateSeconds: 60,
     });
@@ -275,8 +252,7 @@ describe("decideIsr — STALE", () => {
     // the canonical buildCachedRevalidateCacheControl("STALE", secs) result which
     // is `s-maxage=0, stale-while-revalidate` when expire is absent, matching prod.
     const d = decideIsr({
-      hasUsableValue: true,
-      isStale: true,
+      cacheState: "STALE",
       kind: "dev",
       revalidateSeconds: 60,
     });
