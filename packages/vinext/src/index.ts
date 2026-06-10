@@ -165,6 +165,7 @@ import { stripServerExports } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
+import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import { getViteMajorVersion } from "./utils/vite-version.js";
@@ -4793,116 +4794,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
-    // vinext:wasm-module-import — handle `import x from '*.wasm?module'` in
-    // non-Cloudflare builds.
+    // Handle `import x from '*.wasm?module'` in non-Cloudflare builds —
+    // see src/plugins/wasm-module-import.ts. Fixes #1351.
     //
-    // The `?module` query is a Cloudflare Workers / workerd convention: it tells
-    // the bundler to load a `.wasm` file as a pre-compiled WebAssembly.Module
-    // rather than raw bytes. When @cloudflare/vite-plugin is present it handles
-    // this for all worker environments via its `additionalModulesPlugin`
-    // (enforce:"pre"), so we must not interfere.
-    //
-    // In plain Node.js builds (no Cloudflare plugin — the case for the
-    // deploy-suite and standalone `vinext start`) Rolldown has no built-in
-    // `?module` handler and throws. This plugin fills the gap by:
-    //   1. Intercepting any `*.wasm?module` import in resolveId.
-    //   2. Reading the WASM file at load time and inlining it as base64.
-    //   3. Exporting a compiled WebAssembly.Module via top-level await.
-    //
-    // workerd forbids compiling WASM from bytes at runtime — modules must come
-    // from the bundler module system. The hasCloudflarePlugin check inside the
-    // resolveId handler ensures this path only runs in Node.js environments
-    // where WebAssembly.compile() from bytes is permitted.
-    //
-    // NOTE: the gating assumption is "no @cloudflare/vite-plugin", not
-    // "Node.js target". The two can diverge: e.g. Nitro's edge presets
-    // (Cloudflare, Deno Deploy) don't register the Cloudflare vite-plugin, so
-    // this plugin would intercept `.wasm?module` there and the emitted
-    // `WebAssembly.compile(bytes)` would be rejected at runtime by workerd.
-    // If that combination ever needs support, the gate must consider the
-    // target runtime rather than (only) plugin presence.
-    //
-    // NOTE: `hasCloudflarePlugin` is set in the `config` hook (after this
-    // plugins array is constructed), so we cannot use it as a spread guard
-    // here. We check it inside the hook handlers instead, where it reflects
-    // the final resolved value.
-    //
-    // Fixes #1351.
-    {
-      name: "vinext:wasm-module-import",
-      enforce: "pre" as const,
-
-      resolveId: {
-        // Match import specifiers that end with `.wasm?module`. The exact
-        // match (no extra query params) is intentional: `?module` as the
-        // entire query string is the documented Cloudflare/Next.js
-        // convention, and anything else (e.g. `?module&v=1`) is not a shape
-        // we want to silently claim — leave it to the bundler to error on.
-        filter: { id: /\.wasm\?module$/ },
-        async handler(source: string, importer: string | undefined) {
-          // Defer to @cloudflare/vite-plugin when it's present — it handles
-          // ?module imports for all worker environments via its own
-          // `additionalModulesPlugin` (also enforce:"pre").  Both plugins have
-          // the same enforce level; by checking this flag at call-time we let
-          // Cloudflare's plugin "win" by returning null here and allowing it to
-          // intercept first in the registration order.
-          if (hasCloudflarePlugin) return null;
-
-          // Skip imports originating from @vercel/og — vinext:og-font-patch
-          // converts those to dynamic imports whose .catch() fallback reads from
-          // disk on Node.js.  If we intercept them here and inline the bytes as
-          // base64, the dynamic import succeeds on Node.js too, defeating the
-          // fallback, causing the ~1.3 MB resvg WASM to be shipped twice, and
-          // breaking findEmittedWasmAsset dedup in vinext:og-assets.
-          // The substring predicate deliberately mirrors the
-          // vinext:og-font-patch transform filter (`id.includes("@vercel/og")`
-          // below) — the two must never diverge, or an id matched by the
-          // font-patch transform could slip past this guard and reintroduce
-          // the double-shipped-WASM bug.
-          const importerPath = importer
-            ? (importer.startsWith("\0") ? importer.slice(1) : importer).split("?")[0]
-            : "";
-          if (importerPath.includes("@vercel/og")) return null;
-
-          // Let Vite's resolver find the absolute path (it handles
-          // relative specifiers, tsconfig paths, etc.), then strip the
-          // ?module query so the result is a real file path.
-          const resolved = await this.resolve(source, importer, { skipSelf: true });
-          if (!resolved) return null;
-          const filePath = stripViteModuleQuery(resolved.id);
-          return `\0vinext-wasm-module:${filePath}`;
-        },
-      },
-
-      load: {
-        // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
-        filter: { id: /^\u0000vinext-wasm-module:/ },
-        handler(id: string) {
-          // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
-          const filePath = id.replace(/^\u0000vinext-wasm-module:/, "");
-          let bytes: Buffer;
-          try {
-            bytes = fs.readFileSync(filePath);
-          } catch {
-            // `this.error` throws; returning it makes the control flow
-            // explicit so no non-null assertion is needed below.
-            return this.error(`[vinext] Could not read WASM file: ${filePath}`);
-          }
-          // Inline the WASM binary as a base64 string and compile it at
-          // module initialisation time.  atob() is available on Node 16+,
-          // browsers, and workerd. Top-level await is valid because this
-          // path only serves server/edge (SSR) imports, where Vite/Rolldown
-          // always emits ESM output — it is not intended for client bundles,
-          // whose targets may not support TLA.
-          const base64 = bytes.toString("base64");
-          return [
-            `const _b64 = ${JSON.stringify(base64)};`,
-            `const _buf = Uint8Array.from(atob(_b64), c => c.charCodeAt(0));`,
-            `export default await WebAssembly.compile(_buf.buffer);`,
-          ].join("\n");
-        },
-      },
-    } as Plugin,
+    // `hasCloudflarePlugin` is set in the `config` hook (after this plugins
+    // array is constructed), so it is passed as a getter and read at hook
+    // call-time, where it reflects the final resolved value.
+    createWasmModuleImportPlugin({
+      getHasCloudflarePlugin: () => hasCloudflarePlugin,
+    }),
     {
       // @vercel/og WASM patch — universal (workerd + Node.js)
       //
