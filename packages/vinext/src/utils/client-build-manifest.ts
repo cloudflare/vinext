@@ -77,6 +77,19 @@ function findEntryFileFromManifest(
   return chosen ? manifestFileWithBase(chosen.file, assetBase) : undefined;
 }
 
+function listFilesRecursive(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...listFilesRecursive(full));
+    } else if (entry.isFile()) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
 function findClientEntryFileInAssetsDir(options: {
   clientDir: string;
   assetsSubdir: string;
@@ -86,16 +99,21 @@ function findClientEntryFileInAssetsDir(options: {
   const assetsDir = path.join(options.clientDir, options.assetsSubdir);
   if (!fs.existsSync(assetsDir)) return undefined;
 
-  const files = fs.readdirSync(assetsDir);
-  let entry: string | undefined;
+  // Walk recursively: client JS entries are emitted under
+  // `<assetsSubdir>/chunks/` (see createClientFileNameConfig), not directly in
+  // `<assetsSubdir>`. A flat readdir here would miss the entry entirely.
+  const files = listFilesRecursive(assetsDir);
+  let entryFull: string | undefined;
   for (const marker of options.markers) {
-    entry = files.find((file) => file.includes(marker) && file.endsWith(".js"));
-    if (entry) break;
+    entryFull = files.find((file) => path.basename(file).includes(marker) && file.endsWith(".js"));
+    if (entryFull) break;
   }
+  if (!entryFull) return undefined;
 
-  return entry
-    ? manifestFileWithBase(`${options.assetsSubdir}/${entry}`, options.assetBase)
-    : undefined;
+  // Return the path relative to clientDir (POSIX-normalised) so it preserves the
+  // `<assetsSubdir>/chunks/` location, then apply the basePath.
+  const relativeToClient = path.relative(options.clientDir, entryFull).split(path.sep).join("/");
+  return manifestFileWithBase(relativeToClient, options.assetBase);
 }
 
 export function findClientEntryFile(options: {

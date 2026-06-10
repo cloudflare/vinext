@@ -3,6 +3,7 @@ import { parseAst } from "vite";
 import MagicString from "magic-string";
 import path from "node:path";
 import { isUnknownRecord as isRecord } from "../utils/record.js";
+import { relativeWithinRoot, tryRealpathSync } from "../build/ssr-manifest.js";
 
 type AstRecord = Record<string, unknown>;
 
@@ -433,22 +434,19 @@ function appendObjectProperty(
 
 function insertSecondOptionsArgument(
   output: MagicString,
-  code: string,
-  callNode: AstRecord,
   firstArg: AstRecord,
   optionsLiteral: string,
 ): boolean {
-  const callEnd = getNumber(callNode, "end");
   const firstArgEnd = getNumber(firstArg, "end");
-  if (callEnd === null || firstArgEnd === null) return false;
+  if (firstArgEnd === null) return false;
 
-  const closeParen = callEnd - 1; // AST `end` is exclusive (past the closing paren)
-  const betweenFirstArgAndClose = code.slice(firstArgEnd, closeParen);
-  if (betweenFirstArgAndClose.includes(",")) {
-    output.overwrite(firstArgEnd, closeParen, `, ${optionsLiteral}`);
-  } else {
-    output.appendLeft(closeParen, `, ${optionsLiteral}`);
-  }
+  // Always insert immediately after the first argument. This is comment- and
+  // whitespace-safe: any text between the first arg and the close paren (a
+  // trailing comma, whitespace, or a comment) is preserved, and a pre-existing
+  // trailing comma simply becomes a trailing comma after our inserted argument
+  // (valid JS), e.g. `dynamic(loader,)` -> `dynamic(loader, { … },)`. Avoids the
+  // previous substring-`,`-scan that ate commas living inside comments.
+  output.appendLeft(firstArgEnd, `, ${optionsLiteral}`);
   return true;
 }
 
@@ -469,9 +467,28 @@ function toManifestModuleId(root: string, resolvedId: string): string | null {
   const cleaned = cleanResolvedId(resolvedId);
   if (!path.isAbsolute(cleaned)) return cleaned.replace(/^\/+/, "");
 
-  const relative = path.relative(root, cleaned);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
-  return relative.split(path.sep).join("/");
+  // Resolve symlinks on BOTH sides before computing the root-relative key.
+  // pnpm stores dependencies behind symlinks and the project root itself may be
+  // symlinked, so `this.resolve()` can hand back a realpath that does not share
+  // the (possibly symlinked) `root` prefix. Without this, `path.relative` yields
+  // a `../…` escape, the module is dropped, and the preload silently disappears
+  // — exactly in vinext's primary pnpm/Cloudflare setups. Reuses the same
+  // realpath-candidate strategy as the SSR-manifest module-id normaliser.
+  const rootCandidates = new Set<string>([root]);
+  const realRoot = tryRealpathSync(root);
+  if (realRoot) rootCandidates.add(realRoot);
+
+  const moduleCandidates = new Set<string>([cleaned]);
+  const realCleaned = tryRealpathSync(cleaned);
+  if (realCleaned) moduleCandidates.add(realCleaned.replace(/\\/g, "/"));
+
+  for (const rootCandidate of rootCandidates) {
+    for (const moduleCandidate of moduleCandidates) {
+      const relative = relativeWithinRoot(rootCandidate, moduleCandidate);
+      if (relative) return relative;
+    }
+  }
+  return null;
 }
 
 async function resolveManifestModuleIds(
@@ -501,7 +518,6 @@ function shouldSkipCall(firstArg: unknown, secondArg: unknown): boolean {
 
 function applyLoadableGenerated(
   output: MagicString,
-  code: string,
   callNode: AstRecord,
   moduleIds: readonly string[],
 ): boolean {
@@ -518,7 +534,7 @@ function applyLoadableGenerated(
   }
 
   if (secondArg === undefined) {
-    return insertSecondOptionsArgument(output, code, callNode, firstArg, `{ ${property} }`);
+    return insertSecondOptionsArgument(output, firstArg, `{ ${property} }`);
   }
 
   if (isRecord(secondArg) && getString(secondArg, "type") === "ObjectExpression") {
@@ -538,6 +554,13 @@ export async function transformNextDynamicPreloadMetadata(
 
   let ast: unknown;
   try {
+    // `parseAst` is Vite's bundled oxc parser in plain-JS mode — it does NOT
+    // accept JSX or TS syntax. This is correct ONLY because the plugin runs as a
+    // normal (non-`enforce`) transform, i.e. AFTER Vite's built-in JSX/TS strip,
+    // so `code` here is already plain JS. If this plugin is ever given
+    // `enforce: "pre"` it would receive raw `.tsx` source, `parseAst` would
+    // throw, and (because we swallow the error below) the feature would silently
+    // no-op for every JSX/TS file. Keep it unenforced — see the plugin factory.
     ast = parseAst(code);
   } catch {
     return null;
@@ -550,17 +573,25 @@ export async function transformNextDynamicPreloadMetadata(
   let changed = false;
   const pending: Promise<void>[] = [];
 
-  // Mutations are safe: microtask callbacks from Promise.all run sequentially
-  // on the JS microtask queue, so no two .then() callbacks overlap.
+  // MagicString edits are safe to issue from out-of-order `.then()` callbacks:
+  // every edit addresses ORIGINAL source offsets (not the evolving output) and
+  // each `dynamic()` boundary edits a region disjoint from every other (we only
+  // append after an argument / inside an options object), so insertion order is
+  // irrelevant. Promise ordering is NOT what makes this correct.
   visitDynamicCalls(ast, dynamicLocals, (node) => {
     const args = getArray(node, "arguments");
+    // Match Next.js's react-loadable plugin, which throws on >2 arguments.
+    if (args.length > 2) {
+      throw new Error(`next/dynamic only accepts 2 arguments (in ${id})`);
+    }
+
     const specifiers = collectImportSpecifiers(dynamicLoaderNode(args[0]));
     if (specifiers.length === 0) return;
 
     pending.push(
       resolveManifestModuleIds(specifiers, id, root, resolveDynamicImport).then((moduleIds) => {
         if (moduleIds.length === 0) return;
-        if (applyLoadableGenerated(output, code, node, moduleIds)) {
+        if (applyLoadableGenerated(output, node, moduleIds)) {
           changed = true;
         }
       }),
@@ -581,6 +612,9 @@ export function createDynamicPreloadMetadataPlugin(): Plugin {
 
   return {
     name: "vinext:dynamic-preload-metadata",
+    // Intentionally NOT `enforce: "pre"`: the transform must run after Vite's
+    // built-in JSX/TS stripping so `parseAst` (plain-JS oxc) can parse the code.
+    // See the parse note in `transformNextDynamicPreloadMetadata`.
     configResolved(config) {
       root = config.root;
     },

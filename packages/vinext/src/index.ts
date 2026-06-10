@@ -125,7 +125,10 @@ import {
   createLocalFontsPlugin,
 } from "./plugins/fonts.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
-import { computeClientRuntimeMetadata } from "./utils/client-runtime-metadata.js";
+import {
+  computeClientRuntimeMetadata,
+  buildRuntimeGlobalsScript,
+} from "./utils/client-runtime-metadata.js";
 import {
   VINEXT_CLIENT_ENTRY_MANIFEST,
   type ClientEntryManifest,
@@ -4700,37 +4703,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // the Pages client entry global.
             const workerEntry = path.resolve(distDir, "server", "index.js");
 
-            if (
-              fs.existsSync(workerEntry) &&
-              (lazyChunksData ||
-                dynamicPreloadsData ||
-                ssrManifestData ||
-                (hasPagesDir && clientEntryFile))
-            ) {
-              let code = fs.readFileSync(workerEntry, "utf-8");
-              const globals: string[] = [];
-              if (hasPagesDir && clientEntryFile) {
-                globals.push(
-                  `globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`,
-                );
+            if (fs.existsSync(workerEntry)) {
+              // `clientEntryFile` is only populated for mixed app+pages builds
+              // (computeClientRuntimeMetadata was asked for "pages-client-entry");
+              // pure App Router gets its client entry via the RSC plugin.
+              const script = buildRuntimeGlobalsScript({
+                clientEntryFile,
+                ssrManifest: ssrManifestData,
+                lazyChunks: lazyChunksData,
+                dynamicPreloads: dynamicPreloadsData,
+              });
+              if (script) {
+                const code = fs.readFileSync(workerEntry, "utf-8");
+                fs.writeFileSync(workerEntry, script + "\n" + code);
               }
-              if (ssrManifestData) {
-                globals.push(
-                  `globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`,
-                );
-              }
-              if (lazyChunksData) {
-                globals.push(
-                  `globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`,
-                );
-              }
-              if (dynamicPreloadsData) {
-                globals.push(
-                  `globalThis.__VINEXT_DYNAMIC_PRELOADS__ = ${JSON.stringify(dynamicPreloadsData)};`,
-                );
-              }
-              code = globals.join("\n") + "\n" + code;
-              fs.writeFileSync(workerEntry, code);
             }
           } else {
             // Pages Router: find worker output by scanning dist/ for a
@@ -4753,31 +4739,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             if (!fs.existsSync(workerEntry)) return;
 
             // Prepend globals to worker entry
-            if (clientEntryFile || ssrManifestData || lazyChunksData || dynamicPreloadsData) {
-              let code = fs.readFileSync(workerEntry, "utf-8");
-              const globals: string[] = [];
-              if (clientEntryFile) {
-                globals.push(
-                  `globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`,
-                );
-              }
-              if (ssrManifestData) {
-                globals.push(
-                  `globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`,
-                );
-              }
-              if (lazyChunksData) {
-                globals.push(
-                  `globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`,
-                );
-              }
-              if (dynamicPreloadsData) {
-                globals.push(
-                  `globalThis.__VINEXT_DYNAMIC_PRELOADS__ = ${JSON.stringify(dynamicPreloadsData)};`,
-                );
-              }
-              code = globals.join("\n") + "\n" + code;
-              fs.writeFileSync(workerEntry, code);
+            const script = buildRuntimeGlobalsScript({
+              clientEntryFile,
+              ssrManifest: ssrManifestData,
+              lazyChunks: lazyChunksData,
+              dynamicPreloads: dynamicPreloadsData,
+            });
+            if (script) {
+              const code = fs.readFileSync(workerEntry, "utf-8");
+              fs.writeFileSync(workerEntry, script + "\n" + code);
             }
           }
 

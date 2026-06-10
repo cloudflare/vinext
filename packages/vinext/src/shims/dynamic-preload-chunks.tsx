@@ -16,6 +16,13 @@
  * regardless of whether the dynamic() call site is a Server or Client
  * Component. This mirrors Next.js's <PreloadChunks> ('use client') and vinext's
  * own next/script shim.
+ *
+ * Deliberate divergence from Next.js: for CSS we render
+ * `<link rel="stylesheet">` WITHOUT `as="style"`. Next.js emits `as="style"`,
+ * but per the HTML spec `as` is only meaningful on `rel="preload"`/`modulepreload`
+ * — on `rel="stylesheet"` it is ignored by browsers and is semantically wrong.
+ * React keys stylesheet resources on href + precedence, not `as`, so omitting it
+ * is safe. This is an intentional, documented difference, not a parity bug.
  */
 import React from "react";
 import * as ReactDOM from "react-dom";
@@ -39,6 +46,12 @@ function resolveDynamicPreloadFiles(moduleIds: readonly string[] | undefined): s
   const preloadMap = globalThis.__VINEXT_DYNAMIC_PRELOADS__;
   if (!preloadMap) return [];
 
+  // NB: a missing key is NOT necessarily an error — a Server Component that
+  // dynamically imports another Server Component has no client chunk and so is
+  // legitimately absent from the map. We therefore can't reliably warn on a miss
+  // at runtime without false positives; key-space integrity is instead guarded
+  // by the realpath-normalising module-ID resolver (dynamic-preload-metadata.ts)
+  // and the production round-trip tests.
   const files: string[] = [];
   const seen = new Set<string>();
   for (const moduleId of moduleIds) {
@@ -54,6 +67,11 @@ function resolveDynamicPreloadFiles(moduleIds: readonly string[] | undefined): s
 
 export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
   const nonce = useScriptNonce();
+  // Decouple correctness from the global's client-absence: this only ever does
+  // work during SSR. On the browser client there is nothing to preload (the
+  // chunks are already being fetched), matching Next.js's `typeof window` guard.
+  // Placed after the (unconditional) hook to keep hook order stable.
+  if (typeof window !== "undefined") return null;
   const files = resolveDynamicPreloadFiles(props.moduleIds);
   if (files.length === 0) return null;
 

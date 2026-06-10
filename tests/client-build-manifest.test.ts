@@ -367,9 +367,11 @@ describe("computeClientRuntimeMetadata", () => {
       assetPrefix: "/cdn",
       includeClientEntry: true,
     });
+    // lazyChunks stay base-only (SSR-manifest key-space for the modulepreload
+    // exclusion); only dynamicPreloads get the assetPrefix.
     expect(result).toEqual({
       clientEntryFile: "_next/static/entry-abc123.js",
-      lazyChunks: ["cdn/_next/static/lazy-ghi789.js"],
+      lazyChunks: ["_next/static/lazy-ghi789.js"],
       dynamicPreloads: {
         LazyComponent: ["cdn/_next/static/lazy-ghi789.js", "cdn/_next/static/lazy-jkl012.css"],
       },
@@ -387,9 +389,13 @@ describe("computeClientRuntimeMetadata", () => {
       assetPrefix: "https://cdn.example.com/assets",
       includeClientEntry: true,
     });
+    // lazyChunks must NOT take an absolute-URL prefix — the Pages Router
+    // modulepreload-exclusion compares them against base-relative SSR-manifest
+    // values, so an absolute URL here would leak lazy chunks into modulepreload.
+    // Only dynamicPreloads (real <link> hrefs) get the absolute prefix.
     expect(result).toEqual({
       clientEntryFile: "_next/static/entry-abc123.js",
-      lazyChunks: ["https://cdn.example.com/assets/_next/static/lazy-ghi789.js"],
+      lazyChunks: ["_next/static/lazy-ghi789.js"],
       dynamicPreloads: {
         LazyComponent: [
           "https://cdn.example.com/assets/_next/static/lazy-ghi789.js",
@@ -472,7 +478,7 @@ describe("computeClientRuntimeMetadata", () => {
     expect(result.lazyChunks).toBeDefined();
   });
 
-  it("lazy chunks and dynamic preloads use the same URL normalisation path", async () => {
+  it("normalises lazy chunks (basePath only) and dynamic preloads (assetPrefix) into distinct key-spaces", async () => {
     await fsp.writeFile(
       path.join(clientDir, ".vite", "manifest.json"),
       JSON.stringify(baseManifest),
@@ -483,10 +489,14 @@ describe("computeClientRuntimeMetadata", () => {
       assetPrefix: "/cdn",
       includeClientEntry: true,
     });
-    // Both lazyChunks and dynamicPreloads pass through the same
-    // manifestFileWithAssetPrefix, so the same chunk file gets the
-    // identical URL regardless of which computation surface produced it.
-    expect(result.lazyChunks).toContain("cdn/_next/static/lazy-ghi789.js");
+    // Regression guard for the absolute/path assetPrefix lazy-chunk leak: the two
+    // consumers expect DIFFERENT key-spaces, so the same source chunk is
+    // normalised differently. lazyChunks keep the SSR-manifest key-space
+    // (basePath only) so the Pages Router modulepreload-exclusion membership test
+    // matches; dynamicPreloads get the full assetPrefix because they render real
+    // <link> hrefs.
+    expect(result.lazyChunks).toEqual(["docs/_next/static/lazy-ghi789.js"]);
     expect(result.dynamicPreloads!.LazyComponent).toContain("cdn/_next/static/lazy-ghi789.js");
+    expect(result.dynamicPreloads!.LazyComponent).not.toContain("docs/_next/static/lazy-ghi789.js");
   });
 });

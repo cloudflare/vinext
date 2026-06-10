@@ -1612,6 +1612,92 @@ describe("next/dynamic preload metadata transform", () => {
 
     expect(result).toBeNull();
   });
+
+  it("injects metadata into nested dynamic() calls without clobbering each other", async () => {
+    // Guards the MagicString disjoint-region invariant: the inner call edits a
+    // region inside the outer call's options object; both must land intact.
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const Outer = dynamic(() => import("./dynamic-widget"), {`,
+      `  loading: dynamic(() => import("./named")),`,
+      `});`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/named.tsx"] }`);
+    // The output must still parse (disjoint edits produced valid JS).
+    expect(() => parseAst(result!.code)).not.toThrow();
+  });
+
+  it("throws when a dynamic() call has more than 2 arguments (Next.js parity)", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const W = dynamic(() => import("./dynamic-widget"), {}, "extra");`,
+    ].join("\n");
+
+    await expect(
+      _transformNextDynamicPreloadMetadata(code, importer, root, resolveDynamicImport),
+    ).rejects.toThrow(/only accepts 2 arguments/);
+  });
+
+  it("preserves a comment containing a comma between the loader and close paren", async () => {
+    // Regression: the previous substring-`,` scan overwrote this region and ate
+    // the comment. Insertion now happens right after the first argument.
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const W = dynamic(() => import("./dynamic-widget") /* trailing , comment */);`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).toContain(`/* trailing , comment */`);
+    expect(() => parseAst(result!.code)).not.toThrow();
+  });
+
+  it("normalises a symlinked resolved path to the real root-relative manifest key", async () => {
+    // pnpm/Cloudflare resolve modules through symlinks; the resolved id may not
+    // share the (possibly symlinked) root prefix. Without realpath normalisation
+    // the module is dropped and the preload silently disappears.
+    const realRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-dpm-real-"));
+    const linkParent = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-dpm-link-"));
+    const linkRoot = path.join(linkParent, "root");
+    try {
+      await fsp.mkdir(path.join(realRoot, "app"), { recursive: true });
+      await fsp.writeFile(path.join(realRoot, "app", "widget.tsx"), "export default () => null;");
+      await fsp.symlink(realRoot, linkRoot, "dir");
+
+      const code = [
+        `import dynamic from "next/dynamic";`,
+        `const W = dynamic(() => import("./app/widget"));`,
+      ].join("\n");
+
+      // root = SYMLINK path; resolver returns the REAL path (the mismatch case).
+      const result = await _transformNextDynamicPreloadMetadata(
+        code,
+        path.join(linkRoot, "page.tsx"),
+        linkRoot,
+        async () => path.join(realRoot, "app", "widget.tsx"),
+      );
+
+      expect(result?.code).toContain(`loadableGenerated: { modules: ["app/widget.tsx"] }`);
+    } finally {
+      await fsp.rm(realRoot, { recursive: true, force: true });
+      await fsp.rm(linkParent, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("augmentSsrManifestFromBundle", () => {

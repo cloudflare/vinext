@@ -354,6 +354,10 @@ describe("App Router Production server (startProdServer)", () => {
     );
 
     const html = await res.text();
+    // Positive sanity: the page actually rendered (otherwise the negative
+    // assertion below could pass for the wrong reason — a blank/errored page).
+    expect(html).toContain("static-text");
+
     // The DynamicPreloadChunks signature is rel="preload" as="script"
     // fetchPriority="low" — route bootstrap uses modulepreload instead, so this
     // matches only dynamic-boundary preloads.
