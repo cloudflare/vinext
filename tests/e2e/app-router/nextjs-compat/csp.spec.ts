@@ -58,9 +58,11 @@ test.describe("Next.js compat: CSP nonce (browser)", () => {
   });
 
   // Server Component call site: dynamic() is called from a pure RSC page that
-  // lazy-loads a client widget. The dynamic preload component must render in the
-  // SSR pass (it is "use client") so the nonce is applied; the lazy chunk then
-  // loads under `strict-dynamic` and hydrates without a CSP violation.
+  // lazy-loads a client widget. In DEV (this project) no preload <link> is
+  // emitted, so this verifies only that the lazy chunk loads under
+  // `strict-dynamic` and the boundary hydrates with no CSP console violation.
+  // The nonce-on-preload assertion for this exact route lives in the prod-server
+  // Vitest suite (tests/app-router-production-server.test.ts).
   test("next/dynamic from a Server Component call site hydrates cleanly under a CSP nonce", async ({
     page,
     consoleErrors,

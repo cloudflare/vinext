@@ -432,21 +432,38 @@ function appendObjectProperty(
   return true;
 }
 
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
 function insertSecondOptionsArgument(
   output: MagicString,
+  code: string,
+  callNode: AstRecord,
   firstArg: AstRecord,
   optionsLiteral: string,
 ): boolean {
+  const callEnd = getNumber(callNode, "end");
   const firstArgEnd = getNumber(firstArg, "end");
-  if (firstArgEnd === null) return false;
+  if (callEnd === null || firstArgEnd === null) return false;
 
-  // Always insert immediately after the first argument. This is comment- and
-  // whitespace-safe: any text between the first arg and the close paren (a
-  // trailing comma, whitespace, or a comment) is preserved, and a pre-existing
-  // trailing comma simply becomes a trailing comma after our inserted argument
-  // (valid JS), e.g. `dynamic(loader,)` -> `dynamic(loader, { … },)`. Avoids the
-  // previous substring-`,`-scan that ate commas living inside comments.
-  output.appendLeft(firstArgEnd, `, ${optionsLiteral}`);
+  // Insert just before the call's closing paren (AST `end` is exclusive, so
+  // `callEnd - 1` is the `)`). This is PAREN-SAFE: a parenthesized first
+  // argument such as `dynamic((() => import("./x")))` reports its `end` BEFORE
+  // the wrapping paren, so inserting at the first arg's end would land inside
+  // those parens and turn the loader into a sequence expression — silently
+  // dropping it. The call's close paren is always past the whole argument list.
+  const closeParen = callEnd - 1;
+
+  // Decide the separator with a COMMENT-AWARE trailing-comma check: strip
+  // comments from the gap between the first argument and the close paren, then
+  // look for a real trailing comma. A pre-existing trailing comma
+  // (`dynamic(loader,)`) must NOT get a second one (`,,` is a syntax error), and
+  // a comma living inside a comment must NOT be mistaken for a real one (the old
+  // substring scan overwrote — and thus ate — such comments).
+  const between = stripComments(code.slice(firstArgEnd, closeParen)).trimEnd();
+  const separator = between.endsWith(",") ? " " : ", ";
+  output.appendLeft(closeParen, `${separator}${optionsLiteral}`);
   return true;
 }
 
@@ -463,6 +480,27 @@ function cleanResolvedId(id: string): string {
     .replace(/\\/g, "/");
 }
 
+// `toManifestModuleId` runs once per resolved specifier but `root` is constant
+// for the whole build, so memoise its realpath instead of stat-ing the FS on
+// every call.
+const rootRealpathCache = new Map<string, string | null>();
+function cachedRootRealpath(root: string): string | null {
+  if (!rootRealpathCache.has(root)) {
+    rootRealpathCache.set(root, tryRealpathSync(root));
+  }
+  return rootRealpathCache.get(root) ?? null;
+}
+
+/** `code` offset -> human `:line:column` (1-based), for build error messages. */
+function formatNodeLocation(code: string, node: AstRecord): string {
+  const start = getNumber(node, "start");
+  if (start === null) return "";
+  const before = code.slice(0, start);
+  const line = before.split("\n").length;
+  const column = start - before.lastIndexOf("\n");
+  return `:${line}:${column}`;
+}
+
 function toManifestModuleId(root: string, resolvedId: string): string | null {
   const cleaned = cleanResolvedId(resolvedId);
   if (!path.isAbsolute(cleaned)) return cleaned.replace(/^\/+/, "");
@@ -474,8 +512,14 @@ function toManifestModuleId(root: string, resolvedId: string): string | null {
   // a `../…` escape, the module is dropped, and the preload silently disappears
   // — exactly in vinext's primary pnpm/Cloudflare setups. Reuses the same
   // realpath-candidate strategy as the SSR-manifest module-id normaliser.
+  //
+  // NB: this realpaths both sides, while the preload map is keyed by Vite's raw
+  // manifest key (`computeDynamicImportPreloads`). They agree because Vite's
+  // default `resolve.preserveSymlinks: false` already emits realpath-relative
+  // manifest keys; under `preserveSymlinks: true` the two key-spaces could
+  // diverge (the lookup would miss and the preload would be skipped — no crash).
   const rootCandidates = new Set<string>([root]);
-  const realRoot = tryRealpathSync(root);
+  const realRoot = cachedRootRealpath(root);
   if (realRoot) rootCandidates.add(realRoot);
 
   const moduleCandidates = new Set<string>([cleaned]);
@@ -518,6 +562,7 @@ function shouldSkipCall(firstArg: unknown, secondArg: unknown): boolean {
 
 function applyLoadableGenerated(
   output: MagicString,
+  code: string,
   callNode: AstRecord,
   moduleIds: readonly string[],
 ): boolean {
@@ -534,7 +579,7 @@ function applyLoadableGenerated(
   }
 
   if (secondArg === undefined) {
-    return insertSecondOptionsArgument(output, firstArg, `{ ${property} }`);
+    return insertSecondOptionsArgument(output, code, callNode, firstArg, `{ ${property} }`);
   }
 
   if (isRecord(secondArg) && getString(secondArg, "type") === "ObjectExpression") {
@@ -562,7 +607,15 @@ export async function transformNextDynamicPreloadMetadata(
     // throw, and (because we swallow the error below) the feature would silently
     // no-op for every JSX/TS file. Keep it unenforced — see the plugin factory.
     ast = parseAst(code);
-  } catch {
+  } catch (error) {
+    // Distinguish "no dynamic() calls" (the common early return below) from a
+    // genuine parse failure. If this fires for valid source, the ordering
+    // invariant above has been violated and the feature silently no-ops for
+    // every affected file — gate a diagnostic behind DEBUG to surface that
+    // without adding noise to normal builds.
+    if (typeof process !== "undefined" && process.env?.DEBUG?.includes("vinext")) {
+      console.debug(`[vinext] dynamic-preload-metadata: failed to parse ${id}:`, error);
+    }
     return null;
   }
 
@@ -582,7 +635,9 @@ export async function transformNextDynamicPreloadMetadata(
     const args = getArray(node, "arguments");
     // Match Next.js's react-loadable plugin, which throws on >2 arguments.
     if (args.length > 2) {
-      throw new Error(`next/dynamic only accepts 2 arguments (in ${id})`);
+      throw new Error(
+        `next/dynamic only accepts 2 arguments (${id}${formatNodeLocation(code, node)})`,
+      );
     }
 
     const specifiers = collectImportSpecifiers(dynamicLoaderNode(args[0]));
@@ -591,7 +646,7 @@ export async function transformNextDynamicPreloadMetadata(
     pending.push(
       resolveManifestModuleIds(specifiers, id, root, resolveDynamicImport).then((moduleIds) => {
         if (moduleIds.length === 0) return;
-        if (applyLoadableGenerated(output, node, moduleIds)) {
+        if (applyLoadableGenerated(output, code, node, moduleIds)) {
           changed = true;
         }
       }),

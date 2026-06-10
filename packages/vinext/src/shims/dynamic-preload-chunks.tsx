@@ -67,10 +67,12 @@ function resolveDynamicPreloadFiles(moduleIds: readonly string[] | undefined): s
 
 export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
   const nonce = useScriptNonce();
-  // Decouple correctness from the global's client-absence: this only ever does
-  // work during SSR. On the browser client there is nothing to preload (the
-  // chunks are already being fetched), matching Next.js's `typeof window` guard.
-  // Placed after the (unconditional) hook to keep hook order stable.
+  // Defensive guard matching Next.js's <PreloadChunks> `typeof window` check:
+  // this component only does work during SSR. The runtime global is server-only
+  // today (so the client already returns null via the empty map), so this is
+  // belt-and-suspenders that also future-proofs against any client-side leak of
+  // the preload map. Placed AFTER the (unconditional) hook to keep hook order
+  // stable across renders.
   if (typeof window !== "undefined") return null;
   const files = resolveDynamicPreloadFiles(props.moduleIds);
   if (files.length === 0) return null;

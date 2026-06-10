@@ -478,6 +478,33 @@ describe("computeClientRuntimeMetadata", () => {
     expect(result.lazyChunks).toBeDefined();
   });
 
+  it("falls back to on-disk client entry under _next/static/chunks/ (real build layout)", async () => {
+    // The real build emits client JS under `_next/static/chunks/`
+    // (createClientFileNameConfig), so the on-disk fallback must recurse into it.
+    // A flat scan of `_next/static` would miss the entry entirely.
+    await fsp.mkdir(path.join(clientDir, "_next", "static", "chunks"), { recursive: true });
+    await fsp.writeFile(
+      path.join(clientDir, "_next", "static", "chunks", "vinext-client-entry-abcd.js"),
+      "",
+    );
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "lazy-chunk.js": {
+          file: "_next/static/chunks/lazy-1234.js",
+          isDynamicEntry: true,
+        },
+      }),
+    );
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "",
+      includeClientEntry: true,
+    });
+    expect(result.clientEntryFile).toBe("_next/static/chunks/vinext-client-entry-abcd.js");
+  });
+
   it("normalises lazy chunks (basePath only) and dynamic preloads (assetPrefix) into distinct key-spaces", async () => {
     await fsp.writeFile(
       path.join(clientDir, ".vite", "manifest.json"),

@@ -25,6 +25,9 @@ import {
   computeLazyChunks,
 } from "../packages/vinext/src/utils/lazy-chunks.js";
 import { transformNextDynamicPreloadMetadata as _transformNextDynamicPreloadMetadata } from "../packages/vinext/src/plugins/dynamic-preload-metadata.js";
+import { collectAssetTags } from "../packages/vinext/src/server/pages-asset-tags.js";
+import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
+import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
 
 // Create a clientManualChunks instance with a test shims directory.
@@ -1649,7 +1652,7 @@ describe("next/dynamic preload metadata transform", () => {
 
   it("preserves a comment containing a comma between the loader and close paren", async () => {
     // Regression: the previous substring-`,` scan overwrote this region and ate
-    // the comment. Insertion now happens right after the first argument.
+    // the comment. The comment-aware trailing-comma check now leaves it intact.
     const code = [
       `import dynamic from "next/dynamic";`,
       `const W = dynamic(() => import("./dynamic-widget") /* trailing , comment */);`,
@@ -1665,6 +1668,86 @@ describe("next/dynamic preload metadata transform", () => {
     expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
     expect(result?.code).toContain(`/* trailing , comment */`);
     expect(() => parseAst(result!.code)).not.toThrow();
+  });
+
+  it("does not corrupt a parenthesized loader into a sequence expression", async () => {
+    // Regression guard: oxc reports an arrow's `end` BEFORE a wrapping paren, so
+    // inserting the options at firstArg.end lands inside the parens and collapses
+    // the loader into a sequence expression (dropping it). Insertion must happen
+    // at the call's closing paren instead.
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const W = dynamic((() => import("./dynamic-widget")));`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+
+    // The dynamic() call must still receive TWO arguments and the first must be
+    // the loader (an arrow), not a SequenceExpression.
+    const ast = parseAst(result!.code) as unknown;
+    let call: { arguments?: { type?: string }[] } | undefined;
+    const visit = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      const n = node as Record<string, unknown>;
+      const callee = n.callee as Record<string, unknown> | undefined;
+      if (
+        n.type === "CallExpression" &&
+        callee?.type === "Identifier" &&
+        callee.name === "dynamic"
+      ) {
+        call = n as { arguments?: { type?: string }[] };
+      }
+      for (const value of Object.values(n)) {
+        if (Array.isArray(value)) value.forEach(visit);
+        else if (value && typeof value === "object") visit(value);
+      }
+    };
+    visit(ast);
+    expect(call?.arguments).toHaveLength(2);
+    expect(call?.arguments?.[0]?.type).not.toBe("SequenceExpression");
+  });
+
+  it("does not emit a double comma when the loader already has a trailing comma", async () => {
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `const W = dynamic(() => import("./dynamic-widget"),);`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result?.code).toContain(`loadableGenerated: { modules: ["app/dynamic-widget.tsx"] }`);
+    expect(result?.code).not.toMatch(/,\s*,/);
+    expect(() => parseAst(result!.code)).not.toThrow();
+  });
+
+  it("does not throw on >2 args when the dynamic binding is shadowed", async () => {
+    // The >2-argument throw must apply ONLY to the real next/dynamic import, not
+    // a shadowed local binding of the same name.
+    const code = [
+      `import dynamic from "next/dynamic";`,
+      `function make(dynamic) { return dynamic(a, b, c); }`,
+    ].join("\n");
+
+    const result = await _transformNextDynamicPreloadMetadata(
+      code,
+      importer,
+      root,
+      resolveDynamicImport,
+    );
+
+    expect(result).toBeNull();
   });
 
   it("normalises a symlinked resolved path to the real root-relative manifest key", async () => {
@@ -1900,41 +1983,29 @@ describe("augmentSsrManifestFromBundle", () => {
 // ─── collectAssetTags lazy filtering (integration) ────────────────────────────
 
 describe("collectAssetTags lazy chunk filtering", () => {
-  // collectAssetTags lives inside the generated virtual server entry and
-  // can't be imported directly. These tests verify the filtering behavior
-  // by simulating what collectAssetTags does: build a lazy set from
-  // computeLazyChunks output, then filter asset tags accordingly.
-
-  /**
-   * Simulates the collectAssetTags filtering logic:
-   * - Normalizes leading slashes from SSR manifest values
-   * - CSS files always get a <link rel="stylesheet"> tag
-   * - Non-lazy JS files get both modulepreload and script tags
-   * - Lazy JS files are skipped entirely
-   *
-   * Must match the actual collectAssetTags implementation in index.ts.
-   */
+  // Drive the REAL exported `collectAssetTags` (server/pages-asset-tags.ts) so
+  // these tests can't drift from production. The thin adapter keeps the original
+  // `(ssrManifestFiles, lazyChunks) -> string[]` shape: it wires the lazy set
+  // through the `globalThis.__VINEXT_LAZY_CHUNKS__` global the function actually
+  // reads, feeds the files as a single page module, and disables optimized
+  // loading (no `defer`) to match the legacy assertions.
   function simulateAssetTagFiltering(ssrManifestFiles: string[], lazyChunks: string[]): string[] {
-    const lazySet = new Set(lazyChunks);
-    const tags: string[] = [];
-    const seen = new Set<string>();
-
-    for (let tf of ssrManifestFiles) {
-      // Normalize: strip leading slash from SSR manifest values to avoid
-      // producing protocol-relative URLs (e.g. "//assets/chunk.js") and
-      // to ensure consistent matching against lazySet and seen set.
-      if (tf.startsWith("/")) tf = tf.slice(1);
-      if (seen.has(tf)) continue;
-      seen.add(tf);
-      if (tf.endsWith(".css")) {
-        tags.push(`<link rel="stylesheet" href="/${tf}" />`);
-      } else if (tf.endsWith(".js")) {
-        if (lazySet.has(tf)) continue;
-        tags.push(`<link rel="modulepreload" href="/${tf}" />`);
-        tags.push(`<script type="module" src="/${tf}" crossorigin></script>`);
-      }
+    const prevLazy = globalThis.__VINEXT_LAZY_CHUNKS__;
+    const prevEntry = globalThis.__VINEXT_CLIENT_ENTRY__;
+    globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks;
+    delete globalThis.__VINEXT_CLIENT_ENTRY__;
+    try {
+      const html = collectAssetTags({
+        manifest: { "page.js": ssrManifestFiles },
+        moduleIds: ["page.js"],
+        disableOptimizedLoading: true,
+      });
+      return html ? html.split("\n  ") : [];
+    } finally {
+      if (prevLazy === undefined) delete globalThis.__VINEXT_LAZY_CHUNKS__;
+      else globalThis.__VINEXT_LAZY_CHUNKS__ = prevLazy;
+      if (prevEntry !== undefined) globalThis.__VINEXT_CLIENT_ENTRY__ = prevEntry;
     }
-    return tags;
   }
 
   it("excludes lazy JS chunks from modulepreload and script tags", () => {
@@ -2131,6 +2202,58 @@ describe("collectAssetTags lazy chunk filtering", () => {
 
     // framework.js should also appear with correct path
     expect(tags).toContain('<link rel="modulepreload" href="/assets/framework.js" />');
+  });
+
+  it("excludes lazy chunks from modulepreload end-to-end under basePath + assetPrefix", async () => {
+    // Round-trip regression guard for the lazy-chunk key-space fix. It wires the
+    // real PRODUCER (computeClientRuntimeMetadata, reading a manifest from disk)
+    // to the real CONSUMER (collectAssetTags). If lazy chunks were ever
+    // asset-prefixed again, their key-space would diverge from the base-relative
+    // SSR-manifest values and the lazy chunk would leak into <link rel=modulepreload>.
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-roundtrip-"));
+    const clientDir = path.join(tmpDir, "client");
+    await fsp.mkdir(path.join(clientDir, ".vite"), { recursive: true });
+    // A real assetPrefix build bakes the prefix into the manifest `file` fields
+    // (build.assetsDir = "<prefix>/_next/static").
+    const manifest = {
+      "virtual:vinext-client-entry": {
+        file: "cdn/_next/static/chunks/entry-abc.js",
+        isEntry: true,
+        dynamicImports: ["src/widget.tsx"],
+      },
+      "src/widget.tsx": {
+        file: "cdn/_next/static/chunks/widget-def.js",
+        isDynamicEntry: true,
+      },
+    };
+    await fsp.writeFile(path.join(clientDir, ".vite", "manifest.json"), JSON.stringify(manifest));
+    try {
+      const metadata = computeClientRuntimeMetadata({
+        clientDir,
+        assetBase: "/docs/",
+        assetPrefix: "/cdn",
+      });
+      // Producer: lazy chunks are base-only (NOT asset-prefixed) — the on-disk
+      // file already carries the cdn prefix and base "/docs/" is prepended.
+      expect(metadata.lazyChunks).toEqual(["docs/cdn/_next/static/chunks/widget-def.js"]);
+
+      // The SSR manifest stores the SAME base-normalized values (the backfill
+      // uses manifestFileWithBase(file, base)); derive them identically.
+      const ssrFiles = [
+        manifestFileWithBase(manifest["virtual:vinext-client-entry"].file, "/docs/"),
+        manifestFileWithBase(manifest["src/widget.tsx"].file, "/docs/"),
+      ];
+
+      // Consumer: the real collectAssetTags must exclude the lazy widget chunk
+      // while keeping the eager entry chunk.
+      const tags = simulateAssetTagFiltering(ssrFiles, metadata.lazyChunks!);
+      expect(tags).toContain(
+        '<link rel="modulepreload" href="/docs/cdn/_next/static/chunks/entry-abc.js" />',
+      );
+      expect(tags.some((t) => t.includes("widget-def.js"))).toBe(false);
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -111,17 +111,22 @@ export function buildRuntimeGlobalsScript(input: {
   lazyChunks?: string[] | null;
   dynamicPreloads?: Record<string, string[]> | null;
 }): string {
+  // Guard on actual content, not just truthiness: `[]` and `{}` are truthy, so a
+  // caller passing an empty collection would otherwise emit a useless (and
+  // misleading) `globalThis.__VINEXT_… = []`. `computeClientRuntimeMetadata`
+  // already returns `undefined` for empties, but this keeps the helper correct
+  // for any caller.
   const globals: string[] = [];
   if (input.clientEntryFile) {
     globals.push(`globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(input.clientEntryFile)};`);
   }
-  if (input.ssrManifest) {
+  if (input.ssrManifest && Object.keys(input.ssrManifest).length > 0) {
     globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(input.ssrManifest)};`);
   }
-  if (input.lazyChunks) {
+  if (input.lazyChunks && input.lazyChunks.length > 0) {
     globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(input.lazyChunks)};`);
   }
-  if (input.dynamicPreloads) {
+  if (input.dynamicPreloads && Object.keys(input.dynamicPreloads).length > 0) {
     globals.push(
       `globalThis.__VINEXT_DYNAMIC_PRELOADS__ = ${JSON.stringify(input.dynamicPreloads)};`,
     );
