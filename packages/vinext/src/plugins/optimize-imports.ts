@@ -19,6 +19,7 @@ import path from "node:path";
 import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { getAstName } from "./ast-utils.js";
+import { normalizePathSeparators } from "../utils/path.js";
 
 /**
  * Read a file's contents, returning null on any error.
@@ -293,18 +294,18 @@ async function resolvePackageEntry(
       if (dotExport) {
         const entryPath = resolveExportsValue(dotExport, preferReactServer);
         if (entryPath) {
-          return path.resolve(pkgDir, entryPath).split(path.sep).join("/");
+          return normalizePathSeparators(path.resolve(pkgDir, entryPath));
         }
       }
     }
 
     const entryField = pkgJson.module ?? pkgJson.main;
     if (typeof entryField === "string") {
-      return path.resolve(pkgDir, entryField).split(path.sep).join("/");
+      return normalizePathSeparators(path.resolve(pkgDir, entryField));
     }
 
     const req = createRequire(path.join(projectRoot, "package.json"));
-    return req.resolve(packageName).split(path.sep).join("/");
+    return normalizePathSeparators(req.resolve(packageName));
   } catch {
     return null;
   }
