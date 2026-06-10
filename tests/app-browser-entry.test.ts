@@ -93,7 +93,10 @@ import {
   HistoryStateSnapshotCache,
   RestorableClientStateController,
 } from "../packages/vinext/src/server/app-history-state.js";
-import { resolveRscRedirectLifecycleHop } from "../packages/vinext/src/server/app-browser-rsc-redirect.js";
+import {
+  resolveRscRedirectLifecycleHop,
+  resolveStreamedRscRedirectLifecycleHop,
+} from "../packages/vinext/src/server/app-browser-rsc-redirect.js";
 import {
   applyApprovedVisibleCommit,
   approveHmrVisibleCommit,
@@ -5721,6 +5724,113 @@ describe("app browser RSC redirect lifecycle", () => {
 
     expect(decision).toEqual({
       href: "/b",
+      kind: "terminal-hard-navigation",
+      reason: "maxRedirectsExceeded",
+      redirectDepth: 2,
+    });
+  });
+
+  it("preserves streamed redirect target hashes", () => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/old#old",
+      historyUpdateMode: "replace",
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      streamedRedirectTarget: "/new#new",
+    });
+
+    expect(decision).toEqual({
+      href: "/new#new",
+      historyUpdateMode: "replace",
+      kind: "follow",
+      previousNextUrl: null,
+      redirectDepth: 1,
+    });
+  });
+
+  it("treats streamed hash-only same-path changes as redirects", () => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/same#old",
+      historyUpdateMode: "push",
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: "/feed",
+      streamedRedirectTarget: "/same#new",
+    });
+
+    expect(decision).toEqual({
+      href: "/same#new",
+      historyUpdateMode: "push",
+      kind: "follow",
+      previousNextUrl: "/feed",
+      redirectDepth: 1,
+    });
+  });
+
+  it("preserves streamed redirect visible query params and hash", () => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/source",
+      historyUpdateMode: "replace",
+      origin: "https://example.com",
+      redirectDepth: 1,
+      requestPreviousNextUrl: null,
+      streamedRedirectTarget: "/target.rsc?visible=1&_rsc=abc#details",
+    });
+
+    expect(decision).toEqual({
+      href: "/target.rsc?visible=1&_rsc=abc#details",
+      historyUpdateMode: "replace",
+      kind: "follow",
+      previousNextUrl: null,
+      redirectDepth: 2,
+    });
+  });
+
+  it("turns same-target streamed redirects into no-redirect decisions", () => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/same?tab=1#section",
+      historyUpdateMode: "replace",
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      streamedRedirectTarget: "/same?tab=1#section",
+    });
+
+    expect(decision).toEqual({ kind: "no-redirect" });
+  });
+
+  it("turns external streamed redirects into terminal hard navigations", () => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/account",
+      historyUpdateMode: "replace",
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      streamedRedirectTarget: "https://idp.example/login#step",
+    });
+
+    expect(decision).toEqual({
+      href: "https://idp.example/login#step",
+      kind: "terminal-hard-navigation",
+      reason: "externalRedirect",
+      redirectDepth: 0,
+    });
+  });
+
+  it("turns over-budget streamed redirects into terminal hard navigations", () => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/a",
+      historyUpdateMode: "replace",
+      maxRedirectDepth: 2,
+      origin: "https://example.com",
+      redirectDepth: 2,
+      requestPreviousNextUrl: null,
+      streamedRedirectTarget: "/b#target",
+    });
+
+    expect(decision).toEqual({
+      href: "/b#target",
       kind: "terminal-hard-navigation",
       reason: "maxRedirectsExceeded",
       redirectDepth: 2,

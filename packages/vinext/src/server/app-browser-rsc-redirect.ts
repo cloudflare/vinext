@@ -30,6 +30,11 @@ function toVisibleAppHref(href: string, origin: string): string {
   return `${stripRscSuffix(url.pathname)}${url.search}${url.hash}`;
 }
 
+function toStreamedRedirectVisibleAppHref(href: string, origin: string): string {
+  const url = new URL(href, origin);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 export function resolveRscRedirectLifecycleHop(options: {
   currentHref: string;
   historyUpdateMode: RscRedirectHistoryUpdateMode;
@@ -53,6 +58,53 @@ export function resolveRscRedirectLifecycleHop(options: {
   const redirectedHref = resolveHardNavigationTargetFromRscResponse(
     responseUrl.href,
     options.currentHref,
+    options.origin,
+  );
+  if (redirectedHref === toVisibleAppHref(options.currentHref, options.origin)) {
+    return { kind: "no-redirect" };
+  }
+
+  const maxRedirectDepth = options.maxRedirectDepth ?? MAX_RSC_REDIRECT_DEPTH;
+  if (options.redirectDepth >= maxRedirectDepth) {
+    return {
+      href: redirectedHref,
+      kind: "terminal-hard-navigation",
+      reason: "maxRedirectsExceeded",
+      redirectDepth: options.redirectDepth,
+    };
+  }
+
+  return {
+    href: redirectedHref,
+    historyUpdateMode: options.historyUpdateMode,
+    kind: "follow",
+    previousNextUrl: options.requestPreviousNextUrl,
+    redirectDepth: options.redirectDepth + 1,
+  };
+}
+
+export function resolveStreamedRscRedirectLifecycleHop(options: {
+  currentHref: string;
+  historyUpdateMode: Exclude<RscRedirectHistoryUpdateMode, undefined>;
+  maxRedirectDepth?: number;
+  origin: string;
+  redirectDepth: number;
+  requestPreviousNextUrl: string | null;
+  streamedRedirectTarget: string;
+}): RscRedirectLifecycleDecision {
+  const streamedRedirectUrl = new URL(options.streamedRedirectTarget, options.origin);
+
+  if (streamedRedirectUrl.origin !== options.origin) {
+    return {
+      href: streamedRedirectUrl.href,
+      kind: "terminal-hard-navigation",
+      reason: "externalRedirect",
+      redirectDepth: options.redirectDepth,
+    };
+  }
+
+  const redirectedHref = toStreamedRedirectVisibleAppHref(
+    options.streamedRedirectTarget,
     options.origin,
   );
   if (redirectedHref === toVisibleAppHref(options.currentHref, options.origin)) {
