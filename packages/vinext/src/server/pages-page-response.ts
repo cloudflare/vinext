@@ -112,6 +112,17 @@ export function etagMatches(etag: string, ifNoneMatch: string): boolean {
   return false;
 }
 
+/**
+ * Returns true when a request `Cache-Control` header asks to bypass the 304
+ * short-circuit. Mirrors the `fresh` package's check used by Next.js's
+ * `sendEtagResponse` (`/(?:^|,)\s*?no-cache\s*?(?:,|$)/`). Shared by the
+ * fresh-MISS bot path here and the ISR HIT/STALE paths in
+ * `pages-page-data.ts` so the two cannot drift.
+ */
+export function requestsNoCache(cacheControl: string | undefined): boolean {
+  return /(?:^|,)\s*no-cache\s*(?:,|$)/.test(cacheControl ?? "");
+}
+
 type PagesFontPreload = {
   href: string;
   type: string;
@@ -707,7 +718,7 @@ export async function renderPagesPageResponse(
     const fullHtml = await readStreamAsText(compositeStream);
     const etag = generatePagesETag(fullHtml);
     responseHeaders.set("ETag", etag);
-    const noCacheRequested = /(?:^|,)\s*no-cache\s*(?:,|$)/.test(options.requestCacheControl ?? "");
+    const noCacheRequested = requestsNoCache(options.requestCacheControl);
     if (!noCacheRequested && options.ifNoneMatch && etagMatches(etag, options.ifNoneMatch)) {
       return new Response(null, {
         status: 304,

@@ -11,6 +11,7 @@ import {
   etagMatches,
   generatePagesETag,
   isPagesStreamingBot,
+  requestsNoCache,
   type PagesGsspResponse,
   type PagesI18nRenderContext,
   type PagesNextDataExtras,
@@ -413,7 +414,7 @@ function applyBotETagAndCheck(
   }
   const etag = generatePagesETag(html);
   cachedResponse.headers.set("ETag", etag);
-  const noCacheRequested = /(?:^|,)\s*no-cache\s*(?:,|$)/.test(options.requestCacheControl ?? "");
+  const noCacheRequested = requestsNoCache(options.requestCacheControl);
   if (!noCacheRequested && options.ifNoneMatch && etagMatches(etag, options.ifNoneMatch)) {
     return {
       kind: "response",
