@@ -2604,7 +2604,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           return generateCacheAdaptersModule(options.cache);
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
-          return generateSsrEntry(hasPagesDir);
+          return generateSsrEntry(
+            await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher),
+            hasPagesDir,
+          );
         }
         if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
           const graph = await appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher);

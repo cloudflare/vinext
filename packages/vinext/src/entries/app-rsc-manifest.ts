@@ -142,13 +142,14 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
     // reached via lazy `{ load }` sources in generateStaticParamsMap, resolved
     // on demand at prerender time.
     if (route.pagePath) imports.getLazyLoaderVar(route.pagePath);
-    // Route handlers are always lazy: they are never referenced by
-    // generateStaticParamsMap (buildGenerateStaticParamsEntries sources only
-    // from layouts + page, never route.routePath), so unlike dynamic-route
-    // pages they have no module-load-time consumer. (Next.js route handlers can
-    // export generateStaticParams for prerendering, but vinext does not wire
-    // that into the map yet — a separate gap, unaffected by lazy loading.)
-    if (route.routePath) imports.getLazyLoaderVar(route.routePath);
+    // Route handlers (e.g. `app/api/<segment>/route.ts`) are NOT pre-registered
+    // as eager imports or lazy loaders here. Instead, the SSR entry generated
+    // by `app-ssr-entry.ts` statically imports every route handler and exposes
+    // a `loadAppRouteHandler(pattern)` resolver. The RSC manifest emits a
+    // thunk that, at runtime, asks the SSR environment to load the matching
+    // handler via `import.meta.viteRsc.loadModule("ssr", "index")`. This
+    // keeps route handler modules out of the `react-server` condition while
+    // still letting them use `react-dom/server` to build Response bodies.
     for (const layout of route.layouts) imports.getImportVar(layout);
     for (const tmpl of route.templates) imports.getImportVar(tmpl);
     if (route.loadingPath) imports.getImportVar(route.loadingPath);
@@ -269,11 +270,12 @@ ${interceptEntries.join(",\n")}
       ep ? imports.getImportVar(ep) : "null",
     );
     const errorVars = (route.errorPaths ?? []).map((ep) => imports.getImportVar(ep));
-    // Page and route handler are always lazy-loaded; hydrated onto route.page /
-    // route.routeHandler by ensureAppRouteModulesLoaded before any read.
+    // Page is always lazy-loaded; hydrated onto route.page by
+    // ensureAppRouteModulesLoaded before any read. Route handler loading is
+    // delegated to the SSR entry — see `loadRouteHandlerField` below.
     const loadPageField = route.pagePath ? imports.getLazyLoaderVar(route.pagePath) : "null";
     const loadRouteHandlerField = route.routePath
-      ? imports.getLazyLoaderVar(route.routePath)
+      ? `(async () => (await import.meta.viteRsc.loadModule("ssr", "index")).loadAppRouteHandler(${JSON.stringify(route.pattern)}))`
       : "null";
     return `  {
     __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
