@@ -263,6 +263,109 @@ describe("App Router Production server (startProdServer)", () => {
     }
   });
 
+  // Edge case: the next/dynamic() CALL SITE is a Server Component (no
+  // "use client") that lazy-loads a client component. The sibling
+  // /nextjs-compat/dynamic page only calls dynamic() from "use client" modules,
+  // which render in the SSR pass where the script-nonce context is set — so it
+  // does not cover this path.
+  //
+  // Next.js parity: <PreloadChunks> is a 'use client' component, so it renders
+  // in the SSR pass and the preload links carry the nonce regardless of whether
+  // the dynamic() call site is a Server or Client Component. vinext's
+  // DynamicPreloadChunks is NOT 'use client', so for a Server-Component call
+  // site it renders in the RSC environment where useScriptNonce() returns
+  // undefined.
+  it("preloads next/dynamic chunks with the CSP nonce when the call site is a Server Component", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic/rsc-imports-client?csp-nonce=1`);
+    expect(res.status).toBe(200);
+    // Sanity: middleware ran and applied the nonce-based CSP for this route.
+    expect(res.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+
+    const html = await res.text();
+    // Sanity: the dynamically-imported client widget actually rendered, so a
+    // client chunk exists and a preload link is expected.
+    expect(html).toContain("rsc-imports-client-widget");
+
+    const dynamicScriptPreloads =
+      html.match(
+        /<link\b(?=[^>]*\brel="preload")(?=[^>]*\bas="script")(?=[^>]*\bhref="[^"]*\/_next\/static\/chunks\/[^"]*\.js")[^>]*>/g,
+      ) ?? [];
+
+    // Parity expectation: a Server-Component call site must still emit a
+    // nonce-bearing preload for the dynamically-loaded client chunk.
+    expect(dynamicScriptPreloads.length).toBeGreaterThan(0);
+    for (const tag of dynamicScriptPreloads) {
+      expect(tag).toContain('nonce="vinext-test-nonce"');
+    }
+  });
+
+  it("preloads next/dynamic CSS with the CSP nonce from a Server Component call site", async () => {
+    // The dynamically-loaded client widget imports CSS. Next.js's <PreloadChunks>
+    // preloads dynamic CSS server-side "to avoid flash of unstyled content", so
+    // the stylesheet link must be emitted with the request nonce. React Float
+    // renders the `precedence` prop as the `data-precedence` attribute.
+    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic/rsc-imports-client?csp-nonce=1`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    const dynamicStylesheets = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+      (tag) => /\brel="stylesheet"/.test(tag) && /\bdata-precedence="dynamic"/.test(tag),
+    );
+
+    expect(dynamicStylesheets.length).toBeGreaterThan(0);
+    for (const tag of dynamicStylesheets) {
+      expect(tag).toContain('nonce="vinext-test-nonce"');
+      // The PR deliberately drops `as="style"` — `as` is only valid on
+      // rel="preload" per the HTML spec, not on rel="stylesheet".
+      expect(tag).not.toContain('as="style"');
+    }
+  });
+
+  it("emits next/dynamic chunk preloads without a nonce when no CSP is set", async () => {
+    // No ?csp-nonce → middleware applies no CSP header, so no nonce is threaded.
+    // The preload optimization is independent of CSP: the links must still be
+    // emitted, but must not carry a stray/empty nonce attribute.
+    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-security-policy")).toBeNull();
+
+    const html = await res.text();
+    const dynamicScriptPreloads =
+      html.match(
+        /<link\b(?=[^>]*\brel="preload")(?=[^>]*\bas="script")(?=[^>]*\bhref="[^"]*\/_next\/static\/chunks\/[^"]*\.js")[^>]*>/g,
+      ) ?? [];
+
+    expect(dynamicScriptPreloads.length).toBeGreaterThan(0);
+    for (const tag of dynamicScriptPreloads) {
+      expect(tag).not.toContain("nonce=");
+    }
+  });
+
+  it("does not emit a server preload for an ssr:false next/dynamic boundary", async () => {
+    // Next.js parity (lazy-dynamic/loadable.tsx): <PreloadChunks> renders only on
+    // the ssr:true path; an ssr:false boundary bails out to CSR and emits no
+    // server-side preload.
+    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic/ssr-false-only?csp-nonce=1`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+
+    const html = await res.text();
+    // The DynamicPreloadChunks signature is rel="preload" as="script"
+    // fetchPriority="low" — route bootstrap uses modulepreload instead, so this
+    // matches only dynamic-boundary preloads.
+    const dynamicScriptPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+      (tag) =>
+        /\brel="preload"/.test(tag) &&
+        /\bas="script"/.test(tag) &&
+        /\bfetchPriority="low"/.test(tag),
+    );
+    expect(dynamicScriptPreloads).toEqual([]);
+  });
+
   it("preloads rendered next/dynamic chunks with assetPrefix and the CSP nonce", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-dynamic-asset-prefix-"));
     const fixtureRoot = path.join(tmpDir, "fixture");

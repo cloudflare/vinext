@@ -20,8 +20,7 @@
  * - dynamic(() => import('./Component'), { ssr: false })
  */
 import React, { type ComponentType } from "react";
-import * as ReactDOM from "react-dom";
-import { useScriptNonce } from "./script-nonce-context.js";
+import { DynamicPreloadChunks } from "./dynamic-preload-chunks.js";
 
 type DynamicLoadingProps = {
   error?: Error | null;
@@ -100,73 +99,6 @@ function createLazyComponent<P extends object>(loader: LoaderFn<P>) {
     if (hasDefaultExport(mod)) return mod;
     return { default: mod };
   });
-}
-
-function dynamicPreloadHref(file: string): string {
-  if (
-    file.startsWith("/") ||
-    file.startsWith("http://") ||
-    file.startsWith("https://") ||
-    file.startsWith("//")
-  ) {
-    return file;
-  }
-  return `/${file}`;
-}
-
-function resolveDynamicPreloadFiles(moduleIds: readonly string[] | undefined): string[] {
-  if (!moduleIds || moduleIds.length === 0) return [];
-
-  const preloadMap = globalThis.__VINEXT_DYNAMIC_PRELOADS__;
-  if (!preloadMap) return [];
-
-  const files: string[] = [];
-  const seen = new Set<string>();
-  for (const moduleId of moduleIds) {
-    for (const file of preloadMap[moduleId] ?? []) {
-      if (seen.has(file)) continue;
-      seen.add(file);
-      files.push(file);
-    }
-  }
-
-  return files;
-}
-
-function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
-  const nonce = useScriptNonce();
-  const files = resolveDynamicPreloadFiles(props.moduleIds);
-  if (files.length === 0) return null;
-
-  const stylesheets: React.ReactNode[] = [];
-  for (const file of files) {
-    const href = dynamicPreloadHref(file);
-    if (href.endsWith(".css")) {
-      stylesheets.push(
-        React.createElement("link", {
-          key: href,
-          rel: "stylesheet",
-          href,
-          nonce,
-          precedence: "dynamic",
-        }),
-      );
-      continue;
-    }
-
-    if (href.endsWith(".js") && typeof ReactDOM.preload === "function") {
-      const preloadOptions: ReactDOM.PreloadOptions = {
-        as: "script",
-        fetchPriority: "low",
-      };
-      if (nonce !== undefined) {
-        preloadOptions.nonce = nonce;
-      }
-      ReactDOM.preload(href, preloadOptions);
-    }
-  }
-
-  return stylesheets.length > 0 ? React.createElement(React.Fragment, null, ...stylesheets) : null;
 }
 
 function useRetryableLazyComponent<P extends object>(
