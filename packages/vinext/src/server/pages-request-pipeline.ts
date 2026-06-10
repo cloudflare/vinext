@@ -34,7 +34,7 @@ import type { HeaderRecord } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
 import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pages-i18n.js";
 import { mergeRewriteQuery } from "../utils/query.js";
-import { hasBasePath } from "../utils/base-path.js";
+import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -120,6 +120,32 @@ export type PagesPipelineDeps = {
     | ((requestPathname: string, stagedHeaders: HeaderRecord) => Promise<boolean>)
     | null;
 };
+
+/**
+ * Wrap an adapter's `runMiddleware` callback so middleware receives the original
+ * (pre-basePath-stripping) URL. Adapters strip the basePath before handing the
+ * request to `runPagesRequest`, but Next.js passes the un-stripped URL to the
+ * middleware adapter so `request.nextUrl.basePath` reflects whether the URL
+ * actually had the basePath prefix. Requests outside the basePath
+ * (`hadBasePath === false`) are passed through untouched so middleware sees
+ * `nextUrl.basePath === ""` and can redirect them into the basePath
+ * (see the middleware-base-path e2e test / #1830).
+ *
+ * Shared by the Node prod server (prod-server.ts) and the generated Pages
+ * Router worker entry (deploy.ts) to keep the two adapters in sync.
+ */
+export function wrapMiddlewareWithBasePath(
+  runMiddleware: NonNullable<PagesPipelineDeps["runMiddleware"]>,
+  basePath: string,
+  hadBasePath: boolean,
+): NonNullable<PagesPipelineDeps["runMiddleware"]> {
+  if (!hadBasePath || !basePath) return runMiddleware;
+  return (request, ctx, opts) => {
+    const mwUrl = new URL(request.url);
+    mwUrl.pathname = addBasePathToPathname(mwUrl.pathname, basePath);
+    return runMiddleware(new Request(mwUrl, request), ctx, opts);
+  };
+}
 
 // The result discriminated union
 export type PagesPipelineResult =

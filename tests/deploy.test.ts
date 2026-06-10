@@ -752,11 +752,12 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("runs middleware before routing", () => {
     const content = generatePagesRouterWorkerEntry();
     // Ordering is now enforced by runPagesRequest (the pipeline owner).
-    // The worker entry wraps runMiddleware to re-add the basePath before
+    // The worker entry wraps runMiddleware via the shared
+    // wrapMiddlewareWithBasePath helper to re-add the basePath before
     // handing the request to the middleware function, then delegates via
     // runPagesRequest.
     expect(content).toContain('typeof runMiddleware === "function"');
-    expect(content).toContain("addBasePathToPathname");
+    expect(content).toContain("wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)");
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
@@ -842,7 +843,7 @@ describe("generatePagesRouterWorkerEntry", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("basePath");
     expect(content).toContain(
-      'import { addBasePathToPathname, hasBasePath, stripBasePath } from "vinext/utils/base-path"',
+      'import { hasBasePath, stripBasePath } from "vinext/utils/base-path"',
     );
     expect(content).toContain("const stripped = stripBasePath(pathname, basePath);");
     // After stripping, a new request with the stripped URL must be created

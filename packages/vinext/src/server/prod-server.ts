@@ -39,6 +39,7 @@ import { filterInternalHeaders, isOpenRedirectShaped } from "./request-pipeline.
 import { notFoundResponse } from "./http-error-responses.js";
 import {
   runPagesRequest,
+  wrapMiddlewareWithBasePath,
   type PagesPipelineDeps,
   type PagesRenderOptions,
 } from "./pages-request-pipeline.js";
@@ -48,7 +49,7 @@ import {
   parseNextDataPathname,
   buildNextDataNotFoundResponse,
 } from "./pages-data-route.js";
-import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import {
   ASSET_PREFIX_URL_DIR,
   assetPrefixPathname,
@@ -1669,21 +1670,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         matchPageRoute: matchPageRoute ?? null,
         // Pass the original (pre-basePath-stripping) URL to middleware so that
         // request.nextUrl.basePath reflects whether the URL actually had the
-        // basePath prefix. This matches Next.js behavior where the middleware
-        // adapter receives the un-stripped URL. Middleware for "absolute paths"
-        // (requests without the basePath prefix) sees nextUrl.basePath === "" so
-        // it can redirect them into the basePath (see middleware-base-path e2e test).
+        // basePath prefix (see wrapMiddlewareWithBasePath).
         runMiddleware:
           typeof runMiddleware === "function"
-            ? (request: Request, ctx: unknown, opts: { isDataRequest: boolean }) => {
-                let mwRequest = request;
-                if (hadBasePath && basePath) {
-                  const mwUrl = new URL(request.url);
-                  mwUrl.pathname = addBasePathToPathname(mwUrl.pathname, basePath);
-                  mwRequest = new Request(mwUrl, request);
-                }
-                return runMiddleware(mwRequest, ctx, opts);
-              }
+            ? wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)
             : null,
         renderPage:
           typeof renderPage === "function"
