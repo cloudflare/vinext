@@ -1,45 +1,13 @@
 /**
  * Centralised ISR `Cache-Control` derivation module.
  *
- * `decideIsr` is the single place that maps (router kind, hit/stale,
+ * `decideIsr` is the single place that maps (router kind, cache state,
  * revalidate/expire metadata) → the exact `Cache-Control` string to stamp on
  * an ISR response. Every ISR code path (app-page, app-route, pages,
  * dev-server) routes through it.
  *
  * `disposition` and `scheduleRegeneration` are informational fields for
  * callers that want them; all current callers only read `cacheControl`.
- *
- * ## Equivalence table
- *
- * Each call site previously derived its own disposition + Cache-Control.
- * This table documents what the migrated path emits vs what it emitted before.
- *
- * | Call site                              | Before                                           | After              | Changed? |
- * |----------------------------------------|--------------------------------------------------|--------------------|----------|
- * | app-page HIT                           | buildCachedRevalidateCacheControl("HIT", r, e)   | same               | no       |
- * | app-page STALE (expire known)          | buildCachedRevalidateCacheControl("STALE", r, e) | same               | no       |
- * | app-page STALE (no expire)             | buildCachedRevalidateCacheControl("STALE", r)    | same → s-maxage=0  | no       |
- * | app-route HIT/STALE (revalidate=0)     | NEVER_CACHE_CONTROL                              | same               | no       |
- * | app-route HIT/STALE (revalidate=∞)     | STATIC_CACHE_CONTROL                             | same               | no       |
- * | app-route HIT/STALE (finite)           | buildCachedRevalidateCacheControl(state, r, e)   | same               | no       |
- * | pages HIT                              | buildCachedRevalidateCacheControl("HIT", r, e)   | same               | no       |
- * | pages STALE (expire known)             | buildCachedRevalidateCacheControl("STALE", r, e) | same               | no       |
- * | pages STALE (no expire)               | buildCachedRevalidateCacheControl("STALE", r)    | same → s-maxage=0  | no       |
- * | dev HIT (getStaticProps)               | s-maxage=${secs}, stale-while-revalidate         | same               | no       |
- * | dev STALE (getStaticProps)             | s-maxage=${secs}, stale-while-revalidate         | s-maxage=0, ...    | **yes**  |
- * | dev MISS/regen (getStaticProps)        | s-maxage=${secs}, stale-while-revalidate         | same               | no       |
- * | dev gssp default (no-store)            | private, no-cache, no-store, max-age=0...        | same (NEVER_CACHE) | no       |
- * | dev nonce (no-store)                   | no-store, must-revalidate                        | same (NO_STORE)    | no       |
- * | pages-page-response scriptNonce        | no-store, must-revalidate                        | same (NO_STORE)    | no       |
- * | pages-page-response gssp default       | private, no-cache, no-store...                   | same (NEVER_CACHE) | no       |
- * | pages-page-handler _next/data default  | private, no-cache, no-store...                   | same (NEVER_CACHE) | no       |
- *
- * The single deliberate change: dev STALE now emits `s-maxage=0,
- * stale-while-revalidate` (matching the prod Pages Router and the canonical
- * `buildCachedRevalidateCacheControl` helper) instead of `s-maxage=<secs>,
- * stale-while-revalidate`. Dev had no CDN in front and was the only path
- * treating a stale-served payload as freshly cacheable downstream — a
- * dev/prod parity gap, not intentional behaviour.
  */
 
 import type { CacheControlMetadata } from "vinext/shims/cache";
@@ -74,16 +42,11 @@ type IsrPolicyKind = "app-page" | "app-route" | "pages" | "dev";
 
 type DecideIsrOptions = {
   /**
-   * True when the cache returned a value that can be forwarded to the client
-   * (the content guards — kind-mismatch, empty body, query-variant-unproven —
-   * have already passed). MISS = false; HIT or STALE = true.
+   * The cache state. Content guards (kind-mismatch, empty body,
+   * query-variant-unproven) must have already passed before passing
+   * `"HIT"` or `"STALE"` here.
    */
-  hasUsableValue: boolean;
-  /**
-   * True when the cache entry is past its TTL and the caller must regenerate.
-   * Only meaningful when `hasUsableValue` is true.
-   */
-  isStale: boolean;
+  cacheState: "HIT" | "STALE" | "MISS";
   /** Which router is making the decision. */
   kind: IsrPolicyKind;
   /**
@@ -146,17 +109,17 @@ function buildCacheControl(
  * Derive the `Cache-Control` string for an ISR response.
  *
  * Content guards (kind mismatch, query-variant-unproven, empty body) are the
- * caller's responsibility and must happen *before* this call. `hasUsableValue`
- * must only be true when those guards have already passed.
+ * caller's responsibility and must happen *before* this call. `cacheState`
+ * must only be `"HIT"` or `"STALE"` when those guards have already passed.
  */
 export function decideIsr(options: DecideIsrOptions): IsrDecision {
-  if (!options.hasUsableValue) {
+  if (options.cacheState === "MISS") {
     return { disposition: "MISS", scheduleRegeneration: false, cacheControl: "" };
   }
 
   const { effectiveRevalidate, effectiveExpire } = resolveRevalidate(options);
 
-  if (!options.isStale) {
+  if (options.cacheState === "HIT") {
     return {
       disposition: "HIT",
       scheduleRegeneration: false,
@@ -164,7 +127,7 @@ export function decideIsr(options: DecideIsrOptions): IsrDecision {
     };
   }
 
-  // Stale: serve + schedule regen.
+  // STALE: serve + schedule regen.
   return {
     disposition: "STALE",
     scheduleRegeneration: true,

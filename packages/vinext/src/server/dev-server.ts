@@ -900,8 +900,7 @@ export function createSSRHandler(
             const transformedHtml = await server.transformIndexHtml(url, cachedHtml);
             const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
             const { cacheControl: hitCacheControl } = decideIsr({
-              hasUsableValue: true,
-              isStale: false,
+              cacheState: "HIT",
               kind: "dev",
               revalidateSeconds: revalidateSecs,
             });
@@ -1073,8 +1072,7 @@ export function createSSRHandler(
             // matching prod Pages Router and the canonical buildCachedRevalidateCacheControl
             // helper. Previously emitted s-maxage=<secs> which was a dev/prod divergence.
             const { cacheControl: staleCacheControl } = decideIsr({
-              hasUsableValue: true,
-              isStale: true,
+              cacheState: "STALE",
               kind: "dev",
               revalidateSeconds: revalidateSecs,
             });

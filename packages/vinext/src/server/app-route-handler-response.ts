@@ -93,8 +93,7 @@ export function buildRouteHandlerCachedResponse(
   // CDN adapter (default: identical single Cache-Control). Edge adapters never
   // reach this path because their get() returns null.
   const { cacheControl } = decideIsr({
-    hasUsableValue: true,
-    isStale: options.cacheState === "STALE",
+    cacheState: options.cacheState,
     kind: "app-route",
     revalidateSeconds: options.revalidateSeconds,
     expireSeconds: options.expireSeconds,

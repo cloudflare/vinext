@@ -272,8 +272,7 @@ export function buildAppPageCachedResponse(
   // falsy statuses still fall back to 200 rather than being forwarded through.
   const status = options.middlewareStatus ?? (cachedValue.status || 200);
   const { cacheControl } = decideIsr({
-    hasUsableValue: true,
-    isStale: options.cacheState === "STALE",
+    cacheState: options.cacheState,
     kind: "app-page",
     revalidateSeconds: options.revalidateSeconds,
     expireSeconds: options.expireSeconds,

@@ -347,8 +347,7 @@ function buildPagesCacheResponse(
   // CDN adapter (default: identical single Cache-Control). Edge adapters never
   // reach this path because their get() returns null.
   const { cacheControl: cacheControlHeader } = decideIsr({
-    hasUsableValue: true,
-    isStale: cacheState === "STALE",
+    cacheState,
     kind: "pages",
     revalidateSeconds: effectiveRevalidateSeconds,
     expireSeconds,
