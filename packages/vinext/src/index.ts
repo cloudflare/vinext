@@ -741,12 +741,10 @@ export type VinextOptions = {
    * need a binding — e.g. a KV namespace — can read it.
    *
    * @example
-   * import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
    * import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
    *
    * vinext({
    *   cache: {
-   *     cdn:  cdnAdapter(),
    *     data: kvDataAdapter({ binding: "MY_KV" }),
    *   },
    * })
