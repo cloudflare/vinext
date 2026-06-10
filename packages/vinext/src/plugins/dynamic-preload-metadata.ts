@@ -395,7 +395,13 @@ function findObjectProperty(node: unknown, name: string): AstRecord | null {
 
 function dynamicLoaderNode(firstArg: unknown): unknown {
   if (!isRecord(firstArg) || getString(firstArg, "type") !== "ObjectExpression") return firstArg;
-  // Fallback to "modules" matches Next.js's react-loadable babel plugin behavior
+  // For the object form `dynamic({ loader })`, scan the `loader` value. The
+  // `modules` fallback mirrors Next.js's react-loadable babel plugin, which
+  // treats `modules` as an alternate loader source (`propertiesMap.modules` →
+  // `loader`) for the legacy `Loadable.Map` shape. In practice `modules` is
+  // usually a string array (no `import()` calls), so collectImportSpecifiers
+  // finds nothing and it's a harmless no-op — but we keep the branch for exact
+  // parity with the function form Next.js still accepts.
   const loaderProperty =
     findObjectProperty(firstArg, "loader") ?? findObjectProperty(firstArg, "modules");
   return loaderProperty?.value;
@@ -692,8 +698,12 @@ export function createDynamicPreloadMetadataPlugin(): Plugin {
           code,
           id,
           root,
-          async (specifier) => {
-            const resolved = await this.resolve(specifier, id, { skipSelf: true });
+          async (specifier, importer) => {
+            // Honor the `importer` from ResolveDynamicImport rather than closing
+            // over `id`: resolveManifestModuleIds always passes the file being
+            // transformed, so this is equivalent today, but matching the
+            // declared signature avoids a footgun if that ever changes.
+            const resolved = await this.resolve(specifier, importer, { skipSelf: true });
             return resolved?.id ?? null;
           },
         );

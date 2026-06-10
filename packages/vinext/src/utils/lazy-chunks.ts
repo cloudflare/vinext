@@ -131,6 +131,17 @@ function collectStaticChunkFiles(
  * reaches through `dynamicImports`, and each dynamic entry lists the JS/CSS
  * files required to evaluate it.
  *
+ * Note on shared chunks: a boundary's static-import tree (`collectStaticChunkFiles`)
+ * can include chunks that the page entry ALSO loads eagerly (a shared vendor
+ * chunk imported by both). Those files are intentionally NOT subtracted here, so
+ * a rendered boundary may emit a `<link rel="preload">` / `<link rel="stylesheet">`
+ * for a chunk the page already `<link rel="modulepreload">`s. This is harmless —
+ * the browser dedupes preloads by URL, `ReactDOM.preload()` dedupes script hints,
+ * and React's stylesheet resource model dedupes by href + precedence — and it
+ * mirrors Next.js listing a module's full file set in its react-loadable
+ * manifest. Subtracting the eager set would couple this to the entry's import
+ * closure for no correctness gain.
+ *
  * @returns A map keyed by root-relative module ID, with JS/CSS files that
  * should be preloaded when that dynamic boundary is rendered.
  */
