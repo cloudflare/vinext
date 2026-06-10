@@ -4825,7 +4825,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       enforce: "pre" as const,
 
       resolveId: {
-        // Match import specifiers that end with `.wasm?module`.
+        // Match import specifiers that end with `.wasm?module`. The exact
+        // match (no extra query params) is intentional: `?module` as the
+        // entire query string is the documented Cloudflare/Next.js
+        // convention, and anything else (e.g. `?module&v=1`) is not a shape
+        // we want to silently claim — leave it to the bundler to error on.
         filter: { id: /\.wasm\?module$/ },
         async handler(source: string, importer: string | undefined) {
           // Defer to @cloudflare/vite-plugin when it's present — it handles
@@ -4867,13 +4871,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           try {
             bytes = fs.readFileSync(filePath);
           } catch {
-            this.error(`[vinext] Could not read WASM file: ${filePath}`);
+            // `this.error` throws; returning it makes the control flow
+            // explicit so no non-null assertion is needed below.
+            return this.error(`[vinext] Could not read WASM file: ${filePath}`);
           }
           // Inline the WASM binary as a base64 string and compile it at
           // module initialisation time.  atob() is available on Node 16+,
-          // browsers, and workerd. Top-level await is valid because
-          // Vite/Rolldown always emits ESM output for SSR/server builds.
-          const base64 = bytes!.toString("base64");
+          // browsers, and workerd. Top-level await is valid because this
+          // path only serves server/edge (SSR) imports, where Vite/Rolldown
+          // always emits ESM output — it is not intended for client bundles,
+          // whose targets may not support TLA.
+          const base64 = bytes.toString("base64");
           return [
             `const _b64 = ${JSON.stringify(base64)};`,
             `const _buf = Uint8Array.from(atob(_b64), c => c.charCodeAt(0));`,
