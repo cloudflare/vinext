@@ -10,6 +10,14 @@ import type {
   RouteManifestRoute,
 } from "../routing/app-route-graph.js";
 import { compareAppElementsSlotIds, type AppElementsSlotBinding } from "./app-elements.js";
+import {
+  resolveRscRedirectLifecycleHop,
+  resolveStreamedRscRedirectLifecycleHop,
+} from "./app-browser-rsc-redirect.js";
+import {
+  resolveHardNavigationTargetFromRscResponse,
+  resolveRscCompatibilityNavigationDecision,
+} from "./app-rsc-cache-busting.js";
 import type {
   CacheEntryReuseDecision,
   CacheEntryReuseProof,
@@ -156,6 +164,55 @@ export type FlightResultV0 = {
   targetSnapshot: RouteSnapshotV0;
 };
 
+export type RscFetchResultSource = "cached" | "live";
+export type RscRedirectSignal = "response-url" | "streamed-header";
+
+export type RscFetchResultFactsV0 = {
+  source: RscFetchResultSource;
+  currentHref: string;
+  origin: string;
+  effectiveHistoryUpdateMode: "push" | "replace";
+  redirectDepth: number;
+  requestPreviousNextUrl: string | null;
+  clientCompatibilityId: string | null;
+  responseOk: boolean;
+  isRscContentType: boolean;
+  hasBody: boolean;
+  compatibilityIdHeader: string | null;
+  responseUrl: string | null;
+  streamedRedirectTarget: string | null;
+};
+
+export type RscRedirectFollowV0 = {
+  href: string;
+  historyUpdateMode: "push" | "replace";
+  previousNextUrl: string | null;
+  redirectDepth: number;
+};
+
+export type RscFetchResultHardNavReason =
+  | "invalidRscPayload"
+  | "rscCompatibilityMismatch"
+  | "externalRedirectTarget"
+  | "redirectDepthExhausted"
+  | "streamedRedirectLoop";
+
+export type RscFetchResultDecisionV0 =
+  | { kind: "proceedToCommit"; discardBody: false; trace: NavigationTrace }
+  | {
+      kind: "followRedirect";
+      discardBody: boolean;
+      redirect: RscRedirectFollowV0;
+      trace: NavigationTrace;
+    }
+  | {
+      kind: "hardNavigate";
+      discardBody: boolean;
+      url: string;
+      reason: RscFetchResultHardNavReason;
+      trace: NavigationTrace;
+    };
+
 export type NavigationPlannerInput = {
   // Graph-owned route topology is the semantic authority for root/layout/slot
   // decisions whenever the caller can supply it. Null keeps the legacy
@@ -229,6 +286,214 @@ function getRequestedWorkTargetHref(work: RequestedWork): string | null {
       throw new Error("[vinext] Unknown requested navigation work: " + String(_exhaustive));
     }
   }
+}
+
+function createRscFetchResultTraceFields(
+  facts: RscFetchResultFactsV0,
+  fields: NavigationTraceFields = {},
+): NavigationTraceFields {
+  return {
+    fetchResultSource: facts.source,
+    ...fields,
+  };
+}
+
+function createRscFetchResultHardNavigationDecision(options: {
+  discardBody: boolean;
+  facts: RscFetchResultFactsV0;
+  reason: RscFetchResultHardNavReason;
+  reasonCode: NavigationTraceReasonCode;
+  redirectSignal?: RscRedirectSignal;
+  url: string;
+}): RscFetchResultDecisionV0 {
+  return {
+    discardBody: options.discardBody,
+    kind: "hardNavigate",
+    reason: options.reason,
+    trace: createNavigationTrace(
+      options.reasonCode,
+      createRscFetchResultTraceFields(options.facts, {
+        ...(options.redirectSignal !== undefined ? { redirectSignal: options.redirectSignal } : {}),
+        redirectDepth: options.facts.redirectDepth,
+        targetHref: options.url,
+      }),
+    ),
+    url: options.url,
+  };
+}
+
+function createRscFetchResultFollowRedirectDecision(options: {
+  discardBody: boolean;
+  facts: RscFetchResultFactsV0;
+  redirect: RscRedirectFollowV0;
+  redirectSignal: RscRedirectSignal;
+}): RscFetchResultDecisionV0 {
+  return {
+    discardBody: options.discardBody,
+    kind: "followRedirect",
+    redirect: options.redirect,
+    trace: createNavigationTrace(
+      NavigationTraceReasonCodes.redirectFollow,
+      createRscFetchResultTraceFields(options.facts, {
+        redirectDepth: options.redirect.redirectDepth,
+        redirectSignal: options.redirectSignal,
+        targetHref: options.redirect.href,
+      }),
+    ),
+  };
+}
+
+function mapRscRedirectTerminalReason(reason: "externalRedirect" | "maxRedirectsExceeded"): {
+  hardNavigationReason: RscFetchResultHardNavReason;
+  traceReasonCode: NavigationTraceReasonCode;
+} {
+  switch (reason) {
+    case "externalRedirect":
+      return {
+        hardNavigationReason: "externalRedirectTarget",
+        traceReasonCode: NavigationTraceReasonCodes.redirectTerminalExternal,
+      };
+    case "maxRedirectsExceeded":
+      return {
+        hardNavigationReason: "redirectDepthExhausted",
+        traceReasonCode: NavigationTraceReasonCodes.redirectTerminalDepth,
+      };
+    default: {
+      const _exhaustive: never = reason;
+      throw new Error("[vinext] Unknown RSC redirect terminal reason: " + String(_exhaustive));
+    }
+  }
+}
+
+function resolveStreamedRedirectVisibleTarget(target: string, origin: string): string {
+  const url = new URL(target, origin);
+  if (url.origin !== origin) {
+    return url.href;
+  }
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function classifyRscFetchResult(facts: RscFetchResultFactsV0): RscFetchResultDecisionV0 {
+  if (!facts.responseOk || !facts.isRscContentType || !facts.hasBody) {
+    const url = resolveHardNavigationTargetFromRscResponse(
+      facts.responseUrl,
+      facts.currentHref,
+      facts.origin,
+    );
+    return createRscFetchResultHardNavigationDecision({
+      discardBody: false,
+      facts,
+      reason: "invalidRscPayload",
+      reasonCode: NavigationTraceReasonCodes.invalidRscPayload,
+      url,
+    });
+  }
+
+  const compatibilityDecision = resolveRscCompatibilityNavigationDecision({
+    clientCompatibilityId: facts.clientCompatibilityId,
+    currentHref: facts.currentHref,
+    origin: facts.origin,
+    responseCompatibilityId: facts.compatibilityIdHeader,
+    responseUrl: facts.responseUrl,
+  });
+  if (compatibilityDecision.kind === "hard-navigate") {
+    return createRscFetchResultHardNavigationDecision({
+      discardBody: false,
+      facts,
+      reason: "rscCompatibilityMismatch",
+      reasonCode: NavigationTraceReasonCodes.rscCompatibilityMismatch,
+      url: compatibilityDecision.hardNavigationTarget,
+    });
+  }
+
+  if (facts.responseUrl !== null) {
+    const redirectDecision = resolveRscRedirectLifecycleHop({
+      currentHref: facts.currentHref,
+      historyUpdateMode: facts.effectiveHistoryUpdateMode,
+      origin: facts.origin,
+      redirectDepth: facts.redirectDepth,
+      requestPreviousNextUrl: facts.requestPreviousNextUrl,
+      responseUrl: facts.responseUrl,
+    });
+    if (redirectDecision.kind === "terminal-hard-navigation") {
+      const terminalReason = mapRscRedirectTerminalReason(redirectDecision.reason);
+      return createRscFetchResultHardNavigationDecision({
+        discardBody: false,
+        facts,
+        reason: terminalReason.hardNavigationReason,
+        reasonCode: terminalReason.traceReasonCode,
+        redirectSignal: "response-url",
+        url: redirectDecision.href,
+      });
+    }
+    if (redirectDecision.kind === "follow") {
+      return createRscFetchResultFollowRedirectDecision({
+        discardBody: false,
+        facts,
+        redirect: {
+          href: redirectDecision.href,
+          historyUpdateMode: facts.effectiveHistoryUpdateMode,
+          previousNextUrl: redirectDecision.previousNextUrl,
+          redirectDepth: redirectDecision.redirectDepth,
+        },
+        redirectSignal: "response-url",
+      });
+    }
+  }
+
+  if (facts.streamedRedirectTarget !== null) {
+    const redirectDecision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: facts.currentHref,
+      historyUpdateMode: facts.effectiveHistoryUpdateMode,
+      origin: facts.origin,
+      redirectDepth: facts.redirectDepth,
+      requestPreviousNextUrl: facts.requestPreviousNextUrl,
+      streamedRedirectTarget: facts.streamedRedirectTarget,
+    });
+    if (redirectDecision.kind === "terminal-hard-navigation") {
+      const terminalReason = mapRscRedirectTerminalReason(redirectDecision.reason);
+      return createRscFetchResultHardNavigationDecision({
+        discardBody: true,
+        facts,
+        reason: terminalReason.hardNavigationReason,
+        reasonCode: terminalReason.traceReasonCode,
+        redirectSignal: "streamed-header",
+        url: redirectDecision.href,
+      });
+    }
+    if (redirectDecision.kind === "follow") {
+      return createRscFetchResultFollowRedirectDecision({
+        discardBody: true,
+        facts,
+        redirect: {
+          href: redirectDecision.href,
+          historyUpdateMode: facts.effectiveHistoryUpdateMode,
+          previousNextUrl: redirectDecision.previousNextUrl,
+          redirectDepth: redirectDecision.redirectDepth,
+        },
+        redirectSignal: "streamed-header",
+      });
+    }
+
+    const url = resolveStreamedRedirectVisibleTarget(facts.streamedRedirectTarget, facts.origin);
+    return createRscFetchResultHardNavigationDecision({
+      discardBody: true,
+      facts,
+      reason: "streamedRedirectLoop",
+      reasonCode: NavigationTraceReasonCodes.streamedRedirectLoop,
+      redirectSignal: "streamed-header",
+      url,
+    });
+  }
+
+  return {
+    discardBody: false,
+    kind: "proceedToCommit",
+    trace: createNavigationTrace(
+      NavigationTraceReasonCodes.proceedToCommit,
+      createRscFetchResultTraceFields(facts),
+    ),
+  };
 }
 
 function createSnapshotRouteTopology(snapshot: RouteSnapshotV0): RouteTopologySnapshot {
@@ -1043,6 +1308,7 @@ function planNavigation(input: NavigationPlannerInput): NavigationDecisionV0 {
 }
 
 export const navigationPlanner = {
+  classifyRscFetchResult,
   classifyRootBoundaryTransition,
   plan: planNavigation,
   resolveCurrentRootBoundaryElementPersistence,
