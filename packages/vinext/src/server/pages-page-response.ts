@@ -688,6 +688,14 @@ export async function renderPagesPageResponse(
   // cache-HIT path in `pages-page-data.ts` which applies the same UA gate for
   // consistent ETag coverage on cached responses.
   //
+  // A consequence of UA-gating is that the ETag/304 path below can also fire
+  // for dynamic (GSSP) responses, which Next.js never 304s (`isDynamic` renders
+  // skip ETag generation entirely). The risk is minimal in practice: GSSP
+  // responses carry `Cache-Control: private, no-cache, no-store,
+  // must-revalidate`, so a conformant client won't revalidate them with
+  // `If-None-Match` — but a dynamic page may legitimately differ between the
+  // ETag-generating render and a revalidation request.
+  //
   // When the incoming `If-None-Match` header matches the computed ETag, return
   // `304 Not Modified` with no body (mirrors Next.js `sendEtagResponse`
   // semantics in packages/next/src/server/send-payload.ts, with weak-ETag
