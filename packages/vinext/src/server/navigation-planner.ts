@@ -365,14 +365,6 @@ function mapRscRedirectTerminalReason(reason: "externalRedirect" | "maxRedirects
   }
 }
 
-function resolveStreamedRedirectVisibleTarget(target: string, origin: string): string {
-  const url = new URL(target, origin);
-  if (url.origin !== origin) {
-    return url.href;
-  }
-  return `${url.pathname}${url.search}${url.hash}`;
-}
-
 function classifyRscFetchResult(facts: RscFetchResultFactsV0): RscFetchResultDecisionV0 {
   if (!facts.responseOk || !facts.isRscContentType || !facts.hasBody) {
     const url = resolveHardNavigationTargetFromRscResponse(
@@ -475,14 +467,13 @@ function classifyRscFetchResult(facts: RscFetchResultFactsV0): RscFetchResultDec
       });
     }
 
-    const url = resolveStreamedRedirectVisibleTarget(facts.streamedRedirectTarget, facts.origin);
     return createRscFetchResultHardNavigationDecision({
       discardBody: true,
       facts,
       reason: "streamedRedirectLoop",
       reasonCode: NavigationTraceReasonCodes.streamedRedirectLoop,
       redirectSignal: "streamed-header",
-      url,
+      url: redirectDecision.href,
     });
   }
 

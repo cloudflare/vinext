@@ -9,7 +9,7 @@ const MAX_RSC_REDIRECT_DEPTH = 10;
 type RscRedirectHistoryUpdateMode = "push" | "replace" | undefined;
 
 type RscRedirectLifecycleDecision =
-  | { kind: "no-redirect" }
+  | { href: string; kind: "no-redirect" }
   | {
       href: string;
       historyUpdateMode: RscRedirectHistoryUpdateMode;
@@ -61,7 +61,7 @@ export function resolveRscRedirectLifecycleHop(options: {
     options.origin,
   );
   if (redirectedHref === toVisibleAppHref(options.currentHref, options.origin)) {
-    return { kind: "no-redirect" };
+    return { href: redirectedHref, kind: "no-redirect" };
   }
 
   const maxRedirectDepth = options.maxRedirectDepth ?? MAX_RSC_REDIRECT_DEPTH;
@@ -108,7 +108,7 @@ export function resolveStreamedRscRedirectLifecycleHop(options: {
     options.origin,
   );
   if (redirectedHref === toVisibleAppHref(options.currentHref, options.origin)) {
-    return { kind: "no-redirect" };
+    return { href: redirectedHref, kind: "no-redirect" };
   }
 
   const maxRedirectDepth = options.maxRedirectDepth ?? MAX_RSC_REDIRECT_DEPTH;

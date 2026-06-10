@@ -5797,7 +5797,7 @@ describe("app browser RSC redirect lifecycle", () => {
       streamedRedirectTarget: "/same?tab=1#section",
     });
 
-    expect(decision).toEqual({ kind: "no-redirect" });
+    expect(decision).toEqual({ href: "/same?tab=1#section", kind: "no-redirect" });
   });
 
   it("turns external streamed redirects into terminal hard navigations", () => {

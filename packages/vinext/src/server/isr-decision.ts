@@ -21,7 +21,7 @@ import {
 
 type IsrDisposition = "HIT" | "STALE" | "MISS";
 
-export type IsrDecision = {
+type IsrDecision = {
   disposition: IsrDisposition;
   /** True when the caller must schedule a background regeneration. */
   scheduleRegeneration: boolean;
