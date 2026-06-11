@@ -473,10 +473,10 @@ export function escapeHeaderSource(source: string): string {
  * Callers extract the relevant parts from the incoming Request.
  */
 export type RequestContext = {
-  headers: Headers;
-  cookies: Record<string, string>;
-  query: URLSearchParams;
-  host: string;
+  readonly headers: Headers;
+  readonly cookies: Record<string, string>;
+  readonly query: URLSearchParams;
+  readonly host: string;
 };
 
 /**
@@ -540,13 +540,26 @@ export function parseCookies(cookieHeader: string | null): Record<string, string
 
 /**
  * Build a RequestContext from a Web Request object.
+ *
+ * `cookies` and `query` are lazy memoized getters: they are consumed only by
+ * `has`/`missing` condition evaluation (`checkHasConditions` /
+ * `matchesRuleConditions`), and most apps configure no such conditions. The
+ * cookie split and `searchParams` access are therefore deferred until first
+ * read and computed at most once. Mirrors `headersContextFromRequest` in
+ * `shims/headers.ts`.
  */
 export function requestContextFromRequest(request: Request): RequestContext {
   const url = new URL(request.url);
+  let cookies: Record<string, string> | undefined;
+  let query: URLSearchParams | undefined;
   return {
     headers: request.headers,
-    cookies: parseCookies(request.headers.get("cookie")),
-    query: url.searchParams,
+    get cookies() {
+      return (cookies ??= parseCookies(request.headers.get("cookie")));
+    },
+    get query() {
+      return (query ??= url.searchParams);
+    },
     host: normalizeHost(request.headers.get("host"), url.hostname),
   };
 }
