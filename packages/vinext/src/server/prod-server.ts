@@ -107,7 +107,12 @@ const bareServerEntryMtimes = new Map<string, number>();
  * A `?t=<mtime>` query string is appended only when the same path is
  * imported again after a rebuild (different mtime) — e.g. test suites that
  * rebuild a fixture to the same output path within one process — where the
- * bare URL's cache entry would return the stale previous build.
+ * bare URL's cache entry would return the stale previous build. Note this
+ * rebuild branch trades the single-instance guarantee back: chunks that
+ * import the entry by bare path still resolve to the FIRST build's cache
+ * entry, so freshness and single-instance only hold together on the first
+ * import of a path. Production processes import each entry path exactly
+ * once and always get both.
  *
  * The entry is imported via its canonical real path: the bundler
  * canonicalizes module ids with fs.realpathSync.native, so chunks evaluate
@@ -119,6 +124,9 @@ const bareServerEntryMtimes = new Map<string, number>();
  * Exported for direct unit testing of the URL choice.
  */
 export function resolveServerEntryImportUrl(entryPath: string): string {
+  // The catch only covers realpathSync.native failing on filesystems that
+  // don't support it; it does not make a missing entry path "work" — that
+  // still throws at the statSync below, same as before this helper existed.
   let canonicalEntryPath: string;
   try {
     canonicalEntryPath = fs.realpathSync.native(entryPath);

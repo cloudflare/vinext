@@ -10,6 +10,14 @@
  * server ends up with two copies of the bundle, the copy serving route
  * handlers reads `initializedBy: null` here even though boot-time
  * initialization ran.
+ *
+ * The probe is only meaningful for a freshly built output path (the first
+ * build a process imports). After a rebuild to the SAME output path, the
+ * prod server intentionally cache-busts the entry while bare chunk imports
+ * still resolve to the first build (see resolveServerEntryImportUrl in
+ * prod-server.ts), so this module would report `initializedBy: null` by
+ * design. Tests using this probe must build into a fresh directory, as the
+ * entry-module-identity regression test does.
  */
 
 /** Module-level singleton state — intentionally NOT stored on globalThis. */
