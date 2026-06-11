@@ -11,6 +11,7 @@ import { compareRoutes, decodeRouteSegment, isInvisibleSegment } from "./utils.j
 import { findFileWithExts, scanWithExtensions, type ValidFileMatcher } from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
 import { compareStrings } from "../utils/compare.js";
+import { normalizePathSeparators } from "../utils/path.js";
 
 type InterceptingRoute = {
   /** The interception convention: "." | ".." | "../.." | "..." */
@@ -2148,7 +2149,7 @@ function discoverSiblingInterceptingRoutes(
     const filePath = route.pagePath ?? route.routePath;
     if (!filePath) continue;
     // Keys are forward-slash — findOwnerRouteForDir compares in that space.
-    const routeDir = path.dirname(filePath).replace(/\\/g, "/");
+    const routeDir = normalizePathSeparators(path.dirname(filePath));
     if (!routesByDir.has(routeDir)) {
       routesByDir.set(routeDir, route);
     }
@@ -2237,8 +2238,8 @@ export function findOwnerRouteForDir(
   routes: readonly AppRouteGraphRoute[],
   routesByDir: Map<string, AppRouteGraphRoute>,
 ): AppRouteGraphRoute | null {
-  const appRoot = appDir.replace(/\\/g, "/");
-  let current = dir.replace(/\\/g, "/");
+  const appRoot = normalizePathSeparators(appDir);
+  let current = normalizePathSeparators(dir);
   while (true) {
     // Exact match: a route whose page/handler file lives directly in `current`
     const exact = routesByDir.get(current);
@@ -2251,7 +2252,7 @@ export function findOwnerRouteForDir(
     for (const route of routes) {
       const filePath = route.pagePath ?? route.routePath;
       if (!filePath) continue;
-      if (!filePath.replace(/\\/g, "/").startsWith(currentWithSep)) continue;
+      if (!normalizePathSeparators(filePath).startsWith(currentWithSep)) continue;
       if (!best || route.patternParts.length < best.patternParts.length) {
         best = route;
       }

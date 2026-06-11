@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +9,15 @@ import {
   type AppRouteGraphRoute,
   type RouteManifest,
 } from "../packages/vinext/src/routing/app-route-graph.js";
+
+// normalizePathSeparators is a platform-gated no-op on POSIX. CI never runs
+// Windows, so force the Windows behavior to let the separator-mismatch tests
+// below exercise the real normalization logic. Harmless for the other tests:
+// POSIX paths contain no backslashes, so the replace is an identity for them.
+vi.mock("../packages/vinext/src/utils/path.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../packages/vinext/src/utils/path.js")>();
+  return { ...actual, normalizePathSeparators: (p: string) => p.replace(/\\/g, "/") };
+});
 
 const EMPTY_PAGE = "export default function Page() { return null; }\n";
 const EMPTY_LAYOUT = "export default function Layout({ children }) { return children; }\n";
