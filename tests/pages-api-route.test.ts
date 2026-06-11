@@ -414,17 +414,17 @@ describe("pages api route", () => {
     await expect(response.text()).resolves.toBe("chunk-1chunk-2chunk-3");
   });
 
-  it("returns a 500 when the response stream is destroyed with an error", async () => {
+  it("returns a 500 when the response stream is destroyed with an error before any body has been written", async () => {
     const reportRequestError = vi.fn();
 
     const response = await handlePagesApiRoute({
       match: createMatch(
         (_req, res) => {
           // Simulate a proxy handler where the upstream errors and the
-          // handler forwards the error to the response stream. Node's
-          // `req.pipe(upstream).pipe(res)` does NOT auto-forward errors,
-          // so well-behaved handlers must attach error listeners and
-          // explicitly destroy `res` to avoid hanging the request.
+          // handler forwards the error to the response stream before
+          // anything is written. In this case the responsePromise should
+          // reject and the normal 500 error path in handlePagesApiRoute
+          // should surface.
           res.destroy(new Error("upstream exploded"));
           return res;
         },
@@ -442,5 +442,29 @@ describe("pages api route", () => {
     expect(response.status).toBe(500);
     await expect(response.text()).resolves.toBe("Internal Server Error");
     expect(reportRequestError).toHaveBeenCalledWith(expect.any(Error), "/api/test");
+  });
+
+  it("does not hang when the response stream is destroyed after partial output has started", async () => {
+    // Regression: after the first write, the Fetch Response has already been
+    // resolved. Destroying the Node-compatible res must error the body
+    // ReadableStream so the consumer sees a failure instead of an open
+    // stream that never terminates.
+    const response = await handlePagesApiRoute({
+      match: createMatch(
+        (_req, res) => {
+          res.write("partial");
+          res.destroy(new Error("upstream exploded"));
+          return res;
+        },
+        {},
+        { api: { bodyParser: false } },
+      ),
+      request: new Request("https://example.com/api/stream-error-partial"),
+      url: "/api/stream-error-partial",
+    });
+
+    expect(response.status).toBe(200);
+    // The body stream should reject because it was destroyed mid-stream.
+    await expect(response.text()).rejects.toThrow("upstream exploded");
   });
 });

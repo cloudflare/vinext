@@ -1,5 +1,5 @@
 import { decode as decodeQueryString } from "node:querystring";
-import { PassThrough, Readable, Writable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { parseCookies } from "../config/config-matchers.js";
 import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
@@ -147,7 +147,9 @@ class PagesResponseStream extends Writable {
   private readonly resHeaders: Record<string, string | number | boolean> = {};
   private readonly setCookieHeaders: string[] = [];
   private resolved = false;
-  private readonly passThrough = new PassThrough();
+  private controller: ReadableStreamDefaultController | null = null;
+  private readonly bufferedChunks: Buffer[] = [];
+  private streamEnded = false;
 
   constructor(
     private readonly resolveResponse: (value: Response) => void,
@@ -182,12 +184,12 @@ class PagesResponseStream extends Writable {
         this.setHeaderValue(key, value, { replaceSetCookie: false });
       }
     }
-    return this;
+    return this as PagesReqResResponse;
   }
 
   setHeader(name: string, value: string | number | boolean | string[]): PagesReqResResponse {
     this.setHeaderValue(name, value, { replaceSetCookie: true });
-    return this;
+    return this as PagesReqResResponse;
   }
 
   getHeader(name: string): string | number | boolean | string[] | undefined {
@@ -199,7 +201,7 @@ class PagesResponseStream extends Writable {
 
   status(code: number): PagesReqResResponse {
     this.resStatusCode = code;
-    return this;
+    return this as PagesReqResResponse;
   }
 
   json(data: unknown): void {
@@ -255,14 +257,47 @@ class PagesResponseStream extends Writable {
     encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
-    this.passThrough.write(chunk, encoding, callback);
+    const buffer = typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk);
+    if (this.controller && !this.streamEnded) {
+      try {
+        this.controller.enqueue(buffer);
+      } catch {
+        // Controller closed — consumer cancelled or stream finished
+      }
+    } else {
+      this.bufferedChunks.push(buffer);
+    }
     this.resolveOnce();
+    callback();
   }
 
   override _final(callback: (error?: Error | null) => void): void {
-    this.passThrough.end();
+    this.streamEnded = true;
+    if (this.controller) {
+      try {
+        this.controller.close();
+      } catch {
+        // Already closed
+      }
+    }
     this.resolveOnce();
     callback();
+  }
+
+  override destroy(error?: Error): this {
+    this.streamEnded = true;
+    if (this.controller) {
+      try {
+        if (error) {
+          this.controller.error(error);
+        } else {
+          this.controller.close();
+        }
+      } catch {
+        // Already closed or errored
+      }
+    }
+    return super.destroy(error);
   }
 
   private setHeaderValue(
@@ -299,8 +334,31 @@ class PagesResponseStream extends Writable {
       headers.append("set-cookie", cookie);
     }
 
-    const body = Readable.toWeb(this.passThrough) as ReadableStream;
-    this.resolveResponse(new Response(body, { status: this.resStatusCode, headers }));
+    const stream = new ReadableStream({
+      start: (controller) => {
+        this.controller = controller;
+        for (const buffer of this.bufferedChunks) {
+          try {
+            controller.enqueue(buffer);
+          } catch {
+            // Controller closed, ignore
+          }
+        }
+        this.bufferedChunks.length = 0;
+        if (this.streamEnded) {
+          try {
+            controller.close();
+          } catch {
+            // Already closed
+          }
+        }
+      },
+      cancel: () => {
+        this.streamEnded = true;
+      },
+    });
+
+    this.resolveResponse(new Response(stream, { status: this.resStatusCode, headers }));
   }
 }
 
@@ -333,7 +391,7 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     resolveResponse,
     rejectResponse,
     options.request.headers,
-  );
+  ) as PagesReqResResponse;
 
   return { req, res, responsePromise };
 }
