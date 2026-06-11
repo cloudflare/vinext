@@ -136,7 +136,6 @@ import { DevRecoveryBoundary, RedirectBoundary } from "vinext/shims/error-bounda
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import type { RouteManifest } from "../routing/app-route-graph.js";
-import { stripBasePath } from "../utils/base-path.js";
 import { createOnUncaughtError, prodOnCaughtError } from "./app-browser-error.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
 import {
@@ -755,14 +754,13 @@ function storeVisitedResponseSnapshot(
   );
 }
 
-function isSamePageSearchNavigation(
-  currentSnapshot: ClientNavigationRenderSnapshot,
-  targetUrl: URL,
-): boolean {
-  const targetPathname = stripBasePath(targetUrl.pathname, __basePath);
-  if (targetPathname !== currentSnapshot.pathname) return false;
-
-  return targetUrl.searchParams.toString() !== currentSnapshot.searchParams.toString();
+// Build the absolute current-document href the early-intent planner compares
+// against the navigation target. The committed snapshot carries a base-stripped
+// pathname plus parsed search params; the planner re-strips the base (a no-op on
+// an already-stripped path) so both sides reduce to the same canonical form.
+function clientNavigationSnapshotHref(snapshot: ClientNavigationRenderSnapshot): string {
+  const query = snapshot.searchParams.toString();
+  return `${window.location.origin}${snapshot.pathname}${query ? `?${query}` : ""}`;
 }
 
 type NavigationRequestState = {
@@ -1706,9 +1704,24 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         // when a visible Link prefetched the target. Search params are a page
         // input, so a cached full-route payload is not authoritative here.
         // Ref: packages/next/src/client/components/router-reducer/ppr-navigations.ts
+        //
+        // The planner owns the early-intent classification; hash-only changes are
+        // already short-circuited before reaching this loop, so for a "navigate"
+        // here the decision is always a flight navigation and only its
+        // cache-bypass bit is consumed.
+        const earlyIntentDecision =
+          navigationKind === "navigate"
+            ? navigationPlanner.classifyEarlyNavigationIntent({
+                basePath: __basePath,
+                currentHref: clientNavigationSnapshotHref(routerStateAtNavStart.navigationSnapshot),
+                mode: currentHistoryMode ?? "push",
+                scroll: scrollIntent != null,
+                targetHref: url.href,
+              })
+            : null;
         const shouldBypassNavigationCache =
-          navigationKind === "navigate" &&
-          isSamePageSearchNavigation(routerStateAtNavStart.navigationSnapshot, url);
+          earlyIntentDecision?.kind === "flightNavigation" &&
+          earlyIntentDecision.bypassNavigationCache;
         // The client reuse manifest is excluded from VINEXT_RSC_VARY_HEADER, so
         // it never affects the cache-busting URL. Defer producing it until the
         // visited-response cache miss is confirmed below — its producer iterates

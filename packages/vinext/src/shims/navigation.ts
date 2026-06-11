@@ -35,11 +35,11 @@ import {
 } from "../server/headers.js";
 import {
   isAbsoluteOrProtocolRelativeUrl,
-  isHashOnlyBrowserUrlChange,
   toBrowserNavigationHref,
   toSameOriginAppPath,
   withBasePath,
 } from "./url-utils.js";
+import { navigationPlanner } from "../server/navigation-planner.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
@@ -1559,15 +1559,6 @@ function isExternalUrl(href: string): boolean {
   return isAbsoluteOrProtocolRelativeUrl(href);
 }
 
-/**
- * Check if a href is only a hash change relative to the current URL.
- */
-function isHashOnlyChange(href: string): boolean {
-  if (typeof window === "undefined") return false;
-  if (href.startsWith("#")) return true;
-  return isHashOnlyBrowserUrlChange(href, window.location.href, __basePath);
-}
-
 // ---------------------------------------------------------------------------
 // History method wrappers — suppress notifications for internal updates
 // ---------------------------------------------------------------------------
@@ -1793,13 +1784,21 @@ export async function navigateClientSide(
     saveScrollPosition();
   }
 
-  // Hash-only change: update URL and scroll to target, skip RSC fetch
-  if (isHashOnlyChange(fullHref)) {
-    const hash = fullHref.includes("#") ? fullHref.slice(fullHref.indexOf("#")) : "";
-    commitHashOnlyHistoryState(fullHref, mode, scroll);
+  // The planner classifies the early navigation intent from the URL delta. A
+  // same-document scroll updates the URL and scrolls to the hash target without
+  // an RSC fetch; everything else proceeds to the RSC navigation below.
+  const earlyIntent = navigationPlanner.classifyEarlyNavigationIntent({
+    basePath: __basePath,
+    currentHref: window.location.href,
+    mode,
+    scroll,
+    targetHref: fullHref,
+  });
+  if (earlyIntent.kind === "sameDocumentScroll") {
+    commitHashOnlyHistoryState(fullHref, earlyIntent.mode, earlyIntent.scroll);
     commitClientNavigationState();
-    if (scroll) {
-      scrollToHashTarget(hash);
+    if (earlyIntent.scroll) {
+      scrollToHashTarget(earlyIntent.hash);
     }
     return;
   }
