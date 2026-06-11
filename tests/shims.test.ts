@@ -12914,17 +12914,25 @@ describe("Pages Router router helpers", () => {
 });
 
 describe("Pages Router concurrent navigation", () => {
-  it("does not install the Pages Router popstate runtime when next/router is imported", async () => {
+  it("installs the Pages Router popstate runtime before exposing window.next.router", async () => {
     const previousWindow = (globalThis as any).window;
     const { win } = createNavWindow();
-    win.addEventListener = vi.fn();
+    const calls: string[] = [];
+    win.addEventListener = vi.fn((type: string) => {
+      const next = Reflect.get(win, "next");
+      const router =
+        typeof next === "object" && next !== null ? Reflect.get(next, "router") : undefined;
+      calls.push(
+        `${type}:${router === undefined ? "before-window-next-router" : "after-window-next-router"}`,
+      );
+    });
     (globalThis as any).window = win;
 
     try {
       vi.resetModules();
       await import("../packages/vinext/src/shims/router.js");
 
-      expect(win.addEventListener).not.toHaveBeenCalledWith("popstate", expect.any(Function));
+      expect(calls).toEqual(["popstate:before-window-next-router"]);
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {

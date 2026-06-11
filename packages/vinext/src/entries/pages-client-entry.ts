@@ -72,7 +72,6 @@ export async function generateClientEntry(
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
-import { installPagesRouterRuntime } from "vinext/pages-router-runtime";
 // Statically import next/router as the very first vinext shim so that
 // (a) installWindowNext runs at top-level — \`window.next.router\` is
 //     available to test harnesses and third-party scripts BEFORE
@@ -193,7 +192,6 @@ async function hydrate() {
 
   const root = hydrateRoot(container, element, hydrateRootOptions);
   window.__VINEXT_ROOT__ = root;
-  installPagesRouterRuntime();
   const hydratedAt = performance.now();
   window.__VINEXT_HYDRATED_AT = hydratedAt;
   window.__NEXT_HYDRATED = true;

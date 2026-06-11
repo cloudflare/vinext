@@ -109,6 +109,18 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "pages-scroll-restoration": {
+    testDir: "./tests/e2e/pages-scroll-restoration",
+    use: { baseURL: "http://localhost:4185" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4185",
+      cwd: "./tests/fixtures/pages-scroll-restoration",
+      port: 4185,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
   "cloudflare-workers": {
     testDir: "./tests/e2e",
     testMatch: [

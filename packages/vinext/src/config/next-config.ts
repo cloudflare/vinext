@@ -448,6 +448,13 @@ export type ResolvedNextConfig = {
    */
   disableOptimizedLoading: boolean;
   /**
+   * Mirrors Next.js `experimental.scrollRestoration`. When true, the Pages
+   * Router client takes ownership of browser history scroll restoration by
+   * setting `window.history.scrollRestoration = "manual"` and snapshotting
+   * scroll positions per history entry.
+   */
+  scrollRestoration: boolean;
+  /**
    * Build-time constant replacement map applied to BOTH client and server
    * bundles. Sourced from `compiler.define` in next.config. Values are
    * pre-serialized via `JSON.stringify` so they can be fed straight into
@@ -1234,6 +1241,7 @@ export async function resolveNextConfig(
       sassOptions: null,
       removeConsole: false,
       disableOptimizedLoading: false,
+      scrollRestoration: false,
       compilerDefine: {},
       compilerDefineServer: {},
       instrumentationClientInject: [],
@@ -1528,6 +1536,7 @@ export async function resolveNextConfig(
     // Next.js stores this under `experimental.disableOptimizedLoading`.
     // Default `false` matches Next.js: page scripts get `defer` in <head>.
     disableOptimizedLoading: experimental?.disableOptimizedLoading === true,
+    scrollRestoration: experimental?.scrollRestoration === true,
     compilerDefine: serializeCompilerDefine(config.compiler?.define),
     compilerDefineServer: serializeCompilerDefine(config.compiler?.defineServer),
     clientTraceMetadata: Array.isArray(experimental?.clientTraceMetadata)
