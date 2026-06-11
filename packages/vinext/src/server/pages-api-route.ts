@@ -24,8 +24,7 @@ type PagesApiRouteConfig = {
    * `bodyParser: false` is critical for webhook handlers (Stripe, GitHub,
    * Slack, etc.) that need to read the raw bytes to verify an HMAC
    * signature. With it set, `req.body` is left undefined and the raw stream
-   * is exposed on `req.body` as a Web `ReadableStream<Uint8Array>` so user
-   * code can consume it.
+   * remains available through the Node-readable request object.
    *
    * @see https://nextjs.org/docs/pages/building-your-application/routing/api-routes#custom-config
    */
@@ -35,10 +34,7 @@ type PagesApiRouteConfig = {
   };
 };
 
-type PagesNodeApiRouteHandler = (
-  req: PagesReqResRequest,
-  res: PagesReqResResponse,
-) => void | Promise<void>;
+type PagesNodeApiRouteHandler = (req: PagesReqResRequest, res: PagesReqResResponse) => unknown;
 
 type PagesEdgeApiRouteHandler = (request: Request) => Response | Promise<Response>;
 
@@ -139,9 +135,9 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     // Honour `export const config = { api: { bodyParser: ... } }` on the
     // route module. When the handler opts out (`bodyParser: false`) we must
     // not consume the stream — `req.body` stays `undefined` and the raw
-    // bytes are exposed via the async-iterator on `req` itself, matching
-    // Next.js's Node `IncomingMessage` contract. User code (e.g. a Stripe/
-    // GitHub webhook) drains them with `for await (const chunk of req)`.
+    // bytes are exposed via the Node-readable `req` itself, matching Next.js's
+    // `IncomingMessage` contract. User code can drain them with
+    // `for await (const chunk of req)` or stream them with `req.pipe(...)`.
     // See issue #1479.
     const bodyParserConfig = resolveBodyParserConfig(route.module.config);
 
@@ -156,8 +152,10 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       url: options.url,
     });
 
-    await route.module.default(req, res);
-    res.end();
+    const handlerResult: unknown = await route.module.default(req, res);
+    if (handlerResult === undefined && !res.headersSent) {
+      res.end();
+    }
     return await responsePromise;
   } catch (error) {
     if (error instanceof PagesApiBodyParseError) {
