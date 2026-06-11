@@ -74,4 +74,31 @@ test.describe("app-dir - unstable_catchError", () => {
       "`unstable_retry()` can only be used in the App Router. Use `reset()` in the Pages Router.",
     );
   });
+
+  test("should preserve the original HTML stream for uncaught server errors and render global-error on the client", async ({
+    page,
+  }) => {
+    // Next-parity test: an uncaught post-shell RSC error with no route/userland
+    // boundary should preserve the original HTML stream rather than server-
+    // rendering global-error. The client renders global-error during hydration.
+    //
+    // Ported from Next.js: test/e2e/app-dir/global-error/basic/index.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/global-error/basic/index.test.ts
+    const response = await page.goto(`${BASE}/uncaught-error`);
+    expect(response?.status()).toBe(200);
+
+    // The initial HTML response must contain the root layout and loading
+    // fallback, not the global-error document. The server preserves the
+    // original stream and lets the client Flight/error path decide.
+    const html = await response!.text();
+    expect(html).toContain('lang="en"');
+    expect(html).toContain('<div id="loading">Loading...</div>');
+    expect(html).not.toContain("<h1>Global Error</h1>");
+
+    // After hydration, the client renders global-error because the route has
+    // no error.tsx and no userland boundary.
+    await expect(page.locator("h1")).toHaveText("Global Error");
+    await expect(page.locator("#error")).toHaveText(/^Global error: Error:/);
+    await expect(page.locator("#digest")).toHaveText(/\w+/);
+  });
 });
