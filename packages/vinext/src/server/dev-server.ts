@@ -1207,10 +1207,15 @@ export function createSSRHandler(
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
           // deployment and trigger a hard navigation (deployment-skew
-          // protection). Fixes #1829.
-          const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
-          if (deploymentId) {
-            dataHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+          // protection). Next.js skips the success path for /_error and /500
+          // (`!isErrorPage && !is500Page`). Fixes #1829.
+          const dataRoutePattern = patternToNextFormat(route.pattern);
+          if (dataRoutePattern !== "/_error" && dataRoutePattern !== "/500") {
+            const deploymentId =
+              process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
+            if (deploymentId) {
+              dataHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+            }
           }
           res.writeHead(statusCode ?? 200, dataHeaders);
           res.end(JSON.stringify({ pageProps }));

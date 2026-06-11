@@ -1807,6 +1807,17 @@ describe("Pages Router integration", () => {
         });
       });
 
+      it("omits the header on the /500 data success response", async () => {
+        // Next.js pages-handler.ts guards the success-path header with
+        // `!isErrorPage && !is500Page`, so /_error and /500 data responses
+        // must not carry it even when a deployment id is configured.
+        await withDeploymentId(async () => {
+          const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/500.json`);
+          expect(res.status).toBe(200);
+          expect(res.headers.get("x-nextjs-deployment-id")).toBeNull();
+        });
+      });
+
       it("omits the header when no deployment id is configured", async () => {
         // Without NEXT_DEPLOYMENT_ID / a configured deploymentId the header
         // must be absent on every exit — mirroring Next.js, which only sets

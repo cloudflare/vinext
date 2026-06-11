@@ -615,10 +615,14 @@ export function createPagesPageHandler(
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
           // deployment and trigger a hard navigation (deployment-skew
-          // protection). Fixes #1829.
-          const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
-          if (deploymentId) {
-            init.headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+          // protection). Next.js skips the success path for /_error and /500
+          // (`!isErrorPage && !is500Page`). Fixes #1829.
+          if (routePattern !== "/_error" && routePattern !== "/500") {
+            const deploymentId =
+              process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
+            if (deploymentId) {
+              init.headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+            }
           }
           return buildNextDataJsonResponse(pageProps, safeJsonStringify, init);
         }

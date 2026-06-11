@@ -527,6 +527,37 @@ describe("createPagesPageHandler — x-nextjs-deployment-id", () => {
     }
   });
 
+  it("omits x-nextjs-deployment-id on _next/data success responses for /_error and /500", async () => {
+    const savedId = process.env.__VINEXT_DEPLOYMENT_ID;
+    process.env.__VINEXT_DEPLOYMENT_ID = DEPLOYMENT_ID;
+    try {
+      // Next.js pages-handler.ts guards the success-path header with
+      // `!isErrorPage && !is500Page`; mirror that exclusion here.
+      for (const pattern of ["/_error", "/500"]) {
+        const routes = [makeRoute(pattern)];
+        const handler = createPagesPageHandler(
+          makeOpts({
+            pageRoutes: routes,
+            matchRoute: (url, r) => {
+              const route = r.find((rt) => rt.pattern === url.split("?")[0]);
+              return route ? { route, params: {} } : null;
+            },
+          }),
+        );
+        const dataUrl = `/_next/data/test-build-id${pattern}.json`;
+        const res = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+        expect(res.status).toBe(200);
+        expect(res.headers.get("x-nextjs-deployment-id")).toBeNull();
+      }
+    } finally {
+      if (savedId === undefined) {
+        delete process.env.__VINEXT_DEPLOYMENT_ID;
+      } else {
+        process.env.__VINEXT_DEPLOYMENT_ID = savedId;
+      }
+    }
+  });
+
   it("sets x-nextjs-deployment-id on _next/data wrong-buildId 404 response", async () => {
     const savedId = process.env.__VINEXT_DEPLOYMENT_ID;
     process.env.__VINEXT_DEPLOYMENT_ID = DEPLOYMENT_ID;
