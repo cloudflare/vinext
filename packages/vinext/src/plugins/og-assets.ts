@@ -8,12 +8,18 @@
  *   time with the pattern:
  *
  *     fetch(new URL("./some-font.ttf", import.meta.url)).then(res => res.arrayBuffer())
+ *     fetch(new URL("../../../assets/font.ttf", import.meta.url)).then(res => res.arrayBuffer())
+ *
+ *   Both ./-relative and ../-relative paths are handled (the latter appears in
+ *   Next.js test fixtures like og-routes-custom-font and metadata-font where the
+ *   font file lives in a project-root assets/ directory).
  *
  *   This works in browser and standard Node.js because import.meta.url is a
  *   real file:// URL. In Cloudflare Workers (both wrangler dev and production),
  *   however, import.meta.url is the string "worker" — not a URL — so
  *   new URL(...) throws "TypeError: Invalid URL string" and the Worker fails to
- *   start.
+ *   start. Additionally, Node.js's built-in fetch() does not support file://
+ *   URLs, so even on Node.js the pattern must be inlined at build time.
  *
  *   Fix: at Vite transform time, find every such pattern, resolve the referenced
  *   file relative to the module's actual path on disk (available as `id`), read
@@ -104,10 +110,24 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
       };
 
       // Pattern 1 — edge build: fetch(new URL("./file", import.meta.url)).then((res) => res.arrayBuffer())
+      // Supports both ./-relative and ../-relative paths (e.g. "../../../assets/font.ttf").
+      // The regex is deliberately tolerant of how formatters (Prettier
+      // `trailingComma: "all"`, oxfmt) rewrite the `.then(...)` callback when the call
+      // is wrapped across multiple lines, since formatted source that fails to match is
+      // left as a runtime fetch (which throws "Invalid URL" on Workers, where
+      // import.meta.url is "worker"):
+      //   - `,?` before each close paren tolerates a trailing comma, e.g.
+      //       .then((res) =>
+      //         res.arrayBuffer(),
+      //       )
+      //   - `;?` before the block-body `}` tolerates a terminating semicolon, e.g.
+      //       .then((res) => {
+      //         return res.arrayBuffer();
+      //       })
       // Replace with an inline IIFE that decodes the asset as base64 and returns Promise<ArrayBuffer>.
       if (code.includes("fetch(")) {
         const fetchPattern =
-          /fetch\(\s*new URL\(\s*(["'])(\.\/[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*\}?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*\))/g;
+          /fetch\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*;?\s*\}?\s*,?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*,?\s*\))/g;
 
         for (const match of code.matchAll(fetchPattern)) {
           const fullMatch = match[0];
@@ -134,11 +154,12 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
       }
 
       // Pattern 2 — node build: readFileSync(fileURLToPath(new URL("./file", import.meta.url)))
+      // Supports both ./-relative and ../-relative paths (e.g. "../../../assets/font.ttf").
       // Replace with Buffer.from("<base64>", "base64"), which returns a Buffer (compatible with
       // both font data passed to satori and WASM bytes passed to initWasm).
       if (code.includes("readFileSync(")) {
         const readFilePattern =
-          /[a-zA-Z_$][a-zA-Z0-9_$]*\.readFileSync\(\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\.)?fileURLToPath\(\s*new URL\(\s*(["'])(\.\/[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*\)/g;
+          /[a-zA-Z_$][a-zA-Z0-9_$]*\.readFileSync\(\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\.)?fileURLToPath\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*\)/g;
 
         for (const match of newCode.matchAll(readFilePattern)) {
           const fullMatch = match[0];

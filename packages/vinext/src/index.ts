@@ -1,4 +1,11 @@
-import type { Plugin, PluginOption, UserConfig, ViteDevServer } from "vite";
+import type {
+  CSSModulesOptions,
+  Plugin,
+  PluginOption,
+  SassPreprocessorOptions,
+  UserConfig,
+  ViteDevServer,
+} from "vite";
 import { loadEnv, parseAst, transformWithOxc } from "vite";
 import {
   pagesRouter,
@@ -92,8 +99,6 @@ import {
 import { proxyExternalRequest } from "./config/config-matchers.js";
 import { detectPackageManager } from "./utils/project.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
-import { manifestFilesWithBase } from "./utils/manifest-paths.js";
-
 import {
   ASSET_PREFIX_URL_DIR,
   resolveAssetUrlPrefix,
@@ -110,6 +115,7 @@ import {
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
+import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
@@ -127,22 +133,22 @@ import {
   createLocalFontsPlugin,
 } from "./plugins/fonts.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
-import { computeLazyChunks } from "./utils/lazy-chunks.js";
 import {
-  findClientEntryFile,
-  findPagesClientEntryFile,
-  readClientBuildManifest,
-} from "./utils/client-build-manifest.js";
+  computeClientRuntimeMetadata,
+  buildRuntimeGlobalsScript,
+} from "./utils/client-runtime-metadata.js";
 import {
-  findClientEntryFileFromVinextManifest,
-  findPagesClientEntryFileFromVinextManifest,
-  readClientEntryManifest,
-  type ClientEntryManifest,
   VINEXT_CLIENT_ENTRY_MANIFEST,
+  type ClientEntryManifest,
 } from "./utils/client-entry-manifest.js";
 import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
-import { buildSassPreprocessorOptions } from "./plugins/sass.js";
 import {
+  buildSassPreprocessorOptions,
+  createSassTildeImporter,
+  createSassAwareFileSystemLoader,
+} from "./plugins/sass.js";
+import {
+  createClientFileNameConfig,
   createClientManualChunks,
   createClientOutputConfig,
   createClientCodeSplittingConfig,
@@ -309,12 +315,12 @@ function resolveShimModulePath(shimsDir: string, moduleName: string): string {
   // JavaScript. Check .ts first to avoid an extra stat in development.
   const candidates = [".ts", ".tsx", ".js"];
   for (const ext of candidates) {
-    const candidate = path.join(shimsDir, `${moduleName}${ext}`);
+    const candidate = path.posix.join(shimsDir, `${moduleName}${ext}`);
     if (fs.existsSync(candidate)) {
       return candidate;
     }
   }
-  return path.join(shimsDir, `${moduleName}.js`);
+  return path.posix.join(shimsDir, `${moduleName}.js`);
 }
 
 function isVercelOgImport(id: string): boolean {
@@ -539,8 +545,14 @@ const RESOLVED_INSTRUMENTATION_CLIENT = `\0${VIRTUAL_INSTRUMENTATION_CLIENT}.mjs
  *  Shared between the Rolldown hook filter and the transform handler regex. */
 const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
 
-/** Absolute path to vinext's shims directory, used by clientManualChunks. */
-const _shimsDir = path.resolve(__dirname, "shims") + "/";
+/**
+ * Absolute path to vinext's shims directory, with a trailing slash. Normalized
+ * to forward slashes because it is prefix-matched against Vite module ids (which
+ * Vite always normalizes to forward slashes) in the font plugins and
+ * clientManualChunks — a raw path.resolve value has backslashes on Windows and
+ * the `id.startsWith(_shimsDir)` checks would never match.
+ */
+const _shimsDir = normalizePathSeparators(path.resolve(__dirname, "shims")) + "/";
 const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
 
 function isValidExportIdentifier(name: string): boolean {
@@ -647,6 +659,7 @@ const clientCodeSplittingConfig = createClientCodeSplittingConfig(clientManualCh
 function getClientOutputConfigForVite(viteMajorVersion: number, assetsDir: string) {
   return viteMajorVersion >= 8
     ? {
+        ...createClientFileNameConfig(assetsDir),
         assetFileNames: createClientAssetFileNames(assetsDir),
         codeSplitting: clientCodeSplittingConfig,
       }
@@ -736,12 +749,10 @@ export type VinextOptions = {
    * need a binding — e.g. a KV namespace — can read it.
    *
    * @example
-   * import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
    * import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
    *
    * vinext({
    *   cache: {
-   *     cdn:  cdnAdapter(),
    *     data: kvDataAdapter({ binding: "MY_KV" }),
    *   },
    * })
@@ -795,6 +806,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasNitroPlugin = false;
   let rscCompatibilityId: string | undefined;
   const draftModeSecret = randomUUID();
+
+  // Per-plugin-instance binding of the Sass-aware CSS Modules Loader. The
+  // `config` hook injects `Loader` as `css.modules.Loader` and
+  // `configResolved` binds the resolved config, so multiple vinext builds in
+  // one process never preprocess `composes` deps with another build's config.
+  const sassComposesLoader = createSassAwareFileSystemLoader();
 
   // Build-time layout classification manifest, captured in the RSC virtual
   // module's load hook and consumed in renderChunk to patch the generated
@@ -1127,7 +1144,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       enforce: "pre",
 
       async config(config, env) {
-        root = config.root ?? process.cwd();
+        root = normalizePathSeparators(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         const shouldEnableNativeTsconfigPaths =
           viteMajorVersion >= 8 && userResolve?.tsconfigPaths === undefined;
@@ -1165,27 +1182,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // If not provided, auto-detect: check root first, then src/ subdirectory.
         let baseDir: string;
         if (options.appDir) {
-          baseDir = path.isAbsolute(options.appDir)
+          const dir = path.isAbsolute(options.appDir)
             ? options.appDir
             : path.resolve(root, options.appDir);
+          baseDir = normalizePathSeparators(dir);
         } else {
           // Auto-detect: prefer root-level app/ and pages/, fall back to src/
-          const hasRootApp = fs.existsSync(path.join(root, "app"));
-          const hasRootPages = fs.existsSync(path.join(root, "pages"));
-          const hasSrcApp = fs.existsSync(path.join(root, "src", "app"));
-          const hasSrcPages = fs.existsSync(path.join(root, "src", "pages"));
+          const hasRootApp = fs.existsSync(path.posix.join(root, "app"));
+          const hasRootPages = fs.existsSync(path.posix.join(root, "pages"));
+          const hasSrcApp = fs.existsSync(path.posix.join(root, "src", "app"));
+          const hasSrcPages = fs.existsSync(path.posix.join(root, "src", "pages"));
 
           if (hasRootApp || hasRootPages) {
             baseDir = root;
           } else if (hasSrcApp || hasSrcPages) {
-            baseDir = path.join(root, "src");
+            baseDir = path.posix.join(root, "src");
           } else {
             baseDir = root;
           }
         }
 
-        pagesDir = path.join(baseDir, "pages");
-        appDir = path.join(baseDir, "app");
+        pagesDir = path.posix.join(baseDir, "pages");
+        appDir = path.posix.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
 
@@ -1371,6 +1389,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.NEXT_DEPLOYMENT_ID"] = nextConfig.deploymentId
           ? JSON.stringify(nextConfig.deploymentId)
           : "false";
+        // `process.env.NEXT_RUNTIME` — compile-time constant that identifies
+        // the target runtime for the current bundle.  Next.js sets this in
+        // every environment via its webpack DefinePlugin
+        // (see packages/next/src/build/define-env.ts).  Client bundles receive
+        // `''` (empty string); server bundles receive `'nodejs'` or `'edge'`
+        // depending on the route's configured runtime.
+        //
+        // Here we set the client-bundle default to `''` at the top-level Vite
+        // define, matching Next.js's client value.  The server value
+        // (`'nodejs'`) is overlaid per-environment in the
+        // `vinext:compiler-define-server` configEnvironment hook below, which
+        // Vite merges over this base value for server environments only.
+        defines["process.env.NEXT_RUNTIME"] = '""';
         // Next.js version compat — mirrors Next.js' `process.env.__NEXT_VERSION`,
         // which is substituted by their webpack DefinePlugin at build time
         // (see `packages/next/src/client/next.ts` line 5 and
@@ -1654,6 +1685,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...(typeof config.server?.hmr === "object" ? config.server.hmr : {}),
                 overlay: false,
               };
+
+        // Override the default postcss-modules FileSystemLoader so that
+        // .scss/.sass files referenced via `composes: from` are preprocessed
+        // through Sass before PostCSS scoping runs (spread into `css` below).
+        // The `Loader` field is a postcss-modules option not reflected in
+        // Vite's `CSSModulesOptions` type definition, hence the cast.
+        //
+        // Plugin `config` returns are merged *over* the user config, and
+        // Vite's `mergeConfigRecursively` lets an object override a `false`
+        // value — so injecting unconditionally would silently re-enable
+        // CSS Modules for a user who set `css.modules: false`, and would
+        // clobber a user-provided custom `Loader`. Skip injection in both
+        // cases.
+        const cssModulesOverride: { modules?: CSSModulesOptions } =
+          config.css?.modules === false ||
+          (typeof config.css?.modules === "object" && "Loader" in config.css.modules)
+            ? {}
+            : { modules: { Loader: sassComposesLoader.Loader } as CSSModulesOptions };
 
         const viteConfig: UserConfig = {
           // Disable Vite's default HTML serving - we handle all routing
@@ -1956,30 +2005,65 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 },
               }
             : {}),
-          // Inject resolved PostCSS plugins (when found) and any
-          // sassOptions translated from next.config. Both end up on
-          // `css.*`, so we merge them into a single `css` object rather
-          // than emitting `{ css: ... }` twice (the second would clobber
+          // Inject resolved PostCSS plugins (when found), any sassOptions
+          // translated from next.config, and the Sass-aware CSS Modules Loader.
+          // All end up on `css.*`, so we merge them into a single `css` object
+          // rather than emitting `{ css: ... }` twice (the second would clobber
           // the first).
-          ...(postcssOverride || sassPreprocessorOptions
-            ? {
-                css: {
-                  ...(postcssOverride ? { postcss: postcssOverride } : {}),
-                  ...(sassPreprocessorOptions
-                    ? {
-                        preprocessorOptions: {
-                          // Apply the same options to both `.scss` and `.sass`
-                          // entry points. Next.js's sass-loader rule matches
-                          // /\.s[ca]ss$/, so a single `sassOptions` block
-                          // covers both syntaxes there too.
-                          scss: sassPreprocessorOptions,
-                          sass: sassPreprocessorOptions,
-                        },
-                      }
-                    : {}),
-                },
-              }
-            : {}),
+          //
+          // The tilde importer is ALWAYS injected so that SCSS files can use
+          // webpack-style `~pkg/file` (node_modules) and `~/path` (root)
+          // imports that Next.js (sass-loader) supports out of the box.
+          // See: test/e2e/app-dir/scss/npm-import-tilde and #1825.
+          //
+          // The `SassAwareFileSystemLoader` is injected as
+          // `css.modules.Loader` (via `cssModulesOverride` above) so that
+          // SCSS files referenced by
+          // `composes: className from './other.module.scss'` are compiled
+          // through Sass before CSS-module class scoping runs.  Without this,
+          // raw SCSS variables (`$var: red;`) end up in the PostCSS output and
+          // cause LightningCSS to fail with "Invalid empty selector" during
+          // the production minification step.  See issue #1825.
+          css: {
+            ...(postcssOverride ? { postcss: postcssOverride } : {}),
+            preprocessorOptions: (() => {
+              // Tilde importer: strip the leading ~ and resolve the rest
+              // either from node_modules (~pkg/...) or project root (~/).
+              // Placed first so it runs before Vite's own internal importer,
+              // which is appended at the end of `importers[]` by the vite:css
+              // plugin (vite/src/node/plugins/css.ts makeScssWorker).
+              const tildeImporter = createSassTildeImporter(root);
+
+              // Base options shared by both .scss and .sass preprocessors.
+              const baseOpts: SassPreprocessorOptions = {
+                ...sassPreprocessorOptions,
+                // Merge user-supplied importers (from sassOptions) with the
+                // tilde importer. Tilde goes first so it gets first crack at
+                // ~ prefixed URLs; other importers follow; Vite's own internal
+                // importer is appended last by the vite:css plugin.
+                //
+                // Cast: the tilde importer implements the modern Sass
+                // `FileImporter` shape structurally and user importers are
+                // forwarded as-is. Vite's `importers` type resolves to the
+                // concrete `sass` package types only when `sass` is
+                // installed (it is `any` otherwise), so the array needs an
+                // explicit cast to typecheck in both situations.
+                importers: [
+                  tildeImporter,
+                  ...((sassPreprocessorOptions?.importers as unknown[]) ?? []),
+                ] as SassPreprocessorOptions["importers"],
+              };
+
+              return {
+                // Apply the same options to both `.scss` and `.sass` entry
+                // points. Next.js's sass-loader rule matches /\.s[ca]ss$/,
+                // so a single `sassOptions` block covers both syntaxes there.
+                scss: baseOpts,
+                sass: baseOpts,
+              };
+            })(),
+            ...cssModulesOverride,
+          },
         };
 
         // Collect user-provided ssr.external so we can propagate it into
@@ -2198,11 +2282,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ],
               },
               build: {
-                // When targeting Cloudflare Workers or mixing app/ with pages/,
-                // enable manifest generation so production runtimes can read the
-                // client build manifest. Cloudflare uses it for lazy chunks; the
-                // hybrid Node/App fallback uses it to find the Pages client entry.
-                ...(hasCloudflarePlugin || hasPagesDir ? { manifest: true } : {}),
+                // Production App Router rendering needs Vite's client manifest
+                // to resolve next/dynamic module IDs to the exact JS/CSS files
+                // that should be preloaded when a dynamic boundary renders.
+                // Cloudflare builds also use it to inject lazy chunk metadata
+                // into the Worker entry.
+                manifest: true,
                 ...(hasPagesDir ? { ssrManifest: true } : {}),
                 // Client-scoped so RSC/SSR keep their normal asset handling
                 // unless the user configured Vite globally.
@@ -2301,6 +2386,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       configResolved(config) {
+        // Provide the resolved config to the Sass-aware CSS Modules Loader so
+        // it can call Vite's `preprocessCSS` when processing SCSS files
+        // referenced by `composes: className from './file.module.scss'`.
+        // Must be called early in `configResolved` before any CSS transform
+        // work begins, but after the config is fully resolved so that Sass
+        // preprocessor options and `css.modules` settings are in place.
+        sassComposesLoader.setResolvedConfig(config);
+
         // When the user sets `ssr.external: true`, strip React entries from
         // `environments.ssr.resolve.noExternal`. @vitejs/plugin-rsc populates
         // this list via crawlFrameworkPkgs, but `noExternal` overrides
@@ -3809,20 +3902,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
-    // Inject `compiler.defineServer` substitutions into server environments
-    // only. The universal `compiler.define` map is already merged into the
-    // top-level Vite `define` config above, so it applies to both client
-    // and server bundles. `defineServer` MUST NOT leak into the browser
-    // bundle (it can contain secrets), so we layer it in via the
-    // per-environment `define` hook, which Vite merges over the top-level
+    // Inject server-environment defines (NEXT_RUNTIME + user `compiler.defineServer`
+    // entries) into non-client environments only.  The universal
+    // `compiler.define` map is already merged into the top-level Vite
+    // `define` config above, so it applies to both client and server bundles.
+    // Server-only defines MUST NOT leak into the browser bundle (they can
+    // contain secrets such as the revalidate secret), so we layer them in via
+    // the per-environment `define` hook, which Vite merges over the top-level
     // value for that environment only.
     //
     // Mirrors Next.js: packages/next/src/build/define-env.ts — the
     // `defineServer` entries are only added to the `nodejs` / `edge`
     // serialized define environments, never to `client`.
-    //
-    // Returning `null`/`undefined` means "no change"; the explicit empty
-    // check keeps the hook a no-op when the user never configured it.
     {
       name: "vinext:compiler-define-server",
       configEnvironment(name) {
@@ -3834,6 +3925,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (name === "client") return null;
 
         const serverDefines: Record<string, string> = { ...nextConfig.compilerDefineServer };
+
+        // Mirror Next.js's compile-time `process.env.NEXT_RUNTIME` constant
+        // (see packages/next/src/build/define-env.ts).  This is a build-time
+        // define — it is inlined at compile time and has no runtime equivalent.
+        // Next.js compiles each route into its own bundle and stamps the bundle
+        // with the runtime it targets ('edge' or 'nodejs').  Vinext compiles a
+        // single RSC bundle that covers all routes, so we use 'nodejs' for
+        // every server environment — the value that matches Vinext's Workers
+        // Node.js compatibility target.
+        //
+        // Without this define, `process.env.NEXT_RUNTIME` falls back to the
+        // top-level `''` value set for the client bundle.  User-land code (and
+        // the Next.js test fixture at
+        // test/e2e/app-dir/next-after-app-deploy/app/path-prefix.js) that uses
+        // `process.env.NEXT_RUNTIME` to construct revalidation paths would then
+        // compute `'/nodejs'` correctly instead of `''` (issue #1365).
+        serverDefines["process.env.NEXT_RUNTIME"] = JSON.stringify("nodejs");
 
         // On-demand ISR revalidation secret — baked SERVER-ONLY (the `client`
         // early-return above guarantees it never reaches the browser bundle) so
@@ -3852,7 +3960,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             JSON.stringify(sharedRevalidateSecret);
         }
 
-        if (Object.keys(serverDefines).length === 0) return null;
         return { define: serverDefines };
       },
     },
@@ -4026,6 +4133,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       () => nextConfig,
       () => root,
     ),
+    // next/dynamic preload metadata:
+    // Mirrors Next.js's react-loadable transform by recording which resolved
+    // module IDs belong to each dynamic() boundary. The runtime resolves those
+    // IDs through Vite's build manifest so it can emit boundary-scoped preload
+    // hints with the request CSP nonce.
+    createDynamicPreloadMetadataPlugin(),
     // "use cache" directive transform:
     // Detects "use cache" at file-level or function-level and wraps the
     // exports/functions with registerCachedFunction() from vinext/cache-runtime.
@@ -4597,16 +4710,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
     },
     // Cloudflare Workers production build integration:
-    // After all environments are built, compute lazy chunks from the client
-    // build manifest and inject globals into the worker entry.
+    // After all environments are built, compute dynamic chunk metadata from
+    // the client build manifest and inject globals into the worker entry.
     //
     // Pages Router: injects __VINEXT_CLIENT_ENTRY__, __VINEXT_SSR_MANIFEST__,
-    //   and __VINEXT_LAZY_CHUNKS__ into the worker entry (found via wrangler.json).
+    //   __VINEXT_LAZY_CHUNKS__, and __VINEXT_DYNAMIC_PRELOADS__ into the worker
+    //   entry (found via wrangler.json).
     // App Router: the RSC plugin handles App hydration via
-    //   loadBootstrapScriptContent(), but we still inject __VINEXT_LAZY_CHUNKS__
-    //   and __VINEXT_SSR_MANIFEST__ into the worker entry at dist/server/index.js.
-    //   Mixed app+pages builds also inject __VINEXT_CLIENT_ENTRY__ for Pages
-    //   Router fallback routes.
+    //   loadBootstrapScriptContent(), but we still inject __VINEXT_LAZY_CHUNKS__,
+    //   __VINEXT_DYNAMIC_PRELOADS__, and __VINEXT_SSR_MANIFEST__ into the worker
+    //   entry at dist/server/index.js. Mixed app+pages builds also inject
+    //   __VINEXT_CLIENT_ENTRY__ for Pages Router fallback routes.
     // Both: generates _headers file for immutable asset caching.
     {
       name: "vinext:cloudflare-build",
@@ -4629,33 +4743,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const clientDir = path.resolve(buildRoot, "dist", "client");
           const clientBase = envConfig.base ?? "/";
 
-          // Read build manifest and compute lazy chunks (only reachable via
-          // dynamic imports). This runs for BOTH App Router and Pages Router.
-          // App Router gets its app client bootstrap via the RSC plugin. This
-          // Pages client entry is still needed for mixed app+pages fallback
-          // routes rendered through the Pages Router entry.
-          let lazyChunksData: string[] | null = null;
-          let clientEntryFile: string | null = null;
-          const clientEntryManifest = readClientEntryManifest(clientDir);
-          clientEntryFile =
-            (hasAppDir && hasPagesDir
-              ? findPagesClientEntryFileFromVinextManifest
-              : findClientEntryFileFromVinextManifest)(clientEntryManifest, clientBase) ?? null;
-          const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
-          const buildManifest = readClientBuildManifest(buildManifestPath);
-          if (buildManifest) {
-            if (!clientEntryFile) {
-              clientEntryFile =
-                (hasAppDir && hasPagesDir ? findPagesClientEntryFile : findClientEntryFile)({
-                  buildManifest,
-                  clientDir,
-                  assetsSubdir: resolveAssetsDir(nextConfig?.assetPrefix),
-                  assetBase: clientBase,
-                }) ?? null;
-            }
-            const lazy = manifestFilesWithBase(computeLazyChunks(buildManifest), clientBase);
-            if (lazy.length > 0) lazyChunksData = lazy;
-          }
+          // Compute runtime metadata from the client build manifest: lazy
+          // chunks, per-next/dynamic preload files, and (for Pages Router)
+          // the client entry file. This runs for BOTH App Router and Pages
+          // Router — clientEntryFile is only used by the Pages Router path
+          // below (App Router gets its client entry via the RSC plugin).
+          const runtimeMetadata = computeClientRuntimeMetadata({
+            clientDir,
+            assetBase: clientBase,
+            assetPrefix: nextConfig.assetPrefix,
+            includeClientEntry: !hasAppDir ? true : hasPagesDir ? "pages-client-entry" : false,
+          });
+          const lazyChunksData: string[] | null = runtimeMetadata.lazyChunks ?? null;
+          const dynamicPreloadsData: Record<string, string[]> | null =
+            runtimeMetadata.dynamicPreloads ?? null;
+          let clientEntryFile: string | null = runtimeMetadata.clientEntryFile ?? null;
 
           // Read SSR manifest for per-page CSS/JS injection
           let ssrManifestData: Record<string, string[]> | null = null;
@@ -4674,38 +4776,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // fallback routes still render through the Pages entry and need
             // the Pages client entry global.
             const workerEntry = path.resolve(distDir, "server", "index.js");
-            if (!clientEntryFile && hasPagesDir) {
-              clientEntryFile =
-                findPagesClientEntryFile({
-                  clientDir,
-                  assetsSubdir: resolveAssetsDir(nextConfig?.assetPrefix),
-                  assetBase: clientBase,
-                }) ?? null;
-            }
 
-            if (
-              fs.existsSync(workerEntry) &&
-              (lazyChunksData || ssrManifestData || (hasPagesDir && clientEntryFile))
-            ) {
-              let code = fs.readFileSync(workerEntry, "utf-8");
-              const globals: string[] = [];
-              if (hasPagesDir && clientEntryFile) {
-                globals.push(
-                  `globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`,
-                );
+            if (fs.existsSync(workerEntry)) {
+              // `clientEntryFile` is only populated for mixed app+pages builds
+              // (computeClientRuntimeMetadata was asked for "pages-client-entry");
+              // pure App Router gets its client entry via the RSC plugin.
+              const script = buildRuntimeGlobalsScript({
+                clientEntryFile,
+                ssrManifest: ssrManifestData,
+                lazyChunks: lazyChunksData,
+                dynamicPreloads: dynamicPreloadsData,
+              });
+              if (script) {
+                const code = fs.readFileSync(workerEntry, "utf-8");
+                fs.writeFileSync(workerEntry, script + "\n" + code);
               }
-              if (ssrManifestData) {
-                globals.push(
-                  `globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`,
-                );
-              }
-              if (lazyChunksData) {
-                globals.push(
-                  `globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`,
-                );
-              }
-              code = globals.join("\n") + "\n" + code;
-              fs.writeFileSync(workerEntry, code);
             }
           } else {
             // Pages Router: find worker output by scanning dist/ for a
@@ -4727,46 +4812,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const workerEntry = path.join(workerOutDir, "index.js");
             if (!fs.existsSync(workerEntry)) return;
 
-            // Fallback: scan the on-disk assets directory for the client entry
-            // chunk when the SSR manifest lookup didn't surface one. Pages Router
-            // uses "vinext-client-entry", App Router uses "vinext-app-browser-entry".
-            //
-            // When `assetPrefix` is configured, chunks live under
-            // `<prefix>/_next/static/` (path-prefix) or `_next/static/`
-            // (absolute-URL prefix) — NOT `assets/`. Resolve the actual
-            // subdirectory from the same helper that drives `build.assetsDir`
-            // and the prod-server lookup path, so this fallback works for every
-            // layout supported by the rest of the pipeline.
-            if (!clientEntryFile) {
-              clientEntryFile =
-                findClientEntryFile({
-                  clientDir,
-                  assetsSubdir: resolveAssetsDir(nextConfig?.assetPrefix),
-                  assetBase: clientBase,
-                }) ?? null;
-            }
-
             // Prepend globals to worker entry
-            if (clientEntryFile || ssrManifestData || lazyChunksData) {
-              let code = fs.readFileSync(workerEntry, "utf-8");
-              const globals: string[] = [];
-              if (clientEntryFile) {
-                globals.push(
-                  `globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`,
-                );
-              }
-              if (ssrManifestData) {
-                globals.push(
-                  `globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`,
-                );
-              }
-              if (lazyChunksData) {
-                globals.push(
-                  `globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`,
-                );
-              }
-              code = globals.join("\n") + "\n" + code;
-              fs.writeFileSync(workerEntry, code);
+            const script = buildRuntimeGlobalsScript({
+              clientEntryFile,
+              ssrManifest: ssrManifestData,
+              lazyChunks: lazyChunksData,
+              dynamicPreloads: dynamicPreloadsData,
+            });
+            if (script) {
+              const code = fs.readFileSync(workerEntry, "utf-8");
+              fs.writeFileSync(workerEntry, script + "\n" + code);
             }
           }
 

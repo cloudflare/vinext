@@ -4,7 +4,8 @@ import {
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
 } from "./app-rsc-cache-busting.js";
-import { applyCdnResponseHeaders, buildCachedRevalidateCacheControl } from "./cache-control.js";
+import { applyCdnResponseHeaders } from "./cache-control.js";
+import { decideIsr } from "./isr-decision.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -200,14 +201,6 @@ export function buildAppPageCacheTags(pathname: string, extraTags: readonly stri
   return tags.map(encodeCacheTag);
 }
 
-function buildAppPageCacheControl(
-  cacheState: BuildAppPageCachedResponseOptions["cacheState"],
-  revalidateSeconds: number,
-  expireSeconds?: number,
-): string {
-  return buildCachedRevalidateCacheControl(cacheState, revalidateSeconds, expireSeconds);
-}
-
 function buildAppPageCachedHeaders(options: {
   cacheControl: string;
   cacheState: BuildAppPageCachedResponseOptions["cacheState"];
@@ -278,16 +271,13 @@ export function buildAppPageCachedResponse(
   // Preserve the legacy fallback semantics from the generated entry: invalid
   // falsy statuses still fall back to 200 rather than being forwarded through.
   const status = options.middlewareStatus ?? (cachedValue.status || 200);
-  const revalidateSeconds = options.cacheControl?.revalidate ?? options.revalidateSeconds;
-  const expireSeconds =
-    options.cacheControl === undefined
-      ? undefined
-      : (options.cacheControl.expire ?? options.expireSeconds);
-  const cacheControl = buildAppPageCacheControl(
-    options.cacheState,
-    revalidateSeconds,
-    expireSeconds,
-  );
+  const { cacheControl } = decideIsr({
+    cacheState: options.cacheState,
+    kind: "app-page",
+    revalidateSeconds: options.revalidateSeconds,
+    expireSeconds: options.expireSeconds,
+    cacheControlMeta: options.cacheControl,
+  });
   if (options.isRscRequest) {
     if (!cachedValue.rscData) {
       return null;

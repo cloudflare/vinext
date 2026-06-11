@@ -1,6 +1,9 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { createOnUncaughtError } from "../packages/vinext/src/server/app-browser-error.js";
+import {
+  createOnUncaughtError,
+  prodOnCaughtError,
+} from "../packages/vinext/src/server/app-browser-error.js";
 import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
@@ -6338,6 +6341,91 @@ describe("createOnUncaughtError (hydrateRoot uncaught handler)", () => {
         handler(new Error("late error"), {});
         expect(assignSpy).toHaveBeenCalledWith("/second");
       });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+});
+
+describe("prodOnCaughtError (hydrateRoot prod handler)", () => {
+  it("ignores redirect sentinels handled by RedirectBoundary", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      prodOnCaughtError(
+        Object.assign(new Error("NEXT_REDIRECT:/result"), {
+          digest: "NEXT_REDIRECT;;%2Fresult",
+        }),
+        { componentStack: "\n    at Root" },
+      );
+      expect(consoleSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("ignores notFound and HTTP fallback sentinels (notFound/forbidden/unauthorized)", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      prodOnCaughtError(Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" }), {
+        componentStack: "\n    at Page",
+      });
+      prodOnCaughtError(
+        Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;403"), {
+          digest: "NEXT_HTTP_ERROR_FALLBACK;403",
+        }),
+        { componentStack: "\n    at Page" },
+      );
+      expect(consoleSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("forwards real caught errors to console.error", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const err = new Error("Maximum update depth exceeded");
+      prodOnCaughtError(err, { componentStack: "\n    at List\n    at Apps" });
+      const loggedErrors = consoleSpy.mock.calls.map((args) => args[0]);
+      expect(loggedErrors).toContain(err);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("includes the React component stack in the log when provided", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      prodOnCaughtError(new Error("boom"), {
+        componentStack: "\n    at List (apps/list.tsx:202)",
+      });
+      expect(consoleSpy).toHaveBeenCalledTimes(2);
+      expect(String(consoleSpy.mock.calls[1][0])).toContain("apps/list.tsx:202");
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("logs only the error when no component stack is provided", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const err = new Error("no stack");
+      prodOnCaughtError(err, {});
+      expect(consoleSpy).toHaveBeenCalledTimes(1);
+      expect(consoleSpy.mock.calls[0][0]).toBe(err);
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it("does not swallow a plain error that merely mentions NEXT_REDIRECT (no digest)", () => {
+    // Classification is digest-based; an error whose *message* contains the
+    // sentinel text but has no framework digest must still be logged.
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const err = new Error("user code threw: NEXT_REDIRECT");
+      prodOnCaughtError(err, {});
+      expect(consoleSpy.mock.calls.map((args) => args[0])).toContain(err);
     } finally {
       consoleSpy.mockRestore();
     }

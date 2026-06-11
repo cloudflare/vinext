@@ -104,9 +104,6 @@ export default {
     // probed via require.resolve
     "next-intl",
 
-    // Optional peer dependency probed by tests/scss.test.ts.
-    "sass",
-
     // Vite+ reporter name used outside CI in vite.config.ts.
     "agent",
 

@@ -422,14 +422,47 @@ export async function buildAppPageSpecialErrorResponse(
   if (options.renderFallbackPage) {
     const fallbackResponse = await options.renderFallbackPage(options.specialError.statusCode);
     if (fallbackResponse) {
-      return mergeAppPageSpecialErrorHeaders(fallbackResponse, options.middlewareContext);
+      // When notFound() / forbidden() / unauthorized() is thrown from
+      // generateMetadata(), Next.js treats the error as a suspended metadata
+      // result — the not-found UI is rendered through the React boundary
+      // client-side while the HTTP response itself stays 200. Mirror that
+      // behavior by overriding the rendered boundary response status to 200.
+      // Mirrors the redirect-from-metadata path above, which also returns 200.
+      // Reference: test/e2e/app-dir/metadata-navigation
+      //   "should support notFound in generateMetadata"
+      //
+      // Exception: when serveStreamingMetadata === false (html-limited bots),
+      // metadata blocks the render synchronously. Next.js sets the real HTTP
+      // error status in this case (app-render.tsx ~2845). Mirror by not
+      // overriding the status, symmetrically with the redirect-from-metadata
+      // path which is already gated on serveStreamingMetadata !== false.
+      const responseToMerge =
+        options.specialError.fromMetadata === true && options.serveStreamingMetadata !== false
+          ? new Response(fallbackResponse.body, {
+              headers: fallbackResponse.headers,
+              status: 200,
+              statusText: fallbackResponse.statusText,
+            })
+          : fallbackResponse;
+      return mergeAppPageSpecialErrorHeaders(responseToMerge, options.middlewareContext);
     }
   }
 
   options.clearRequestContext();
+  // When notFound() is thrown from generateMetadata() with no fallback page
+  // available, keep the 200 status to stay consistent with the streamed
+  // metadata contract (the error is surfaced in the page UI, not the status).
+  // Exception: when serveStreamingMetadata === false (html-limited bots),
+  // metadata blocks the render synchronously — Next.js sets the real HTTP
+  // error status in this case (app-render.tsx ~2845), symmetric with the
+  // redirect-from-metadata path that is already gated on the same flag.
+  const responseStatus =
+    options.specialError.fromMetadata === true && options.serveStreamingMetadata !== false
+      ? 200
+      : options.specialError.statusCode;
   return mergeAppPageSpecialErrorHeaders(
     new Response(getAppPageStatusText(options.specialError.statusCode), {
-      status: options.specialError.statusCode,
+      status: responseStatus,
     }),
     options.middlewareContext,
   );

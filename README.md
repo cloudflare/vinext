@@ -528,22 +528,19 @@ The cache is pluggable. The default `MemoryCacheHandler` works out of the box. S
 
 #### Configuring cache adapters from `vite.config`
 
-Instead of wiring up cache handlers imperatively from a worker entry, you can declare them in the `vinext()` plugin config. The `@vinext/cloudflare` package ships two Cloudflare adapters for this:
+Instead of wiring up cache handlers imperatively from a worker entry, you can declare them in the `vinext()` plugin config. The `@vinext/cloudflare` package ships Cloudflare adapters for this:
 
 - **`kvDataAdapter()`** (`@vinext/cloudflare/cache/kv-data-adapter`) — backs the `"use cache"` data cache with a Workers KV namespace.
-- **`cdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — backs full-route CDN caching with the Workers Cache API.
 
 ```ts
 import { defineConfig } from "vite";
 import vinext from "vinext";
-import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 
 export default defineConfig({
   plugins: [
     vinext({
       cache: {
-        cdn: cdnAdapter(),
         data: kvDataAdapter(),
       },
     }),
@@ -559,7 +556,7 @@ The KV data adapter reads `env[binding]` at runtime, so add the matching KV name
 }
 ```
 
-`binding` defaults to `VINEXT_KV_CACHE`, so `kvDataAdapter()` with no options works as long as that's your binding name. Other options: `appPrefix` (namespace cache keys to isolate multiple apps in one KV namespace), `ttlSeconds` (default KV `expirationTtl`, default 30 days), and `tagCacheTtlMs` (in-memory tag-invalidation cache TTL, default 5s). `cdnAdapter()` takes no options — it just needs the Workers Cache, which is always available on Workers.
+`binding` defaults to `VINEXT_KV_CACHE`, so `kvDataAdapter()` with no options works as long as that's your binding name. Other options: `appPrefix` (namespace cache keys to isolate multiple apps in one KV namespace), `ttlSeconds` (default KV `expirationTtl`, default 30 days), and `tagCacheTtlMs` (in-memory tag-invalidation cache TTL, default 5s).
 
 Each builder returns a plain, serializable `{ adapter, options }` descriptor — **it never touches the Workers runtime**, so nothing throws at build or dev time when bindings aren't available. The actual adapter (and its `env` binding lookup) is instantiated lazily on the first request.
 

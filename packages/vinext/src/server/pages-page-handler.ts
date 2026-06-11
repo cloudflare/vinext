@@ -45,6 +45,7 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js";
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
+import { ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,6 +79,7 @@ type I18nConfig = {
 
 type VinextConfigSubset = {
   basePath: string;
+  assetPrefix: string;
   trailingSlash: boolean;
   expireTime?: number;
   clientTraceMetadata?: readonly string[];
@@ -456,8 +458,18 @@ export function createPagesPageHandler(
           if (methodResponse) return methodResponse;
         }
 
-        const pageModuleUrl = resolveClientModuleUrl(manifest, route.filePath);
-        const appModuleUrl = resolveClientModuleUrl(manifest, appAssetPath);
+        const pageModuleUrl = resolveClientModuleUrl(
+          manifest,
+          route.filePath,
+          vinextConfig.basePath,
+          vinextConfig.assetPrefix,
+        );
+        const appModuleUrl = resolveClientModuleUrl(
+          manifest,
+          appAssetPath,
+          vinextConfig.basePath,
+          vinextConfig.assetPrefix,
+        );
         const serializedPagesNextData = {
           ...pagesNextData,
           __vinext: {
@@ -542,6 +554,9 @@ export function createPagesPageHandler(
           triggerBackgroundRegeneration,
           vinext: serializedPagesNextData.__vinext,
           nextData: serializedPagesNextData,
+          userAgent: request.headers.get("user-agent") ?? undefined,
+          ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
+          requestCacheControl: request.headers.get("cache-control") ?? undefined,
         });
 
         if (pageDataResult.kind === "notFound") {
@@ -608,8 +623,7 @@ export function createPagesPageHandler(
               }
             }
             if (!hasUserCacheControl) {
-              init.headers["Cache-Control"] =
-                "private, no-cache, no-store, max-age=0, must-revalidate";
+              init.headers["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
             }
           }
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
@@ -638,6 +652,8 @@ export function createPagesPageHandler(
           moduleIds: pageModuleIds,
           scriptNonce,
           disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
+          basePath: vinextConfig.basePath,
+          assetPrefix: vinextConfig.assetPrefix,
         });
 
         return await renderPagesPageResponse({
@@ -684,6 +700,9 @@ export function createPagesPageHandler(
           scriptNonce,
           statusCode: renderStatusCode,
           nextData: serializedPagesNextData,
+          userAgent: request.headers.get("user-agent") ?? undefined,
+          ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
+          requestCacheControl: request.headers.get("cache-control") ?? undefined,
         });
       } catch (e) {
         console.error("[vinext] SSR error:", e);

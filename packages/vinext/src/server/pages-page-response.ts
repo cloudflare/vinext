@@ -3,7 +3,12 @@ import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { CachedPagesValue } from "vinext/shims/cache";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { applyCdnResponseHeaders, buildRevalidateCacheControl } from "./cache-control.js";
+import { applyCdnResponseHeaders } from "./cache-control.js";
+import {
+  buildMissIsrCacheControl,
+  ISR_NEVER_CACHE_CONTROL,
+  ISR_NO_STORE_CACHE_CONTROL,
+} from "./isr-decision.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
@@ -14,8 +19,84 @@ import {
   type RenderPageEnhancers,
   runDocumentRenderPage,
 } from "./pages-document-initial-props.js";
+import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
+
+// ---------------------------------------------------------------------------
+// Bot / crawler detection for Pages Router edge-runtime SSR
+//
+// Mirrors Next.js's packages/next/src/shared/lib/router/utils/html-bots.ts
+// and is-bot.ts. These bots cannot parse streamed HTML correctly (they may
+// read metadata only from the initial <head> flush), so we buffer the full
+// response and emit it in a single chunk, identical to the Node.js path.
+// ---------------------------------------------------------------------------
+
+/**
+ * Crawlers that cannot handle streamed HTML: they read metadata only from
+ * the first network chunk, so streaming would give them an incomplete <head>.
+ * Pattern sourced from Next.js html-bots.ts (updated to match the canary).
+ */
+const HTML_LIMITED_BOT_UA_RE =
+  /[\w-]+-Google|Google-[\w-]+|Chrome-Lighthouse|Slurp|DuckDuckBot|baiduspider|yandex|sogou|bitlybot|tumblr|vkShare|quora link preview|redditbot|ia_archiver|Bingbot|BingPreview|applebot|facebookexternalhit|facebookcatalog|Twitterbot|LinkedInBot|Slackbot|Discordbot|WhatsApp|SkypeUriPreview|Yeti|googleweblight/i;
+
+/**
+ * Googlebot (the main search crawler) executes JavaScript via a headless
+ * browser, so it too cannot safely handle mid-stream HTML mutations.
+ * Matches "Googlebot" but NOT suffixed variants like "Googlebot-Image".
+ */
+const HEADLESS_BROWSER_BOT_UA_RE = /Googlebot(?!-)|Googlebot$/i;
+
+/**
+ * Returns true when the User-Agent belongs to a bot or crawler that cannot
+ * reliably consume a streamed HTML response.
+ */
+export function isPagesStreamingBot(userAgent: string): boolean {
+  return HEADLESS_BROWSER_BOT_UA_RE.test(userAgent) || HTML_LIMITED_BOT_UA_RE.test(userAgent);
+}
+
+// ---------------------------------------------------------------------------
+// ETag generation — FNV-1a 52-bit, matching Next.js's generateETag() in
+// packages/next/src/server/lib/etag.ts. Both produce a strong ETag (no W/
+// prefix) when weak=false, which is the default Next.js uses at runtime.
+// ---------------------------------------------------------------------------
+
+export function generatePagesETag(payload: string): string {
+  return '"' + fnv1a52(payload).toString(36) + payload.length.toString(36) + '"';
+}
+
+/**
+ * Mirrors Next.js `sendEtagResponse` semantics (weak/strong comparison).
+ *
+ * A weak ETag `W/"..."` matches both `W/"..."` and `"..."` in `If-None-Match`.
+ * A strong ETag `"..."` only matches the same strong token.
+ * `*` always matches.
+ */
+export function etagMatches(etag: string, ifNoneMatch: string): boolean {
+  if (ifNoneMatch === "*") return true;
+  // Normalise: strip the W/ prefix for comparison. Next.js's
+  // `sendEtagResponse` (packages/next/src/server/send-payload.ts) uses the
+  // `fresh` package, which treats a weak token in `If-None-Match` as matching
+  // the corresponding strong ETag and vice versa (RFC 7232 §2.3.2 weak
+  // comparison). We replicate that behaviour here.
+  const normalize = (t: string) => t.replace(/^W\//, "");
+  const etagNorm = normalize(etag.trim());
+  for (const token of ifNoneMatch.split(",")) {
+    if (normalize(token.trim()) === etagNorm) return true;
+  }
+  return false;
+}
+
+/**
+ * Returns true when a request `Cache-Control` header asks to bypass the 304
+ * short-circuit. Mirrors the `fresh` package's check used by Next.js's
+ * `sendEtagResponse` (`/(?:^|,)\s*?no-cache\s*?(?:,|$)/`). Shared by the
+ * fresh-MISS bot path here and the ISR HIT/STALE paths in
+ * `pages-page-data.ts` so the two cannot drift.
+ */
+export function requestsNoCache(cacheControl: string | undefined): boolean {
+  return /(?:^|,)\s*no-cache\s*(?:,|$)/.test(cacheControl ?? "");
+}
 
 type PagesFontPreload = {
   href: string;
@@ -112,6 +193,28 @@ type RenderPagesPageResponseOptions = {
   statusCode?: number;
   vinext?: VinextNextData["__vinext"];
   nextData?: PagesNextDataExtras;
+  /**
+   * The request's User-Agent string (from `request.headers.get('user-agent')`).
+   * When this matches a known crawler / bot pattern, the response is fully
+   * buffered before sending so bots receive a single complete HTML chunk with
+   * an ETag header. Omitting this field disables bot-detection (streaming as
+   * normal), which is the correct behaviour for non-HTML requests and tests.
+   */
+  userAgent?: string;
+  /**
+   * The incoming request's `If-None-Match` header value. When set and the
+   * computed ETag matches (weak-ETag semantics, mirroring Next.js's
+   * `sendEtagResponse`), a `304 Not Modified` is returned with an empty body.
+   * Only evaluated on bot/buffered responses that carry an ETag.
+   */
+  ifNoneMatch?: string;
+  /**
+   * The incoming request's `Cache-Control` header value. When the value
+   * contains `no-cache`, the 304 short-circuit is skipped and a full 200
+   * response is always returned — mirroring the `fresh` package used by
+   * Next.js's `sendEtagResponse`.
+   */
+  requestCacheControl?: string;
 };
 
 function buildPagesFontHeadHtml(
@@ -532,7 +635,7 @@ export async function renderPagesPageResponse(
   const userSetCacheControl = responseHeaders.has("Cache-Control");
 
   if (options.scriptNonce) {
-    responseHeaders.set("Cache-Control", "no-store, must-revalidate");
+    responseHeaders.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);
   } else if (options.isrRevalidateSeconds) {
     // Fresh ISR (MISS) response: route through the CDN adapter so edge adapters
     // emit CDN-Cache-Control + a path-based Cache-Tag (matching revalidatePath,
@@ -540,10 +643,7 @@ export async function renderPagesPageResponse(
     const isrPathname = options.routeUrl.split("?")[0];
     const stem = isrPathname.endsWith("/") ? isrPathname.slice(0, -1) : isrPathname;
     applyCdnResponseHeaders(responseHeaders, {
-      cacheControl: buildRevalidateCacheControl(
-        options.isrRevalidateSeconds,
-        options.expireSeconds,
-      ),
+      cacheControl: buildMissIsrCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
       tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
     });
     setCacheStateHeaders(responseHeaders, "MISS");
@@ -551,10 +651,56 @@ export async function renderPagesPageResponse(
     // Default for getServerSideProps responses, matching Next.js
     // pages-handler.ts (revalidate: 0 → getCacheControlHeader). Without this,
     // CDNs and browsers could cache per-request gssp responses.
-    responseHeaders.set("Cache-Control", "private, no-cache, no-store, max-age=0, must-revalidate");
+    responseHeaders.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
   }
   if (options.fontLinkHeader) {
     responseHeaders.set("Link", options.fontLinkHeader);
+  }
+
+  // Bot / crawler path: buffer the complete HTML, emit as a single chunk, and
+  // attach an ETag. Bots (Googlebot, Google-PageRenderer, etc.) cannot parse
+  // incrementally-streamed HTML — metadata tags pushed after the initial <head>
+  // flush are invisible to them.
+  //
+  // INTENTIONAL DIVERGENCE FROM NEXT.JS: Next.js gates this buffering/ETag on
+  // `!result.isDynamic` (i.e., only static/ISR pages get it, not GSSP pages).
+  // Vinext instead gates on the crawler User-Agent — buffering ALL bot requests
+  // regardless of whether the route uses getServerSideProps or getStaticProps.
+  // This is deliberate: edge-runtime streaming is unreliable for bots on any
+  // route type, so the UA check is the correct signal here. See also the ISR
+  // cache-HIT path in `pages-page-data.ts` which applies the same UA gate for
+  // consistent ETag coverage on cached responses.
+  //
+  // A consequence of UA-gating is that the ETag/304 path below can also fire
+  // for dynamic (GSSP) responses, which Next.js never 304s (`isDynamic` renders
+  // skip ETag generation entirely). The risk is minimal in practice: GSSP
+  // responses carry `Cache-Control: private, no-cache, no-store,
+  // must-revalidate`, so a conformant client won't revalidate them with
+  // `If-None-Match` — but a dynamic page may legitimately differ between the
+  // ETag-generating render and a revalidation request.
+  //
+  // When the incoming `If-None-Match` header matches the computed ETag, return
+  // `304 Not Modified` with no body (mirrors Next.js `sendEtagResponse`
+  // semantics in packages/next/src/server/send-payload.ts, with weak-ETag
+  // comparison per RFC 7232 §2.3.2).
+  //
+  // NOTE: This check is intentionally placed after the Cache-Control / header
+  // setup above so bot responses still carry the correct cache semantics.
+  if (options.userAgent && isPagesStreamingBot(options.userAgent)) {
+    const fullHtml = await readStreamAsText(compositeStream);
+    const etag = generatePagesETag(fullHtml);
+    responseHeaders.set("ETag", etag);
+    const noCacheRequested = requestsNoCache(options.requestCacheControl);
+    if (!noCacheRequested && options.ifNoneMatch && etagMatches(etag, options.ifNoneMatch)) {
+      return new Response(null, {
+        status: 304,
+        headers: responseHeaders,
+      });
+    }
+    return new Response(fullHtml, {
+      status: finalStatus,
+      headers: responseHeaders,
+    });
   }
 
   const response: PagesStreamedHtmlResponse = Object.assign(

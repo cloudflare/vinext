@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vite-plus/test";
 import {
   runPagesRequest,
+  wrapMiddlewareWithBasePath,
   type PagesPipelineDeps,
   type MiddlewareResult,
   type PagesRenderOptions,
@@ -643,5 +644,47 @@ describe("preserveCredentialHeaders", () => {
     // Verify fetch was called (external proxy triggered)
     expect(mockFetch).toHaveBeenCalled();
     mockFetch.mockRestore();
+  });
+});
+
+// 20. wrapMiddlewareWithBasePath: shared adapter helper that re-adds the basePath
+// to the middleware request URL. Used by prod-server.ts and the generated worker
+// entry (deploy.ts) so middleware sees the original (pre-stripping) URL.
+describe("wrapMiddlewareWithBasePath", () => {
+  it("passes through unchanged when hadBasePath is false (out-of-basePath request)", async () => {
+    const runMiddleware = makeMiddleware({ continue: true });
+    const wrapped = wrapMiddlewareWithBasePath(runMiddleware, "/root", false);
+    // Out-of-basePath requests stay bare so middleware sees nextUrl.basePath === "" (#1830).
+    expect(wrapped).toBe(runMiddleware);
+    await wrapped(makeRequest("/dashboard"), null, { isDataRequest: false });
+    expect(runMiddleware.mock.calls[0][0].url).toBe("http://localhost/dashboard");
+  });
+
+  it("passes through unchanged when basePath is empty", () => {
+    const runMiddleware = makeMiddleware({ continue: true });
+    expect(wrapMiddlewareWithBasePath(runMiddleware, "", true)).toBe(runMiddleware);
+  });
+
+  it("re-adds the basePath to the request URL when hadBasePath is true", async () => {
+    const runMiddleware = makeMiddleware({ continue: true });
+    const wrapped = wrapMiddlewareWithBasePath(runMiddleware, "/root", true);
+    expect(wrapped).not.toBe(runMiddleware);
+    const result = await wrapped(makeRequest("/dashboard?q=1", { "x-test": "kept" }), "ctx", {
+      isDataRequest: true,
+    });
+    expect(result.continue).toBe(true);
+    const [mwReq, ctx, opts] = runMiddleware.mock.calls[0];
+    expect(mwReq.url).toBe("http://localhost/root/dashboard?q=1");
+    // Headers, ctx, and opts are forwarded untouched.
+    expect(mwReq.headers.get("x-test")).toBe("kept");
+    expect(ctx).toBe("ctx");
+    expect(opts).toEqual({ isDataRequest: true });
+  });
+
+  it("does not double-add an already-present basePath (addBasePathToPathname is idempotent)", async () => {
+    const runMiddleware = makeMiddleware({ continue: true });
+    const wrapped = wrapMiddlewareWithBasePath(runMiddleware, "/root", true);
+    await wrapped(makeRequest("/root/dashboard"), null, { isDataRequest: false });
+    expect(runMiddleware.mock.calls[0][0].url).toBe("http://localhost/root/dashboard");
   });
 });

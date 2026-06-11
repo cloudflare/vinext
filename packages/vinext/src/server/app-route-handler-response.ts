@@ -1,10 +1,6 @@
 import type { CachedRouteValue, CacheControlMetadata } from "vinext/shims/cache";
-import {
-  applyCdnResponseHeaders,
-  buildCachedRevalidateCacheControl,
-  NEVER_CACHE_CONTROL,
-  STATIC_CACHE_CONTROL,
-} from "./cache-control.js";
+import { applyCdnResponseHeaders } from "./cache-control.js";
+import { decideIsr, buildAppRouteMissIsrCacheControl } from "./isr-decision.js";
 import {
   MIDDLEWARE_HEADER_PREFIX,
   MIDDLEWARE_NEXT_HEADER,
@@ -46,28 +42,6 @@ function hasMiddlewareHeader(headers: Headers): boolean {
     if (key.startsWith(MIDDLEWARE_HEADER_PREFIX)) return true;
   }
   return false;
-}
-
-function buildRouteHandlerCacheControl(
-  cacheState: BuildRouteHandlerCachedResponseOptions["cacheState"],
-  revalidateSeconds: number,
-  expireSeconds?: number,
-): string {
-  if (revalidateSeconds === 0) {
-    // A cached response is never produced for revalidate = 0 (the ISR write
-    // path skips it), so only the HIT/STALE->fresh rewrite can arrive here
-    // with a 0 value, via applyRouteHandlerRevalidateHeader. In all such
-    // cases the author opted out of caching entirely.
-    return NEVER_CACHE_CONTROL;
-  }
-
-  if (revalidateSeconds === Infinity) {
-    // revalidate = false / Infinity means "cache indefinitely" — emit the
-    // same static Cache-Control used by pages, not a dynamic SWR value.
-    return STATIC_CACHE_CONTROL;
-  }
-
-  return buildCachedRevalidateCacheControl(cacheState, revalidateSeconds, expireSeconds);
 }
 
 export function applyRouteHandlerMiddlewareContext(
@@ -115,21 +89,17 @@ export function buildRouteHandlerCachedResponse(
     }
   }
   setCacheStateHeaders(headers, options.cacheState);
-  const revalidateSeconds = options.cacheControl?.revalidate ?? options.revalidateSeconds;
-  const expireSeconds =
-    options.cacheControl === undefined
-      ? undefined
-      : (options.cacheControl.expire ?? options.expireSeconds);
   // HIT/STALE served from the origin store: route the cache header through the
   // CDN adapter (default: identical single Cache-Control). Edge adapters never
   // reach this path because their get() returns null.
-  applyCdnResponseHeaders(headers, {
-    cacheControl: buildRouteHandlerCacheControl(
-      options.cacheState,
-      revalidateSeconds,
-      expireSeconds,
-    ),
+  const { cacheControl } = decideIsr({
+    cacheState: options.cacheState,
+    kind: "app-route",
+    revalidateSeconds: options.revalidateSeconds,
+    expireSeconds: options.expireSeconds,
+    cacheControlMeta: options.cacheControl,
   });
+  applyCdnResponseHeaders(headers, { cacheControl });
 
   return new Response(options.isHead ? null : cachedValue.body, {
     status: cachedValue.status,
@@ -145,8 +115,11 @@ export function applyRouteHandlerRevalidateHeader(
 ): void {
   // Fresh (MISS) response: route through the CDN adapter so edge adapters emit
   // CDN-Cache-Control + Cache-Tag while the default emits a single Cache-Control.
+  // Uses buildAppRouteMissIsrCacheControl so the revalidate=0→NEVER and
+  // Infinity→STATIC gates apply, and expireSeconds is used as the direct route
+  // config ceiling (not a per-entry metadata fallback).
   applyCdnResponseHeaders(response.headers, {
-    cacheControl: buildRouteHandlerCacheControl("HIT", revalidateSeconds, expireSeconds),
+    cacheControl: buildAppRouteMissIsrCacheControl(revalidateSeconds, expireSeconds),
     tags,
   });
 }

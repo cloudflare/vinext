@@ -47,9 +47,9 @@ describe("App Router Production build", () => {
     // Client bundle should exist
     expect(fs.existsSync(path.join(outDir, "client"))).toBe(true);
 
-    // Client should have hashed JS assets under Next.js's canonical
-    // `_next/static/` directory (matches `resolveAssetsDir("")`).
-    const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static"));
+    // Client JS should land under Next.js's canonical `_next/static/chunks/`
+    // directory.
+    const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
     expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
 
     // RSC bundle should contain route handling code
@@ -268,9 +268,9 @@ export default function proxy(request: NextRequest) {
       const homeHtml = await homeRes.text();
       expect(homeHtml).toContain("Welcome to App Router");
       expect(homeHtml).toContain("<script");
-      // Production bootstrap is emitted as a real <script type="module" src=…>
-      // tag (via React's bootstrapModules option) referencing hashed assets.
-      expect(homeHtml).toMatch(/<script[^>]+type="module"[^>]+src="\/_next\/static\/[^"]+\.js"/);
+      expect(homeHtml).toMatch(
+        /<script[^>]+type="module"[^>]+src="\/_next\/static\/chunks\/[^"]+\.js"/,
+      );
 
       // Dynamic route works
       const blogRes = await fetch(`${previewUrl}/blog/test-post`);

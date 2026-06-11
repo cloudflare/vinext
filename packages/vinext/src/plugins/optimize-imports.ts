@@ -19,6 +19,7 @@ import path from "node:path";
 import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { getAstName } from "./ast-utils.js";
+import { normalizePathSeparators } from "../utils/path.js";
 
 /**
  * Read a file's contents, returning null on any error.
@@ -293,18 +294,18 @@ async function resolvePackageEntry(
       if (dotExport) {
         const entryPath = resolveExportsValue(dotExport, preferReactServer);
         if (entryPath) {
-          return path.resolve(pkgDir, entryPath).split(path.sep).join("/");
+          return normalizePathSeparators(path.resolve(pkgDir, entryPath));
         }
       }
     }
 
     const entryField = pkgJson.module ?? pkgJson.main;
     if (typeof entryField === "string") {
-      return path.resolve(pkgDir, entryField).split(path.sep).join("/");
+      return normalizePathSeparators(path.resolve(pkgDir, entryField));
     }
 
     const req = createRequire(path.join(projectRoot, "package.json"));
-    return req.resolve(packageName).split(path.sep).join("/");
+    return normalizePathSeparators(req.resolve(packageName));
   } catch {
     return null;
   }
@@ -360,7 +361,9 @@ async function buildExportMapFromFile(
   >();
   const localDeclarations = new Set<string>();
 
-  const fileDir = path.dirname(filePath);
+  // filePath is already normalized POSIX (every producer normalizes), so
+  // path.posix.dirname is safe.
+  const fileDir = path.posix.dirname(filePath);
 
   /**
    * Normalize a source specifier: resolve relative paths to absolute so that
@@ -368,9 +371,7 @@ async function buildExportMapFromFile(
    * Bare package specifiers (e.g. "@radix-ui/react-slot") are returned unchanged.
    */
   function normalizeSource(source: string): string {
-    return source.startsWith(".")
-      ? path.resolve(fileDir, source).split(path.sep).join("/")
-      : source;
+    return source.startsWith(".") ? path.posix.join(fileDir, source) : source;
   }
 
   function recordLocalDeclaration(node: DeclarationNode | null | undefined): void {
@@ -448,7 +449,7 @@ async function buildExportMapFromFile(
         } else {
           // export * from "./sub" — wildcard: recursively merge sub-module exports
           if (rawSource.startsWith(".")) {
-            const subPath = path.resolve(fileDir, rawSource).split(path.sep).join("/");
+            const subPath = path.posix.join(fileDir, rawSource);
             // Try with the path as-is first, then with common extensions.
             // Includes TypeScript-first (.ts/.tsx/.cts/.mts) and JSX (.jsx) extensions
             // for TypeScript-first internal libraries and monorepo packages that may
@@ -582,17 +583,19 @@ async function buildExportMapFromFile(
  * Handles: `export * as X from`, `export { A } from`, `import * as X; export { X }`,
  * and `export * from "./sub"` (recursively resolves wildcard re-exports).
  *
- * Returns null if the entry cannot be resolved, the file cannot be read, or
- * the file has a parse error. Returns an empty map if the file is valid but
- * exports nothing.
+ * Returns null if `entryPath` is empty, the file cannot be read, or the file
+ * has a parse error. Returns an empty map if the file is valid but exports
+ * nothing.
+ *
+ * @param entryPath - Pre-resolved absolute path to the barrel entry file (the
+ *   caller owns entry resolution + its caching), or null when it could not be
+ *   resolved.
  */
 export async function buildBarrelExportMap(
-  packageName: string,
-  resolveEntry: (pkg: string) => string | null,
+  entryPath: string | null,
   readFile: (filepath: string) => Promise<string | null>,
   cache?: Map<string, BarrelExportMap>,
 ): Promise<BarrelExportMap | null> {
-  const entryPath = resolveEntry(packageName);
   if (!entryPath) return null;
 
   const exportMapCache = cache ?? new Map<string, BarrelExportMap>();
@@ -763,10 +766,7 @@ export function createOptimizeImportsPlugin(
             entryPathCache.set(cacheKey, barrelEntry ?? null);
           }
           const exportMap = await buildBarrelExportMap(
-            importSource,
-            // Entry already resolved above via entryPathCache; the callback is a
-            // no-op resolver that simply returns the pre-resolved barrelEntry.
-            () => barrelEntry ?? null,
+            barrelEntry,
             readFileSafe,
             barrelCaches.exportMapCache,
           );

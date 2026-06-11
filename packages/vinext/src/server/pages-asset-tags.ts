@@ -10,6 +10,7 @@
  */
 
 import { createNonceAttribute } from "./html.js";
+import { assetServingUrlFromBaseAnchored } from "../utils/manifest-paths.js";
 
 // ---------------------------------------------------------------------------
 // Manifest helpers
@@ -51,21 +52,25 @@ export function getManifestFilesForModule(
 }
 
 /**
- * Find the first `.js` file in the manifest for `moduleId` and return its
- * URL-path form (with a leading `/`). Used to resolve the hydration URL for
- * the matched page or the `_app` module.
+ * Find the first `.js` file in the manifest for `moduleId` and return the URL it
+ * is actually SERVED from. Used to resolve the client-navigation / hydration URL
+ * for the matched page or the `_app` module (it is `import()`ed on the client),
+ * so it must point at the served location: `assetPrefix` replaces `basePath` for
+ * asset URLs. SSR-manifest values are base-anchored; re-anchor under any
+ * configured `assetPrefix` (default `""` keeps the legacy `"/" + file`).
  */
 export function resolveClientModuleUrl(
   manifest: Record<string, string[]> | null | undefined,
   moduleId: string | null | undefined,
+  basePath = "",
+  assetPrefix = "",
 ): string | undefined {
   const files = getManifestFilesForModule(resolveSsrManifest(manifest), moduleId);
   if (!files) return undefined;
   for (let i = 0; i < files.length; i++) {
-    let file = files[i];
+    const file = files[i];
     if (!file || !file.endsWith(".js")) continue;
-    if (file.charAt(0) !== "/") file = "/" + file;
-    return file;
+    return assetServingUrlFromBaseAnchored(file, basePath, assetPrefix);
   }
   return undefined;
 }
@@ -93,6 +98,14 @@ type CollectAssetTagsOptions = {
    * default.
    */
   disableOptimizedLoading: boolean;
+  /**
+   * Configured `basePath` / `assetPrefix`. SSR-manifest values are base-anchored
+   * (needed for the lazy-chunk membership test), but the EMITTED href must point
+   * where the asset is actually served — `assetPrefix` replaces `basePath` for
+   * asset URLs. Default `""` (both unset) keeps the legacy `"/" + value` href.
+   */
+  basePath?: string;
+  assetPrefix?: string;
 };
 
 /**
@@ -122,6 +135,16 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   // attribute, and adding it preserves parity without changing browser behaviour.
   const deferAttr = options.disableOptimizedLoading ? "" : " defer";
 
+  // SSR-manifest / client-entry values are base-anchored (so the lazy-chunk
+  // membership test below matches the base-anchored __VINEXT_LAZY_CHUNKS__), but
+  // the EMITTED href must point where the asset is actually served. assetPrefix
+  // replaces basePath for asset URLs, so re-anchor each href accordingly. With
+  // no assetPrefix this is the legacy `"/" + value`.
+  const basePath = options.basePath ?? "";
+  const assetPrefix = options.assetPrefix ?? "";
+  const href = (value: string): string =>
+    assetServingUrlFromBaseAnchored(value, basePath, assetPrefix);
+
   // Load the set of lazy chunk filenames (only reachable via dynamic imports).
   // These should NOT get <link rel="modulepreload"> or <script type="module">
   // tags — they are fetched on demand when the dynamic import() executes.
@@ -133,13 +156,13 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   if (typeof globalThis !== "undefined" && globalThis.__VINEXT_CLIENT_ENTRY__) {
     const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
     seen.add(entry);
-    tags.push('<link rel="modulepreload"' + nonceAttr + ' href="/' + entry + '" />');
+    tags.push('<link rel="modulepreload"' + nonceAttr + ' href="' + href(entry) + '" />');
     tags.push(
       '<script type="module"' +
         deferAttr +
         nonceAttr +
-        ' src="/' +
-        entry +
+        ' src="' +
+        href(entry) +
         '" crossorigin></script>',
     );
   }
@@ -198,18 +221,20 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
       if (seen.has(tf)) continue;
       seen.add(tf);
       if (tf.endsWith(".css")) {
-        tags.push('<link rel="stylesheet"' + nonceAttr + ' href="/' + tf + '" />');
+        tags.push('<link rel="stylesheet"' + nonceAttr + ' href="' + href(tf) + '" />');
       } else if (tf.endsWith(".js")) {
         // Skip lazy chunks — they are behind dynamic import() boundaries
         // (React.lazy, next/dynamic) and should only be fetched on demand.
+        // Membership test uses the base-anchored `tf` (same key-space as
+        // __VINEXT_LAZY_CHUNKS__), NOT the re-anchored href.
         if (lazySet && lazySet.has(tf)) continue;
-        tags.push('<link rel="modulepreload"' + nonceAttr + ' href="/' + tf + '" />');
+        tags.push('<link rel="modulepreload"' + nonceAttr + ' href="' + href(tf) + '" />');
         tags.push(
           '<script type="module"' +
             deferAttr +
             nonceAttr +
-            ' src="/' +
-            tf +
+            ' src="' +
+            href(tf) +
             '" crossorigin></script>',
         );
       }

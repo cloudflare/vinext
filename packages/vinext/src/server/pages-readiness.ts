@@ -18,7 +18,7 @@ import type { PagesPageModule } from "./pages-page-data.js";
  * The field names/types are projected from the canonical `VinextNextData` so
  * this stays in lockstep with the `__NEXT_DATA__` shape it feeds into.
  */
-export type PagesReadinessNextData = Pick<
+type PagesReadinessNextData = Pick<
   VinextNextData,
   "gssp" | "gsp" | "gip" | "appGip" | "autoExport"
 > & {

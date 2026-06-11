@@ -47,7 +47,7 @@ import {
   getWindowOrigin,
   withBasePath,
 } from "./url-utils.js";
-import { stripBasePath } from "../utils/base-path.js";
+import { stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
 import {
   addLocalePrefix,
   getDomainLocaleUrl,
@@ -1828,6 +1828,31 @@ async function performNavigation(
     return true;
   }
 
+  // If this destination was detected as an App Router route during prefetch,
+  // skip the Pages Router SPA fetch and do an immediate hard navigation.
+  // The Pages Router client-side stack cannot render App Router pages; a hard
+  // navigation lets the browser bootstrap the App Router runtime from scratch.
+  //
+  // Mirrors Next.js: packages/next/src/shared/lib/router/router.ts:1448-1453
+  //   if ((this.components[pathname] as any)?.__appRouter) {
+  //     handleHardNavigation({ url: as, router: this })
+  //     return new Promise(() => {})
+  //   }
+  //
+  // Key normalisation: strip trailing slash so the lookup always matches the
+  // canonical key written by markAppRouteDetectedOnPrefetch, regardless of
+  // whether trailingSlash:true added a slash to `resolved` above (line 1797).
+  // Mirrors Next.js: removeTrailingSlash(removeBasePath(pathname)) at line 1442.
+  const appPath = getLocalPathname(resolved);
+  const appPathNorm = appPath !== null ? removeTrailingSlash(appPath) : null;
+  const appPathEntry =
+    appPathNorm !== null ? getPagesRouterComponentsMap()[appPathNorm] : undefined;
+  if (appPathEntry !== undefined && "__appRouter" in appPathEntry && appPathEntry.__appRouter) {
+    if (mode === "push") window.location.assign(full);
+    else window.location.replace(full);
+    return new Promise<boolean>(() => {});
+  }
+
   if (mode === "push") saveScrollPosition();
   routerEvents.emit("routeChangeStart", resolved, { shallow });
   routerEvents.emit("beforeHistoryChange", resolved, { shallow });
@@ -2389,6 +2414,44 @@ const Router: typeof RouterMethods & Omit<NextRouter, keyof typeof RouterMethods
       },
     },
   }) as typeof RouterMethods & Omit<NextRouter, keyof typeof RouterMethods>;
+
+// Deprecated event property bridging: when userland code does
+// `Router.onRouteChangeComplete = handler` (the legacy Next.js pattern),
+// the handler must be called whenever the corresponding event fires.
+//
+// For each known router event, register a listener that reads the deprecated
+// `on<EventName>` property off the singleton and calls it if present.
+//
+// Ported from Next.js: packages/next/src/client/router.ts (lines 105–124).
+// The reference implementation wraps this in `singletonRouter.ready()` so it
+// runs after the router instance is created; vinext's routerEvents is a module-
+// level singleton that exists from the start, so we can register directly.
+// Registering unconditionally at module load (without a client-only guard) is
+// safe here because every routerEvents.emit() call is already gated behind
+// typeof window checks, so these listeners never fire in SSR contexts.
+const deprecatedRouterEvents = [
+  "routeChangeStart",
+  "beforeHistoryChange",
+  "routeChangeComplete",
+  "routeChangeError",
+  "hashChangeStart",
+  "hashChangeComplete",
+] as const;
+
+for (const event of deprecatedRouterEvents) {
+  const eventField = `on${event.charAt(0).toUpperCase()}${event.substring(1)}`;
+  routerEvents.on(event, (...args: unknown[]) => {
+    const handler = (Router as Record<string, unknown>)[eventField];
+    if (typeof handler === "function") {
+      try {
+        (handler as (...a: unknown[]) => void)(...args);
+      } catch (err) {
+        console.error(`Error when running the Router event: ${eventField}`);
+        console.error(err instanceof Error ? `${err.message}\n${err.stack}` : String(err));
+      }
+    }
+  });
+}
 
 // Expose `window.next.router` for Next.js parity. Pages Router test suites,
 // userland scripts, and third-party libraries reach for this global directly

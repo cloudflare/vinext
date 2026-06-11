@@ -39,6 +39,7 @@ import { filterInternalHeaders, isOpenRedirectShaped } from "./request-pipeline.
 import { notFoundResponse } from "./http-error-responses.js";
 import {
   runPagesRequest,
+  wrapMiddlewareWithBasePath,
   type PagesPipelineDeps,
   type PagesRenderOptions,
 } from "./pages-request-pipeline.js";
@@ -53,20 +54,8 @@ import {
   ASSET_PREFIX_URL_DIR,
   assetPrefixPathname,
   isAbsoluteAssetPrefix,
-  resolveAssetsDir,
 } from "../utils/asset-prefix.js";
-import { computeLazyChunks } from "../utils/lazy-chunks.js";
-import { manifestFileWithBase } from "../utils/manifest-paths.js";
-import {
-  findClientEntryFile,
-  findPagesClientEntryFile,
-  readClientBuildManifest,
-} from "../utils/client-build-manifest.js";
-import {
-  findClientEntryFileFromVinextManifest,
-  findPagesClientEntryFileFromVinextManifest,
-  readClientEntryManifest,
-} from "../utils/client-entry-manifest.js";
+import { computeClientRuntimeMetadata } from "../utils/client-runtime-metadata.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
@@ -278,6 +267,15 @@ function matchesIfNoneMatchHeader(ifNoneMatch: string | undefined, etag: string)
     .some((value) => value === etag);
 }
 
+function installClientBuildManifestGlobals(
+  clientDir: string,
+  assetBase: string,
+  assetPrefix: string,
+): void {
+  const metadata = computeClientRuntimeMetadata({ clientDir, assetBase, assetPrefix });
+  globalThis.__VINEXT_LAZY_CHUNKS__ = metadata.lazyChunks;
+  globalThis.__VINEXT_DYNAMIC_PRELOADS__ = metadata.dynamicPreloads;
+}
 function isNoBodyResponseStatus(status: number): boolean {
   return NO_BODY_RESPONSE_STATUSES.has(status);
 }
@@ -1012,7 +1010,7 @@ function readSsrManifest(clientDir: string): Record<string, string[]> {
 
 function installPagesClientAssetGlobals(options: {
   clientDir: string;
-  assetsSubdir: string;
+  assetPrefix: string;
   assetBase: string;
   clientEntryLookup: PagesClientEntryLookup;
 }): Record<string, string[]> {
@@ -1020,31 +1018,17 @@ function installPagesClientAssetGlobals(options: {
   globalThis.__VINEXT_SSR_MANIFEST__ =
     Object.keys(ssrManifest).length > 0 ? ssrManifest : undefined;
 
-  const buildManifest = readClientBuildManifest(
-    path.join(options.clientDir, ".vite", "manifest.json"),
-  );
-  const clientEntryManifest = readClientEntryManifest(options.clientDir);
-  const entryOptions = {
+  const metadata = computeClientRuntimeMetadata({
     clientDir: options.clientDir,
-    assetsSubdir: options.assetsSubdir,
     assetBase: options.assetBase,
-    ...(buildManifest ? { buildManifest } : {}),
-  };
-  globalThis.__VINEXT_CLIENT_ENTRY__ =
-    options.clientEntryLookup === "pages-client-entry"
-      ? (findPagesClientEntryFileFromVinextManifest(clientEntryManifest, options.assetBase) ??
-        findPagesClientEntryFile(entryOptions))
-      : (findClientEntryFileFromVinextManifest(clientEntryManifest, options.assetBase) ??
-        findClientEntryFile(entryOptions));
+    assetPrefix: options.assetPrefix,
+    includeClientEntry:
+      options.clientEntryLookup === "pages-client-entry" ? "pages-client-entry" : true,
+  });
 
-  if (buildManifest) {
-    const lazyChunks = computeLazyChunks(buildManifest).map((file) =>
-      manifestFileWithBase(file, options.assetBase),
-    );
-    globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks.length > 0 ? lazyChunks : undefined;
-  } else {
-    globalThis.__VINEXT_LAZY_CHUNKS__ = undefined;
-  }
+  globalThis.__VINEXT_CLIENT_ENTRY__ = metadata.clientEntryFile;
+  globalThis.__VINEXT_LAZY_CHUNKS__ = metadata.lazyChunks;
+  globalThis.__VINEXT_DYNAMIC_PRELOADS__ = metadata.dynamicPreloads;
 
   return ssrManifest;
 }
@@ -1117,10 +1101,12 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   if (appRouterHasPagesDir) {
     installPagesClientAssetGlobals({
       clientDir,
-      assetsSubdir: resolveAssetsDir(appRouterAssetPrefix),
+      assetPrefix: appRouterAssetPrefix,
       assetBase: appAssetBase,
       clientEntryLookup: "pages-client-entry",
     });
+  } else {
+    installClientBuildManifestGlobals(clientDir, appAssetBase, appRouterAssetPrefix);
   }
 
   // Seed the memory cache with pre-rendered routes so the first request to
@@ -1442,7 +1428,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   // Cloudflare builds inject into the Worker entry at build time.
   const ssrManifest = installPagesClientAssetGlobals({
     clientDir,
-    assetsSubdir: resolveAssetsDir(assetPrefix),
+    assetPrefix,
     assetBase,
     clientEntryLookup: "any-client-entry",
   });
@@ -1667,7 +1653,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         // Raw query from req.url so redirect Locations aren't re-encoded by URL parsing.
         rawSearch: rawQs,
         matchPageRoute: matchPageRoute ?? null,
-        runMiddleware: typeof runMiddleware === "function" ? runMiddleware : null,
+        // Pass the original (pre-basePath-stripping) URL to middleware so that
+        // request.nextUrl.basePath reflects whether the URL actually had the
+        // basePath prefix (see wrapMiddlewareWithBasePath).
+        runMiddleware:
+          typeof runMiddleware === "function"
+            ? wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)
+            : null,
         renderPage:
           typeof renderPage === "function"
             ? (

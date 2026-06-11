@@ -17,6 +17,7 @@ import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
+import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 
 export type MiddlewareModule = Record<string, unknown>;
 
@@ -44,6 +45,19 @@ type MiddlewareConfigExport = {
 type ExecuteMiddlewareOptions = {
   basePath?: string;
   filePath?: string;
+  /**
+   * Whether the incoming request was inside the configured basePath. Drives
+   * the `nextUrl.basePath` the middleware observes: in-basePath requests are
+   * re-prefixed so NextURL reports the configured basePath, while
+   * out-of-basePath ("absolute path") requests stay un-prefixed so middleware
+   * sees `nextUrl.basePath === ""` (Next.js `getNextPathnameInfo` semantics —
+   * see test/e2e/middleware-base-path "should execute from absolute paths").
+   * When omitted it is derived from the request URL, which is correct for the
+   * Pages prod/deploy adapters because they pass the original (un-stripped)
+   * URL. Callers that pass an already-stripped URL (dev server, App Router)
+   * must set this explicitly.
+   */
+  hadBasePath?: boolean;
   i18nConfig?: NextI18nConfig | null;
   includeErrorDetails?: boolean;
   /**
@@ -192,14 +206,29 @@ function createNextRequest(
   i18nConfig?: NextI18nConfig | null,
   basePath?: string,
   trailingSlash?: boolean,
+  hadBasePath?: boolean,
 ): NextRequest {
   const url = new URL(request.url);
   // Middleware gets an isolated body branch; downstream routing keeps owning
   // the original request body.
   let mwRequest = request.body && !request.bodyUsed ? request.clone() : request;
-  if (normalizedPathname !== url.pathname) {
+  // NextURL._stripBasePath only recognises basePath when the URL's pathname
+  // actually starts with the basePath prefix. normalizedPathname may already
+  // be basePath-stripped (App Router passes cleanPathname, the dev server
+  // receives Vite-stripped URLs), so for in-basePath requests we re-add the
+  // basePath prefix here to mirror the un-stripped URL that Next.js's
+  // middleware adapter always receives. NextURL will strip it back during
+  // construction, and request.nextUrl.basePath will correctly reflect the
+  // configured value. Out-of-basePath ("absolute path") requests must stay
+  // un-prefixed so the middleware observes nextUrl.basePath === "" (Next.js
+  // getNextPathnameInfo semantics).
+  const mwPathname =
+    basePath && hadBasePath
+      ? addBasePathToPathname(normalizedPathname, basePath)
+      : normalizedPathname;
+  if (mwPathname !== url.pathname) {
     const mwUrl = new URL(url);
-    mwUrl.pathname = normalizedPathname;
+    mwUrl.pathname = mwPathname;
     mwRequest = new Request(mwUrl, mwRequest);
   }
 
@@ -230,9 +259,29 @@ export async function executeMiddleware(
     return { continue: false, response: normalizedPathname };
   }
 
+  // Default: derive in-basePath state from the request URL. The Pages
+  // prod/deploy adapters pass the original URL — prefixed for in-basePath
+  // requests, bare for out-of-basePath requests — so the URL itself is the
+  // source of truth. Callers that pass pre-stripped URLs (dev server, App
+  // Router) override this with an explicit `hadBasePath: true`.
+  const hadBasePath =
+    options.hadBasePath ??
+    (!options.basePath || hasBasePath(new URL(options.request.url).pathname, options.basePath));
+
+  // Matcher patterns use basePath-stripped paths (e.g. /about, not /root/about),
+  // matching Next.js behavior where the matcher is evaluated against the path
+  // without the basePath prefix. When normalizedPathname was explicitly provided
+  // by the caller (e.g. App Router passes cleanPathname which is already stripped),
+  // stripBasePath is a no-op. When it is auto-derived from the request URL and the
+  // URL carries the basePath (because the adapter passed the original URL), we must
+  // strip before matching so patterns like "/about" fire correctly.
+  const matchPathname = options.basePath
+    ? stripBasePath(normalizedPathname, options.basePath)
+    : normalizedPathname;
+
   if (
     !matchesMiddleware(
-      normalizedPathname,
+      matchPathname,
       middlewareMatcher(options.module),
       options.request,
       options.i18nConfig,
@@ -247,8 +296,9 @@ export async function executeMiddleware(
     options.i18nConfig,
     options.basePath,
     options.trailingSlash,
+    hadBasePath,
   );
-  const fetchEvent = new NextFetchEvent({ page: normalizedPathname });
+  const fetchEvent = new NextFetchEvent({ page: matchPathname });
 
   let response: Response | undefined | void;
   try {
@@ -377,7 +427,17 @@ export async function executeMiddleware(
         // See test/e2e/middleware-rewrites/test/index.test.ts
         //   ("should clear query parameters")
         // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
-        rewritePath = rewriteParsed.pathname + rewriteParsed.search;
+        //
+        // Strip basePath from the rewrite pathname so downstream routing
+        // receives the basePath-free path. Middleware encodes basePath into the
+        // rewrite URL via NextURL.href (which adds _basePath in _formatPathname),
+        // but callers (pages pipeline, App Router handler) always operate on
+        // basePath-stripped paths. This mirrors the Next.js behavior where the
+        // rewrite target is normalized via getNextPathnameInfo before routing.
+        const rewritePathname = options.basePath
+          ? stripBasePath(rewriteParsed.pathname, options.basePath)
+          : rewriteParsed.pathname;
+        rewritePath = rewritePathname + rewriteParsed.search;
       } else {
         // External rewrites are proxied as-is; don't smuggle local query params
         // into the upstream URL.

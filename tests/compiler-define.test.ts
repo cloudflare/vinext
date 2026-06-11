@@ -145,17 +145,68 @@ describe("compiler.define forwarding to Vite", () => {
         { command: "build" },
       );
 
+      // NEXT_RUNTIME is always injected for server environments in addition to
+      // user-configured defineServer entries.
       expect(rscResult?.define).toEqual({
         MY_SERVER_VARIABLE: '"server"',
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
+        "process.env.NEXT_RUNTIME": '"nodejs"',
       });
       expect(ssrResult?.define).toEqual({
         MY_SERVER_VARIABLE: '"server"',
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
+        "process.env.NEXT_RUNTIME": '"nodejs"',
       });
       // Client environment must never receive server-only defines.
       expect(clientResult).toBeNull();
     } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  // Mirrors Next.js: packages/next/src/build/define-env.ts (NEXT_RUNTIME define)
+  it("injects `process.env.NEXT_RUNTIME` = 'nodejs' for server envs and '' for client", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext() as VinextPlugin[];
+    const mainPlugin = plugins.find(
+      (p) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    const serverDefinePlugin = plugins.find((p) => p.name === "vinext:compiler-define-server");
+    expect(mainPlugin).toBeDefined();
+    expect(serverDefinePlugin).toBeDefined();
+
+    // Suppress revalidate secret so it doesn't appear in the define output.
+    const prev = process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
+    delete process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
+
+    const tmpDir = await setupTmpProject(`export default {};`);
+    try {
+      const configResult = (await mainPlugin!.config!(
+        { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
+        { command: "build" },
+      )) as { define?: Record<string, string> };
+
+      // Top-level define (applies to all environments including client) must
+      // set NEXT_RUNTIME to '' — matching Next.js's client-bundle value.
+      expect(configResult.define?.["process.env.NEXT_RUNTIME"]).toBe('""');
+
+      // Server environments must override NEXT_RUNTIME to 'nodejs'.
+      for (const env of ["rsc", "ssr"]) {
+        const result = serverDefinePlugin!.configEnvironment!(env, {}, { command: "build" });
+        expect(result?.define?.["process.env.NEXT_RUNTIME"]).toBe('"nodejs"');
+      }
+
+      // Client environment returns null — it receives the top-level '' value
+      // and must never receive the server-only 'nodejs' override.
+      const clientResult = serverDefinePlugin!.configEnvironment!(
+        "client",
+        {},
+        { command: "build" },
+      );
+      expect(clientResult).toBeNull();
+    } finally {
+      if (prev === undefined) delete process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
+      else process.env.__VINEXT_SHARED_REVALIDATE_SECRET = prev;
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
@@ -218,7 +269,7 @@ describe("compiler.define forwarding to Vite", () => {
     }
   }, 15000);
 
-  it("no-ops the configEnvironment hook when `defineServer` is not configured", async () => {
+  it("still injects NEXT_RUNTIME for server environments even when `defineServer` is not configured", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext() as VinextPlugin[];
     const mainPlugin = plugins.find(
@@ -229,9 +280,8 @@ describe("compiler.define forwarding to Vite", () => {
     expect(serverDefinePlugin).toBeDefined();
 
     // Explicitly clear the build-time revalidate secret env var so the hook has
-    // no `defineServer` entries AND no baked revalidate-secret define — only
-    // then is the truly-empty no-op path exercised. (Without this the test would
-    // silently depend on the env var happening to be unset in the test process.)
+    // no user `defineServer` entries AND no baked revalidate-secret define —
+    // only the built-in NEXT_RUNTIME define is present.
     const prev = process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
     delete process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
 
@@ -242,7 +292,13 @@ describe("compiler.define forwarding to Vite", () => {
         { command: "build" },
       );
       const rscResult = serverDefinePlugin!.configEnvironment!("rsc", {}, { command: "build" });
-      expect(rscResult).toBeNull();
+      // NEXT_RUNTIME is always injected for server environments, so the hook
+      // always returns a define object (never null) even without user defineServer.
+      expect(rscResult).not.toBeNull();
+      expect(rscResult?.define?.["process.env.NEXT_RUNTIME"]).toBe('"nodejs"');
+      // No other keys should be present when neither defineServer nor revalidate
+      // secret are configured.
+      expect(Object.keys(rscResult!.define!)).toEqual(["process.env.NEXT_RUNTIME"]);
     } finally {
       if (prev === undefined) delete process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
       else process.env.__VINEXT_SHARED_REVALIDATE_SECRET = prev;

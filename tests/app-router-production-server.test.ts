@@ -242,6 +242,346 @@ describe("App Router Production server (startProdServer)", () => {
     expect(secondHtml).not.toContain('nonce="first"');
   });
 
+  it("preloads rendered next/dynamic chunks with the CSP nonce", async () => {
+    // Ported from Next.js: test/e2e/app-dir/next-dynamic-csp-nonce/next-dynamic-csp-nonce.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-dynamic-csp-nonce/next-dynamic-csp-nonce.test.ts
+    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic?csp-nonce=1`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+
+    const html = await res.text();
+    const dynamicScriptPreloads =
+      html.match(
+        /<link\b(?=[^>]*\brel="preload")(?=[^>]*\bas="script")(?=[^>]*\bhref="[^"]*\/_next\/static\/chunks\/[^"]*\.js")[^>]*>/g,
+      ) ?? [];
+
+    expect(dynamicScriptPreloads.length).toBeGreaterThan(0);
+    for (const tag of dynamicScriptPreloads) {
+      expect(tag).toContain('nonce="vinext-test-nonce"');
+    }
+  });
+
+  // Edge case: the next/dynamic() CALL SITE is a Server Component (no
+  // "use client") that lazy-loads a client component. The sibling
+  // /nextjs-compat/dynamic page only calls dynamic() from "use client" modules,
+  // which render in the SSR pass where the script-nonce context is set — so it
+  // does not cover this path.
+  //
+  // Next.js parity: <PreloadChunks> is a 'use client' component, so it renders
+  // in the SSR pass and the preload links carry the nonce regardless of whether
+  // the dynamic() call site is a Server or Client Component. vinext matches
+  // this: DynamicPreloadChunks is ALSO a 'use client' component (see
+  // shims/dynamic-preload-chunks.tsx), so it renders in the SSR pass — where
+  // withScriptNonce installs the provider — and the nonce is applied even for a
+  // Server-Component call site. This test guards exactly that. (Before that fix
+  // it was rendered in the RSC environment, where useScriptNonce() returns
+  // undefined and the nonce was dropped.)
+  it("preloads next/dynamic chunks with the CSP nonce when the call site is a Server Component", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic/rsc-imports-client?csp-nonce=1`);
+    expect(res.status).toBe(200);
+    // Sanity: middleware ran and applied the nonce-based CSP for this route.
+    expect(res.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+
+    const html = await res.text();
+    // Sanity: the dynamically-imported client widget actually rendered, so a
+    // client chunk exists and a preload link is expected.
+    expect(html).toContain("rsc-imports-client-widget");
+
+    const dynamicScriptPreloads =
+      html.match(
+        /<link\b(?=[^>]*\brel="preload")(?=[^>]*\bas="script")(?=[^>]*\bhref="[^"]*\/_next\/static\/chunks\/[^"]*\.js")[^>]*>/g,
+      ) ?? [];
+
+    // Parity expectation: a Server-Component call site must still emit a
+    // nonce-bearing preload for the dynamically-loaded client chunk.
+    expect(dynamicScriptPreloads.length).toBeGreaterThan(0);
+    for (const tag of dynamicScriptPreloads) {
+      expect(tag).toContain('nonce="vinext-test-nonce"');
+    }
+  });
+
+  it("preloads next/dynamic CSS with the CSP nonce from a Server Component call site", async () => {
+    // The dynamically-loaded client widget imports CSS. Next.js's <PreloadChunks>
+    // preloads dynamic CSS server-side "to avoid flash of unstyled content", so
+    // the stylesheet link must be emitted with the request nonce. React Float
+    // renders the `precedence` prop as the `data-precedence` attribute.
+    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic/rsc-imports-client?csp-nonce=1`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    const dynamicStylesheets = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+      (tag) => /\brel="stylesheet"/.test(tag) && /\bdata-precedence="dynamic"/.test(tag),
+    );
+
+    expect(dynamicStylesheets.length).toBeGreaterThan(0);
+    for (const tag of dynamicStylesheets) {
+      expect(tag).toContain('nonce="vinext-test-nonce"');
+      // The PR deliberately drops `as="style"` — `as` is only valid on
+      // rel="preload" per the HTML spec, not on rel="stylesheet".
+      expect(tag).not.toContain('as="style"');
+    }
+  });
+
+  it("emits next/dynamic chunk preloads without a nonce when no CSP is set", async () => {
+    // No ?csp-nonce → middleware applies no CSP header, so no nonce is threaded.
+    // The preload optimization is independent of CSP: the links must still be
+    // emitted, but must not carry a stray/empty nonce attribute.
+    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-security-policy")).toBeNull();
+
+    const html = await res.text();
+    const dynamicScriptPreloads =
+      html.match(
+        /<link\b(?=[^>]*\brel="preload")(?=[^>]*\bas="script")(?=[^>]*\bhref="[^"]*\/_next\/static\/chunks\/[^"]*\.js")[^>]*>/g,
+      ) ?? [];
+
+    expect(dynamicScriptPreloads.length).toBeGreaterThan(0);
+    for (const tag of dynamicScriptPreloads) {
+      expect(tag).not.toContain("nonce=");
+    }
+  });
+
+  it("does not emit a server preload for an ssr:false next/dynamic boundary", async () => {
+    // Next.js parity (lazy-dynamic/loadable.tsx): <PreloadChunks> renders only on
+    // the ssr:true path; an ssr:false boundary bails out to CSR and emits no
+    // server-side preload.
+    const res = await fetch(`${baseUrl}/nextjs-compat/dynamic/ssr-false-only?csp-nonce=1`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-security-policy")).toBe(
+      "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+    );
+
+    const html = await res.text();
+    // Positive sanity: the page actually rendered (otherwise the negative
+    // assertion below could pass for the wrong reason — a blank/errored page).
+    // Assert the visible text, not just the id, to also catch a structural-but-
+    // empty render.
+    expect(html).toContain("This is static content");
+
+    // The DynamicPreloadChunks signature is rel="preload" as="script"
+    // fetchPriority="low" — route bootstrap uses modulepreload instead, so this
+    // matches only dynamic-boundary preloads. Match the attribute name
+    // case-INSENSITIVELY: React currently serializes the `fetchPriority` prop
+    // verbatim (camelCase), but if it ever lowercased it to `fetchpriority` a
+    // case-sensitive matcher would match nothing and this negative assertion
+    // would pass vacuously even if a preload leaked.
+    const dynamicScriptPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+      (tag) =>
+        /\brel="preload"/i.test(tag) &&
+        /\bas="script"/i.test(tag) &&
+        /\bfetchpriority="low"/i.test(tag),
+    );
+    expect(dynamicScriptPreloads).toEqual([]);
+  });
+
+  it("preloads rendered next/dynamic chunks with assetPrefix and the CSP nonce", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-dynamic-asset-prefix-"));
+    const fixtureRoot = path.join(tmpDir, "fixture");
+    const prefixedOutDir = path.join(fixtureRoot, "dist");
+    let assetPrefixServer: import("node:http").Server | undefined;
+    const prodGlobalKeys = [
+      "__VINEXT_CLIENT_ENTRY__",
+      "__VINEXT_DYNAMIC_PRELOADS__",
+      "__VINEXT_LAZY_CHUNKS__",
+      "__VINEXT_SSR_MANIFEST__",
+      "__vite_rsc_client_require__",
+      "__vite_rsc_require__",
+      "__vite_rsc_server_require__",
+      "__webpack_chunk_load__",
+      "__webpack_require__",
+    ];
+    // startProdServer installs build/runtime globals process-wide. This test
+    // starts a second prod server while the shared server is still alive, so
+    // restore the shared server's globals before later tests run.
+    const previousGlobals = new Map(
+      prodGlobalKeys.map((key) => [
+        key,
+        {
+          exists: Reflect.has(globalThis, key),
+          value: Reflect.get(globalThis, key),
+        },
+      ]),
+    );
+
+    try {
+      fs.cpSync(APP_FIXTURE_DIR, fixtureRoot, { recursive: true });
+      fs.rmSync(prefixedOutDir, { recursive: true, force: true });
+      const fixtureNodeModules = path.join(fixtureRoot, "node_modules");
+      if (!fs.existsSync(fixtureNodeModules)) {
+        fs.symlinkSync(
+          path.resolve(__dirname, "..", "node_modules"),
+          fixtureNodeModules,
+          "junction",
+        );
+      }
+
+      const nextConfigPath = path.join(fixtureRoot, "next.config.ts");
+      const nextConfig = fs.readFileSync(nextConfigPath, "utf-8");
+      fs.writeFileSync(
+        nextConfigPath,
+        nextConfig.replace(
+          "const nextConfig: NextConfig = {",
+          'const nextConfig: NextConfig = {\n  assetPrefix: "/cdn",',
+        ),
+      );
+
+      const builder = await createBuilder({
+        root: fixtureRoot,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureRoot })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      ({ server: assetPrefixServer } = await startProdServer({
+        port: 0,
+        outDir: prefixedOutDir,
+        noCompression: true,
+      }));
+      const addr = assetPrefixServer.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      const tmpBaseUrl = `http://localhost:${port}`;
+
+      const res = await fetch(`${tmpBaseUrl}/nextjs-compat/dynamic?csp-nonce=1`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-security-policy")).toBe(
+        "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+      );
+
+      const html = await res.text();
+      // DynamicPreloadChunks emits ReactDOM.preload(..., { fetchPriority: "low" });
+      // use that signal to avoid matching route bootstrap modulepreload links.
+      const dynamicScriptPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+        (tag) =>
+          /\bfetchpriority="low"/i.test(tag) &&
+          tag.includes('nonce="vinext-test-nonce"') &&
+          tag.includes("/_next/static/chunks/"),
+      );
+
+      expect(dynamicScriptPreloads.length).toBeGreaterThan(0);
+      for (const tag of dynamicScriptPreloads) {
+        expect(tag).toMatch(/\bhref="\/cdn\/_next\/static\/chunks\/[^"]+\.js"/);
+      }
+    } finally {
+      assetPrefixServer?.close();
+      for (const [key, previous] of previousGlobals) {
+        if (previous.exists) {
+          Reflect.set(globalThis, key, previous.value);
+        } else {
+          Reflect.deleteProperty(globalThis, key);
+        }
+      }
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it("preloads rendered next/dynamic chunks with absolute assetPrefix and the CSP nonce", async () => {
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "vinext-app-dynamic-absolute-asset-prefix-"),
+    );
+    const fixtureRoot = path.join(tmpDir, "fixture");
+    const prefixedOutDir = path.join(fixtureRoot, "dist");
+    let assetPrefixServer: import("node:http").Server | undefined;
+    const prodGlobalKeys = [
+      "__VINEXT_CLIENT_ENTRY__",
+      "__VINEXT_DYNAMIC_PRELOADS__",
+      "__VINEXT_LAZY_CHUNKS__",
+      "__VINEXT_SSR_MANIFEST__",
+      "__vite_rsc_client_require__",
+      "__vite_rsc_require__",
+      "__vite_rsc_server_require__",
+      "__webpack_chunk_load__",
+      "__webpack_require__",
+    ];
+    const previousGlobals = new Map(
+      prodGlobalKeys.map((key) => [
+        key,
+        {
+          exists: Reflect.has(globalThis, key),
+          value: Reflect.get(globalThis, key),
+        },
+      ]),
+    );
+
+    try {
+      fs.cpSync(APP_FIXTURE_DIR, fixtureRoot, { recursive: true });
+      fs.rmSync(prefixedOutDir, { recursive: true, force: true });
+      const fixtureNodeModules = path.join(fixtureRoot, "node_modules");
+      if (!fs.existsSync(fixtureNodeModules)) {
+        fs.symlinkSync(
+          path.resolve(__dirname, "..", "node_modules"),
+          fixtureNodeModules,
+          "junction",
+        );
+      }
+
+      const nextConfigPath = path.join(fixtureRoot, "next.config.ts");
+      const nextConfig = fs.readFileSync(nextConfigPath, "utf-8");
+      fs.writeFileSync(
+        nextConfigPath,
+        nextConfig.replace(
+          "const nextConfig: NextConfig = {",
+          'const nextConfig: NextConfig = {\n  assetPrefix: "https://cdn.example.com",',
+        ),
+      );
+
+      const builder = await createBuilder({
+        root: fixtureRoot,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureRoot })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      ({ server: assetPrefixServer } = await startProdServer({
+        port: 0,
+        outDir: prefixedOutDir,
+        noCompression: true,
+      }));
+      const addr = assetPrefixServer.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      const tmpBaseUrl = `http://localhost:${port}`;
+
+      const res = await fetch(`${tmpBaseUrl}/nextjs-compat/dynamic?csp-nonce=1`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-security-policy")).toBe(
+        "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+      );
+
+      const html = await res.text();
+      const dynamicScriptPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+        (tag) =>
+          /\bfetchpriority="low"/i.test(tag) &&
+          tag.includes('nonce="vinext-test-nonce"') &&
+          tag.includes("https://cdn.example.com/_next/static/chunks/"),
+      );
+
+      expect(dynamicScriptPreloads.length).toBeGreaterThan(0);
+      for (const tag of dynamicScriptPreloads) {
+        expect(tag).toMatch(
+          /\bhref="https:\/\/cdn\.example\.com\/_next\/static\/chunks\/[^"]+\.js"/,
+        );
+      }
+    } finally {
+      assetPrefixServer?.close();
+      for (const [key, previous] of previousGlobals) {
+        if (previous.exists) {
+          Reflect.set(globalThis, key, previous.value);
+        } else {
+          Reflect.deleteProperty(globalThis, key);
+        }
+      }
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
   it("does not collapse encoded slashes onto nested routes in production", async () => {
     const encodedRes = await fetch(`${baseUrl}/headers%2Foverride-from-middleware`);
     expect(encodedRes.status).toBe(404);
@@ -405,14 +745,13 @@ describe("App Router Production server (startProdServer)", () => {
   });
 
   it("serves static assets with cache headers", async () => {
-    // Find an actual hashed asset from the build (on disk under
-    // `_next/static/`, matching `resolveAssetsDir("")`).
-    const assetsDir = path.join(outDir, "client", "_next", "static");
+    // Find an actual hashed JS asset from the build.
+    const assetsDir = path.join(outDir, "client", "_next", "static", "chunks");
     const assets = fs.readdirSync(assetsDir);
     const jsFile = assets.find((f: string) => f.endsWith(".js"));
     expect(jsFile).toBeDefined();
 
-    const res = await fetch(`${baseUrl}/_next/static/${jsFile}`);
+    const res = await fetch(`${baseUrl}/_next/static/chunks/${jsFile}`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("javascript");
     expect(res.headers.get("cache-control")).toContain("immutable");

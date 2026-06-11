@@ -168,11 +168,7 @@ describe("buildBarrelExportMap", () => {
     const barrelCode = `export * as Slot from "@radix-ui/react-slot";
 export * as Tooltip from "@radix-ui/react-tooltip";`;
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      () => Promise.resolve(barrelCode),
-    );
+    const map = await buildBarrelExportMap(entryPath, () => Promise.resolve(barrelCode));
 
     expect(map).not.toBeNull();
     expect(map!.get("Slot")).toEqual({
@@ -191,11 +187,7 @@ export * as Tooltip from "@radix-ui/react-tooltip";`;
     const barrelCode = `export { Button, buttonVariants } from "./button";
 export { Input } from "./input";`;
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      () => Promise.resolve(barrelCode),
-    );
+    const map = await buildBarrelExportMap(entryPath, () => Promise.resolve(barrelCode));
 
     expect(map).not.toBeNull();
     // Relative sources are resolved to absolute paths during map building
@@ -221,11 +213,7 @@ export { Input } from "./input";`;
     const entryDir = path.dirname(entryPath);
     const barrelCode = `export { default as Calendar } from "./calendar";`;
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      () => Promise.resolve(barrelCode),
-    );
+    const map = await buildBarrelExportMap(entryPath, () => Promise.resolve(barrelCode));
 
     expect(map).not.toBeNull();
     expect(map!.get("Calendar")).toEqual({
@@ -240,11 +228,7 @@ export { Input } from "./input";`;
     const barrelCode = `import * as AlertDialog from "@radix-ui/react-alert-dialog";
 export { AlertDialog };`;
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      () => Promise.resolve(barrelCode),
-    );
+    const map = await buildBarrelExportMap(entryPath, () => Promise.resolve(barrelCode));
 
     expect(map).not.toBeNull();
     expect(map!.get("AlertDialog")).toEqual({
@@ -258,11 +242,7 @@ export { AlertDialog };`;
     const barrelCode = `import { format } from "date-fns/format";
 export { format };`;
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      () => Promise.resolve(barrelCode),
-    );
+    const map = await buildBarrelExportMap(entryPath, () => Promise.resolve(barrelCode));
 
     expect(map).not.toBeNull();
     expect(map!.get("format")).toEqual({
@@ -277,11 +257,7 @@ export { format };`;
     const barrelCode = `const Mo = {};
 export { Mo as Listbox };`;
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      () => Promise.resolve(barrelCode),
-    );
+    const map = await buildBarrelExportMap(entryPath, () => Promise.resolve(barrelCode));
 
     expect(map).not.toBeNull();
     expect(map!.get("Listbox")).toEqual({
@@ -292,21 +268,13 @@ export { Mo as Listbox };`;
   });
 
   it("returns null when entry cannot be resolved", async () => {
-    const map = await buildBarrelExportMap(
-      "nonexistent-pkg",
-      () => null,
-      () => Promise.resolve(null),
-    );
+    const map = await buildBarrelExportMap(null, () => Promise.resolve(null));
     expect(map).toBeNull();
   });
 
   it("returns null when entry file cannot be read", async () => {
     const entryPath = uniquePath("unreadable");
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      () => Promise.resolve(null),
-    );
+    const map = await buildBarrelExportMap(entryPath, () => Promise.resolve(null));
     expect(map).toBeNull();
   });
 
@@ -315,11 +283,7 @@ export { Mo as Listbox };`;
     // unchanged in the transform), not null. Null is only returned when the
     // entry path itself cannot be resolved or the file cannot be read.
     const entryPath = uniquePath("syntax-error");
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      () => Promise.resolve("export { unclosed"),
-    );
+    const map = await buildBarrelExportMap(entryPath, () => Promise.resolve("export { unclosed"));
     expect(map).not.toBeNull();
     expect(map!.size).toBe(0);
   });
@@ -334,11 +298,7 @@ export { Mo as Listbox };`;
       [subPath]: `export { format } from "./format";\nexport { parse } from "./parse";`,
     };
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      (fp) => Promise.resolve(files[fp] ?? null),
-    );
+    const map = await buildBarrelExportMap(entryPath, (fp) => Promise.resolve(files[fp] ?? null));
 
     expect(map).not.toBeNull();
     // Button from the barrel — resolved to absolute path relative to entry dir
@@ -361,11 +321,7 @@ export { Mo as Listbox };`;
       [subPath]: `export { format } from "./other-format";`,
     };
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      (fp) => Promise.resolve(files[fp] ?? null),
-    );
+    const map = await buildBarrelExportMap(entryPath, (fp) => Promise.resolve(files[fp] ?? null));
 
     expect(map).not.toBeNull();
     // The explicit export wins over the wildcard — resolved to absolute path
@@ -386,11 +342,7 @@ export { Mo as Listbox };`;
 
     // Should not throw or hang
     await expect(
-      buildBarrelExportMap(
-        "test-pkg",
-        () => entryPath,
-        (fp) => Promise.resolve(files[fp] ?? null),
-      ),
+      buildBarrelExportMap(entryPath, (fp) => Promise.resolve(files[fp] ?? null)),
     ).resolves.not.toThrow();
   });
 
@@ -399,11 +351,7 @@ export { Mo as Listbox };`;
     const barrelCode = `export * from "some-external-pkg";
 export { Button } from "./button";`;
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      () => Promise.resolve(barrelCode),
-    );
+    const map = await buildBarrelExportMap(entryPath, () => Promise.resolve(barrelCode));
 
     expect(map).not.toBeNull();
     // Only Button is in the map (external wildcard is skipped)
@@ -432,11 +380,7 @@ export { Button } from "./button";`;
       "/fake/nested/components/Button.js": `export function Button() {}`,
     };
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      (fp) => Promise.resolve(files[fp] ?? null),
-    );
+    const map = await buildBarrelExportMap(entryPath, (fp) => Promise.resolve(files[fp] ?? null));
 
     expect(map).not.toBeNull();
     const buttonEntry = map!.get("Button");
@@ -457,11 +401,7 @@ export { Button } from "./button";`;
       "/fake/dir-wildcard/components/Button.js": `export function Button() {}`,
     };
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      (fp) => Promise.resolve(files[fp] ?? null),
-    );
+    const map = await buildBarrelExportMap(entryPath, (fp) => Promise.resolve(files[fp] ?? null));
 
     expect(map).not.toBeNull();
     const buttonEntry = map!.get("Button");
@@ -480,11 +420,7 @@ export { Button } from "./button";`;
       "/fake/jsx-wildcard/Button.jsx": `export { Button } from "./button-impl";`,
     };
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      (fp) => Promise.resolve(files[fp] ?? null),
-    );
+    const map = await buildBarrelExportMap(entryPath, (fp) => Promise.resolve(files[fp] ?? null));
 
     expect(map).not.toBeNull();
     // Button must be resolvable via the .jsx candidate
@@ -500,11 +436,7 @@ export { Button } from "./button";`;
       "/fake/cjs-wildcard/helpers.cjs": `exports.helper = function helper() {};`,
     };
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      (fp) => Promise.resolve(files[fp] ?? null),
-    );
+    const map = await buildBarrelExportMap(entryPath, (fp) => Promise.resolve(files[fp] ?? null));
 
     // The .cjs file is found (not null map). The map may be empty if parseAst
     // can't parse CJS syntax, but the important thing is no error is thrown.
@@ -520,11 +452,7 @@ export { Button } from "./button";`;
     const entryPath = uniquePath("malformed-ast");
     const barrelCode = `export { Button } from "./button";`;
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      () => Promise.resolve(barrelCode),
-    );
+    const map = await buildBarrelExportMap(entryPath, () => Promise.resolve(barrelCode));
 
     // Normal exports are still present
     expect(map).not.toBeNull();
@@ -544,11 +472,7 @@ export { Button } from "./button";`;
       [subPath]: `export function formatDistanceToNow(date, options) { return date; }`,
     };
 
-    const map = await buildBarrelExportMap(
-      "date-fns",
-      () => entryPath,
-      (fp) => Promise.resolve(files[fp] ?? null),
-    );
+    const map = await buildBarrelExportMap(entryPath, (fp) => Promise.resolve(files[fp] ?? null));
 
     expect(map).not.toBeNull();
     const entry = map!.get("formatDistanceToNow");
@@ -566,11 +490,7 @@ export { Button } from "./button";`;
       [subPath]: `export const add = (a, b) => a + b, subtract = (a, b) => a - b;`,
     };
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      (fp) => Promise.resolve(files[fp] ?? null),
-    );
+    const map = await buildBarrelExportMap(entryPath, (fp) => Promise.resolve(files[fp] ?? null));
 
     expect(map).not.toBeNull();
     expect(map!.get("add")).toMatchObject({ source: subPath, isNamespace: false });
@@ -585,11 +505,7 @@ export { Button } from "./button";`;
       [subPath]: `export class MyClass {}`,
     };
 
-    const map = await buildBarrelExportMap(
-      "test-pkg",
-      () => entryPath,
-      (fp) => Promise.resolve(files[fp] ?? null),
-    );
+    const map = await buildBarrelExportMap(entryPath, (fp) => Promise.resolve(files[fp] ?? null));
 
     expect(map).not.toBeNull();
     expect(map!.get("MyClass")).toMatchObject({ source: subPath, isNamespace: false });

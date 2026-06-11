@@ -1,3 +1,5 @@
+import { isNavigationSignalError } from "../utils/navigation-signal.js";
+
 // Build the onUncaughtError handler for hydrateRoot. When a render error
 // tears down the tree without an error boundary catching, the
 // NavigationCommitSignal layout effect never runs, so the URL update for
@@ -24,4 +26,23 @@ export function createOnUncaughtError(
       window.location.assign(recoveryHref);
     }
   };
+}
+
+// Production onCaughtError handler for hydrateRoot. React calls this for
+// every error caught by an error boundary. Navigation sentinel errors
+// (redirect(), notFound(), forbidden(), unauthorized()) are intentionally
+// thrown as control flow and MUST be caught by their dedicated boundaries;
+// logging them to the console would produce spurious browser console errors
+// that break the "no console errors" assertion in Next.js compat tests
+// (e.g. root-layout-redirect). Filter them out silently — the boundary has
+// already consumed the error and triggered the appropriate navigation.
+//
+// All other caught errors are logged to console.error, preserving React's
+// default behavior.
+export function prodOnCaughtError(error: unknown, errorInfo: { componentStack?: string }): void {
+  if (isNavigationSignalError(error)) return;
+  console.error(error);
+  if (errorInfo?.componentStack) {
+    console.error("The above error occurred in a React component:\n" + errorInfo.componentStack);
+  }
 }

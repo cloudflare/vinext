@@ -75,6 +75,7 @@ catalog:
   react: ^19.2.7
   react-dom: ^19.2.7
   react-server-dom-webpack: ^19.2.7
+  sass: 1.100.0
   server-only: ^0.0.1
   swr: ^2.0.0
   tailwind-merge: ^3.3.0

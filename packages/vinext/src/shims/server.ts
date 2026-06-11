@@ -19,7 +19,7 @@ import { serializeSetCookie, validateCookieName } from "./internal/cookie-serial
 import { parseCookieHeader } from "./internal/parse-cookie-header.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
-import { stripBasePath } from "../utils/base-path.js";
+import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 
 // ---------------------------------------------------------------------------
 // Inlined cache-scope guard for after()
@@ -310,6 +310,12 @@ export type NextURLConfig = {
 export class NextURL {
   /** Internal URL stores the pathname WITHOUT basePath or locale prefix. */
   private _url: URL;
+  /**
+   * The configured basePath (from nextConfig). May differ from the active
+   * `_basePath`: parsing only activates basePath when the URL's pathname
+   * actually carries the configured prefix.
+   */
+  private _configBasePath: string;
   private _basePath: string;
   private _trailingSlash: boolean;
   private _locale: string | undefined;
@@ -318,7 +324,8 @@ export class NextURL {
 
   constructor(input: string | URL, base?: string | URL, config?: NextURLConfig) {
     this._url = new URL(input.toString(), base);
-    this._basePath = config?.basePath ?? "";
+    this._configBasePath = config?.basePath ?? "";
+    this._basePath = this._configBasePath;
     this._trailingSlash = config?.nextConfig?.trailingSlash ?? false;
     this._stripBasePath();
     const i18n = config?.nextConfig?.i18n;
@@ -329,10 +336,25 @@ export class NextURL {
     }
   }
 
-  /** Strip basePath prefix from the internal pathname. */
+  /** Strip basePath prefix from the internal pathname.
+   * Mirrors Next.js's getNextPathnameInfo (re-run by NextURL.analyze() on
+   * every parse, including `href` reassignment): basePath is only considered
+   * active when the URL's pathname actually starts with the configured
+   * basePath prefix. If the pathname is outside the basePath, the active
+   * basePath is cleared to "" so that request.nextUrl.basePath reflects the
+   * actual URL rather than the config value; if a later `href` assignment
+   * moves the URL back inside the basePath, it is re-activated from the
+   * configured value. This matches the Next.js behavior tested by
+   * middleware-base-path's "should execute from absolute paths" case.
+   */
   private _stripBasePath(): void {
-    if (!this._basePath) return;
-    this._url.pathname = stripBasePath(this._url.pathname, this._basePath);
+    if (!this._configBasePath) return;
+    if (!hasBasePath(this._url.pathname, this._configBasePath)) {
+      this._basePath = "";
+      return;
+    }
+    this._basePath = this._configBasePath;
+    this._url.pathname = stripBasePath(this._url.pathname, this._configBasePath);
   }
 
   /** Extract locale from pathname, stripping it from the internal URL. */
