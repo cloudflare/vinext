@@ -38,6 +38,7 @@ const {
   runWithFetchCache,
   getCollectedFetchTags,
   setCurrentFetchCacheMode,
+  setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
   getOriginalFetch,
   _resetPendingRefetches,
@@ -46,6 +47,7 @@ const {
 } = await import("../packages/vinext/src/shims/fetch-cache.js");
 const { getCacheHandler, revalidatePath, revalidateTag, MemoryCacheHandler, setCacheHandler } =
   await import("../packages/vinext/src/shims/cache.js");
+const { consumeDynamicUsage } = await import("../packages/vinext/src/shims/headers.js");
 const { runWithExecutionContext } = await import("../packages/vinext/src/shims/request-context.js");
 const { createRequestContext, runWithRequestContext } =
   await import("../packages/vinext/src/shims/unified-request-context.js");
@@ -67,11 +69,13 @@ describe("fetch cache shim", () => {
     setCacheHandler(new MemoryCacheHandler());
     // Clear in-flight refetch dedup state
     _resetPendingRefetches();
+    consumeDynamicUsage();
     // Install the patched fetch
     cleanup = withFetchCache();
   });
 
   afterEach(() => {
+    consumeDynamicUsage();
     cleanup?.();
     cleanup = null;
   });
@@ -106,6 +110,20 @@ describe("fetch cache shim", () => {
     });
     const data2 = await res2.json();
     expect(data2.count).toBe(1); // Cached
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves Response.url on cached fetch responses", async () => {
+    const url = "https://api.example.com/force-url";
+
+    await fetch(url, {
+      cache: "force-cache",
+    });
+    const cached = await fetch(url, {
+      cache: "force-cache",
+    });
+
+    expect(cached.url).toBe(url);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -213,6 +231,89 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledWith("https://api.example.com/segment-force-no-store-init", {
       cache: "no-store",
     });
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-static/app-static.test.ts
+  // Upstream verifies that explicit uncached fetches in /default-cache and
+  // fetchCache = "force-no-store" make the page output non-reusable, while
+  // auto/default fetches can still participate in static prerender output.
+  it("marks page output dynamic for explicit uncached fetch decisions", async () => {
+    setCurrentFetchCacheMode("default-cache");
+
+    await fetch("https://api.example.com/segment-explicit-no-cache", {
+      cache: "no-cache",
+    });
+
+    expect(consumeDynamicUsage()).toBe(true);
+
+    setCurrentFetchCacheMode("force-no-store");
+
+    await fetch("https://api.example.com/segment-force-no-store-dynamic", {
+      cache: "force-cache",
+    });
+
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
+  it("does not mark page output dynamic for auto/default pass-through fetches", async () => {
+    await fetch("https://api.example.com/auto-pass-through");
+    await fetch("https://api.example.com/default-pass-through", {
+      cache: "default",
+    });
+
+    expect(consumeDynamicUsage()).toBe(false);
+    expect(peekDynamicFetchObservations()).toEqual([
+      "https://api.example.com/auto-pass-through",
+      "https://api.example.com/default-pass-through",
+    ]);
+  });
+
+  it("does not mark page output dynamic for fetchCache default-cache implicit cache hits", async () => {
+    setCurrentFetchCacheMode("default-cache");
+
+    const res1 = await fetch("https://api.example.com/segment-default-cache-static");
+    const data1 = await res1.json();
+    const res2 = await fetch("https://api.example.com/segment-default-cache-static");
+    const data2 = await res2.json();
+
+    expect(data1.count).toBe(1);
+    expect(data2.count).toBe(1);
+    expect(consumeDynamicUsage()).toBe(false);
+  });
+
+  it("uses force-dynamic as a default no-store fetch mode without overriding explicit revalidate", async () => {
+    setCurrentForceDynamicFetchDefault(true);
+
+    await fetch("https://api.example.com/force-dynamic-default");
+    expect(fetchMock).toHaveBeenLastCalledWith("https://api.example.com/force-dynamic-default", {
+      cache: "no-store",
+    });
+    expect(consumeDynamicUsage()).toBe(true);
+
+    await fetch("https://api.example.com/force-dynamic-cache-default", {
+      cache: "default",
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://api.example.com/force-dynamic-cache-default",
+      {
+        cache: "no-store",
+      },
+    );
+    expect(consumeDynamicUsage()).toBe(true);
+
+    const res1 = await fetch("https://api.example.com/force-dynamic-explicit-revalidate", {
+      next: { revalidate: 3 },
+    });
+    const data1 = await res1.json();
+    const res2 = await fetch("https://api.example.com/force-dynamic-explicit-revalidate", {
+      next: { revalidate: 3 },
+    });
+    const data2 = await res2.json();
+
+    expect(data1.count).toBe(3);
+    expect(data2.count).toBe(3);
+    expect(consumeDynamicUsage()).toBe(false);
   });
 
   it("segment fetchCache only-cache rejects no-store fetches", async () => {

@@ -29,6 +29,7 @@ import {
   peekDynamicFetchObservations,
   runWithFetchDedupe,
   setCurrentFetchCacheMode,
+  setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
 } from "vinext/shims/fetch-cache";
 import { AppElementsWire, type AppOutgoingElements } from "./app-elements.js";
@@ -431,6 +432,7 @@ async function runAppPageRevalidationContext<
   const requestContext = createRequestContext({
     headersContext,
     currentFetchCacheMode: options.currentFetchCacheMode ?? null,
+    currentForceDynamicFetchDefault: options.dynamicConfig === "force-dynamic",
     executionContext: getRequestExecutionContext(),
     unstableCacheRevalidation: "foreground",
   });
@@ -494,6 +496,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
   setCurrentFetchCacheMode(options.fetchCache ?? null);
+  setCurrentForceDynamicFetchDefault(isForceDynamic);
 
   if (options.hasPageModule && !options.hasPageDefaultExport) {
     options.clearRequestContext();

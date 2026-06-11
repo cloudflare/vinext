@@ -22,6 +22,7 @@
 import { getDataCacheHandler, type CachedFetchValue } from "./cache.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
+import { markDynamicUsage } from "./headers.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
   isInsideUnifiedScope,
@@ -478,6 +479,7 @@ export type FetchCacheState = {
   currentRequestTags: string[];
   currentFetchSoftTags: string[];
   currentFetchCacheMode: FetchCacheMode | null;
+  currentForceDynamicFetchDefault: boolean;
   dynamicFetchUrls: Set<string>;
   isFetchDedupeActive: boolean;
   currentFetchDedupeEntries: Map<string, FetchDedupeEntry[]>;
@@ -513,6 +515,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   currentRequestTags: [],
   currentFetchSoftTags: [],
   currentFetchCacheMode: null,
+  currentForceDynamicFetchDefault: false,
   dynamicFetchUrls: new Set<string>(),
   isFetchDedupeActive: false,
   currentFetchDedupeEntries: new Map(),
@@ -534,6 +537,7 @@ function _resetFallbackState(isFetchDedupeActive: boolean): void {
   _fallbackState.currentRequestTags = [];
   _fallbackState.currentFetchSoftTags = [];
   _fallbackState.currentFetchCacheMode = null;
+  _fallbackState.currentForceDynamicFetchDefault = false;
   _fallbackState.dynamicFetchUrls = new Set<string>();
   _fallbackState.isFetchDedupeActive = isFetchDedupeActive;
   _fallbackState.currentFetchDedupeEntries = new Map();
@@ -545,6 +549,11 @@ function getFetchObservationUrl(input: string | URL | Request): string {
 
 function recordDynamicFetchObservation(input: string | URL | Request): void {
   _getState().dynamicFetchUrls.add(getFetchObservationUrl(input));
+}
+
+function markUncachedFetchForPageOutput(input: string | URL | Request): void {
+  recordDynamicFetchObservation(input);
+  markDynamicUsage();
 }
 
 function recordCacheableFetchObservation(input: string | URL | Request): void {
@@ -623,6 +632,10 @@ export function setCurrentFetchCacheMode(mode: FetchCacheMode | null): void {
   _getState().currentFetchCacheMode = mode;
 }
 
+export function setCurrentForceDynamicFetchDefault(enabled: boolean): void {
+  _getState().currentForceDynamicFetchDefault = enabled;
+}
+
 function isNoStoreFetch(
   cacheDirective: RequestCache | undefined,
   nextOpts: NextFetchOptions | undefined,
@@ -653,7 +666,17 @@ function resolveSegmentCacheDirective(
   cacheDirective: RequestCache | undefined,
   nextOpts: NextFetchOptions | undefined,
   mode: FetchCacheMode | null,
+  forceDynamicFetchDefault: boolean,
 ): RequestCache | undefined {
+  if (
+    forceDynamicFetchDefault &&
+    (!mode || mode === "auto") &&
+    (cacheDirective === undefined || cacheDirective === "default") &&
+    !hasExplicitRevalidateValue(nextOpts)
+  ) {
+    return "no-store";
+  }
+
   if (!mode || mode === "auto") {
     return cacheDirective;
   }
@@ -784,6 +807,23 @@ function cloneDedupeResponse(response: Response): [Response, Response] {
   return [buildDedupeClone(body1, response), buildDedupeClone(body2, response)];
 }
 
+function buildCachedFetchResponse(data: CachedFetchValue["data"]): Response {
+  const response = new Response(data.body, {
+    status: data.status ?? 200,
+    headers: data.headers,
+  });
+  Object.defineProperty(response, "url", {
+    value: data.url,
+    configurable: true,
+    enumerable: true,
+    writable: false,
+  });
+  if (_responseBodyRegistry && response.body) {
+    _responseBodyRegistry.register(response, new WeakRef(response.body));
+  }
+  return response;
+}
+
 function dedupeFetch(
   input: string | URL | Request,
   init: RequestInit | undefined,
@@ -870,6 +910,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       getFetchCacheDirective(input, init),
       nextOpts,
       _getState().currentFetchCacheMode,
+      _getState().currentForceDynamicFetchDefault,
     );
 
     // Determine caching behavior:
@@ -895,7 +936,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
     ) {
       // Strip the `next` property before passing to real fetch
       const cleanInit = stripNextFromInit(init, cacheDirective);
-      recordDynamicFetchObservation(input);
+      markUncachedFetchForPageOutput(input);
       return dedupeFetch(input, cleanInit);
     }
 
@@ -909,7 +950,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0);
     if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
       const cleanInit = stripNextFromInit(init, cacheDirective);
-      recordDynamicFetchObservation(input);
+      markUncachedFetchForPageOutput(input);
       return dedupeFetch(input, cleanInit);
     }
 
@@ -969,7 +1010,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         err instanceof SkipCacheKeyGenerationError
       ) {
         fetchInit = stripNextFromInit(fetchInit, cacheDirective);
-        recordDynamicFetchObservation(input);
+        markUncachedFetchForPageOutput(input);
         return dedupeFetch(input, fetchInit);
       }
       throw err;
@@ -981,11 +1022,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       const cached = await handler.get(cacheKey, { kind: "FETCH", tags, softTags });
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
         const cachedData = cached.value.data;
-        // Reconstruct a Response from the cached data
-        return new Response(cachedData.body, {
-          status: cachedData.status ?? 200,
-          headers: cachedData.headers,
-        });
+        return buildCachedFetchResponse(cachedData);
       }
 
       // Stale entry — we could do stale-while-revalidate here, but for fetch()
@@ -1068,10 +1105,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         }
 
         // Return stale data immediately
-        return new Response(staleData.body, {
-          status: staleData.status ?? 200,
-          headers: staleData.headers,
-        });
+        return buildCachedFetchResponse(staleData);
       }
     } catch (cacheErr) {
       // Cache read failed — fall through to network
@@ -1210,6 +1244,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
       currentRequestTags: [],
       currentFetchSoftTags: [],
       currentFetchCacheMode: null,
+      currentForceDynamicFetchDefault: false,
       dynamicFetchUrls: new Set<string>(),
       isFetchDedupeActive: true,
       currentFetchDedupeEntries: new Map(),

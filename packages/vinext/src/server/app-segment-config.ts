@@ -186,11 +186,12 @@ export function resolveAppPageSegmentConfig(
     config.revalidateSeconds = 0;
   }
 
-  // Top-level dynamic modes supply fetchCache defaults unless a segment does.
+  // Static-only dynamic modes supply fetchCache defaults unless a segment does.
+  // `dynamic = "force-dynamic"` is handled at the fetch decision layer: it
+  // defaults no-config fetches to no-store but must not override explicit
+  // per-fetch cache/revalidate options.
   if (config.fetchCache === undefined) {
-    if (config.dynamicConfig === "force-dynamic") {
-      config.fetchCache = "force-no-store";
-    } else if (config.dynamicConfig === "error") {
+    if (config.dynamicConfig === "error") {
       config.fetchCache = "only-cache";
     }
   }

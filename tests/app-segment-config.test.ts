@@ -37,7 +37,6 @@ describe("resolveAppPageSegmentConfig", () => {
       }),
     ).toEqual({
       dynamicConfig: "force-dynamic",
-      fetchCache: "force-no-store",
       revalidateSeconds: 0,
     });
   });
