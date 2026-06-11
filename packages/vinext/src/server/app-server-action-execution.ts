@@ -27,6 +27,7 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
+import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
@@ -90,6 +91,18 @@ type AppServerActionRoute = {
   pattern: string;
   routeHandler?: unknown;
   routeSegments?: readonly string[];
+  params?: readonly string[] | null;
+  slots?: Readonly<
+    Record<
+      string,
+      {
+        default?: { default?: unknown } | null;
+        page?: { default?: unknown } | null;
+        slotPatternParts?: readonly string[] | null;
+        slotParamNames?: readonly string[] | null;
+      }
+    >
+  > | null;
 };
 
 /**
@@ -1160,10 +1173,16 @@ export async function handleServerActionRscRequest<
         url: redirectTarget,
       });
       setHeadersContext(headersContextFromRequest(redirectRenderRequest));
+      const redirectNavigationParams = resolveAppPageNavigationParams(
+        targetMatch.route,
+        targetMatch.params,
+        targetPathname,
+        null,
+      );
       options.setNavigationContext({
         pathname: targetPathname,
         searchParams: redirectTarget.searchParams,
-        params: targetMatch.params,
+        params: redirectNavigationParams,
       });
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(targetMatch.route) ?? null);
       setCurrentFetchSoftTags(buildServerActionPageTags(targetMatch.route, targetPathname));
@@ -1270,10 +1289,17 @@ export async function handleServerActionRscRequest<
         toInterceptOpts: options.toInterceptOpts,
       });
 
+      // Invariant: TInterceptOpts is structurally equivalent to the navigation param intercept options.
+      const resolvedActionNavigationParams = resolveAppPageNavigationParams(
+        actionRerenderTarget.route,
+        actionRerenderTarget.params,
+        options.cleanPathname,
+        actionRerenderTarget.interceptOpts as Parameters<typeof resolveAppPageNavigationParams>[3],
+      );
       options.setNavigationContext({
         pathname: options.cleanPathname,
         searchParams: options.searchParams,
-        params: actionRerenderTarget.navigationParams,
+        params: resolvedActionNavigationParams,
       });
       // Hydrate the re-render target before reading its page module.
       await options.ensureRouteLoaded?.(actionRerenderTarget.route);

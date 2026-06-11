@@ -230,6 +230,9 @@ function resolveOptimisticNavigationParams(options: {
   const navigationParams: Record<string, string | string[]> = { ...options.match.params };
 
   for (const binding of options.routeManifest.segmentGraph.slotBindings.values()) {
+    // Unlike the server-side resolveSlotParamOverrides, this loop doesn't skip
+    // slots whose slotParamNames are all already route params. That's a no-op
+    // merge in practice (identical values) but keeps client-side logic simpler.
     if (binding.routeId !== options.match.route.id || binding.state !== "active") {
       continue;
     }

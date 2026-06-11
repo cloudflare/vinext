@@ -533,10 +533,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         routePattern: route.pattern,
       }),
     );
+    const staticNavigationParams = resolveAppPageNavigationParams(
+      route,
+      options.params,
+      options.cleanPathname,
+      null,
+    );
     options.setNavigationContext({
       pathname: options.displayPathname ?? options.cleanPathname,
       searchParams: new URLSearchParams(),
-      params: options.params,
+      params: staticNavigationParams,
     });
   }
 
@@ -588,6 +594,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             return toInterceptOptions(options.interceptionContext, intercept);
           },
         });
+        revalidationTarget.navigationParams = resolveAppPageNavigationParams(
+          revalidationTarget.route,
+          revalidationTarget.params,
+          options.cleanPathname,
+          revalidationTarget.interceptOpts,
+        );
 
         // Hydrate the (possibly different) source route before reading its
         // page module for fetch-cache-mode resolution.

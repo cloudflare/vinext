@@ -437,6 +437,10 @@ export function resolveAppPageNavigationParams(
       opts?.interceptSlotKey === slotKey &&
       opts.interceptSlotKey !== SIBLING_PAGE_INTERCEPT_SLOT_KEY &&
       hasDefaultExport(opts.interceptPage);
+    // A slot is considered active here if it exports a default component (page or fallback).
+    // This is distinct from the optimistic-routing path (which keys off manifest bindings)
+    // and the route graph (which keys off pagePath existence), but functionally equivalent
+    // for param extraction today since default-only slots do not specify pattern parts.
     if (!isInterceptedSlot && !hasDefaultExport(slot.page) && !hasDefaultExport(slot.default)) {
       continue;
     }
