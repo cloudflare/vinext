@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import type { Plugin } from "vite";
+import { stripViteModuleQuery } from "../utils/path.js";
 
 /**
  * vinext:wasm-module-import — handle `import x from '*.wasm?module'`.
  *
- * Target adapters can claim the import through Vite's resolver and return an
- * external module reference. When no adapter claims it, this plugin reads the
- * WASM file, inlines it as base64, and exports a compiled WebAssembly.Module.
+ * Resolutions marked external by Vite or a target adapter are preserved. For
+ * non-external resolutions, this plugin reads the WASM file, inlines it as
+ * base64, and exports a compiled WebAssembly.Module.
  *
  * Fixes #1351.
  */
@@ -53,7 +54,7 @@ export function createWasmModuleImportPlugin(): Plugin {
         const resolved = await this.resolve(source, importer, { skipSelf: true });
         if (!resolved) return null;
         if (resolved.external) return resolved;
-        const filePath = stripModuleQuery(resolved.id);
+        const filePath = stripViteModuleQuery(resolved.id);
         return `\0vinext-wasm-module:${filePath}`;
       },
     },
@@ -90,14 +91,4 @@ export function createWasmModuleImportPlugin(): Plugin {
       },
     },
   };
-}
-
-/**
- * Strip the query/hash suffix from a Vite module id (`/a/b.wasm?module` →
- * `/a/b.wasm`). Local copy of index.ts's `stripViteModuleQuery` — small
- * enough that sharing it isn't worth an index.ts export cycle.
- */
-function stripModuleQuery(id: string): string {
-  const queryIndex = id.search(/[?#]/);
-  return queryIndex === -1 ? id : id.slice(0, queryIndex);
 }
