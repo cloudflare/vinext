@@ -2118,6 +2118,47 @@ describe("window.next debug global", () => {
     }
   });
 
+  // Shallow navigations skip the render-commit path, so the scroll reset is
+  // applied synchronously in performNavigation — before routeChangeComplete.
+  // This matches the non-shallow path, where the x/y reset runs inside the
+  // render-commit callback (also ahead of routeChangeComplete). Pins the
+  // ordering so listeners observe the final scroll position.
+  it("shallow push applies the scroll reset before routeChangeComplete", async () => {
+    const previousWindow = (globalThis as any).window;
+    const order: string[] = [];
+    const win: any = {
+      location: {
+        pathname: "/",
+        search: "",
+        hash: "",
+        href: "http://localhost/",
+        origin: "http://localhost",
+      },
+      history: { state: null, pushState() {}, replaceState() {} },
+      addEventListener() {},
+      dispatchEvent() {},
+      scrollTo(x: number, y: number) {
+        order.push(`scrollTo:${x},${y}`);
+      },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      win.next.router.events.on("routeChangeComplete", () => {
+        order.push("routeChangeComplete");
+      });
+      const result = await win.next.router.push("/foo", undefined, { shallow: true });
+      expect(result).toBe(true);
+      expect(order).toEqual(["scrollTo:0,0", "routeChangeComplete"]);
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
   // Issue #1522 — shallow `Router.push(url, as, { shallow: true })` must
   // update history to `as` (the visible URL) without fetching the server,
   // even when `as` matches a server-side redirect rule (e.g. `/redirect-1`
@@ -2353,6 +2394,9 @@ describe("next/router withRouter HOC", () => {
           return [typeof initialValue === "function" ? initialValue() : initialValue, vi.fn()];
         },
         useEffect(effect: () => void | (() => void)) {
+          effect();
+        },
+        useLayoutEffect(effect: () => void | (() => void)) {
           effect();
         },
         useMemo(factory: () => unknown) {

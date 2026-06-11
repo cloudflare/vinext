@@ -85,6 +85,15 @@ const __scrollRestoration: boolean = process.env.__NEXT_SCROLL_RESTORATION === "
 type ScrollPosition = { x: number; y: number };
 const noopCommit = (): void => {};
 
+/**
+ * A version of useLayoutEffect that doesn't warn during SSR.
+ * `wrapWithRouterContext` is shared with the server-side Pages Router render
+ * path, where a raw useLayoutEffect would log React's "useLayoutEffect does
+ * nothing on the server" warning on every render. Same pattern as
+ * `shims/image.tsx`; Next.js only runs the commit callback on the client.
+ */
+const useNonWarningLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
 class PagesRouterCommitBoundary extends Component<{
   children?: ReactNode;
   onCommit: () => void;
@@ -110,7 +119,7 @@ function PagesRouterCommitBoundaryHelper({
   children?: ReactNode;
   onCommit: () => void;
 }): ReactElement {
-  useLayoutEffect(() => {
+  useNonWarningLayoutEffect(() => {
     onCommit();
   }, [onCommit]);
 
@@ -2047,6 +2056,11 @@ async function performNavigation(
     if (result === "cancelled") return true;
     if (result === "failed") return false;
   } else {
+    // Shallow navigations skip the render-commit path, so apply the scroll
+    // reset synchronously here — before routeChangeComplete. This matches the
+    // non-shallow path, where the x/y reset runs inside the render-commit
+    // callback (also ahead of routeChangeComplete), mirroring Next.js's
+    // ordering of scroll-during-commit, then completion event.
     if (doScroll) {
       if (hash) scrollToHashTarget(hash);
       else window.scrollTo(0, 0);
@@ -2386,6 +2400,14 @@ setPagesRouterPopStateHandler(handlePagesRouterPopState);
  * The provider owns the reactive Pages Router snapshot so next/router and
  * next/compat/router consumers share one context value instead of each hook
  * installing its own global URL-change listener.
+ *
+ * The PagesRouterCommitBoundary exists for client navigations: its onCommit
+ * callback resolves the render-commit promise (so scroll restoration runs at
+ * commit time) and its onError rejection drives the hard-navigation fallback
+ * in runNavigateClient. The same boundary intentionally also wraps SSR and
+ * initial hydration, where both callbacks default to noopCommit: a
+ * hydration-time render error is caught here (React still console.error's
+ * it) instead of propagating, matching the navigation-path containment.
  */
 export function wrapWithRouterContext(
   element: ReactElement,
