@@ -314,11 +314,22 @@ function nodeHeadersToWebHeaders(headersRecord: IncomingMessage["headers"]): Hea
 
 const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
 
+// Constant header-name sets for `omitHeadersCaseInsensitive`. Hoisted to module
+// scope so the `.map().toLowerCase()` + `Set` allocation happens once at module
+// load instead of per response. All entries must be lowercase; the static-file
+// header constant is already `x-vinext-static-file`.
+const OMIT_BODY_HEADERS: ReadonlySet<string> = new Set(["content-length", "content-type"]);
+const OMIT_STATIC_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
+  VINEXT_STATIC_FILE_HEADER,
+  "content-encoding",
+  "content-length",
+  "content-type",
+]);
+
 function omitHeadersCaseInsensitive(
   headersRecord: Record<string, string | string[]>,
-  names: readonly string[],
+  targets: ReadonlySet<string>,
 ): Record<string, string | string[]> {
-  const targets = new Set(names.map((name) => name.toLowerCase()));
   const filtered: Record<string, string | string[]> = {};
   for (const [key, value] of Object.entries(headersRecord)) {
     if (targets.has(key.toLowerCase())) continue;
@@ -410,10 +421,7 @@ function sendCompressed(
   const buf = typeof body === "string" ? Buffer.from(body) : body;
   const baseType = contentType.split(";")[0].trim();
   const encoding = compress ? negotiateEncoding(req) : null;
-  const headersWithoutBodyHeaders = omitHeadersCaseInsensitive(extraHeaders, [
-    "content-length",
-    "content-type",
-  ]);
+  const headersWithoutBodyHeaders = omitHeadersCaseInsensitive(extraHeaders, OMIT_BODY_HEADERS);
 
   const writeHead = (headers: Record<string, string | string[]>) => {
     if (statusText) {
@@ -1339,7 +1347,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
         const staticResponseHeaders = omitHeadersCaseInsensitive(
           mergeResponseHeaders({}, response),
-          [VINEXT_STATIC_FILE_HEADER, "content-encoding", "content-length", "content-type"],
+          OMIT_STATIC_RESPONSE_HEADERS,
         );
 
         const served = await tryServeStatic(
