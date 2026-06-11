@@ -2055,7 +2055,14 @@ if (process.env.__NEXT_GESTURE_TRANSITION) {
       appHref = localPath;
     }
 
+    // Track the scheduled navigation like push/replace so a `refresh()` issued
+    // in the same task skips its redundant re-fetch (see
+    // hasScheduledAppRouterNavigation() in refresh()). Unlike push/replace
+    // there is no synchronous React.startTransition dispatch here that could
+    // throw, so no try/catch unwind is needed.
+    const releaseNavigation = trackScheduledAppRouterNavigation();
     void navigateClientSide(appHref, "push", options?.scroll !== false, false, "synchronous");
+    releaseScheduledAppRouterNavigationAfterCurrentTask(releaseNavigation);
   };
 }
 

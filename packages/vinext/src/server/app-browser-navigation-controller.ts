@@ -526,6 +526,11 @@ export function createAppBrowserNavigationController(
       return;
     }
 
+    // `synchronous` mode assumes a null `pendingRouterState`: its only caller
+    // (gesture push) navigates with `programmaticTransition = false`, so the
+    // early return above never wins. A future caller combining `synchronous`
+    // with a programmatic transition would have its synchronous commit
+    // silently dropped in favor of the deferred resolve above.
     if (visibleCommitMode === "synchronous") {
       flushSync(() => {
         setter(applyApprovedVisibleCommit(getBrowserRouterState(), commit));

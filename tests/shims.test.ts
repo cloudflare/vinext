@@ -329,6 +329,31 @@ describe("next/navigation shim", () => {
     }
   });
 
+  it("attaches experimental_gesturePush only when the gesture transition define is set", async () => {
+    // In real builds `process.env.__NEXT_GESTURE_TRANSITION` is replaced with a
+    // boolean literal by the define in packages/vinext/src/index.ts; in vitest
+    // it reads the live env, so stub it and re-import the shim to exercise both
+    // sides of the gate.
+    try {
+      vi.stubEnv("__NEXT_GESTURE_TRANSITION", "");
+      vi.resetModules();
+      const { appRouterInstance: withoutDefine } = await import(
+        "../packages/vinext/src/shims/navigation.js"
+      );
+      expect(withoutDefine.experimental_gesturePush).toBeUndefined();
+
+      vi.stubEnv("__NEXT_GESTURE_TRANSITION", "true");
+      vi.resetModules();
+      const { appRouterInstance: withDefine } = await import(
+        "../packages/vinext/src/shims/navigation.js"
+      );
+      expect(typeof withDefine.experimental_gesturePush).toBe("function");
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
   it("hash-only app router navigation preserves bfcache metadata without copying scroll restoration", async () => {
     const previousWindow = (globalThis as any).window;
     const previousDocument = (globalThis as any).document;
