@@ -22,11 +22,17 @@ async function expectScrollPosition(page: Page, expected: ScrollPosition) {
 }
 
 async function expectRouteChangeComplete(page: Page): Promise<void> {
-  // Register a one-shot listener for the next routeChangeComplete event,
-  // then return the promise so the caller can await it alongside navigation.
+  // Register a one-shot listener for the next routeChangeComplete event.
+  // MUST be started before the navigation that triggers the event — calling
+  // this after an awaited router.push() will deadlock because the event has
+  // already fired.
   return page.evaluate(() => {
     const router = (window as any).next?.router;
-    if (!router?.events) return Promise.resolve();
+    if (!router?.events) {
+      throw new Error(
+        "expectRouteChangeComplete: window.next.router.events is not available",
+      );
+    }
     return new Promise<void>((resolve) => {
       const handler = () => {
         router.events.off("routeChangeComplete", handler);
@@ -139,7 +145,8 @@ test.describe("reload-scroll-back-restoration", () => {
     expect(initialScroll.y).not.toBe(0);
 
     await pushWithPagesRouter(page, "/1");
-    await expectRouteChangeComplete(page);
+    // pushWithPagesRouter already awaits router.push() which resolves after
+    // routeChangeComplete — no separate wait needed here.
 
     // Register a one-shot listener on routeChangeComplete to record scroll position
     const scrollAtEventPromise = page.evaluate(() => {
