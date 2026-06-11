@@ -291,6 +291,14 @@ class PagesResponseStream extends Writable {
 
   override destroy(error?: Error): this {
     this.streamEnded = true;
+    if (!this.resolved) {
+      if (error) {
+        this.resolved = true;
+        this.rejectResponse(error);
+      } else {
+        this.resolveOnce();
+      }
+    }
     if (this.controller) {
       try {
         if (error) {

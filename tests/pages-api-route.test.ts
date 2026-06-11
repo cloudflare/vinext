@@ -497,4 +497,20 @@ describe("pages api route", () => {
     // The body stream should reject because it was destroyed mid-stream.
     await expect(response.text()).rejects.toThrow("upstream exploded");
   });
+
+  it("does not hang when res.destroy() is called without an error before any body is written", async () => {
+    // Regression: destroy() with no error before resolveOnce() must still
+    // resolve the response promise so the request does not hang.
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.destroy();
+        return res;
+      }),
+      request: new Request("https://example.com/api/destroy-no-error"),
+      url: "/api/destroy-no-error",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("");
+  });
 });
