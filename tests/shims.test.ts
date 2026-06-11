@@ -13980,6 +13980,81 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  // Without experimental.scrollRestoration, popstate must still restore the
+  // per-entry scroll saved into history state on push (__vinext_scrollX/Y):
+  // a soft popstate re-renders content the browser's native "auto" scroll
+  // restoration can't position correctly.
+  it("popstate restores history-state scroll when manual scroll restoration is off", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win, render } = createNavWindow();
+    const pageModuleUrl = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+
+    (globalThis as any).window = win;
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+
+    globalThis.fetch = vi.fn(
+      async () => new Response(buildNavHtml("/other", pageModuleUrl), { status: 200 }),
+    );
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      const routeChangeComplete = new Promise<void>((resolve, reject) => {
+        (win as any).next.router.events.on("routeChangeComplete", () => resolve());
+        (win as any).next.router.events.on("routeChangeError", (err: unknown) => reject(err));
+      });
+
+      win.location.pathname = "/other";
+      win.location.href = "http://localhost/other";
+      // The router-owned state shape saveScrollPosition() writes on push:
+      // the Next.js state stamp plus the merged __vinext_scrollX/Y fields.
+      popstateHandler!({
+        state: {
+          __N: true,
+          url: "/other",
+          as: "/other",
+          options: {},
+          __vinext_scrollX: 12,
+          __vinext_scrollY: 345,
+        },
+      });
+      await routeChangeComplete;
+
+      // The scroll target is applied inside the render-commit callback; the
+      // mocked root.render never mounts React, so fire the commit manually.
+      expect(render).toHaveBeenCalled();
+      const committed = render.mock.calls.at(-1)![0];
+      committed.props.onCommit();
+
+      expect(win.scrollTo).toHaveBeenCalledWith(12, 345);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
+    }
+  });
+
   it("does not prefix a locale-qualified target with the current locale", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;

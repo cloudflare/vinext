@@ -2321,6 +2321,9 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
   if (manualScrollRestoration) {
     const currentKey = _currentHistoryKey;
     if (currentKey !== undefined && currentKey !== targetKey) {
+      // Reading window scroll here is only correct because manualScrollRestoration
+      // implies history.scrollRestoration = "manual", so the browser hasn't yet
+      // moved the viewport to the target entry's position when popstate fires.
       saveScrollPositionToSessionStorage(currentKey, getWindowScrollPosition());
     }
 
@@ -2373,9 +2376,14 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
   // compatibility.
   routerEvents.emit("beforeHistoryChange", fullAppUrl, { shallow: false });
   void (async () => {
+    // When manual scroll restoration is enabled we drive the position from the
+    // sessionStorage snapshot keyed by history key. When it is disabled we
+    // still restore the per-entry scroll saved in history state on push, since
+    // a soft popstate re-renders content the browser's native restoration
+    // can't position correctly.
     const scrollTarget = manualScrollRestoration
       ? (forcedScroll ?? readScrollPosition(state) ?? { x: 0, y: 0 })
-      : null;
+      : readScrollPosition(state);
     const result = await runNavigateClient(
       browserUrl,
       fullAppUrl,
