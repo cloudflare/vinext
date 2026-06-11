@@ -2,46 +2,15 @@ import fs from "node:fs";
 import type { Plugin } from "vite";
 
 /**
- * vinext:wasm-module-import — handle `import x from '*.wasm?module'` in
- * non-Cloudflare builds.
+ * vinext:wasm-module-import — handle `import x from '*.wasm?module'`.
  *
- * The `?module` query is a Cloudflare Workers / workerd convention: it tells
- * the bundler to load a `.wasm` file as a pre-compiled WebAssembly.Module
- * rather than raw bytes. When @cloudflare/vite-plugin is present it handles
- * this for all worker environments via its `additionalModulesPlugin`
- * (enforce:"pre"), so we must not interfere.
- *
- * In plain Node.js builds (no Cloudflare plugin — the case for the
- * deploy-suite and standalone `vinext start`) Rolldown has no built-in
- * `?module` handler and throws. This plugin fills the gap by:
- *   1. Intercepting any `*.wasm?module` import in resolveId.
- *   2. Reading the WASM file at load time and inlining it as base64.
- *   3. Exporting a compiled WebAssembly.Module via top-level await.
- *
- * workerd forbids compiling WASM from bytes at runtime — modules must come
- * from the bundler module system. The getHasCloudflarePlugin() check inside
- * the resolveId handler ensures this path only runs in Node.js environments
- * where WebAssembly.compile() from bytes is permitted.
- *
- * NOTE: the gating assumption is "no @cloudflare/vite-plugin", not
- * "Node.js target". The two can diverge: e.g. Nitro's edge presets
- * (Cloudflare, Deno Deploy) don't register the Cloudflare vite-plugin, so
- * this plugin would intercept `.wasm?module` there and the emitted
- * `WebAssembly.compile(bytes)` would be rejected at runtime by workerd.
- * If that combination ever needs support, the gate must consider the
- * target runtime rather than (only) plugin presence.
- *
- * NOTE: `hasCloudflarePlugin` is set in vinext's `config` hook (after the
- * plugins array is constructed), so the flag is passed in as a getter and
- * read at hook call-time, where it reflects the final resolved value.
+ * Target adapters can claim the import through Vite's resolver and return an
+ * external module reference. When no adapter claims it, this plugin reads the
+ * WASM file, inlines it as base64, and exports a compiled WebAssembly.Module.
  *
  * Fixes #1351.
  */
-export function createWasmModuleImportPlugin(options: {
-  getHasCloudflarePlugin: () => boolean;
-}): Plugin {
-  const { getHasCloudflarePlugin } = options;
-
+export function createWasmModuleImportPlugin(): Plugin {
   return {
     name: "vinext:wasm-module-import",
     enforce: "pre",
@@ -54,14 +23,6 @@ export function createWasmModuleImportPlugin(options: {
       // we want to silently claim — leave it to the bundler to error on.
       filter: { id: /\.wasm\?module$/ },
       async handler(source: string, importer: string | undefined) {
-        // Defer to @cloudflare/vite-plugin when it's present — it handles
-        // ?module imports for all worker environments via its own
-        // `additionalModulesPlugin` (also enforce:"pre").  Both plugins have
-        // the same enforce level; by checking this flag at call-time we let
-        // Cloudflare's plugin "win" by returning null here and allowing it to
-        // intercept first in the registration order.
-        if (getHasCloudflarePlugin()) return null;
-
         // `?module` is a server/edge convention with no meaning in browser
         // bundles, and the emitted top-level await may not be valid for the
         // configured client build.target. Never claim the import for the
@@ -91,6 +52,7 @@ export function createWasmModuleImportPlugin(options: {
         // ?module query so the result is a real file path.
         const resolved = await this.resolve(source, importer, { skipSelf: true });
         if (!resolved) return null;
+        if (resolved.external) return resolved;
         const filePath = stripModuleQuery(resolved.id);
         return `\0vinext-wasm-module:${filePath}`;
       },

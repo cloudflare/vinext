@@ -4794,15 +4794,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
-    // Handle `import x from '*.wasm?module'` in non-Cloudflare builds —
-    // see src/plugins/wasm-module-import.ts. Fixes #1351.
-    //
-    // `hasCloudflarePlugin` is set in the `config` hook (after this plugins
-    // array is constructed), so it is passed as a getter and read at hook
-    // call-time, where it reflects the final resolved value.
-    createWasmModuleImportPlugin({
-      getHasCloudflarePlugin: () => hasCloudflarePlugin,
-    }),
+    // Handle `import x from '*.wasm?module'` — see
+    // src/plugins/wasm-module-import.ts. Fixes #1351.
+    createWasmModuleImportPlugin(),
     {
       // @vercel/og WASM patch — universal (workerd + Node.js)
       //

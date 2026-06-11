@@ -24,4 +24,13 @@ test.describe("Cloudflare Workers API Routes", () => {
 
     expect(contentType).toContain("application/json");
   });
+
+  // Ported from Next.js: test/e2e/edge-can-use-wasm-files/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/edge-can-use-wasm-files/index.test.ts
+  test("API route can use a wasm module", async ({ request }) => {
+    const response = await request.get(`${BASE}/api/wasm`);
+
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual({ result: 42 });
+  });
 });
