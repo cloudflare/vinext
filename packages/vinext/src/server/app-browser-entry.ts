@@ -1713,8 +1713,10 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             ? navigationPlanner.classifyEarlyNavigationIntent({
                 basePath: __basePath,
                 currentHref: clientNavigationSnapshotHref(routerStateAtNavStart.navigationSnapshot),
-                mode: currentHistoryMode ?? "push",
-                scroll: scrollIntent != null,
+                // This loop only consumes the flight-navigation cache policy;
+                // hash-only intents already return before a request is queued.
+                mode: "push",
+                scroll: false,
                 targetHref: url.href,
               })
             : null;
