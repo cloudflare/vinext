@@ -35,7 +35,6 @@ import {
   deferUntilStreamConsumed,
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
-  shouldRerenderAppPageWithGlobalError,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
@@ -886,20 +885,6 @@ export async function renderAppPageLifecycle(
         void htmlStream.cancel().catch(() => {});
         return options.renderPageSpecialError(specialError);
       }
-    }
-  }
-
-  if (
-    shouldRerenderAppPageWithGlobalError({
-      capturedError: rscErrorTracker.getCapturedError(),
-      hasLocalBoundary: options.routeHasLocalBoundary,
-    })
-  ) {
-    const cleanResponse = await options.renderErrorBoundaryResponse(
-      rscErrorTracker.getCapturedError(),
-    );
-    if (cleanResponse) {
-      return cleanResponse;
     }
   }
 

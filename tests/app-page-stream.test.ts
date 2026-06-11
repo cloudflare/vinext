@@ -7,7 +7,6 @@ import {
   renderAppPageHtmlResponse,
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
-  shouldRerenderAppPageWithGlobalError,
 } from "../packages/vinext/src/server/app-page-stream.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
@@ -362,29 +361,6 @@ describe("app page stream helpers", () => {
     tracker.onRenderError({ digest: "NEXT_NOT_FOUND" }, { path: "/test" }, { chunk: 2 });
     expect((tracker.getCapturedError() as Error).message).toBe("boom");
     expect(baseOnError).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not rerender global-error after the RSC shell because client boundaries may catch", () => {
-    expect(
-      shouldRerenderAppPageWithGlobalError({
-        capturedError: new Error("boom"),
-        hasLocalBoundary: false,
-      }),
-    ).toBe(false);
-
-    expect(
-      shouldRerenderAppPageWithGlobalError({
-        capturedError: new Error("boom"),
-        hasLocalBoundary: true,
-      }),
-    ).toBe(false);
-
-    expect(
-      shouldRerenderAppPageWithGlobalError({
-        capturedError: null,
-        hasLocalBoundary: false,
-      }),
-    ).toBe(false);
   });
 
   it("emits the `x-edge-runtime: 1` marker on HTML stream responses for edge-runtime routes", async () => {
