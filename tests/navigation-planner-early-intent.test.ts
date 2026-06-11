@@ -142,6 +142,24 @@ describe("navigationPlanner early navigation intent classification", () => {
     expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
   });
 
+  it("does not treat a cross-origin same-path hash target as a same-document scroll", () => {
+    const decision = classify({
+      currentHref: "https://a.example/docs?q=1",
+      targetHref: "https://b.example/docs?q=1#section",
+    });
+
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
+  });
+
+  it("does not treat a cross-origin same-path search target as same-page search", () => {
+    const decision = classify({
+      currentHref: "https://a.example/docs?q=1",
+      targetHref: "https://b.example/docs?q=2",
+    });
+
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
+  });
+
   it("strips the base path before comparing pathnames for a hash change", () => {
     const decision = classify({
       basePath: "/app",

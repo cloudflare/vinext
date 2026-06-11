@@ -559,12 +559,20 @@ function classifyEarlyNavigationIntent(
     };
   }
 
+  // A cross-origin target is never a same-document or same-page navigation, even
+  // when its pathname and search match. The planner is the semantic authority
+  // here, so it cannot assume the caller already filtered same-origin: gate both
+  // same-document outcomes on origin so a different host falls through to an
+  // ordinary flight.
   const samePathname =
+    current.origin === next.origin &&
     stripBasePath(current.pathname, facts.basePath) ===
-    stripBasePath(next.pathname, facts.basePath);
-  // Compare normalized search params rather than raw search strings so encoding
-  // or ordering differences that parse to the same query do not split a
-  // hash-only change into a search navigation.
+      stripBasePath(next.pathname, facts.basePath);
+  // Compare serialised search params rather than raw search strings, matching the
+  // previous same-page-search predicate, so encoding differences that parse to
+  // the same query (e.g. "%20" vs "+") are not read as a search change. This does
+  // not normalise key order; URLSearchParams.toString() preserves it and we do
+  // not sort, since query order can be observable.
   const sameSearch = current.searchParams.toString() === next.searchParams.toString();
 
   if (samePathname && sameSearch && next.hash !== "") {
