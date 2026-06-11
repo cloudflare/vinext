@@ -11,10 +11,14 @@ const Page = ({ id }) => {
   }
 
   useEffect(() => {
-    router.events.on("routeChangeComplete", () => {
+    const handler = () => {
       setReady(true);
-    });
-  }, [router, ready, setReady]);
+    };
+    router.events.on("routeChangeComplete", handler);
+    return () => {
+      router.events.off("routeChangeComplete", handler);
+    };
+  }, [router]);
 
   return (
     <>

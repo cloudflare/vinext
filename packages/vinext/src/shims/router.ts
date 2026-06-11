@@ -1962,7 +1962,11 @@ async function performNavigation(
   const shallow = options?.shallow ?? false;
   const doScroll = options?.scroll !== false;
   const hash = extractHash(resolved);
-  const scrollTarget = doScroll ? (hash ? hash : { x: 0, y: 0 }) : null;
+  // Only pass {x, y} restoration through renderPagesRouterElement's commit
+  // callback. Hash scrolling is deferred until after routeChangeComplete so
+  // the event ordering matches Next.js: x/y reset before completion, hash
+  // scroll after completion.
+  const scrollTarget = doScroll && !hash ? { x: 0, y: 0 } : null;
   const navigateOptions: NavigateClientOptions = errorRouteHtmlFetchUrl
     ? { allowNotFoundResponse: true, mode, scroll: scrollTarget }
     : { mode, scroll: scrollTarget };
@@ -2029,6 +2033,12 @@ async function performNavigation(
   }
   onStateUpdate?.();
   routerEvents.emit("routeChangeComplete", resolved, { shallow });
+  // Hash scrolling after routeChangeComplete, matching Next.js ordering:
+  // x/y restoration happens during the render commit, then hash scrolling
+  // happens after the completion event.
+  if (doScroll && hash && !shallow) {
+    scrollToHashTarget(hash);
+  }
   dispatchNavigateEvent();
   return true;
 }

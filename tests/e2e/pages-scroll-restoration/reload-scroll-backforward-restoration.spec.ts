@@ -22,7 +22,19 @@ async function expectScrollPosition(page: Page, expected: ScrollPosition) {
 }
 
 async function expectRouteChangeComplete(page: Page): Promise<void> {
-  await expect(page.locator("html")).toContainText("routeChangeComplete");
+  // Register a one-shot listener for the next routeChangeComplete event,
+  // then return the promise so the caller can await it alongside navigation.
+  return page.evaluate(() => {
+    const router = (window as any).next?.router;
+    if (!router?.events) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const handler = () => {
+        router.events.off("routeChangeComplete", handler);
+        resolve();
+      };
+      router.events.on("routeChangeComplete", handler);
+    });
+  });
 }
 
 async function pushWithPagesRouter(page: Page, href: string): Promise<void> {
@@ -65,16 +77,18 @@ test.describe("reload-scroll-back-restoration", () => {
     scrollPositionMemories.push(await getScrollPosition(page));
     await pushWithPagesRouter(page, "/2");
 
+    const rc1 = expectRouteChangeComplete(page);
     await page.goBack();
-    await expectRouteChangeComplete(page);
+    await rc1;
     await expectScrollPosition(page, scrollPositionMemories[1]);
 
     await page.reload();
 
     await expect.poll(() => isPagesRouterReady(page)).toBe(true);
 
+    const rc2 = expectRouteChangeComplete(page);
     await page.goBack();
-    await expectRouteChangeComplete(page);
+    await rc2;
     await expectScrollPosition(page, scrollPositionMemories[0]);
   });
 
@@ -101,16 +115,18 @@ test.describe("reload-scroll-back-restoration", () => {
 
     await page.goBack();
     await page.goBack();
+    const rc3 = expectRouteChangeComplete(page);
     await page.goForward();
-    await expectRouteChangeComplete(page);
+    await rc3;
     await expectScrollPosition(page, scrollPositionMemories[1]);
 
     await page.reload();
 
     await expect.poll(() => isPagesRouterReady(page)).toBe(true);
 
+    const rc4 = expectRouteChangeComplete(page);
     await page.goForward();
-    await expectRouteChangeComplete(page);
+    await rc4;
     await expectScrollPosition(page, scrollPositionMemories[2]);
   });
 
@@ -125,27 +141,26 @@ test.describe("reload-scroll-back-restoration", () => {
     await pushWithPagesRouter(page, "/1");
     await expectRouteChangeComplete(page);
 
-    // Register event listener on routeChangeComplete to record scroll position
-    await page.evaluate(() => {
-      (window as any).scrollAtEvent = null;
+    // Register a one-shot listener on routeChangeComplete to record scroll position
+    const scrollAtEventPromise = page.evaluate(() => {
       const router = (window as any).next?.router;
-      if (router && router.events) {
-        router.events.on("routeChangeComplete", () => {
-          (window as any).scrollAtEvent = { x: window.scrollX, y: window.scrollY };
-        });
-      }
+      if (!router?.events) return null;
+      return new Promise<{ x: number; y: number }>((resolve) => {
+        const handler = () => {
+          router.events.off("routeChangeComplete", handler);
+          resolve({ x: window.scrollX, y: window.scrollY });
+        };
+        router.events.on("routeChangeComplete", handler);
+      });
     });
 
     // Go back, which triggers scroll restoration
     await page.goBack();
 
     // Verify routeChangeComplete fired and recorded the restored scroll position
-    await expect
-      .poll(async () => page.evaluate(() => (window as any).scrollAtEvent))
-      .not.toBeNull();
-
-    const scrollAtEvent = await page.evaluate(() => (window as any).scrollAtEvent);
-    expect(scrollAtEvent.y).toBe(initialScroll.y);
+    const scrollAtEvent = await scrollAtEventPromise;
+    expect(scrollAtEvent).not.toBeNull();
+    expect(scrollAtEvent!.y).toBe(initialScroll.y);
   });
 
   test("should reject navigation, emit routeChangeError and fallback to hard navigation on render error", async ({
