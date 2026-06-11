@@ -210,6 +210,9 @@ describe("app page request helpers", () => {
         return sourceRoute;
       },
       isRscRequest: true,
+      resolveNavigationParams(_route, params) {
+        return { ...params, catchAll: ["photos", "123"] };
+      },
       renderInterceptResponse,
       searchParams: new URLSearchParams("from=feed"),
       setNavigationContext,
@@ -225,7 +228,7 @@ describe("app page request helpers", () => {
     expect(result.interceptOpts).toBeUndefined();
     expect(result.response).toBeInstanceOf(Response);
     expect(setNavigationContext).toHaveBeenCalledWith({
-      params: { id: "123" },
+      params: { id: "123", catchAll: ["photos", "123"] },
       pathname: "/photos/123",
       searchParams: new URLSearchParams("from=feed"),
     });
@@ -267,6 +270,9 @@ describe("app page request helpers", () => {
         return currentRoute;
       },
       isRscRequest: true,
+      resolveNavigationParams(_route, params) {
+        return params;
+      },
       async renderInterceptResponse() {
         throw new Error("should not render a separate intercept response");
       },

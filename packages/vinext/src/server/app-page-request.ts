@@ -118,6 +118,12 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
   getSourceRoute: (sourceRouteIndex: number) => Awaitable<TRoute | undefined>;
   isRscRequest: boolean;
   layoutParamAccess?: AppLayoutParamAccessTracker;
+  resolveNavigationParams: (
+    route: TRoute,
+    params: AppPageParams,
+    pathname: string,
+    interceptOpts: TInterceptOpts,
+  ) => AppPageParams;
   renderInterceptResponse: (route: TRoute, element: TElement) => Promise<Response> | Response;
   searchParams: URLSearchParams;
   setNavigationContext: (context: {
@@ -405,20 +411,26 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
 
   if (interceptState.kind === "source-route") {
     const renderRoute = interceptState.sourceRoute;
+    const interceptOpts = options.toInterceptOpts(interceptState.intercept);
     const renderParams = pickRouteParams(
       interceptState.intercept.matchedParams,
       options.getRouteParamNames(interceptState.sourceRoute),
     );
 
     options.setNavigationContext({
-      params: interceptState.intercept.matchedParams,
+      params: options.resolveNavigationParams(
+        renderRoute,
+        interceptState.intercept.matchedParams,
+        options.cleanPathname,
+        interceptOpts,
+      ),
       pathname: options.cleanPathname,
       searchParams: options.searchParams,
     });
     const interceptElement = await options.buildPageElement(
       renderRoute,
       renderParams,
-      options.toInterceptOpts(interceptState.intercept),
+      interceptOpts,
       options.searchParams,
       options.layoutParamAccess,
     );

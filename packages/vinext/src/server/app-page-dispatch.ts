@@ -789,6 +789,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     },
     isRscRequest: options.isRscRequest,
     layoutParamAccess,
+    resolveNavigationParams(sourceRoute, navigationParams, pathname, interceptOpts) {
+      return resolveAppPageNavigationParams(sourceRoute, navigationParams, pathname, interceptOpts);
+    },
     renderInterceptResponse(sourceRoute, interceptElement) {
       const interceptOnError = options.createRscOnErrorHandler(
         options.cleanPathname,
