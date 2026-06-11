@@ -6,9 +6,15 @@
  * Ported from Next.js: packages/next/src/shared/lib/router/utils/escape-path-delimiters.ts
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/escape-path-delimiters.ts
  */
+// Pre-compiled variants — avoids recompiling per segment per request.
+// Sharing `g`-flagged regexes is safe here: String.prototype.replace always
+// starts from index 0 and resets lastIndex on completion.
+const PATH_DELIMITERS_RE = /([/#?])/gi;
+const PATH_DELIMITERS_ENCODED_RE = /([/#?]|%(2f|23|3f|5c))/gi;
+
 export function escapePathDelimiters(segment: string, escapeEncoded?: boolean): string {
   return segment.replace(
-    new RegExp(`([/#?]${escapeEncoded ? "|%(2f|23|3f|5c)" : ""})`, "gi"),
+    escapeEncoded ? PATH_DELIMITERS_ENCODED_RE : PATH_DELIMITERS_RE,
     (char: string) => encodeURIComponent(char),
   );
 }

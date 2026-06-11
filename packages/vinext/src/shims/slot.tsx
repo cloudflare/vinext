@@ -55,7 +55,7 @@ export type BfcacheSlotEntry = {
 };
 
 function isCacheComponentsEnabled(): boolean {
-  return process.env.__NEXT_CACHE_COMPONENTS === "true";
+  return String(process.env.__NEXT_CACHE_COMPONENTS) === "true";
 }
 
 type MergeElementsOptions = {

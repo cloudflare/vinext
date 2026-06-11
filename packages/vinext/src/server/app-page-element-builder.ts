@@ -92,6 +92,8 @@ export type BuildPageElementsOptions<
    * so file-based metadata route URLs emitted in <head> are prefixed.
    */
   basePath?: string;
+  /** Configured next.config `trailingSlash`, threaded into canonical URL rendering. */
+  trailingSlash?: boolean;
   /** Serialized next.config `htmlLimitedBots` regexp source. */
   htmlLimitedBots?: string;
 };
@@ -306,6 +308,7 @@ export async function buildPageElements<
     searchParams: pageSearchParamsThenable,
     slotOverrides,
     renderMode,
+    trailingSlash: options.trailingSlash,
   });
 }
 

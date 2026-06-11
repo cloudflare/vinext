@@ -86,6 +86,8 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
   metadataRoutes: MetadataFileRoute[];
   /** Configured next.config `basePath`, threaded into file-based metadata href emission. */
   basePath?: string;
+  /** Configured next.config `trailingSlash`, threaded into canonical URL rendering. */
+  trailingSlash?: boolean;
   renderToReadableStream: (
     element: ReactNode | AppElements,
     options: { onError: AppPageBoundaryOnError },
@@ -361,7 +363,14 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
     createElement("meta", { key: "robots", name: "robots", content: "noindex" }),
   ];
   if (metadata) {
-    headElements.push(createElement(MetadataHead, { key: "metadata", metadata, pathname }));
+    headElements.push(
+      createElement(MetadataHead, {
+        key: "metadata",
+        metadata,
+        pathname,
+        trailingSlash: options.trailingSlash,
+      }),
+    );
   }
   headElements.push(createElement(ViewportHead, { key: "viewport", viewport }));
 
@@ -430,7 +439,14 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
         routeSegments: options.route?.routeSegments,
       });
       if (metadata) {
-        headElements.push(createElement(MetadataHead, { key: "metadata", metadata, pathname }));
+        headElements.push(
+          createElement(MetadataHead, {
+            key: "metadata",
+            metadata,
+            pathname,
+            trailingSlash: options.trailingSlash,
+          }),
+        );
       }
       headElements.push(createElement(ViewportHead, { key: "viewport", viewport }));
     } catch (error) {

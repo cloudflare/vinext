@@ -684,16 +684,48 @@ function formatResolvedMetadataUrl(url: URL): string {
   return url.href;
 }
 
-function resolveMetadataUrl(url: string | URL, metadataBase: URL | null | undefined): string {
+// Next.js's exact file-extension regex for trailingSlash canonical rule.
+// Matches paths like /foo.xml, /bar/baz.json but NOT /.well-known/... paths.
+const TRAILING_SLASH_FILE_REGEX =
+  /^(?:\/((?!\.well-known(?:\/.*)?)((?:[^/]+\/)*)([^/]+\.\w+)))(\/?|$)/i;
+
+function resolveMetadataUrl(
+  url: string | URL,
+  metadataBase: URL | null | undefined,
+  trailingSlash?: boolean,
+): string {
   const value = stringifyUrl(url);
-  if (isAbsoluteOrProtocolRelativeUrl(value) || !metadataBase) {
+  if (!metadataBase) {
     return value;
   }
 
   try {
-    return formatResolvedMetadataUrl(
-      new URL(joinMetadataPath(metadataBase.pathname, value), metadataBase),
-    );
+    const isAbsolute = isAbsoluteOrProtocolRelativeUrl(value);
+    const composed = isAbsolute
+      ? new URL(value, metadataBase)
+      : new URL(joinMetadataPath(metadataBase.pathname, value), metadataBase);
+    if (isAbsolute && composed.origin !== metadataBase.origin) {
+      return value;
+    }
+    // Match Next.js's resolveAbsoluteUrlWithPathname: only ADD a trailing slash
+    // when trailingSlash is true; never strip when false. See
+    // packages/next/src/lib/metadata/resolvers/resolve-url.ts.
+    if (trailingSlash === true && composed.search === "") {
+      if (
+        composed.pathname !== "/" &&
+        !composed.pathname.endsWith("/") &&
+        !TRAILING_SLASH_FILE_REGEX.test(composed.pathname)
+      ) {
+        composed.pathname += "/";
+      }
+    }
+    const result = formatResolvedMetadataUrl(composed);
+    // formatResolvedMetadataUrl collapses pathname '/' with no query to bare
+    // origin (no trailing slash). For trailingSlash:true restore the slash.
+    if (trailingSlash === true && result === metadataBase.origin) {
+      return `${metadataBase.origin}/`;
+    }
+    return result;
   } catch {
     return value;
   }
@@ -703,11 +735,26 @@ function resolveCanonicalUrl(
   url: string | URL,
   metadataBase: URL | null | undefined,
   pathname: string,
+  trailingSlash?: boolean,
 ): string {
   if (url instanceof URL) {
-    return resolveMetadataUrl(url, metadataBase);
+    return resolveMetadataUrl(url, metadataBase, trailingSlash);
   }
-  return resolveMetadataUrl(resolveRelativeMetadataUrl(url, pathname), metadataBase);
+  return resolveMetadataUrl(resolveRelativeMetadataUrl(url, pathname), metadataBase, trailingSlash);
+}
+
+function resolveAlternateUrl(
+  url: string | URL,
+  metadataBase: URL | null | undefined,
+  pathname: string,
+  trailingSlash?: boolean,
+): string {
+  if (url instanceof URL) {
+    const resolvedUrl = new URL(pathname, url);
+    url.searchParams.forEach((value, key) => resolvedUrl.searchParams.set(key, value));
+    return resolveMetadataUrl(resolvedUrl, metadataBase, trailingSlash);
+  }
+  return resolveCanonicalUrl(url, metadataBase, pathname, trailingSlash);
 }
 
 function isSocialImageDescriptor(
@@ -739,6 +786,7 @@ function resolveSocialImageUrl(
 type MetadataHeadProps = {
   metadata: Metadata;
   pathname?: string;
+  trailingSlash?: boolean;
 };
 
 function escapeHtmlText(value: string): string {
@@ -799,11 +847,17 @@ function renderMetadataElementToHtml(node: unknown): string {
   }
 }
 
-export function renderMetadataToHtml(metadata: Metadata, pathname = "/"): string {
-  return renderMetadataElementToHtml(MetadataHead({ metadata, pathname }));
+export function renderMetadataToHtml(
+  metadata: Metadata,
+  pathname = "/",
+  options?: { trailingSlash?: boolean },
+): string {
+  return renderMetadataElementToHtml(
+    MetadataHead({ metadata, pathname, trailingSlash: options?.trailingSlash }),
+  );
 }
 
-export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
+export function MetadataHead({ metadata, pathname = "/", trailingSlash }: MetadataHeadProps) {
   const elements: React.ReactElement[] = [];
   let key = 0;
 
@@ -932,7 +986,15 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
     if (og.title) elements.push(<meta key={key++} property="og:title" content={og.title} />);
     if (og.description)
       elements.push(<meta key={key++} property="og:description" content={og.description} />);
-    if (og.url) elements.push(<meta key={key++} property="og:url" content={resolveUrl(og.url)} />);
+    if (og.url) {
+      elements.push(
+        <meta
+          key={key++}
+          property="og:url"
+          content={resolveCanonicalUrl(og.url, base, pathname, trailingSlash)}
+        />,
+      );
+    }
     if (og.siteName)
       elements.push(<meta key={key++} property="og:site_name" content={og.siteName} />);
     if (og.type) elements.push(<meta key={key++} property="og:type" content={og.type} />);
@@ -1166,23 +1228,44 @@ export function MetadataHead({ metadata, pathname = "/" }: MetadataHeadProps) {
         <link
           key={key++}
           rel="canonical"
-          href={resolveCanonicalUrl(alt.canonical, base, pathname)}
+          href={resolveCanonicalUrl(alt.canonical, base, pathname, trailingSlash)}
         />,
       );
     }
     if (alt.languages) {
       for (const [lang, href] of Object.entries(alt.languages)) {
-        elements.push(<link key={key++} rel="alternate" hrefLang={lang} href={resolveUrl(href)} />);
+        elements.push(
+          <link
+            key={key++}
+            rel="alternate"
+            hrefLang={lang}
+            href={resolveAlternateUrl(href, base, pathname, trailingSlash)}
+          />,
+        );
       }
     }
     if (alt.media) {
       for (const [media, href] of Object.entries(alt.media)) {
-        elements.push(<link key={key++} rel="alternate" media={media} href={resolveUrl(href)} />);
+        elements.push(
+          <link
+            key={key++}
+            rel="alternate"
+            media={media}
+            href={resolveAlternateUrl(href, base, pathname, trailingSlash)}
+          />,
+        );
       }
     }
     if (alt.types) {
       for (const [type, href] of Object.entries(alt.types)) {
-        elements.push(<link key={key++} rel="alternate" type={type} href={resolveUrl(href)} />);
+        elements.push(
+          <link
+            key={key++}
+            rel="alternate"
+            type={type}
+            href={resolveAlternateUrl(href, base, pathname, trailingSlash)}
+          />,
+        );
       }
     }
   }
