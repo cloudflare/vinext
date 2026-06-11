@@ -23,8 +23,11 @@ export const NavigationTraceReasonCodes = {
   rootBoundaryChanged: "NC_ROOT",
   rootBoundaryUnknown: "NC_ROOT_UNKNOWN",
   rscCompatibilityMismatch: "NC_RSC_COMPAT_MISMATCH",
+  rscNavigationError: "NC_RSC_NAV_ERROR",
   sameDocumentScroll: "NC_SAME_DOC_SCROLL",
   samePageSearch: "NC_SAME_PAGE_SEARCH",
+  serverActionRedirectCompatibilityMismatch: "NC_SA_REDIRECT_COMPAT",
+  serverActionRscCompatibilityMismatch: "NC_SA_RSC_COMPAT",
   staleOperation: "NC_STALE",
   streamedRedirectLoop: "NC_RSC_STREAMED_REDIRECT_LOOP",
 } satisfies Readonly<{
@@ -48,8 +51,11 @@ export const NavigationTraceReasonCodes = {
   rootBoundaryChanged: "NC_ROOT";
   rootBoundaryUnknown: "NC_ROOT_UNKNOWN";
   rscCompatibilityMismatch: "NC_RSC_COMPAT_MISMATCH";
+  rscNavigationError: "NC_RSC_NAV_ERROR";
   sameDocumentScroll: "NC_SAME_DOC_SCROLL";
   samePageSearch: "NC_SAME_PAGE_SEARCH";
+  serverActionRedirectCompatibilityMismatch: "NC_SA_REDIRECT_COMPAT";
+  serverActionRscCompatibilityMismatch: "NC_SA_RSC_COMPAT";
   staleOperation: "NC_STALE";
   streamedRedirectLoop: "NC_RSC_STREAMED_REDIRECT_LOOP";
 }>;

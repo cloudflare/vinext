@@ -91,8 +91,6 @@ import {
   normalizeServerActionThrownValue,
   parseServerActionRevalidationHeader,
   readInvalidServerActionResponseError,
-  resolveServerActionRedirectCompatibilityHardNavigationTarget,
-  shouldCheckRscCompatibilityForServerActionResponse,
   shouldClearClientNavigationCachesForServerActionResult,
   type ServerActionRevalidationKind,
   type AppBrowserServerActionResult,
@@ -154,7 +152,6 @@ import {
   createRscRequestUrl,
   createServerActionRequestUrl,
   getVinextRscCompatibilityId,
-  resolveRscCompatibilityNavigationDecision,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
@@ -1390,33 +1387,29 @@ function registerServerActionCallback(): void {
       return undefined;
     }
 
-    const actionRedirectCompatibilityHardNavigationTarget =
-      resolveServerActionRedirectCompatibilityHardNavigationTarget({
-        actionRedirectHref: actionRedirectTarget?.href ?? null,
-        clientCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
-        response: fetchResponse,
-      });
-    if (actionRedirectCompatibilityHardNavigationTarget) {
-      clearClientNavigationCaches();
+    const actionResultDecision = navigationPlanner.classifyServerActionResult({
+      actionRedirectHref: actionRedirectTarget?.href ?? null,
+      actionRedirectType:
+        actionRedirectTarget?.type === "push" || actionRedirectTarget?.type === "replace"
+          ? actionRedirectTarget.type
+          : null,
+      clientCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
+      compatibilityIdHeader: fetchResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
+      currentHref: actionInitiation.href,
+      isRscContentType: (fetchResponse.headers.get("content-type") ?? "").startsWith(
+        VINEXT_RSC_CONTENT_TYPE,
+      ),
+      origin: window.location.origin,
+      responseUrl: fetchResponse.url,
+    });
+    if (actionResultDecision.kind === "hardNavigate") {
+      if (actionResultDecision.clearClientNavigationCaches) {
+        clearClientNavigationCaches();
+      }
       browserNavigationController.performHardNavigation(
-        actionRedirectCompatibilityHardNavigationTarget,
-        actionRedirectTarget?.type === "push" ? "assign" : "replace",
+        actionResultDecision.url,
+        actionResultDecision.historyMode,
       );
-      return undefined;
-    }
-
-    if (
-      !actionRedirectTarget &&
-      shouldCheckRscCompatibilityForServerActionResponse(fetchResponse) &&
-      resolveRscCompatibilityNavigationDecision({
-        clientCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
-        currentHref: actionInitiation.href,
-        origin: window.location.origin,
-        responseCompatibilityId: fetchResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
-        responseUrl: fetchResponse.url,
-      }).kind === "hard-navigate"
-    ) {
-      browserNavigationController.performHardNavigation(actionInitiation.href);
       return undefined;
     }
 
@@ -1437,7 +1430,7 @@ function registerServerActionCallback(): void {
     }
     if (
       actionRedirectTarget &&
-      !shouldCheckRscCompatibilityForServerActionResponse(fetchResponse)
+      !(fetchResponse.headers.get("content-type") ?? "").startsWith(VINEXT_RSC_CONTENT_TYPE)
     ) {
       browserNavigationController.performHardNavigation(actionRedirectTarget.href);
       return undefined;
@@ -2089,7 +2082,10 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
       if (!isPageUnloading) {
         console.error("[vinext] RSC navigation error:", error);
       }
-      performHardNavigationForScrollIntent(currentHref);
+      const errorDecision = navigationPlanner.classifyRscNavigationError({
+        currentHref,
+      });
+      performHardNavigationForScrollIntent(errorDecision.url);
     } finally {
       // Single settlement site: covers normal return, early returns on stale-id
       // checks, and error paths. The finally runs even when the catch returns.
