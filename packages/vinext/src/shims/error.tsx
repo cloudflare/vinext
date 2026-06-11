@@ -109,14 +109,14 @@ export default ErrorComponent;
 // ---------------------------------------------------------------------------
 
 export type ErrorInfo = {
-  error: Error;
+  error: unknown;
   reset: () => void;
   unstable_retry: () => void;
 };
 
 type _UserProps = Record<string, unknown>;
 
-type _CatchErrorState = Error | null;
+type _CatchErrorState = { thrownValue: unknown } | null;
 type _CatchErrorProps<P extends _UserProps> = {
   children?: React.ReactNode;
   fallback: React.ComponentType<{
@@ -155,13 +155,13 @@ class _CatchError<P extends _UserProps> extends React.Component<
     };
   }
 
-  static getDerivedStateFromError(error: Error): { error: _CatchErrorState } {
-    if (isNextRouterError(error)) {
+  static getDerivedStateFromError(thrownValue: unknown): { error: _CatchErrorState } {
+    if (isNextRouterError(thrownValue)) {
       // Re-throw redirect/notFound/etc. so an outer framework boundary handles
       // them. Matches Next.js's CatchError.getDerivedStateFromError().
-      throw error;
+      throw thrownValue;
     }
-    return { error };
+    return { error: { thrownValue } };
   }
 
   static getDerivedStateFromProps(
@@ -212,7 +212,7 @@ class _CatchError<P extends _UserProps> extends React.Component<
     if (this.state.error) {
       const Fallback = this.props.fallback;
       const errorInfo: ErrorInfo = {
-        error: this.state.error,
+        error: this.state.error.thrownValue,
         reset: this.reset,
         unstable_retry: this.unstable_retry,
       };
