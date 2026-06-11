@@ -940,6 +940,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     // Explicit no-store or no-cache — bypass cache entirely
+    // Deliberate divergence from upstream: Next.js only calls
+    // markCurrentScopeAsDynamic for 'no-store'/revalidate: 0, while 'no-cache'
+    // merely opts the fetch out of caching. We conservatively mark the page
+    // dynamic for 'no-cache' too, since its response is never reusable.
     if (
       cacheDirective === "no-store" ||
       cacheDirective === "no-cache" ||
