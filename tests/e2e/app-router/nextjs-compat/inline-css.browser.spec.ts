@@ -191,13 +191,16 @@ async function buildAndServeInlineCssFixture(): Promise<ProductionApp> {
 
 /* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks -- Playwright fixture `use`, not a React hook */
 const test = base.extend<{ inlineCssApp: ProductionApp }>({
-  // oxlint-disable-next-line eslint/no-empty-pattern
-  inlineCssApp: async ({}, use) => {
+  inlineCssApp: async ({ page }, use) => {
     const app = await buildAndServeInlineCssFixture();
 
     try {
       await use(app);
     } finally {
+      // Close the page before the server: Link prefetches are scheduled via
+      // requestIdleCallback and can fire after the test body finishes, hitting
+      // a closed port and logging ERR_CONNECTION_REFUSED to the console.
+      await page.close();
       await closeServer(app.server);
       await fs.rm(app.fixtureRoot, { recursive: true, force: true });
     }

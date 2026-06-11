@@ -256,6 +256,9 @@ test.describe("Next.js compat: hash RSC requests in production", () => {
       // fixture middleware, which would have responded with HTTP 599.
       expect(middlewareLeakResponses).toEqual([]);
     } finally {
+      // Close the page before the server so late idle-scheduled Link
+      // prefetches can't hit a closed port.
+      await page.close();
       await closeServer(app.server);
       await fs.rm(app.fixtureRoot, { recursive: true, force: true });
     }
