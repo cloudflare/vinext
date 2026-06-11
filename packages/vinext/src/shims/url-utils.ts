@@ -212,6 +212,10 @@ export function isHashOnlyBrowserUrlChange(
     const next = new URL(href, currentHref);
     const currentPathname = stripBasePath(current.pathname, basePath);
     const nextPathname = stripBasePath(next.pathname, basePath);
+    // Pages Router hash-change events use the browser-visible search string.
+    // Keep this raw comparison distinct from the App Router planner's parsed
+    // search-param comparison until their separate navigation lifecycles are
+    // deliberately unified.
     return currentPathname === nextPathname && current.search === next.search && next.hash !== "";
   } catch {
     return false;

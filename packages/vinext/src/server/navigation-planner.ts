@@ -570,9 +570,10 @@ function classifyEarlyNavigationIntent(
       stripBasePath(next.pathname, facts.basePath);
   // Compare serialised search params rather than raw search strings, matching the
   // previous same-page-search predicate, so encoding differences that parse to
-  // the same query (e.g. "%20" vs "+") are not read as a search change. This does
-  // not normalise key order; URLSearchParams.toString() preserves it and we do
-  // not sort, since query order can be observable.
+  // the same query (e.g. "%20" vs "+") are not read as a search change. App
+  // Router snapshots reach currentHref through createSnapshotPathAndSearch();
+  // reparsing and serialising that canonical query is idempotent and preserves
+  // key order. We intentionally do not sort, since query order can be observable.
   const sameSearch = current.searchParams.toString() === next.searchParams.toString();
 
   if (samePathname && sameSearch && next.hash !== "") {

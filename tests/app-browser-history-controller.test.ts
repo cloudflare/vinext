@@ -399,4 +399,16 @@ describe("history snapshot target normalization shared with same-route popstate 
       createSnapshotPathAndSearch(snapshot),
     );
   });
+
+  it("keeps snapshot search serialization stable across the planner URL round-trip", () => {
+    const snapshot = createClientNavigationRenderSnapshot(
+      "https://example.com/docs?space=a%20b&plus=%2B&empty=&encoded=%2520&order=1&order=2",
+      {},
+    );
+    const snapshotPathAndSearch = createSnapshotPathAndSearch(snapshot);
+    const plannerCurrentUrl = new URL(snapshotPathAndSearch, "https://example.com");
+
+    expect(plannerCurrentUrl.searchParams.toString()).toBe(snapshot.searchParams.toString());
+    expect([...plannerCurrentUrl.searchParams]).toEqual([...snapshot.searchParams]);
+  });
 });
