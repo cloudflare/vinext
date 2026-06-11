@@ -1078,6 +1078,26 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  it("captures catch-all slotPatternParts for inherited parallel routes", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "[teamID]/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "[teamID]/sub/folder/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[teamID]/@slot/default.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "[teamID]/@slot/[...catchAll]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const route = findRoute(graph.routes, "/:teamID/sub/folder");
+      expect(route.parallelSlots[0]).toMatchObject({
+        name: "slot",
+        pagePath: path.join(appDir, "[teamID]/@slot/[...catchAll]/page.tsx"),
+        routeSegments: ["[...catchAll]"],
+        slotPatternParts: [":teamID", ":catchAll+"],
+        slotParamNames: ["teamID", "catchAll"],
+      });
+    });
+  });
+
   it("mirrors when the slot is owned at an intermediate ancestor (not appDir)", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);

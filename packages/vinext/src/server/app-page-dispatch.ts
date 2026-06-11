@@ -47,6 +47,7 @@ import {
   type LayoutClassificationOptions,
 } from "./app-page-execution.js";
 import { resolveAppPageMethodResponse } from "./app-page-method.js";
+import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
 import {
   buildAppPageElement,
   resolveAppPageInterceptionRerenderTarget,
@@ -140,6 +141,13 @@ type AppPageModule = {
   revalidate?: unknown;
 };
 
+type AppPageDispatchSlot = {
+  default?: AppPageModule | null;
+  page?: AppPageModule | null;
+  slotPatternParts?: readonly string[] | null;
+  slotParamNames?: readonly string[] | null;
+};
+
 type LayoutSegmentConfigClassification = Readonly<{
   kind: "dynamic" | "static";
   reason: ClassificationReason;
@@ -166,6 +174,7 @@ type AppPageDispatchRoute = {
   params: readonly string[];
   pattern: string;
   routeSegments: readonly string[];
+  slots?: Readonly<Record<string, AppPageDispatchSlot>>;
   unauthorized?: AppPageModule | null;
   unauthorizeds?: readonly (AppPageModule | null | undefined)[];
 };
@@ -814,6 +823,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   if (pageBuildResult.response) {
     return pageBuildResult.response;
   }
+  const navigationParams = resolveAppPageNavigationParams(
+    route,
+    options.params,
+    options.cleanPathname,
+    interceptResult.interceptOpts,
+  );
+  options.setNavigationContext({
+    pathname: options.cleanPathname,
+    searchParams: options.searchParams,
+    params: navigationParams,
+  });
 
   const layoutClassifications = getEffectiveLayoutClassifications(
     route,
@@ -878,6 +898,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     layoutCount: route.layouts.length,
     loadSsrHandler: options.loadSsrHandler,
     middlewareContext: options.middlewareContext,
+    navigationParams,
     params: options.params,
     layoutParamAccess,
     rootParams: options.rootParams,

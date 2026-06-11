@@ -96,6 +96,28 @@ export type BuildPageElementsOptions<
   htmlLimitedBots?: string;
 };
 
+type AppPageNavigationParamModule = {
+  default?: unknown;
+};
+
+type AppPageNavigationParamSlot = {
+  default?: AppPageNavigationParamModule | null;
+  page?: AppPageNavigationParamModule | null;
+  slotPatternParts?: readonly string[] | null;
+  slotParamNames?: readonly string[] | null;
+};
+
+type AppPageNavigationParamRoute = {
+  params?: readonly string[] | null;
+  slots?: Readonly<Record<string, AppPageNavigationParamSlot>> | null;
+};
+
+type AppPageNavigationParamInterceptOptions = {
+  interceptPage?: unknown;
+  interceptParams?: AppPageParams | null;
+  interceptSlotKey?: string | null;
+};
+
 /**
  * Build the App Router element tree for a matched route.
  *
@@ -344,6 +366,21 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
     };
   }
 
+  const slotParamOverrides = resolveSlotParamOverrides(route, routeParams, routePath);
+  for (const [slotKey, params] of Object.entries(slotParamOverrides ?? {})) {
+    const existing = overrides[slotKey];
+    overrides[slotKey] = existing ? { ...existing, params } : { params };
+  }
+
+  return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+function resolveSlotParamOverrides(
+  route: AppPageNavigationParamRoute,
+  routeParams: AppPageParams,
+  routePath: string,
+): Readonly<Record<string, AppPageParams>> | null {
+  const overrides: Record<string, AppPageParams> = {};
   const slots = route.slots;
   if (slots) {
     let urlParts: string[] | null = null;
@@ -364,12 +401,55 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
       const matched = matchRoutePattern(urlParts, patternParts);
       if (!matched) continue;
 
-      const existing = overrides[slotKey];
-      overrides[slotKey] = existing ? { ...existing, params: matched } : { params: matched };
+      overrides[slotKey] = matched;
     }
   }
 
   return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+function mergeAppPageParams(target: AppPageParams, source: AppPageParams): void {
+  for (const [key, value] of Object.entries(source)) {
+    target[key] = value;
+  }
+}
+
+function isDefaultExportModule(module: unknown): module is AppPageNavigationParamModule {
+  return typeof module === "object" && module !== null;
+}
+
+function hasDefaultExport(module: unknown): boolean {
+  if (!isDefaultExportModule(module)) return false;
+  return module?.default !== null && module?.default !== undefined;
+}
+
+export function resolveAppPageNavigationParams(
+  route: AppPageNavigationParamRoute,
+  routeParams: AppPageParams,
+  routePath: string,
+  opts?: AppPageNavigationParamInterceptOptions | null,
+): AppPageParams {
+  const navigationParams: AppPageParams = { ...routeParams };
+  const slotParamOverrides = resolveSlotParamOverrides(route, routeParams, routePath);
+
+  for (const [slotKey, slot] of Object.entries(route.slots ?? {})) {
+    const isInterceptedSlot =
+      opts?.interceptSlotKey === slotKey &&
+      opts.interceptSlotKey !== SIBLING_PAGE_INTERCEPT_SLOT_KEY &&
+      hasDefaultExport(opts.interceptPage);
+    if (!isInterceptedSlot && !hasDefaultExport(slot.page) && !hasDefaultExport(slot.default)) {
+      continue;
+    }
+
+    mergeAppPageParams(
+      navigationParams,
+      isInterceptedSlot
+        ? (opts?.interceptParams ?? routeParams)
+        : (slotParamOverrides?.[slotKey] ?? routeParams),
+    );
+  }
+
+  return navigationParams;
 }
 
 function collectParamNameSet(params: readonly string[] | undefined | null): Set<string> {
