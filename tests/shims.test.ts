@@ -1585,6 +1585,12 @@ describe("next/error shim — unstable_catchError", () => {
       );
     }
 
+    // `as any` is necessary here because this test probes the inner
+    // `_CatchError` class component directly, where `Fallback` is used
+    // as a React component type (receives `{ props, errorInfo }` as a
+    // single props object per React.createElement semantics), matching
+    // the internal wrapper shape rather than the public API signature
+    // `(props: P, errorInfo: ErrorInfo) => React.ReactNode`.
     const Boundary = unstable_catchError<{ title: string }>(Fallback as any);
 
     // The Boundary wrapper is a function component that calls hooks.
@@ -1686,7 +1692,8 @@ describe("next/error shim — unstable_catchError", () => {
     // installed BEFORE re-importing the shims, otherwise navigation.ts will
     // initialize its client navigation state against a bare `{}` and crash.
     // Mutable view over globalThis that allows assigning/deleting `window`.
-    const previousWindow = (globalThis as any).window;
+    const globalAny = globalThis as unknown as { window?: unknown };
+    const previousWindow = globalAny.window;
     const win = {
       location: {
         pathname: "/",
@@ -1709,7 +1716,7 @@ describe("next/error shim — unstable_catchError", () => {
       scrollX: 0,
       scrollY: 0,
     };
-    (globalThis as any).window = win;
+    globalAny.window = win;
 
     try {
       vi.resetModules();
@@ -1768,7 +1775,7 @@ describe("next/error shim — unstable_catchError", () => {
       expect(setStateCalls).toHaveLength(1);
       expect(setStateCalls[0]).toEqual({ error: null });
     } finally {
-      (globalThis as any).window = previousWindow;
+      globalAny.window = previousWindow;
       vi.resetModules();
     }
   });
