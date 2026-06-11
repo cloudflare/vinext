@@ -31,6 +31,18 @@ type PagesApiRouteConfig = {
   api?: {
     bodyParser?: boolean | { sizeLimit?: string | number };
     responseLimit?: boolean | string | number;
+    /**
+     * `externalResolver: true` declares that the response is sent by an
+     * external resolver (e.g. express/connect proxy middleware) that may
+     * complete after the handler's promise settles. Next.js uses it to
+     * suppress the "API resolved without sending a response" dev warning;
+     * vinext additionally uses it to suppress the auto-`end()` safety net,
+     * which would otherwise resolve an empty response before the external
+     * resolver writes.
+     *
+     * @see https://nextjs.org/docs/pages/building-your-application/routing/api-routes#custom-config
+     */
+    externalResolver?: boolean;
   };
 };
 
@@ -162,10 +174,18 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       resWasPiped = true;
     });
 
+    // Mirrors apiResolver: `config.api?.externalResolver || false`. Next.js
+    // never auto-ends — when this flag is set it only suppresses the dev
+    // warning and the response is delivered whenever the external resolver
+    // (e.g. proxy middleware that attaches its pipe asynchronously) sends it.
+    const externalResolver = route.module.config?.api?.externalResolver || false;
+
     await route.module.default(req, res);
     // Auto-end if no stream is in progress. Without this guard a handler
     // that forgets to call res.end() would leave the request hanging.
-    if (!resWasPiped && !res.headersSent) {
+    // Skipped for `externalResolver: true` routes, which legitimately
+    // respond after the handler settles.
+    if (!externalResolver && !resWasPiped && !res.headersSent) {
       res.end();
     }
     return await responsePromise;

@@ -119,7 +119,7 @@ export async function parsePagesApiBody(
   return rawBody;
 }
 
-async function* requestBodyChunks(request: Request): AsyncGenerator<Uint8Array> {
+async function* requestBodyChunks(request: Request): AsyncGenerator<Buffer> {
   if (!request.body || request.bodyUsed) {
     return;
   }
@@ -131,7 +131,11 @@ async function* requestBodyChunks(request: Request): AsyncGenerator<Uint8Array> 
       if (done) {
         return;
       }
-      yield value;
+      // Node `IncomingMessage` yields `Buffer` chunks, not `Uint8Array`:
+      // handler code routinely calls `chunk.toString("utf8")`, which on a
+      // raw Uint8Array comma-joins the byte values instead of decoding.
+      // Buffer.from(buffer, offset, length) is a zero-copy view.
+      yield Buffer.from(value.buffer, value.byteOffset, value.byteLength);
     }
   } finally {
     try {
@@ -144,7 +148,10 @@ async function* requestBodyChunks(request: Request): AsyncGenerator<Uint8Array> 
 }
 
 function createRequestReadable(request: Request): Readable {
-  return Readable.from(requestBodyChunks(request));
+  // `Readable.from` defaults to objectMode — opt out so the request is a
+  // byte stream like `IncomingMessage` (`setEncoding()`/`read(n)` byte
+  // semantics, byte-based highWaterMark).
+  return Readable.from(requestBodyChunks(request), { objectMode: false });
 }
 
 class PagesResponseStream extends Writable {

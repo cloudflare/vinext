@@ -594,4 +594,64 @@ describe("pages api route", () => {
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe(body);
   });
+
+  it("exposes the raw body as a byte-mode stream of Buffer chunks", async () => {
+    // Parity: Node `IncomingMessage` is a non-objectMode stream yielding
+    // `Buffer`s. Handlers routinely call `chunk.toString("utf8")` per chunk
+    // (webhook signature verification etc.) — on a raw Uint8Array that
+    // comma-joins byte values instead of decoding.
+    const body = "buffer-parity-body";
+    let objectMode: boolean | undefined;
+    let allBuffers = true;
+
+    const response = await handlePagesApiRoute({
+      match: createMatch(
+        async (req, res) => {
+          objectMode = req.readableObjectMode;
+          let text = "";
+          for await (const chunk of req) {
+            allBuffers &&= Buffer.isBuffer(chunk);
+            text += chunk.toString("utf8");
+          }
+          res.send(text);
+        },
+        {},
+        { api: { bodyParser: false } },
+      ),
+      request: new Request("https://example.com/api/buffer-chunks", {
+        method: "POST",
+        body,
+      }),
+      url: "/api/buffer-chunks",
+    });
+
+    expect(response.status).toBe(200);
+    expect(objectMode).toBe(false);
+    expect(allBuffers).toBe(true);
+    await expect(response.text()).resolves.toBe(body);
+  });
+
+  it("does not auto-end when config.api.externalResolver is true and the handler responds late", async () => {
+    // Parity: Next.js never auto-ends a response — `externalResolver: true`
+    // is the documented contract for handlers (e.g. proxy middleware) that
+    // send the response after the handler's promise settles. Without the
+    // flag the auto-end safety net would resolve an empty 200 first.
+    const response = await handlePagesApiRoute({
+      match: createMatch(
+        (_req, res) => {
+          setTimeout(() => {
+            res.status(201).json({ late: true });
+          }, 10);
+          // Returns before anything is written or piped.
+        },
+        {},
+        { api: { externalResolver: true } },
+      ),
+      request: new Request("https://example.com/api/external-resolver"),
+      url: "/api/external-resolver",
+    });
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toEqual({ late: true });
+  });
 });
