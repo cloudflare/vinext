@@ -22,6 +22,13 @@ test.describe("Next.js compat: gesture transitions", () => {
 
     expect(page.url()).toContain(`${ROUTE_ROOT}/target-page`);
 
+    // Note: like the upstream test, this deliberately does not assert the
+    // negative held state (`loading` visible / `dynamic-content` absent)
+    // during the gesture. The gesture commit performs a full RSC navigation
+    // rather than rendering a prefetched static shell, and `connection()`
+    // resolves immediately on the dev server, so the dynamic hole streams in
+    // during the gesture and the Suspense fallback is not reliably observable.
+
     await page.getByTestId("end-gesture").click();
 
     await expect(page.getByTestId("dynamic-content")).toHaveText("Dynamic content");

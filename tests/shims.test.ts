@@ -339,7 +339,7 @@ describe("next/navigation shim", () => {
       vi.resetModules();
       const { appRouterInstance: withoutDefine } =
         await import("../packages/vinext/src/shims/navigation.js");
-      expect(withoutDefine.experimental_gesturePush).toBeUndefined();
+      expect(typeof withoutDefine.experimental_gesturePush).toBe("undefined");
 
       vi.stubEnv("__NEXT_GESTURE_TRANSITION", "true");
       vi.resetModules();
