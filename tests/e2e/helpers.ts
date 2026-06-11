@@ -1,36 +1,6 @@
 import type { Page, Request } from "@playwright/test";
 import { expect } from "@playwright/test";
 
-const SERVER_READY_TIMEOUT = 30_000;
-const SERVER_READY_POLL_INTERVAL = 300;
-const SERVER_READY_REQUEST_TIMEOUT = 2_000;
-
-/**
- * Poll the local server until it responds or the timeout is reached.
- * Used when a test manages its own server lifecycle outside of Playwright's
- * webServer config, which is the case for tests that build and serve a
- * temporary fixture inline.
- */
-export async function waitForServer(baseUrl: string): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < SERVER_READY_TIMEOUT) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), SERVER_READY_REQUEST_TIMEOUT);
-      const response = await fetch(baseUrl, {
-        redirect: "manual",
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      await response.text();
-      return;
-    } catch {
-      await new Promise<void>((r) => setTimeout(r, SERVER_READY_POLL_INTERVAL));
-    }
-  }
-  throw new Error(`Server at ${baseUrl} failed to start within ${SERVER_READY_TIMEOUT / 1000}s`);
-}
-
 export function isAppRouterRscRequestForPath(request: Request, pathname: string): boolean {
   const url = new URL(request.url());
   return (
