@@ -947,6 +947,12 @@ export default __createAppRscHandler({
       readFormDataWithLimit: __readFormDataWithLimit,
       renderToReadableStream,
       reportRequestError: _reportRequestError,
+      resolveRouteFetchCacheMode(targetRoute) {
+        return __resolveRouteFetchCacheMode(targetRoute);
+      },
+      resolveRouteDynamicConfig(targetRoute) {
+        return __resolveRouteDynamicConfig(targetRoute);
+      },
       resolveRouteRuntime: __resolveRouteRuntime,
       request,
       sanitizeErrorForClient(error) {

@@ -276,7 +276,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   request: Request;
   revalidateSeconds: number | null;
   resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
-  resolveRouteDynamicConfig?: (route: TRoute) => string | undefined;
+  resolveRouteDynamicConfig?: (route: TRoute) => string | null | undefined;
   rootForbiddenModule?: AppPageModule | null;
   rootNotFoundModule?: AppPageModule | null;
   rootUnauthorizedModule?: AppPageModule | null;

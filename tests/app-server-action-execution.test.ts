@@ -1978,6 +1978,89 @@ describe("app server action execution helpers", () => {
     expect(response?.status).toBe(200);
     expect(response?.headers.get("x-edge-runtime")).toBe("1");
   });
+
+  it("resolves the redirect target route's dynamic config and fetch cache mode for force-dynamic fetch defaults", async () => {
+    const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
+
+    const targetRoute: TestRoute = {
+      id: "redirect-target",
+      page: {},
+      params: [],
+      pattern: "/redirect-target",
+    };
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        loadServerAction() {
+          return Promise.resolve(() => redirect("/redirect-target"));
+        },
+        matchRoute(pathname) {
+          if (pathname === "/redirect-target") {
+            return { params: {}, route: targetRoute };
+          }
+          return {
+            params: {},
+            route: { id: "dashboard", page: {}, params: [], pattern: "/dashboard" },
+          };
+        },
+        resolveRouteFetchCacheMode(route) {
+          return route === targetRoute ? "force-cache" : null;
+        },
+        resolveRouteDynamicConfig(route) {
+          return route === targetRoute ? "force-dynamic" : null;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(303);
+    expect(modeSpy).toHaveBeenCalledWith("force-cache");
+    expect(forceDynamicSpy).toHaveBeenCalledWith(true);
+
+    modeSpy.mockRestore();
+    forceDynamicSpy.mockRestore();
+  });
+
+  it("resolves the re-render target route's dynamic config and fetch cache mode for force-dynamic fetch defaults", async () => {
+    const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
+
+    const targetRoute: TestRoute = {
+      id: "dashboard",
+      page: {},
+      params: [],
+      pattern: "/dashboard",
+    };
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await revalidatePath("/dashboard");
+            return "revalidated";
+          });
+        },
+        matchRoute() {
+          return { params: {}, route: targetRoute };
+        },
+        resolveRouteFetchCacheMode(route) {
+          return route === targetRoute ? "force-no-store" : null;
+        },
+        resolveRouteDynamicConfig(route) {
+          return route === targetRoute ? "force-dynamic" : null;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(modeSpy).toHaveBeenCalledWith("force-no-store");
+    expect(forceDynamicSpy).toHaveBeenCalledWith(true);
+
+    modeSpy.mockRestore();
+    forceDynamicSpy.mockRestore();
+  });
 });
 
 // The client-side counterpart of `createServerActionNotFoundResponse`: when the
