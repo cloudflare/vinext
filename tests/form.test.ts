@@ -321,6 +321,7 @@ describe("Form client GET interception", () => {
       false,
       undefined,
       expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
+      "transition",
     );
   });
 
@@ -357,6 +358,7 @@ describe("Form client GET interception", () => {
       false,
       undefined,
       expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
+      "transition",
     );
   });
 
@@ -389,6 +391,7 @@ describe("Form client GET interception", () => {
       false,
       undefined,
       expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
+      "transition",
     );
   });
 
@@ -445,6 +448,7 @@ describe("Form client GET interception", () => {
       false,
       undefined,
       expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
+      "transition",
     );
   });
 
@@ -546,6 +550,7 @@ describe("Form client GET interception", () => {
       false,
       undefined,
       expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
+      "transition",
     );
   });
 });
@@ -767,6 +772,7 @@ describe("Form file input warning", () => {
       false,
       undefined,
       expect.objectContaining({ commitId: null, hash: null, id: expect.any(Number) }),
+      "transition",
     );
   });
 });
