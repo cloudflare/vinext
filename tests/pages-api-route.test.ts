@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   handlePagesApiRoute,
@@ -512,5 +513,54 @@ describe("pages api route", () => {
 
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe("");
+  });
+
+  it("does not auto-end when the handler pipes into res without returning it", async () => {
+    const body = "raw-body-data";
+    const response = await handlePagesApiRoute({
+      match: createMatch(
+        (req, res) => {
+          // Handler pipes req through a transform into res, matching the
+          // real-world pattern: a webhook handler forwarding the raw body
+          // upstream without returning the pipe chain.
+          req.pipe(new PassThrough()).pipe(res);
+          // Note: does NOT return res — handler returns undefined.
+        },
+        {},
+        { api: { bodyParser: false } },
+      ),
+      request: new Request("https://example.com/api/pipe-no-return", {
+        method: "POST",
+        body,
+      }),
+      url: "/api/pipe-no-return",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe(body);
+  });
+
+  it("streams a piped request body through to the response", async () => {
+    const body = "piped-body-content";
+    const response = await handlePagesApiRoute({
+      match: createMatch(
+        (req, res) => {
+          // Handler pipes req directly to res and returns the result,
+          // matching the fixture pattern in the upstream PR.
+          const result = req.pipe(new PassThrough()).pipe(res);
+          return result;
+        },
+        {},
+        { api: { bodyParser: false } },
+      ),
+      request: new Request("https://example.com/api/pipe-with-return", {
+        method: "POST",
+        body,
+      }),
+      url: "/api/pipe-with-return",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe(body);
   });
 });

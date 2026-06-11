@@ -134,6 +134,11 @@ async function* requestBodyChunks(request: Request): AsyncGenerator<Uint8Array> 
       yield value;
     }
   } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // Ignore cancellation errors from the upstream source.
+    }
     reader.releaseLock();
   }
 }
