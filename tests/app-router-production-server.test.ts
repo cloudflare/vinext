@@ -172,8 +172,8 @@ describe("App Router Production server (startProdServer)", () => {
     return html.match(/id="random-data"[^>]*>(?:<!--.*?-->)*([^<]+)/)?.[1];
   }
 
-  async function fetchRandomData(pathname: string): Promise<string> {
-    const response = await fetch(`${baseUrl}${pathname}`);
+  async function fetchRandomData(pathname: string, url = baseUrl): Promise<string> {
+    const response = await fetch(`${url}${pathname}`);
     expect(response.status).toBe(200);
     const html = await response.text();
     const data = extractRandomData(html);
@@ -181,17 +181,20 @@ describe("App Router Production server (startProdServer)", () => {
     return data ?? "";
   }
 
-  async function expectRewrittenPathRevalidates(pathname: "/static" | "/dynamic"): Promise<void> {
-    const initial = await fetchRandomData(pathname);
-    const refreshed = await fetchRandomData(pathname);
+  async function expectRewrittenPathRevalidates(
+    pathname: "/static" | "/dynamic",
+    url = baseUrl,
+  ): Promise<void> {
+    const initial = await fetchRandomData(pathname, url);
+    const refreshed = await fetchRandomData(pathname, url);
     expect(refreshed).toBe(initial);
 
-    const revalidateRes = await fetch(`${baseUrl}/api/revalidate?path=${pathname}`);
+    const revalidateRes = await fetch(`${url}/api/revalidate?path=${pathname}`);
     expect(revalidateRes.status).toBe(200);
     expect(await revalidateRes.json()).toEqual({ revalidated: true });
 
     await waitForCondition(async () => {
-      const revalidated = await fetchRandomData(pathname);
+      const revalidated = await fetchRandomData(pathname, url);
       return revalidated !== initial;
     });
   }
@@ -1042,6 +1045,97 @@ describe("App Router Production server (startProdServer)", () => {
     it("dynamic page should revalidate a dynamic page that was rewritten", async () => {
       await expectRewrittenPathRevalidates("/dynamic");
     });
+
+    // Coverage for the cacheComponents: true path — the sibling tests above exercise
+    // the default disabled case. The define contract must stay consistent between the
+    // config-load-time environment (used by next.config rewrites) and the bundled
+    // boolean expression (used by the route handler).
+    it("static page should revalidate a rewritten page with cacheComponents enabled", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-cache-components-rewrite-"));
+      const fixtureRoot = path.join(tmpDir, "fixture");
+      const ccOutDir = path.join(fixtureRoot, "dist");
+      let ccServer: import("node:http").Server | undefined;
+      const prodGlobalKeys = [
+        "__VINEXT_CLIENT_ENTRY__",
+        "__VINEXT_DYNAMIC_PRELOADS__",
+        "__VINEXT_LAZY_CHUNKS__",
+        "__VINEXT_SSR_MANIFEST__",
+        "__vite_rsc_client_require__",
+        "__vite_rsc_require__",
+        "__vite_rsc_server_require__",
+        "__webpack_chunk_load__",
+        "__webpack_require__",
+      ];
+      const previousGlobals = new Map(
+        prodGlobalKeys.map((key) => [
+          key,
+          {
+            exists: Reflect.has(globalThis, key),
+            value: Reflect.get(globalThis, key),
+          },
+        ]),
+      );
+
+      try {
+        fs.cpSync(APP_FIXTURE_DIR, fixtureRoot, { recursive: true });
+        fs.rmSync(ccOutDir, { recursive: true, force: true });
+        const fixtureNodeModules = path.join(fixtureRoot, "node_modules");
+        if (!fs.existsSync(fixtureNodeModules)) {
+          fs.symlinkSync(
+            path.resolve(__dirname, "..", "node_modules"),
+            fixtureNodeModules,
+            "junction",
+          );
+        }
+
+        const nextConfigPath = path.join(fixtureRoot, "next.config.ts");
+        const nextConfig = fs.readFileSync(nextConfigPath, "utf-8");
+        fs.writeFileSync(
+          nextConfigPath,
+          nextConfig.replace(
+            "const nextConfig: NextConfig = {",
+            "const nextConfig: NextConfig = {\n  cacheComponents: true,",
+          ),
+        );
+
+        // Set the env var so next.config.ts rewrites resolve to the cache-components
+        // prefix (the config is evaluated at load time, before the Vite define replaces
+        // process.env.__NEXT_CACHE_COMPONENTS with the bundled boolean).
+        process.env.__NEXT_CACHE_COMPONENTS = "true";
+
+        const builder = await createBuilder({
+          root: fixtureRoot,
+          configFile: false,
+          plugins: [vinext({ appDir: fixtureRoot })],
+          logLevel: "silent",
+        });
+        await builder.buildApp();
+
+        const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+        ({ server: ccServer } = await startProdServer({
+          port: 0,
+          outDir: ccOutDir,
+          noCompression: true,
+        }));
+        const addr = ccServer.address();
+        const port = typeof addr === "object" && addr ? addr.port : 0;
+        const tmpBaseUrl = `http://localhost:${port}`;
+
+        await expectRewrittenPathRevalidates("/static", tmpBaseUrl);
+        await expectRewrittenPathRevalidates("/dynamic", tmpBaseUrl);
+      } finally {
+        delete process.env.__NEXT_CACHE_COMPONENTS;
+        ccServer?.close();
+        for (const [key, previous] of previousGlobals) {
+          if (previous.exists) {
+            Reflect.set(globalThis, key, previous.value);
+          } else {
+            Reflect.deleteProperty(globalThis, key);
+          }
+        }
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    }, 60000);
   });
 
   it("dedupes identical no-store fetches across metadata and page render during ISR background regeneration", async () => {
