@@ -656,14 +656,19 @@ function isCacheableFetch(
   );
 }
 
-// Matches upstream's `!currentFetchRevalidate` truthiness check: `false` and `0`
-// are both falsy, meaning "no fetch revalidate config" for the force-dynamic
-// default evaluation.  Only numeric values > 0 are treated as explicit cache
-// durations that should block the force-dynamic no-store default.
+// Returns true when the fetch call carries any defined `next.revalidate` value.
+// Used by segment cache defaults (default-cache, default-no-store) where
+// `revalidate: 0` and `revalidate: false` are both explicit opt-outs that
+// should prevent the segment default from kicking in.
 function hasExplicitRevalidateValue(nextOpts: NextFetchOptions | undefined): boolean {
-  return (
-    nextOpts?.revalidate !== undefined && nextOpts.revalidate !== false && nextOpts.revalidate !== 0
-  );
+  return nextOpts?.revalidate !== undefined;
+}
+
+// Matches upstream's `!currentFetchRevalidate` truthiness check in
+// noFetchConfigAndForceDynamic.  `false` and `0` are both falsy, so they
+// count as "no fetch revalidate config" for the force-dynamic default path.
+function isFalsyRevalidate(nextOpts: NextFetchOptions | undefined): boolean {
+  return !nextOpts?.revalidate;
 }
 
 function resolveSegmentCacheDirective(
@@ -676,7 +681,7 @@ function resolveSegmentCacheDirective(
     forceDynamicFetchDefault &&
     (!mode || mode === "auto") &&
     (cacheDirective === undefined || cacheDirective === "default") &&
-    !hasExplicitRevalidateValue(nextOpts)
+    isFalsyRevalidate(nextOpts)
   ) {
     return "no-store";
   }

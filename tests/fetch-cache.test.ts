@@ -225,6 +225,36 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  // revalidate: 0 is an explicit opt-out — default-cache must not override it to force-cache
+  it("segment fetchCache default-cache does not override next.revalidate: 0", async () => {
+    setCurrentFetchCacheMode("default-cache");
+
+    await fetch("https://api.example.com/segment-default-cache-revalidate-zero", {
+      next: { revalidate: 0 },
+    });
+    // revalidate: 0 bypasses cache entirely (no persistent cache entry)
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
+  // revalidate: false is an explicit opt-out — default-no-store must not override it
+  it("segment fetchCache default-no-store does not override next.revalidate: false", async () => {
+    setCurrentFetchCacheMode("default-no-store");
+
+    const res1 = await fetch("https://api.example.com/segment-default-no-store-revalidate-false", {
+      next: { revalidate: false },
+    });
+    const data1 = await res1.json();
+    // revalidate: false → cache indefinitely (1 year), so second fetch hits cache
+    const res2 = await fetch("https://api.example.com/segment-default-no-store-revalidate-false", {
+      next: { revalidate: false },
+    });
+    const data2 = await res2.json();
+    expect(data1.count).toBe(1);
+    expect(data2.count).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("segment fetchCache default-no-store bypasses cache with metadata-only next options", async () => {
     setCurrentFetchCacheMode("default-no-store");
 
