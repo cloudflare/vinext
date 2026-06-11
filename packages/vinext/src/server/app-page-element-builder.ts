@@ -366,7 +366,7 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
     };
   }
 
-  const slotParamOverrides = resolveSlotParamOverrides(route, routeParams, routePath);
+  const slotParamOverrides = resolveSlotParamOverrides(route, routePath);
   for (const [slotKey, params] of Object.entries(slotParamOverrides ?? {})) {
     const existing = overrides[slotKey];
     overrides[slotKey] = existing ? { ...existing, params } : { params };
@@ -377,7 +377,6 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
 
 function resolveSlotParamOverrides(
   route: AppPageNavigationParamRoute,
-  routeParams: AppPageParams,
   routePath: string,
 ): Readonly<Record<string, AppPageParams>> | null {
   const overrides: Record<string, AppPageParams> = {};
@@ -430,7 +429,7 @@ export function resolveAppPageNavigationParams(
   opts?: AppPageNavigationParamInterceptOptions | null,
 ): AppPageParams {
   const navigationParams: AppPageParams = { ...routeParams };
-  const slotParamOverrides = resolveSlotParamOverrides(route, routeParams, routePath);
+  const slotParamOverrides = resolveSlotParamOverrides(route, routePath);
 
   for (const [slotKey, slot] of Object.entries(route.slots ?? {})) {
     const isInterceptedSlot =
@@ -449,7 +448,11 @@ export function resolveAppPageNavigationParams(
       navigationParams,
       isInterceptedSlot
         ? (opts?.interceptParams ?? routeParams)
-        : (slotParamOverrides?.[slotKey] ?? routeParams),
+        : // Fallback to routeParams when slotParamOverrides missing — the slot
+          // is active but contributes no new params (all its param names are
+          // already route params, or the slot has no pattern parts). Merging
+          // routeParams here is a deliberate no-op that keeps the loop uniform.
+          (slotParamOverrides?.[slotKey] ?? routeParams),
     );
   }
 

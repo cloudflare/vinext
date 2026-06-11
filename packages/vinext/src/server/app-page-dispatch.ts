@@ -594,12 +594,18 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             return toInterceptOptions(options.interceptionContext, intercept);
           },
         });
-        revalidationTarget.navigationParams = resolveAppPageNavigationParams(
+        // Use the full navigationParams (not narrowed params) as the base so
+        // interception-specific extras from a source-route intercept survive
+        // the slot param merge.  resolveAppPageNavigationParams preserves all
+        // base keys and overlays active slot params on top; when narrowed
+        // params were used here, non-slot extras were silently dropped.
+        const mergedNavigationParams = resolveAppPageNavigationParams(
           revalidationTarget.route,
-          revalidationTarget.params,
+          revalidationTarget.navigationParams,
           options.cleanPathname,
           revalidationTarget.interceptOpts,
         );
+        revalidationTarget.navigationParams = mergedNavigationParams;
 
         // Hydrate the (possibly different) source route before reading its
         // page module for fetch-cache-mode resolution.
