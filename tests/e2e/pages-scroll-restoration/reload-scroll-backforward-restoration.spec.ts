@@ -199,4 +199,69 @@ test.describe("reload-scroll-back-restoration", () => {
     const isSoft = await page.evaluate(() => window.isSoftNavigation);
     expect(isSoft).toBeUndefined();
   });
+
+  // Ported from Next.js: test/e2e/reload-scroll-backforward-restoration/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/reload-scroll-backforward-restoration/index.test.ts
+  test("should reset x/y scroll to (0,0) before routeChangeComplete on route with hash", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/0`);
+    await waitForHydration(page);
+
+    // Scroll down so we can detect the reset
+    await page.evaluate(() => window.scrollTo(0, 500));
+    expect((await getScrollPosition(page)).y).toBe(500);
+
+    // Set up a one-shot routeChangeComplete listener that records scroll position
+    const scrollAtEvent = page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router || !("events" in router)) return null;
+      return new Promise<{ x: number; y: number }>((resolve) => {
+        const handler = () => {
+          router.events.off("routeChangeComplete", handler);
+          resolve({ x: window.scrollX, y: window.scrollY });
+        };
+        router.events.on("routeChangeComplete", handler);
+      });
+    });
+
+    await pushWithPagesRouter(page, "/1#end-el");
+
+    const scrollAtEventValue = await scrollAtEvent;
+    expect(scrollAtEventValue).not.toBeNull();
+    // x/y reset (0,0) should have happened before routeChangeComplete fires
+    expect(scrollAtEventValue!.y).toBe(0);
+
+    // After routeChangeComplete, hash scroll should have moved the page
+    const finalScroll = await getScrollPosition(page);
+    // Hash scroll to #end-el should have moved away from (0,0)
+    expect(finalScroll.y).toBeGreaterThan(0);
+  });
+
+  test("should settle superseded navigation promises instead of hanging", async ({ page }) => {
+    await page.goto(`${BASE}/0`);
+    await waitForHydration(page);
+
+    // Start two navigations in rapid succession — the first should be
+    // superseded and settle (not hang) while the second completes.
+    const result = await page.evaluate(async (base) => {
+      const router = window.next?.router;
+      if (!router) return "no-router";
+
+      const p1 = router.push(`${base}/1`);
+      const p2 = router.push(`${base}/2`);
+
+      const settled = await Promise.allSettled([p1, p2]);
+      // Both must settle — the first may reject with NavigationCancelledError
+      // or resolve with true (runNavigateClient returns "cancelled" → true).
+      // The second must resolve successfully.
+      if (settled[0].status !== "fulfilled") return "p1-unsettled";
+      if (settled[1].status !== "fulfilled") return "p2-unsettled";
+      return "ok";
+    }, BASE);
+
+    expect(result).toBe("ok");
+    // Verify the final URL is /2, not /1
+    await expect(page).toHaveURL(`${BASE}/2`);
+  });
 });

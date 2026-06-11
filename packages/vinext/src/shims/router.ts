@@ -126,7 +126,14 @@ function renderPagesRouterElement(
     return Promise.resolve();
   }
 
+  cancelPreviousRenderCommit();
+
   return new Promise<void>((resolve, reject) => {
+    _cancelPendingRenderCommit = () => {
+      _cancelPendingRenderCommit = null;
+      reject(new NavigationCancelledError("superseded"));
+    };
+
     const scrollHandler = () => {
       if (scroll) {
         window.scrollTo(scroll.x, scroll.y);
@@ -137,6 +144,7 @@ function renderPagesRouterElement(
       wrapWithRouterContext(
         element,
         () => {
+          _cancelPendingRenderCommit = null;
           try {
             scrollHandler();
             resolve();
@@ -144,10 +152,14 @@ function renderPagesRouterElement(
             reject(err);
           }
         },
-        reject,
+        (error) => {
+          _cancelPendingRenderCommit = null;
+          reject(error);
+        },
       ),
     );
     if (typeof document === "undefined") {
+      _cancelPendingRenderCommit = null;
       resolve();
     }
   });
@@ -1049,6 +1061,18 @@ let _navigationId = 0;
 /** AbortController for the in-flight fetch, so superseded navigations abort network I/O. */
 let _activeAbortController: AbortController | null = null;
 
+/**
+ * Pending render-commit rejection, so superseded navigations settle their
+ * render-commit Promise instead of hanging when a newer root.render() call
+ * starts before the previous tree commits.
+ */
+let _cancelPendingRenderCommit: (() => void) | null = null;
+
+function cancelPreviousRenderCommit(): void {
+  _cancelPendingRenderCommit?.();
+  _cancelPendingRenderCommit = null;
+}
+
 function scheduleHardNavigationAndThrow(url: string, message: string): never {
   if (typeof window === "undefined") {
     throw new HardNavigationScheduledError(message);
@@ -1626,8 +1650,9 @@ async function navigateClient(
 ): Promise<void> {
   if (typeof window === "undefined") return;
 
-  // Cancel any in-flight navigation (abort its fetch, mark it stale)
+  // Cancel any in-flight navigation (abort its fetch, settle its render-commit wait)
   _activeAbortController?.abort();
+  cancelPreviousRenderCommit();
   const controller = new AbortController();
   _activeAbortController = controller;
 
@@ -1962,7 +1987,7 @@ async function performNavigation(
   // callback. Hash scrolling is deferred until after routeChangeComplete so
   // the event ordering matches Next.js: x/y reset before completion, hash
   // scroll after completion.
-  const scrollTarget = doScroll && !hash ? { x: 0, y: 0 } : null;
+  const scrollTarget = doScroll ? { x: 0, y: 0 } : null;
   const navigateOptions: NavigateClientOptions = errorRouteHtmlFetchUrl
     ? { allowNotFoundResponse: true, mode, scroll: scrollTarget }
     : { mode, scroll: scrollTarget };
