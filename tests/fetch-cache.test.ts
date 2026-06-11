@@ -354,6 +354,24 @@ describe("fetch cache shim", () => {
     expect(consumeDynamicUsage()).toBe(false);
   });
 
+  // Ported from Next.js: test/e2e/app-dir/force-dynamic-fetch-revalidate/force-dynamic-fetch-revalidate.test.ts
+  // Upstream noFetchConfigAndForceDynamic uses !currentFetchRevalidate (truthiness),
+  // so revalidate: false is treated as "no fetch revalidate config" and force-dynamic wins.
+  it("force-dynamic overrides next.revalidate: false to no-store (upstream parity)", async () => {
+    setCurrentForceDynamicFetchDefault(true);
+
+    await fetch("https://api.example.com/force-dynamic-revalidate-false", {
+      next: { revalidate: false },
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://api.example.com/force-dynamic-revalidate-false",
+      {
+        cache: "no-store",
+      },
+    );
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
   it("segment fetchCache only-cache rejects no-store fetches", async () => {
     setCurrentFetchCacheMode("only-cache");
 
