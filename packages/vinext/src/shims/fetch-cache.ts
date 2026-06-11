@@ -641,10 +641,7 @@ function isNoStoreFetch(
   nextOpts: NextFetchOptions | undefined,
 ): boolean {
   return (
-    cacheDirective === "no-store" ||
-    cacheDirective === "no-cache" ||
-    nextOpts?.revalidate === false ||
-    nextOpts?.revalidate === 0
+    cacheDirective === "no-store" || cacheDirective === "no-cache" || nextOpts?.revalidate === 0
   );
 }
 
@@ -654,6 +651,7 @@ function isCacheableFetch(
 ): boolean {
   return (
     cacheDirective === "force-cache" ||
+    nextOpts?.revalidate === false ||
     (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0)
   );
 }
@@ -916,7 +914,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // Determine caching behavior:
     // - cache: 'no-store' → skip cache entirely
     // - cache: 'force-cache' → cache indefinitely (revalidate = Infinity)
-    // - next.revalidate: false → same as 'no-store'
+    // - next.revalidate: false → cache indefinitely (same as force-cache)
     // - next.revalidate: 0 → same as 'no-store'
     // - next.revalidate: N → cache for N seconds
     // - No cache/next options → default behavior (no caching, pass-through)
@@ -931,7 +929,6 @@ function createPatchedFetch(): typeof globalThis.fetch {
     if (
       cacheDirective === "no-store" ||
       cacheDirective === "no-cache" ||
-      nextOpts?.revalidate === false ||
       nextOpts?.revalidate === 0
     ) {
       // Strip the `next` property before passing to real fetch
@@ -945,12 +942,14 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // `next.revalidate`, skip caching to prevent accidental cross-user data
     // leakage. Developers who understand the implications can still force
     // caching by using `cache: 'force-cache'` or `next: { revalidate: N }`.
+    // This mirrors upstream's autoNoCache path and does NOT mark the page
+    // dynamic — it is an automatic safety bypass, not an explicit opt-out.
     const hasExplicitCacheOpt =
       cacheDirective === "force-cache" ||
+      nextOpts?.revalidate === false ||
       (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0);
     if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
       const cleanInit = stripNextFromInit(init, cacheDirective);
-      markUncachedFetchForPageOutput(input);
       return dedupeFetch(input, cleanInit);
     }
 
@@ -962,6 +961,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
         nextOpts?.revalidate && typeof nextOpts.revalidate === "number"
           ? nextOpts.revalidate
           : 31536000; // 1 year
+    } else if (nextOpts?.revalidate === false) {
+      // revalidate: false means cache indefinitely
+      revalidateSeconds = 31536000; // 1 year
     } else if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
       revalidateSeconds = nextOpts.revalidate;
     } else {
@@ -1052,12 +1054,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
                 data: {
                   headers: freshHeaders,
                   body: freshBody,
-                  url:
-                    typeof input === "string"
-                      ? input
-                      : input instanceof URL
-                        ? input.toString()
-                        : input.url,
+                  url: freshResp.url,
                   status: freshResp.status,
                 },
                 tags,
@@ -1133,8 +1130,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         data: {
           headers,
           body,
-          url:
-            typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+          url: response.url,
           status: cloned.status,
         },
         tags,

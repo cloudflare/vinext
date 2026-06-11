@@ -22,10 +22,17 @@ const defaultFetchMockImplementation = async (
   requestCount++;
   const url =
     typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-  return new Response(JSON.stringify({ url, count: requestCount }), {
+  const response = new Response(JSON.stringify({ url, count: requestCount }), {
     status: 200,
     headers: { "content-type": "application/json" },
   });
+  Object.defineProperty(response, "url", {
+    value: url,
+    configurable: true,
+    enumerable: true,
+    writable: false,
+  });
+  return response;
 };
 const fetchMock = vi.fn(defaultFetchMockImplementation);
 
@@ -124,6 +131,37 @@ describe("fetch cache shim", () => {
     });
 
     expect(cached.url).toBe(url);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves actual response URL when it differs from request URL", async () => {
+    const requestUrl = "https://api.example.com/redirect-request";
+    const responseUrl = "https://api.example.com/redirect-actual";
+
+    fetchMock.mockImplementationOnce(async () => {
+      requestCount++;
+      const response = new Response(JSON.stringify({ url: responseUrl, count: requestCount }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+      Object.defineProperty(response, "url", {
+        value: responseUrl,
+        configurable: true,
+        enumerable: true,
+        writable: false,
+      });
+      return response;
+    });
+
+    const res1 = await fetch(requestUrl, {
+      cache: "force-cache",
+    });
+    expect(res1.url).toBe(responseUrl);
+
+    const cached = await fetch(requestUrl, {
+      cache: "force-cache",
+    });
+    expect(cached.url).toBe(responseUrl);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -360,7 +398,7 @@ describe("fetch cache shim", () => {
     ).rejects.toThrow(/only-no-store/);
   });
 
-  // ── No caching (no-store, revalidate: 0, revalidate: false) ─────────
+  // ── No caching (no-store, revalidate: 0) ─────────────────────────────
   // Ported from Next.js: test coverage for packages/next/src/server/lib/dedupe-fetch.test.ts
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/dedupe-fetch.test.ts
 
@@ -414,7 +452,7 @@ describe("fetch cache shim", () => {
     expect(peekDynamicFetchObservations()).toEqual([]);
   });
 
-  it("next.revalidate: false bypasses persistent cache but dedupes identical render fetches", async () => {
+  it("next.revalidate: false caches indefinitely", async () => {
     const res1 = await fetch("https://api.example.com/revfalse", {
       next: { revalidate: false },
     });
@@ -425,8 +463,15 @@ describe("fetch cache shim", () => {
       next: { revalidate: false },
     });
     const data2 = await res2.json();
-    expect(data2.count).toBe(1); // Same render fetch is deduped
+    expect(data2.count).toBe(1); // Cached indefinitely
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("next.revalidate: false does not mark page output dynamic", async () => {
+    await fetch("https://api.example.com/revfalse-dynamic", {
+      next: { revalidate: false },
+    });
+    expect(consumeDynamicUsage()).toBe(false);
   });
 
   it("no cache or next options bypasses persistent cache but dedupes identical render fetches", async () => {

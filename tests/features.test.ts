@@ -3366,7 +3366,7 @@ describe("fetch cache (extended fetch with next options)", () => {
     }
   });
 
-  it("next.revalidate: false bypasses persistent cache but dedupes within a render", async () => {
+  it("next.revalidate: false caches indefinitely across render scopes", async () => {
     const { withFetchCache } = await import("../packages/vinext/src/shims/fetch-cache.js");
     const { setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
@@ -3383,7 +3383,7 @@ describe("fetch cache (extended fetch with next options)", () => {
       cleanup();
       cleanup = withFetchCache();
       await fetch(`${mockServerUrl}/no-rev`, { next: { revalidate: false } });
-      expect(fetchCallCount).toBe(2);
+      expect(fetchCallCount).toBe(1); // Still cached across render scopes
     } finally {
       cleanup();
       setCacheHandler(new MemoryCacheHandler());
