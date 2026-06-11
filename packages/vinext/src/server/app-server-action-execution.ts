@@ -1289,10 +1289,13 @@ export async function handleServerActionRscRequest<
         toInterceptOpts: options.toInterceptOpts,
       });
 
+      // Use the full navigationParams (not narrowed params) as the merge base so
+      // interception-specific extras from a source-route intercept survive the
+      // slot param merge — mirroring the dispatch ISR path in app-page-dispatch.ts.
       // Invariant: TInterceptOpts is structurally equivalent to the navigation param intercept options.
       const resolvedActionNavigationParams = resolveAppPageNavigationParams(
         actionRerenderTarget.route,
-        actionRerenderTarget.params,
+        actionRerenderTarget.navigationParams,
         options.cleanPathname,
         actionRerenderTarget.interceptOpts as Parameters<typeof resolveAppPageNavigationParams>[3],
       );

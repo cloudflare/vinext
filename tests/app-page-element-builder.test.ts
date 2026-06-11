@@ -277,6 +277,82 @@ describe("buildPageElements", () => {
     });
   });
 
+  it("merges non-intercepted active slot params alongside intercepted slot params", () => {
+    // Both slots have catch-all patterns that match the same URL; only @slot
+    // is intercepted, so @other should still contribute its catch-all.
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(() => null),
+      layouts: [createSyntheticPageModule(() => null)],
+      params: ["teamID"],
+      pattern: "/:teamID/sub/folder",
+      routeSegments: ["[teamID]", "sub", "folder"],
+      slots: {
+        "slot@app/[teamID]/@slot": {
+          name: "slot",
+          page: createSyntheticPageModule(() => null),
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: 0,
+          routeSegments: ["[...catchAll]"],
+          slotPatternParts: [":teamID", ":catchAll+"],
+          slotParamNames: ["teamID", "catchAll"],
+        },
+        "slot@app/[teamID]/@other": {
+          name: "other",
+          page: createSyntheticPageModule(() => null),
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: 0,
+          routeSegments: ["[...otherCatchAll]"],
+          slotPatternParts: [":teamID", ":otherCatchAll+"],
+          slotParamNames: ["teamID", "otherCatchAll"],
+        },
+      },
+    });
+
+    expect(
+      resolveAppPageNavigationParams(route, { teamID: "vercel" }, "/vercel/sub/folder", {
+        interceptSlotKey: "slot@app/[teamID]/@slot",
+        interceptPage: { default: vi.fn() },
+        interceptParams: { teamID: "vercel", catchAll: ["intercepted-override"] },
+      }),
+    ).toEqual({
+      teamID: "vercel",
+      catchAll: ["intercepted-override"],
+      otherCatchAll: ["sub", "folder"],
+    });
+  });
+
+  it("uses interceptParams for an intercepted slot instead of slotParamOverrides", () => {
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(() => null),
+      layouts: [createSyntheticPageModule(() => null)],
+      params: ["teamID"],
+      pattern: "/:teamID/sub/folder",
+      routeSegments: ["[teamID]", "sub", "folder"],
+      slots: {
+        "slot@app/[teamID]/@slot": {
+          name: "slot",
+          page: createSyntheticPageModule(() => null),
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: 0,
+          routeSegments: ["[...catchAll]"],
+          slotPatternParts: [":teamID", ":catchAll+"],
+          slotParamNames: ["teamID", "catchAll"],
+        },
+      },
+    });
+
+    expect(
+      resolveAppPageNavigationParams(route, { teamID: "vercel" }, "/vercel/sub/folder", {
+        interceptSlotKey: "slot@app/[teamID]/@slot",
+        interceptPage: { default: vi.fn() },
+        interceptParams: { teamID: "vercel", catchAll: ["intercepted", "override"] },
+      }),
+    ).toEqual({
+      teamID: "vercel",
+      catchAll: ["intercepted", "override"],
+    });
+  });
+
   it("surfaces a no-default-export error for a sibling intercept page instead of rendering the source page", async () => {
     function SourcePage(): React.ReactNode {
       return React.createElement("div", null, "Source page content");
