@@ -1,5 +1,5 @@
 import { decode as decodeQueryString } from "node:querystring";
-import { Readable, Writable } from "node:stream";
+import { PassThrough, Readable, Writable } from "node:stream";
 import { parseCookies } from "../config/config-matchers.js";
 import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
@@ -146,14 +146,21 @@ class PagesResponseStream extends Writable {
   private resStatusCode = 200;
   private readonly resHeaders: Record<string, string | number | boolean> = {};
   private readonly setCookieHeaders: string[] = [];
-  private readonly chunks: Buffer[] = [];
   private resolved = false;
+  private readonly passThrough = new PassThrough();
 
   constructor(
     private readonly resolveResponse: (value: Response) => void,
+    private readonly rejectResponse: (error: Error) => void,
     private readonly requestHeaders: Headers,
   ) {
     super();
+    this.once("error", (err) => {
+      if (!this.resolved) {
+        this.resolved = true;
+        this.rejectResponse(err);
+      }
+    });
   }
 
   get statusCode(): number {
@@ -248,17 +255,12 @@ class PagesResponseStream extends Writable {
     encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
-    try {
-      this.chunks.push(
-        typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk),
-      );
-      callback();
-    } catch (error) {
-      callback(error instanceof Error ? error : new Error(String(error)));
-    }
+    this.passThrough.write(chunk, encoding, callback);
+    this.resolveOnce();
   }
 
   override _final(callback: (error?: Error | null) => void): void {
+    this.passThrough.end();
     this.resolveOnce();
     callback();
   }
@@ -297,7 +299,7 @@ class PagesResponseStream extends Writable {
       headers.append("set-cookie", cookie);
     }
 
-    const body = this.chunks.length > 0 ? new Uint8Array(Buffer.concat(this.chunks)) : null;
+    const body = Readable.toWeb(this.passThrough) as ReadableStream;
     this.resolveResponse(new Response(body, { status: this.resStatusCode, headers }));
   }
 }
@@ -322,11 +324,14 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
   });
 
   let resolveResponse!: (value: Response) => void;
-  const responsePromise = new Promise<Response>((resolve) => {
+  let rejectResponse!: (error: Error) => void;
+  const responsePromise = new Promise<Response>((resolve, reject) => {
     resolveResponse = resolve;
+    rejectResponse = reject;
   });
   const res: PagesReqResResponse = new PagesResponseStream(
     resolveResponse,
+    rejectResponse,
     options.request.headers,
   );
 

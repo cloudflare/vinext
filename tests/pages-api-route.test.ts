@@ -379,4 +379,68 @@ describe("pages api route", () => {
       });
     }
   });
+
+  it("auto-ends the response when a handler returns a non-stream value and does not call res.end()", async () => {
+    // Regression: handlers that return a plain value (e.g. a number) and
+    // forget to call res.end() must not hang the request. Only returning
+    // the response writable itself (from req.pipe(...).pipe(res)) should
+    // defer auto-ending.
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.status(202);
+        return 42;
+      }),
+      request: new Request("https://example.com/api/non-stream-return"),
+      url: "/api/non-stream-return",
+    });
+
+    expect(response.status).toBe(202);
+    await expect(response.text()).resolves.toBe("");
+  });
+
+  it("streams multi-chunk res.write() / res.end() without buffering the whole body", async () => {
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.write("chunk-1");
+        res.write("chunk-2");
+        res.write("chunk-3");
+        res.end();
+      }),
+      request: new Request("https://example.com/api/multi-chunk"),
+      url: "/api/multi-chunk",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("chunk-1chunk-2chunk-3");
+  });
+
+  it("returns a 500 when the response stream is destroyed with an error", async () => {
+    const reportRequestError = vi.fn();
+
+    const response = await handlePagesApiRoute({
+      match: createMatch(
+        (_req, res) => {
+          // Simulate a proxy handler where the upstream errors and the
+          // handler forwards the error to the response stream. Node's
+          // `req.pipe(upstream).pipe(res)` does NOT auto-forward errors,
+          // so well-behaved handlers must attach error listeners and
+          // explicitly destroy `res` to avoid hanging the request.
+          res.destroy(new Error("upstream exploded"));
+          return res;
+        },
+        {},
+        { api: { bodyParser: false } },
+      ),
+      reportRequestError,
+      request: new Request("https://example.com/api/stream-error", {
+        method: "POST",
+        body: "some-body",
+      }),
+      url: "/api/stream-error",
+    });
+
+    expect(response.status).toBe(500);
+    await expect(response.text()).resolves.toBe("Internal Server Error");
+    expect(reportRequestError).toHaveBeenCalledWith(expect.any(Error), "/api/test");
+  });
 });

@@ -153,7 +153,14 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     });
 
     const handlerResult: unknown = await route.module.default(req, res);
-    if (handlerResult === undefined && !res.headersSent) {
+    // Node's `req.pipe(upstream).pipe(res)` returns the destination `res`.
+    // When a handler returns the response writable we must not auto-end it,
+    // because the stream will close itself when the source exhausts. For
+    // every other return value (including undefined) we end the response if
+    // the handler has not already sent headers — this prevents requests from
+    // hanging when a handler forgets to call res.end().
+    const returnedResponseWritable = handlerResult === res;
+    if (!returnedResponseWritable && !res.headersSent) {
       res.end();
     }
     return await responsePromise;
