@@ -402,6 +402,35 @@ describe("fetch cache shim", () => {
     expect(consumeDynamicUsage()).toBe(true);
   });
 
+  // The force-dynamic fetch default only applies when the segment has no
+  // explicit fetchCache mode — an explicit `fetchCache = "default-cache"` /
+  // `"default-no-store"` takes precedence over the force-dynamic default.
+  it("explicit segment fetchCache takes precedence over force-dynamic fetch default", async () => {
+    setCurrentForceDynamicFetchDefault(true);
+    setCurrentFetchCacheMode("default-cache");
+
+    const res1 = await fetch("https://api.example.com/force-dynamic-segment-default-cache");
+    const data1 = await res1.json();
+    const res2 = await fetch("https://api.example.com/force-dynamic-segment-default-cache");
+    const data2 = await res2.json();
+
+    // default-cache promotes the fetch to force-cache despite force-dynamic
+    expect(data1.count).toBe(1);
+    expect(data2.count).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(consumeDynamicUsage()).toBe(false);
+
+    setCurrentFetchCacheMode("default-no-store");
+
+    await fetch("https://api.example.com/force-dynamic-segment-default-no-store");
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://api.example.com/force-dynamic-segment-default-no-store",
+      {
+        cache: "no-store",
+      },
+    );
+  });
+
   it("segment fetchCache only-cache rejects no-store fetches", async () => {
     setCurrentFetchCacheMode("only-cache");
 
@@ -1760,6 +1789,23 @@ describe("fetch cache shim", () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
+    it("auth-keyed safety bypass records a dynamic fetch observation without marking the page dynamic", async () => {
+      await fetch("https://api.example.com/auth-bypass-page-output", {
+        headers: { Authorization: "Bearer alice" },
+        next: { tags: ["user-data"] },
+      });
+
+      // The fetch itself is bypassed (not cached), but the per-user response
+      // must still downgrade the page output to fresh render so auth-keyed
+      // data is never statically cached and served across users.
+      expect(peekDynamicFetchObservations()).toEqual([
+        "https://api.example.com/auth-bypass-page-output",
+      ]);
+      // The safety bypass is automatic, not an explicit uncached-fetch
+      // decision, so the page is not marked dynamic.
+      expect(consumeDynamicUsage()).toBe(false);
+    });
+
     it("X-API-Key header is included in cache key", async () => {
       const res1 = await fetch("https://api.example.com/api-key", {
         headers: { "X-API-Key": "key-alice" },
@@ -2427,6 +2473,23 @@ describe("fetch cache shim", () => {
       const data2 = await res2.json();
       expect(data2.count).toBe(2); // bypassed cache because body is oversized
       expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("oversized body with explicit cache opt-in does not mark page output dynamic", async () => {
+      await fetch("https://api.example.com/large-body-page-output", {
+        method: "POST",
+        body: "x".repeat(1024 * 1024 + 1),
+        cache: "force-cache",
+      });
+
+      // The developer opted into caching; failing to build a cache key is an
+      // internal vinext limitation, not an explicit uncached-fetch decision.
+      // The observation downgrades the page output to fresh render, but the
+      // page is not marked dynamic.
+      expect(consumeDynamicUsage()).toBe(false);
+      expect(peekDynamicFetchObservations()).toContain(
+        "https://api.example.com/large-body-page-output",
+      );
     });
 
     it("oversized Request body bypasses cache without cloning the body when content-length exceeds the limit", async () => {

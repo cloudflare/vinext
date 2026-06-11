@@ -956,14 +956,18 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // `next.revalidate`, skip caching to prevent accidental cross-user data
     // leakage. Developers who understand the implications can still force
     // caching by using `cache: 'force-cache'` or `next: { revalidate: N }`.
-    // This mirrors upstream's autoNoCache path and does NOT mark the page
-    // dynamic — it is an automatic safety bypass, not an explicit opt-out.
+    // This is an automatic safety bypass, not an explicit opt-out, so it does
+    // NOT mark the page dynamic via markDynamicUsage(). It still records a
+    // dynamic fetch observation: the per-user response must downgrade the
+    // page output to fresh render, or a statically cached page could leak
+    // one user's auth-keyed data to everyone else.
     const hasExplicitCacheOpt =
       cacheDirective === "force-cache" ||
       nextOpts?.revalidate === false ||
       (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0);
     if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
       const cleanInit = stripNextFromInit(init, cacheDirective);
+      recordDynamicFetchObservation(input);
       return dedupeFetch(input, cleanInit);
     }
 
@@ -1026,7 +1030,12 @@ function createPatchedFetch(): typeof globalThis.fetch {
         err instanceof SkipCacheKeyGenerationError
       ) {
         fetchInit = stripNextFromInit(fetchInit, cacheDirective);
-        markUncachedFetchForPageOutput(input);
+        // The developer opted into caching but we couldn't build a cache key
+        // (body too large / unserializable). That is an internal vinext
+        // limitation, not an explicit uncached-fetch decision, so record only
+        // the observation (downgrading the page output to fresh render)
+        // without marking the whole page dynamic.
+        recordDynamicFetchObservation(input);
         return dedupeFetch(input, fetchInit);
       }
       throw err;
