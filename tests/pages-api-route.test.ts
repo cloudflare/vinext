@@ -398,7 +398,7 @@ describe("pages api route", () => {
     await expect(response.text()).resolves.toBe("");
   });
 
-  it("streams multi-chunk res.write() / res.end() without buffering the whole body", async () => {
+  it("streams multi-chunk res.write() / res.end() through a ReadableStream body", async () => {
     const response = await handlePagesApiRoute({
       match: createMatch((_req, res) => {
         res.write("chunk-1");
@@ -412,6 +412,36 @@ describe("pages api route", () => {
 
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe("chunk-1chunk-2chunk-3");
+  });
+
+  it("does not accumulate chunks after the response body is cancelled", async () => {
+    let resRef: any;
+
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        resRef = res;
+        res.write("first");
+        // Keep the stream open so the test can cancel the body before the
+        // Node side finishes.
+      }),
+      request: new Request("https://example.com/api/cancel"),
+      url: "/api/cancel",
+    });
+
+    const reader = response.body!.getReader();
+    const { value } = await reader.read();
+    expect(new TextDecoder().decode(value)).toBe("first");
+
+    await reader.cancel();
+
+    // After the Fetch body is cancelled, the Node-compatible writable must
+    // reject further writes instead of silently buffering them.
+    const writeErr = await new Promise<Error | null>((resolve) => {
+      resRef.write("second", (err: Error | null) => resolve(err));
+    });
+
+    expect(writeErr).toBeInstanceOf(Error);
+    expect(writeErr!.message).toMatch(/Cannot call write after a stream was destroyed/);
   });
 
   it("returns a 500 when the response stream is destroyed with an error before any body has been written", async () => {

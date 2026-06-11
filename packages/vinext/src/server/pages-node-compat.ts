@@ -257,6 +257,11 @@ class PagesResponseStream extends Writable {
     encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
+    if (this.streamEnded || this.destroyed) {
+      callback(new Error("Response stream is closed"));
+      return;
+    }
+
     const buffer = typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk);
     if (this.controller && !this.streamEnded) {
       try {
@@ -353,8 +358,9 @@ class PagesResponseStream extends Writable {
           }
         }
       },
-      cancel: () => {
-        this.streamEnded = true;
+      cancel: (reason) => {
+        this.bufferedChunks.length = 0;
+        this.destroy(reason instanceof Error ? reason : new Error("Response body cancelled"));
       },
     });
 
