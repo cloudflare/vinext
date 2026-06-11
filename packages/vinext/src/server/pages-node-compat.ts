@@ -262,11 +262,6 @@ class PagesResponseStream extends Writable {
     encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
-    if (this.streamEnded || this.destroyed) {
-      callback(new Error("Response stream is closed"));
-      return;
-    }
-
     const buffer = typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk);
     if (this.controller && !this.streamEnded) {
       try {
@@ -294,7 +289,7 @@ class PagesResponseStream extends Writable {
     callback();
   }
 
-  override destroy(error?: Error): this {
+  override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
     this.streamEnded = true;
     if (!this.resolved) {
       if (error) {
@@ -315,7 +310,7 @@ class PagesResponseStream extends Writable {
         // Already closed or errored
       }
     }
-    return super.destroy(error);
+    callback(error);
   }
 
   private setHeaderValue(

@@ -502,7 +502,7 @@ describe("handlePagesApiRoute body parser config (Workers/prod path)", () => {
 
       expect(data.method).toBe(method);
       if (body) {
-        expect(data.headers["content-length"] || String(body.length)).toBe(String(body.length));
+        expect(data.headers["content-length"]).toBe(String(body.length));
         expect(data.rawBody).toBe(body);
       } else {
         expect(data.rawBody).toBe("");

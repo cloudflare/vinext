@@ -413,9 +413,11 @@ describe("pages api route", () => {
   });
 
   it("streams multi-chunk res.write() / res.end() through a ReadableStream body", async () => {
+    let headersSentAfterWrite = false;
     const response = await handlePagesApiRoute({
       match: createMatch((_req, res) => {
         res.write("chunk-1");
+        headersSentAfterWrite = res.headersSent;
         res.write("chunk-2");
         res.write("chunk-3");
         res.end();
@@ -425,6 +427,7 @@ describe("pages api route", () => {
     });
 
     expect(response.status).toBe(200);
+    expect(headersSentAfterWrite).toBe(true);
     await expect(response.text()).resolves.toBe("chunk-1chunk-2chunk-3");
   });
 
@@ -522,6 +525,21 @@ describe("pages api route", () => {
       }),
       request: new Request("https://example.com/api/destroy-no-error"),
       url: "/api/destroy-no-error",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("");
+  });
+
+  it("settles the response only once when res.destroy() is called repeatedly", async () => {
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.destroy();
+        res.destroy(new Error("second destroy must be ignored"));
+        return res;
+      }),
+      request: new Request("https://example.com/api/destroy-idempotent"),
+      url: "/api/destroy-idempotent",
     });
 
     expect(response.status).toBe(200);
