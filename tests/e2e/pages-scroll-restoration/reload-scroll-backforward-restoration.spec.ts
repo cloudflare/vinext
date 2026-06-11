@@ -6,6 +6,13 @@ const BASE = "http://localhost:4185";
 
 type ScrollPosition = { x: number; y: number };
 
+declare global {
+  // oxlint-disable-next-line typescript/consistent-type-definitions -- Window augmentation requires interface merging.
+  interface Window {
+    isSoftNavigation?: boolean;
+  }
+}
+
 async function scrollLinkIntoView(page: Page): Promise<void> {
   await page.evaluate(() => document.querySelector("#link")?.scrollIntoView());
 }
@@ -27,11 +34,9 @@ async function expectRouteChangeComplete(page: Page): Promise<void> {
   // this after an awaited router.push() will deadlock because the event has
   // already fired.
   return page.evaluate(() => {
-    const router = (window as any).next?.router;
-    if (!router?.events) {
-      throw new Error(
-        "expectRouteChangeComplete: window.next.router.events is not available",
-      );
+    const router = window.next?.router;
+    if (!router || !("events" in router)) {
+      throw new Error("expectRouteChangeComplete: window.next.router.events is not available");
     }
     return new Promise<void>((resolve) => {
       const handler = () => {
@@ -57,7 +62,7 @@ async function isPagesRouterReady(page: Page): Promise<boolean> {
   return page.evaluate(() => {
     const router = window.next?.router;
     if (!router || !("isReady" in router)) return false;
-    return router.isReady === true;
+    return (router as { isReady: boolean }).isReady === true;
   });
 }
 
@@ -150,8 +155,8 @@ test.describe("reload-scroll-back-restoration", () => {
 
     // Register a one-shot listener on routeChangeComplete to record scroll position
     const scrollAtEventPromise = page.evaluate(() => {
-      const router = (window as any).next?.router;
-      if (!router?.events) return null;
+      const router = window.next?.router;
+      if (!router || !("events" in router)) return null;
       return new Promise<{ x: number; y: number }>((resolve) => {
         const handler = () => {
           router.events.off("routeChangeComplete", handler);
@@ -178,7 +183,7 @@ test.describe("reload-scroll-back-restoration", () => {
 
     // Set marker on window to detect full page reload
     await page.evaluate(() => {
-      (window as any).isSoftNavigation = true;
+      window.isSoftNavigation = true;
     });
 
     // Push to the page that throws render error
@@ -191,7 +196,7 @@ test.describe("reload-scroll-back-restoration", () => {
     await waitForHydration(page);
 
     // Verify that the window marker is indeed gone (hard navigation occurred)
-    const isSoft = await page.evaluate(() => (window as any).isSoftNavigation);
+    const isSoft = await page.evaluate(() => window.isSoftNavigation);
     expect(isSoft).toBeUndefined();
   });
 });
