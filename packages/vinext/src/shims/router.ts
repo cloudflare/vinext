@@ -138,9 +138,17 @@ function renderPagesRouterElement(
   cancelPreviousRenderCommit();
 
   return new Promise<void>((resolve, reject) => {
-    _cancelPendingRenderCommit = () => {
-      _cancelPendingRenderCommit = null;
+    const cancel = () => {
+      if (_cancelPendingRenderCommit === cancel) _cancelPendingRenderCommit = null;
       reject(new NavigationCancelledError("superseded"));
+    };
+    _cancelPendingRenderCommit = cancel;
+
+    // Only clear the module-level canceller if it still belongs to this
+    // render; a superseded tree can commit late and must not null out the
+    // canceller installed by a newer navigation.
+    const clearIfCurrent = () => {
+      if (_cancelPendingRenderCommit === cancel) _cancelPendingRenderCommit = null;
     };
 
     const scrollHandler = () => {
@@ -153,7 +161,7 @@ function renderPagesRouterElement(
       wrapWithRouterContext(
         element,
         () => {
-          _cancelPendingRenderCommit = null;
+          clearIfCurrent();
           try {
             scrollHandler();
             resolve();
@@ -162,13 +170,13 @@ function renderPagesRouterElement(
           }
         },
         (error) => {
-          _cancelPendingRenderCommit = null;
+          clearIfCurrent();
           reject(error);
         },
       ),
     );
     if (typeof document === "undefined") {
-      _cancelPendingRenderCommit = null;
+      clearIfCurrent();
       resolve();
     }
   });
@@ -2720,7 +2728,10 @@ for (const event of deprecatedRouterEvents) {
 if (typeof window !== "undefined") {
   // Match Next.js's Router constructor: stamp the initial history entry and
   // attach the popstate listener while next/router itself is evaluating,
-  // before window.next.router is exposed to userland.
+  // before window.next.router is exposed to userland. This install is
+  // intentionally unconditional at module eval — any value import of
+  // next/router (even from an App Router app) triggers it, mirroring
+  // Next.js where the Router singleton's constructor runs at module eval.
   installPagesRouterRuntime();
   // Cast: `NextRouter.push`/`replace` are typed with narrow parameters
   // (UrlObject | string) while `PagesRouterPublicInstance` accepts unknown
