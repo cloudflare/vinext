@@ -40,10 +40,9 @@
  * `window.next.router`. Mirrors the `publicAppRouterInstance` shape from
  * `packages/next/src/client/components/app-router-instance.ts`.
  *
- * `hmrRefresh` and `experimental_gesturePush` are intentionally omitted —
- * vinext does not implement them. Library callers that branch on their
- * presence (`typeof router.hmrRefresh === "function"`) will skip the
- * branch, matching what they would do on a production Next.js build.
+ * `hmrRefresh` is intentionally omitted — vinext does not implement it.
+ * `experimental_gesturePush` is attached only when
+ * `experimental.gestureTransition` is enabled, matching Next.js.
  */
 type AppRouterPublicInstance = {
   push: (href: string, options?: { scroll?: boolean }) => void;
@@ -52,6 +51,7 @@ type AppRouterPublicInstance = {
   forward: () => void;
   refresh: () => void;
   prefetch: (href: string, options?: { onInvalidate?: () => void }) => void;
+  experimental_gesturePush?: (href: string, options?: { scroll?: boolean }) => void;
   /** Default placeholder, matches Next.js. */
   bfcacheId?: string;
 };

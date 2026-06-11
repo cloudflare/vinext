@@ -20,6 +20,8 @@ type NavigationRuntimeKind = "navigate" | "traverse" | "refresh";
 
 type NavigationRuntimeHistoryUpdateMode = "push" | "replace";
 
+export type NavigationRuntimeVisibleCommitMode = "transition" | "synchronous";
+
 type NavigationRuntimeTraversalIntent = {
   direction: "back" | "forward" | "unknown";
   historyState: unknown;
@@ -35,6 +37,7 @@ export type NavigationRuntimeNavigate = (
   programmaticTransition?: boolean,
   traversalIntent?: NavigationRuntimeTraversalIntent,
   scrollIntent?: AppRouterScrollIntent | null,
+  visibleCommitMode?: NavigationRuntimeVisibleCommitMode,
 ) => Promise<void>;
 
 export type NavigationRuntimeFunctions = {

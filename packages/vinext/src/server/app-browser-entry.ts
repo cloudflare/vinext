@@ -54,6 +54,7 @@ import {
   registerNavigationRuntimeBootstrap,
   registerNavigationRuntimeFunctions,
   type NavigationRuntimeNavigate,
+  type NavigationRuntimeVisibleCommitMode,
   type NavigationRuntimeRscBootstrap,
 } from "../client/navigation-runtime.js";
 import { retryScrollTo, scrollToHashTargetOnNextFrame } from "vinext/shims/hash-scroll";
@@ -563,6 +564,7 @@ async function renderNavigationPayload(
   scrollIntent: AppRouterScrollIntent | null | undefined = null,
   restoredBfcacheIds: Readonly<Record<string, string>> | null = null,
   reuseCurrentBfcacheIds: boolean = true,
+  visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
 ): Promise<NavigationPayloadOutcome> {
   syncServerActionHttpFallbackHead(null);
   try {
@@ -586,6 +588,7 @@ async function renderNavigationPayload(
       targetHistoryIndex: traversalIntent === null ? undefined : traversalIntent.targetHistoryIndex,
       targetHref,
       navId,
+      visibleCommitMode,
     });
   } catch (error) {
     pendingNavigationRecoveryHref = null;
@@ -1623,6 +1626,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     programmaticTransition = false,
     traversalIntent?: HistoryTraversalIntent,
     scrollIntent?: AppRouterScrollIntent | null,
+    visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
   ): Promise<void> {
     let pendingRouterState: PendingBrowserRouterState | null = null;
     // Hoist navId above try so the catch and finally blocks can reference it.
@@ -1803,6 +1807,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
             scrollIntent,
             restoredBfcacheIds,
             reuseCurrentBfcacheIds,
+            visibleCommitMode,
           );
           if (cachedRenderOutcome === "no-commit") {
             deleteVisitedResponse(rscUrl, requestInterceptionContext);
@@ -1887,6 +1892,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
                 scrollIntent,
                 restoredBfcacheIds,
                 reuseCurrentBfcacheIds,
+                visibleCommitMode,
               ).catch((error) => {
                 if (browserNavigationController.isCurrentNavigation(navId)) {
                   console.error("[vinext] Optimistic RSC navigation error:", error);
@@ -2021,6 +2027,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           scrollIntent,
           restoredBfcacheIds,
           reuseCurrentBfcacheIds,
+          visibleCommitMode,
         );
         if (renderOutcome !== "committed") return;
         // Don't cache the response if this navigation was superseded during

@@ -25,6 +25,11 @@ export type AppRouterInstance = {
   push(href: string, options?: NavigateOptions): void;
   replace(href: string, options?: NavigateOptions): void;
   prefetch(href: string, options?: PrefetchOptions): void;
+  /**
+   * Perform an experimental gesture transition navigation.
+   * Only available when experimental.gestureTransition is enabled.
+   */
+  experimental_gesturePush?(href: string, options?: NavigateOptions): void;
 };
 
 const APP_ROUTER_CONTEXT_KEY = Symbol.for("vinext.appRouterContext");

@@ -1,4 +1,5 @@
 import { startTransition, useLayoutEffect, type Dispatch, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import {
   activateNavigationSnapshot,
   clearPendingPathname,
@@ -33,6 +34,7 @@ import {
   type ServerActionRevalidationKind,
 } from "./app-browser-action-result.js";
 import type { AppElements } from "./app-elements.js";
+import type { NavigationRuntimeVisibleCommitMode } from "../client/navigation-runtime.js";
 
 export type HistoryUpdateMode = "push" | "replace";
 
@@ -113,6 +115,7 @@ type BrowserNavigationController = {
     targetHistoryIndex?: number | null;
     targetHref: string;
     navId: number;
+    visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
   }): Promise<NavigationPayloadOutcome>;
   commitSameUrlNavigatePayload(
     nextElements: Promise<AppElements>,
@@ -511,6 +514,7 @@ export function createAppBrowserNavigationController(
   function dispatchApprovedVisibleCommit(
     commit: ApprovedVisibleCommit,
     pendingRouterState: PendingBrowserRouterState | null,
+    visibleCommitMode: NavigationRuntimeVisibleCommitMode,
   ): void {
     const setter = getBrowserRouterStateSetter();
 
@@ -519,6 +523,13 @@ export function createAppBrowserNavigationController(
       // (from router.push/replace/refresh/Link), so resolving the deferred promise
       // is sufficient.
       resolvePendingBrowserRouterState(pendingRouterState, commit);
+      return;
+    }
+
+    if (visibleCommitMode === "synchronous") {
+      flushSync(() => {
+        setter(applyApprovedVisibleCommit(getBrowserRouterState(), commit));
+      });
       return;
     }
 
@@ -632,6 +643,7 @@ export function createAppBrowserNavigationController(
     targetHistoryIndex?: number | null;
     targetHref: string;
     navId: number;
+    visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
   }): Promise<NavigationPayloadOutcome> {
     const renderId = allocateRenderId();
     let resolveCommitted: (() => void) | undefined;
@@ -700,7 +712,11 @@ export function createAppBrowserNavigationController(
       claimAppRouterScrollIntentForCommit(options.scrollIntent, renderId);
       activateNavigationSnapshot();
       snapshotActivated = true;
-      dispatchApprovedVisibleCommit(approvedCommit, options.pendingRouterState);
+      dispatchApprovedVisibleCommit(
+        approvedCommit,
+        options.pendingRouterState,
+        options.visibleCommitMode ?? "transition",
+      );
     } catch (error) {
       pendingNavigationPrePaintEffects.delete(renderId);
       pendingNavigationCommits.delete(renderId);

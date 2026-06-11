@@ -274,6 +274,14 @@ export type NextConfig = {
      */
     defineServer?: Record<string, string | number | boolean>;
   };
+  experimental?: {
+    /**
+     * Enables the experimental App Router gesture transition API:
+     * `useRouter().experimental_gesturePush()`.
+     */
+    gestureTransition?: boolean;
+    [key: string]: unknown;
+  };
   /**
    * Path to a custom cache handler module (e.g., KV, Redis, DynamoDB).
    * Accepts relative paths, absolute paths, or file:// URLs from import.meta.resolve().
@@ -329,6 +337,11 @@ export type ResolvedNextConfig = {
   pageExtensions: string[];
   instrumentationClientInject: string[];
   cacheComponents: boolean;
+  /**
+   * Enables the experimental App Router gesture transition API:
+   * `useRouter().experimental_gesturePush()`.
+   */
+  gestureTransition: boolean;
   /**
    * Whether `experimental.prefetchInlining` is configured. Next.js uses this
    * with the Segment Cache to fetch the route tree before the bundled inlined
@@ -1192,6 +1205,7 @@ export async function resolveNextConfig(
       output: "",
       pageExtensions: normalizePageExtensions(),
       cacheComponents: false,
+      gestureTransition: false,
       prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
@@ -1475,6 +1489,7 @@ export async function resolveNextConfig(
         )
       : [],
     cacheComponents: config.cacheComponents ?? false,
+    gestureTransition: experimental?.gestureTransition === true,
     prefetchInlining,
     redirects,
     rewrites,

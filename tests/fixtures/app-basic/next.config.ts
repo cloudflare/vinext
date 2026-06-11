@@ -11,6 +11,10 @@
 import type { NextConfig } from "vinext";
 
 const nextConfig: NextConfig = {
+  experimental: {
+    gestureTransition: true,
+  },
+
   // Default is false — trailing slashes are stripped (redirects /about/ → /about)
   // trailingSlash: false,
 

@@ -11,7 +11,11 @@
 // would throw at link time for missing bindings. With `import * as React`, the
 // bindings are just `undefined` on the namespace object and we can guard at runtime.
 import * as React from "react";
-import { getNavigationRuntime, hasAppNavigationRuntime } from "../client/navigation-runtime.js";
+import {
+  getNavigationRuntime,
+  hasAppNavigationRuntime,
+  type NavigationRuntimeVisibleCommitMode,
+} from "../client/navigation-runtime.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import { INITIAL_BFCACHE_ID, PUBLIC_INITIAL_BFCACHE_ID } from "../server/app-bfcache-id.js";
 import { AppElementsWire } from "../server/app-elements.js";
@@ -43,7 +47,7 @@ import {
 import { stripBasePath } from "../utils/base-path.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
-import { AppRouterContext } from "./internal/app-router-context.js";
+import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { retryScrollTo, scrollToHashTarget } from "./hash-scroll.js";
 import {
   beginAppRouterScrollIntent,
@@ -1753,6 +1757,7 @@ export async function navigateClientSide(
   mode: "push" | "replace",
   scroll: boolean,
   programmaticTransition = false,
+  visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
 ): Promise<void> {
   // Reset any link still showing a `useLinkStatus()` pending state that did not
   // initiate this navigation (e.g. a programmatic router.push or form submit).
@@ -1851,6 +1856,7 @@ export async function navigateClientSide(
         programmaticTransition,
         undefined,
         scrollIntent,
+        visibleCommitMode,
       );
     } else {
       if (mode === "replace") {
@@ -1917,7 +1923,7 @@ function releaseScheduledAppRouterNavigationAfterCurrentTask(release: () => void
  * `window.next.router` for Next.js parity (see `client/window-next.ts`).
  * Internal callers in this file continue to use `_appRouter` for brevity.
  */
-const _appRouter = {
+const _appRouter: AppRouterInstance = {
   bfcacheId: INITIAL_BFCACHE_ID,
   push(href: string, options?: { scroll?: boolean }): void {
     assertSafeNavigationUrl(href);
@@ -2036,6 +2042,22 @@ const _appRouter = {
     });
   },
 };
+
+if (process.env.__NEXT_GESTURE_TRANSITION) {
+  _appRouter.experimental_gesturePush = (href: string, options?: { scroll?: boolean }): void => {
+    assertSafeNavigationUrl(href);
+    if (isServer) return;
+
+    let appHref = href;
+    if (isAbsoluteOrProtocolRelativeUrl(href)) {
+      const localPath = toSameOriginAppPath(href, __basePath);
+      if (localPath === null) return;
+      appHref = localPath;
+    }
+
+    void navigateClientSide(appHref, "push", options?.scroll !== false, false, "synchronous");
+  };
+}
 
 function formatPublicBfcacheId(value: string | null | undefined): string {
   if (!value || value === INITIAL_BFCACHE_ID) return PUBLIC_INITIAL_BFCACHE_ID;
