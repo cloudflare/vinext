@@ -5,6 +5,7 @@ import path from "node:path";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import {
   buildAppRouteGraph,
+  findOwnerRouteForDir,
   type AppRouteGraphRoute,
   type RouteManifest,
 } from "../packages/vinext/src/routing/app-route-graph.js";
@@ -1537,6 +1538,62 @@ describe("App Router route graph builder", () => {
         expect(intercept).toBeDefined();
         // The nearest ancestor route with a page is "/" (the root)
         expect(intercept?.ownerRoute).toBe("/");
+      });
+    });
+
+    describe("findOwnerRouteForDir with Windows-style separators", () => {
+      // On Windows the config hook normalizes `appDir` to forward slashes,
+      // but marker directories and route file paths descend through native
+      // path.join/path.dirname and stay backslash. findOwnerRouteForDir must
+      // compare in forward-slash space; CI is POSIX-only, so simulate the
+      // Windows shapes directly.
+      function makeRoute(pagePath: string, patternParts: string[]): AppRouteGraphRoute {
+        return { pagePath, routePath: null, patternParts } as unknown as AppRouteGraphRoute;
+      }
+
+      const appDir = "C:/proj/app";
+      const rootRoute = makeRoute("C:\\proj\\app\\page.tsx", []);
+      const templatesRoute = makeRoute("C:\\proj\\app\\templates\\page.tsx", ["templates"]);
+      const routes = [rootRoute, templatesRoute];
+      const routesByDir = new Map([
+        ["C:/proj/app", rootRoute],
+        ["C:/proj/app/templates", templatesRoute],
+      ]);
+
+      it("terminates the ancestor walk at the forward-slash app root", () => {
+        // deep/path has no route — the walk must stop at appDir and attach to
+        // the nearest ancestor route instead of overshooting the app root.
+        const owner = findOwnerRouteForDir(
+          "C:\\proj\\app\\deep\\path",
+          appDir,
+          routes,
+          routesByDir,
+        );
+        expect(owner).toBe(rootRoute);
+      });
+
+      it("finds the exact owner for a backslash marker parent dir", () => {
+        const owner = findOwnerRouteForDir("C:\\proj\\app\\templates", appDir, routes, routesByDir);
+        expect(owner).toBe(templatesRoute);
+      });
+
+      it("matches catch-all subtree routes across separator styles", () => {
+        const catchAll = makeRoute("C:\\proj\\app\\templates\\[...slug]\\page.tsx", [
+          "templates",
+          ":slug+",
+        ]);
+        const owner = findOwnerRouteForDir(
+          "C:\\proj\\app\\templates",
+          appDir,
+          [catchAll],
+          new Map([["C:/proj/app/templates/[...slug]", catchAll]]),
+        );
+        expect(owner).toBe(catchAll);
+      });
+
+      it("resolves the root owner when the marker parent is the app root itself", () => {
+        const owner = findOwnerRouteForDir(appDir, appDir, routes, routesByDir);
+        expect(owner).toBe(rootRoute);
       });
     });
 
