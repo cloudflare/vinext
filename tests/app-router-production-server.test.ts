@@ -1313,3 +1313,139 @@ describe("App Router Production server (startProdServer)", () => {
     expect(text).toContain("echo:world");
   });
 });
+
+describe("App Router production server entry module identity", () => {
+  // Regression test for cloudflare/vinext#1923.
+  //
+  // Chunks emitted by default Vite builds — Rollup on Vite 7 and Rolldown on
+  // Vite 8 — import the server entry back by its bare path: modules shared
+  // between the entry's static graph (middleware, instrumentation) and lazy
+  // route chunks are hoisted into the entry chunk, and the lazy chunks then
+  // import them via "../../index.js" (e.g. a plain `vite@8.0.16` SSR build
+  // of an entry-shared module emits `import { t as shared } from
+  // "../entry.js"` in the lazy chunk).
+  // Node keys its ESM cache on the full URL *including the query string*, so
+  // while the production server imported the entry as `index.js?t=<mtime>`,
+  // a chunk's bare back-import evaluated the entire server bundle a second
+  // time. Module-level singletons (db pools, service registries) then
+  // silently diverged between the two copies: boot-time initialisation ran
+  // on the server's instance while route handlers read the duplicate.
+  //
+  // The Vite+ toolchain this repo builds with enables rolldown's
+  // shared-chunk extraction, so this fixture build does not naturally emit
+  // the back-import. Recreate the default-Vite layout by prepending a bare
+  // entry import to the lazy route chunk before starting the server.
+  it("evaluates the server bundle once even when a chunk imports the entry back by bare path", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-prod-entry-identity-"));
+    const fixtureRoot = path.join(tmpDir, "fixture");
+    const outDir = path.join(fixtureRoot, "dist");
+    let server: import("node:http").Server | undefined;
+    const EVAL_COUNT_KEY = "__vinext_test_entry_evaluations__";
+    const prodGlobalKeys = [
+      "__VINEXT_CLIENT_ENTRY__",
+      "__VINEXT_DYNAMIC_PRELOADS__",
+      "__VINEXT_LAZY_CHUNKS__",
+      "__VINEXT_SSR_MANIFEST__",
+      "__vite_rsc_client_require__",
+      "__vite_rsc_require__",
+      "__vite_rsc_server_require__",
+      "__webpack_chunk_load__",
+      "__webpack_require__",
+    ];
+    const previousGlobals = new Map(
+      prodGlobalKeys.map((key) => [
+        key,
+        {
+          exists: Reflect.has(globalThis, key),
+          value: Reflect.get(globalThis, key),
+        },
+      ]),
+    );
+
+    try {
+      fs.cpSync(APP_FIXTURE_DIR, fixtureRoot, { recursive: true });
+      fs.rmSync(outDir, { recursive: true, force: true });
+      const fixtureNodeModules = path.join(fixtureRoot, "node_modules");
+      if (!fs.existsSync(fixtureNodeModules)) {
+        fs.symlinkSync(
+          path.resolve(__dirname, "..", "node_modules"),
+          fixtureNodeModules,
+          "junction",
+        );
+      }
+
+      const builder = await createBuilder({
+        root: fixtureRoot,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureRoot })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const serverDir = path.join(outDir, "server");
+      const entryPath = path.join(serverDir, "index.js");
+
+      // Count evaluations of the server entry chunk itself. Imports hoist, so
+      // the prepended statement runs first in the entry's own body each time
+      // the module is evaluated.
+      fs.writeFileSync(
+        entryPath,
+        `globalThis.${EVAL_COUNT_KEY} = [...(globalThis.${EVAL_COUNT_KEY} ?? []), import.meta.url];\n` +
+          fs.readFileSync(entryPath, "utf-8"),
+      );
+
+      // Recreate the Rollup chunk layout: the lazy chunk for
+      // /api/prod-singleton imports the entry back by bare path.
+      const staticDir = path.join(serverDir, "_next", "static");
+      const routeChunkNames = fs
+        .readdirSync(staticDir)
+        .filter(
+          (name) =>
+            name.endsWith(".js") &&
+            fs
+              .readFileSync(path.join(staticDir, name), "utf-8")
+              .includes("x-vinext-prod-singleton"),
+        );
+      expect(routeChunkNames).toHaveLength(1);
+      const routeChunkPath = path.join(staticDir, routeChunkNames[0]);
+      fs.writeFileSync(
+        routeChunkPath,
+        `import "../../index.js";\n` + fs.readFileSync(routeChunkPath, "utf-8"),
+      );
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      ({ server } = await startProdServer({ port: 0, outDir, noCompression: true }));
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+
+      expect(Reflect.get(globalThis, EVAL_COUNT_KEY)).toHaveLength(1);
+
+      const res = await fetch(`http://localhost:${port}/api/prod-singleton`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-vinext-prod-singleton")).toBe("1");
+      const body = await res.json();
+
+      // Loading the lazy route chunk pulled in the bare "../../index.js"
+      // import; the server bundle must still have been evaluated only once.
+      // (The recorded values are the import.meta.url of each evaluation, so
+      // a failure shows which URLs the two module instances were keyed on.)
+      expect(Reflect.get(globalThis, EVAL_COUNT_KEY)).toHaveLength(1);
+
+      // The route handler reads the same module-level singleton instance
+      // that boot-time instrumentation register() initialised. A duplicate
+      // bundle instance would report null.
+      expect(body).toEqual({ initializedBy: "instrumentation-register" });
+    } finally {
+      server?.close();
+      Reflect.deleteProperty(globalThis, EVAL_COUNT_KEY);
+      for (const [key, previous] of previousGlobals) {
+        if (previous.exists) {
+          Reflect.set(globalThis, key, previous.value);
+        } else {
+          Reflect.deleteProperty(globalThis, key);
+        }
+      }
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 120000);
+});

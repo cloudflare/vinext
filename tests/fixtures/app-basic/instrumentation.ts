@@ -10,9 +10,16 @@
  */
 
 import { markRegisterCalled, recordRequestError } from "./instrumentation-state";
+import { initializeProdSingleton } from "./prod-singleton-state";
 
 export async function register(): Promise<void> {
   markRegisterCalled();
+  // Initialize the module-level singleton probe. register() runs once, on
+  // the module instance the server imported at boot — mirroring how real
+  // apps initialize db pools or service registries. If the production
+  // server ends up with a second copy of the server bundle (double
+  // evaluation), that copy never sees this write.
+  initializeProdSingleton("instrumentation-register");
 }
 
 export async function onRequestError(

@@ -79,6 +79,67 @@ import {
   resolveRequestHost as resolveHost,
 } from "./proxy-trust.js";
 
+/**
+ * mtime of the build each bare (query-less) server-entry URL was first
+ * imported from in this process. Node's ESM cache pins a bare URL to that
+ * build forever, so rebuilds to the same path must be detected and loaded
+ * through a cache-busted URL instead.
+ */
+const bareServerEntryMtimes = new Map<string, number>();
+
+/**
+ * Import a built server entry module (App Router RSC entry or Pages Router
+ * server entry) by absolute file path.
+ *
+ * The first import of a given path uses the plain file:// URL with NO query
+ * string. This is load-bearing: code-split builds emit lazy chunks that
+ * import the entry back by bare specifier (default Vite builds on both
+ * supported majors — Rollup on Vite 7 and Rolldown on Vite 8 — hoist modules
+ * shared between the entry's static graph and lazy route chunks into the
+ * entry chunk, which the chunks then import as e.g. "../../index.js").
+ * Node keys its ESM cache on the full URL including the query string, so if
+ * the server imported the entry as `index.js?t=<mtime>`, a chunk's bare
+ * back-import would evaluate the entire server bundle a second time and
+ * module-level singletons (db pools, service registries) would silently
+ * diverge between the two copies. See
+ * https://github.com/cloudflare/vinext/issues/1923.
+ *
+ * A `?t=<mtime>` query string is appended only when the same path is
+ * imported again after a rebuild (different mtime) — e.g. test suites that
+ * rebuild a fixture to the same output path within one process — where the
+ * bare URL's cache entry would return the stale previous build.
+ *
+ * The entry is imported via its canonical real path: the bundler
+ * canonicalizes module ids with fs.realpathSync.native, so chunks evaluate
+ * under realpath-based URLs and their relative imports resolve to realpath
+ * URLs too. Importing the entry through a symlinked path (macOS /var/...
+ * tmpdirs, symlinked deploy directories) would otherwise create a second
+ * instance keyed on the symlinked URL.
+ *
+ * Exported for direct unit testing of the URL choice.
+ */
+export function resolveServerEntryImportUrl(entryPath: string): string {
+  let canonicalEntryPath: string;
+  try {
+    canonicalEntryPath = fs.realpathSync.native(entryPath);
+  } catch {
+    canonicalEntryPath = entryPath;
+  }
+  const href = pathToFileURL(canonicalEntryPath).href;
+  const mtime = fs.statSync(canonicalEntryPath).mtimeMs;
+  const bareMtime = bareServerEntryMtimes.get(href);
+  if (bareMtime === undefined || bareMtime === mtime) {
+    bareServerEntryMtimes.set(href, mtime);
+    return href;
+  }
+  return `${href}?t=${mtime}`;
+}
+
+// oxlint-disable-next-line typescript/no-explicit-any -- built entry modules are untyped, matching the previous inline `await import(...)`
+export async function importServerEntryModule(entryPath: string): Promise<any> {
+  return import(resolveServerEntryImportUrl(entryPath));
+}
+
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -1069,12 +1130,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
   const prerenderSecret = readPrerenderSecret(path.dirname(rscEntryPath));
 
-  // Import the RSC handler (use file:// URL for reliable dynamic import).
-  // Cache-bust with mtime so that if this function is called multiple times
-  // (e.g. across test describe blocks that rebuild to the same path) Node's
-  // module cache does not return the stale module from a previous build.
-  const rscMtime = fs.statSync(rscEntryPath).mtimeMs;
-  const rscModule = await import(`${pathToFileURL(rscEntryPath).href}?t=${rscMtime}`);
+  // Import the RSC handler. importServerEntryModule uses the bare file://
+  // URL so lazy chunks that import the entry back resolve to the same module
+  // instance, and only cache-busts when this function runs again after a
+  // rebuild to the same path (e.g. across test describe blocks).
+  const rscModule = await importServerEntryModule(rscEntryPath);
   const rscHandler = resolveAppRouterHandler(rscModule.default);
 
   // `assetPrefix` is embedded as a compile-time constant in the generated
@@ -1371,11 +1431,11 @@ function readPagesServerEntryPageRoutes(value: unknown): PagesServerEntryPageRou
 async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const { port, host, clientDir, serverEntryPath, compress, purpose } = options;
 
-  // Import the server entry module (use file:// URL for reliable dynamic import).
-  // Cache-bust with mtime so that rebuilds to the same output path always load
-  // the freshly built module rather than a stale cached copy.
-  const serverMtime = fs.statSync(serverEntryPath).mtimeMs;
-  const serverEntry = await import(`${pathToFileURL(serverEntryPath).href}?t=${serverMtime}`);
+  // Import the server entry module. importServerEntryModule uses the bare
+  // file:// URL so lazy chunks that import the entry back resolve to the same
+  // module instance, and only cache-busts when this function runs again after
+  // a rebuild to the same output path.
+  const serverEntry = await importServerEntryModule(serverEntryPath);
   const {
     renderPage,
     handleApiRoute: handleApi,
