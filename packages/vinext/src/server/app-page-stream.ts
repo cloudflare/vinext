@@ -403,7 +403,14 @@ export function createAppPageRscErrorTracker(
 }
 
 export function shouldRerenderAppPageWithGlobalError(
-  options: ShouldRerenderAppPageWithGlobalErrorOptions,
+  _options: ShouldRerenderAppPageWithGlobalErrorOptions,
 ): boolean {
-  return Boolean(options.capturedError) && !options.hasLocalBoundary;
+  // React's RSC onError reports errors that can still be caught by client
+  // error boundaries serialized in the Flight payload. Re-rendering
+  // global-error here masks userland boundaries such as next/error's
+  // unstable_catchError and plain class error boundaries that are invisible to
+  // the route manifest. Shell-level failures are still handled by
+  // renderAppPageHtmlStreamWithRecovery's catch path; after the shell exists,
+  // keep the original stream and let React's boundary nesting decide.
+  return false;
 }

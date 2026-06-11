@@ -761,8 +761,8 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/blog", "layout:/blog/post"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -794,15 +794,15 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/dashboard"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
+        async runWithIsolatedDynamicScope(fn) {
           probeCallCount++;
-          const result = fn();
+          const result = await fn();
           // Simulate: second probe call (layout 0, since we iterate inner-to-outer)
           // detects dynamic usage
-          return Promise.resolve({
+          return {
             result,
             dynamicDetected: probeCallCount === 2,
-          });
+          };
         },
       },
     });
@@ -930,9 +930,9 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/admin"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
+        async runWithIsolatedDynamicScope(fn) {
           probeCalls++;
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -1008,8 +1008,8 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/admin"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -1046,8 +1046,8 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/admin", "layout:/admin/posts"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -1093,12 +1093,12 @@ describe("app page execution helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/dashboard"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
+        async runWithIsolatedDynamicScope(fn) {
           probeCalls++;
           // probeAppPageLayouts iterates inner-to-outer:
           // first call → layout 1 (dashboard) → dynamic
           // second call → layout 0 (root) → static
-          return Promise.resolve({ result: fn(), dynamicDetected: probeCalls === 1 });
+          return { result: await fn(), dynamicDetected: probeCalls === 1 };
         },
       },
     });

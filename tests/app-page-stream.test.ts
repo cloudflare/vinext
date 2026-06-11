@@ -364,13 +364,13 @@ describe("app page stream helpers", () => {
     expect(baseOnError).toHaveBeenCalledTimes(2);
   });
 
-  it("only rerenders with global-error when an RSC error was captured and no local boundary exists", () => {
+  it("does not rerender global-error after the RSC shell because client boundaries may catch", () => {
     expect(
       shouldRerenderAppPageWithGlobalError({
         capturedError: new Error("boom"),
         hasLocalBoundary: false,
       }),
-    ).toBe(true);
+    ).toBe(false);
 
     expect(
       shouldRerenderAppPageWithGlobalError({

@@ -987,11 +987,23 @@ export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
  * and sets Cache-Control: no-store on the response.
  */
 export async function connection(): Promise<void> {
-  const { markDynamicUsage, markRenderRequestApiUsage, throwIfInsideCacheScope } =
-    await import("./headers.js");
+  const {
+    getHeadersContext,
+    markDynamicUsage,
+    markRenderRequestApiUsage,
+    suspendConnectionProbe,
+    throwIfInsideCacheScope,
+  } = await import("./headers.js");
+  if (getHeadersContext()?.forceStatic) {
+    return;
+  }
   markRenderRequestApiUsage("connection");
   throwIfInsideCacheScope("connection()");
   markDynamicUsage();
+  const pendingProbe = suspendConnectionProbe();
+  if (pendingProbe) {
+    await pendingProbe;
+  }
 }
 
 /**

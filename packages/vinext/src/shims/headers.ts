@@ -49,12 +49,28 @@ export type VinextHeadersShimState = {
   headersContext: HeadersContext | null;
   dynamicUsageDetected: boolean;
   renderRequestApiUsage: Set<RenderRequestApiKind>;
+  connectionProbe: ConnectionProbeState | null;
   /** Error recorded by throwIfInsideCacheScope for dev diagnostics, persists even if caught by user code. */
   invalidDynamicUsageError: unknown;
   pendingSetCookies: string[];
   draftModeCookieHeader: string | null;
   phase: HeadersAccessPhase;
 };
+
+type ConnectionProbeState = {
+  interrupted: boolean;
+  interrupt: () => void;
+  pending: Promise<never>;
+};
+
+type ConnectionProbeResult<T> =
+  | {
+      completed: true;
+      result: T;
+    }
+  | {
+      completed: false;
+    };
 
 // NOTE:
 // - This shim can be loaded under multiple module specifiers in Vite's
@@ -71,6 +87,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   headersContext: null,
   dynamicUsageDetected: false,
   renderRequestApiUsage: new Set<RenderRequestApiKind>(),
+  connectionProbe: null,
   invalidDynamicUsageError: null,
   pendingSetCookies: [],
   draftModeCookieHeader: null,
@@ -186,6 +203,48 @@ export function markDynamicUsage(): void {
 
 export function markRenderRequestApiUsage(kind: RenderRequestApiKind): void {
   _getState().renderRequestApiUsage.add(kind);
+}
+
+export async function runWithConnectionProbe<T>(
+  fn: () => T | Promise<T>,
+): Promise<ConnectionProbeResult<T>> {
+  const state = _getState();
+  const previousProbe = state.connectionProbe;
+  let interruptProbe: () => void = () => {};
+  const interrupted = new Promise<ConnectionProbeResult<T>>((resolve) => {
+    interruptProbe = () => resolve({ completed: false });
+  });
+
+  const probe: ConnectionProbeState = {
+    interrupted: false,
+    interrupt() {
+      if (probe.interrupted) return;
+      probe.interrupted = true;
+      interruptProbe();
+    },
+    // `connection()` suspends forever inside speculative probes, matching
+    // Next.js's prerender/probe contract: code after `await connection()`
+    // must not run while classifying a route.
+    pending: new Promise<never>(() => {}),
+  };
+
+  state.connectionProbe = probe;
+  try {
+    const completed = Promise.resolve()
+      .then(fn)
+      .then<ConnectionProbeResult<T>>((result) => ({ completed: true, result }));
+    return await Promise.race([completed, interrupted]);
+  } finally {
+    state.connectionProbe = previousProbe;
+  }
+}
+
+export function suspendConnectionProbe(): Promise<never> | null {
+  const probe = _getState().connectionProbe;
+  if (!probe) return null;
+
+  probe.interrupt();
+  return probe.pending;
 }
 
 export function peekRenderRequestApiUsage(): RenderRequestApiKind[] {
@@ -413,6 +472,7 @@ export function runWithHeadersContext<T>(
       uCtx.headersContext = ctx;
       uCtx.dynamicUsageDetected = false;
       uCtx.renderRequestApiUsage = new Set();
+      uCtx.connectionProbe = null;
       uCtx.pendingSetCookies = [];
       uCtx.draftModeCookieHeader = null;
       uCtx.phase = "render";
@@ -423,6 +483,7 @@ export function runWithHeadersContext<T>(
     headersContext: ctx,
     dynamicUsageDetected: false,
     renderRequestApiUsage: new Set(),
+    connectionProbe: null,
     invalidDynamicUsageError: null,
     pendingSetCookies: [],
     draftModeCookieHeader: null,

@@ -69,6 +69,18 @@ const projectServers = {
     use: { baseURL: "http://localhost:4183" },
     server: appRouterBfcacheServer,
   },
+  "catch-error": {
+    testDir: "./tests/e2e/catch-error",
+    use: { baseURL: "http://localhost:4185" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4185",
+      cwd: "./tests/fixtures/global-not-found-basic",
+      port: 4185,
+      reuseExistingServer: false,
+      timeout: 60_000,
+    },
+  },
   "cloudflare-pages-router": {
     testDir: "./tests/e2e",
     testMatch: [

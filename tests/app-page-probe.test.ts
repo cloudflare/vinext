@@ -293,8 +293,8 @@ describe("app page probe helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/admin"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -335,8 +335,8 @@ describe("app page probe helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/admin"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
