@@ -1748,7 +1748,7 @@ describe("next/error shim — unstable_catchError", () => {
       };
       const instance = new InnerCatchError({
         fallback: Fallback,
-        forwardedProps: {},
+        props: {},
       });
       // Manually instantiating the class skips React's context machinery.
       // Seed `this.context` with a mock App Router instance so the App Router
