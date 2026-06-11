@@ -33,7 +33,10 @@ import {
   type OperationToken,
   type RouteSnapshotV0,
 } from "./navigation-planner.js";
-import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
+import {
+  createSnapshotPathAndSearch,
+  type ClientNavigationRenderSnapshot,
+} from "vinext/shims/navigation";
 import {
   countConsumedPathnameSegments,
   isInvisibleSegment,
@@ -564,11 +567,6 @@ function createPendingNavigationTraceFields(options: {
   };
 }
 
-function createNavigationSnapshotUrl(snapshot: ClientNavigationRenderSnapshot): string {
-  const query = snapshot.searchParams.toString();
-  return query === "" ? snapshot.pathname : `${snapshot.pathname}?${query}`;
-}
-
 function createMountedParallelSlotSnapshots(
   elements: AppElements,
 ): readonly MountedParallelSlotSnapshotV0[] {
@@ -585,7 +583,7 @@ function createMountedParallelSlotSnapshots(
 }
 
 function createVisibleRouteSnapshot(state: AppRouterState): RouteSnapshotV0 {
-  const displayUrl = createNavigationSnapshotUrl(state.navigationSnapshot);
+  const displayUrl = createSnapshotPathAndSearch(state.navigationSnapshot);
   const matchedUrl = normalizeNavigationSnapshotMatchedUrl(state.navigationSnapshot.pathname);
   return {
     displayUrl,
@@ -608,7 +606,7 @@ function createVisibleRouteSnapshot(state: AppRouterState): RouteSnapshotV0 {
 }
 
 function createPendingRouteSnapshot(pending: PendingNavigationCommit): RouteSnapshotV0 {
-  const displayUrl = createNavigationSnapshotUrl(pending.action.navigationSnapshot);
+  const displayUrl = createSnapshotPathAndSearch(pending.action.navigationSnapshot);
   const matchedUrl = normalizeNavigationSnapshotMatchedUrl(
     pending.action.navigationSnapshot.pathname,
   );

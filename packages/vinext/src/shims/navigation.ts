@@ -1367,6 +1367,11 @@ export function createClientNavigationRenderSnapshot(
   };
 }
 
+export function createSnapshotPathAndSearch(snapshot: ClientNavigationRenderSnapshot): string {
+  const query = snapshot.searchParams.toString();
+  return query === "" ? snapshot.pathname : `${snapshot.pathname}?${query}`;
+}
+
 // Module-level fallback for environments without window (tests, SSR).
 let _fallbackClientParams: Record<string, string | string[]> = _EMPTY_PARAMS;
 let _fallbackClientParamsJson = "{}";

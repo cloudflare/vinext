@@ -759,8 +759,7 @@ function storeVisitedResponseSnapshot(
 // pathname plus parsed search params; the planner re-strips the base (a no-op on
 // an already-stripped path) so both sides reduce to the same canonical form.
 function clientNavigationSnapshotHref(snapshot: ClientNavigationRenderSnapshot): string {
-  const query = snapshot.searchParams.toString();
-  return `${window.location.origin}${snapshot.pathname}${query ? `?${query}` : ""}`;
+  return `${window.location.origin}${createSnapshotPathAndSearch(snapshot)}`;
 }
 
 type NavigationRequestState = {

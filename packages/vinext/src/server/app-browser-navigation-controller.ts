@@ -3,8 +3,9 @@ import {
   activateNavigationSnapshot,
   clearPendingPathname,
   commitClientNavigationState,
+  createSnapshotPathAndSearch,
+  type ClientNavigationRenderSnapshot,
 } from "vinext/shims/navigation";
-import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
 import {
   claimAppRouterScrollIntentForCommit,
   consumeAppRouterScrollIntent,
@@ -215,10 +216,7 @@ function performHardNavigationWithLoopGuard(
   return true;
 }
 
-export function createSnapshotPathAndSearch(snapshot: ClientNavigationRenderSnapshot): string {
-  const query = snapshot.searchParams.toString();
-  return query === "" ? snapshot.pathname : `${snapshot.pathname}?${query}`;
-}
+export { createSnapshotPathAndSearch };
 
 export function createBasePathStrippedPathAndSearch(url: URL, basePath: string): string {
   const pathname = stripBasePath(url.pathname, basePath);
