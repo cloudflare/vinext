@@ -172,6 +172,7 @@ import { stripServerExports } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
+import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import { getViteMajorVersion } from "./utils/vite-version.js";
@@ -184,7 +185,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
-import { normalizePathSeparators } from "./utils/path.js";
+import { normalizePathSeparators, stripViteModuleQuery } from "./utils/path.js";
 
 // Install the process-level peer-disconnect backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
@@ -195,11 +196,6 @@ import { normalizePathSeparators } from "./utils/path.js";
 installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
-
-function stripViteModuleQuery(id: string): string {
-  const queryIndex = id.search(/[?#]/);
-  return queryIndex === -1 ? id : id.slice(0, queryIndex);
-}
 
 function isInsideDirectory(dir: string, filePath: string): boolean {
   const relativePath = path.relative(dir, filePath);
@@ -1420,15 +1416,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // enable functional App Shell prefetching.
         // See: https://github.com/vercel/next.js/pull/93997
         defines["process.env.__NEXT_APP_SHELLS"] = JSON.stringify(nextConfig.appShells);
-        // Cache Components — Next.js gates segment Activity BFCache retention
-        // on this build-time flag. Without the flag the active segment renders
-        // in place (unkeyed); enabling it turns on the three-entry inactive
-        // Activity tree cache.
-        // Deliberately string-shaped: `process.env` consumers compare against
-        // "true", so do not simplify this to a boolean define.
-        // See: packages/next/src/client/components/layout-router.tsx
+        // Cache Components — Next.js exposes this as a boolean build-time
+        // DefinePlugin value. Some upstream fixtures intentionally use
+        // `!!process.env.__NEXT_CACHE_COMPONENTS`, so the disabled state must
+        // compile to `false`, not the truthy string "false".
+        // See: packages/next/src/build/define-env.ts
         defines["process.env.__NEXT_CACHE_COMPONENTS"] = JSON.stringify(
-          String(nextConfig.cacheComponents ?? false),
+          nextConfig.cacheComponents ?? false,
         );
 
         // User-defined compile-time constants from `compiler.define` in
@@ -4857,6 +4851,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
+    // Handle `import x from '*.wasm?module'` — see
+    // src/plugins/wasm-module-import.ts. Fixes #1351.
+    createWasmModuleImportPlugin(),
     {
       // @vercel/og WASM patch — universal (workerd + Node.js)
       //

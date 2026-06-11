@@ -180,6 +180,7 @@ type BuildAppPageRouteElementOptions<
   resolvedMetadata: Metadata | null;
   resolvedMetadataPathname?: string;
   resolvedViewport: Viewport;
+  trailingSlash?: boolean;
   rootForbiddenModule?: TModule | null;
   rootNotFoundModule?: TModule | null;
   rootUnauthorizedModule?: TModule | null;
@@ -475,26 +476,33 @@ function createAppPageRouteHead(
   viewport: Viewport,
   pathname: string,
   metadataPlacement: "body" | "head",
+  trailingSlash?: boolean,
 ): ReactNode {
   return (
     <>
       <meta charSet="utf-8" />
       {metadata && metadataPlacement === "head" ? (
-        <MetadataHead metadata={metadata} pathname={pathname} />
+        <MetadataHead metadata={metadata} pathname={pathname} trailingSlash={trailingSlash} />
       ) : null}
       <ViewportHead viewport={viewport} />
     </>
   );
 }
 
-function createAppPageRouteBodyMetadata(
+export function createAppPageRouteBodyMetadata(
   metadata: Metadata | null,
   pathname: string,
   metadataPlacement: "body" | "head",
+  trailingSlash?: boolean,
 ): ReactNode {
   if (!metadata || metadataPlacement !== "body") return null;
   return (
-    <div hidden dangerouslySetInnerHTML={{ __html: renderMetadataToHtml(metadata, pathname) }} />
+    <div
+      hidden
+      dangerouslySetInnerHTML={{
+        __html: renderMetadataToHtml(metadata, pathname, { trailingSlash }),
+      }}
+    />
   );
 }
 
@@ -1051,12 +1059,14 @@ export function buildAppPageElements<
         options.resolvedViewport,
         options.resolvedMetadataPathname ?? options.routePath,
         metadataPlacement,
+        options.trailingSlash,
       )}
       {routeChildren}
       {createAppPageRouteBodyMetadata(
         options.resolvedMetadata,
         options.resolvedMetadataPathname ?? options.routePath,
         metadataPlacement,
+        options.trailingSlash,
       )}
     </>
   );

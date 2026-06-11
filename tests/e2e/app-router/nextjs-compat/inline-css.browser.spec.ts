@@ -3,7 +3,7 @@ import type { Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { test, expect } from "../../fixtures";
+import { test as base, expect } from "../../fixtures";
 
 type ProductionApp = {
   baseUrl: string;
@@ -189,6 +189,22 @@ async function buildAndServeInlineCssFixture(): Promise<ProductionApp> {
   };
 }
 
+/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks -- Playwright fixture `use`, not a React hook */
+const test = base.extend<{ inlineCssApp: ProductionApp }>({
+  // oxlint-disable-next-line eslint/no-empty-pattern
+  inlineCssApp: async ({}, use) => {
+    const app = await buildAndServeInlineCssFixture();
+
+    try {
+      await use(app);
+    } finally {
+      await closeServer(app.server);
+      await fs.rm(app.fixtureRoot, { recursive: true, force: true });
+    }
+  },
+});
+/* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
+
 test.setTimeout(90_000);
 
 test.describe("App Router experimental.inlineCss production parity", () => {
@@ -197,49 +213,45 @@ test.describe("App Router experimental.inlineCss production parity", () => {
   test("inlines CSS in HTML while keeping dynamic RSC navigations free of inline CSS bodies", async ({
     page,
     consoleErrors,
+    inlineCssApp,
   }) => {
-    const app = await buildAndServeInlineCssFixture();
+    await page.goto(`${inlineCssApp.baseUrl}/`, { waitUntil: "load" });
 
-    try {
-      await page.goto(`${app.baseUrl}/`, { waitUntil: "load" });
+    const inlineStyleText = await page
+      .locator("style")
+      .first()
+      .evaluate((style) => style.textContent ?? "");
+    expect(inlineStyleText).toContain("color");
+    expect(inlineStyleText).toContain("@font-face");
+    const fontUrl = inlineStyleText.match(/src:\s*url\(['"]?([^)'"]+)/)?.[1];
+    expect(fontUrl).toBeTruthy();
+    const fontResponse = await page.request.get(
+      new URL(fontUrl ?? "", inlineCssApp.baseUrl).toString(),
+    );
+    expect(fontResponse.status()).toBe(200);
+    expect(fontResponse.headers()["content-type"]).toContain("font");
+    await expect(page.locator("#home")).toHaveCSS("color", "rgb(255, 255, 0)");
 
-      const inlineStyleText = await page
-        .locator("style")
-        .first()
-        .evaluate((style) => style.textContent ?? "");
-      expect(inlineStyleText).toContain("color");
-      expect(inlineStyleText).toContain("@font-face");
-      const fontUrl = inlineStyleText.match(/src:\s*url\(['"]?([^)'"]+)/)?.[1];
-      expect(fontUrl).toBeTruthy();
-      const fontResponse = await page.request.get(new URL(fontUrl ?? "", app.baseUrl).toString());
-      expect(fontResponse.status()).toBe(200);
-      expect(fontResponse.headers()["content-type"]).toContain("font");
-      await expect(page.locator("#home")).toHaveCSS("color", "rgb(255, 255, 0)");
+    const rscPayload = await (
+      await page.request.get(`${inlineCssApp.baseUrl}/a?_rsc`, {
+        headers: {
+          rsc: "1",
+        },
+      })
+    ).text();
+    expect(rscPayload).toContain("__route");
+    expect(rscPayload).not.toContain("font-size");
 
-      const rscPayload = await (
-        await page.request.get(`${app.baseUrl}/a?_rsc`, {
-          headers: {
-            rsc: "1",
-          },
-        })
-      ).text();
-      expect(rscPayload).toContain("__route");
-      expect(rscPayload).not.toContain("font-size");
+    const htmlPayload = await (await page.request.get(`${inlineCssApp.baseUrl}/a?_rsc`)).text();
+    expect(htmlPayload).toContain("font-size");
 
-      const htmlPayload = await (await page.request.get(`${app.baseUrl}/a?_rsc`)).text();
-      expect(htmlPayload).toContain("font-size");
-
-      await page.locator("#link-b").click();
-      await expect(page.locator("#page-b")).toBeVisible();
-      await expect(page.locator("style")).toHaveCount(1);
-      const stylesheetLinks = await page
-        .locator('link[rel="stylesheet"]')
-        .evaluateAll((links) => links.map((link) => link.outerHTML));
-      expect(stylesheetLinks).toEqual([]);
-      expect(consoleErrors).toEqual([]);
-    } finally {
-      await closeServer(app.server);
-      await fs.rm(app.fixtureRoot, { recursive: true, force: true });
-    }
+    await page.locator("#link-b").click();
+    await expect(page.locator("#page-b")).toBeVisible();
+    await expect(page.locator("style")).toHaveCount(1);
+    const stylesheetLinks = await page
+      .locator('link[rel="stylesheet"]')
+      .evaluateAll((links) => links.map((link) => link.outerHTML));
+    expect(stylesheetLinks).toEqual([]);
+    expect(consoleErrors).toEqual([]);
   });
 });

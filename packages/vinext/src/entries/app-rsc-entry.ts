@@ -437,6 +437,10 @@ ${metaRouteEntries.join(",\n")}
 // recognising /_next/static/* paths (parity with __assetPrefix below).
 export const __basePath = ${JSON.stringify(bp)};
 
+// Hoisted alongside __basePath so __fallbackRenderer / buildPageElements can
+// thread the configured trailingSlash flag through canonical URL rendering.
+const __trailingSlash = ${JSON.stringify(ts)};
+
 const rootNotFoundModule = ${rootNotFoundVar ? rootNotFoundVar : "null"};
 const rootForbiddenModule = ${rootForbiddenVar ? rootForbiddenVar : "null"};
 const rootUnauthorizedModule = ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"};
@@ -462,6 +466,7 @@ const createRscOnErrorHandler = (request, pathname, routePath) =>
 
 const __fallbackRenderer = __createAppFallbackRenderer({
   basePath: __basePath,
+  trailingSlash: __trailingSlash,
   rootBoundaries: {
     rootForbiddenModule,
     rootLayouts,
@@ -521,11 +526,11 @@ async function buildPageElements(route, params, routePath, pageRequest, layoutPa
     metadataRoutes,
     layoutParamAccess,
     basePath: __basePath,
+    trailingSlash: __trailingSlash,
     htmlLimitedBots: __htmlLimitedBots,
   });
 }
 
-const __trailingSlash = ${JSON.stringify(ts)};
 const __i18nConfig = ${JSON.stringify(i18nConfig)};
 const __configRedirects = ${JSON.stringify(redirects)};
 const __configRewrites = ${JSON.stringify(rewrites)};

@@ -14,3 +14,8 @@ const isWindows = process.platform === "win32";
 export function normalizePathSeparators(p: string): string {
   return isWindows ? p.replace(/\\/g, "/") : p;
 }
+
+export function stripViteModuleQuery(id: string): string {
+  const queryIndex = id.search(/[?#]/);
+  return queryIndex === -1 ? id : id.slice(0, queryIndex);
+}

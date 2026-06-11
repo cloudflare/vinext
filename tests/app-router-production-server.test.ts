@@ -100,14 +100,53 @@ async function withCountingFetchTarget<T>(
   }
 }
 
+type StartedTextSequenceTarget = {
+  close: () => Promise<void>;
+  url: string;
+};
+
+async function startTextSequenceTarget(): Promise<StartedTextSequenceTarget> {
+  let responseCount = 0;
+  const upstream = http.createServer((_req, res) => {
+    responseCount += 1;
+    res.setHeader("content-type", "text/plain; charset=utf-8");
+    res.end(`random-${responseCount}`);
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    upstream.once("error", reject);
+    upstream.listen(0, "127.0.0.1", () => {
+      upstream.off("error", reject);
+      resolve();
+    });
+  });
+
+  const address = upstream.address();
+  if (!address || typeof address === "string") {
+    await new Promise<void>((resolve, reject) => {
+      upstream.close((error) => (error ? reject(error) : resolve()));
+    });
+    throw new Error("Text sequence target did not bind to a TCP port");
+  }
+
+  return {
+    url: `http://127.0.0.1:${address.port}/random`,
+    close() {
+      return new Promise<void>((resolve, reject) => {
+        upstream.close((error) => (error ? reject(error) : resolve()));
+      });
+    },
+  };
+}
+
 async function waitForCondition(
-  condition: () => boolean,
+  condition: () => boolean | Promise<boolean>,
   options?: { intervalMs?: number; timeoutMs?: number },
 ): Promise<void> {
   const intervalMs = options?.intervalMs ?? 100;
   const deadline = Date.now() + (options?.timeoutMs ?? 3000);
 
-  while (!condition()) {
+  while (!(await condition())) {
     if (Date.now() >= deadline) {
       throw new Error("Timed out waiting for condition");
     }
@@ -119,6 +158,7 @@ describe("App Router Production server (startProdServer)", () => {
   const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
   let server: import("node:http").Server | undefined;
   let baseUrl: string;
+  let revalidatePathFetchTarget: StartedTextSequenceTarget | undefined;
 
   function extractRequestId(html: string): string | undefined {
     return (
@@ -128,26 +168,73 @@ describe("App Router Production server (startProdServer)", () => {
     );
   }
 
-  beforeAll(async () => {
-    // Build the app-basic fixture to the default dist/ directory
-    const builder = await createBuilder({
-      root: APP_FIXTURE_DIR,
-      configFile: false,
-      plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
-      logLevel: "silent",
-    });
-    await builder.buildApp();
+  function extractRandomData(html: string): string | undefined {
+    return html.match(/id="random-data"[^>]*>(?:<!--.*?-->)*([^<]+)/)?.[1];
+  }
 
-    // Start the production server on a random available port
-    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-    ({ server } = await startProdServer({ port: 0, outDir, noCompression: false }));
-    const addr = server!.address();
-    const port = typeof addr === "object" && addr ? addr.port : 4210;
-    baseUrl = `http://localhost:${port}`;
+  async function fetchRandomData(pathname: string, url = baseUrl): Promise<string> {
+    const response = await fetch(`${url}${pathname}`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    const data = extractRandomData(html);
+    expect(data).toBeTruthy();
+    return data ?? "";
+  }
+
+  async function expectRewrittenPathRevalidates(
+    pathname: "/static" | "/dynamic",
+    url = baseUrl,
+  ): Promise<void> {
+    const initial = await fetchRandomData(pathname, url);
+    const refreshed = await fetchRandomData(pathname, url);
+    expect(refreshed).toBe(initial);
+
+    const revalidateRes = await fetch(`${url}/api/revalidate?path=${pathname}`);
+    expect(revalidateRes.status).toBe(200);
+    expect(await revalidateRes.json()).toEqual({ revalidated: true });
+
+    await waitForCondition(async () => {
+      const revalidated = await fetchRandomData(pathname, url);
+      return revalidated !== initial;
+    });
+  }
+
+  beforeAll(async () => {
+    revalidatePathFetchTarget = await startTextSequenceTarget();
+    process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET = revalidatePathFetchTarget.url;
+
+    try {
+      // Build the app-basic fixture to the default dist/ directory
+      const builder = await createBuilder({
+        root: APP_FIXTURE_DIR,
+        configFile: false,
+        plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      // Start the production server on a random available port
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      ({ server } = await startProdServer({ port: 0, outDir, noCompression: false }));
+      const addr = server!.address();
+      const port = typeof addr === "object" && addr ? addr.port : 4210;
+      baseUrl = `http://localhost:${port}`;
+    } catch (error) {
+      server?.close();
+      try {
+        await revalidatePathFetchTarget.close();
+      } finally {
+        revalidatePathFetchTarget = undefined;
+        delete process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET;
+      }
+      throw error;
+    }
   }, 60000);
 
-  afterAll(() => {
+  afterAll(async () => {
     server?.close();
+    await revalidatePathFetchTarget?.close();
+    delete process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET;
     fs.rmSync(outDir, { recursive: true, force: true });
   });
 
@@ -942,6 +1029,119 @@ describe("App Router Production server (startProdServer)", () => {
     expect(reqId3).toBeTruthy();
     expect(reqId3).not.toBe(reqId1);
     expect(res3.headers.get("x-vinext-cache")).toBe("MISS");
+  });
+
+  describe("revalidatePath with rewrites", () => {
+    // Ported from Next.js: test/e2e/app-dir/revalidate-path-with-rewrites/revalidate-path-with-rewrites.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/revalidate-path-with-rewrites/revalidate-path-with-rewrites.test.ts
+    //
+    // The upstream fixture fetches https://next-data-api-endpoint.vercel.app/api/random.
+    // This fixture uses a local text endpoint so the same force-cache/revalidatePath
+    // contract is exercised without an external network dependency.
+    it("static page should revalidate a static page that was rewritten", async () => {
+      await expectRewrittenPathRevalidates("/static");
+    });
+
+    it("dynamic page should revalidate a dynamic page that was rewritten", async () => {
+      await expectRewrittenPathRevalidates("/dynamic");
+    });
+
+    // Coverage for the cacheComponents: true path — the sibling tests above exercise
+    // the default disabled case. The define contract must stay consistent between the
+    // config-load-time environment (used by next.config rewrites) and the bundled
+    // boolean expression (used by the route handler).
+    it("static page should revalidate a rewritten page with cacheComponents enabled", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-cache-components-rewrite-"));
+      const fixtureRoot = path.join(tmpDir, "fixture");
+      const ccOutDir = path.join(fixtureRoot, "dist");
+      let ccServer: import("node:http").Server | undefined;
+      const prodGlobalKeys = [
+        "__VINEXT_CLIENT_ENTRY__",
+        "__VINEXT_DYNAMIC_PRELOADS__",
+        "__VINEXT_LAZY_CHUNKS__",
+        "__VINEXT_SSR_MANIFEST__",
+        "__vite_rsc_client_require__",
+        "__vite_rsc_require__",
+        "__vite_rsc_server_require__",
+        "__webpack_chunk_load__",
+        "__webpack_require__",
+      ];
+      const previousGlobals = new Map(
+        prodGlobalKeys.map((key) => [
+          key,
+          {
+            exists: Reflect.has(globalThis, key),
+            value: Reflect.get(globalThis, key),
+          },
+        ]),
+      );
+
+      try {
+        fs.cpSync(APP_FIXTURE_DIR, fixtureRoot, {
+          recursive: true,
+          filter: (src) => {
+            const rel = path.relative(APP_FIXTURE_DIR, src);
+            return rel !== "dist" && !rel.startsWith(`dist${path.sep}`);
+          },
+        });
+        fs.rmSync(ccOutDir, { recursive: true, force: true });
+        const fixtureNodeModules = path.join(fixtureRoot, "node_modules");
+        if (!fs.existsSync(fixtureNodeModules)) {
+          fs.symlinkSync(
+            path.resolve(__dirname, "..", "node_modules"),
+            fixtureNodeModules,
+            "junction",
+          );
+        }
+
+        const nextConfigPath = path.join(fixtureRoot, "next.config.ts");
+        const nextConfig = fs.readFileSync(nextConfigPath, "utf-8");
+        fs.writeFileSync(
+          nextConfigPath,
+          nextConfig.replace(
+            "const nextConfig: NextConfig = {",
+            "const nextConfig: NextConfig = {\n  cacheComponents: true,",
+          ),
+        );
+
+        // Set the env var so next.config.ts rewrites resolve to the cache-components
+        // prefix (the config is evaluated at load time, before the Vite define replaces
+        // process.env.__NEXT_CACHE_COMPONENTS with the bundled boolean).
+        process.env.__NEXT_CACHE_COMPONENTS = "true";
+
+        const builder = await createBuilder({
+          root: fixtureRoot,
+          configFile: false,
+          plugins: [vinext({ appDir: fixtureRoot })],
+          logLevel: "silent",
+        });
+        await builder.buildApp();
+
+        const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+        ({ server: ccServer } = await startProdServer({
+          port: 0,
+          outDir: ccOutDir,
+          noCompression: true,
+        }));
+        const addr = ccServer.address();
+        const port = typeof addr === "object" && addr ? addr.port : 0;
+        const tmpBaseUrl = `http://localhost:${port}`;
+
+        await expectRewrittenPathRevalidates("/static", tmpBaseUrl);
+        await expectRewrittenPathRevalidates("/dynamic", tmpBaseUrl);
+      } finally {
+        delete process.env.__NEXT_CACHE_COMPONENTS;
+        ccServer?.close();
+        for (const [key, previous] of previousGlobals) {
+          if (previous.exists) {
+            Reflect.set(globalThis, key, previous.value);
+          } else {
+            Reflect.deleteProperty(globalThis, key);
+          }
+        }
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    }, 60000);
   });
 
   it("dedupes identical no-store fetches across metadata and page render during ISR background regeneration", async () => {

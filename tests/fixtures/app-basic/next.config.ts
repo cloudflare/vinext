@@ -110,6 +110,22 @@ const nextConfig: NextConfig = {
       afterFiles: [
         // Used by Vitest: app-router.test.ts
         { source: "/after-rewrite-about", destination: "/about" },
+        // Ported from Next.js: test/e2e/app-dir/revalidate-path-with-rewrites/next.config.js
+        // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/revalidate-path-with-rewrites/next.config.js
+        {
+          source: "/static",
+          destination:
+            process.env.__NEXT_CACHE_COMPONENTS === "true"
+              ? "/cache-components/static"
+              : "/legacy/static",
+        },
+        {
+          source: "/dynamic",
+          destination:
+            process.env.__NEXT_CACHE_COMPONENTS === "true"
+              ? "/cache-components/dynamic"
+              : "/legacy/dynamic",
+        },
         // Used by E2E: config-redirect.spec.ts
         { source: "/config-rewrite", destination: "/" },
         // Used by Vitest: nextjs-compat/hooks.test.ts — usePathname should
