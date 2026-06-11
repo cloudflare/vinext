@@ -119,7 +119,7 @@ function PagesRouterCommitBoundaryHelper({
 
 function renderPagesRouterElement(
   element: ReactElement,
-  scroll?: ScrollPosition | string | null,
+  scroll?: ScrollPosition | null,
 ): Promise<void> {
   const root = window.__VINEXT_ROOT__;
   if (!root) {
@@ -129,11 +129,7 @@ function renderPagesRouterElement(
   return new Promise<void>((resolve, reject) => {
     const scrollHandler = () => {
       if (scroll) {
-        if (typeof scroll === "string") {
-          scrollToHashTarget(scroll);
-        } else {
-          window.scrollTo(scroll.x, scroll.y);
-        }
+        window.scrollTo(scroll.x, scroll.y);
       }
     };
 
@@ -1070,7 +1066,7 @@ type NavigateClientOptions = {
    * Next.js's `this.change(method, ...)` re-dispatch.
    */
   mode?: "push" | "replace";
-  scroll?: ScrollPosition | string | null;
+  scroll?: ScrollPosition | null;
 };
 
 /** Wire format of `/_next/data/<id>/<page>.json` response bodies. */
