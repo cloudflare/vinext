@@ -4,6 +4,7 @@ import {
   matchRoutePatternWithOptionalDynamicSegments,
 } from "../routing/route-pattern.js";
 import { splitPathnameForRouteMatch } from "../routing/utils.js";
+import { stripBasePath } from "../utils/base-path.js";
 import type {
   RouteManifest,
   RouteManifestInterception,
@@ -210,6 +211,46 @@ export type RscFetchResultDecisionV0 =
       discardBody: boolean;
       url: string;
       reason: RscFetchResultHardNavReason;
+      trace: NavigationTrace;
+    };
+
+// Early navigation intent classification runs before any fetch, on URL-delta
+// facts the executor can collect synchronously at navigation start. It is the
+// pre-flight sibling of classifyRscFetchResult: the planner owns the semantic
+// outcome (same-document scroll vs cache-bypassing flight vs ordinary flight),
+// the executor owns the effects (history mutation, scroll, RSC fetch).
+//
+// V0 only needs the URL delta plus history/scroll intent. Richer planner inputs
+// (route manifest, mounted slots) join later slices once prefetch reuse and the
+// remaining hard-navigation causes route through this surface.
+export type EarlyNavigationIntentFactsV0 = {
+  // App basePath, stripped from both pathnames before comparison.
+  basePath: string;
+  // The current visible document URL (window.location.href at navigation start),
+  // absolute so it can anchor relative target resolution.
+  currentHref: string;
+  // push/replace history intent carried through to the scroll executor.
+  mode: "push" | "replace";
+  // Whether the navigation requested scroll (Link/router scroll option).
+  scroll: boolean;
+  // The navigation target, absolute or relative to currentHref.
+  targetHref: string;
+};
+
+export type EarlyNavigationIntentDecisionV0 =
+  | {
+      kind: "sameDocumentScroll";
+      // Always non-empty: same-document scroll is only chosen for a hash target.
+      hash: string;
+      mode: "push" | "replace";
+      scroll: boolean;
+      trace: NavigationTrace;
+    }
+  | {
+      kind: "flightNavigation";
+      // True for same-path search changes, where a cached full-route payload is
+      // not authoritative because search params are a page input.
+      bypassNavigationCache: boolean;
       trace: NavigationTrace;
     };
 
@@ -486,6 +527,68 @@ function classifyRscFetchResult(facts: RscFetchResultFactsV0): RscFetchResultDec
       NavigationTraceReasonCodes.proceedToCommit,
       createRscFetchResultTraceFields(facts),
     ),
+  };
+}
+
+function createEarlyNavigationIntentTrace(
+  reasonCode: NavigationTraceReasonCode,
+  facts: EarlyNavigationIntentFactsV0,
+): NavigationTrace {
+  return createNavigationTrace(reasonCode, { targetHref: facts.targetHref });
+}
+
+function classifyEarlyNavigationIntent(
+  facts: EarlyNavigationIntentFactsV0,
+): EarlyNavigationIntentDecisionV0 {
+  let current: URL;
+  let next: URL;
+  try {
+    current = new URL(facts.currentHref);
+    next = new URL(facts.targetHref, facts.currentHref);
+  } catch {
+    // Unparseable hrefs cannot be reasoned about as a same-document delta. Fall
+    // back to an ordinary flight navigation and let the fetch path surface any
+    // real failure rather than masking it as a same-page outcome.
+    return {
+      bypassNavigationCache: false,
+      kind: "flightNavigation",
+      trace: createEarlyNavigationIntentTrace(
+        NavigationTraceReasonCodes.crossDocumentFlight,
+        facts,
+      ),
+    };
+  }
+
+  const samePathname =
+    stripBasePath(current.pathname, facts.basePath) ===
+    stripBasePath(next.pathname, facts.basePath);
+  // Compare normalized search params rather than raw search strings so encoding
+  // or ordering differences that parse to the same query do not split a
+  // hash-only change into a search navigation.
+  const sameSearch = current.searchParams.toString() === next.searchParams.toString();
+
+  if (samePathname && sameSearch && next.hash !== "") {
+    return {
+      hash: next.hash,
+      kind: "sameDocumentScroll",
+      mode: facts.mode,
+      scroll: facts.scroll,
+      trace: createEarlyNavigationIntentTrace(NavigationTraceReasonCodes.sameDocumentScroll, facts),
+    };
+  }
+
+  if (samePathname && !sameSearch) {
+    return {
+      bypassNavigationCache: true,
+      kind: "flightNavigation",
+      trace: createEarlyNavigationIntentTrace(NavigationTraceReasonCodes.samePageSearch, facts),
+    };
+  }
+
+  return {
+    bypassNavigationCache: false,
+    kind: "flightNavigation",
+    trace: createEarlyNavigationIntentTrace(NavigationTraceReasonCodes.crossDocumentFlight, facts),
   };
 }
 
@@ -1301,6 +1404,7 @@ function planNavigation(input: NavigationPlannerInput): NavigationDecisionV0 {
 }
 
 export const navigationPlanner = {
+  classifyEarlyNavigationIntent,
   classifyRscFetchResult,
   classifyRootBoundaryTransition,
   plan: planNavigation,

@@ -5,6 +5,7 @@ type NavigationTraceSchemaVersion = 0;
 export const NavigationTraceReasonCodes = {
   cacheProofRejected: "NC_CACHE_REJECT",
   commitCurrent: "NC_COMMIT",
+  crossDocumentFlight: "NC_CROSS_DOC_FLIGHT",
   invalidRscPayload: "NC_RSC_INVALID",
   interceptedCommitCurrent: "NC_INTERCEPT_COMMIT",
   interceptedRejectedIncompatibleRoot: "NC_INTERCEPT_REJECT_ROOT",
@@ -22,11 +23,14 @@ export const NavigationTraceReasonCodes = {
   rootBoundaryChanged: "NC_ROOT",
   rootBoundaryUnknown: "NC_ROOT_UNKNOWN",
   rscCompatibilityMismatch: "NC_RSC_COMPAT_MISMATCH",
+  sameDocumentScroll: "NC_SAME_DOC_SCROLL",
+  samePageSearch: "NC_SAME_PAGE_SEARCH",
   staleOperation: "NC_STALE",
   streamedRedirectLoop: "NC_RSC_STREAMED_REDIRECT_LOOP",
 } satisfies Readonly<{
   cacheProofRejected: "NC_CACHE_REJECT";
   commitCurrent: "NC_COMMIT";
+  crossDocumentFlight: "NC_CROSS_DOC_FLIGHT";
   invalidRscPayload: "NC_RSC_INVALID";
   interceptedCommitCurrent: "NC_INTERCEPT_COMMIT";
   interceptedRejectedIncompatibleRoot: "NC_INTERCEPT_REJECT_ROOT";
@@ -44,6 +48,8 @@ export const NavigationTraceReasonCodes = {
   rootBoundaryChanged: "NC_ROOT";
   rootBoundaryUnknown: "NC_ROOT_UNKNOWN";
   rscCompatibilityMismatch: "NC_RSC_COMPAT_MISMATCH";
+  sameDocumentScroll: "NC_SAME_DOC_SCROLL";
+  samePageSearch: "NC_SAME_PAGE_SEARCH";
   staleOperation: "NC_STALE";
   streamedRedirectLoop: "NC_RSC_STREAMED_REDIRECT_LOOP";
 }>;
