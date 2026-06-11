@@ -276,6 +276,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   request: Request;
   revalidateSeconds: number | null;
   resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
+  resolveRouteDynamicConfig?: (route: TRoute) => string | undefined;
   rootForbiddenModule?: AppPageModule | null;
   rootNotFoundModule?: AppPageModule | null;
   rootUnauthorizedModule?: AppPageModule | null;
@@ -591,7 +592,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
               (revalidationTarget.route === route ? (options.fetchCache ?? null) : null),
             draftModeSecret: options.draftModeSecret,
-            dynamicConfig,
+            dynamicConfig:
+              options.resolveRouteDynamicConfig?.(revalidationTarget.route) ??
+              (revalidationTarget.route === route ? dynamicConfig : undefined),
             params: revalidationTarget.navigationParams,
             routePattern: revalidationTarget.route.pattern,
             routeSegments: revalidationTarget.route.routeSegments,
@@ -741,6 +744,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // Hydrate the intercept source route before reading its page module.
       await options.ensureRouteLoaded?.(interceptRoute);
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
+      setCurrentForceDynamicFetchDefault(
+        options.resolveRouteDynamicConfig?.(interceptRoute) === "force-dynamic",
+      );
       return options.buildPageElement(
         interceptRoute,
         interceptParams,

@@ -386,6 +386,13 @@ function __resolveRouteFetchCacheMode(route) {
   });
 }
 
+function __resolveRouteDynamicConfig(route) {
+  return __resolveAppPageSegmentConfig({
+    layouts: route.layouts,
+    page: route.page,
+  }).dynamicConfig ?? null;
+}
+
 function __resolveRouteRuntime(route) {
   return __resolveAppPageSegmentConfig({
     layouts: route.layouts,
@@ -740,6 +747,9 @@ export default __createAppRscHandler({
       revalidateSeconds: __segmentConfig.revalidateSeconds,
       resolveRouteFetchCacheMode(targetRoute) {
         return __resolveRouteFetchCacheMode(targetRoute);
+      },
+      resolveRouteDynamicConfig(targetRoute) {
+        return __resolveRouteDynamicConfig(targetRoute);
       },
       rootForbiddenModule,
       rootNotFoundModule,

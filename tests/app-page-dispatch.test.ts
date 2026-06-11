@@ -276,6 +276,7 @@ function createDispatchOptions(
     request?: Request;
     revalidateSeconds?: number | null;
     resolveRouteFetchCacheMode?: DispatchOptions["resolveRouteFetchCacheMode"];
+    resolveRouteDynamicConfig?: DispatchOptions["resolveRouteDynamicConfig"];
     route?: TestRoute;
     scheduleBackgroundRegeneration?: DispatchOptions["scheduleBackgroundRegeneration"];
     searchParams?: URLSearchParams;
@@ -362,6 +363,7 @@ function createDispatchOptions(
     request: overrides.request ?? new Request("https://example.test/posts/hello"),
     revalidateSeconds: overrides.revalidateSeconds ?? null,
     resolveRouteFetchCacheMode: overrides.resolveRouteFetchCacheMode,
+    resolveRouteDynamicConfig: overrides.resolveRouteDynamicConfig,
     route,
     runWithSuppressedHookWarning<T>(probe: () => Promise<T>) {
       return probe();
@@ -1138,6 +1140,103 @@ describe("app page dispatch", () => {
     );
   });
 
+  it("resolves the intercept source route's dynamic config for force-dynamic fetch defaults", async () => {
+    // When the current route is not force-dynamic but the intercepted source route is,
+    // the dispatch must resolve the source route's dynamic config so that fetch
+    // defaults come from the source route, not the current route.
+    const sourceRoute = createRoute({
+      params: [],
+      pattern: "/feed",
+      routeSegments: ["feed"],
+      layouts: [{ default: () => null, dynamic: "force-dynamic" }],
+    });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+
+    const resolveRouteDynamicConfig = vi.fn((route: TestRoute) =>
+      route === sourceRoute ? "force-dynamic" : undefined,
+    );
+
+    const { options } = createDispatchOptions({
+      async buildPageElement(route, params, opts) {
+        return `${route.pattern}:${JSON.stringify(params)}:${opts?.interceptSlotKey ?? "direct"}`;
+      },
+      isRscRequest: true,
+      route: currentRoute,
+      resolveRouteDynamicConfig,
+    });
+
+    const response = await dispatchAppPage({
+      ...options,
+      findIntercept() {
+        return {
+          matchedParams: { id: "123" },
+          page: { default: "modal-page" },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 1,
+        };
+      },
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(sourceRoute);
+  });
+
+  it("does not leak the current route's force-dynamic config into the intercept source route", async () => {
+    // When the current route is force-dynamic but the intercepted source route is not,
+    // the dispatch must resolve the source route's dynamic config so that fetch
+    // defaults do NOT leak from the current route into the source route.
+    const sourceRoute = createRoute({
+      params: [],
+      pattern: "/feed",
+      routeSegments: ["feed"],
+    });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+      layouts: [{ default: () => null, dynamic: "force-dynamic" }],
+    });
+
+    const resolveRouteDynamicConfig = vi.fn((route: TestRoute) =>
+      route === currentRoute ? "force-dynamic" : undefined,
+    );
+
+    const { options } = createDispatchOptions({
+      async buildPageElement(route, params, opts) {
+        return `${route.pattern}:${JSON.stringify(params)}:${opts?.interceptSlotKey ?? "direct"}`;
+      },
+      dynamicConfig: "force-dynamic",
+      isRscRequest: true,
+      route: currentRoute,
+      resolveRouteDynamicConfig,
+    });
+
+    const response = await dispatchAppPage({
+      ...options,
+      findIntercept() {
+        return {
+          matchedParams: { id: "123" },
+          page: { default: "modal-page" },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 1,
+        };
+      },
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(sourceRoute);
+  });
+
   it("regenerates stale HTML cache entries with waitForAllReady so suspense fallbacks never leak into the cache", async () => {
     // Stale-while-revalidate regeneration must await React's `allReady` before
     // transforming/buffering the HTML stream — same guarantee as the prerender
@@ -1194,5 +1293,204 @@ describe("app page dispatch", () => {
 
     expect(capturedWaitForAllReady).toBe(true);
     expect(isrSet).toHaveBeenCalled();
+  });
+
+  it("resolves the revalidation target route's dynamic config for force-dynamic fetch defaults", async () => {
+    // When regenerating a stale cache entry for a target route that is force-dynamic,
+    // the dispatch must resolve the target route's dynamic config so that fetch
+    // defaults come from the target route, not the current route.
+    const targetRoute = createRoute({
+      pattern: "/feed",
+      routeSegments: ["feed"],
+      layouts: [{ default: () => null, dynamic: "force-dynamic" }],
+    });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+
+    let scheduledRender: unknown = null;
+    const scheduleBackgroundRegeneration: DispatchOptions["scheduleBackgroundRegeneration"] = (
+      _key,
+      renderFn,
+    ) => {
+      scheduledRender = renderFn;
+    };
+
+    const resolveRouteDynamicConfig = vi.fn((route: TestRoute) =>
+      route === targetRoute ? "force-dynamic" : undefined,
+    );
+
+    const buildPageElement = vi.fn(
+      async (
+        route: TestRoute,
+        params: Record<string, string | string[]>,
+        opts: Parameters<DispatchOptions["buildPageElement"]>[2],
+        searchParams: URLSearchParams,
+      ) =>
+        JSON.stringify({
+          params,
+          route: route.pattern,
+          search: searchParams.toString(),
+          slot: opts?.interceptSlotKey ?? "direct",
+        }),
+    );
+
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      cleanPathname: "/photos/123",
+      findIntercept() {
+        return {
+          matchedParams: { id: "123" },
+          page: { default: "modal-page" },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 1,
+        };
+      },
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? targetRoute : undefined;
+      },
+      interceptionContext: "/feed",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            new TextEncoder().encode("stale-flight").buffer,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      ),
+      isrRscKey(pathname, mountedSlotsHeader, _renderMode, interceptionContext) {
+        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}:${interceptionContext ?? "none"}`;
+      },
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>fresh</html>"]);
+        },
+      }),
+      mountedSlotsHeader: "slot:modal:/feed",
+      revalidateSeconds: 60,
+      resolveRouteDynamicConfig,
+      route: currentRoute,
+      scheduleBackgroundRegeneration,
+      searchParams: new URLSearchParams("tab=popular"),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(typeof scheduledRender).toBe("function");
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale response to schedule regeneration");
+    }
+
+    await scheduledRender();
+
+    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(targetRoute);
+    const [routeArg] = buildPageElement.mock.calls[0];
+    expect(routeArg).toBe(targetRoute);
+  });
+
+  it("does not leak the current route's force-dynamic config into the revalidation target route", async () => {
+    // When regenerating a stale cache entry for a target route that is NOT force-dynamic,
+    // the dispatch must resolve the target route's dynamic config so that fetch
+    // defaults do NOT leak from the current route into the target route.
+    const targetRoute = createRoute({
+      pattern: "/feed",
+      routeSegments: ["feed"],
+    });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+      layouts: [{ default: () => null, dynamic: "force-dynamic" }],
+    });
+
+    const resolveRouteDynamicConfig = vi.fn((route: TestRoute) =>
+      route === currentRoute ? "force-dynamic" : undefined,
+    );
+
+    const buildPageElement = vi.fn(
+      async (
+        route: TestRoute,
+        params: Record<string, string | string[]>,
+        opts: Parameters<DispatchOptions["buildPageElement"]>[2],
+        searchParams: URLSearchParams,
+      ) =>
+        JSON.stringify({
+          params,
+          route: route.pattern,
+          search: searchParams.toString(),
+          slot: opts?.interceptSlotKey ?? "direct",
+        }),
+    );
+
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      cleanPathname: "/photos/123",
+      dynamicConfig: "force-dynamic",
+      findIntercept() {
+        return {
+          matchedParams: { id: "123" },
+          page: { default: "modal-page" },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 1,
+        };
+      },
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? targetRoute : undefined;
+      },
+      interceptionContext: "/feed",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            new TextEncoder().encode("stale-flight").buffer,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      ),
+      isrRscKey(pathname, mountedSlotsHeader, _renderMode, interceptionContext) {
+        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}:${interceptionContext ?? "none"}`;
+      },
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>fresh</html>"]);
+        },
+      }),
+      mountedSlotsHeader: "slot:modal:/feed",
+      revalidateSeconds: 60,
+      resolveRouteDynamicConfig,
+      route: currentRoute,
+      searchParams: new URLSearchParams("tab=popular"),
+    });
+
+    // A force-dynamic current route skips the cache read entirely, so there is no
+    // revalidation path. The intercept path is still exercised, and it must resolve
+    // the target route's dynamic config instead of inheriting the current route's.
+    const response = await dispatchAppPage(options);
+    expect(response.status).toBe(200);
+    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(targetRoute);
   });
 });
