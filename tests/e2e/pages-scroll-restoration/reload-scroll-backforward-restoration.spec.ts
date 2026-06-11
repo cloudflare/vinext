@@ -113,4 +113,63 @@ test.describe("reload-scroll-back-restoration", () => {
     await expectRouteChangeComplete(page);
     await expectScrollPosition(page, scrollPositionMemories[2]);
   });
+
+  test("should apply scroll position before emitting routeChangeComplete", async ({ page }) => {
+    await page.goto(`${BASE}/0`);
+    await waitForHydration(page);
+    await scrollLinkIntoView(page);
+
+    const initialScroll = await getScrollPosition(page);
+    expect(initialScroll.y).not.toBe(0);
+
+    await pushWithPagesRouter(page, "/1");
+    await expectRouteChangeComplete(page);
+
+    // Register event listener on routeChangeComplete to record scroll position
+    await page.evaluate(() => {
+      (window as any).scrollAtEvent = null;
+      const router = (window as any).next?.router;
+      if (router && router.events) {
+        router.events.on("routeChangeComplete", () => {
+          (window as any).scrollAtEvent = { x: window.scrollX, y: window.scrollY };
+        });
+      }
+    });
+
+    // Go back, which triggers scroll restoration
+    await page.goBack();
+
+    // Verify routeChangeComplete fired and recorded the restored scroll position
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).scrollAtEvent))
+      .not.toBeNull();
+
+    const scrollAtEvent = await page.evaluate(() => (window as any).scrollAtEvent);
+    expect(scrollAtEvent.y).toBe(initialScroll.y);
+  });
+
+  test("should reject navigation, emit routeChangeError and fallback to hard navigation on render error", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/0`);
+    await waitForHydration(page);
+
+    // Set marker on window to detect full page reload
+    await page.evaluate(() => {
+      (window as any).isSoftNavigation = true;
+    });
+
+    // Push to the page that throws render error
+    await pushWithPagesRouter(page, "/error");
+
+    // Since it falls back to hard navigation, the page fully reloads.
+    // The reload clears the window context, so `window.isSoftNavigation` will be undefined.
+    // We should wait until the url is "/error" and we are hydrated.
+    await expect(page).toHaveURL(`${BASE}/error`);
+    await waitForHydration(page);
+
+    // Verify that the window marker is indeed gone (hard navigation occurred)
+    const isSoft = await page.evaluate(() => (window as any).isSoftNavigation);
+    expect(isSoft).toBeUndefined();
+  });
 });

@@ -12,6 +12,7 @@ import {
   useContext,
   useLayoutEffect,
   Fragment,
+  Component,
   createElement,
   type ReactElement,
   type ReactNode,
@@ -82,10 +83,27 @@ const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
 const __scrollRestoration: boolean = process.env.__NEXT_SCROLL_RESTORATION === "true";
 
 type ScrollPosition = { x: number; y: number };
-
 const noopCommit = (): void => {};
 
-function PagesRouterCommitBoundary({
+class PagesRouterCommitBoundary extends Component<{
+  children?: ReactNode;
+  onCommit: () => void;
+  onError: (error: Error) => void;
+}> {
+  componentDidCatch(error: Error) {
+    this.props.onError(error);
+  }
+
+  render() {
+    return createElement(
+      PagesRouterCommitBoundaryHelper,
+      { onCommit: this.props.onCommit },
+      this.props.children,
+    );
+  }
+}
+
+function PagesRouterCommitBoundaryHelper({
   children,
   onCommit,
 }: {
@@ -99,14 +117,40 @@ function PagesRouterCommitBoundary({
   return createElement(Fragment, null, children);
 }
 
-function renderPagesRouterElement(element: ReactElement): Promise<void> {
+function renderPagesRouterElement(
+  element: ReactElement,
+  scroll?: ScrollPosition | string | null,
+): Promise<void> {
   const root = window.__VINEXT_ROOT__;
   if (!root) {
     return Promise.resolve();
   }
 
-  return new Promise<void>((resolve) => {
-    root.render(wrapWithRouterContext(element, resolve));
+  return new Promise<void>((resolve, reject) => {
+    const scrollHandler = () => {
+      if (scroll) {
+        if (typeof scroll === "string") {
+          scrollToHashTarget(scroll);
+        } else {
+          window.scrollTo(scroll.x, scroll.y);
+        }
+      }
+    };
+
+    root.render(
+      wrapWithRouterContext(
+        element,
+        () => {
+          try {
+            scrollHandler();
+            resolve();
+          } catch (err) {
+            reject(err);
+          }
+        },
+        reject,
+      ),
+    );
     if (typeof document === "undefined") {
       resolve();
     }
@@ -518,14 +562,6 @@ function readScrollPositionFromSessionStorage(key: string): ScrollPosition | nul
     return readScrollPosition(parsed);
   } catch {
     return null;
-  }
-}
-
-/** Restore scroll position from history state or a Next-style scroll snapshot. */
-function restoreScrollPosition(stateOrPosition: unknown): void {
-  const position = readScrollPosition(stateOrPosition);
-  if (position !== null) {
-    requestAnimationFrame(() => window.scrollTo(position.x, position.y));
   }
 }
 
@@ -1032,6 +1068,7 @@ type NavigateClientOptions = {
    * Next.js's `this.change(method, ...)` re-dispatch.
    */
   mode?: "push" | "replace";
+  scroll?: ScrollPosition | string | null;
 };
 
 /** Wire format of `/_next/data/<id>/<page>.json` response bodies. */
@@ -1396,7 +1433,7 @@ async function navigateClientData(
   // Next.js's client Root callback without remounting the page tree.
   window.__NEXT_DATA__ = nextData;
   applyVinextLocaleGlobals(window, nextData);
-  await renderPagesRouterElement(element);
+  await renderPagesRouterElement(element, options.scroll);
   assertStillCurrent();
 }
 
@@ -1566,7 +1603,7 @@ async function navigateClientHtml(
   }
   window.__NEXT_DATA__ = nextData;
   applyVinextLocaleGlobals(window, nextData);
-  await renderPagesRouterElement(element);
+  await renderPagesRouterElement(element, options.scroll);
   assertStillCurrent();
 }
 
@@ -1920,11 +1957,13 @@ async function performNavigation(
   );
   const errorRouteHtmlFetchUrl = resolvePagesErrorHtmlFetchUrl(url, navigationLocale);
   const htmlFetchUrl = errorRouteHtmlFetchUrl ?? getPagesHtmlFetchUrl(full, navigationLocale);
-  const navigateOptions: NavigateClientOptions = errorRouteHtmlFetchUrl
-    ? { allowNotFoundResponse: true, mode }
-    : { mode };
   const shallow = options?.shallow ?? false;
   const doScroll = options?.scroll !== false;
+  const hash = extractHash(resolved);
+  const scrollTarget = doScroll ? (hash ? hash : { x: 0, y: 0 }) : null;
+  const navigateOptions: NavigateClientOptions = errorRouteHtmlFetchUrl
+    ? { allowNotFoundResponse: true, mode, scroll: scrollTarget }
+    : { mode, scroll: scrollTarget };
 
   // History state metadata — surfaces the active locale to popstate and the
   // Safari-replay filter. `as` is the canonical app-relative path (no
@@ -1980,15 +2019,14 @@ async function performNavigation(
     const result = await runNavigateClient(full, resolved, htmlFetchUrl, navigateOptions);
     if (result === "cancelled") return true;
     if (result === "failed") return false;
+  } else {
+    if (doScroll) {
+      if (hash) scrollToHashTarget(hash);
+      else window.scrollTo(0, 0);
+    }
   }
   onStateUpdate?.();
   routerEvents.emit("routeChangeComplete", resolved, { shallow });
-
-  const hash = extractHash(resolved);
-  if (doScroll) {
-    if (hash) scrollToHashTarget(hash);
-    else window.scrollTo(0, 0);
-  }
   dispatchNavigateEvent();
   return true;
 }
@@ -2288,14 +2326,17 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
   // compatibility.
   routerEvents.emit("beforeHistoryChange", fullAppUrl, { shallow: false });
   void (async () => {
+    const scrollTarget = manualScrollRestoration
+      ? (forcedScroll ?? readScrollPosition(state) ?? { x: 0, y: 0 })
+      : null;
     const result = await runNavigateClient(
       browserUrl,
       fullAppUrl,
       getPagesHtmlFetchUrl(browserUrl, effectiveLocale),
+      { scroll: scrollTarget },
     );
     if (result === "completed") {
       routerEvents.emit("routeChangeComplete", fullAppUrl, { shallow: false });
-      restoreScrollPosition(forcedScroll ?? e.state);
       dispatchNavigateEvent();
     }
     // "cancelled": superseded by a newer navigation, so this popstate no longer wins.
@@ -2316,10 +2357,11 @@ setPagesRouterPopStateHandler(handlePagesRouterPopState);
 export function wrapWithRouterContext(
   element: ReactElement,
   onCommit: () => void = noopCommit,
+  onError: (error: Error) => void = noopCommit,
 ): ReactElement {
   return createElement(
     PagesRouterCommitBoundary,
-    { onCommit },
+    { onCommit, onError },
     createElement(PagesRouterProvider, null, element),
   );
 }

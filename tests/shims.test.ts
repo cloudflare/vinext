@@ -2339,6 +2339,7 @@ describe("next/router withRouter HOC", () => {
     vi.resetModules();
     vi.doMock("react", () => {
       const react = {
+        Component: class {},
         createContext(defaultValue: unknown) {
           return { Provider: "Provider", Consumer: "Consumer", defaultValue };
         },

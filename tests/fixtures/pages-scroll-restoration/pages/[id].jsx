@@ -6,6 +6,10 @@ const Page = ({ id }) => {
   const router = useRouter();
   const [ready, setReady] = useState(false);
 
+  if (typeof window !== "undefined" && id === "error") {
+    throw new Error("Simulated client-side render error");
+  }
+
   useEffect(() => {
     router.events.on("routeChangeComplete", () => {
       setReady(true);
