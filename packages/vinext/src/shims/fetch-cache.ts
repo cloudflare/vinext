@@ -45,6 +45,9 @@ const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 const CACHE_KEY_PREFIX = "v3";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
 
+// "Cache indefinitely" duration — mirrors upstream's CACHE_ONE_YEAR_SECONDS.
+const ONE_YEAR_SECONDS = 31536000;
+
 class BodyTooLargeForCacheKeyError extends Error {
   constructor() {
     super("Fetch body too large for cache key generation");
@@ -971,10 +974,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
       revalidateSeconds =
         nextOpts?.revalidate && typeof nextOpts.revalidate === "number"
           ? nextOpts.revalidate
-          : 31536000; // 1 year
+          : ONE_YEAR_SECONDS;
     } else if (nextOpts?.revalidate === false) {
       // revalidate: false means cache indefinitely
-      revalidateSeconds = 31536000; // 1 year
+      revalidateSeconds = ONE_YEAR_SECONDS;
     } else if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
       revalidateSeconds = nextOpts.revalidate;
     } else {
@@ -982,7 +985,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // caching when `next` is present (force-cache behavior).
       // If only tags are specified, cache indefinitely.
       if (nextOpts?.tags && nextOpts.tags.length > 0) {
-        revalidateSeconds = 31536000;
+        revalidateSeconds = ONE_YEAR_SECONDS;
       } else {
         // next: {} with no revalidate or tags — pass through
         const cleanInit = stripNextFromInit(init, cacheDirective);

@@ -434,6 +434,16 @@ describe("fetch cache shim", () => {
     ).rejects.toThrow(/only-no-store/);
   });
 
+  it("segment fetchCache only-no-store rejects next.revalidate: false fetches", async () => {
+    setCurrentFetchCacheMode("only-no-store");
+
+    await expect(
+      fetch("https://api.example.com/segment-only-no-store-revalidate-false", {
+        next: { revalidate: false },
+      }),
+    ).rejects.toThrow(/only-no-store/);
+  });
+
   it("segment fetchCache only-no-store rejects cacheable Request inputs", async () => {
     setCurrentFetchCacheMode("only-no-store");
 
