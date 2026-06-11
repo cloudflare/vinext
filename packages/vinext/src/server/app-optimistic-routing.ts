@@ -242,6 +242,12 @@ function resolveOptimisticNavigationParams(options: {
       continue;
     }
 
+    // Slot params are decoded once (from urlParts via splitPathnameForRouteMatch),
+    // matching the server-side resolveSlotParamOverrides decode pass. Route params
+    // are decoded a second time via decodeMatchedParams(match.params) above — a
+    // pre-existing asymmetry that has no practical effect for normal segments but
+    // means an encoded catch-all (%25/%2F) could differ between route and slot
+    // params in the same payload. TODO: converge the decode passes.
     const matched = matchRoutePattern(options.urlParts, patternParts);
     if (matched) {
       mergeParams(navigationParams, matched);
