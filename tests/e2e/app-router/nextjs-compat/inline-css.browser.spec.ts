@@ -3,6 +3,7 @@ import type { Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { waitForServer } from "../../helpers";
 import { test, expect } from "../../fixtures";
 
 type ProductionApp = {
@@ -201,6 +202,7 @@ test.describe("App Router experimental.inlineCss production parity", () => {
     const app = await buildAndServeInlineCssFixture();
 
     try {
+      await waitForServer(app.baseUrl);
       await page.goto(`${app.baseUrl}/`, { waitUntil: "load" });
 
       const inlineStyleText = await page
