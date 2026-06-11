@@ -100,14 +100,53 @@ async function withCountingFetchTarget<T>(
   }
 }
 
+type StartedTextSequenceTarget = {
+  close: () => Promise<void>;
+  url: string;
+};
+
+async function startTextSequenceTarget(): Promise<StartedTextSequenceTarget> {
+  let responseCount = 0;
+  const upstream = http.createServer((_req, res) => {
+    responseCount += 1;
+    res.setHeader("content-type", "text/plain; charset=utf-8");
+    res.end(`random-${responseCount}`);
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    upstream.once("error", reject);
+    upstream.listen(0, "127.0.0.1", () => {
+      upstream.off("error", reject);
+      resolve();
+    });
+  });
+
+  const address = upstream.address();
+  if (!address || typeof address === "string") {
+    await new Promise<void>((resolve, reject) => {
+      upstream.close((error) => (error ? reject(error) : resolve()));
+    });
+    throw new Error("Text sequence target did not bind to a TCP port");
+  }
+
+  return {
+    url: `http://127.0.0.1:${address.port}/random`,
+    close() {
+      return new Promise<void>((resolve, reject) => {
+        upstream.close((error) => (error ? reject(error) : resolve()));
+      });
+    },
+  };
+}
+
 async function waitForCondition(
-  condition: () => boolean,
+  condition: () => boolean | Promise<boolean>,
   options?: { intervalMs?: number; timeoutMs?: number },
 ): Promise<void> {
   const intervalMs = options?.intervalMs ?? 100;
   const deadline = Date.now() + (options?.timeoutMs ?? 3000);
 
-  while (!condition()) {
+  while (!(await condition())) {
     if (Date.now() >= deadline) {
       throw new Error("Timed out waiting for condition");
     }
@@ -119,6 +158,7 @@ describe("App Router Production server (startProdServer)", () => {
   const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
   let server: import("node:http").Server | undefined;
   let baseUrl: string;
+  let revalidatePathFetchTarget: StartedTextSequenceTarget | undefined;
 
   function extractRequestId(html: string): string | undefined {
     return (
@@ -128,26 +168,70 @@ describe("App Router Production server (startProdServer)", () => {
     );
   }
 
-  beforeAll(async () => {
-    // Build the app-basic fixture to the default dist/ directory
-    const builder = await createBuilder({
-      root: APP_FIXTURE_DIR,
-      configFile: false,
-      plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
-      logLevel: "silent",
-    });
-    await builder.buildApp();
+  function extractRandomData(html: string): string | undefined {
+    return html.match(/id="random-data"[^>]*>(?:<!--.*?-->)*([^<]+)/)?.[1];
+  }
 
-    // Start the production server on a random available port
-    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-    ({ server } = await startProdServer({ port: 0, outDir, noCompression: false }));
-    const addr = server!.address();
-    const port = typeof addr === "object" && addr ? addr.port : 4210;
-    baseUrl = `http://localhost:${port}`;
+  async function fetchRandomData(pathname: string): Promise<string> {
+    const response = await fetch(`${baseUrl}${pathname}`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    const data = extractRandomData(html);
+    expect(data).toBeTruthy();
+    return data ?? "";
+  }
+
+  async function expectRewrittenPathRevalidates(pathname: "/static" | "/dynamic"): Promise<void> {
+    const initial = await fetchRandomData(pathname);
+    const refreshed = await fetchRandomData(pathname);
+    expect(refreshed).toBe(initial);
+
+    const revalidateRes = await fetch(`${baseUrl}/api/revalidate?path=${pathname}`);
+    expect(revalidateRes.status).toBe(200);
+    expect(await revalidateRes.json()).toEqual({ revalidated: true });
+
+    await waitForCondition(async () => {
+      const revalidated = await fetchRandomData(pathname);
+      return revalidated !== initial;
+    });
+  }
+
+  beforeAll(async () => {
+    revalidatePathFetchTarget = await startTextSequenceTarget();
+    process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET = revalidatePathFetchTarget.url;
+
+    try {
+      // Build the app-basic fixture to the default dist/ directory
+      const builder = await createBuilder({
+        root: APP_FIXTURE_DIR,
+        configFile: false,
+        plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      // Start the production server on a random available port
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      ({ server } = await startProdServer({ port: 0, outDir, noCompression: false }));
+      const addr = server!.address();
+      const port = typeof addr === "object" && addr ? addr.port : 4210;
+      baseUrl = `http://localhost:${port}`;
+    } catch (error) {
+      server?.close();
+      try {
+        await revalidatePathFetchTarget.close();
+      } finally {
+        revalidatePathFetchTarget = undefined;
+        delete process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET;
+      }
+      throw error;
+    }
   }, 60000);
 
-  afterAll(() => {
+  afterAll(async () => {
     server?.close();
+    await revalidatePathFetchTarget?.close();
+    delete process.env.TEST_REVALIDATE_PATH_REWRITES_TARGET;
     fs.rmSync(outDir, { recursive: true, force: true });
   });
 
@@ -942,6 +1026,22 @@ describe("App Router Production server (startProdServer)", () => {
     expect(reqId3).toBeTruthy();
     expect(reqId3).not.toBe(reqId1);
     expect(res3.headers.get("x-vinext-cache")).toBe("MISS");
+  });
+
+  describe("revalidatePath with rewrites", () => {
+    // Ported from Next.js: test/e2e/app-dir/revalidate-path-with-rewrites/revalidate-path-with-rewrites.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/revalidate-path-with-rewrites/revalidate-path-with-rewrites.test.ts
+    //
+    // The upstream fixture fetches https://next-data-api-endpoint.vercel.app/api/random.
+    // This fixture uses a local text endpoint so the same force-cache/revalidatePath
+    // contract is exercised without an external network dependency.
+    it("static page should revalidate a static page that was rewritten", async () => {
+      await expectRewrittenPathRevalidates("/static");
+    });
+
+    it("dynamic page should revalidate a dynamic page that was rewritten", async () => {
+      await expectRewrittenPathRevalidates("/dynamic");
+    });
   });
 
   it("dedupes identical no-store fetches across metadata and page render during ISR background regeneration", async () => {
