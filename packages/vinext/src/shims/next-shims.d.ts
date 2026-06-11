@@ -388,7 +388,7 @@ declare module "next/error" {
   export default ErrorComponent;
 
   export type ErrorInfo = {
-    error: Error;
+    error: unknown;
     reset: () => void;
     unstable_retry: () => void;
   };
