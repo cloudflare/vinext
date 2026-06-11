@@ -71,7 +71,9 @@ describe("loadNextConfig with CJS next.config.js under type:module", () => {
     fs.writeFileSync(
       path.join(tmpDir, "next.config.js"),
       `const path = require('node:path');\n` +
-        `module.exports = { basePath: path.join('/', 'docs') };\n`,
+        // posix.join keeps the result "/docs" on Windows too — the point of
+        // this fixture is exercising require(), not platform join behavior.
+        `module.exports = { basePath: path.posix.join('/', 'docs') };\n`,
     );
 
     const config = await loadNextConfig(tmpDir);
