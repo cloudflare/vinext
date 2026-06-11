@@ -124,6 +124,18 @@ describe("navigationPlanner early navigation intent classification", () => {
     });
   });
 
+  it("treats search params that differ only by encoding as the same page", () => {
+    // "+" and "%20" both decode to a space, so this is not a search change and
+    // must not bypass the navigation cache. Guards the choice of comparing
+    // serialised params over raw search strings.
+    const decision = classify({
+      currentHref: "https://example.com/docs?a=+",
+      targetHref: "https://example.com/docs?a=%20",
+    });
+
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
+  });
+
   it("does not treat an identical URL as a same-document scroll", () => {
     const decision = classify({
       currentHref: "https://example.com/docs?q=1",
