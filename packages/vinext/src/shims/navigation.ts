@@ -2048,6 +2048,9 @@ if (process.env.__NEXT_GESTURE_TRANSITION) {
     assertSafeNavigationUrl(href);
     if (isServer) return;
 
+    // navigateClientSide would normalize same-origin absolute URLs itself; this
+    // inline check exists to *no-op* on external hrefs instead of falling
+    // through to its hard window.location.assign.
     let appHref = href;
     if (isAbsoluteOrProtocolRelativeUrl(href)) {
       const localPath = toSameOriginAppPath(href, __basePath);
