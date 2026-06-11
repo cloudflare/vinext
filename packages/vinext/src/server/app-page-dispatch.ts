@@ -213,6 +213,7 @@ type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   ) => Promise<AppPageElement>;
   clientReuseManifest?: ClientReuseManifestParseResult;
   cleanPathname: string;
+  displayPathname?: string;
   clearRequestContext: () => void;
   createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
   debugClassification?: (layoutId: string, reason: ClassificationReason) => void;
@@ -421,6 +422,7 @@ async function runAppPageRevalidationContext<
 >(
   options: {
     cleanPathname: string;
+    displayPathname?: string;
     currentFetchCacheMode?: FetchCacheMode | null;
     draftModeSecret: string;
     dynamicConfig?: string;
@@ -448,7 +450,7 @@ async function runAppPageRevalidationContext<
     ensureFetchPatch();
     setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], options.routeSegments));
     options.setNavigationContext({
-      pathname: options.cleanPathname,
+      pathname: options.displayPathname ?? options.cleanPathname,
       searchParams: new URLSearchParams(),
       params: options.params,
     });
@@ -532,7 +534,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       }),
     );
     options.setNavigationContext({
-      pathname: options.cleanPathname,
+      pathname: options.displayPathname ?? options.cleanPathname,
       searchParams: new URLSearchParams(),
       params: options.params,
     });
@@ -593,6 +595,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         return runAppPageRevalidationContext(
           {
             cleanPathname: options.cleanPathname,
+            displayPathname: options.displayPathname,
             currentFetchCacheMode:
               options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
               (revalidationTarget.route === route ? (options.fetchCache ?? null) : null),
@@ -830,7 +833,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     interceptResult.interceptOpts,
   );
   options.setNavigationContext({
-    pathname: options.cleanPathname,
+    pathname: options.displayPathname ?? options.cleanPathname,
     searchParams: options.searchParams,
     params: navigationParams,
   });

@@ -249,6 +249,34 @@ describe("buildPageElements", () => {
     });
   });
 
+  it("resolves navigation params with duplicate/colliding slot and route param keys", () => {
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(() => null),
+      layouts: [createSyntheticPageModule(() => null)],
+      params: ["id"],
+      pattern: "/:id",
+      routeSegments: ["[id]"],
+      slots: {
+        "slot@app/[id]/@slot": {
+          name: "slot",
+          page: createSyntheticPageModule(() => null),
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: 0,
+          routeSegments: ["[id]"],
+          slotPatternParts: [":id", ":catchAll+"],
+          slotParamNames: ["id", "catchAll"],
+        },
+      },
+    });
+
+    expect(
+      resolveAppPageNavigationParams(route, { id: "primary" }, "/slot-override/sub/folder", null),
+    ).toEqual({
+      id: "slot-override",
+      catchAll: ["sub", "folder"],
+    });
+  });
+
   it("surfaces a no-default-export error for a sibling intercept page instead of rendering the source page", async () => {
     function SourcePage(): React.ReactNode {
       return React.createElement("div", null, "Source page content");
