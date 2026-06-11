@@ -194,7 +194,6 @@ function createCommonOptions() {
       renderLayoutSpecialError,
       renderPageSpecialError,
       renderToReadableStream,
-      routeHasLocalBoundary: false,
       routePattern: "/posts/[slug]",
       runWithSuppressedHookWarning<T>(probe: () => Promise<T>) {
         return probe();
@@ -1172,7 +1171,6 @@ describe("layoutFlags injection into RSC payload", () => {
         capturedElement = captureRecord(el);
         return createStream(["flight-data"]);
       },
-      routeHasLocalBoundary: false,
       routePattern: overrides.routePattern ?? "/test",
       runWithSuppressedHookWarning: <T>(probe: () => Promise<T>) => probe(),
       element: overrides.element ?? { "page:/test": "test-page" },

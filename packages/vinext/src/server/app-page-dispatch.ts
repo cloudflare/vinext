@@ -934,9 +934,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return renderPageSpecialError(options, specialError);
     },
     renderToReadableStream: options.renderToReadableStream,
-    routeHasLocalBoundary: Boolean(
-      route.error?.default || route.errors?.some((errorModule) => errorModule?.default),
-    ),
     routePattern: route.pattern,
     runWithSuppressedHookWarning(probe) {
       return options.runWithSuppressedHookWarning(probe);

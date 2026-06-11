@@ -169,7 +169,6 @@ type RenderAppPageLifecycleOptions = {
     element: ReactNode | AppOutgoingElements,
     options: { onError: AppPageBoundaryOnError },
   ) => ReadableStream<Uint8Array>;
-  routeHasLocalBoundary: boolean;
   routePattern: string;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
   scriptNonce?: string;
