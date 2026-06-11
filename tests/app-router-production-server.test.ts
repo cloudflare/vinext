@@ -1077,7 +1077,13 @@ describe("App Router Production server (startProdServer)", () => {
       );
 
       try {
-        fs.cpSync(APP_FIXTURE_DIR, fixtureRoot, { recursive: true });
+        fs.cpSync(APP_FIXTURE_DIR, fixtureRoot, {
+          recursive: true,
+          filter: (src) => {
+            const rel = path.relative(APP_FIXTURE_DIR, src);
+            return rel !== "dist" && !rel.startsWith(`dist${path.sep}`);
+          },
+        });
         fs.rmSync(ccOutDir, { recursive: true, force: true });
         const fixtureNodeModules = path.join(fixtureRoot, "node_modules");
         if (!fs.existsSync(fixtureNodeModules)) {
