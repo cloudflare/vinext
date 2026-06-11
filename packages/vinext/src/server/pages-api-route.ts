@@ -154,22 +154,18 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
 
     // Track whether `res` has had a pipe destination attached. Next.js skips
     // auto-ending when a stream is being piped (matching the Node.js "pipe"
-    // event on ServerResponse). A handler can pipe without returning the
-    // chain result, so the handler-return check alone is insufficient.
+    // event on ServerResponse). The "pipe" event is the canonical stream
+    // signal; the handler return value is not — chainable helpers like
+    // `return res.status(202)` return `this` without implying streaming.
     let resWasPiped = false;
     res.once("pipe", () => {
       resWasPiped = true;
     });
 
-    const handlerResult: unknown = await route.module.default(req, res);
-    // Node's `req.pipe(upstream).pipe(res)` returns the destination `res`.
-    // When a handler returns the response writable we must not auto-end it,
-    // because the stream will close itself when the source exhausts. For
-    // every other return value (including undefined) we end the response if
-    // the handler has not already sent headers — this prevents requests from
-    // hanging when a handler forgets to call res.end().
-    const returnedResponseWritable = handlerResult === res;
-    if (!returnedResponseWritable && !resWasPiped && !res.headersSent) {
+    await route.module.default(req, res);
+    // Auto-end if no stream is in progress. Without this guard a handler
+    // that forgets to call res.end() would leave the request hanging.
+    if (!resWasPiped && !res.headersSent) {
       res.end();
     }
     return await responsePromise;

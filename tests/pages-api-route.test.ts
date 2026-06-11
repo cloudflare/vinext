@@ -383,9 +383,8 @@ describe("pages api route", () => {
 
   it("auto-ends the response when a handler returns a non-stream value and does not call res.end()", async () => {
     // Regression: handlers that return a plain value (e.g. a number) and
-    // forget to call res.end() must not hang the request. Only returning
-    // the response writable itself (from req.pipe(...).pipe(res)) should
-    // defer auto-ending.
+    // forget to call res.end() must not hang the request. Auto-end is
+    // gated on the "pipe" event only — return values do not defer it.
     const response = await handlePagesApiRoute({
       match: createMatch((_req, res) => {
         res.status(202);
@@ -393,6 +392,20 @@ describe("pages api route", () => {
       }),
       request: new Request("https://example.com/api/non-stream-return"),
       url: "/api/non-stream-return",
+    });
+
+    expect(response.status).toBe(202);
+    await expect(response.text()).resolves.toBe("");
+  });
+
+  it("auto-ends when a handler returns the response object without piping or sending", async () => {
+    // Regression: chainable helpers like `return res.status(202)` return
+    // `this` (the response object), but that does not mean streaming is
+    // in progress. Only the "pipe" event should defer auto-ending.
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => res.status(202)),
+      request: new Request("https://example.com/api/return-res-status"),
+      url: "/api/return-res-status",
     });
 
     expect(response.status).toBe(202);
