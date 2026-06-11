@@ -482,6 +482,8 @@ function buildInitialRouterState(): VinextHistoryState {
 function stampInitialHistoryState(): void {
   installManualScrollRestoration();
 
+  if (!window.history) return;
+
   const existingState = window.history.state;
   if (existingState !== null && existingState !== undefined) {
     _currentHistoryKey = getRouterStateKey(existingState) ?? _currentHistoryKey;
