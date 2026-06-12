@@ -115,14 +115,10 @@ export type ErrorInfo = {
   unstable_retry: () => void;
 };
 
-/** @internal */
-export type _UserProps = Record<string, unknown>;
+type _UserProps = Record<string, unknown>;
 
-/** @internal */
-export type _CatchErrorState = { thrownValue: unknown } | null;
-
-/** @internal */
-export type _CatchErrorProps<P extends _UserProps = _UserProps> = {
+type _CatchErrorState = { thrownValue: unknown } | null;
+type _CatchErrorProps<P extends _UserProps> = {
   children?: React.ReactNode;
   fallback: React.ComponentType<{
     props: P;
@@ -133,8 +129,7 @@ export type _CatchErrorProps<P extends _UserProps = _UserProps> = {
   props: P;
 };
 
-/** @internal */
-export type _CatchErrorInternalState = {
+type _CatchErrorInternalState = {
   error: _CatchErrorState;
   previousPathname: string | null;
 };
@@ -142,8 +137,7 @@ export type _CatchErrorInternalState = {
 const _CatchErrorAppRouterContext =
   AppRouterContext ?? React.createContext<AppRouterInstance | null>(null);
 
-/** @internal */
-export class _CatchError<P extends _UserProps = _UserProps> extends React.Component<
+class _CatchError<P extends _UserProps> extends React.Component<
   _CatchErrorProps<P>,
   _CatchErrorInternalState
 > {

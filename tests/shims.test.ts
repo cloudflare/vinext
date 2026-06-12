@@ -2102,10 +2102,7 @@ describe("next/error shim — unstable_catchError", () => {
   it("getDerivedStateFromProps clears the error when pathname changes and retains it when pathname stays the same", async () => {
     const React = (await import("react")).default;
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const { unstable_catchError, _CatchError } =
-      await import("../packages/vinext/src/shims/error.js");
-    type _CatchErrorInternalState =
-      import("../packages/vinext/src/shims/error.js")._CatchErrorInternalState;
+    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
 
     function Fallback() {
       return null;
@@ -2116,16 +2113,26 @@ describe("next/error shim — unstable_catchError", () => {
     // We must call it inside a React render so React's dispatcher is active.
     let wrapperResult: React.ReactElement | null = null;
     function Capture() {
-      wrapperResult = Boundary({});
+      wrapperResult = (Boundary as unknown as (p: Record<string, never>) => React.ReactElement)({});
       return React.createElement("span");
     }
     renderToStaticMarkup(React.createElement(Capture));
 
-    // The rendered element's type is the internal _CatchError class.
-    const InnerCatchError = wrapperResult!.type as typeof _CatchError;
+    // Structural type for the internal class component so we can call
+    // getDerivedStateFromProps without importing non-public exports.
+    const InnerCatchError = wrapperResult!.type as unknown as React.ComponentClass<{
+      fallback: typeof Fallback;
+      pathname: string | null;
+      props: Record<string, never>;
+    }> & {
+      getDerivedStateFromProps(
+        props: Pick<{ pathname: string | null }, "pathname">,
+        state: { error: { thrownValue: unknown } | null; previousPathname: string | null },
+      ): { error: { thrownValue: unknown } | null; previousPathname: string | null };
+    };
 
     const thrown = new Error("boom");
-    const initialState: _CatchErrorInternalState = {
+    const initialState = {
       error: { thrownValue: thrown },
       previousPathname: "/initial",
     };
