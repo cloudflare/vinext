@@ -19,6 +19,7 @@ import {
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "../server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
+import { parseCookieHeader } from "../utils/parse-cookie.js";
 
 /**
  * Cache for compiled regex patterns in matchConfigPattern.
@@ -526,16 +527,7 @@ function shouldEvaluateRule(ruleBasePath: false | undefined, state: BasePathMatc
  * Parse a Cookie header string into a key-value record.
  */
 export function parseCookies(cookieHeader: string | null): Record<string, string> {
-  if (!cookieHeader) return {};
-  const cookies: Record<string, string> = {};
-  for (const part of cookieHeader.split(";")) {
-    const eq = part.indexOf("=");
-    if (eq === -1) continue;
-    const key = part.slice(0, eq).trim();
-    const value = part.slice(eq + 1).trim();
-    if (key) cookies[key] = value;
-  }
-  return cookies;
+  return parseCookieHeader(cookieHeader);
 }
 
 /**

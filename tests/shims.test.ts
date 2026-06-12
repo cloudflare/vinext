@@ -9791,6 +9791,26 @@ describe("parseCookies", () => {
     const { parseCookies } = await import("../packages/vinext/src/config/config-matchers.js");
     expect(parseCookies("  a = 1 ;  b = 2 ")).toEqual({ a: "1", b: "2" });
   });
+
+  // Next.js uses the same compiled `cookie` parser for request cookies.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/api-utils/get-cookie-parser.ts
+  it("preserves the first duplicate and safely exposes special cookie names", async () => {
+    const { parseCookies } = await import("../packages/vinext/src/config/config-matchers.js");
+    const cookies = parseCookies(
+      'session=trusted; session=attacker; __proto__=prototype-cookie; constructor=constructor-cookie; toString=string-cookie; encoded=hello%20world; malformed=%E0%A4%A; quoted="quoted value"',
+    );
+
+    expect(Object.getPrototypeOf(cookies)).toBeNull();
+    expect(cookies.session).toBe("trusted");
+    expect(cookies.__proto__).toBe("prototype-cookie");
+    expect(cookies.constructor).toBe("constructor-cookie");
+    expect(cookies["toString"]).toBe("string-cookie");
+    expect(cookies.encoded).toBe("hello world");
+    expect(cookies.malformed).toBe("%E0%A4%A");
+    expect(cookies.quoted).toBe("quoted value");
+    expect(Object.hasOwn(cookies, "constructor")).toBe(true);
+    expect(Object.hasOwn(cookies, "toString")).toBe(true);
+  });
 });
 
 describe("checkHasConditions", () => {
@@ -9879,6 +9899,28 @@ describe("checkHasConditions", () => {
     expect(
       checkHasConditions([{ type: "cookie", key: "authorized", value: "false" }], undefined, ctx),
     ).toBe(false);
+  });
+
+  it("config cookie conditions use the first duplicate and own special names", async () => {
+    const { checkHasConditions, requestContextFromRequest } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const ctx = requestContextFromRequest(
+      new Request("https://example.com/account", {
+        headers: {
+          cookie:
+            "session=trusted; session=attacker; constructor=constructor-cookie; toString=string-cookie",
+        },
+      }),
+    );
+
+    expect(
+      checkHasConditions([{ type: "cookie", key: "session", value: "trusted" }], undefined, ctx),
+    ).toBe(true);
+    expect(
+      checkHasConditions([{ type: "cookie", key: "session", value: "attacker" }], undefined, ctx),
+    ).toBe(false);
+    expect(checkHasConditions([{ type: "cookie", key: "constructor" }], undefined, ctx)).toBe(true);
+    expect(checkHasConditions([{ type: "cookie", key: "toString" }], undefined, ctx)).toBe(true);
   });
 
   // -- query conditions --

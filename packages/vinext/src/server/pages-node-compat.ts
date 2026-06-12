@@ -1,6 +1,6 @@
 import { decode as decodeQueryString } from "node:querystring";
 import { Readable, Writable } from "node:stream";
-import { parseCookies } from "../config/config-matchers.js";
+import { parseCookieHeader } from "../utils/parse-cookie.js";
 import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
@@ -399,7 +399,7 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     headers: headersObj,
     query: options.query,
     body: options.body,
-    cookies: parseCookies(options.request.headers.get("cookie")),
+    cookies: parseCookieHeader(options.request.headers.get("cookie")),
   });
 
   let resolveResponse!: (value: Response) => void;
