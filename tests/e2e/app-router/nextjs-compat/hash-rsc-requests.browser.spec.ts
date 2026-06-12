@@ -93,7 +93,7 @@ export default function HashRscRequestsPage() {
         To non-existent
       </Link>
       <div>
-        <Link href="?with-query-param#hash-160" id="link-to-query-param">
+        <Link href="?with-query-param#hash-160" id="link-to-query-param" prefetch={false}>
           To 160 (with query param)
         </Link>
       </div>
@@ -222,11 +222,10 @@ test.describe("Next.js compat: hash RSC requests in production", () => {
       await page.goto(`${app.baseUrl}/nextjs-compat/hash-rsc-requests`);
       await waitForAppRouterHydration(page);
       await expect(page.locator("p")).toHaveText("Hash Page");
-      // Wait for all initial network activity (including the query-param link's
-      // viewport prefetch) to settle *before* clearing the tracked RSC requests.
-      // Otherwise the prefetch can land after the clear on slower runtimes
-      // (e.g. WebKit) and be misattributed to the hash-only navigations below.
-      // Mirrors upstream's `waitForIdleNetwork()` in the ported Next.js test.
+      // Wait for initial network activity to settle before tracking navigation
+      // requests. The query-param Link disables automatic prefetching so a
+      // delayed WebKit viewport prefetch cannot be misattributed to the
+      // hash-only navigations below.
       await page.waitForLoadState("networkidle");
       rscRequestUrls.clear();
 
