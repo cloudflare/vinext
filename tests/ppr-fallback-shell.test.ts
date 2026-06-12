@@ -277,11 +277,10 @@ describe("ppr fallback shell render lifecycle", () => {
       expect(p2).not.toBeNull();
     });
 
-    await delay(5);
+    await ready;
     expect(isReady).toBe(true);
     expect(state.pendingCacheTasks).toBe(0);
 
     state.abortController.abort();
-    await ready.catch(() => {});
   });
 });
