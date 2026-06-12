@@ -1149,9 +1149,6 @@ export function validateWranglerEnvName(env: string): string {
   if (env.includes("\0")) {
     throw new Error("Wrangler environment names cannot contain null bytes.");
   }
-  if (env.length > 255) {
-    throw new Error("Wrangler environment names cannot exceed 255 characters.");
-  }
   return env;
 }
 

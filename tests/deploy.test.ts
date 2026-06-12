@@ -156,9 +156,9 @@ describe("buildWranglerDeployArgs", () => {
     },
   );
 
-  it("rejects null bytes and excessively long environment names", () => {
+  it("rejects null bytes without imposing an artificial length limit", () => {
     expect(() => validateWranglerEnvName("preview\0prod")).toThrow("null bytes");
-    expect(() => validateWranglerEnvName("a".repeat(256))).toThrow("255 characters");
+    expect(validateWranglerEnvName("a".repeat(1024))).toBe("a".repeat(1024));
   });
 });
 
@@ -167,8 +167,8 @@ describe("deploy environment validation", () => {
     writeFile(tmpDir, "package.json", '{"name":"unchanged"}\n');
     const before = fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8");
 
-    await expect(deploy({ root: tmpDir, env: "a".repeat(256), dryRun: true })).rejects.toThrow(
-      "255 characters",
+    await expect(deploy({ root: tmpDir, env: "preview\0prod", dryRun: true })).rejects.toThrow(
+      "null bytes",
     );
 
     expect(fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8")).toBe(before);
