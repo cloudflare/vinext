@@ -776,6 +776,25 @@ describe("loadNextConfig with tsconfig path aliases", () => {
 });
 
 describe("resolveNextConfig alias extraction", () => {
+  it("prefers turbopack resolveExtensions and falls back to webpack extensions", async () => {
+    const fallback = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = ["", ".png", ".jsx", ".js"];
+        return webpackConfig;
+      },
+    });
+    expect(fallback.resolveExtensions).toEqual(["", ".png", ".jsx", ".js"]);
+
+    const preferred = await resolveNextConfig({
+      turbopack: { resolveExtensions: ["", ".web.tsx", ".tsx"] },
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = ["", ".png", ".js"];
+        return webpackConfig;
+      },
+    });
+    expect(preferred.resolveExtensions).toEqual(["", ".web.tsx", ".tsx"]);
+  });
+
   let tmpDir: string;
 
   afterEach(() => {
@@ -1644,6 +1663,7 @@ describe("detectNextIntlConfig", () => {
       trailingSlash: false,
       output: "",
       pageExtensions: ["tsx", "ts", "jsx", "js"],
+      resolveExtensions: [],
       cacheComponents: false,
       gestureTransition: false,
       prefetchInlining: false,

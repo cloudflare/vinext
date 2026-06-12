@@ -214,6 +214,12 @@ export type NextConfig = {
   output?: "export" | "standalone";
   /** File extensions treated as routable pages/routes (Next.js pageExtensions) */
   pageExtensions?: string[];
+  /** Turbopack-compatible module resolution options. */
+  turbopack?: {
+    resolveAlias?: Record<string, unknown>;
+    resolveExtensions?: string[];
+    [key: string]: unknown;
+  };
   /**
    * Module specifiers that are required for side effects on the client before
    * hydration, in array order, ahead of the user's `instrumentation-client.{ts,js}`.
@@ -335,6 +341,7 @@ export type ResolvedNextConfig = {
   trailingSlash: boolean;
   output: "" | "export" | "standalone";
   pageExtensions: string[];
+  resolveExtensions: string[];
   instrumentationClientInject: string[];
   cacheComponents: boolean;
   /**
@@ -1211,6 +1218,7 @@ export async function resolveNextConfig(
       trailingSlash: false,
       output: "",
       pageExtensions: normalizePageExtensions(),
+      resolveExtensions: [],
       cacheComponents: false,
       gestureTransition: false,
       prefetchInlining: false,
@@ -1443,6 +1451,8 @@ export async function resolveNextConfig(
   }
 
   const pageExtensions = normalizePageExtensions(config.pageExtensions);
+  const turbopack = readOptionalRecord(config.turbopack);
+  const resolveExtensions = readStringArray(turbopack?.resolveExtensions);
 
   // Parse i18n config
   let i18n: NextI18nConfig | null = null;
@@ -1491,6 +1501,8 @@ export async function resolveNextConfig(
     trailingSlash: config.trailingSlash ?? false,
     output: output === "export" || output === "standalone" ? output : "",
     pageExtensions,
+    resolveExtensions:
+      resolveExtensions.length > 0 ? resolveExtensions : webpackProbe.resolveExtensions,
     instrumentationClientInject: Array.isArray(config.instrumentationClientInject)
       ? (config.instrumentationClientInject as unknown[]).filter(
           (x): x is string => typeof x === "string",
@@ -1623,14 +1635,18 @@ function extractTurboAliases(config: NextConfig, root: string): Record<string, s
 async function probeWebpackConfig(
   config: NextConfig,
   root: string,
-): Promise<{ aliases: Record<string, string>; mdx: MdxOptions | null }> {
+): Promise<{
+  aliases: Record<string, string>;
+  mdx: MdxOptions | null;
+  resolveExtensions: string[];
+}> {
   if (typeof config.webpack !== "function") {
-    return { aliases: {}, mdx: null };
+    return { aliases: {}, mdx: null, resolveExtensions: [] };
   }
 
   // oxlint-disable-next-line typescript/no-explicit-any
   const mockModuleRules: any[] = [];
-  const mockResolve: { alias: Record<string, unknown> } = { alias: {} };
+  const mockResolve: { alias: Record<string, unknown>; extensions?: unknown } = { alias: {} };
   const mockConfig = {
     context: root,
     resolve: mockResolve,
@@ -1662,9 +1678,10 @@ async function probeWebpackConfig(
     return {
       aliases: normalizeAliasEntries(finalConfig.resolve?.alias, root),
       mdx: extractMdxOptionsFromRules(rules),
+      resolveExtensions: readStringArray(finalConfig.resolve?.extensions),
     };
   } catch {
-    return { aliases: {}, mdx: null };
+    return { aliases: {}, mdx: null, resolveExtensions: [] };
   }
 }
 

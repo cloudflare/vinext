@@ -1,6 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
+import { createBuilder } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 import { buildViteResolveExtensions } from "../packages/vinext/src/routing/file-matcher.js";
 
@@ -8,7 +9,7 @@ import { buildViteResolveExtensions } from "../packages/vinext/src/routing/file-
 // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/resolve-extensions/
 //
 // When users configure custom extensions via `pageExtensions` or
-// `turbopack.resolveExtensions` (e.g. `.platform.tsx` or `.mdx`), Vite must
+// `turbopack.resolveExtensions` (e.g. `.platform.tsx`, `.mdx`, or `.png`), Vite must
 // know to attempt those extensions when resolving extensionless imports.
 // Otherwise extensionless imports of files with those custom extensions
 // fail to resolve and the build crashes.
@@ -108,6 +109,96 @@ describe("vinext plugin wires pageExtensions into Vite resolve.extensions", () =
       // so a bare `./Component` import lands on `Component.platform.tsx`
       // (mirrors Next.js / Turbopack resolveExtensions semantics).
       expect(extensions.indexOf(".platform.tsx")).toBeLessThan(extensions.indexOf(".tsx"));
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("builds the Next.js resolve-extensions fixture for server and client graphs", async () => {
+    // Ported from Next.js: test/e2e/app-dir/resolve-extensions/resolve-extensions.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/resolve-extensions/resolve-extensions.test.ts
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-resolve-extensions-build-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fs.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fs.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fs.writeFile(
+      path.join(tmpDir, "app", "image.png"),
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/2p5WAAAAAElFTkSuQmCC",
+        "base64",
+      ),
+    );
+    await fs.writeFile(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "resolve-extensions-fixture", private: true, type: "module" }),
+    );
+    await fs.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { turbopack: { resolveExtensions: ["", ".png", ".tsx", ".ts", ".jsx", ".js", ".json"] } };`,
+    );
+    await fs.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fs.writeFile(
+      path.join(tmpDir, "app", "component.jsx"),
+      `'use client'; import image from './image'; import Image from 'next/image'; export default function Component() { return <p><Image src={image} alt="hello image 2" />hello world{typeof window !== 'undefined' ? 'hello client' : 'hello server'}</p>; }`,
+    );
+    await fs.writeFile(
+      path.join(tmpDir, "app", "page.jsx"),
+      `import image from './image'; import Image from 'next/image'; import Component from './component'; export default function Page() { return <p><Image src={image} alt="hello image 1" /><Component /></p>; }`,
+    );
+
+    try {
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+      await expect(fs.stat(path.join(tmpDir, "dist", "client"))).resolves.toBeDefined();
+      await expect(fs.stat(path.join(tmpDir, "dist", "server"))).resolves.toBeDefined();
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 30000);
+
+  it("forwards turbopack.resolveExtensions for extensionless asset imports", async () => {
+    // Ported from Next.js: test/e2e/app-dir/resolve-extensions/resolve-extensions.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/resolve-extensions/resolve-extensions.test.ts
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const mainPlugin = plugins.find(
+      // oxlint-disable-next-line typescript/no-explicit-any
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-resolve-extensions-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fs.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fs.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fs.writeFile(
+      path.join(tmpDir, "app", "page.jsx"),
+      `import image from "./image"; export default function Page() { return image.src; }`,
+    );
+    await fs.writeFile(path.join(tmpDir, "app", "image.png"), "fixture");
+    await fs.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { turbopack: { resolveExtensions: ["", ".png", ".tsx", ".ts", ".jsx", ".js", ".json"] } };`,
+    );
+
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      // oxlint-disable-next-line typescript/no-explicit-any
+      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const extensions: string[] = result.resolve?.extensions ?? [];
+      expect(extensions[0]).toBe(".png");
+      expect(extensions).toContain(".jsx");
+      expect(extensions).not.toContain("");
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

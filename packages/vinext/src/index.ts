@@ -1929,13 +1929,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...nextConfig.aliases,
               ...nextShimMap,
             },
-            // Mirror Next.js `pageExtensions` into Vite's `resolve.extensions`
-            // so extensionless imports of files with custom extensions
-            // (`.mdx`, `.platform.tsx`, `.web.tsx`, etc.) resolve. Without
-            // this the build crashes with "Custom deploy script failed:
-            // undefined (1)" when the user configures pageExtensions beyond
-            // Vite's default set. See cloudflare/vinext#1502.
-            extensions: buildViteResolveExtensions(nextConfig.pageExtensions),
+            // Prefer Next.js module resolver extensions, falling back to
+            // pageExtensions when none are configured. This supports imports
+            // such as `./image` resolving to `./image.png`, as exercised by
+            // Next.js' resolve-extensions deploy suite.
+            extensions: buildViteResolveExtensions(
+              nextConfig.resolveExtensions.length > 0
+                ? nextConfig.resolveExtensions
+                : nextConfig.pageExtensions,
+            ),
             // Dedupe React packages to prevent dual-instance errors.
             // When vinext is linked (npm link / bun link) or any dependency
             // brings its own React copy, multiple React instances can load,
