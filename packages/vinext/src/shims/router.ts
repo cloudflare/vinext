@@ -2433,6 +2433,9 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     // with it disabled, an entry we never stamped resolves to null (no scroll
     // from us) and native "auto" restoration — still enabled — handles it,
     // matching the old restoreScrollPosition no-op on main.
+    // The manual chain is not three independent fallbacks: keyed entries always
+    // resolve via forcedScroll (already `?? { x: 0, y: 0 }`), so the middle term
+    // only handles entries without a router key, via the history-state shape.
     const scrollTarget = manualScrollRestoration
       ? (forcedScroll ?? readScrollPosition(state) ?? { x: 0, y: 0 })
       : readScrollPosition(state);
