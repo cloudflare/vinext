@@ -113,6 +113,79 @@ describe("app route handler cache helpers", () => {
   });
 
   it.each([false, true])(
+    "forces middleware cookie responses to no-store for cached %s entries",
+    async (isStale) => {
+      const scheduledRegenerations: Array<() => Promise<void>> = [];
+
+      const response = await readAppRouteHandlerCacheResponse({
+        buildPageCacheTags(pathname, extraTags) {
+          return [pathname, ...extraTags];
+        },
+        cleanPathname: "/api/middleware-cookie-cache",
+        clearRequestContext() {},
+        consumeDynamicUsage() {
+          return false;
+        },
+        getAndClearPendingCookies() {
+          return [];
+        },
+        getCollectedFetchTags() {
+          return [];
+        },
+        getDraftModeCookieHeader() {
+          return null;
+        },
+        handlerFn() {
+          return new Response("regenerated");
+        },
+        isAutoHead: false,
+        async isrDelete() {},
+        async isrGet() {
+          return buildISRCacheEntry(buildCachedRouteValue("shared cached body"), isStale);
+        },
+        isrRouteKey(pathname) {
+          return "route:" + pathname;
+        },
+        async isrSet() {},
+        markDynamicUsage() {},
+        middlewareContext: {
+          headers: new Headers([
+            ["set-cookie", "middleware=1; Path=/; HttpOnly"],
+            ["cache-control", "public, s-maxage=300"],
+            ["cdn-cache-control", "public, max-age=300"],
+            ["cache-tag", "unsafe-cached-response"],
+          ]),
+          status: null,
+        },
+        params: {},
+        requestUrl: "https://example.com/api/middleware-cookie-cache",
+        revalidateSearchParams: new URLSearchParams(),
+        revalidateSeconds: 60,
+        routePattern: "/api/middleware-cookie-cache",
+        async runInRevalidationContext(renderFn) {
+          await renderFn();
+        },
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRegenerations.push(renderFn);
+        },
+        setHeadersAccessPhase() {
+          return "render";
+        },
+        setNavigationContext() {},
+      });
+
+      expect(response?.headers.getSetCookie()).toEqual(["middleware=1; Path=/; HttpOnly"]);
+      expect(response?.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(response?.headers.get("cdn-cache-control")).toBeNull();
+      expect(response?.headers.get("cache-tag")).toBeNull();
+      await expect(response?.text()).resolves.toBe("shared cached body");
+      expect(scheduledRegenerations).toHaveLength(isStale ? 1 : 0);
+    },
+  );
+
+  it.each([false, true])(
     "deletes legacy %s APP_ROUTE entries containing Set-Cookie",
     async (isStale) => {
       let deletedKey: string | null = null;
