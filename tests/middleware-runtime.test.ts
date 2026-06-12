@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { executeMiddleware } from "../packages/vinext/src/server/middleware-runtime.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 
@@ -259,5 +259,17 @@ describe("middleware nextUrl basePath", () => {
     expect(result.continue).toBe(true);
     expect(captured.request?.nextUrl.basePath).toBe("/root");
     expect(captured.request?.nextUrl.pathname).toBe("/dashboard");
+  });
+
+  it("reports when a matcher skips middleware execution", async () => {
+    const handler = vi.fn(() => undefined);
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: { middleware: handler, config: { matcher: "/admin" } },
+      request: new Request("http://localhost:3000/public"),
+    });
+
+    expect(result).toMatchObject({ continue: true, executed: false });
+    expect(handler).not.toHaveBeenCalled();
   });
 });

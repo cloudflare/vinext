@@ -35,6 +35,8 @@ import { mergeHeaders } from "./worker-utils.js";
 import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pages-i18n.js";
 import { mergeRewriteQuery } from "../utils/query.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
+import { finalizeCdnResponsePolicy } from "./cache-control.js";
+import { hasCdnSensitiveRequestHeaders } from "vinext/shims/cdn-cache";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -45,6 +47,7 @@ export type PagesRenderOptions = {
 
 export type MiddlewareResult = {
   continue: boolean;
+  executed: boolean;
   redirectUrl?: string;
   redirectStatus?: number;
   rewriteUrl?: string;
@@ -270,10 +273,12 @@ export async function runPagesRequest(
   let resolvedUrl = pathname + search;
   const middlewareHeaders: HeaderRecord = {};
   let middlewareStatus: number | undefined;
-  const middlewareExecuted = typeof deps.runMiddleware === "function";
+  let middlewareExecuted = false;
+  const hasSensitiveRequestHeaders = hasCdnSensitiveRequestHeaders(request.headers);
 
   if (typeof deps.runMiddleware === "function") {
     const result = await deps.runMiddleware(request, deps.ctx ?? null, { isDataRequest });
+    middlewareExecuted = result.executed;
 
     // Bubble waitUntil promises
     if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {
@@ -315,14 +320,23 @@ export async function runPagesRequest(
         }
         return {
           type: "response",
-          response: new Response(null, {
-            status: result.redirectStatus ?? 307,
-            headers,
-          }),
+          response: finalizeCdnResponsePolicy(
+            new Response(null, {
+              status: result.redirectStatus ?? 307,
+              headers,
+            }),
+            middlewareExecuted || hasSensitiveRequestHeaders,
+          ),
         };
       }
       if (result.response) {
-        return { type: "response", response: result.response };
+        return {
+          type: "response",
+          response: finalizeCdnResponsePolicy(
+            result.response,
+            middlewareExecuted || hasSensitiveRequestHeaders,
+          ),
+        };
       }
     }
 
@@ -386,7 +400,10 @@ export async function runPagesRequest(
     const proxyResponse = await proxyExternal(request, resolvedUrl);
     return {
       type: "response",
-      response: mergeHeaders(proxyResponse, middlewareHeaders, undefined),
+      response: finalizeCdnResponsePolicy(
+        mergeHeaders(proxyResponse, middlewareHeaders, undefined),
+        middlewareExecuted || hasSensitiveRequestHeaders,
+      ),
     };
   }
 
@@ -415,7 +432,13 @@ export async function runPagesRequest(
     if (rewritten) {
       if (isExternalUrl(rewritten)) {
         // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
-        return { type: "response", response: await proxyExternal(request, rewritten) };
+        return {
+          type: "response",
+          response: finalizeCdnResponsePolicy(
+            await proxyExternal(request, rewritten),
+            middlewareExecuted || hasSensitiveRequestHeaders,
+          ),
+        };
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       resolvedPathname = resolvedUrl.split("?")[0];
@@ -445,7 +468,10 @@ export async function runPagesRequest(
         // API routes return arbitrary data; default a missing content-type to
         // application/octet-stream (not text/html) to avoid content sniffing.
         defaultContentType: "application/octet-stream",
-        response: mergeHeaders(response, middlewareHeaders, middlewareStatus),
+        response: finalizeCdnResponsePolicy(
+          mergeHeaders(response, middlewareHeaders, middlewareStatus),
+          middlewareExecuted || hasSensitiveRequestHeaders,
+        ),
       };
     } else {
       // dev: emit intent
@@ -474,7 +500,13 @@ export async function runPagesRequest(
     if (rewritten) {
       if (isExternalUrl(rewritten)) {
         // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
-        return { type: "response", response: await proxyExternal(request, rewritten) };
+        return {
+          type: "response",
+          response: finalizeCdnResponsePolicy(
+            await proxyExternal(request, rewritten),
+            middlewareExecuted || hasSensitiveRequestHeaders,
+          ),
+        };
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       resolvedPathname = resolvedUrl.split("?")[0];
@@ -539,7 +571,10 @@ export async function runPagesRequest(
           // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
           return {
             type: "response",
-            response: await proxyExternal(request, fallbackRewrite),
+            response: finalizeCdnResponsePolicy(
+              await proxyExternal(request, fallbackRewrite),
+              middlewareExecuted || hasSensitiveRequestHeaders,
+            ),
           };
         }
         response = await deps.renderPage(
@@ -572,7 +607,11 @@ export async function runPagesRequest(
       ).__vinextStreamedHtmlResponse;
     }
     // Page renders default a missing content-type to text/html.
-    return { type: "response", response: merged, defaultContentType: "text/html" };
+    return {
+      type: "response",
+      response: finalizeCdnResponsePolicy(merged, middlewareExecuted || hasSensitiveRequestHeaders),
+      defaultContentType: "text/html",
+    };
   }
   // dev: apply fallback rewrites eagerly (no renderPage to 404-gate on).
   // If matchPageRoute says there's no match, try fallback rewrites before
@@ -594,7 +633,13 @@ export async function runPagesRequest(
     if (fallbackRewrite) {
       if (isExternalUrl(fallbackRewrite)) {
         // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
-        return { type: "response", response: await proxyExternal(request, fallbackRewrite) };
+        return {
+          type: "response",
+          response: finalizeCdnResponsePolicy(
+            await proxyExternal(request, fallbackRewrite),
+            middlewareExecuted || hasSensitiveRequestHeaders,
+          ),
+        };
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
     }

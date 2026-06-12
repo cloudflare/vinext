@@ -31,10 +31,7 @@ import {
 } from "vinext/shims/request-context";
 import { pickRootParams, setRootParams, type RootParams } from "vinext/shims/root-params";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
-import {
-  hasCdnSensitiveRequestHeaders,
-  markCdnCacheRequestDependent,
-} from "vinext/shims/cdn-cache";
+import { hasCdnSensitiveRequestHeaders } from "vinext/shims/cdn-cache";
 import { flattenErrorCauses } from "../utils/error-cause.js";
 import { hasBasePath } from "../utils/base-path.js";
 import { applyAppMiddleware, type AppMiddlewareContext } from "./app-middleware.js";
@@ -497,7 +494,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   };
 
   if (options.middlewareModule) {
-    markCdnCacheRequestDependent();
     const middlewareResult = await applyAppMiddleware({
       basePath: options.basePath,
       cleanPathname,

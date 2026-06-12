@@ -177,7 +177,7 @@ export async function runMiddleware(request, ctx, options) {
   // rewrite to something else).
   const __dataNorm = __normalizePagesDataRequest(request, buildId);
   if (__dataNorm.notFoundResponse) {
-    return { continue: false, response: __dataNorm.notFoundResponse };
+    return { continue: false, executed: false, response: __dataNorm.notFoundResponse };
   }
   const __result = await __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
@@ -201,12 +201,12 @@ export async function runMiddleware(request) {
   // the worker pipeline sees the page path. Mismatched buildId → JSON 404.
   const __dataNorm = __normalizePagesDataRequest(request, buildId);
   if (__dataNorm.notFoundResponse) {
-    return { continue: false, response: __dataNorm.notFoundResponse };
+    return { continue: false, executed: false, response: __dataNorm.notFoundResponse };
   }
   if (__dataNorm.isDataReq) {
-    return { continue: true, rewriteUrl: __dataNorm.normalizedPathname + __dataNorm.search };
+    return { continue: true, executed: false, rewriteUrl: __dataNorm.normalizedPathname + __dataNorm.search };
   }
-  return { continue: true };
+  return { continue: true, executed: false };
 }
 `;
 

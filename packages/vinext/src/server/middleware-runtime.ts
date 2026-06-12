@@ -23,6 +23,7 @@ export type MiddlewareModule = Record<string, unknown>;
 
 export type MiddlewareResult = {
   continue: boolean;
+  executed: boolean;
   redirectUrl?: string;
   redirectStatus?: number;
   rewriteUrl?: string;
@@ -256,7 +257,7 @@ export async function executeMiddleware(
   const normalizedPathname =
     options.normalizedPathname ?? resolveMiddlewarePathname(options.request);
   if (normalizedPathname instanceof Response) {
-    return { continue: false, response: normalizedPathname };
+    return { continue: false, executed: false, response: normalizedPathname };
   }
 
   // Default: derive in-basePath state from the request URL. The Pages
@@ -287,7 +288,7 @@ export async function executeMiddleware(
       options.i18nConfig,
     )
   ) {
-    return { continue: true };
+    return { continue: true, executed: false };
   }
 
   const nextRequest = createNextRequest(
@@ -311,6 +312,7 @@ export async function executeMiddleware(
       : "Internal Server Error";
     return {
       continue: false,
+      executed: true,
       response: internalServerErrorResponse(message),
       waitUntilPromises,
     };
@@ -319,12 +321,13 @@ export async function executeMiddleware(
   const waitUntilPromises = drainFetchEvent(fetchEvent);
 
   if (!response) {
-    return { continue: true, waitUntilPromises };
+    return { continue: true, executed: true, waitUntilPromises };
   }
 
   if (response.headers.get(MIDDLEWARE_NEXT_HEADER) === "1") {
     return {
       continue: true,
+      executed: true,
       responseHeaders: collectMiddlewareHeaders(response),
       status: response.status !== 200 ? response.status : undefined,
       waitUntilPromises,
@@ -377,6 +380,7 @@ export async function executeMiddleware(
       if (options.isDataRequest) {
         return {
           continue: false,
+          executed: true,
           response: dataRedirectResponse(normalizedLocation, response),
           waitUntilPromises,
         };
@@ -400,6 +404,7 @@ export async function executeMiddleware(
       });
       return {
         continue: false,
+        executed: true,
         redirectUrl: normalizedLocation,
         redirectStatus: response.status,
         response: stripMiddlewareHeadersFromResponse(relativizedResponse),
@@ -448,6 +453,7 @@ export async function executeMiddleware(
     }
     return {
       continue: true,
+      executed: true,
       rewriteUrl: rewritePath,
       rewriteStatus: response.status !== 200 ? response.status : undefined,
       responseHeaders: collectMiddlewareHeaders(response),
@@ -458,6 +464,7 @@ export async function executeMiddleware(
 
   return {
     continue: false,
+    executed: true,
     response: stripMiddlewareHeadersFromResponse(response),
     waitUntilPromises,
   };

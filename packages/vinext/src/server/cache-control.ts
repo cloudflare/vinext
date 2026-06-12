@@ -41,6 +41,30 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
   }
 }
 
+const CDN_RESPONSE_POLICY_HEADERS = [
+  "CDN-Cache-Control",
+  "Cloudflare-CDN-Cache-Control",
+  "Cache-Tag",
+];
+
+/** Enforce request-dependent no-store after every response/header merge has completed. */
+export function finalizeCdnResponsePolicy(
+  response: Response,
+  requestDependent = isCdnCacheRequestDependent(),
+): Response {
+  if (!requestDependent) return response;
+
+  const headers = new Headers(response.headers);
+  headers.set("Cache-Control", "no-store");
+  for (const name of CDN_RESPONSE_POLICY_HEADERS) headers.delete(name);
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 /**
  * Matches Next.js's `getCacheControlHeader` stale window semantics while
  * preserving vinext's legacy unbounded SWR header when no expire ceiling is

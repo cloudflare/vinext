@@ -31,6 +31,7 @@ function baseDeps(overrides?: Partial<PagesPipelineDeps>): PagesPipelineDeps {
 function makeMiddleware(result: Partial<MiddlewareResult>) {
   return vi.fn(async (_req: Request, _ctx: unknown, _opts: { isDataRequest: boolean }) => ({
     continue: true,
+    executed: true,
     ...result,
   }));
 }
@@ -164,6 +165,112 @@ describe("middleware", () => {
     );
   });
 
+  it("keeps public caching when the middleware matcher skips the route", async () => {
+    const renderPage = vi.fn(
+      async (_req: Request, _url: string, _opts?: PagesRenderOptions, _headers?: Headers) =>
+        new Response("public", {
+          headers: {
+            "Cache-Control": "public, max-age=0, must-revalidate",
+            "CDN-Cache-Control": "public, max-age=300",
+            "Cache-Tag": "public-page",
+          },
+        }),
+    );
+    const result = await runPagesRequest(
+      makeRequest("/public"),
+      baseDeps({
+        runMiddleware: makeMiddleware({ executed: false }),
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage.mock.calls[0][2]).toBeUndefined();
+    expect(result.response.headers.get("CDN-Cache-Control")).toBe("public, max-age=300");
+    expect(result.response.headers.get("Cache-Tag")).toBe("public-page");
+  });
+
+  it("removes config cache headers after a middleware-dependent render", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/admin"),
+      baseDeps({
+        configHeaders: [
+          {
+            source: "/admin",
+            headers: [
+              { key: "CDN-Cache-Control", value: "public, max-age=300" },
+              { key: "Cloudflare-CDN-Cache-Control", value: "public, max-age=300" },
+              { key: "Cache-Tag", value: "private-admin" },
+            ],
+          },
+        ],
+        runMiddleware: makeMiddleware({ executed: true }),
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+    expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(result.response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(result.response.headers.get("Cache-Tag")).toBeNull();
+  });
+
+  it("removes cache headers from middleware redirects", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/admin"),
+      baseDeps({
+        runMiddleware: makeMiddleware({
+          continue: false,
+          executed: true,
+          redirectUrl: "http://localhost/login",
+          responseHeaders: [
+            ["CDN-Cache-Control", "public, max-age=300"],
+            ["Cloudflare-CDN-Cache-Control", "public, max-age=300"],
+            ["Cache-Tag", "private-admin"],
+          ],
+        }),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(307);
+    expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+    expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(result.response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(result.response.headers.get("Cache-Tag")).toBeNull();
+  });
+
+  it("removes config cache headers from middleware-dependent API responses", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/api/private"),
+      baseDeps({
+        configHeaders: [
+          {
+            source: "/api/private",
+            headers: [
+              { key: "CDN-Cache-Control", value: "public, max-age=300" },
+              { key: "Cloudflare-CDN-Cache-Control", value: "public, max-age=300" },
+              { key: "Cache-Tag", value: "private-api" },
+            ],
+          },
+        ],
+        runMiddleware: makeMiddleware({ executed: true }),
+        handleApi: async () => new Response("secret"),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+    expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(result.response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(result.response.headers.get("Cache-Tag")).toBeNull();
+  });
+
   // 6. Middleware response short-circuit → {type:"response"} with middleware response
   it("middleware response short-circuit returns the middleware response", async () => {
     const middlewareResponse = new Response("blocked", { status: 403 });
@@ -176,8 +283,8 @@ describe("middleware", () => {
     );
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
-    expect(result.response).toBe(middlewareResponse);
     expect(result.response.status).toBe(403);
+    expect(result.response.headers.get("Cache-Control")).toBe("no-store");
     // Passthrough response: no content-type default → Node sends it verbatim.
     expect(result.defaultContentType).toBeUndefined();
   });
@@ -212,6 +319,7 @@ describe("middleware", () => {
       baseDeps({
         runMiddleware: vi.fn(async () => ({
           continue: true,
+          executed: true,
           responseHeaders: [...responseHeaders.entries()],
         })),
         renderPage,

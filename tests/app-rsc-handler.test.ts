@@ -108,6 +108,31 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
   });
 
+  it("keeps public caching when the middleware matcher skips the route", async () => {
+    const middleware = vi.fn(() => undefined);
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage: async () =>
+        new Response("page", {
+          headers: {
+            "Cache-Control": "public, max-age=0, must-revalidate",
+            "CDN-Cache-Control": "public, max-age=300",
+            "Cache-Tag": "public-page",
+          },
+        }),
+      middlewareModule: {
+        middleware,
+        config: { matcher: "/admin" },
+      },
+    });
+
+    const response = await handler(new Request("https://example.test/docs/about"), null);
+
+    expect(middleware).not.toHaveBeenCalled();
+    expect(response.headers.get("CDN-Cache-Control")).toBe("public, max-age=300");
+    expect(response.headers.get("Cache-Tag")).toBe("public-page");
+  });
+
   it("does not trailing-slash redirect RSC requests built from already-canonical trailingSlash paths", async () => {
     const headers = createRscRequestHeaders();
     const requestPath = await createRscRequestUrl("/about/", headers);
@@ -929,7 +954,7 @@ describe("createAppRscHandler", () => {
     expect(matchRoute).not.toHaveBeenCalled();
   });
 
-  it("lets middleware Cache-Control override static metadata route defaults", async () => {
+  it("forces no-store after middleware overrides static metadata route defaults", async () => {
     // Ported from Next.js: test/e2e/app-dir/no-duplicate-headers-middleware/no-duplicate-headers-middleware.test.ts
     // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/no-duplicate-headers-middleware/no-duplicate-headers-middleware.test.ts
     const handler = createHandler({
@@ -962,7 +987,7 @@ describe("createAppRscHandler", () => {
     const response = await handler(new Request("https://example.test/docs/favicon.ico"), null);
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toBe("max-age=1234");
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("content-type")).toBe("image/x-icon");
     await expect(response.text()).resolves.toBe("icon-bytes");
   });

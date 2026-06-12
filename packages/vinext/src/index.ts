@@ -3626,7 +3626,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       // Forward middleware context to the RSC entry so it can
                       // populate _mwCtx without re-running the middleware function.
                       // This prevents double execution in hybrid app+pages dev mode.
-                      if (hasAppDir && result.continue) {
+                      if (hasAppDir && result.continue && result.executed) {
                         const mwCtxEntries: [string, string][] = [];
                         if (result.responseHeaders) {
                           for (const [key, value] of result.responseHeaders) {

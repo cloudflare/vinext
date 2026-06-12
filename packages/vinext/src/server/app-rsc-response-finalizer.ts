@@ -1,7 +1,7 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/config-matchers.js";
 import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
-import { applyCdnResponseHeaders } from "./cache-control.js";
+import { applyCdnResponseHeaders, finalizeCdnResponsePolicy } from "./cache-control.js";
 import { applyConfigHeadersToResponse } from "./request-pipeline.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
@@ -49,7 +49,7 @@ export function finalizeAppRscResponse(
   // 3xx responses: Response.redirect() headers are immutable (throws on write),
   // and Next.js deliberately excludes config headers from redirect responses.
   if (response.status >= 300 && response.status < 400) {
-    return response;
+    return finalizeCdnResponsePolicy(response);
   }
 
   if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {
@@ -69,7 +69,7 @@ export function finalizeAppRscResponse(
   }
 
   if (!options.configHeaders.length) {
-    return response;
+    return finalizeCdnResponsePolicy(response);
   }
 
   const url = new URL(request.url);
@@ -106,5 +106,5 @@ export function finalizeAppRscResponse(
     basePathState: { basePath: options.basePath, hadBasePath },
   });
 
-  return response;
+  return finalizeCdnResponsePolicy(response);
 }

@@ -1,6 +1,7 @@
 import type { NextI18nConfig } from "../config/next-config.js";
 import { isExternalUrl, proxyExternalRequest } from "../config/config-matchers.js";
 import { applyMiddlewareRequestHeaders, setHeadersContext } from "vinext/shims/headers";
+import { markCdnCacheRequestDependent } from "vinext/shims/cdn-cache";
 import { setNavigationContext } from "vinext/shims/navigation";
 import { FLIGHT_HEADERS, VINEXT_MW_CTX_HEADER } from "./headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "./middleware-request-headers.js";
@@ -250,6 +251,10 @@ export async function applyAppMiddleware(
       request: middlewareRequest,
       trailingSlash: options.trailingSlash,
     });
+
+    if (result.executed) {
+      markCdnCacheRequestDependent();
+    }
 
     if (!result.continue) {
       if (result.redirectUrl) {

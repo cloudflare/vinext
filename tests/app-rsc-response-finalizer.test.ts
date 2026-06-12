@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 import type { RequestContext } from "../packages/vinext/src/config/config-matchers.js";
 
 function makeRequestContext(headers: Headers = new Headers()): RequestContext {
@@ -306,5 +310,53 @@ describe("finalizeAppRscResponse — default-locale path normalisation", () => {
 
     expect(response.headers.get("x-fr")).toBe("yes");
     expect(response.headers.get("x-en")).toBeNull();
+  });
+});
+
+describe("finalizeAppRscResponse — request-dependent CDN policy", () => {
+  it("removes cache config headers after config header application", async () => {
+    await runWithRequestContext(createRequestContext({ cdnCacheRequestDependent: true }), () => {
+      const response = new Response("body", { status: 200 });
+      const finalized = finalizeAppRscResponse(response, new Request("http://example.com/about"), {
+        basePath: "",
+        configHeaders: [
+          {
+            source: "/about",
+            headers: [
+              { key: "CDN-Cache-Control", value: "public, max-age=300" },
+              { key: "Cloudflare-CDN-Cache-Control", value: "public, max-age=300" },
+              { key: "Cache-Tag", value: "private-admin" },
+            ],
+          },
+        ],
+        i18nConfig: null,
+        requestContext: makeRequestContext(),
+      });
+
+      expect(finalized.headers.get("Cache-Control")).toBe("no-store");
+      expect(finalized.headers.get("CDN-Cache-Control")).toBeNull();
+      expect(finalized.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+      expect(finalized.headers.get("Cache-Tag")).toBeNull();
+    });
+  });
+
+  it("cleans request-dependent redirect cache headers", async () => {
+    await runWithRequestContext(createRequestContext({ cdnCacheRequestDependent: true }), () => {
+      const finalized = finalizeAppRscResponse(
+        Response.redirect("http://example.com/login"),
+        new Request("http://example.com/about"),
+        {
+          basePath: "",
+          configHeaders: [],
+          i18nConfig: null,
+          requestContext: makeRequestContext(),
+        },
+      );
+
+      expect(finalized.status).toBe(302);
+      expect(finalized.headers.get("Location")).toBe("http://example.com/login");
+      expect(finalized.headers.get("Cache-Control")).toBe("no-store");
+      expect(finalized.headers.get("CDN-Cache-Control")).toBeNull();
+    });
   });
 });
