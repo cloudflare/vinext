@@ -52,17 +52,42 @@ export function finalizeCdnResponsePolicy(
   response: Response,
   requestDependent = isCdnCacheRequestDependent(),
 ): Response {
-  if (!requestDependent) return response;
+  if (!requestDependent || process.env.VINEXT_PRERENDER === "1") return response;
+
+  const currentCacheControl = response.headers.get("Cache-Control");
+  const cacheControl =
+    currentCacheControl && /\b(?:no-store|no-cache|private)\b/i.test(currentCacheControl)
+      ? currentCacheControl
+      : "no-store";
+  const needsCleanup = CDN_RESPONSE_POLICY_HEADERS.some((name) => response.headers.has(name));
+  if (currentCacheControl === cacheControl && !needsCleanup) return response;
+
+  try {
+    response.headers.set("Cache-Control", cacheControl);
+    for (const name of CDN_RESPONSE_POLICY_HEADERS) response.headers.delete(name);
+    return response;
+  } catch {
+    // Response.redirect() and other platform responses can expose immutable
+    // headers. Clone only those responses; ordinary streamed responses stay
+    // untouched so their vinext streaming metadata remains attached.
+  }
 
   const headers = new Headers(response.headers);
-  headers.set("Cache-Control", "no-store");
+  headers.set("Cache-Control", cacheControl);
   for (const name of CDN_RESPONSE_POLICY_HEADERS) headers.delete(name);
 
-  return new Response(response.body, {
+  const finalized = new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
     headers,
   });
+  const streamingMetadata = response as Response & { __vinextStreamedHtmlResponse?: boolean };
+  if (streamingMetadata.__vinextStreamedHtmlResponse === true) {
+    (
+      finalized as Response & { __vinextStreamedHtmlResponse?: boolean }
+    ).__vinextStreamedHtmlResponse = true;
+  }
+  return finalized;
 }
 
 /**

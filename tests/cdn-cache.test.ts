@@ -41,7 +41,10 @@ import {
 } from "../packages/vinext/src/server/isr-cache.js";
 import { setHeadersAccessPhase } from "../packages/vinext/src/shims/headers.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
-import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
+import {
+  applyCdnResponseHeaders,
+  finalizeCdnResponsePolicy,
+} from "../packages/vinext/src/server/cache-control.js";
 import {
   createRequestContext,
   runWithRequestContext,
@@ -154,6 +157,46 @@ class EdgeCdnAdapter implements CdnCacheAdapter {
 }
 
 describe("edge CDN adapter integration", () => {
+  it("does not alter internal prerender response policies", () => {
+    const previous = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+    try {
+      const response = new Response("static", {
+        headers: { "CDN-Cache-Control": "public, max-age=300" },
+      });
+      const finalized = finalizeCdnResponsePolicy(response, true);
+
+      expect(finalized).toBe(response);
+      expect(finalized.headers.get("CDN-Cache-Control")).toBe("public, max-age=300");
+      expect(finalized.headers.get("Cache-Control")).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previous;
+    }
+  });
+
+  it("preserves stronger no-store policies and streamed response metadata", () => {
+    const response = new Response("stream", {
+      headers: {
+        "Cache-Control": "no-store, must-revalidate",
+        "CDN-Cache-Control": "public, max-age=300",
+      },
+    });
+    (
+      response as Response & { __vinextStreamedHtmlResponse?: boolean }
+    ).__vinextStreamedHtmlResponse = true;
+
+    const finalized = finalizeCdnResponsePolicy(response, true);
+
+    expect(finalized).toBe(response);
+    expect(finalized.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(finalized.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(
+      (finalized as Response & { __vinextStreamedHtmlResponse?: boolean })
+        .__vinextStreamedHtmlResponse,
+    ).toBe(true);
+  });
+
   it.each([
     ["Cookie", "session=admin"],
     ["Authorization", "Bearer secret"],
