@@ -1327,7 +1327,8 @@ export function getClientNavigationRenderContext(): React.Context<ClientNavigati
 }
 
 /* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
-function useClientNavigationRenderSnapshot(): ClientNavigationRenderSnapshot | null {
+/** @internal */
+export function useClientNavigationRenderSnapshot(): ClientNavigationRenderSnapshot | null {
   const ctx = getClientNavigationRenderContext();
   if (!ctx || typeof React.useContext !== "function") return null;
   try {

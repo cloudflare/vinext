@@ -8,12 +8,10 @@
  *   https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/client/components/navigation-untracked.ts
  */
 
-import * as React from "react";
 import {
   getClientNavigationState,
-  getClientNavigationRenderContext,
   getNavigationContext,
-  type ClientNavigationRenderSnapshot,
+  useClientNavigationRenderSnapshot,
 } from "../navigation.js";
 import { getPagesNavigationContext } from "./pages-router-accessor.js";
 
@@ -27,18 +25,6 @@ function getPathnameSnapshot(): string | null {
   return getClientNavigationState()?.cachedPathname ?? "/";
 }
 
-/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
-function useClientNavigationRenderSnapshot(): ClientNavigationRenderSnapshot | null {
-  const ctx = getClientNavigationRenderContext();
-  if (!ctx || typeof React.useContext !== "function") return null;
-  try {
-    return React.useContext(ctx);
-  } catch {
-    return null;
-  }
-}
-/* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
-
 // ─── useUntrackedPathname ───────────────────────────────────────────────────
 
 /**
@@ -47,9 +33,11 @@ function useClientNavigationRenderSnapshot(): ClientNavigationRenderSnapshot | n
  * and therefore does not cause the component to re-render on navigation.
  *
  * Server: returns the pathname from context, or `"/"` when no navigation context
- * is available (the client will hydrate with the real value). Returns `null` only
- * when the render is a missing-params shell — vinext does not yet implement
- * fallback-route-param detection, so this path is not currently reachable.
+ * is available (the client will hydrate with the real value). The `"/"` fallback
+ * deliberately matches vinext's `usePathname()` behavior rather than Next.js's
+ * null context default. Returns `null` only when the render is a missing-params
+ * shell — vinext does not yet implement fallback-route-param detection, so this
+ * path is not currently reachable.
  *
  * Client: prefers the render snapshot **only during an active navigation**
  * transition (`navigationSnapshotActiveCount > 0`) so the hook returns the
