@@ -2,8 +2,17 @@ import MagicString from "magic-string";
 import { parseAst, type Plugin, type ResolvedConfig } from "vite";
 import { forEachAstChild, hasRange, isAstRecord, nodeArray, type AstRecord } from "./ast-utils.js";
 
-const MODULE_EXTENSIONS = [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx"];
-const TRANSFORMABLE_EXTENSIONS = new Set([...MODULE_EXTENSIONS, ".cjs", ".cts"]);
+const MODULE_EXTENSIONS = [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json"];
+const TRANSFORMABLE_EXTENSIONS = new Set([
+  ".mjs",
+  ".js",
+  ".mts",
+  ".ts",
+  ".jsx",
+  ".tsx",
+  ".cjs",
+  ".cts",
+]);
 
 type ExtensionlessImport = {
   start: number;
@@ -24,7 +33,7 @@ export function createExtensionlessDynamicImportPlugin(): Plugin {
       moduleExtensions = getModuleExtensions(config);
     },
     transform(code, id) {
-      if (!code.includes("import(") && !code.includes("import (")) return null;
+      if (!/\bimport\s*\(/.test(code)) return null;
       const lang = langForId(id);
       if (!lang) return null;
 
@@ -105,16 +114,18 @@ function parseExtensionlessImport(
   if (first == null || last == null) return null;
   if (!/^import\s*\(\s*$/.test(code.slice(node.start, source.start))) return null;
   if (!(first.startsWith("./") || first.startsWith("../"))) return null;
-  if (!first.endsWith("/")) return null;
   if (/[*?[\]{}()!]/.test(first)) return null;
   if (/[.?#]/.test(last)) return null;
+
+  const directoryEnd = first.lastIndexOf("/") + 1;
+  const directory = first.slice(0, directoryEnd);
 
   return {
     start: node.start,
     end: node.end,
     sourceStart: source.start,
     sourceEnd: source.end,
-    globPattern: `${first}**/*{${moduleExtensions.join(",")}}`,
+    globPattern: `${directory}**/*{${moduleExtensions.join(",")}}`,
     moduleExtensions,
   };
 }
@@ -128,9 +139,7 @@ function templateElementText(value: unknown): string | null {
 }
 
 function getModuleExtensions(config: ResolvedConfig): string[] {
-  return config.resolve.extensions.filter(
-    (extension) => extension !== ".json" && extension !== ".node",
-  );
+  return config.resolve.extensions.filter((extension) => extension !== ".node");
 }
 
 function buildReplacement(
@@ -139,5 +148,5 @@ function buildReplacement(
   moduleExtensions: readonly string[],
 ): string {
   const extensions = JSON.stringify(moduleExtensions);
-  return `((__vinextPath, __vinextModules = import.meta.glob(${JSON.stringify(globPattern)}), __vinextExtensions = ${extensions}) => { const __vinextLoader = __vinextModules[__vinextPath] ?? __vinextExtensions.map((__vinextExtension) => __vinextModules[__vinextPath + __vinextExtension] ?? __vinextModules[__vinextPath + "/index" + __vinextExtension]).find(Boolean); return __vinextLoader ? __vinextLoader() : Promise.reject(new Error("Cannot find module '" + __vinextPath + "'")); })(${source})`;
+  return `((__vinextPath, __vinextModules = import.meta.glob(${JSON.stringify(globPattern)}), __vinextExtensions = ${extensions}) => { const __vinextLoader = __vinextModules[__vinextPath] ?? __vinextExtensions.map((__vinextExtension) => __vinextModules[__vinextPath + __vinextExtension]).find(Boolean) ?? __vinextExtensions.map((__vinextExtension) => __vinextModules[__vinextPath + "/index" + __vinextExtension]).find(Boolean); return __vinextLoader ? __vinextLoader() : Promise.reject(new Error("Cannot find module '" + __vinextPath + "'")); })(${source})`;
 }

@@ -18,7 +18,7 @@ describe("vinext:extensionless-dynamic-import", () => {
     const transform = createTransform();
     const result = transform("const moduleExports = await import(`./${slug}`)", "/app/page.tsx");
 
-    expect(result.code).toContain('import.meta.glob("./**/*{.mjs,.js,.mts,.ts,.jsx,.tsx}")');
+    expect(result.code).toContain('import.meta.glob("./**/*{.mjs,.js,.mts,.ts,.jsx,.tsx,.json}")');
     expect(result.code).toContain("__vinextModules[__vinextPath + __vinextExtension]");
     expect(result.code).toContain('__vinextPath + "/index" + __vinextExtension');
     expect(result.code).toContain("Promise.reject(new Error");
@@ -28,8 +28,36 @@ describe("vinext:extensionless-dynamic-import", () => {
     const transform = createTransform([".platform.tsx", ".tsx", ".js", ".json"]);
     const result = transform("await import(`./${slug}`)", "/app/page.tsx");
 
-    expect(result.code).toContain('import.meta.glob("./**/*{.platform.tsx,.tsx,.js}")');
-    expect(result.code).toContain('[".platform.tsx",".tsx",".js"]');
+    expect(result.code).toContain('import.meta.glob("./**/*{.platform.tsx,.tsx,.js,.json}")');
+    expect(result.code).toContain('[".platform.tsx",".tsx",".js",".json"]');
+  });
+
+  it("tries every file extension before directory index files", () => {
+    const transform = createTransform([".tsx", ".js"]);
+    const result = transform("await import(`./${slug}`)", "/app/page.tsx");
+
+    expect(result.code.indexOf("__vinextPath + __vinextExtension")).toBeLessThan(
+      result.code.indexOf('__vinextPath + "/index" + __vinextExtension'),
+    );
+    expect(result.code).not.toContain(
+      '__vinextModules[__vinextPath + __vinextExtension] ?? __vinextModules[__vinextPath + "/index"',
+    );
+  });
+
+  it("transforms imports separated from the call parenthesis by newlines", () => {
+    const transform = createTransform();
+    const result = transform("await import\n(`./${slug}`)", "/app/page.tsx");
+
+    expect(result.code).toContain("import.meta.glob");
+  });
+
+  it("transforms imports with a static filename prefix", () => {
+    const transform = createTransform();
+    const result = transform("await import(`./components/prefixed-${slug}`)", "/app/page.tsx");
+
+    expect(result.code).toContain(
+      'import.meta.glob("./components/**/*{.mjs,.js,.mts,.ts,.jsx,.tsx,.json}")',
+    );
   });
 
   it("leaves imports with explicit extensions unchanged", () => {

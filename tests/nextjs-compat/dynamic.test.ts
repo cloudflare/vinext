@@ -133,6 +133,9 @@ describe("Next.js compat: next/dynamic", () => {
   it("RSC: resolves extensionless variable dynamic imports", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic/extensionless-import");
     expect(html).toContain("<button>submit</button>");
+    expect(html).toContain("<p>file import</p>");
+    expect(html).toContain("<p>json import</p>");
+    expect(html).toContain("<p>prefixed import</p>");
   });
 
   // Ported from Next.js: test/e2e/app-dir/next-dynamic-csp-nonce/next-dynamic-csp-nonce.test.ts
