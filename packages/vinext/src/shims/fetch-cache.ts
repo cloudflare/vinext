@@ -822,16 +822,21 @@ function cloneDedupeResponse(response: Response): [Response, Response] {
   return [buildDedupeClone(body1, response), buildDedupeClone(body2, response)];
 }
 
-function buildCachedFetchResponse(data: CachedFetchValue["data"]): Response {
+function buildCachedFetchResponse(
+  data: CachedFetchValue["data"],
+  input: string | URL | Request,
+): Response {
   const response = new Response(data.body, {
     status: data.status ?? 200,
     headers: data.headers,
   });
   // `data.url` is typed as required, but cached entries may cross a
   // serialization boundary (e.g. KV) where a legacy or third-party writer
-  // never populated it — fall back to "" rather than `undefined`.
+  // never populated it — fall back to the request URL (what an uncached,
+  // redirect-free fetch would report) so consumers that read `response.url`
+  // (e.g. to resolve relative redirects) still see a usable absolute URL.
   Object.defineProperty(response, "url", {
-    value: data.url ?? "",
+    value: data.url ?? getFetchObservationUrl(input),
     configurable: true,
     enumerable: true,
     writable: false,
@@ -1057,7 +1062,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       const cached = await handler.get(cacheKey, { kind: "FETCH", tags, softTags });
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
         const cachedData = cached.value.data;
-        return buildCachedFetchResponse(cachedData);
+        return buildCachedFetchResponse(cachedData, input);
       }
 
       // Stale entry — we could do stale-while-revalidate here, but for fetch()
@@ -1135,7 +1140,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         }
 
         // Return stale data immediately
-        return buildCachedFetchResponse(staleData);
+        return buildCachedFetchResponse(staleData, input);
       }
     } catch (cacheErr) {
       // Cache read failed — fall through to network

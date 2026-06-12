@@ -165,7 +165,7 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("falls back to an empty Response.url when a cached entry lacks url", async () => {
+  it("falls back to the request URL when a cached entry lacks url", async () => {
     const url = "https://api.example.com/legacy-no-url";
 
     await fetch(url, {
@@ -185,7 +185,7 @@ describe("fetch cache shim", () => {
       cache: "force-cache",
     });
 
-    expect(cached.url).toBe("");
+    expect(cached.url).toBe(url);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

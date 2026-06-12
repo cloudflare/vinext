@@ -743,6 +743,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     ) {
       // Hydrate the intercept source route before reading its page module.
       await options.ensureRouteLoaded?.(interceptRoute);
+      // Deliberately no save/restore around buildPageElement: when this
+      // callback runs, resolveAppPageIntercept returns the intercept response
+      // directly and the dispatch never falls through to the original route.
+      // The intercept route's fetch defaults must also stay active past this
+      // call — its server components fetch lazily during the
+      // renderToReadableStream in renderInterceptResponse below.
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
       setCurrentForceDynamicFetchDefault(
         options.resolveRouteDynamicConfig?.(interceptRoute) === "force-dynamic",
