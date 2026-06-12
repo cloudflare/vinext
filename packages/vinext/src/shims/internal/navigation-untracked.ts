@@ -15,41 +15,14 @@ import {
   getNavigationContext,
   type ClientNavigationRenderSnapshot,
 } from "../navigation.js";
+import { getPagesNavigationContext } from "./pages-router-accessor.js";
 
 const isServer = typeof window === "undefined";
-
-// ─── Pages Router compat ────────────────────────────────────────────────────
-// The Pages Router accessor is not exported from navigation.ts, so we duplicate
-// only this Symbol-based lookup here.
-
-type PagesNavigationContext = {
-  pathname: string | null;
-  searchParams: URLSearchParams;
-  params: Record<string, string | string[]> | null;
-};
-
-const PAGES_NAVIGATION_ACCESSOR_KEY = Symbol.for(
-  "vinext.navigation.pagesNavigationContextAccessor",
-);
-
-type _GlobalWithPagesAccessor = typeof globalThis & {
-  [PAGES_NAVIGATION_ACCESSOR_KEY]?: () => PagesNavigationContext | null;
-};
-
-function _getPagesNavigationContext(): PagesNavigationContext | null {
-  const accessor = (globalThis as _GlobalWithPagesAccessor)[PAGES_NAVIGATION_ACCESSOR_KEY];
-  if (!accessor) return null;
-  try {
-    return accessor();
-  } catch {
-    return null;
-  }
-}
 
 // ─── Client snapshots ───────────────────────────────────────────────────────
 
 function getPathnameSnapshot(): string | null {
-  const pagesCtx = _getPagesNavigationContext();
+  const pagesCtx = getPagesNavigationContext();
   if (pagesCtx) return pagesCtx.pathname;
   return getClientNavigationState()?.cachedPathname ?? "/";
 }
@@ -93,14 +66,14 @@ export function useUntrackedPathname(): string | null {
   if (isServer) {
     const ctx = getNavigationContext();
     if (ctx) return ctx.pathname;
-    const pagesCtx = _getPagesNavigationContext();
+    const pagesCtx = getPagesNavigationContext();
     return pagesCtx ? pagesCtx.pathname : "/";
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
   if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
     return renderSnapshot.pathname;
   }
-  const pagesCtx = _getPagesNavigationContext();
+  const pagesCtx = getPagesNavigationContext();
   if (pagesCtx) return pagesCtx.pathname;
   return getPathnameSnapshot();
 }
