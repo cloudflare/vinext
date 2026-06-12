@@ -16,7 +16,7 @@ import {
 } from "../server/headers.js";
 import { encodeMiddlewareRequestHeaders } from "../server/middleware-request-headers.js";
 import { serializeSetCookie, validateCookieName } from "./internal/cookie-serialize.js";
-import { parseEdgeRequestCookieHeader } from "./internal/parse-cookie-header.js";
+import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";

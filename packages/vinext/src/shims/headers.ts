@@ -16,7 +16,7 @@ import {
   validateCookieAttributeValue,
   validateCookieName,
 } from "./internal/cookie-serialize.js";
-import { parseEdgeRequestCookieHeader } from "./internal/parse-cookie-header.js";
+import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,
