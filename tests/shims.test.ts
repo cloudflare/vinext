@@ -16186,6 +16186,7 @@ describe("Pages Router _next/data client navigation", () => {
   it("uses the JSON path for prefetch when a loader is registered", async () => {
     const previousWindow = (globalThis as any).window;
     const originalDocument = (globalThis as any).document;
+    const originalFetch = globalThis.fetch;
 
     const aboutLoader = vi.fn(async () => makePageModule("about"));
     const { win, buildId } = createDataNavWindow({
@@ -16216,6 +16217,8 @@ describe("Pages Router _next/data client navigation", () => {
         },
       },
     };
+    const fetchMock = vi.fn(async () => new Response("{}"));
+    globalThis.fetch = fetchMock;
     vi.resetModules();
 
     try {
@@ -16223,17 +16226,22 @@ describe("Pages Router _next/data client navigation", () => {
       const Router = routerModule.default;
       await Router.prefetch("/about");
 
-      const prefetchLink = appendedLinks.find((l) => l.rel === "prefetch");
-      expect(prefetchLink).toBeDefined();
-      expect(prefetchLink?.as).toBe("fetch");
-      expect(prefetchLink?.href).toBe(`/_next/data/${buildId}/about.json`);
-      expect(prefetchLink?.crossOrigin).toBe("anonymous");
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+      expect(fetchMock).toHaveBeenCalledWith(`/_next/data/${buildId}/about.json`, {
+        headers: {
+          Accept: "application/json",
+          purpose: "prefetch",
+          "x-nextjs-data": "1",
+        },
+      });
+      expect(appendedLinks).toEqual([]);
       // The loader was warmed (chunk fetch kicked off).
       expect(aboutLoader).toHaveBeenCalledTimes(1);
     } finally {
       if (previousWindow === undefined) delete (globalThis as any).window;
       else (globalThis as any).window = previousWindow;
       (globalThis as any).document = originalDocument;
+      globalThis.fetch = originalFetch;
       vi.resetModules();
     }
   });

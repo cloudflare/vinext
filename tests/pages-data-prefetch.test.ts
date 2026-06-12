@@ -2,25 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { clearPagesDataInflight } from "../packages/vinext/src/shims/internal/pages-data-fetch-dedup.js";
 import { prefetchPagesData } from "../packages/vinext/src/shims/internal/pages-data-target.js";
 
-const originalDocument = globalThis.document;
-const originalFetch = globalThis.fetch;
-
 describe("prefetchPagesData", () => {
   beforeEach(() => {
     clearPagesDataInflight();
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {} });
+    vi.stubGlobal("document", {});
   });
 
   afterEach(() => {
     clearPagesDataInflight();
-    vi.restoreAllMocks();
-    if (originalDocument === undefined) delete (globalThis as { document?: Document }).document;
-    else
-      Object.defineProperty(globalThis, "document", {
-        configurable: true,
-        value: originalDocument,
-      });
-    globalThis.fetch = originalFetch;
+    vi.unstubAllGlobals();
     delete process.env.__VINEXT_DEPLOYMENT_ID;
   });
 
@@ -31,7 +21,7 @@ describe("prefetchPagesData", () => {
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
       async () => new Response("{}"),
     );
-    globalThis.fetch = fetchMock;
+    vi.stubGlobal("fetch", fetchMock);
     const loader = vi.fn(async () => ({ default: null }));
 
     prefetchPagesData({
