@@ -1165,6 +1165,14 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(basePathPos).toBeLessThan(imagePos);
   });
 
+  it("threads configured image widths and qualities into optimization validation", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES");
+    expect(content).toContain("vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES");
+    expect(content).toContain("qualities: vinextConfig.images.qualities");
+    expect(content).toContain("}, allowedWidths, imageConfig)");
+  });
+
   it("uses segment-boundary check before skipping redirect destination prefixing", () => {
     const content = generatePagesRouterWorkerEntry();
     // Segment-boundary checks for redirect destination prefixing are now

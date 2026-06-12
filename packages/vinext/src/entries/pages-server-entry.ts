@@ -123,6 +123,7 @@ export async function generateServerEntry(
     images: {
       deviceSizes: nextConfig?.images?.deviceSizes,
       imageSizes: nextConfig?.images?.imageSizes,
+      qualities: nextConfig?.images?.qualities,
       dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
       dangerouslyAllowLocalIP: nextConfig?.images?.dangerouslyAllowLocalIP,
       contentDispositionType: nextConfig?.images?.contentDispositionType,

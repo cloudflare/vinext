@@ -201,6 +201,8 @@ export type NextConfig = {
     deviceSizes?: number[];
     /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [16, 32, 48, 64, 96, 128, 256, 384] */
     imageSizes?: number[];
+    /** Allowed image qualities. Defaults to Next.js 16's `[75]`. */
+    qualities?: number[];
     /** Allow SVG images through the image optimization endpoint. SVG can contain scripts, so only enable if you trust all image sources. */
     dangerouslyAllowSVG?: boolean;
     /** Allow image optimization for hostnames that resolve to private IP addresses. This is a security risk (SSRF) — only enable for private networks when you understand the risk. */

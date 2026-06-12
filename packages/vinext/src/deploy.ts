@@ -572,6 +572,7 @@ const configRedirects = vinextConfig?.redirects ?? [];
 const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
 const configHeaders = vinextConfig?.headers ?? [];
 const imageConfig: ImageConfig | undefined = vinextConfig?.images ? {
+  qualities: vinextConfig.images.qualities,
   dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
   dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
   contentDispositionType: vinextConfig.images.contentDispositionType,
@@ -637,7 +638,10 @@ export default {
       // ── Image optimization via Cloudflare Images binding ──────────
       // Checked after basePath stripping so /<basePath>/_next/image works.
       if (isImageOptimizationPath(pathname)) {
-        const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
+        const allowedWidths = [
+          ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
+          ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
+        ];
         return handleImageOptimization(request, {
           fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
           transformImage: async (body, { width, format, quality }) => {

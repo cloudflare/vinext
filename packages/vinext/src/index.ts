@@ -4405,6 +4405,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (!outDir) return;
 
           const imageConfig = {
+            deviceSizes: nextConfig?.images?.deviceSizes,
+            imageSizes: nextConfig?.images?.imageSizes,
+            qualities: nextConfig?.images?.qualities,
             dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
             contentDispositionType: nextConfig?.images?.contentDispositionType,
             contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
