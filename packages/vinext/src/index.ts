@@ -173,6 +173,7 @@ import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
+import { replaceTypeofWindow } from "./plugins/typeof-window.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import { getViteMajorVersion } from "./utils/vite-version.js";
@@ -3913,8 +3914,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
-    // Inject server-environment defines (NEXT_RUNTIME + user `compiler.defineServer`
-    // entries) into non-client environments only.  The universal
+    // Fold `typeof window` like Next.js before Rolldown resolves imports. This
+    // removes browser-only dynamic imports from server bundles before package
+    // conditional exports are evaluated.
+    {
+      name: "vinext:typeof-window",
+      enforce: "post",
+      transform: {
+        filter: { code: /typeof\s+window/ },
+        handler(code) {
+          return replaceTypeofWindow(
+            code,
+            this.environment?.name === "client" ? "object" : "undefined",
+          );
+        },
+      },
+    },
+    // Inject server-environment defines. Server environments receive
+    // NEXT_RUNTIME + user `compiler.defineServer` entries. The universal
     // `compiler.define` map is already merged into the top-level Vite
     // `define` config above, so it applies to both client and server bundles.
     // Server-only defines MUST NOT leak into the browser bundle (they can
@@ -3928,11 +3945,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     {
       name: "vinext:compiler-define-server",
       configEnvironment(name) {
-        // The client environment is NEVER given server-only defines. Returning
-        // early here is what makes every define in `serverDefines` below
-        // structurally guaranteed to stay out of the browser bundle. All other
-        // environments (rsc, ssr, custom worker envs, etc.) are server-side per
-        // Vite's `consumer: "server"` default and receive the substitutions.
         if (name === "client") return null;
 
         const serverDefines: Record<string, string> = { ...nextConfig.compilerDefineServer };
