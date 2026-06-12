@@ -823,6 +823,42 @@ describe("resolveNextConfig alias extraction", () => {
     ]);
   });
 
+  it("ignores untouched webpack resolve.extensions defaults", async () => {
+    const untouched = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        return webpackConfig;
+      },
+    });
+    expect(untouched.resolveExtensions).toBeNull();
+
+    const copied = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = [...webpackConfig.resolve.extensions];
+        return webpackConfig;
+      },
+    });
+    expect(copied.resolveExtensions).toBeNull();
+  });
+
+  it("captures in-place webpack resolve.extensions mutations", async () => {
+    const resolved = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions.unshift(".web.tsx");
+        return webpackConfig;
+      },
+    });
+    expect(resolved.resolveExtensions).toEqual([
+      ".web.tsx",
+      ".js",
+      ".mjs",
+      ".tsx",
+      ".ts",
+      ".jsx",
+      ".json",
+      ".wasm",
+    ]);
+  });
+
   let tmpDir: string;
 
   afterEach(() => {

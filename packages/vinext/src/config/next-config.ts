@@ -1663,7 +1663,7 @@ async function probeWebpackConfig(
     // existing list observe the same starting point.
     extensions: [".js", ".mjs", ".tsx", ".ts", ".jsx", ".json", ".wasm"],
   };
-  const defaultResolveExtensions = mockResolve.extensions;
+  const defaultResolveExtensions = [...mockResolve.extensions];
   const mockConfig = {
     context: root,
     resolve: mockResolve,
@@ -1692,11 +1692,20 @@ async function probeWebpackConfig(
     // the shared Node process so they become visible to defines and
     // server-side code during the same build.
     invokeLoaderSideEffects(rules, root);
+    const resolveExtensions = Array.isArray(finalConfig.resolve?.extensions)
+      ? readStringArray(finalConfig.resolve.extensions)
+      : null;
+    const resolveExtensionsCustomized =
+      resolveExtensions !== null &&
+      (resolveExtensions.length !== defaultResolveExtensions.length ||
+        resolveExtensions.some(
+          (extension, index) => extension !== defaultResolveExtensions[index],
+        ));
     return {
       aliases: normalizeAliasEntries(finalConfig.resolve?.alias, root),
       mdx: extractMdxOptionsFromRules(rules),
-      resolveExtensions: readStringArray(finalConfig.resolve?.extensions),
-      resolveExtensionsCustomized: finalConfig.resolve?.extensions !== defaultResolveExtensions,
+      resolveExtensions: resolveExtensionsCustomized ? resolveExtensions : null,
+      resolveExtensionsCustomized,
     };
   } catch {
     return {
