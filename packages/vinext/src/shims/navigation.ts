@@ -2048,6 +2048,14 @@ if (process.env.__NEXT_GESTURE_TRANSITION) {
     assertSafeNavigationUrl(href);
     if (isServer) return;
 
+    // Next.js parity: upstream's gesturePush early-returns when
+    // `getCurrentAppRouterState() === null` (a gesture dispatched before
+    // hydration is a no-op). Our equivalent readiness signal is the runtime's
+    // navigate function — the same check navigateClientSide uses before its
+    // non-runtime fallback, which would otherwise perform a real history push
+    // here instead of upstream's no-op.
+    if (!getNavigationRuntime()?.functions.navigate) return;
+
     // navigateClientSide would normalize same-origin absolute URLs itself; this
     // inline check exists to *no-op* on external hrefs instead of falling
     // through to its hard window.location.assign.
@@ -2062,7 +2070,11 @@ if (process.env.__NEXT_GESTURE_TRANSITION) {
     // in the same task skips its redundant re-fetch (see
     // hasScheduledAppRouterNavigation() in refresh()). Unlike push/replace
     // there is no synchronous React.startTransition dispatch here that could
-    // throw, so no try/catch unwind is needed.
+    // throw, so no try/catch unwind is needed. The un-awaited
+    // `void navigateClientSide(...)` deliberately matches push/replace's
+    // fire-and-forget shape (their try/catch only covers the synchronous
+    // startTransition throw): an RSC fetch rejection mid-gesture surfaces the
+    // same way it would for those siblings.
     const releaseNavigation = trackScheduledAppRouterNavigation();
     void navigateClientSide(appHref, "push", options?.scroll !== false, false, "synchronous");
     releaseScheduledAppRouterNavigationAfterCurrentTask(releaseNavigation);
