@@ -99,11 +99,8 @@ import {
 import { proxyExternalRequest } from "./config/config-matchers.js";
 import { detectPackageManager } from "./utils/project.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
-import {
-  ASSET_PREFIX_URL_DIR,
-  resolveAssetUrlPrefix,
-  resolveAssetsDir,
-} from "./utils/asset-prefix.js";
+import { ASSET_PREFIX_URL_DIR, resolveAssetsDir } from "./utils/asset-prefix.js";
+import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
@@ -1382,8 +1379,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // generate a separate token so RSC headers do not expose
         // generateBuildId() verbatim.
         defines["process.env.__VINEXT_RSC_COMPATIBILITY_ID"] = JSON.stringify(rscCompatibilityId);
-        // Deployment ID — mirrors Next.js' NEXT_DEPLOYMENT_ID seed for shared
-        // "use cache" entries, falling back to build ID when absent.
+        // Deployment ID — mirrors Next.js' configured NEXT_DEPLOYMENT_ID.
+        // This remains empty when deploymentId is not configured; the separate
+        // "use cache" key builder falls back to __VINEXT_BUILD_ID when needed.
         defines["process.env.__VINEXT_DEPLOYMENT_ID"] = JSON.stringify(
           nextConfig.deploymentId ?? "",
         );
@@ -1991,28 +1989,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // See packages/vinext/src/utils/asset-prefix.ts for the helpers
           // and Next.js docs for the contract:
           // https://nextjs.org/docs/app/api-reference/config/next-config-js/assetPrefix
-          ...(nextConfig.assetPrefix
+          ...(nextConfig.assetPrefix || nextConfig.deploymentId
             ? {
                 experimental: {
-                  renderBuiltUrl: (filename: string) => {
-                    // `filename` is the bundler-relative output path,
-                    // e.g. `_next/static/chunk-abc.js` or
-                    // `<assetPrefix-pathname>/_next/static/chunk-abc.js`
-                    // when assetPrefix is a path prefix. Re-anchor it under
-                    // the configured asset URL prefix.
-                    const urlPrefix = resolveAssetUrlPrefix(nextConfig.assetPrefix);
-                    // Strip any leading on-disk `assetsDir` segment so we
-                    // don't double-prefix when the on-disk layout already
-                    // mirrors the URL path.
-                    const onDiskDir = resolveAssetsDir(nextConfig.assetPrefix);
-                    const dirPrefix = onDiskDir + "/";
-                    const stripped = filename.startsWith(dirPrefix)
-                      ? filename.slice(dirPrefix.length)
-                      : filename.startsWith(`${ASSET_PREFIX_URL_DIR}/`)
-                        ? filename.slice(ASSET_PREFIX_URL_DIR.length + 1)
-                        : filename;
-                    return urlPrefix + stripped;
-                  },
+                  renderBuiltUrl: (filename: string) =>
+                    renderVinextBuiltUrl(filename, nextConfig.assetPrefix, nextConfig.deploymentId),
                 },
               }
             : {}),

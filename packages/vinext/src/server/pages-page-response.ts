@@ -22,6 +22,7 @@ import {
 import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
+import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -227,11 +228,11 @@ function buildPagesFontHeadHtml(
   const nonceAttr = createNonceAttribute(scriptNonce);
 
   for (const link of fontLinks) {
-    html += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(link)}" />\n  `;
+    html += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(appendDeploymentIdQuery(link))}" />\n  `;
   }
 
   for (const preload of fontPreloads) {
-    html += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n  `;
+    html += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(appendDeploymentIdQuery(preload.href))}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n  `;
   }
 
   if (fontStyles.length > 0) {

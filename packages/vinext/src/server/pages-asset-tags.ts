@@ -11,6 +11,7 @@
 
 import { createNonceAttribute } from "./html.js";
 import { assetServingUrlFromBaseAnchored } from "../utils/manifest-paths.js";
+import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
 
 // ---------------------------------------------------------------------------
 // Manifest helpers
@@ -64,13 +65,17 @@ export function resolveClientModuleUrl(
   moduleId: string | null | undefined,
   basePath = "",
   assetPrefix = "",
+  deploymentId?: string,
 ): string | undefined {
   const files = getManifestFilesForModule(resolveSsrManifest(manifest), moduleId);
   if (!files) return undefined;
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     if (!file || !file.endsWith(".js")) continue;
-    return assetServingUrlFromBaseAnchored(file, basePath, assetPrefix);
+    return appendDeploymentIdQuery(
+      assetServingUrlFromBaseAnchored(file, basePath, assetPrefix),
+      deploymentId,
+    );
   }
   return undefined;
 }
@@ -106,6 +111,7 @@ type CollectAssetTagsOptions = {
    */
   basePath?: string;
   assetPrefix?: string;
+  deploymentId?: string;
 };
 
 /**
@@ -143,7 +149,10 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   const basePath = options.basePath ?? "";
   const assetPrefix = options.assetPrefix ?? "";
   const href = (value: string): string =>
-    assetServingUrlFromBaseAnchored(value, basePath, assetPrefix);
+    appendDeploymentIdQuery(
+      assetServingUrlFromBaseAnchored(value, basePath, assetPrefix),
+      options.deploymentId,
+    );
 
   // Load the set of lazy chunk filenames (only reachable via dynamic imports).
   // These should NOT get <link rel="modulepreload"> or <script type="module">

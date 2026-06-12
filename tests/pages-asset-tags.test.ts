@@ -109,6 +109,11 @@ describe("resolveClientModuleUrl", () => {
     const m = makeManifest({ "page.tsx": ["style.css"] });
     expect(resolveClientModuleUrl(m, "page.tsx")).toBeUndefined();
   });
+
+  it("appends the deployment ID to client module URLs", () => {
+    const m = makeManifest({ "page.tsx": ["page.js"] });
+    expect(resolveClientModuleUrl(m, "page.tsx", "", "", "dpl_123")).toBe("/page.js?dpl=dpl_123");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -138,6 +143,21 @@ describe("collectAssetTags", () => {
     });
     expect(result).toContain('<link rel="stylesheet"');
     expect(result).toContain('href="/style.css"');
+  });
+
+  // Ported from Next.js: test/production/deployment-id-handling/deployment-id-handling.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/production/deployment-id-handling/deployment-id-handling.test.ts
+  it("appends the deployment ID to managed script and stylesheet URLs", () => {
+    const result = collectAssetTags({
+      manifest: makeManifest({ "page.tsx": ["style.css", "page.js"] }),
+      moduleIds: ["page.tsx"],
+      disableOptimizedLoading: true,
+      deploymentId: "dpl_123",
+    });
+
+    expect(result).toContain('href="/style.css?dpl=dpl_123"');
+    expect(result).toContain('href="/page.js?dpl=dpl_123"');
+    expect(result).toContain('src="/page.js?dpl=dpl_123"');
   });
 
   it("emits modulepreload + script for js files", () => {

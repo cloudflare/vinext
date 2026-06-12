@@ -15,6 +15,7 @@ import {
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "./headers.js";
+import { applyDeploymentIdHeader } from "../utils/deployment-id.js";
 
 /**
  * RSC cache-busting hashes cover the headers that make an RSC payload vary.
@@ -279,6 +280,7 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
     Accept: VINEXT_RSC_CONTENT_TYPE,
     [RSC_HEADER]: "1",
   });
+  applyDeploymentIdHeader(headers);
 
   if (options.interceptionContext !== undefined && options.interceptionContext !== null) {
     headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, options.interceptionContext);

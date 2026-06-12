@@ -46,6 +46,7 @@ import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js";
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
+import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -463,12 +464,14 @@ export function createPagesPageHandler(
           route.filePath,
           vinextConfig.basePath,
           vinextConfig.assetPrefix,
+          process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
         );
         const appModuleUrl = resolveClientModuleUrl(
           manifest,
           appAssetPath,
           vinextConfig.basePath,
           vinextConfig.assetPrefix,
+          process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
         );
         const serializedPagesNextData = {
           ...pagesNextData,
@@ -489,7 +492,12 @@ export function createPagesPageHandler(
           if (allFontPreloads.length > 0) {
             fontLinkHeader = allFontPreloads
               .map(
-                (p) => "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin",
+                (p) =>
+                  "<" +
+                  appendDeploymentIdQuery(p.href) +
+                  ">; rel=preload; as=font; type=" +
+                  p.type +
+                  "; crossorigin",
               )
               .join(", ");
           }
@@ -654,6 +662,7 @@ export function createPagesPageHandler(
           disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
           basePath: vinextConfig.basePath,
           assetPrefix: vinextConfig.assetPrefix,
+          deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
         });
 
         return await renderPagesPageResponse({

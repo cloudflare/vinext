@@ -74,6 +74,7 @@ import {
 } from "./pages-router-runtime.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
+import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../utils/deployment-id.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
@@ -1334,9 +1335,10 @@ async function navigateClientData(
   }
   let res: Response;
   try {
-    res = await dedupedPagesDataFetch(target.dataHref, {
-      headers: { Accept: "application/json", "x-nextjs-data": "1" },
-    });
+    const headers: Record<string, string> = { Accept: "application/json", "x-nextjs-data": "1" };
+    const deploymentId = getDeploymentId();
+    if (deploymentId) headers[NEXT_DEPLOYMENT_ID_HEADER] = deploymentId;
+    res = await dedupedPagesDataFetch(target.dataHref, { headers });
   } catch (err: unknown) {
     if (err instanceof DOMException && err.name === "AbortError") {
       throw new NavigationCancelledError(url);

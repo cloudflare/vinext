@@ -27,6 +27,7 @@
 import React from "react";
 import * as ReactDOM from "react-dom";
 import { useScriptNonce } from "./script-nonce-context.js";
+import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
 
 function dynamicPreloadHref(file: string): string {
   if (
@@ -79,8 +80,9 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
 
   const stylesheets: React.ReactNode[] = [];
   for (const file of files) {
-    const href = dynamicPreloadHref(file);
-    if (href.endsWith(".css")) {
+    const assetHref = dynamicPreloadHref(file);
+    const href = appendDeploymentIdQuery(assetHref);
+    if (assetHref.endsWith(".css")) {
       stylesheets.push(
         React.createElement("link", {
           key: href,
@@ -93,7 +95,7 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
       continue;
     }
 
-    if (href.endsWith(".js") && typeof ReactDOM.preload === "function") {
+    if (assetHref.endsWith(".js") && typeof ReactDOM.preload === "function") {
       // Pass `nonce` directly (React omits the attribute when it is undefined),
       // matching the stylesheet branch above.
       const preloadOptions: ReactDOM.PreloadOptions = {
