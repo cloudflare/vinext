@@ -11,6 +11,11 @@
 import type { NextConfig } from "vinext";
 
 const nextConfig: NextConfig = {
+  // Used by E2E: nextjs-compat/gesture-transitions.spec.ts — enabled
+  // fixture-wide solely for that spec (the only observable effect is the
+  // optional `experimental_gesturePush` method being attached). Note this
+  // means the fixture does NOT represent the default (gate-off) config, so
+  // don't assert the method's absence against this fixture.
   experimental: {
     gestureTransition: true,
   },
