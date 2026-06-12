@@ -841,6 +841,9 @@ function buildCachedFetchResponse(
     enumerable: true,
     writable: false,
   });
+  // Intentional change from the previous inline reconstruction: cached
+  // responses now participate in body-stream cleanup too, so an unconsumed
+  // cached body gets cancelled when the Response is GC'd instead of leaking.
   if (_responseBodyRegistry && response.body) {
     _responseBodyRegistry.register(response, new WeakRef(response.body));
   }
