@@ -302,6 +302,10 @@ jobs:
             label: pages-router-prod
             shardIndex: 1
             shardTotal: 1
+          - project: pages-scroll-restoration
+            label: pages-scroll-restoration
+            shardIndex: 1
+            shardTotal: 1
           - project: cloudflare-workers
             label: cloudflare-workers
             shardIndex: 1

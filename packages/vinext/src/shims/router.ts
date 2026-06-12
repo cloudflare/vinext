@@ -2415,7 +2415,11 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     // sessionStorage snapshot keyed by history key. When it is disabled we
     // still restore the per-entry scroll saved in history state on push, since
     // a soft popstate re-renders content the browser's native restoration
-    // can't position correctly.
+    // can't position correctly. The fallbacks differ on purpose: with manual
+    // restoration the browser is hands-off, so we default to { x: 0, y: 0 };
+    // with it disabled, an entry we never stamped resolves to null (no scroll
+    // from us) and native "auto" restoration — still enabled — handles it,
+    // matching the old restoreScrollPosition no-op on main.
     const scrollTarget = manualScrollRestoration
       ? (forcedScroll ?? readScrollPosition(state) ?? { x: 0, y: 0 })
       : readScrollPosition(state);
