@@ -793,6 +793,34 @@ describe("resolveNextConfig alias extraction", () => {
       },
     });
     expect(preferred.resolveExtensions).toEqual(["", ".web.tsx", ".tsx"]);
+
+    const explicitlyEmpty = await resolveNextConfig({
+      turbopack: { resolveExtensions: [] },
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = [".png"];
+        return webpackConfig;
+      },
+    });
+    expect(explicitlyEmpty.resolveExtensions).toEqual([]);
+  });
+
+  it("provides Next.js webpack defaults to resolve.extensions callbacks", async () => {
+    const resolved = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = [".web.tsx", ...webpackConfig.resolve.extensions];
+        return webpackConfig;
+      },
+    });
+    expect(resolved.resolveExtensions).toEqual([
+      ".web.tsx",
+      ".js",
+      ".mjs",
+      ".tsx",
+      ".ts",
+      ".jsx",
+      ".json",
+      ".wasm",
+    ]);
   });
 
   let tmpDir: string;
@@ -1663,7 +1691,7 @@ describe("detectNextIntlConfig", () => {
       trailingSlash: false,
       output: "",
       pageExtensions: ["tsx", "ts", "jsx", "js"],
-      resolveExtensions: [],
+      resolveExtensions: null,
       cacheComponents: false,
       gestureTransition: false,
       prefetchInlining: false,

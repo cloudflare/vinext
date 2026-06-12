@@ -341,7 +341,7 @@ export type ResolvedNextConfig = {
   trailingSlash: boolean;
   output: "" | "export" | "standalone";
   pageExtensions: string[];
-  resolveExtensions: string[];
+  resolveExtensions: string[] | null;
   instrumentationClientInject: string[];
   cacheComponents: boolean;
   /**
@@ -1218,7 +1218,7 @@ export async function resolveNextConfig(
       trailingSlash: false,
       output: "",
       pageExtensions: normalizePageExtensions(),
-      resolveExtensions: [],
+      resolveExtensions: null,
       cacheComponents: false,
       gestureTransition: false,
       prefetchInlining: false,
@@ -1430,13 +1430,17 @@ export async function resolveNextConfig(
     );
   }
 
-  // Warn about unsupported webpack usage. We preserve alias injection and
-  // extract MDX settings, but all other webpack customization is still ignored.
+  // Warn about unsupported webpack usage. We preserve alias injection,
+  // resolve.extensions, and MDX settings, but other customization is ignored.
   if (config.webpack !== undefined) {
-    if (mdx || Object.keys(webpackProbe.aliases).length > 0) {
+    if (
+      mdx ||
+      Object.keys(webpackProbe.aliases).length > 0 ||
+      webpackProbe.resolveExtensionsCustomized
+    ) {
       console.warn(
         '[vinext] next.config option "webpack" is only partially supported. ' +
-          "vinext preserves resolve.alias entries and MDX loader settings, but other webpack customization is ignored",
+          "vinext preserves resolve.alias, resolve.extensions, and MDX loader settings, but other webpack customization is ignored",
       );
     } else {
       console.warn(
@@ -1452,7 +1456,9 @@ export async function resolveNextConfig(
 
   const pageExtensions = normalizePageExtensions(config.pageExtensions);
   const turbopack = readOptionalRecord(config.turbopack);
-  const resolveExtensions = readStringArray(turbopack?.resolveExtensions);
+  const resolveExtensions = Array.isArray(turbopack?.resolveExtensions)
+    ? readStringArray(turbopack.resolveExtensions)
+    : null;
 
   // Parse i18n config
   let i18n: NextI18nConfig | null = null;
@@ -1501,8 +1507,7 @@ export async function resolveNextConfig(
     trailingSlash: config.trailingSlash ?? false,
     output: output === "export" || output === "standalone" ? output : "",
     pageExtensions,
-    resolveExtensions:
-      resolveExtensions.length > 0 ? resolveExtensions : webpackProbe.resolveExtensions,
+    resolveExtensions: resolveExtensions ?? webpackProbe.resolveExtensions,
     instrumentationClientInject: Array.isArray(config.instrumentationClientInject)
       ? (config.instrumentationClientInject as unknown[]).filter(
           (x): x is string => typeof x === "string",
@@ -1638,15 +1643,27 @@ async function probeWebpackConfig(
 ): Promise<{
   aliases: Record<string, string>;
   mdx: MdxOptions | null;
-  resolveExtensions: string[];
+  resolveExtensions: string[] | null;
+  resolveExtensionsCustomized: boolean;
 }> {
   if (typeof config.webpack !== "function") {
-    return { aliases: {}, mdx: null, resolveExtensions: [] };
+    return {
+      aliases: {},
+      mdx: null,
+      resolveExtensions: null,
+      resolveExtensionsCustomized: false,
+    };
   }
 
   // oxlint-disable-next-line typescript/no-explicit-any
   const mockModuleRules: any[] = [];
-  const mockResolve: { alias: Record<string, unknown>; extensions?: unknown } = { alias: {} };
+  const mockResolve: { alias: Record<string, unknown>; extensions: string[] } = {
+    alias: {},
+    // Match Next.js' webpack defaults so callbacks that spread or mutate the
+    // existing list observe the same starting point.
+    extensions: [".js", ".mjs", ".tsx", ".ts", ".jsx", ".json", ".wasm"],
+  };
+  const defaultResolveExtensions = mockResolve.extensions;
   const mockConfig = {
     context: root,
     resolve: mockResolve,
@@ -1679,9 +1696,15 @@ async function probeWebpackConfig(
       aliases: normalizeAliasEntries(finalConfig.resolve?.alias, root),
       mdx: extractMdxOptionsFromRules(rules),
       resolveExtensions: readStringArray(finalConfig.resolve?.extensions),
+      resolveExtensionsCustomized: finalConfig.resolve?.extensions !== defaultResolveExtensions,
     };
   } catch {
-    return { aliases: {}, mdx: null, resolveExtensions: [] };
+    return {
+      aliases: {},
+      mdx: null,
+      resolveExtensions: null,
+      resolveExtensionsCustomized: false,
+    };
   }
 }
 

@@ -19,6 +19,7 @@ import { appRouteGraph, appRouter, invalidateAppRouteCache } from "./routing/app
 import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
 import {
   buildViteResolveExtensions,
+  normalizeViteResolveExtensions,
   createValidFileMatcher,
   findFileWithExts,
 } from "./routing/file-matcher.js";
@@ -1933,11 +1934,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // pageExtensions when none are configured. This supports imports
             // such as `./image` resolving to `./image.png`, as exercised by
             // Next.js' resolve-extensions deploy suite.
-            extensions: buildViteResolveExtensions(
-              nextConfig.resolveExtensions.length > 0
-                ? nextConfig.resolveExtensions
-                : nextConfig.pageExtensions,
-            ),
+            extensions:
+              nextConfig.resolveExtensions === null
+                ? buildViteResolveExtensions(nextConfig.pageExtensions)
+                : normalizeViteResolveExtensions(nextConfig.resolveExtensions),
             // Dedupe React packages to prevent dual-instance errors.
             // When vinext is linked (npm link / bun link) or any dependency
             // brings its own React copy, multiple React instances can load,

@@ -3,7 +3,10 @@ import os from "node:os";
 import fs from "node:fs/promises";
 import { createBuilder } from "vite";
 import { describe, expect, it } from "vite-plus/test";
-import { buildViteResolveExtensions } from "../packages/vinext/src/routing/file-matcher.js";
+import {
+  buildViteResolveExtensions,
+  normalizeViteResolveExtensions,
+} from "../packages/vinext/src/routing/file-matcher.js";
 
 // Ported in spirit from Next.js: test/e2e/app-dir/resolve-extensions/
 // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/resolve-extensions/
@@ -60,6 +63,16 @@ describe("buildViteResolveExtensions", () => {
     const extensions = buildViteResolveExtensions([".platform.tsx", " tsx ", ""]);
     expect(extensions[0]).toBe(".platform.tsx");
     expect(extensions).toContain(".tsx");
+  });
+});
+
+describe("normalizeViteResolveExtensions", () => {
+  it("treats explicit resolver extensions as a replacement list", () => {
+    expect(normalizeViteResolveExtensions(["", ".png", ".web.tsx", ".tsx"])).toEqual([
+      ".png",
+      ".web.tsx",
+      ".tsx",
+    ]);
   });
 });
 
@@ -135,7 +148,7 @@ describe("vinext plugin wires pageExtensions into Vite resolve.extensions", () =
     );
     await fs.writeFile(
       path.join(tmpDir, "next.config.mjs"),
-      `export default { turbopack: { resolveExtensions: ["", ".png", ".tsx", ".ts", ".jsx", ".js", ".json"] } };`,
+      `export default { turbopack: { resolveExtensions: ["", ".png", ".web.tsx", ".tsx", ".ts", ".jsx", ".js", ".json"] } };`,
     );
     await fs.writeFile(
       path.join(tmpDir, "app", "layout.tsx"),
@@ -146,8 +159,16 @@ describe("vinext plugin wires pageExtensions into Vite resolve.extensions", () =
       `'use client'; import image from './image'; import Image from 'next/image'; export default function Component() { return <p><Image src={image} alt="hello image 2" />hello world{typeof window !== 'undefined' ? 'hello client' : 'hello server'}</p>; }`,
     );
     await fs.writeFile(
+      path.join(tmpDir, "app", "PlatformComponent.web.tsx"),
+      `export default function PlatformComponent() { return <span>hello web platform</span>; }`,
+    );
+    await fs.writeFile(
+      path.join(tmpDir, "app", "PlatformComponent.tsx"),
+      `export default function PlatformComponent() { return <span>hello default platform</span>; }`,
+    );
+    await fs.writeFile(
       path.join(tmpDir, "app", "page.jsx"),
-      `import image from './image'; import Image from 'next/image'; import Component from './component'; export default function Page() { return <p><Image src={image} alt="hello image 1" /><Component /></p>; }`,
+      `import image from './image'; import Image from 'next/image'; import Component from './component'; import PlatformComponent from './PlatformComponent'; export default function Page() { return <p><Image src={image} alt="hello image 1" /><Component /><PlatformComponent /></p>; }`,
     );
 
     try {
@@ -160,6 +181,19 @@ describe("vinext plugin wires pageExtensions into Vite resolve.extensions", () =
       await builder.buildApp();
       await expect(fs.stat(path.join(tmpDir, "dist", "client"))).resolves.toBeDefined();
       await expect(fs.stat(path.join(tmpDir, "dist", "server"))).resolves.toBeDefined();
+      const builtFiles = await fs.readdir(path.join(tmpDir, "dist", "server"), {
+        recursive: true,
+        encoding: "utf8",
+      });
+      const serverOutput = (
+        await Promise.all(
+          builtFiles
+            .filter((file) => file.endsWith(".js"))
+            .map((file) => fs.readFile(path.join(tmpDir, "dist", "server", file), "utf8")),
+        )
+      ).join("\n");
+      expect(serverOutput).toContain("hello web platform");
+      expect(serverOutput).not.toContain("hello default platform");
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -199,6 +233,7 @@ describe("vinext plugin wires pageExtensions into Vite resolve.extensions", () =
       expect(extensions[0]).toBe(".png");
       expect(extensions).toContain(".jsx");
       expect(extensions).not.toContain("");
+      expect(extensions).not.toContain(".mjs");
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
