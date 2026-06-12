@@ -282,10 +282,6 @@ jobs:
             label: app-router-bfcache
             shardIndex: 1
             shardTotal: 1
-          - project: catch-error
-            label: catch-error
-            shardIndex: 1
-            shardTotal: 1
           - project: app-router
             label: app-router 3/3
             shardIndex: 3
