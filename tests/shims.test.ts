@@ -1466,6 +1466,146 @@ describe("next/navigation shim", () => {
   });
 
   // -------------------------------------------------------------------------
+  // useUntrackedPathname
+  //
+  // Ported from Next.js:
+  //   https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/client/components/navigation-untracked.ts
+  // -------------------------------------------------------------------------
+  it("useUntrackedPathname returns null on server when no navigation context is set", async () => {
+    const { useUntrackedPathname } = await import("../packages/vinext/src/shims/navigation.js");
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    let captured: string | null = "";
+    function Probe() {
+      captured = useUntrackedPathname();
+      return React.createElement("span", null, captured ?? "null");
+    }
+
+    renderToStaticMarkup(React.createElement(Probe));
+    expect(captured).toBeNull();
+  });
+
+  it("useUntrackedPathname returns pathname from server context", async () => {
+    const { useUntrackedPathname, setNavigationContext } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    setNavigationContext({
+      pathname: "/untracked/test",
+      searchParams: new URLSearchParams(""),
+      params: {},
+    });
+
+    let captured: string | null = "";
+    function Probe() {
+      captured = useUntrackedPathname();
+      return React.createElement("span", null, captured ?? "null");
+    }
+
+    try {
+      renderToStaticMarkup(React.createElement(Probe));
+      expect(captured).toBe("/untracked/test");
+    } finally {
+      setNavigationContext(null);
+    }
+  });
+
+  it("useUntrackedPathname prefers render snapshot during active navigation", async () => {
+    const previousWindow = globalThis.window;
+    const win = {
+      addEventListener() {},
+      dispatchEvent() {
+        return true;
+      },
+      history: {
+        pushState() {},
+        replaceState() {},
+      },
+      location: {
+        href: "http://localhost/committed",
+        origin: "http://localhost",
+        pathname: "/committed",
+        search: "",
+      },
+      removeEventListener() {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const React = await import("react");
+      const { renderToStaticMarkup } = await import("react-dom/server");
+      const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      const Context = navigation.getClientNavigationRenderContext();
+      if (!Context) {
+        throw new Error("Expected client navigation render context");
+      }
+
+      navigation.activateNavigationSnapshot();
+      const snapshot = navigation.createClientNavigationRenderSnapshot(
+        "http://localhost/pending-untracked?from=snapshot",
+        {},
+      );
+
+      let pathname: string | null = "";
+      function Probe() {
+        pathname = navigation.useUntrackedPathname();
+        return React.createElement("span", null, pathname ?? "null");
+      }
+
+      renderToStaticMarkup(
+        React.createElement(Context.Provider, { value: snapshot }, React.createElement(Probe)),
+      );
+      expect(pathname).toBe("/pending-untracked");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("useUntrackedPathname returns Pages Router pathname when no App context is set", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const accessorKey = Symbol.for("vinext.navigation.pagesNavigationContextAccessor");
+    const globalRecord = globalThis as Record<PropertyKey, unknown>;
+    const previousAccessor = globalRecord[accessorKey];
+
+    try {
+      globalRecord[accessorKey] = () => ({
+        pathname: "/pages/untracked",
+        searchParams: new URLSearchParams(""),
+        params: {},
+      });
+
+      const hookPath = "../packages/vinext/src/shims/navigation.js?pages-untracked=1";
+      const { useUntrackedPathname } = (await import(
+        hookPath
+      )) as typeof import("../packages/vinext/src/shims/navigation.js");
+
+      let captured: string | null = "";
+      function Probe() {
+        captured = useUntrackedPathname();
+        return React.createElement("span", null, captured ?? "null");
+      }
+
+      renderToStaticMarkup(React.createElement(Probe));
+      expect(captured).toBe("/pages/untracked");
+    } finally {
+      if (previousAccessor === undefined) {
+        delete globalRecord[accessorKey];
+      } else {
+        globalRecord[accessorKey] = previousAccessor;
+      }
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // react-server re-exports
   // -------------------------------------------------------------------------
   it("navigation.react-server re-exports unstable_rethrow and stubs unstable_isUnrecognizedActionError", async () => {

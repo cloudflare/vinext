@@ -10,7 +10,7 @@
  * `next/error`'s public surface.
  */
 import React from "react";
-import { isNextRouterError, usePathname } from "./navigation.js";
+import { isNextRouterError, useUntrackedPathname } from "./navigation.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { RouterContext } from "./internal/router-context.js";
 
@@ -240,7 +240,7 @@ export function unstable_catchError<P extends _UserProps>(
 
   function CatchErrorBoundary(allProps: P & { children?: React.ReactNode }): React.ReactElement {
     const { children, ...rest } = allProps;
-    const pathname = usePathname();
+    const pathname = useUntrackedPathname();
     const isPagesRouter = React.useContext(RouterContext) !== null;
     // Boundary assertion: React's prop rest type is `Omit<P & { children?: ... }, "children">`;
     // by construction `children` is the only key removed, so the remaining
