@@ -202,6 +202,18 @@ const manualScrollRestoration =
   canUseSessionStorageForScrollRestoration();
 
 function installManualScrollRestoration(): void {
+  // The `experimental.scrollRestoration` manual opt-in is Pages-Router-only.
+  // Next.js sets `history.scrollRestoration = "manual"` inside the Router
+  // class constructor (.nextjs-ref/packages/next/src/shared/lib/router/
+  // router.ts around L892), which only runs when client/index.tsx hydrates a
+  // Pages Router document — a bare value import of next/router never flips
+  // it, and App Router owns its own scroll behavior. The vinext shim installs
+  // at module eval instead, so an App Router app that value-imports
+  // next/router for compat would otherwise disable the browser's native
+  // restoration. The App Router bootstrap stamps `window.next.appDir = true`
+  // at entry eval, before any client-component module (and therefore this
+  // shim) can evaluate, so it is a reliable router-mode gate here.
+  if (window.next?.appDir === true) return;
   if (manualScrollRestoration) {
     window.history.scrollRestoration = "manual";
   }
@@ -2365,7 +2377,17 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
   _lastPathnameAndSearch = browserUrl;
 
   if (isHashOnly) {
-    // Hash-only back/forward — no page fetch needed
+    // Hash-only back/forward — no page fetch needed.
+    //
+    // `forcedScroll` is intentionally discarded here: only the hash anchor is
+    // honoured, never the target entry's `__next_scroll_<key>` snapshot. This
+    // matches Next.js, where `change()`'s onlyAHashChange branch calls
+    // `this.set(nextState, this.components[nextState.route], null)` and only
+    // `scrollToHash` runs — `forcedScroll` is consumed solely by the later
+    // `upcomingScrollState = forcedScroll ?? resetScroll` full-navigation
+    // path (.nextjs-ref/packages/next/src/shared/lib/router/router.ts around
+    // L1381-1403 and L1780). The snapshot stays in sessionStorage, so a later
+    // non-hash popstate to this entry still restores the saved position.
     const hashUrl = appUrl + window.location.hash;
     routerEvents.emit("hashChangeStart", hashUrl, { shallow: false });
     scrollToHashTarget(window.location.hash);
@@ -2737,6 +2759,10 @@ if (typeof window !== "undefined") {
   // intentionally unconditional at module eval — any value import of
   // next/router (even from an App Router app) triggers it, mirroring
   // Next.js where the Router singleton's constructor runs at module eval.
+  // The one Pages-Router-only side effect it carries — flipping
+  // `history.scrollRestoration` to "manual" under
+  // `experimental.scrollRestoration` — is gated on the document not being
+  // an App Router one (see installManualScrollRestoration).
   installPagesRouterRuntime();
   // Cast: `NextRouter.push`/`replace` are typed with narrow parameters
   // (UrlObject | string) while `PagesRouterPublicInstance` accepts unknown
