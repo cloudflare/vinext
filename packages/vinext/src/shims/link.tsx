@@ -54,7 +54,6 @@ import {
 import {
   isAbsoluteOrProtocolRelativeUrl,
   normalizePathTrailingSlash,
-  resolveRelativeHref,
   toBrowserNavigationHref,
   toSameOriginAppPath,
   withBasePath,
@@ -945,9 +944,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
 
     e.preventDefault();
 
-    // Resolve relative hrefs (#hash, ?query) against the current URL once so
-    // onNavigate and the actual navigation target stay in sync.
-    const absoluteHref = resolveRelativeHref(navigateHref, window.location.href, __basePath);
+    // Resolve relative hrefs (#hash, ?query) for onNavigate and the hard-navigation fallback.
     const absoluteFullHref = toBrowserNavigationHref(
       navigateHref,
       window.location.href,
