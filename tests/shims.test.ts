@@ -2102,11 +2102,10 @@ describe("next/error shim — unstable_catchError", () => {
   it("getDerivedStateFromProps clears the error when pathname changes and retains it when pathname stays the same", async () => {
     const React = (await import("react")).default;
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const {
-      unstable_catchError,
-      _CatchError,
-    } = await import("../packages/vinext/src/shims/error.js");
-    type _CatchErrorInternalState = import("../packages/vinext/src/shims/error.js")._CatchErrorInternalState;
+    const { unstable_catchError, _CatchError } =
+      await import("../packages/vinext/src/shims/error.js");
+    type _CatchErrorInternalState =
+      import("../packages/vinext/src/shims/error.js")._CatchErrorInternalState;
 
     function Fallback() {
       return null;
