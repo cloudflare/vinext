@@ -187,6 +187,22 @@ import { randomBytes, randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 import { normalizePathSeparators, stripViteModuleQuery } from "./utils/path.js";
 
+type ServerFunctionDirectiveContext = {
+  value: string;
+  name: string;
+  id: string;
+  directiveMatch: RegExpMatchArray;
+  location: "inline" | "module";
+  parameters?: { count: number; hasRest: boolean };
+  runtime?: string;
+};
+
+function parseUseCacheVariant(directive: string): string {
+  return directive === "use cache"
+    ? ""
+    : directive.replace("use cache:", "").replace("use cache: ", "").trim();
+}
+
 // Install the process-level peer-disconnect backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
 // timing-fragile in vite-plus — install was silently skipped,
@@ -906,16 +922,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // so all import() calls in this module use consistent resolution.
   let resolvedReactPath: string | null = null;
   let resolvedRscPath: string | null = null;
-  let resolvedRscTransformsPath: string | null = null;
   // Prefer the user's project graph so vinext shares the app's Vite/plugin
   // instances. In source/workspace development, test fixtures may not declare
   // peer deps explicitly, so fall back to vinext's own install location.
   resolvedReactPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-react");
   resolvedRscPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-rsc");
-  resolvedRscTransformsPath = resolveOptionalDependency(
-    earlyBaseDir,
-    "@vitejs/plugin-rsc/transforms",
-  );
 
   // If app/ exists and auto-RSC is enabled, create a lazy Promise that
   // resolves to the configured RSC plugin array. Vite's asyncFlatten
@@ -940,6 +951,74 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ssr: VIRTUAL_APP_SSR_ENTRY,
             client: VIRTUAL_APP_BROWSER_ENTRY,
           },
+          serverFunctionDirectives: [
+            {
+              directive: /^use cache.*$/,
+              test: (code: string) => code.includes("use cache"),
+              filter: (id: string) =>
+                /\.(tsx?|jsx?|mjs)$/.test(id) && !id.includes("/node_modules/"),
+              rejectNonAsyncFunction: true,
+              rejectNonAsyncModule: false,
+              runtime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-runtime")).href,
+              validate: ({ directive }: { directive: string }) => {
+                if (!/^use cache(?:: ([^\s].*))?$/.test(directive)) {
+                  const cacheKind = directive.includes(":")
+                    ? directive.slice(directive.indexOf(":") + 1).trim()
+                    : directive.slice("use cache".length).trim();
+                  const expected = cacheKind ? `use cache: ${cacheKind}` : "use cache";
+                  throw new Error(
+                    `Invalid cache directive ${JSON.stringify(directive)}. Did you mean ${JSON.stringify(expected)}?`,
+                  );
+                }
+              },
+              clientError: ({ id, environment }: { id: string; environment: string }) =>
+                `It is not allowed to define inline "use cache" annotated functions in Client Components. Export them from a separate file with a module-level "use cache" or "use server" directive, or pass them down through props from a Server Component. (${environment}: ${id})`,
+              wrap: ({
+                value,
+                name,
+                id,
+                directiveMatch,
+                location,
+                parameters,
+                runtime,
+              }: ServerFunctionDirectiveContext) => {
+                const variant = parseUseCacheVariant(directiveMatch[0]);
+                const modulePath = stripViteModuleQuery(id);
+                const moduleFileName = path.basename(modulePath);
+                const isAppPageDefault =
+                  location === "module" &&
+                  name === "default" &&
+                  hasAppDir &&
+                  isInsideDirectory(appDir, modulePath) &&
+                  path.parse(moduleFileName).name === "page" &&
+                  fileMatcher.extensionRegex.test(moduleFileName);
+                const runtimeOptions = {
+                  ...(isAppPageDefault ? { appPageDefaultExport: true } : {}),
+                  ...(parameters ? { parameters } : {}),
+                };
+                const pageOptions =
+                  Object.keys(runtimeOptions).length > 0
+                    ? `, ${JSON.stringify(runtimeOptions)}`
+                    : "";
+                return `${runtime}.registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)}${pageOptions})`;
+              },
+              filterExport: ({
+                name,
+                id,
+                meta,
+              }: {
+                name: string;
+                id: string;
+                meta: { isFunction?: boolean };
+              }) => {
+                if (meta.isFunction === false) return false;
+                if (/\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id) && name === "default") {
+                  return false;
+                }
+                return true;
+              },
+            },
+          ],
         });
       })
       .catch((cause) => {
@@ -4141,226 +4220,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // IDs through Vite's build manifest so it can emit boundary-scoped preload
     // hints with the request CSP nonce.
     createDynamicPreloadMetadataPlugin(),
-    // "use cache" directive transform:
-    // Detects "use cache" at file-level or function-level and wraps the
-    // exports/functions with registerCachedFunction() from vinext/cache-runtime.
-    // Runs without enforce so it executes after JSX transform (parseAst needs plain JS).
-    {
-      name: "vinext:use-cache",
-
-      transform: {
-        // Hook filter: only invoke JS when code contains 'use cache'.
-        // The vast majority of files don't use this directive.
-        filter: {
-          id: {
-            include: /\.(tsx?|jsx?|mjs)$/,
-            exclude: /node_modules/,
-          },
-          code: "use cache",
-        },
-        async handler(code, id) {
-          // Defensive guard — duplicates filter logic
-          if (id.includes("node_modules")) return null;
-          if (id.startsWith("\0")) return null;
-          if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
-          if (!code.includes("use cache")) return null;
-
-          // Parse the AST first to check for actual "use cache" directives before
-          // throwing the missing-RSC error. The fast-path string check above can
-          // fire on files that contain "use cache" only in comments or string
-          // literals (e.g., in error messages), not as real directives.
-          const ast = parseAst(code);
-
-          // Check for file-level "use cache" directive
-          const cacheDirective = ast.body.find(
-            (node) =>
-              node.type === "ExpressionStatement" &&
-              node.expression?.type === "Literal" &&
-              typeof node.expression.value === "string" &&
-              node.expression.value.startsWith("use cache"),
-          );
-
-          // Check for function-level "use cache" directives by walking function bodies.
-          // Accepts any function-like node: FunctionDeclaration/Expression, ArrowFunctionExpression,
-          // or MethodDefinition. MethodDefinition stores its FunctionExpression in `.value`, not
-          // `.body`, so we unwrap it here rather than at each call site to keep the callee safe.
-          function nodeHasInlineCacheDirective(node: ASTNode): boolean {
-            if (!node || typeof node !== "object") return false;
-            // MethodDefinition wraps its FunctionExpression in .value; unwrap to reach .body.
-            const fn = node.type === "MethodDefinition" ? node.value : node;
-            // fn.body is a BlockStatement node ({type:"BlockStatement", body:Statement[]}), not
-            // a raw array. Unwrap it. Arrow functions with expression bodies have a non-array
-            // .body — the BlockStatement check handles that case (body.body would be undefined).
-            const stmts: ASTNode[] | null =
-              // oxlint-disable-next-line typescript/no-explicit-any
-              (fn as any)?.body?.type === "BlockStatement" ? (fn as any).body.body : null;
-            if (Array.isArray(stmts)) {
-              for (const stmt of stmts) {
-                if (
-                  stmt?.type === "ExpressionStatement" &&
-                  stmt.expression?.type === "Literal" &&
-                  typeof stmt.expression?.value === "string" &&
-                  /^use cache(:\s*\w+)?$/.test(stmt.expression.value)
-                ) {
-                  return true;
-                }
-              }
-            }
-            return false;
-          }
-          function astHasInlineCache(nodes: ASTNode[]): boolean {
-            for (const node of nodes) {
-              if (!node || typeof node !== "object") continue;
-              if (
-                (node.type === "FunctionDeclaration" ||
-                  node.type === "FunctionExpression" ||
-                  node.type === "ArrowFunctionExpression" ||
-                  node.type === "MethodDefinition") &&
-                nodeHasInlineCacheDirective(node)
-              ) {
-                return true;
-              }
-              // Walk into variable declarations, export declarations, etc.
-              for (const key of Object.keys(node)) {
-                if (key === "type" || key === "start" || key === "end" || key === "loc") continue;
-                const child = node[key as keyof typeof node] as ASTNode;
-                if (Array.isArray(child) && child.some((c) => c && typeof c === "object")) {
-                  if (astHasInlineCache(child)) return true;
-                } else if (child && typeof child === "object" && child.type) {
-                  if (astHasInlineCache([child])) return true;
-                }
-              }
-            }
-            return false;
-          }
-          const hasInlineCache = !cacheDirective && astHasInlineCache(ast.body);
-
-          if (!cacheDirective && !hasInlineCache) return null;
-
-          if (!resolvedRscTransformsPath) {
-            throw new Error(
-              "vinext: 'use cache' requires @vitejs/plugin-rsc to be installed.\n" +
-                "Run: " +
-                detectPackageManager(process.cwd()) +
-                " @vitejs/plugin-rsc",
-            );
-          }
-          const { transformWrapExport, transformHoistInlineDirective } = await import(
-            pathToFileURL(resolvedRscTransformsPath).href
-          );
-
-          if (cacheDirective) {
-            // File-level "use cache" — wrap function exports with
-            // registerCachedFunction. Page default exports are wrapped directly
-            // (they're leaf components). Layout/template defaults are excluded
-            // because they receive {children} from the framework.
-            // oxlint-disable-next-line typescript/no-explicit-any
-            const directiveValue = (cacheDirective as any).expression.value;
-            const variant =
-              directiveValue === "use cache"
-                ? ""
-                : directiveValue.replace("use cache:", "").replace("use cache: ", "").trim();
-
-            // Only skip default export wrapping for layouts and templates —
-            // they receive {children} from the framework which requires
-            // temporary reference handling that registerCachedFunction doesn't
-            // support yet. Pages, not-found, loading, error, and default are
-            // leaf components with no {children} prop and can be cached directly.
-            const isLayoutOrTemplate = /\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id);
-            const modulePath = stripViteModuleQuery(id);
-            const moduleFileName = path.basename(modulePath);
-            const isAppPageModule =
-              hasAppDir &&
-              isInsideDirectory(appDir, modulePath) &&
-              path.parse(moduleFileName).name === "page" &&
-              fileMatcher.extensionRegex.test(moduleFileName);
-
-            const runtimeModuleUrl = pathToFileURL(
-              resolveShimModulePath(shimsDir, "cache-runtime"),
-            ).href;
-            const result = transformWrapExport(code, ast, {
-              runtime: (value: string, name: string) => {
-                const pageOptions =
-                  name === "default" && isAppPageModule ? `, { appPageDefaultExport: true }` : "";
-                return `(await import(${JSON.stringify(runtimeModuleUrl)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)}${pageOptions})`;
-              },
-              rejectNonAsyncFunction: false,
-              filter: (name: string, meta: { isFunction?: boolean }) => {
-                // Skip non-functions (constants, types, etc.)
-                if (meta.isFunction === false) return false;
-                // Skip the default export on layout/template files — these
-                // receive {children} from the framework, and caching them
-                // requires temporary reference handling for the children slot.
-                // Named exports (e.g. generateMetadata) are still wrapped.
-                if (isLayoutOrTemplate && name === "default") return false;
-                return true;
-              },
-            });
-
-            if (result.exportNames.length > 0) {
-              // Remove the directive itself so it doesn't cause runtime errors
-              const output = result.output;
-              output.overwrite(
-                cacheDirective.start,
-                cacheDirective.end,
-                `/* "use cache" — wrapped by vinext */`,
-              );
-              return {
-                code: output.toString(),
-                map: output.generateMap({ hires: "boundary" }),
-              };
-            }
-
-            // Even if no exports were wrapped, still strip the directive
-            // (e.g., layout/template file with only a default export)
-            const output = new MagicString(code);
-            output.overwrite(
-              cacheDirective.start,
-              cacheDirective.end,
-              `/* "use cache" — handled by vinext */`,
-            );
-            return {
-              code: output.toString(),
-              map: output.generateMap({ hires: "boundary" }),
-            };
-          }
-
-          // Check for function-level "use cache" directives
-          // (e.g., async function getData() { "use cache"; ... })
-          if (hasInlineCache) {
-            const runtimeModuleUrl2 = pathToFileURL(
-              resolveShimModulePath(shimsDir, "cache-runtime"),
-            ).href;
-
-            try {
-              const result = transformHoistInlineDirective(code, ast, {
-                directive: /^use cache(:\s*\w+)?$/,
-                runtime: (value: string, name: string, meta: { directiveMatch: string[] }) => {
-                  const directiveMatch = meta.directiveMatch[0];
-                  const variant =
-                    directiveMatch === "use cache"
-                      ? ""
-                      : directiveMatch.replace("use cache:", "").replace("use cache: ", "").trim();
-                  return `(await import(${JSON.stringify(runtimeModuleUrl2)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`;
-                },
-                rejectNonAsyncFunction: false,
-              });
-
-              if (result.names.length > 0) {
-                return {
-                  code: result.output.toString(),
-                  map: result.output.generateMap({ hires: "boundary" }),
-                };
-              }
-            } catch {
-              // If hoisting fails (e.g., complex closure), fall through
-            }
-          }
-
-          return null;
-        },
-      },
-    },
     createImportMetaUrlPlugin({
       getRoot: () => root,
     }),

@@ -4634,6 +4634,63 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(2);
   });
 
+  it("registerCachedFunction excludes arguments beyond declared arity from cache keys", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    let calls = 0;
+    const cached = registerCachedFunction(
+      async (value: number, ...extra: unknown[]) => {
+        calls++;
+        return { value, extra };
+      },
+      "test:declared-arity",
+      "",
+      { parameters: { count: 1, hasRest: false } },
+    );
+
+    expect(await cached(1, "first")).toEqual({ value: 1, extra: ["first"] });
+    expect(await cached(1, "second")).toEqual({ value: 1, extra: ["first"] });
+    expect(calls).toBe(1);
+  });
+
+  it("registerCachedFunction excludes framework-injected arguments for zero-arity functions", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    let calls = 0;
+    const cached = registerCachedFunction(
+      async (...injected: unknown[]) => {
+        calls++;
+        return injected;
+      },
+      "test:zero-arity",
+      "",
+      { parameters: { count: 0, hasRest: false } },
+    );
+
+    expect(await cached("first")).toEqual(["first"]);
+    expect(await cached("second")).toEqual(["first"]);
+    expect(calls).toBe(1);
+  });
+
+  it("registerCachedFunction includes all arguments for rest parameters", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    let calls = 0;
+    const cached = registerCachedFunction(
+      async (...values: number[]) => {
+        calls++;
+        return values;
+      },
+      "test:rest-args",
+      "",
+      { parameters: { count: 1, hasRest: true } },
+    );
+
+    expect(await cached(1, 2)).toEqual([1, 2]);
+    expect(await cached(1, 3)).toEqual([1, 3]);
+    expect(calls).toBe(2);
+  });
+
   it("scopes shared cache entries by build ID", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");

@@ -168,7 +168,10 @@ export function getCacheContext(): CacheContext | null {
  */
 type RscModule = {
   renderToReadableStream: (data: unknown, options?: object) => ReadableStream<Uint8Array>;
-  createFromReadableStream: <T>(stream: ReadableStream<Uint8Array>, options?: object) => Promise<T>;
+  createFromReadableStream: <T>(
+    stream: ReadableStream<Uint8Array>,
+    options?: { serverReferences?: "resolve" | "preserve" },
+  ) => Promise<T>;
   encodeReply: (v: unknown[], options?: unknown) => Promise<string | FormData>;
   createTemporaryReferenceSet: () => unknown;
   createClientTemporaryReferenceSet: () => unknown;
@@ -426,6 +429,8 @@ type RegisterCachedFunctionOptions = {
    * rather than on the intermediate createElement config object.
    */
   appPageDefaultExport?: boolean;
+  /** Declared function parameter shape supplied by the directive transform. */
+  parameters?: { count: number; hasRest: boolean };
 };
 
 /**
@@ -463,11 +468,15 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     // from key). Falls back to stableStringify when RSC is unavailable.
     let cacheKey: string;
     try {
+      const keyArgs =
+        options.parameters && !options.parameters.hasRest
+          ? args.slice(0, options.parameters.count)
+          : args;
       const processedArgs =
-        args.length > 0
-          ? unwrapThenableObjectArray(args, { omitAppPageSearchParamsFromFirstArg })
+        keyArgs.length > 0
+          ? unwrapThenableObjectArray(keyArgs, { omitAppPageSearchParamsFromFirstArg })
           : [];
-      if (rsc && args.length > 0) {
+      if (rsc && keyArgs.length > 0) {
         // Temporary references let encodeReply handle non-serializable values
         // (like React elements in args) by excluding them from the key.
         const tempRefs = rsc.createClientTemporaryReferenceSet();
@@ -546,7 +555,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           // RSC-serialized entry: base64 → bytes → stream → deserialize
           const bytes = base64ToUint8(existing.value.data.body);
           const stream = uint8ToStream(bytes);
-          const result = await rsc.createFromReadableStream<TResult>(stream);
+          const result = await rsc.createFromReadableStream<TResult>(stream, {
+            serverReferences: "preserve",
+          });
           recordRequestScopedCacheControl(existing.cacheControl);
           return result;
         }

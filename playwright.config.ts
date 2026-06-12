@@ -49,6 +49,18 @@ const projectServers = {
     use: { baseURL: "http://localhost:4174" },
     server: appRouterServer,
   },
+  "app-router-prod": {
+    testDir: "./tests/e2e/app-router-prod",
+    use: { baseURL: "http://localhost:4184" },
+    server: {
+      command:
+        "npx tsc -p ../../../packages/vinext/tsconfig.json && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4184",
+      cwd: "./tests/fixtures/app-basic",
+      port: 4184,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
   "app-router-chrome-browser-specific": {
     testDir: "./tests/e2e",
     testMatch: [appRouterBrowserSpecificTests],

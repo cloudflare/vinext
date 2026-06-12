@@ -1,6 +1,40 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type APIRequestContext } from "@playwright/test";
+import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 const BASE = "http://localhost:4174";
+const USE_CACHE_HMR_ACTIONS_FILE = path.join(
+  process.cwd(),
+  "tests/fixtures/app-basic/app/use-cache-hmr/actions.ts",
+);
+const USE_CACHE_HMR_CACHED = `"use cache";
+
+export async function getMode() {
+  return "cached";
+}
+`;
+const USE_CACHE_HMR_PLAIN = `"use server";
+
+export async function getMode() {
+  return "plain";
+}
+`;
+
+async function writeUseCacheHmrActions(content: string, forceUpdate = false) {
+  const nextContent = forceUpdate ? `${content}// hmr-update:${Date.now()}\n` : content;
+  if ((await readFile(USE_CACHE_HMR_ACTIONS_FILE, "utf8")) !== nextContent) {
+    await writeFile(USE_CACHE_HMR_ACTIONS_FILE, nextContent);
+  }
+}
+
+async function waitForUseCacheHmrTransform(request: APIRequestContext) {
+  await expect
+    .poll(async () => {
+      const response = await request.get(`${BASE}/app/use-cache-hmr/actions.ts?t=${Date.now()}`);
+      return response.ok();
+    })
+    .toBe(true);
+}
 
 test.describe('"use cache" file-level directive', () => {
   test("use-cache page renders correctly", async ({ page }) => {
@@ -96,6 +130,116 @@ test.describe('"use cache" function-level directive', () => {
     const dataValue2 = html2.match(/data-testid="data-value">(\d+)</)?.[1];
 
     expect(Number(dataValue2)).toBeGreaterThan(Number(dataValue1));
+  });
+});
+
+test.describe('"use cache" direct client imports', () => {
+  test("file-level cached exports become callable server references", async ({ page }) => {
+    await page.goto(`${BASE}/use-cache-client-import`);
+    await expect(async () => {
+      await page.locator("#call-client-imported-cache").click();
+      await expect(page.getByTestId("client-imported-cache-result")).toHaveText(
+        /^client-cache:direct:[0-9.e+-]+$/,
+        { timeout: 2000 },
+      );
+    }).toPass({ timeout: 15_000 });
+  });
+});
+
+test.describe('"use cache" transform coverage', () => {
+  test("supports advanced function and export forms", async ({ page }) => {
+    await page.goto(`${BASE}/use-cache-transform-coverage`);
+    await expect(page.getByTestId("use-cache-transform-coverage")).toHaveText(
+      "destructured|export-star|object-method|static-method|server-boundary|custom-kind",
+    );
+    await expect(async () => {
+      await page.locator("#call-cached-server-boundary").click();
+      await expect(page.getByTestId("cached-server-boundary-result")).toHaveText(
+        "server-boundary",
+        { timeout: 2000 },
+      );
+    }).toPass({ timeout: 15_000 });
+  });
+
+  test("removes and restores directive metadata during HMR", async ({ page, request }) => {
+    await writeUseCacheHmrActions(USE_CACHE_HMR_CACHED, true);
+    try {
+      await page.goto(`${BASE}/use-cache-hmr`);
+      await expect(async () => {
+        await page.locator("#call-use-cache-hmr").click();
+        await expect(page.getByTestId("use-cache-hmr-result")).toHaveText("cached", {
+          timeout: 2000,
+        });
+      }).toPass({ timeout: 15_000 });
+
+      await writeUseCacheHmrActions(USE_CACHE_HMR_PLAIN, true);
+      await waitForUseCacheHmrTransform(request);
+      await expect(async () => {
+        await page.reload();
+        await page.locator("#call-use-cache-hmr").click();
+        await expect(page.getByTestId("use-cache-hmr-result")).toHaveText("plain", {
+          timeout: 2000,
+        });
+      }).toPass({ timeout: 15_000 });
+
+      await writeUseCacheHmrActions(USE_CACHE_HMR_CACHED, true);
+      await waitForUseCacheHmrTransform(request);
+      await expect(async () => {
+        await page.reload();
+        await page.locator("#call-use-cache-hmr").click();
+        await expect(page.getByTestId("use-cache-hmr-result")).toHaveText("cached", {
+          timeout: 2000,
+        });
+      }).toPass({ timeout: 15_000 });
+    } finally {
+      await writeUseCacheHmrActions(USE_CACHE_HMR_CACHED);
+    }
+  });
+});
+
+test.describe('"use cache" nested cache functions as props', () => {
+  // Ported from Next.js: test/e2e/app-dir/use-cache-with-server-function-props
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-with-server-function-props/use-cache-with-server-function-props.test.ts
+  //
+  // Inline "use cache" functions defined inside a cached component are passed
+  // as props to a client component and invoked via useActionState. This is a
+  // full client→server round-trip: the cached functions must serialize as
+  // server references in the RSC payload AND resolve back on the action POST.
+  const isoDateRegExp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+  const randomRegExp = /^\d+\.\d+$/;
+
+  test("should be able to use nested cache functions as props", async ({ page }) => {
+    await page.goto(`${BASE}/use-cache-nested-fn-props`);
+
+    // Click + assert inside a polling loop: a click that lands before
+    // hydration completes falls back to a native form POST (full document
+    // reload) and loses the useActionState output, so retry until the
+    // hydrated client-side round-trip succeeds.
+    await expect(async () => {
+      await page.locator("#submit-button-date").click();
+      await expect(page.locator("#date")).toHaveText(isoDateRegExp, { timeout: 2000 });
+    }).toPass({ timeout: 15_000 });
+
+    await expect(async () => {
+      await page.locator("#submit-button-random").click();
+      await expect(page.locator("#random")).toHaveText(randomRegExp, { timeout: 2000 });
+    }).toPass({ timeout: 15_000 });
+
+    // Closure-captured bound args: getMessage closes over a value from the
+    // cached component's scope, which the hoist transform turns into a
+    // `.bind(null, ...)` bound arg on the server reference. Invoking it from
+    // the client exercises the full flight round-trip for bound args:
+    // $$bound serialized into the RSC payload → encodeReply on click →
+    // decrypt + prepend on the server. The trailing numeric suffix is the
+    // fixture's Math.random() marker, which the production-server test uses
+    // to pin cached-invoke semantics for the bound path.
+    await expect(async () => {
+      await page.locator("#submit-button-message").click();
+      await expect(page.locator("#message")).toHaveText(
+        /^message:closure-captured-bound-arg-vinext:[0-9.e+-]+$/,
+        { timeout: 2000 },
+      );
+    }).toPass({ timeout: 15_000 });
   });
 });
 
