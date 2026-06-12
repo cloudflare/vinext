@@ -36,13 +36,7 @@ describe("nextjs deploy manifest", () => {
 
     await execFileAsync(
       process.execPath,
-      [
-        path.resolve("scripts/nextjs-deploy-manifest.mjs"),
-        nextjsDir,
-        outputPath,
-        "--match",
-        suite,
-      ],
+      [path.resolve("scripts/nextjs-deploy-manifest.mjs"), nextjsDir, outputPath, "--match", suite],
       { cwd: path.resolve(".") },
     );
 
