@@ -133,9 +133,10 @@ export function parseImageParams(
   const quality = Number.parseInt(qualityParam, 10);
   if (String(width) !== widthParam || String(quality) !== qualityParam) return null;
 
-  const isDevBlur = options.isDev && width <= DEV_BLUR_MAX_WIDTH && quality === DEV_BLUR_QUALITY;
-  if (width <= 0 || (!allowedWidths.includes(width) && !isDevBlur)) return null;
-  if (quality < 1 || quality > 100 || (!allowedQualities.includes(quality) && !isDevBlur)) {
+  const isDevBlurWidth = options.isDev && width <= DEV_BLUR_MAX_WIDTH;
+  const isDevBlurQuality = options.isDev && quality === DEV_BLUR_QUALITY;
+  if (width <= 0 || (!allowedWidths.includes(width) && !isDevBlurWidth)) return null;
+  if (quality < 1 || quality > 100 || (!allowedQualities.includes(quality) && !isDevBlurQuality)) {
     return null;
   }
 

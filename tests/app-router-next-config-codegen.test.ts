@@ -115,6 +115,20 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("vinext");
   });
 
+  it("embeds image validation config in the pure App Router RSC handler", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      imageConfig: {
+        deviceSizes: [320, 640],
+        imageSizes: [16],
+        qualities: [60, 75],
+      },
+    });
+    expect(code).toContain("const __imageConfig");
+    expect(code).toContain('"deviceSizes":[320,640]');
+    expect(code).toContain('"qualities":[60,75]');
+    expect(code).toContain("imageConfig: __imageConfig");
+  });
+
   it("routes hybrid Pages API misses through the Pages server entry", () => {
     // Ported from Next.js: test/e2e/og-api/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/og-api/index.test.ts

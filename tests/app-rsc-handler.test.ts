@@ -66,6 +66,7 @@ function createHandler(overrides: Partial<HandlerOptions> = {}) {
     handleProgressiveActionRequest: overrides.handleProgressiveActionRequest ?? (async () => null),
     handleServerActionRequest: overrides.handleServerActionRequest ?? (async () => null),
     i18nConfig: overrides.i18nConfig ?? null,
+    imageConfig: overrides.imageConfig,
     isMiddlewareProxy: overrides.isMiddlewareProxy ?? false,
     makeThenableParams,
     matchRoute:
@@ -96,6 +97,48 @@ function prerenderRouteParamsHeader(payload: unknown): string {
 }
 
 describe("createAppRscHandler", () => {
+  it.each([
+    "url=%2Fimg.jpg&w=640junk&q=75",
+    "url=%2Fimg.jpg&w=640&q=75&extra=1",
+    "url=%2Fimg.jpg&w=640&w=640&q=75",
+  ])("rejects malformed pure App Router dev image parameters: %s", async (query) => {
+    const handler = createHandler();
+    const response = await handler(
+      new Request(`https://example.test/docs/_next/image?${query}`),
+      null,
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("uses configured image widths and qualities in pure App Router dev", async () => {
+    const handler = createHandler({
+      imageConfig: { deviceSizes: [320], imageSizes: [16], qualities: [60] },
+    });
+    const allowed = await handler(
+      new Request("https://example.test/docs/_next/image?url=%2Fimg.jpg&w=320&q=60"),
+      null,
+    );
+    expect(allowed.status).toBe(302);
+    expect(allowed.headers.get("location")).toBe("https://example.test/img.jpg");
+
+    const defaultOnly = await handler(
+      new Request("https://example.test/docs/_next/image?url=%2Fimg.jpg&w=640&q=75"),
+      null,
+    );
+    expect(defaultOnly.status).toBe(400);
+  });
+
+  it("allows independent Next.js blur width and quality exceptions in pure App Router dev", async () => {
+    const handler = createHandler();
+    for (const query of ["url=%2Fimg.jpg&w=8&q=75", "url=%2Fimg.jpg&w=640&q=70"]) {
+      const response = await handler(
+        new Request(`https://example.test/docs/_next/image?${query}`),
+        null,
+      );
+      expect(response.status).toBe(302);
+    }
+  });
+
   it("wraps dispatch responses with request-scoped finalization", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
     const handler = createHandler({ dispatchMatchedPage });

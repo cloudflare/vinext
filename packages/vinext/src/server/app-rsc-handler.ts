@@ -49,7 +49,14 @@ import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
-import { isImageOptimizationPath } from "./image-optimization.js";
+import {
+  DEFAULT_DEVICE_SIZES,
+  DEFAULT_IMAGE_QUALITIES,
+  DEFAULT_IMAGE_SIZES,
+  isImageOptimizationPath,
+  resolveDevImageRedirect,
+  type ImageConfig,
+} from "./image-optimization.js";
 import { handleMetadataRouteRequest } from "./metadata-route-response.js";
 import type { MiddlewareModule } from "./middleware-runtime.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
@@ -63,7 +70,6 @@ import {
   applyConfigHeadersToResponse,
   normalizeTrailingSlash,
   resolvePublicFileRoute,
-  validateImageUrl,
 } from "./request-pipeline.js";
 import {
   prerenderRouteParamsPayloadMatchesRoute,
@@ -255,6 +261,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     options: HandleServerActionRequestOptions,
   ) => Promise<Response | null>;
   i18nConfig: NextI18nConfig | null;
+  imageConfig?: ImageConfig;
   isMiddlewareProxy: boolean;
   loadPrerenderPagesRoutes?: () => Promise<unknown>;
   makeThenableParams: MakeThenableParams;
@@ -543,9 +550,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (beforeFilesRewrite) cleanPathname = beforeFilesRewrite;
 
   if (isImageOptimizationPath(cleanPathname)) {
-    const imageUrlResult = validateImageUrl(url.searchParams.get("url"), request.url);
-    if (imageUrlResult instanceof Response) return imageUrlResult;
-    return Response.redirect(new URL(imageUrlResult, url.origin).href, 302);
+    const imageRedirect = resolveDevImageRedirect(
+      url,
+      [
+        ...(options.imageConfig?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
+        ...(options.imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
+      ],
+      options.imageConfig?.qualities ?? DEFAULT_IMAGE_QUALITIES,
+    );
+    if (!imageRedirect)
+      return new Response("Invalid image optimization parameters", { status: 400 });
+    return Response.redirect(new URL(imageRedirect, url.origin).href, 302);
   }
 
   const metadataRouteResponse = await handleMetadataRouteRequest({
