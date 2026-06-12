@@ -1,5 +1,60 @@
 # vinext
 
+## 0.1.2
+
+### Bug Fixes
+
+#### App Router
+
+- include parallel slot params in useParams (#1904)
+- preserve unstable_catchError boundaries (#1906)
+- suppress redirect console errors in production onCaughtError (root-layout-redirect) (#1878)
+- preload next/dynamic chunks with CSP nonce (#1594)
+- extend OTel tracer provider for Cache Component span context (#1868)
+- return HTTP 200 when notFound() is thrown from generateMetadata (#1864)
+- discover parallel-slot pages inside route groups for catch-all + parallel-routes-group (#1865)
+
+#### Pages Router
+
+- support stream proxying in API routes (#1902)
+- set x-nextjs-deployment-id on SSG \_next/data responses (#1863)
+- buffer SSR response for crawler/bot User-Agents (#1876)
+- hard-navigate to App Router destinations from Pages Router links (#1879)
+- bridge deprecated Router.on<Event> property callbacks (#1869)
+
+#### Misc
+
+- **Router:** support experimental gesture push (#1909)
+- **Prod Server:** stop double-evaluating the server bundle when chunks import the entry back (#1924)
+- **Trailing Slash:** canonical url trailing slash support (#1888)
+- **Edge Wasm:** handle `*.wasm?module` imports in non-Cloudflare builds (#1877)
+- **Config:** define cache components flag as boolean (#1903)
+- **Scss:** preprocess SCSS CSS-module composes deps via SassAwareFileSystemLoader (#1882)
+- **Routing:** normalize route root to forward slashes, drop downstream path workarounds (#1896)
+- **Middleware:** clear nextUrl.basePath for absolute paths outside basePath (part of #1830) (#1872)
+- **Cloudflare:** update cache adapter jsdoc and examples (#1898)
+- **Fonts:** normalize shims dir so shim-skip guards match on Windows (#1885)
+- **Check:** normalize scanned file paths to forward slashes on Windows (#1887)
+- **Shims:** use path.posix.join in resolveShimModulePath for Windows (#1886)
+- **Scss:** resolve tilde (~) imports from node_modules and project root (#1881)
+- **Build:** define process.env.NEXT_RUNTIME for server bundles (#1880)
+- **Build:** inline ../-relative font assets in OG routes (#1866)
+- **Use Cache:** pass soft tags to cache lookup so revalidatePath invalidates use-cache entries in route handlers (#1867)
+
+### Performance
+
+- **Server:** eliminate redundant per-request parsing in the request pipeline (#1929)
+- **Server:** hoist per-request regex compilation out of SSR streaming and shim hot paths (#1915)
+
+### Contributors
+
+- @Divkix
+- @james-elicx
+- @jgeurts
+- @MaxtuneLee
+- @NathanDrake2406
+- @shulaoda
+
 ## 0.1.1
 
 ### Bug Fixes
