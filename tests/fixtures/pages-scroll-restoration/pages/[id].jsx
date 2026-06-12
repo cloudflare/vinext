@@ -49,7 +49,7 @@ const Page = ({ id }) => {
 export default Page;
 
 export const getServerSideProps = (context) => {
-  const { id = 0 } = context.query;
+  const { id = "0" } = context.query;
   return {
     props: {
       id,
