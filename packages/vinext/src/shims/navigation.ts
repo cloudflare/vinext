@@ -1515,40 +1515,6 @@ export function usePathname(): string | null {
 
 /* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
 /**
- * Returns the current pathname without registering it as a tracked render
- * dependency. Unlike `usePathname()`, this does not use `useSyncExternalStore`
- * and therefore does not cause the component to re-render on navigation.
- *
- * Server: returns `null` when no navigation context is available (missing-params
- * shell prerender), instead of falling back to `"/"`.
- *
- * Client: reads directly from the navigation snapshot or location without
- * subscribing to URL changes.
- *
- * Used by `unstable_catchError` error boundaries to avoid unnecessary re-renders.
- *
- * Ported from Next.js:
- *   https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/client/components/navigation-untracked.ts
- */
-export function useUntrackedPathname(): string | null {
-  if (isServer) {
-    const ctx = _getServerContext();
-    if (ctx) return ctx.pathname;
-    const pagesCtx = _getPagesNavigationContext();
-    return pagesCtx ? pagesCtx.pathname : null;
-  }
-  const renderSnapshot = useClientNavigationRenderSnapshot();
-  if (renderSnapshot) {
-    return renderSnapshot.pathname;
-  }
-  const pagesCtx = _getPagesNavigationContext();
-  if (pagesCtx) return pagesCtx.pathname;
-  return getPathnameSnapshot();
-}
-/* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
-
-/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
-/**
  * Returns the current search params as a read-only URLSearchParams.
  */
 export function useSearchParams(): ReadonlyURLSearchParams {

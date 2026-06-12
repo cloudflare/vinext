@@ -10,7 +10,8 @@
  * `next/error`'s public surface.
  */
 import React from "react";
-import { isNextRouterError, useUntrackedPathname } from "./navigation.js";
+import { isNextRouterError } from "./navigation.js";
+import { useUntrackedPathname } from "./internal/navigation-untracked.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { RouterContext } from "./internal/router-context.js";
 

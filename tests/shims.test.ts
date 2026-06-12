@@ -1471,8 +1471,9 @@ describe("next/navigation shim", () => {
   // Ported from Next.js:
   //   https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/client/components/navigation-untracked.ts
   // -------------------------------------------------------------------------
-  it("useUntrackedPathname returns null on server when no navigation context is set", async () => {
-    const { useUntrackedPathname } = await import("../packages/vinext/src/shims/navigation.js");
+  it("useUntrackedPathname returns '/' on server when no navigation context is set", async () => {
+    const { useUntrackedPathname } =
+      await import("../packages/vinext/src/shims/internal/navigation-untracked.js");
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
 
@@ -1483,12 +1484,13 @@ describe("next/navigation shim", () => {
     }
 
     renderToStaticMarkup(React.createElement(Probe));
-    expect(captured).toBeNull();
+    expect(captured).toBe("/");
   });
 
   it("useUntrackedPathname returns pathname from server context", async () => {
-    const { useUntrackedPathname, setNavigationContext } =
-      await import("../packages/vinext/src/shims/navigation.js");
+    const { useUntrackedPathname } =
+      await import("../packages/vinext/src/shims/internal/navigation-untracked.js");
+    const { setNavigationContext } = await import("../packages/vinext/src/shims/navigation.js");
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
 
@@ -1537,6 +1539,8 @@ describe("next/navigation shim", () => {
       vi.resetModules();
       const React = await import("react");
       const { renderToStaticMarkup } = await import("react-dom/server");
+      const { useUntrackedPathname } =
+        await import("../packages/vinext/src/shims/internal/navigation-untracked.js");
       const navigation = await import("../packages/vinext/src/shims/navigation.js");
       const Context = navigation.getClientNavigationRenderContext();
       if (!Context) {
@@ -1551,7 +1555,7 @@ describe("next/navigation shim", () => {
 
       let pathname: string | null = "";
       function Probe() {
-        pathname = navigation.useUntrackedPathname();
+        pathname = useUntrackedPathname();
         return React.createElement("span", null, pathname ?? "null");
       }
 
@@ -1583,10 +1587,11 @@ describe("next/navigation shim", () => {
         params: {},
       });
 
-      const hookPath = "../packages/vinext/src/shims/navigation.js?pages-untracked=1";
+      const hookPath =
+        "../packages/vinext/src/shims/internal/navigation-untracked.js?pages-untracked=1";
       const { useUntrackedPathname } = (await import(
         hookPath
-      )) as typeof import("../packages/vinext/src/shims/navigation.js");
+      )) as typeof import("../packages/vinext/src/shims/internal/navigation-untracked.js");
 
       let captured: string | null = "";
       function Probe() {
@@ -2025,6 +2030,79 @@ describe("next/error shim — unstable_catchError", () => {
     expect(() => instance.unstable_retry()).toThrow(
       "`unstable_retry()` can only be used in the App Router. Use `reset()` in the Pages Router.",
     );
+  });
+
+  // Integration test: the boundary contract that useUntrackedPathname protects.
+  // The error boundary must clear its captured error when the pathname changes
+  // (navigation) and retain it when the pathname stays the same. This is the
+  // reason useUntrackedPathname exists: it provides a pathname that changes on
+  // navigation without subscribing the component to every URL change.
+  it("getDerivedStateFromProps clears the error when pathname changes and retains it when pathname stays the same", async () => {
+    const React = (await import("react")).default;
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
+
+    function Fallback() {
+      return null;
+    }
+    const Boundary = unstable_catchError(Fallback);
+
+    // The Boundary wrapper is a function component that calls hooks.
+    // We must call it inside a React render so React's dispatcher is active.
+    let wrapperResult: React.ReactElement | null = null;
+    function Capture() {
+      wrapperResult = (Boundary as unknown as (p: Record<string, never>) => React.ReactElement)({});
+      return React.createElement("span");
+    }
+    renderToStaticMarkup(React.createElement(Capture));
+
+    const InnerCatchError = wrapperResult!.type as unknown as React.ComponentClass<{
+      fallback: typeof Fallback;
+      pathname: string | null;
+      props: Record<string, never>;
+    }> & {
+      getDerivedStateFromProps(
+        props: Pick<{ pathname: string | null }, "pathname">,
+        state: { error: { thrownValue: unknown } | null; previousPathname: string | null },
+      ): { error: { thrownValue: unknown } | null; previousPathname: string | null };
+    };
+
+    const thrown = new Error("boom");
+    const initialState = {
+      error: { thrownValue: thrown },
+      previousPathname: "/initial",
+    };
+
+    // Same pathname: error must be retained
+    const samePath = InnerCatchError.getDerivedStateFromProps(
+      { pathname: "/initial" },
+      initialState,
+    );
+    expect(samePath).toEqual({
+      error: { thrownValue: thrown },
+      previousPathname: "/initial",
+    });
+
+    // Different pathname: error must be cleared
+    const changedPath = InnerCatchError.getDerivedStateFromProps(
+      { pathname: "/new" },
+      initialState,
+    );
+    expect(changedPath).toEqual({
+      error: null,
+      previousPathname: "/new",
+    });
+
+    // Null pathname to real pathname: error must be cleared.
+    // This matches the missing-params shell → real render transition.
+    const nullToReal = InnerCatchError.getDerivedStateFromProps(
+      { pathname: "/real" },
+      { error: { thrownValue: thrown }, previousPathname: null },
+    );
+    expect(nullToReal).toEqual({
+      error: null,
+      previousPathname: "/real",
+    });
   });
 });
 
