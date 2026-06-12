@@ -48,7 +48,7 @@ import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/s
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
-import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
+import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 
 /**
  * `@types/react-dom` does not yet type `maxHeadersLength` (it pairs with the
@@ -183,11 +183,11 @@ function renderFontHtml(
   const includeStyles = options.includeStyles ?? true;
 
   for (const url of fontData.links ?? []) {
-    fontHTML += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(appendDeploymentIdQuery(url))}" />\n`;
+    fontHTML += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(appendAssetDeploymentIdQuery(url))}" />\n`;
   }
 
   for (const preload of fontData.preloads ?? []) {
-    fontHTML += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(appendDeploymentIdQuery(preload.href))}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
+    fontHTML += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(appendAssetDeploymentIdQuery(preload.href))}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
   }
 
   if (includeStyles && fontData.styles && fontData.styles.length > 0) {
@@ -443,7 +443,7 @@ export async function handleSsr(
         );
         const rawBootstrapModuleUrl = extractBootstrapModuleUrl(bootstrapScriptContent);
         const bootstrapModuleUrl = rawBootstrapModuleUrl
-          ? appendDeploymentIdQuery(rawBootstrapModuleUrl)
+          ? appendAssetDeploymentIdQuery(rawBootstrapModuleUrl)
           : undefined;
         const errorMetaRenderer = createSsrErrorMetaRenderer({
           basePath: options?.basePath,

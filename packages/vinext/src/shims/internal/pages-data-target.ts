@@ -111,6 +111,11 @@ export function resolvePagesDataNavigationTarget(
  * warm by the time the user clicks.
  *
  * Used by both `Router.prefetch()` and `<Link>` hover/viewport prefetch. The
+ * JSON request uses `fetch()` rather than `<link rel="prefetch">` so it can
+ * carry Next.js's `x-deployment-id` skew-protection header. The in-flight
+ * request is shared with a racing navigation; after it settles, the browser's
+ * normal HTTP cache remains responsible for reuse.
+ *
  * loader's returned Promise is intentionally discarded — `import()` caches the
  * result, so a subsequent navigation re-invocation hits the cache without
  * paying for a second round trip. Errors are swallowed: prefetch is

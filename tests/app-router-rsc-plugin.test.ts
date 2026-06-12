@@ -49,6 +49,40 @@ describe("RSC plugin auto-registration", () => {
     expect(html).toContain("auto-rsc-test");
   });
 
+  it("serves the browser bootstrap in dev when deploymentId is configured", async () => {
+    const { createServer } = await import("vite");
+    const deploymentServer = await createServer({
+      root: APP_FIXTURE_DIR,
+      configFile: false,
+      plugins: [
+        vinext({
+          appDir: APP_FIXTURE_DIR,
+          nextConfig: () => ({ deploymentId: "dev-deployment-id" }),
+        }),
+      ],
+      optimizeDeps: { holdUntilCrawlEnd: true },
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+    await deploymentServer.listen();
+
+    try {
+      const address = deploymentServer.httpServer?.address();
+      const url = address && typeof address === "object" ? `http://localhost:${address.port}` : "";
+      const response = await fetch(`${url}/`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      const bootstrapUrl = html.match(/<script[^>]+type="module"[^>]+src="([^"]+)"/)?.[1];
+      expect(bootstrapUrl).not.toContain("dpl=");
+
+      const bootstrapResponse = await fetch(new URL(bootstrapUrl!, url));
+      expect(bootstrapResponse.status).toBe(200);
+      expect(bootstrapResponse.headers.get("content-type")).toContain("javascript");
+    } finally {
+      await deploymentServer.close();
+    }
+  }, 30_000);
+
   it("does not double-register when RSC plugin is already present", async () => {
     const { createServer } = await import("vite");
     const rsc = (await import("@vitejs/plugin-rsc")).default;

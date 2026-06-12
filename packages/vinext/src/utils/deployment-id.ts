@@ -12,7 +12,16 @@ export function appendDeploymentIdQuery(value: string, deploymentId = getDeploym
   const parsed = new URL(url, "http://vinext.local");
   if (parsed.searchParams.has("dpl")) return value;
   const separator = url.includes("?") ? "&" : "?";
-  return `${url}${separator}dpl=${encodeURIComponent(deploymentId)}${fragment}`;
+  return `${url}${separator}dpl=${deploymentId}${fragment}`;
+}
+
+export function appendAssetDeploymentIdQuery(
+  value: string,
+  deploymentId = getDeploymentId(),
+): string {
+  const parsed = new URL(value, "http://vinext.local");
+  if (!parsed.pathname.includes("/_next/static/")) return value;
+  return appendDeploymentIdQuery(value, deploymentId);
 }
 
 export function applyDeploymentIdHeader(headers: Headers, deploymentId = getDeploymentId()): void {

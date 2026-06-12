@@ -27,7 +27,7 @@
 import React from "react";
 import * as ReactDOM from "react-dom";
 import { useScriptNonce } from "./script-nonce-context.js";
-import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
+import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 
 function dynamicPreloadHref(file: string): string {
   if (
@@ -81,7 +81,7 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
   const stylesheets: React.ReactNode[] = [];
   for (const file of files) {
     const assetHref = dynamicPreloadHref(file);
-    const href = appendDeploymentIdQuery(assetHref);
+    const href = appendAssetDeploymentIdQuery(assetHref);
     if (assetHref.endsWith(".css")) {
       stylesheets.push(
         React.createElement("link", {
