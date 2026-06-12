@@ -31,7 +31,9 @@ type ReadAppRouteHandlerCacheOptions = {
   clearRequestContext: () => void;
   consumeDynamicUsage: AppRouteDynamicUsageFn;
   dynamicConfig?: string;
+  getAndClearPendingCookies: () => string[];
   getCollectedFetchTags: () => string[];
+  getDraftModeCookieHeader: () => string | null | undefined;
   handlerFn: AppRouteHandlerFunction;
   i18n?: NextI18nConfig | null;
   trailingSlash?: boolean;
@@ -124,9 +126,21 @@ export async function readAppRouteHandlerCacheResponse(
           options.setNavigationContext(null);
           assertSupportedAppRouteHandlerResponse(response);
 
-          if (dynamicUsedInHandler) {
+          const pendingCookies = options.getAndClearPendingCookies();
+          const hasResponseCookies =
+            response.headers.has("set-cookie") ||
+            pendingCookies.length > 0 ||
+            Boolean(options.getDraftModeCookieHeader()) ||
+            options.middlewareContext.headers?.has("set-cookie") === true;
+
+          if (dynamicUsedInHandler || hasResponseCookies) {
             markKnownDynamicAppRoute(options.routePattern);
-            options.isrDebug?.("route regen skipped (dynamic usage)", options.cleanPathname);
+            options.isrDebug?.(
+              hasResponseCookies
+                ? "route regen skipped (response cookies)"
+                : "route regen skipped (dynamic usage)",
+              options.cleanPathname,
+            );
             return;
           }
 

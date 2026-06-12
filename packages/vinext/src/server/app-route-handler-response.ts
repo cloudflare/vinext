@@ -1,5 +1,5 @@
 import type { CachedRouteValue, CacheControlMetadata } from "vinext/shims/cache";
-import { applyCdnResponseHeaders } from "./cache-control.js";
+import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
 import { decideIsr, buildAppRouteMissIsrCacheControl } from "./isr-decision.js";
 import {
   MIDDLEWARE_HEADER_PREFIX,
@@ -80,6 +80,9 @@ export function buildRouteHandlerCachedResponse(
 ): Response {
   const headers = new Headers();
   for (const [key, value] of Object.entries(cachedValue.headers)) {
+    if (key.toLowerCase() === "set-cookie") {
+      continue;
+    }
     if (Array.isArray(value)) {
       for (const entry of value) {
         headers.append(key, entry);
@@ -126,6 +129,19 @@ export function applyRouteHandlerRevalidateHeader(
 
 export function markRouteHandlerCacheMiss(response: Response): void {
   setCacheStateHeaders(response.headers, "MISS");
+}
+
+export function preventSharedRouteHandlerCaching(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("Cache-Control", NEVER_CACHE_CONTROL);
+  headers.delete("CDN-Cache-Control");
+  headers.delete("Cache-Tag");
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 /**
@@ -231,11 +247,6 @@ export async function buildAppRouteCacheValue(response: Response): Promise<Cache
     }
     headers[key] = value;
   });
-  const setCookies = response.headers.getSetCookie?.() ?? [];
-  if (setCookies.length > 0) {
-    headers["set-cookie"] = setCookies;
-  }
-
   return {
     kind: "APP_ROUTE",
     body,

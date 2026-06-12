@@ -21,6 +21,7 @@ import {
   buildAppRouteCacheValue,
   finalizeRouteHandlerResponse,
   markRouteHandlerCacheMiss,
+  preventSharedRouteHandlerCaching,
   type RouteHandlerMiddlewareContext,
 } from "./app-route-handler-response.js";
 import {
@@ -159,15 +160,28 @@ export async function executeAppRouteHandler(
   const previousHeadersPhase = options.setHeadersAccessPhase("route-handler");
 
   try {
-    const { dynamicUsedInHandler, response } = await runAppRouteHandler({
+    const { dynamicUsedInHandler, response: handlerResponse } = await runAppRouteHandler({
       ...options,
       dynamicConfig: options.handler.dynamic,
     });
+    let response = handlerResponse;
     assertSupportedAppRouteHandlerResponse(response);
     const handlerSetCacheControl = response.headers.has("cache-control");
 
     if (dynamicUsedInHandler) {
       markKnownDynamicAppRoute(options.routePattern);
+    }
+
+    const pendingCookies = options.getAndClearPendingCookies();
+    const draftCookie = options.getDraftModeCookieHeader();
+    const hasResponseCookies =
+      response.headers.has("set-cookie") ||
+      pendingCookies.length > 0 ||
+      Boolean(draftCookie) ||
+      options.middlewareContext.headers?.has("set-cookie") === true;
+
+    if (hasResponseCookies) {
+      response = preventSharedRouteHandlerCaching(response);
     }
 
     // The route's cache tags, shared by the response Cache-Tag header (so edge
@@ -184,7 +198,8 @@ export async function executeAppRouteHandler(
         isAutoHead: options.isAutoHead,
         method: options.method,
         revalidateSeconds: options.revalidateSeconds,
-      })
+      }) &&
+      !hasResponseCookies
     ) {
       const revalidateSeconds = options.revalidateSeconds;
       if (revalidateSeconds == null) {
@@ -207,7 +222,8 @@ export async function executeAppRouteHandler(
         isProduction: options.isProduction,
         method: options.method,
         revalidateSeconds: options.revalidateSeconds,
-      })
+      }) &&
+      !hasResponseCookies
     ) {
       markRouteHandlerCacheMiss(response);
       const routeClone = response.clone();
@@ -234,8 +250,6 @@ export async function executeAppRouteHandler(
       options.executionContext?.waitUntil(routeWritePromise);
     }
 
-    const pendingCookies = options.getAndClearPendingCookies();
-    const draftCookie = options.getDraftModeCookieHeader();
     options.clearRequestContext();
 
     return applyRouteHandlerMiddlewareContext(

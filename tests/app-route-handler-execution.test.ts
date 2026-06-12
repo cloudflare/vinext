@@ -150,13 +150,13 @@ describe("app route handler execution helpers", () => {
         },
       },
       getAndClearPendingCookies() {
-        return ["session=1; Path=/"];
+        return [];
       },
       getCollectedFetchTags() {
         return ["tag:demo"];
       },
       getDraftModeCookieHeader() {
-        return "draft=1; Path=/";
+        return null;
       },
       handler: { dynamic: "auto" },
       handlerFn() {
@@ -203,7 +203,7 @@ describe("app route handler execution helpers", () => {
     expect(response.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate=240");
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(response.headers.get("x-middleware")).toBe("present");
-    expect(response.headers.getSetCookie?.()).toEqual(["session=1; Path=/", "draft=1; Path=/"]);
+    expect(response.headers.getSetCookie?.()).toEqual([]);
     await expect(response.text()).resolves.toBe("ok");
     expect(isrSetCalls).toEqual([
       {
@@ -274,6 +274,154 @@ describe("app route handler execution helpers", () => {
     expect(response.headers.get("x-vinext-cache")).toBeNull();
     expect(wroteCache).toBe(false);
     await expect(response.json()).resolves.toEqual({ ping: "from-header" });
+  });
+
+  it("does not share route handler responses that set cookies between users", async () => {
+    // Next.js merges handler and mutable cookies only after producing the App
+    // Route prerender result:
+    // packages/next/src/server/route-modules/app-route/module.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-route/module.ts
+    const sharedCache = new Map<string, unknown>();
+
+    async function requestFor(user: string): Promise<Response> {
+      const dynamicUsage = createDynamicUsageState();
+      return executeAppRouteHandler({
+        buildPageCacheTags(pathname, extraTags) {
+          return [pathname, ...extraTags];
+        },
+        cleanPathname: "/api/session",
+        clearRequestContext() {},
+        consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+        executionContext: null,
+        getAndClearPendingCookies() {
+          return [];
+        },
+        getCollectedFetchTags() {
+          return [];
+        },
+        getDraftModeCookieHeader() {
+          return null;
+        },
+        handler: { dynamic: "auto" },
+        handlerFn() {
+          return new Response(`issued for ${user}`, {
+            headers: {
+              "cache-control": "public, s-maxage=300",
+              "cdn-cache-control": "public, max-age=300",
+              "cache-tag": "unsafe-session-response",
+              "set-cookie": `session=${user}-secret; Path=/; HttpOnly`,
+            },
+          });
+        },
+        isAutoHead: false,
+        isProduction: true,
+        isrRouteKey(pathname) {
+          return `route:${pathname}`;
+        },
+        async isrSet(key, value) {
+          sharedCache.set(key, value);
+        },
+        markDynamicUsage: dynamicUsage.markDynamicUsage,
+        method: "GET",
+        middlewareContext: { headers: null, status: null },
+        params: {},
+        reportRequestError() {},
+        request: new Request(`https://example.com/api/session?user=${user}`),
+        revalidateSeconds: 300,
+        routePattern: "/api/session",
+        setHeadersAccessPhase() {
+          return "render";
+        },
+      });
+    }
+
+    const victimResponse = await requestFor("victim");
+    const attackerResponse = await requestFor("attacker");
+
+    expect(sharedCache.size).toBe(0);
+    expect(victimResponse.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(victimResponse.headers.get("cdn-cache-control")).toBeNull();
+    expect(victimResponse.headers.get("cache-tag")).toBeNull();
+    expect(victimResponse.headers.getSetCookie()).toEqual([
+      "session=victim-secret; Path=/; HttpOnly",
+    ]);
+    expect(attackerResponse.headers.getSetCookie()).toEqual([
+      "session=attacker-secret; Path=/; HttpOnly",
+    ]);
+    await expect(attackerResponse.text()).resolves.toBe("issued for attacker");
+  });
+
+  it.each([
+    {
+      name: "pending mutable cookies",
+      pendingCookies: ["session=pending; Path=/"],
+      draftCookie: null,
+      middlewareHeaders: null,
+    },
+    {
+      name: "draft mode cookies",
+      pendingCookies: [],
+      draftCookie: "__prerender_bypass=draft; Path=/",
+      middlewareHeaders: null,
+    },
+    {
+      name: "middleware cookies",
+      pendingCookies: [],
+      draftCookie: null,
+      middlewareHeaders: new Headers([["set-cookie", "middleware=1; Path=/"]]),
+    },
+  ])("skips shared route ISR for $name", async (testCase) => {
+    const dynamicUsage = createDynamicUsageState();
+    let wroteCache = false;
+
+    const response = await executeAppRouteHandler({
+      buildPageCacheTags(pathname, extraTags) {
+        return [pathname, ...extraTags];
+      },
+      cleanPathname: "/api/cookies",
+      clearRequestContext() {},
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      executionContext: null,
+      getAndClearPendingCookies() {
+        return testCase.pendingCookies;
+      },
+      getCollectedFetchTags() {
+        return [];
+      },
+      getDraftModeCookieHeader() {
+        return testCase.draftCookie;
+      },
+      handler: { dynamic: "auto" },
+      handlerFn() {
+        return new Response("cookie response");
+      },
+      isAutoHead: false,
+      isProduction: true,
+      isrRouteKey(pathname) {
+        return `route:${pathname}`;
+      },
+      async isrSet() {
+        wroteCache = true;
+      },
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      method: "GET",
+      middlewareContext: { headers: testCase.middlewareHeaders, status: null },
+      params: {},
+      reportRequestError() {},
+      request: new Request("https://example.com/api/cookies"),
+      revalidateSeconds: 300,
+      routePattern: "/api/cookies",
+      setHeadersAccessPhase() {
+        return "render";
+      },
+    });
+
+    expect(wroteCache).toBe(false);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
   });
 
   it("skips cache writes and marks the route dynamic when a revalidating handler fetches with no-store", async () => {

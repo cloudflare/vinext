@@ -8,6 +8,7 @@ import {
   buildRouteHandlerCachedResponse,
   finalizeRouteHandlerResponse,
   markRouteHandlerCacheMiss,
+  preventSharedRouteHandlerCaching,
 } from "../packages/vinext/src/server/app-route-handler-response.js";
 import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
@@ -174,7 +175,23 @@ describe("app route handler response helpers", () => {
     expect(new TextDecoder().decode(value.body)).toBe("cache me");
   });
 
-  it("preserves multiple Set-Cookie headers when building cache value", async () => {
+  it("clones immutable fetch responses before disabling shared caching", async () => {
+    const immutableResponse = Response.redirect("https://example.com/proxied");
+
+    expect(() => immutableResponse.headers.set("x-test", "value")).toThrow(TypeError);
+
+    const safeResponse = preventSharedRouteHandlerCaching(immutableResponse);
+
+    expect(safeResponse.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(safeResponse.headers.get("cdn-cache-control")).toBeNull();
+    expect(safeResponse.headers.get("cache-tag")).toBeNull();
+    expect(safeResponse.status).toBe(302);
+    expect(safeResponse.headers.get("location")).toBe("https://example.com/proxied");
+  });
+
+  it("never serializes Set-Cookie headers into APP_ROUTE cache values", async () => {
     const response = new Response("with cookies", {
       status: 200,
       headers: [
@@ -187,11 +204,7 @@ describe("app route handler response helpers", () => {
 
     const value = await buildAppRouteCacheValue(response);
 
-    expect(value.headers["set-cookie"]).toEqual([
-      "session=abc; Path=/; HttpOnly",
-      "theme=dark; Path=/",
-      "lang=en; Path=/; SameSite=Lax",
-    ]);
+    expect(value.headers["set-cookie"]).toBeUndefined();
     expect(value.headers["content-type"]).toBe("application/json");
   });
 
@@ -207,25 +220,26 @@ describe("app route handler response helpers", () => {
     expect(value.headers["set-cookie"]).toBeUndefined();
   });
 
-  it("round-trips multiple Set-Cookie headers through cache store and restore", async () => {
-    const original = new Response("round trip", {
-      status: 200,
-      headers: [
-        ["content-type", "text/plain"],
-        ["set-cookie", "a=1; Path=/"],
-        ["set-cookie", "b=2; Path=/"],
-      ],
-    });
+  it("does not replay Set-Cookie from legacy APP_ROUTE cache values", async () => {
+    const restored = buildRouteHandlerCachedResponse(
+      {
+        kind: "APP_ROUTE",
+        body: new TextEncoder().encode("legacy cache").buffer,
+        status: 200,
+        headers: {
+          "content-type": "text/plain",
+          "set-cookie": ["victim-session=secret; Path=/; HttpOnly"],
+        },
+      },
+      {
+        cacheState: "HIT",
+        isHead: false,
+        revalidateSeconds: 60,
+      },
+    );
 
-    const cached = await buildAppRouteCacheValue(original);
-    const restored = buildRouteHandlerCachedResponse(cached, {
-      cacheState: "HIT",
-      isHead: false,
-      revalidateSeconds: 60,
-    });
-
-    expect(restored.headers.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
-    await expect(restored.text()).resolves.toBe("round trip");
+    expect(restored.headers.getSetCookie()).toEqual([]);
+    await expect(restored.text()).resolves.toBe("legacy cache");
   });
 
   it("finalizes route handler responses with cookies and auto-head semantics", async () => {

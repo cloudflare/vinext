@@ -60,8 +60,14 @@ describe("app route handler cache helpers", () => {
       consumeDynamicUsage() {
         return false;
       },
+      getAndClearPendingCookies() {
+        return [];
+      },
       getCollectedFetchTags() {
         return [];
+      },
+      getDraftModeCookieHeader() {
+        return null;
       },
       handlerFn() {
         throw new Error("should not run");
@@ -124,8 +130,14 @@ describe("app route handler cache helpers", () => {
       cleanPathname: "/api/stale",
       clearRequestContext() {},
       consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      getAndClearPendingCookies() {
+        return [];
+      },
       getCollectedFetchTags() {
         return ["tag:regen"];
+      },
+      getDraftModeCookieHeader() {
+        return null;
       },
       handlerFn() {
         return Response.json({
@@ -195,8 +207,14 @@ describe("app route handler cache helpers", () => {
       clearRequestContext() {},
       consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
       dynamicConfig: "force-static",
+      getAndClearPendingCookies() {
+        return [];
+      },
       getCollectedFetchTags() {
         return [];
+      },
+      getDraftModeCookieHeader() {
+        return null;
       },
       handlerFn() {
         return new Response("regenerated");
@@ -254,8 +272,14 @@ describe("app route handler cache helpers", () => {
       cleanPathname: "/api/stale-dynamic",
       clearRequestContext() {},
       consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      getAndClearPendingCookies() {
+        return [];
+      },
       getCollectedFetchTags() {
         return [];
+      },
+      getDraftModeCookieHeader() {
+        return null;
       },
       handlerFn(request) {
         return Response.json({
@@ -302,6 +326,76 @@ describe("app route handler cache helpers", () => {
     expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
   });
 
+  it("skips stale regeneration writes when the handler sets a cookie", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    const routePattern = "/api/stale-cookie-" + Date.now();
+    const scheduledRegens: Array<() => Promise<void>> = [];
+    let wroteCache = false;
+
+    const response = await readAppRouteHandlerCacheResponse({
+      buildPageCacheTags(pathname, extraTags) {
+        return [pathname, ...extraTags];
+      },
+      cleanPathname: "/api/stale-cookie",
+      clearRequestContext() {},
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      getAndClearPendingCookies() {
+        return [];
+      },
+      getCollectedFetchTags() {
+        return [];
+      },
+      getDraftModeCookieHeader() {
+        return null;
+      },
+      handlerFn() {
+        return new Response("personalized regeneration", {
+          headers: { "set-cookie": "session=victim; Path=/; HttpOnly" },
+        });
+      },
+      isAutoHead: false,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedRouteValue("safe stale body"), true);
+      },
+      isrRouteKey(pathname) {
+        return "route:" + pathname;
+      },
+      async isrSet() {
+        wroteCache = true;
+      },
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      middlewareContext: { headers: null, status: null },
+      params: {},
+      requestUrl: "https://example.com/api/stale-cookie",
+      revalidateSearchParams: new URLSearchParams(),
+      revalidateSeconds: 60,
+      routePattern,
+      async runInRevalidationContext(renderFn) {
+        await renderFn();
+      },
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRegens.push(renderFn);
+      },
+      setHeadersAccessPhase() {
+        return "render";
+      },
+      setNavigationContext() {},
+    });
+
+    expect(response?.headers.getSetCookie()).toEqual([]);
+    await expect(response?.text()).resolves.toBe("safe stale body");
+
+    const scheduledRegenRun = scheduledRegens[0];
+    expect(scheduledRegens).toHaveLength(1);
+    if (!scheduledRegenRun) {
+      throw new Error("Expected scheduled route regeneration");
+    }
+    await scheduledRegenRun();
+
+    expect(wroteCache).toBe(false);
+    expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
+  });
+
   it("rejects invalid route handler responses during background regeneration", async () => {
     const dynamicUsage = createDynamicUsageState();
     const scheduledRegens: Array<() => Promise<void>> = [];
@@ -314,8 +408,14 @@ describe("app route handler cache helpers", () => {
       cleanPathname: "/api/stale-invalid",
       clearRequestContext() {},
       consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      getAndClearPendingCookies() {
+        return [];
+      },
       getCollectedFetchTags() {
         return [];
+      },
+      getDraftModeCookieHeader() {
+        return null;
       },
       handlerFn() {
         return new Response("should not be cached", {
@@ -378,8 +478,14 @@ describe("app route handler cache helpers", () => {
       consumeDynamicUsage() {
         return false;
       },
+      getAndClearPendingCookies() {
+        return [];
+      },
       getCollectedFetchTags() {
         return [];
+      },
+      getDraftModeCookieHeader() {
+        return null;
       },
       handlerFn() {
         throw new Error("should not run");
