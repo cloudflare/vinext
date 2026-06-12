@@ -1,5 +1,5 @@
-import { defineConfig } from "vite";
-import vinext from "../../../packages/vinext/dist/index.js";
+import { defineConfig } from "vite-plus";
+import vinext from "vinext";
 
 export default defineConfig({
   plugins: [vinext()],
