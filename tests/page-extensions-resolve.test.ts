@@ -1,7 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
-import { createBuilder } from "vite";
+import { createBuilder, resolveConfig } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 import {
   buildViteResolveExtensions,
@@ -91,6 +91,7 @@ describe("vinext plugin wires pageExtensions into Vite resolve.extensions", () =
       (p: any) => p.name === "vinext:config" && typeof p.config === "function",
     );
     expect(mainPlugin).toBeDefined();
+    expect(typeof (mainPlugin as any).configEnvironment).toBe("function");
 
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-ext-resolve-"));
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
@@ -113,8 +114,10 @@ describe("vinext plugin wires pageExtensions into Vite resolve.extensions", () =
         plugins: [],
       };
       // oxlint-disable-next-line typescript/no-explicit-any
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
-      const extensions: string[] = result.resolve?.extensions ?? [];
+      await (mainPlugin as any).config(mockConfig, { command: "build" });
+      const environmentConfig: any = { resolve: { extensions: [".earlier"] } };
+      (mainPlugin as any).configEnvironment("client", environmentConfig);
+      const extensions: string[] = environmentConfig.resolve.extensions;
       expect(extensions).toContain(".platform.tsx");
       expect(extensions).toContain(".mdx");
       expect(extensions).toContain(".tsx");
@@ -210,6 +213,7 @@ describe("vinext plugin wires pageExtensions into Vite resolve.extensions", () =
       (p: any) => p.name === "vinext:config" && typeof p.config === "function",
     );
     expect(mainPlugin).toBeDefined();
+    expect(typeof (mainPlugin as any).configEnvironment).toBe("function");
 
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-resolve-extensions-"));
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
@@ -226,14 +230,63 @@ describe("vinext plugin wires pageExtensions into Vite resolve.extensions", () =
     );
 
     try {
-      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
-      // oxlint-disable-next-line typescript/no-explicit-any
-      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
-      const extensions: string[] = result.resolve?.extensions ?? [];
+      const resolved = await resolveConfig(
+        {
+          root: tmpDir,
+          configFile: false,
+          resolve: { extensions: [".earlier", ".tsx"] },
+          plugins: [vinext({ appDir: tmpDir })],
+          logLevel: "silent",
+        },
+        "build",
+      );
+      const extensions: string[] = resolved.environments.client.resolve.extensions;
       expect(extensions[0]).toBe(".png");
       expect(extensions).toContain(".jsx");
       expect(extensions).not.toContain("");
       expect(extensions).not.toContain(".mjs");
+      expect(extensions).not.toContain(".earlier");
+      expect(extensions.filter((extension) => extension === ".tsx")).toHaveLength(1);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("applies conditional webpack extensions to the matching Vite environments", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-webpack-extensions-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fs.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fs.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fs.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Page() { return <p>hello</p>; }`,
+    );
+    await fs.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { webpack(config, { isServer, dev }) { config.resolve.extensions = [isServer ? ".server.ts" : ".client.ts", dev ? ".dev.ts" : ".prod.ts", ".ts"]; return config; } };`,
+    );
+
+    try {
+      const resolved = await resolveConfig(
+        {
+          root: tmpDir,
+          configFile: false,
+          plugins: [vinext({ appDir: tmpDir })],
+          logLevel: "silent",
+        },
+        "build",
+      );
+      expect(resolved.environments.client.resolve.extensions).toEqual([
+        ".client.ts",
+        ".prod.ts",
+        ".ts",
+      ]);
+      expect(resolved.environments.ssr.resolve.extensions).toEqual([
+        ".server.ts",
+        ".prod.ts",
+        ".ts",
+      ]);
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

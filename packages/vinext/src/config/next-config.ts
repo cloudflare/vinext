@@ -342,6 +342,7 @@ export type ResolvedNextConfig = {
   output: "" | "export" | "standalone";
   pageExtensions: string[];
   resolveExtensions: string[] | null;
+  serverResolveExtensions: string[] | null;
   instrumentationClientInject: string[];
   cacheComponents: boolean;
   /**
@@ -1207,6 +1208,7 @@ function resolveStaleTimes(experimental: Record<string, unknown> | undefined): {
 export async function resolveNextConfig(
   config: NextConfig | null,
   root: string = process.cwd(),
+  options: { dev?: boolean } = {},
 ): Promise<ResolvedNextConfig> {
   if (!config) {
     const buildId = await resolveBuildId(undefined);
@@ -1219,6 +1221,7 @@ export async function resolveNextConfig(
       output: "",
       pageExtensions: normalizePageExtensions(),
       resolveExtensions: null,
+      serverResolveExtensions: null,
       cacheComponents: false,
       gestureTransition: false,
       prefetchInlining: false,
@@ -1316,9 +1319,9 @@ export async function resolveNextConfig(
     headers = await config.headers();
   }
 
-  // Probe wrapped webpack config once so alias extraction and MDX extraction
-  // observe the same mock environment.
-  const webpackProbe = await probeWebpackConfig(config, root);
+  // Probe wrapped webpack config for client and server resolution. Alias and
+  // MDX extraction use the client result, matching the previous behavior.
+  const webpackProbe = await probeWebpackConfig(config, root, options.dev ?? false);
   const mdx = webpackProbe.mdx;
   const aliases = {
     ...extractTurboAliases(config, root),
@@ -1455,10 +1458,13 @@ export async function resolveNextConfig(
   }
 
   const pageExtensions = normalizePageExtensions(config.pageExtensions);
+  const experimentalTurbo = readOptionalRecord(experimental?.turbo);
   const turbopack = readOptionalRecord(config.turbopack);
   const resolveExtensions = Array.isArray(turbopack?.resolveExtensions)
     ? readStringArray(turbopack.resolveExtensions)
-    : null;
+    : Array.isArray(experimentalTurbo?.resolveExtensions)
+      ? readStringArray(experimentalTurbo.resolveExtensions)
+      : null;
 
   // Parse i18n config
   let i18n: NextI18nConfig | null = null;
@@ -1508,6 +1514,7 @@ export async function resolveNextConfig(
     output: output === "export" || output === "standalone" ? output : "",
     pageExtensions,
     resolveExtensions: resolveExtensions ?? webpackProbe.resolveExtensions,
+    serverResolveExtensions: resolveExtensions ?? webpackProbe.serverResolveExtensions,
     instrumentationClientInject: Array.isArray(config.instrumentationClientInject)
       ? (config.instrumentationClientInject as unknown[]).filter(
           (x): x is string => typeof x === "string",
@@ -1640,10 +1647,12 @@ function extractTurboAliases(config: NextConfig, root: string): Record<string, s
 async function probeWebpackConfig(
   config: NextConfig,
   root: string,
+  dev: boolean,
 ): Promise<{
   aliases: Record<string, string>;
   mdx: MdxOptions | null;
   resolveExtensions: string[] | null;
+  serverResolveExtensions: string[] | null;
   resolveExtensionsCustomized: boolean;
 }> {
   if (typeof config.webpack !== "function") {
@@ -1651,39 +1660,18 @@ async function probeWebpackConfig(
       aliases: {},
       mdx: null,
       resolveExtensions: null,
+      serverResolveExtensions: null,
       resolveExtensionsCustomized: false,
     };
   }
 
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const mockModuleRules: any[] = [];
-  const mockResolve: { alias: Record<string, unknown>; extensions: string[] } = {
-    alias: {},
-    // Match Next.js' webpack defaults so callbacks that spread or mutate the
-    // existing list observe the same starting point.
-    extensions: [".js", ".mjs", ".tsx", ".ts", ".jsx", ".json", ".wasm"],
-  };
-  const defaultResolveExtensions = [...mockResolve.extensions];
-  const mockConfig = {
-    context: root,
-    resolve: mockResolve,
-    module: { rules: mockModuleRules },
-    // oxlint-disable-next-line typescript/no-explicit-any
-    plugins: [] as any[],
-  };
-  const mockOptions = {
-    defaultLoaders: { babel: { loader: "next-babel-loader" } },
-    isServer: false,
-    dev: false,
-    dir: root,
-  };
-
   try {
-    // oxlint-disable-next-line typescript/no-unsafe-function-type
-    const result = await (config.webpack as Function)(mockConfig, mockOptions);
-    const finalConfig = result ?? mockConfig;
-    // oxlint-disable-next-line typescript/no-explicit-any
-    const rules: any[] = finalConfig.module?.rules ?? mockModuleRules;
+    const clientProbe = await runWebpackConfigProbe(config, root, { dev, isServer: false });
+    const serverProbe = await runWebpackConfigProbe(config, root, {
+      dev,
+      isServer: true,
+      nextRuntime: "nodejs",
+    });
     // Invoke loader callbacks for any side effects on `process.env`.
     // Next.js webpack loaders sometimes mutate `process.env.X = ...` at
     // compile time (see issue #1500), and vinext otherwise never sees the
@@ -1691,30 +1679,74 @@ async function probeWebpackConfig(
     // loader once with a dummy source lets build-time env mutations land in
     // the shared Node process so they become visible to defines and
     // server-side code during the same build.
-    invokeLoaderSideEffects(rules, root);
-    const resolveExtensions = Array.isArray(finalConfig.resolve?.extensions)
-      ? readStringArray(finalConfig.resolve.extensions)
-      : null;
-    const resolveExtensionsCustomized =
-      resolveExtensions !== null &&
-      (resolveExtensions.length !== defaultResolveExtensions.length ||
-        resolveExtensions.some(
-          (extension, index) => extension !== defaultResolveExtensions[index],
-        ));
+    invokeLoaderSideEffects(clientProbe.rules, root);
     return {
-      aliases: normalizeAliasEntries(finalConfig.resolve?.alias, root),
-      mdx: extractMdxOptionsFromRules(rules),
-      resolveExtensions: resolveExtensionsCustomized ? resolveExtensions : null,
-      resolveExtensionsCustomized,
+      aliases: normalizeAliasEntries(clientProbe.config.resolve?.alias, root),
+      mdx: extractMdxOptionsFromRules(clientProbe.rules),
+      resolveExtensions: clientProbe.resolveExtensions,
+      serverResolveExtensions: serverProbe.resolveExtensions,
+      resolveExtensionsCustomized:
+        clientProbe.resolveExtensions !== null || serverProbe.resolveExtensions !== null,
     };
   } catch {
     return {
       aliases: {},
       mdx: null,
       resolveExtensions: null,
+      serverResolveExtensions: null,
       resolveExtensionsCustomized: false,
     };
   }
+}
+
+const DEFAULT_WEBPACK_RESOLVE_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx", ".json", ".wasm"];
+
+async function runWebpackConfigProbe(
+  config: NextConfig,
+  root: string,
+  options: { dev: boolean; isServer: boolean; nextRuntime?: "nodejs" | "edge" },
+): Promise<{
+  // oxlint-disable-next-line typescript/no-explicit-any
+  config: any;
+  // oxlint-disable-next-line typescript/no-explicit-any
+  rules: any[];
+  resolveExtensions: string[] | null;
+}> {
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const rules: any[] = [];
+  const mockConfig = {
+    context: root,
+    resolve: {
+      alias: {} as Record<string, unknown>,
+      extensions: [...DEFAULT_WEBPACK_RESOLVE_EXTENSIONS],
+    },
+    module: { rules },
+    // oxlint-disable-next-line typescript/no-explicit-any
+    plugins: [] as any[],
+  };
+  // oxlint-disable-next-line typescript/no-unsafe-function-type
+  const result = await (config.webpack as Function)(mockConfig, {
+    defaultLoaders: { babel: { loader: "next-babel-loader" } },
+    ...options,
+    dir: root,
+  });
+  const finalConfig = result ?? mockConfig;
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const finalRules: any[] = finalConfig.module?.rules ?? rules;
+  const extensions = Array.isArray(finalConfig.resolve?.extensions)
+    ? readStringArray(finalConfig.resolve.extensions)
+    : null;
+  const customized =
+    extensions !== null &&
+    (extensions.length !== DEFAULT_WEBPACK_RESOLVE_EXTENSIONS.length ||
+      extensions.some(
+        (extension, index) => extension !== DEFAULT_WEBPACK_RESOLVE_EXTENSIONS[index],
+      ));
+  return {
+    config: finalConfig,
+    rules: finalRules,
+    resolveExtensions: customized ? extensions : null,
+  };
 }
 
 /**
@@ -1834,7 +1866,7 @@ export async function extractMdxOptions(
   config: NextConfig,
   root: string = process.cwd(),
 ): Promise<MdxOptions | null> {
-  return (await probeWebpackConfig(config, root)).mdx;
+  return (await probeWebpackConfig(config, root, false)).mdx;
 }
 
 /**

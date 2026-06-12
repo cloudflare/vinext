@@ -1232,7 +1232,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           } else {
             rawConfig = await loadNextConfig(root, phase);
           }
-          nextConfig = await resolveNextConfig(rawConfig, root);
+          nextConfig = await resolveNextConfig(rawConfig, root, {
+            dev: env?.command !== "build",
+          });
 
           // Build-ID coordination across plugin instances.
           //
@@ -1930,14 +1932,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...nextConfig.aliases,
               ...nextShimMap,
             },
-            // Prefer Next.js module resolver extensions, falling back to
-            // pageExtensions when none are configured. This supports imports
-            // such as `./image` resolving to `./image.png`, as exercised by
-            // Next.js' resolve-extensions deploy suite.
-            extensions:
-              nextConfig.resolveExtensions === null
-                ? buildViteResolveExtensions(nextConfig.pageExtensions)
-                : normalizeViteResolveExtensions(nextConfig.resolveExtensions),
             // Dedupe React packages to prevent dual-instance errors.
             // When vinext is linked (npm link / bun link) or any dependency
             // brings its own React copy, multiple React instances can load,
@@ -2396,6 +2390,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
 
         return viteConfig;
+      },
+
+      configEnvironment(name, config) {
+        const configuredExtensions =
+          name === "client" ? nextConfig.resolveExtensions : nextConfig.serverResolveExtensions;
+        const extensions =
+          configuredExtensions === null
+            ? buildViteResolveExtensions(nextConfig.pageExtensions, config.resolve?.extensions)
+            : normalizeViteResolveExtensions(configuredExtensions);
+        config.resolve ??= {};
+        config.resolve.extensions = extensions;
+        return null;
       },
 
       configResolved(config) {
