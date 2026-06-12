@@ -1480,6 +1480,11 @@ function classifyServerActionResult(
     };
   }
 
+  // compatibilityDecision.hardNavigationTarget (derived from responseUrl with _rsc stripped)
+  // is intentionally not used here. For server actions, responseUrl is the action endpoint URL,
+  // not the page URL the user should land on. The authoritative destinations are actionRedirectHref
+  // (explicit redirect) and currentHref (reload in place) — both are set below.
+
   if (facts.actionRedirectHref !== null) {
     return {
       kind: "hardNavigate",

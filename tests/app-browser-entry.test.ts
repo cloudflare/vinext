@@ -5,6 +5,7 @@ import {
   prodOnCaughtError,
 } from "../packages/vinext/src/server/app-browser-error.js";
 import {
+  applyServerActionResultDecision,
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
   normalizeServerActionThrownValue,
@@ -112,6 +113,7 @@ import {
   NavigationTraceTransactionCodes,
   createNavigationTrace,
 } from "../packages/vinext/src/server/navigation-trace.js";
+import { navigationPlanner } from "../packages/vinext/src/server/navigation-planner.js";
 import { createCacheEntryReuseProof } from "../packages/vinext/src/server/cache-proof.js";
 import {
   ACTION_REVALIDATED_HEADER,
@@ -901,6 +903,95 @@ describe("app browser entry navigation scheduling", () => {
     });
 
     expect(target).toBeNull();
+  });
+
+  it("applyServerActionResultDecision clears caches and hard-navigates for a redirect mismatch", () => {
+    // Executor regression: verifies the wiring between classifyServerActionResult output and
+    // the executor's performHardNavigation + clearClientNavigationCaches dispatch.
+    const clearCaches = vi.fn();
+    const performHardNavigation = vi.fn();
+
+    // push redirect with an incompatible build — executor should hard-navigate and clear caches
+    const pushDecision = navigationPlanner.classifyServerActionResult({
+      actionRedirectHref: "https://example.com/target?tab=1",
+      actionRedirectType: "push",
+      clientCompatibilityId: "client-build",
+      compatibilityIdHeader: "server-build",
+      currentHref: "https://example.com/current",
+      isRscContentType: true,
+      origin: "https://example.com",
+      responseUrl: "https://example.com/current",
+    });
+    expect(applyServerActionResultDecision(pushDecision, clearCaches, performHardNavigation)).toBe(
+      true,
+    );
+    expect(clearCaches).toHaveBeenCalledOnce();
+    expect(performHardNavigation).toHaveBeenCalledWith(
+      "https://example.com/target?tab=1",
+      "assign",
+    );
+
+    clearCaches.mockClear();
+    performHardNavigation.mockClear();
+
+    // replace redirect with an incompatible build — executor should use replace history mode
+    const replaceDecision = navigationPlanner.classifyServerActionResult({
+      actionRedirectHref: "https://example.com/replaced",
+      actionRedirectType: "replace",
+      clientCompatibilityId: "client-build",
+      compatibilityIdHeader: "server-build",
+      currentHref: "https://example.com/current",
+      isRscContentType: true,
+      origin: "https://example.com",
+      responseUrl: "https://example.com/current",
+    });
+    expect(
+      applyServerActionResultDecision(replaceDecision, clearCaches, performHardNavigation),
+    ).toBe(true);
+    expect(performHardNavigation).toHaveBeenCalledWith("https://example.com/replaced", "replace");
+
+    clearCaches.mockClear();
+    performHardNavigation.mockClear();
+
+    // no-redirect RSC mismatch — executor reloads current href, does NOT clear caches
+    const noRedirectDecision = navigationPlanner.classifyServerActionResult({
+      actionRedirectHref: null,
+      actionRedirectType: null,
+      clientCompatibilityId: "client-build",
+      compatibilityIdHeader: "server-build",
+      currentHref: "https://example.com/dashboard?view=grid",
+      isRscContentType: true,
+      origin: "https://example.com",
+      responseUrl: "https://example.com/dashboard?view=grid",
+    });
+    expect(
+      applyServerActionResultDecision(noRedirectDecision, clearCaches, performHardNavigation),
+    ).toBe(true);
+    expect(clearCaches).not.toHaveBeenCalled();
+    expect(performHardNavigation).toHaveBeenCalledWith(
+      "https://example.com/dashboard?view=grid",
+      undefined,
+    );
+
+    clearCaches.mockClear();
+    performHardNavigation.mockClear();
+
+    // compatible build — executor should proceed, not hard-navigate
+    const proceedDecision = navigationPlanner.classifyServerActionResult({
+      actionRedirectHref: "https://example.com/target",
+      actionRedirectType: "push",
+      clientCompatibilityId: "same-build",
+      compatibilityIdHeader: "same-build",
+      currentHref: "https://example.com/current",
+      isRscContentType: true,
+      origin: "https://example.com",
+      responseUrl: "https://example.com/current",
+    });
+    expect(
+      applyServerActionResultDecision(proceedDecision, clearCaches, performHardNavigation),
+    ).toBe(false);
+    expect(clearCaches).not.toHaveBeenCalled();
+    expect(performHardNavigation).not.toHaveBeenCalled();
   });
 
   it("uses a stable generic error for non-RSC action responses", async () => {

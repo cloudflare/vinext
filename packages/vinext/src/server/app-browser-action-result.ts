@@ -4,6 +4,7 @@ import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
+import type { ServerActionResultDecisionV0 } from "./navigation-planner.js";
 
 export type AppBrowserServerActionResult<TRoot> = {
   root?: TRoot;
@@ -136,6 +137,21 @@ export function shouldScheduleRefreshForDiscardedServerAction(
   revalidation: ServerActionRevalidationKind,
 ): boolean {
   return revalidation !== "none";
+}
+
+// Dispatches the executor effects implied by a ServerActionResultDecisionV0.
+// Returns true if a hard-navigation was triggered (the caller should return early);
+// false if the decision is "proceed" and normal action processing should continue.
+// Both callbacks are injected so this function is testable without browser globals.
+export function applyServerActionResultDecision(
+  decision: ServerActionResultDecisionV0,
+  clearCaches: () => void,
+  performHardNavigation: (url: string, historyMode?: "assign" | "replace") => void,
+): boolean {
+  if (decision.kind !== "hardNavigate") return false;
+  if (decision.clearClientNavigationCaches) clearCaches();
+  performHardNavigation(decision.url, decision.historyMode);
+  return true;
 }
 
 export function createServerActionInitiationSnapshot<TRouterState>(options: {

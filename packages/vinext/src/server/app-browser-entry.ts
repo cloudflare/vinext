@@ -85,6 +85,7 @@ import {
   resolveMiddlewareRewriteNavigationInterceptionContext,
 } from "./app-browser-interception-context.js";
 import {
+  applyServerActionResultDecision,
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
   isServerActionResult,
@@ -1387,6 +1388,9 @@ function registerServerActionCallback(): void {
       return undefined;
     }
 
+    const fetchResponseIsRsc = (fetchResponse.headers.get("content-type") ?? "").startsWith(
+      VINEXT_RSC_CONTENT_TYPE,
+    );
     const actionResultDecision = navigationPlanner.classifyServerActionResult({
       actionRedirectHref: actionRedirectTarget?.href ?? null,
       actionRedirectType:
@@ -1396,20 +1400,17 @@ function registerServerActionCallback(): void {
       clientCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
       compatibilityIdHeader: fetchResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
       currentHref: actionInitiation.href,
-      isRscContentType: (fetchResponse.headers.get("content-type") ?? "").startsWith(
-        VINEXT_RSC_CONTENT_TYPE,
-      ),
+      isRscContentType: fetchResponseIsRsc,
       origin: window.location.origin,
       responseUrl: fetchResponse.url,
     });
-    if (actionResultDecision.kind === "hardNavigate") {
-      if (actionResultDecision.clearClientNavigationCaches) {
-        clearClientNavigationCaches();
-      }
-      browserNavigationController.performHardNavigation(
-        actionResultDecision.url,
-        actionResultDecision.historyMode,
-      );
+    if (
+      applyServerActionResultDecision(
+        actionResultDecision,
+        clearClientNavigationCaches,
+        (url, historyMode) => browserNavigationController.performHardNavigation(url, historyMode),
+      )
+    ) {
       return undefined;
     }
 
@@ -1428,10 +1429,7 @@ function registerServerActionCallback(): void {
     if (invalidResponseError) {
       throw invalidResponseError;
     }
-    if (
-      actionRedirectTarget &&
-      !(fetchResponse.headers.get("content-type") ?? "").startsWith(VINEXT_RSC_CONTENT_TYPE)
-    ) {
+    if (actionRedirectTarget && !fetchResponseIsRsc) {
       browserNavigationController.performHardNavigation(actionRedirectTarget.href);
       return undefined;
     }
