@@ -17115,6 +17115,30 @@ describe("image optimization request parsing", () => {
     }
   });
 
+  it("parseImageParams rejects leading-zero cache-key aliases", async () => {
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    expect(
+      parseImageParams(new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=0640&q=75")),
+    ).toBeNull();
+    expect(
+      parseImageParams(new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=075")),
+    ).toBeNull();
+  });
+
+  it("parseImageParams rejects duplicate and unknown query parameters", async () => {
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    expect(
+      parseImageParams(new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=640&w=640&q=75")),
+    ).toBeNull();
+    expect(
+      parseImageParams(
+        new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=75&cacheBust=1"),
+      ),
+    ).toBeNull();
+  });
+
   it("parseImageParams rejects source URLs longer than 3072 characters", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
@@ -17286,6 +17310,35 @@ describe("image optimization request parsing", () => {
       [75, 80],
     );
     expect(params?.quality).toBe(80);
+  });
+
+  it("resolveDevImageRedirect applies validation before passthrough", async () => {
+    const { resolveDevImageRedirect } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    expect(
+      resolveDevImageRedirect(
+        new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=640junk&q=75"),
+      ),
+    ).toBeNull();
+    expect(
+      resolveDevImageRedirect(
+        new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=75&extra=1"),
+      ),
+    ).toBeNull();
+    expect(
+      resolveDevImageRedirect(new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=75")),
+    ).toBe("/img.jpg");
+  });
+
+  it("resolveDevImageRedirect preserves Next.js blur requests", async () => {
+    const { resolveDevImageRedirect } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    expect(
+      resolveDevImageRedirect(new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=8&q=70")),
+    ).toBe("/img.jpg");
+    expect(
+      resolveDevImageRedirect(new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=08&q=70")),
+    ).toBeNull();
   });
 
   it("parseImageParams allows imageSizes (small widths) in allowedWidths", async () => {

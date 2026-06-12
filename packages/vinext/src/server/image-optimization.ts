@@ -72,6 +72,31 @@ export type ImageConfig = {
 export const DEFAULT_DEVICE_SIZES = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
 export const DEFAULT_IMAGE_SIZES = [16, 32, 48, 64, 96, 128, 256, 384];
 export const DEFAULT_IMAGE_QUALITIES = [75];
+const DEV_BLUR_MAX_WIDTH = 8;
+const DEV_BLUR_QUALITY = 70;
+
+export type ParseImageParamsOptions = {
+  isDev?: boolean;
+};
+
+export function resolveDevImageRedirect(
+  requestUrl: URL,
+  allowedWidths: number[] = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES],
+  allowedQualities: number[] = DEFAULT_IMAGE_QUALITIES,
+): string | null {
+  const params = parseImageParams(requestUrl, allowedWidths, allowedQualities, { isDev: true });
+  if (!params) return null;
+  if (
+    params.imageUrl.startsWith("/@") ||
+    params.imageUrl.startsWith("/__vite") ||
+    params.imageUrl.startsWith("/node_modules")
+  ) {
+    return null;
+  }
+  const resolved = new URL(params.imageUrl, requestUrl.origin);
+  if (resolved.origin !== requestUrl.origin) return null;
+  return resolved.pathname + resolved.search;
+}
 
 /**
  * Parse and validate image optimization query parameters.
@@ -85,7 +110,16 @@ export function parseImageParams(
   url: URL,
   allowedWidths: number[] = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES],
   allowedQualities: number[] = DEFAULT_IMAGE_QUALITIES,
+  options: ParseImageParamsOptions = {},
 ): { imageUrl: string; width: number; quality: number } | null {
+  // Intentional hardening divergence from Next.js: reject duplicate and unknown
+  // parameters so semantically identical transforms cannot occupy distinct
+  // cache keys and amplify image transformation work.
+  const allowedParamNames = new Set(["url", "w", "q"]);
+  for (const name of url.searchParams.keys()) {
+    if (!allowedParamNames.has(name) || url.searchParams.getAll(name).length !== 1) return null;
+  }
+
   const imageUrl = url.searchParams.get("url");
   if (!imageUrl) return null;
   if (imageUrl.length > 3072) return null;
@@ -97,8 +131,13 @@ export function parseImageParams(
 
   const width = Number.parseInt(widthParam, 10);
   const quality = Number.parseInt(qualityParam, 10);
-  if (width <= 0 || !allowedWidths.includes(width)) return null;
-  if (quality < 1 || quality > 100 || !allowedQualities.includes(quality)) return null;
+  if (String(width) !== widthParam || String(quality) !== qualityParam) return null;
+
+  const isDevBlur = options.isDev && width <= DEV_BLUR_MAX_WIDTH && quality === DEV_BLUR_QUALITY;
+  if (width <= 0 || (!allowedWidths.includes(width) && !isDevBlur)) return null;
+  if (quality < 1 || quality > 100 || (!allowedQualities.includes(quality) && !isDevBlur)) {
+    return null;
+  }
 
   // Prevent open redirect / SSRF — only allow path-relative URLs.
   // Normalize backslashes to forward slashes first: browsers and the URL

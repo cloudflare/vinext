@@ -478,6 +478,17 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, isI
 import type { ImageConfig } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 
+const imageConfig: ImageConfig = {
+  deviceSizes: JSON.parse(
+    process.env.__VINEXT_IMAGE_DEVICE_SIZES ?? JSON.stringify(DEFAULT_DEVICE_SIZES),
+  ),
+  imageSizes: JSON.parse(
+    process.env.__VINEXT_IMAGE_SIZES ?? JSON.stringify(DEFAULT_IMAGE_SIZES),
+  ),
+  qualities: JSON.parse(process.env.__VINEXT_IMAGE_QUALITIES ?? "[75]"),
+  dangerouslyAllowSVG: process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG === "true",
+};
+
 interface Env {
   ASSETS: Fetcher;
   IMAGES: {
@@ -508,14 +519,17 @@ export default {
     // The parseImageParams validation inside handleImageOptimization
     // normalizes backslashes and validates the origin hasn't changed.
     if (isImageOptimizationPath(url.pathname)) {
-      const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
+      const allowedWidths = [
+        ...(imageConfig.deviceSizes ?? DEFAULT_DEVICE_SIZES),
+        ...(imageConfig.imageSizes ?? DEFAULT_IMAGE_SIZES),
+      ];
       return handleImageOptimization(request, {
         fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
         transformImage: async (body, { width, format, quality }) => {
           const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
           return result.response();
         },
-      }, allowedWidths);
+      }, allowedWidths, imageConfig);
     }
 
     // Delegate everything else to vinext, forwarding ctx so that
