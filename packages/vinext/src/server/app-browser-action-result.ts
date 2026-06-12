@@ -127,12 +127,7 @@ export function createServerActionResultFacts(
 ): ServerActionResultFactsV0 {
   return {
     actionRedirectHref: input.actionRedirectHref,
-    actionRedirectType:
-      input.actionRedirectHref === null
-        ? null
-        : input.actionRedirectType === "push"
-          ? "push"
-          : "replace",
+    actionRedirectType: input.actionRedirectType === "push" ? "push" : "replace",
     clientCompatibilityId: input.clientCompatibilityId,
     compatibilityIdHeader: input.compatibilityIdHeader,
     currentHref: input.currentHref,

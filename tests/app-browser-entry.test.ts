@@ -797,10 +797,10 @@ describe("app browser entry navigation scheduling", () => {
     });
     expect(replaceFacts.actionRedirectType).toBe("replace");
 
-    // No redirect — type is always null regardless of header value
+    // No redirect — the raw type is still normalized for the planner contract
     const noRedirectFacts = createServerActionResultFacts({
       actionRedirectHref: null,
-      actionRedirectType: "push",
+      actionRedirectType: null,
       clientCompatibilityId: "client-build",
       compatibilityIdHeader: "server-build",
       contentTypeHeader: "text/x-component",
@@ -809,7 +809,7 @@ describe("app browser entry navigation scheduling", () => {
       responseUrl: currentHref,
     });
     expect(noRedirectFacts.actionRedirectHref).toBeNull();
-    expect(noRedirectFacts.actionRedirectType).toBeNull();
+    expect(noRedirectFacts.actionRedirectType).toBe("replace");
 
     // Non-RSC response — isRscContentType should be false
     const nonRscFacts = createServerActionResultFacts({
@@ -957,7 +957,7 @@ describe("app browser entry navigation scheduling", () => {
     // no-redirect RSC mismatch — executor reloads current href, does NOT clear caches
     const noRedirectDecision = navigationPlanner.classifyServerActionResult({
       actionRedirectHref: null,
-      actionRedirectType: null,
+      actionRedirectType: "replace",
       clientCompatibilityId: "client-build",
       compatibilityIdHeader: "server-build",
       currentHref: "https://example.com/dashboard?view=grid",

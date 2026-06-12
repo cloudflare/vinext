@@ -1414,7 +1414,7 @@ function planNavigation(input: NavigationPlannerInput): NavigationDecisionV0 {
 
 export type ServerActionResultFactsV0 = {
   actionRedirectHref: string | null;
-  actionRedirectType: "push" | "replace" | null;
+  actionRedirectType: "push" | "replace";
   clientCompatibilityId: string | null;
   compatibilityIdHeader: string | null;
   currentHref: string;
@@ -1489,7 +1489,7 @@ function classifyServerActionResult(
     return {
       kind: "hardNavigate",
       url: facts.actionRedirectHref,
-      historyMode: facts.actionRedirectType === "replace" ? "replace" : "assign",
+      historyMode: facts.actionRedirectType === "push" ? "assign" : "replace",
       clearClientNavigationCaches: true,
       reason: "serverActionRedirectCompatibilityMismatch",
       trace: createNavigationTrace(

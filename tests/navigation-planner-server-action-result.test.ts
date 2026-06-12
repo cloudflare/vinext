@@ -16,7 +16,7 @@ function createFacts(
 ): ServerActionResultFactsV0 {
   return {
     actionRedirectHref: null,
-    actionRedirectType: null,
+    actionRedirectType: "replace",
     clientCompatibilityId: "client-build",
     compatibilityIdHeader: "client-build",
     currentHref: "https://example.com/dashboard",
@@ -86,7 +86,7 @@ describe("navigationPlanner server-action result classification", () => {
   it("hard-navigates a no-redirect RSC response with an incompatible compatibility id to the current href", () => {
     const decision = classify({
       actionRedirectHref: null,
-      actionRedirectType: null,
+      actionRedirectType: "replace",
       compatibilityIdHeader: "server-build",
       currentHref: "https://example.com/dashboard?view=grid",
     });
@@ -204,7 +204,7 @@ describe("navigationPlanner server-action result integration with executor contr
   it("produces a decision the executor can consume for no-redirect RSC hard-navigation", () => {
     const decision = classify({
       actionRedirectHref: null,
-      actionRedirectType: null,
+      actionRedirectType: "replace",
       compatibilityIdHeader: "server-build",
       currentHref: "https://example.com/dashboard?view=grid",
     });
@@ -260,7 +260,7 @@ describe("navigationPlanner server-action result integration with executor contr
   it("preserves the full URL including search params for no-redirect hard-navigation", () => {
     const decision = classify({
       actionRedirectHref: null,
-      actionRedirectType: null,
+      actionRedirectType: "replace",
       compatibilityIdHeader: "server-build",
       currentHref: "https://example.com/page?foo=bar&baz=qux#section",
     });
@@ -289,24 +289,6 @@ describe("navigationPlanner server-action result integration with executor contr
     });
   });
 
-  it("returns a decision for null actionRedirectType that defaults to assign history mode", () => {
-    const decision = classify({
-      actionRedirectHref: "https://example.com/target",
-      actionRedirectType: null,
-      compatibilityIdHeader: "server-build",
-    });
-
-    // When actionRedirectHref is present, the classifier always uses the redirect path.
-    // A null actionRedirectType defaults to "assign" (same as push).
-    expect(decision).toMatchObject({
-      kind: "hardNavigate",
-      url: "https://example.com/target",
-      historyMode: "assign",
-      clearClientNavigationCaches: true,
-      reason: "serverActionRedirectCompatibilityMismatch",
-    });
-  });
-
   it("produces a valid trace entry for server action redirect compatibility mismatch", () => {
     const decision = classify({
       actionRedirectHref: "https://example.com/target",
@@ -325,7 +307,7 @@ describe("navigationPlanner server-action result integration with executor contr
   it("produces a valid trace entry for server action RSC compatibility mismatch", () => {
     const decision = classify({
       actionRedirectHref: null,
-      actionRedirectType: null,
+      actionRedirectType: "replace",
       compatibilityIdHeader: "server-build",
       currentHref: "https://example.com/dashboard",
     });
