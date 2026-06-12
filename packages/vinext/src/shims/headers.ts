@@ -16,7 +16,7 @@ import {
   validateCookieAttributeValue,
   validateCookieName,
 } from "./internal/cookie-serialize.js";
-import { parseCookieHeader } from "./internal/parse-cookie-header.js";
+import { parseEdgeRequestCookieHeader } from "./internal/parse-cookie-header.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,
@@ -155,7 +155,7 @@ function rebuildCookiesFromHeader(ctx: HeadersContext, cookieHeader: string | nu
   ctx.cookies.clear();
   if (cookieHeader === null) return;
 
-  const nextCookies = parseCookieHeader(cookieHeader);
+  const nextCookies = parseEdgeRequestCookieHeader(cookieHeader);
   for (const [name, value] of nextCookies) {
     ctx.cookies.set(name, value);
   }
@@ -783,7 +783,7 @@ export function headersContextFromRequest(
     if (_cookies) return _cookies;
     // Read from the proxy so middleware-modified cookie headers are respected.
     const cookieHeader = headersProxy.get("cookie") || "";
-    _cookies = parseCookieHeader(cookieHeader);
+    _cookies = parseEdgeRequestCookieHeader(cookieHeader);
     return _cookies;
   }
 
@@ -937,7 +937,7 @@ export function isDraftModeRequest(request: Request, draftModeSecret: string): b
   const cookieHeader = request.headers.get("cookie");
   if (!cookieHeader) return false;
   return (
-    parseCookieHeader(cookieHeader).get(DRAFT_MODE_COOKIE) ===
+    parseEdgeRequestCookieHeader(cookieHeader).get(DRAFT_MODE_COOKIE) ===
     validateDraftModeSecret(draftModeSecret)
   );
 }

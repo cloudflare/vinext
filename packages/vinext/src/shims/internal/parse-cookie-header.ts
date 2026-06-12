@@ -8,7 +8,7 @@
  * - malformed percent-encoded values are skipped
  * - duplicate names collapse to the last value via Map.set()
  */
-export function parseCookieHeader(cookieHeader: string): Map<string, string> {
+export function parseEdgeRequestCookieHeader(cookieHeader: string): Map<string, string> {
   const cookies = new Map<string, string>();
   for (const pair of cookieHeader.split(/; */)) {
     if (!pair) continue;
