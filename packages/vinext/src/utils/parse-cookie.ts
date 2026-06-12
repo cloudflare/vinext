@@ -10,10 +10,10 @@ function decodeCookieValue(value: string): string {
 
 /**
  * Parse a Cookie header using the semantics of Next.js's compiled `cookie`
- * package while returning a dictionary without inherited properties.
+ * package.
  */
 export function parseCookieHeader(cookieHeader: string | null | undefined): ParsedCookies {
-  const cookies = Object.create(null) as ParsedCookies;
+  const cookies: ParsedCookies = {};
   if (!cookieHeader) return cookies;
 
   for (const part of cookieHeader.split(/; */)) {
@@ -22,7 +22,7 @@ export function parseCookieHeader(cookieHeader: string | null | undefined): Pars
 
     const key = part.slice(0, separator).trim();
     let value = part.slice(separator + 1).trim();
-    if (!key || Object.hasOwn(cookies, key)) continue;
+    if (cookies[key] !== undefined) continue;
 
     if (value.startsWith('"')) {
       value = value.slice(1, -1);

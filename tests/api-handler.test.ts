@@ -511,7 +511,7 @@ describe("handleApiRoute", () => {
       expect(capturedCookies.session).toBe("trusted");
     });
 
-    it("uses an own-property-only cookie dictionary", async () => {
+    it("matches Next.js prototype-key and empty-name cookie semantics", async () => {
       let capturedCookies: Record<string, string> = {};
       const handler = vi.fn((req: any) => {
         capturedCookies = req.cookies;
@@ -519,24 +519,25 @@ describe("handleApiRoute", () => {
       const server = mockServer({ default: handler });
       const req = mockReq("GET", "/api/account", undefined, {
         cookie:
-          '__proto__=prototype-cookie; constructor=constructor-cookie; toString=string-cookie; encoded=hello%20world; malformed=%E0%A4%A; quoted="quoted value"',
+          '=empty-name; __proto__=prototype-cookie; constructor=constructor-cookie; toString=string-cookie; encoded=hello%20world; malformed=%E0%A4%A; quoted="quoted value"',
       });
       const res = mockRes();
 
       await handleApiRoute(server, req, res, "/api/account", [route("/api/account")]);
 
-      expect(Object.getPrototypeOf(capturedCookies)).toBeNull();
-      expect(capturedCookies).toMatchObject({
-        constructor: "constructor-cookie",
-        toString: "string-cookie",
+      expect(Object.getPrototypeOf(capturedCookies)).toBe(Object.prototype);
+      expect(capturedCookies.hasOwnProperty("encoded")).toBe(true);
+      expect(Object.hasOwn(capturedCookies, "toString")).toBe(false);
+      expect(Object.prototype.toString.call(capturedCookies)).toBe("[object Object]");
+      expect(capturedCookies).toEqual({
+        "": "empty-name",
         encoded: "hello world",
         malformed: "%E0%A4%A",
         quoted: "quoted value",
       });
-      expect(capturedCookies.__proto__).toBe("prototype-cookie");
-      expect(Object.hasOwn(capturedCookies, "__proto__")).toBe(true);
-      expect(Object.hasOwn(capturedCookies, "constructor")).toBe(true);
-      expect(Object.hasOwn(capturedCookies, "toString")).toBe(true);
+      expect(Object.hasOwn(capturedCookies, "__proto__")).toBe(false);
+      expect(Object.hasOwn(capturedCookies, "constructor")).toBe(false);
+      expect(Object.hasOwn(capturedCookies, "toString")).toBe(false);
     });
 
     it("returns empty object when no Cookie header", async () => {

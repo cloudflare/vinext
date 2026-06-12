@@ -651,8 +651,8 @@ function matchSingleCondition(
       return _matchConditionValue(headerValue, condition.value);
     }
     case "cookie": {
+      if (!Object.hasOwn(ctx.cookies, condition.key)) return null;
       const cookieValue = ctx.cookies[condition.key];
-      if (cookieValue === undefined) return null;
       return _matchConditionValue(cookieValue, condition.value);
     }
     case "query": {
