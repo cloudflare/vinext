@@ -24,10 +24,13 @@ test.describe("Next.js compat: gesture transitions", () => {
 
     // Note: like the upstream test, this deliberately does not assert the
     // negative held state (`loading` visible / `dynamic-content` absent)
-    // during the gesture. The gesture commit performs a full RSC navigation
-    // rather than rendering a prefetched static shell, and `connection()`
-    // resolves immediately on the dev server, so the dynamic hole streams in
-    // during the gesture and the Suspense fallback is not reliably observable.
+    // during the gesture. Upstream omits it because observing the suspended
+    // dynamic hole would require `FreshnessPolicy.Gesture` static-shell
+    // behavior, which is out of scope here too. In vinext specifically, the
+    // gesture commit performs a full RSC navigation rather than rendering a
+    // prefetched static shell, and `connection()` resolves immediately on the
+    // dev server, so the dynamic hole streams in during the gesture and the
+    // Suspense fallback is not reliably observable either way.
 
     await page.getByTestId("end-gesture").click();
 
