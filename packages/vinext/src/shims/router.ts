@@ -2364,6 +2364,9 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     }
 
     if (targetKey !== undefined && currentKey !== targetKey) {
+      // `?? {x: 0, y: 0}` is the missing-snapshot fallback, not just a type
+      // guard: with no saved position for the target entry, top is the only
+      // safe default under manual restoration.
       forcedScroll = readScrollPositionFromSessionStorage(targetKey) ?? { x: 0, y: 0 };
     }
   }
