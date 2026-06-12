@@ -648,6 +648,9 @@ function isNoStoreFetch(
   );
 }
 
+// Note: `revalidate: false` is cacheable-indefinitely (it normalizes to
+// INFINITE_CACHE), so it belongs here — and therefore conflicts with
+// `only-no-store` — and must not be re-added to `isNoStoreFetch` above.
 function isCacheableFetch(
   cacheDirective: RequestCache | undefined,
   nextOpts: NextFetchOptions | undefined,
@@ -824,8 +827,11 @@ function buildCachedFetchResponse(data: CachedFetchValue["data"]): Response {
     status: data.status ?? 200,
     headers: data.headers,
   });
+  // `data.url` is typed as required, but cached entries may cross a
+  // serialization boundary (e.g. KV) where a legacy or third-party writer
+  // never populated it — fall back to "" rather than `undefined`.
   Object.defineProperty(response, "url", {
-    value: data.url,
+    value: data.url ?? "",
     configurable: true,
     enumerable: true,
     writable: false,

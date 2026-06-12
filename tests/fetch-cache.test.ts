@@ -165,6 +165,30 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("falls back to an empty Response.url when a cached entry lacks url", async () => {
+    const url = "https://api.example.com/legacy-no-url";
+
+    await fetch(url, {
+      cache: "force-cache",
+    });
+
+    // Simulate a legacy/third-party cache writer (e.g. an external KV backend)
+    // that never populated `data.url` on the serialized entry.
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      delete entry.value.data.url;
+    }
+
+    startNewFetchCacheScope();
+    const cached = await fetch(url, {
+      cache: "force-cache",
+    });
+
+    expect(cached.url).toBe("");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("segment fetchCache default-cache caches fetches without per-fetch options", async () => {
     setCurrentFetchCacheMode("default-cache");
 
