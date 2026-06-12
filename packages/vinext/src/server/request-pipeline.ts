@@ -122,6 +122,8 @@ type ApplyConfigHeadersOptions = {
    * support `basePath: false` headers must pass this in.
    */
   basePathState?: BasePathMatchState;
+  /** Existing framework-generated headers that matching config rules may replace. */
+  overwriteExisting?: ReadonlySet<string>;
 };
 
 type StaticFileSignalContext = {
@@ -199,7 +201,7 @@ export function applyConfigHeadersToResponse(
     const lowerName = header.key.toLowerCase();
     if (lowerName === "vary" || lowerName === "set-cookie") {
       responseHeaders.append(header.key, header.value);
-    } else if (!responseHeaders.has(lowerName)) {
+    } else if (options.overwriteExisting?.has(lowerName) || !responseHeaders.has(lowerName)) {
       responseHeaders.set(header.key, header.value);
     }
   }

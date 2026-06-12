@@ -74,6 +74,7 @@ import {
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
 type MetadataRoutes = Parameters<typeof handleMetadataRouteRequest>[0]["metadataRoutes"];
+const STATIC_METADATA_CONFIG_HEADER_OVERRIDES = new Set(["cache-control"]);
 type MakeThenableParams = Parameters<typeof handleMetadataRouteRequest>[0]["makeThenableParams"];
 type StaticParamsMap = Parameters<typeof handleAppPrerenderEndpoint>[1]["staticParamsMap"];
 type RootParamNamesMap = Parameters<
@@ -554,6 +555,16 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     makeThenableParams: options.makeThenableParams,
   });
   if (metadataRouteResponse) {
+    applyConfigHeadersToResponse(
+      metadataRouteResponse.headers,
+      {
+        basePathState,
+        configHeaders: options.configHeaders,
+        overwriteExisting: STATIC_METADATA_CONFIG_HEADER_OVERRIDES,
+        pathname: matchPathname(cleanPathname),
+        requestContext: preMiddlewareRequestContext,
+      },
+    );
     return applyMiddlewareContextToResponse(metadataRouteResponse, middlewareContext);
   }
 
