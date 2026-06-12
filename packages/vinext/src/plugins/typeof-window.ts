@@ -1,10 +1,116 @@
 import { parseAst } from "vite";
 import MagicString from "magic-string";
-import { forEachAstChild, hasRange, isAstRecord, isIdentifierNamed } from "./ast-utils.js";
+import {
+  collectBindingNames,
+  forEachAstChild,
+  hasRange,
+  isAstRecord,
+  isIdentifierNamed,
+  nodeArray,
+} from "./ast-utils.js";
 
 type WindowType = "object" | "undefined";
 
 type AstNode = Parameters<typeof forEachAstChild>[0];
+
+type Scope = {
+  parent: Scope | null;
+  bindings: Set<string>;
+};
+
+function createScope(parent: Scope | null): Scope {
+  return { parent, bindings: new Set() };
+}
+
+function hasBinding(scope: Scope, name: string): boolean {
+  for (let current: Scope | null = scope; current; current = current.parent) {
+    if (current.bindings.has(name)) return true;
+  }
+  return false;
+}
+
+function collectScopeBindings(node: AstNode, scope: Scope): void {
+  forEachAstChild(node, (child) => {
+    if (child.type === "ExportNamedDeclaration" || child.type === "ExportDefaultDeclaration") {
+      if (isAstRecord(child.declaration)) collectScopeBindings(child, scope);
+      return;
+    }
+    if (child.type === "FunctionDeclaration" || child.type === "ClassDeclaration") {
+      collectBindingNames(child.id, scope.bindings);
+      return;
+    }
+    if (child.type === "VariableDeclaration") {
+      for (const declaration of nodeArray(child.declarations)) {
+        if (isAstRecord(declaration)) collectBindingNames(declaration.id, scope.bindings);
+      }
+      return;
+    }
+    if (child.type === "ImportDeclaration") {
+      for (const specifier of nodeArray(child.specifiers)) {
+        if (isAstRecord(specifier)) collectBindingNames(specifier.local, scope.bindings);
+      }
+    }
+  });
+}
+
+function collectVarBindings(node: AstNode, scope: Scope, isRoot = true): void {
+  if (
+    !isRoot &&
+    (node.type === "FunctionDeclaration" ||
+      node.type === "FunctionExpression" ||
+      node.type === "ArrowFunctionExpression")
+  ) {
+    return;
+  }
+  if (node.type === "VariableDeclaration" && node.kind === "var") {
+    for (const declaration of nodeArray(node.declarations)) {
+      if (isAstRecord(declaration)) collectBindingNames(declaration.id, scope.bindings);
+    }
+  }
+  forEachAstChild(node, (child) => collectVarBindings(child, scope, false));
+}
+
+function createChildScope(node: AstNode, parent: Scope): Scope | null {
+  if (
+    node.type !== "Program" &&
+    node.type !== "BlockStatement" &&
+    node.type !== "StaticBlock" &&
+    node.type !== "SwitchStatement" &&
+    node.type !== "CatchClause" &&
+    node.type !== "ForStatement" &&
+    node.type !== "ForInStatement" &&
+    node.type !== "ForOfStatement" &&
+    node.type !== "FunctionDeclaration" &&
+    node.type !== "FunctionExpression" &&
+    node.type !== "ArrowFunctionExpression" &&
+    node.type !== "ClassDeclaration" &&
+    node.type !== "ClassExpression"
+  ) {
+    return null;
+  }
+
+  const scope = createScope(parent);
+  if (
+    node.type === "FunctionDeclaration" ||
+    node.type === "FunctionExpression" ||
+    node.type === "ArrowFunctionExpression"
+  ) {
+    collectBindingNames(node.id, scope.bindings);
+    for (const parameter of nodeArray(node.params)) collectBindingNames(parameter, scope.bindings);
+    collectVarBindings(node, scope);
+  } else if (node.type === "ClassDeclaration" || node.type === "ClassExpression") {
+    collectBindingNames(node.id, scope.bindings);
+  } else if (node.type === "CatchClause") {
+    collectBindingNames(node.param, scope.bindings);
+  }
+  collectScopeBindings(node, scope);
+  if (node.type === "SwitchStatement") {
+    for (const switchCase of nodeArray(node.cases)) {
+      if (isAstRecord(switchCase)) collectScopeBindings(switchCase, scope);
+    }
+  }
+  return scope;
+}
 
 function stringLiteralValue(node: unknown): string | null {
   if (!isAstRecord(node)) return null;
@@ -12,7 +118,11 @@ function stringLiteralValue(node: unknown): string | null {
   return null;
 }
 
-function evaluateTypeofWindowComparison(node: unknown, replacement: WindowType): boolean | null {
+function evaluateTypeofWindowComparison(
+  node: unknown,
+  replacement: WindowType,
+  scope: Scope,
+): boolean | null {
   if (!isAstRecord(node) || node.type !== "BinaryExpression") return null;
   if (!["==", "===", "!=", "!=="].includes(String(node.operator))) return null;
 
@@ -21,11 +131,13 @@ function evaluateTypeofWindowComparison(node: unknown, replacement: WindowType):
   const leftIsTypeofWindow =
     left?.type === "UnaryExpression" &&
     left.operator === "typeof" &&
-    isIdentifierNamed(left.argument, "window");
+    isIdentifierNamed(left.argument, "window") &&
+    !hasBinding(scope, "window");
   const rightIsTypeofWindow =
     right?.type === "UnaryExpression" &&
     right.operator === "typeof" &&
-    isIdentifierNamed(right.argument, "window");
+    isIdentifierNamed(right.argument, "window") &&
+    !hasBinding(scope, "window");
 
   const comparedValue = leftIsTypeofWindow
     ? stringLiteralValue(right)
@@ -50,14 +162,23 @@ export function replaceTypeofWindow(code: string, replacement: WindowType) {
 
   const output = new MagicString(code);
   let changed = false;
+  if (!isAstRecord(ast)) return null;
 
-  function visit(node: AstNode): void {
+  const rootScope = createScope(null);
+  collectScopeBindings(ast, rootScope);
+  collectVarBindings(ast, rootScope);
+
+  function visit(node: AstNode, parentScope: Scope): void {
+    const scope = createChildScope(node, parentScope) ?? parentScope;
+
     if (node.type === "IfStatement" && hasRange(node)) {
-      const result = evaluateTypeofWindowComparison(node.test, replacement);
+      const result = evaluateTypeofWindowComparison(node.test, replacement, scope);
       if (result !== null) {
         const selected = result ? node.consequent : node.alternate;
         if (isAstRecord(selected) && hasRange(selected)) {
-          output.overwrite(node.start, node.end, code.slice(selected.start, selected.end));
+          output.remove(node.start, selected.start);
+          output.remove(selected.end, node.end);
+          visit(selected, scope);
         } else {
           output.overwrite(node.start, node.end, ";");
         }
@@ -70,6 +191,7 @@ export function replaceTypeofWindow(code: string, replacement: WindowType) {
       node.type === "UnaryExpression" &&
       node.operator === "typeof" &&
       isIdentifierNamed(node.argument, "window") &&
+      !hasBinding(scope, "window") &&
       hasRange(node)
     ) {
       output.overwrite(node.start, node.end, JSON.stringify(replacement));
@@ -77,11 +199,11 @@ export function replaceTypeofWindow(code: string, replacement: WindowType) {
       return;
     }
 
-    forEachAstChild(node, visit);
+    forEachAstChild(node, (child) => visit(child, scope));
   }
 
   for (const node of ast.body) {
-    if (isAstRecord(node)) visit(node);
+    if (isAstRecord(node)) visit(node, rootScope);
   }
   if (!changed) return null;
 

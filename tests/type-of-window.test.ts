@@ -8,6 +8,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { createBuilder } from "vite";
 import vinext from "../packages/vinext/src/index.js";
+import { replaceTypeofWindow } from "../packages/vinext/src/plugins/typeof-window.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -20,6 +21,52 @@ afterEach(async () => {
 });
 
 describe("typeof window compilation", () => {
+  it("only folds references to the global window binding", () => {
+    const source = `
+if (typeof window !== "undefined") globalBrowserOnly()
+function check(window) {
+  if (typeof window !== "undefined") localWindowOnly()
+}
+function hoisted() {
+  console.log(typeof window)
+  if (false) var window
+}
+{
+  const window = {}
+  console.log(typeof window)
+}
+export function exported(window) {
+  return typeof window
+}
+const WindowClass = class window {
+  check() { return typeof window }
+}
+switch (value) {
+  case 1:
+    const window = {}
+    console.log(typeof window)
+}`;
+
+    const result = replaceTypeofWindow(source, "undefined");
+
+    expect(result?.code).toContain(";");
+    expect(result?.code).toContain('if (typeof window !== "undefined") localWindowOnly()');
+    expect(result?.code.match(/typeof window/g)).toHaveLength(6);
+  });
+
+  it("removes nested dead branches in the selected branch", () => {
+    const result = replaceTypeofWindow(
+      `if (typeof window === "undefined") {
+  if (typeof window !== "undefined") import("browser-only")
+  serverOnly()
+}`,
+      "undefined",
+    );
+
+    expect(result?.code).not.toContain("browser-only");
+    expect(result?.code).toContain("serverOnly()");
+  });
+
   it("removes browser-only dynamic imports from server bundles", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-"));
     temporaryDirectories.push(root);
