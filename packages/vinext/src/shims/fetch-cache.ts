@@ -683,6 +683,9 @@ function resolveSegmentCacheDirective(
   mode: FetchCacheMode | null,
   forceDynamicFetchDefault: boolean,
 ): RequestCache | undefined {
+  // Explicit segment fetchCache modes (e.g. default-cache/default-no-store)
+  // skip this guard and are handled below, taking precedence over the
+  // force-dynamic no-store default.
   if (
     forceDynamicFetchDefault &&
     (!mode || mode === "auto") &&
