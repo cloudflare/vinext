@@ -1429,6 +1429,18 @@ describe("next/navigation shim", () => {
 //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/catch-error/
 // ---------------------------------------------------------------------------
 describe("next/error shim — unstable_catchError", () => {
+  // Ported from Next.js:
+  // packages/next/src/api/error.react-server.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/api/error.react-server.ts
+  it("error.react-server throws the exact Client Components diagnostic", async () => {
+    const { unstable_catchError } =
+      await import("../packages/vinext/src/shims/error.react-server.js");
+
+    expect(() => unstable_catchError()).toThrow(
+      "`unstable_catchError` can only be used in Client Components.",
+    );
+  });
+
   it("exports unstable_catchError as a function", async () => {
     const mod = await import("../packages/vinext/src/shims/error.js");
     expect(typeof mod.unstable_catchError).toBe("function");
@@ -18877,6 +18889,29 @@ describe("shim alias map .js variants", () => {
 
     const missing = topLevel.filter((key) => !(key + ".js" in aliases!));
     expect(missing, `Missing .js aliases for: ${missing.join(", ")}`).toEqual([]);
+  });
+
+  it("resolves next/error to the react-server shim only in the RSC environment", () => {
+    const plugins = vinext() as Plugin[];
+    const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+    if (!configPlugin?.resolveId || typeof configPlugin.resolveId === "function") {
+      throw new Error("vinext:config resolveId hook not found");
+    }
+
+    const hook = configPlugin.resolveId as {
+      handler: (this: { environment?: { name?: string } }, id: string) => string | undefined;
+    };
+    const clientShim = path.resolve(import.meta.dirname, "../packages/vinext/src/shims/error.tsx");
+    const reactServerShim = path.resolve(
+      import.meta.dirname,
+      "../packages/vinext/src/shims/error.react-server.ts",
+    );
+
+    expect(hook.handler.call({ environment: { name: "rsc" } }, "next/error")).toBe(reactServerShim);
+    expect(hook.handler.call({ environment: { name: "ssr" } }, "next/error")).toBe(clientShim);
+    expect(hook.handler.call({ environment: { name: "rsc" } }, "next/error.js")).toBe(
+      reactServerShim,
+    );
   });
 });
 

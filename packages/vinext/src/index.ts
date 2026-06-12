@@ -647,6 +647,8 @@ const _reactServerShims = new Map<string, string>([
   ["next/navigation", "navigation"],
   ["next/navigation.js", "navigation"],
   ["next/dist/client/components/navigation", "navigation"],
+  ["next/error", "error"],
+  ["next/error.js", "error"],
 ]);
 
 const clientManualChunks = createClientManualChunks(_shimsDir);
@@ -1491,7 +1493,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "next/web-vitals": path.join(shimsDir, "web-vitals"),
             "next/amp": path.join(shimsDir, "amp"),
             "next/offline": path.join(shimsDir, "offline"),
-            "next/error": path.join(shimsDir, "error"),
+            // "next/error" is NOT here — it's in _reactServerShims so Server
+            // Components receive Next.js's client-only throwing stub.
             "next/constants": path.join(shimsDir, "constants"),
             // Internal next/dist/* paths used by popular libraries
             // (next-intl, @clerk/nextjs, @sentry/nextjs, next-nprogress-bar, etc.)
