@@ -455,6 +455,36 @@ describe("fetch cache shim", () => {
     );
   });
 
+  // Upstream noFetchConfigAndForceDynamic: tags alone are not cache config, so
+  // a tags-only fetch under force-dynamic still defaults to no-store. The tags
+  // are stripped with the rest of `next` and never registered for
+  // revalidation, so they must not re-enable caching.
+  it("force-dynamic defaults tags-only fetches to no-store without registering tags", async () => {
+    setCurrentForceDynamicFetchDefault(true);
+
+    const res1 = await fetch("https://api.example.com/force-dynamic-tags-only", {
+      next: { tags: ["force-dynamic-tags-only"] },
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+    expect(fetchMock).toHaveBeenLastCalledWith("https://api.example.com/force-dynamic-tags-only", {
+      cache: "no-store",
+    });
+    expect(getCollectedFetchTags()).toEqual([]);
+    expect(consumeDynamicUsage()).toBe(true);
+
+    // No persistent cache entry: a fresh render scope re-fetches.
+    startNewFetchCacheScope();
+    setCurrentForceDynamicFetchDefault(true);
+
+    const res2 = await fetch("https://api.example.com/force-dynamic-tags-only", {
+      next: { tags: ["force-dynamic-tags-only"] },
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("segment fetchCache only-cache rejects no-store fetches", async () => {
     setCurrentFetchCacheMode("only-cache");
 
