@@ -1162,12 +1162,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             process.env[key] = value;
           }
         }
-        // Align NODE_ENV with Next.js semantics: build -> production, serve -> development.
-        // Next.js unconditionally forces NODE_ENV during build/dev, so we do the same.
+        // Align NODE_ENV with Next.js semantics: build/preview -> production,
+        // development server -> development. Next.js unconditionally forces
+        // NODE_ENV during build/dev, so we do the same.
         let resolvedNodeEnv: string;
         if (mode === "test") {
           resolvedNodeEnv = "test";
-        } else if (env?.command === "build") {
+        } else if (env?.command === "build" || env?.isPreview === true) {
           resolvedNodeEnv = "production";
         } else {
           resolvedNodeEnv = "development";
@@ -1233,7 +1234,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             rawConfig = await loadNextConfig(root, phase);
           }
           nextConfig = await resolveNextConfig(rawConfig, root, {
-            dev: env?.command !== "build",
+            dev: env?.command === "serve" && env?.isPreview !== true,
           });
 
           // Build-ID coordination across plugin instances.

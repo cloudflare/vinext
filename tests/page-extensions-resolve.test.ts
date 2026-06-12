@@ -291,4 +291,39 @@ describe("vinext plugin wires pageExtensions into Vite resolve.extensions", () =
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
+
+  it("uses production webpack extensions during Vite preview", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      // oxlint-disable-next-line typescript/no-explicit-any
+      (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-preview-extensions-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fs.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fs.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fs.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Page() { return <p>hello</p>; }`,
+    );
+    await fs.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { webpack(config, { dev }) { config.resolve.extensions = [dev ? ".dev.ts" : ".prod.ts", ".ts"]; return config; } };`,
+    );
+
+    try {
+      await (mainPlugin as any).config(
+        { root: tmpDir, build: {}, plugins: [] },
+        { command: "serve", mode: "production", isPreview: true },
+      );
+      const environmentConfig: any = { resolve: {} };
+      (mainPlugin as any).configEnvironment("client", environmentConfig);
+      expect(environmentConfig.resolve.extensions).toEqual([".prod.ts", ".ts"]);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
 });

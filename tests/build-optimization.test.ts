@@ -641,6 +641,22 @@ describe("process.env.NODE_ENV define", () => {
     }
   }, 15000);
 
+  it("is injected as production for preview", async () => {
+    const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await mainPlugin.config(mockConfig, {
+        command: "serve",
+        mode: "production",
+        isPreview: true,
+      });
+
+      expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("production"));
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
   it("respects user-defined process.env.NODE_ENV in config.define", async () => {
     const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
     try {
