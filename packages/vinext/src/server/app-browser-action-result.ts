@@ -1,5 +1,6 @@
 import { ACTION_REVALIDATED_HEADER } from "./headers.js";
 import { VINEXT_RSC_CONTENT_TYPE } from "./app-rsc-cache-busting.js";
+import { ServerActionResultFactsV0 } from "./navigation-planner.js";
 
 export type AppBrowserServerActionResult<TRoot> = {
   root?: TRoot;
@@ -104,10 +105,41 @@ export async function readInvalidServerActionResponseError(
   return new Error(message || "An unexpected response was received from the server.");
 }
 
-export function shouldCheckRscCompatibilityForServerActionResponse(
-  response: Pick<Response, "headers">,
-): boolean {
-  return (response.headers.get("content-type") ?? "").startsWith(VINEXT_RSC_CONTENT_TYPE);
+export type ServerActionResultResponseFactsInput = {
+  actionRedirectHref: string | null;
+  actionRedirectType: string | null;
+  clientCompatibilityId: string | null;
+  contentTypeHeader: string | null;
+  compatibilityIdHeader: string | null;
+  currentHref: string;
+  origin: string;
+  responseUrl: string | null;
+};
+
+/**
+ * Converts raw browser response data into the narrow facts expected by the
+ * navigation planner. This is the single place where redirect-type
+ * normalisation and RSC content-type detection happen for server-action
+ * compatibility checks.
+ */
+export function createServerActionResultFacts(
+  input: ServerActionResultResponseFactsInput,
+): ServerActionResultFactsV0 {
+  return {
+    actionRedirectHref: input.actionRedirectHref,
+    actionRedirectType:
+      input.actionRedirectHref === null
+        ? null
+        : input.actionRedirectType === "push"
+          ? "push"
+          : "replace",
+    clientCompatibilityId: input.clientCompatibilityId,
+    compatibilityIdHeader: input.compatibilityIdHeader,
+    currentHref: input.currentHref,
+    isRscContentType: (input.contentTypeHeader ?? "").startsWith(VINEXT_RSC_CONTENT_TYPE),
+    origin: input.origin,
+    responseUrl: input.responseUrl,
+  };
 }
 
 export function shouldScheduleRefreshForDiscardedServerAction(

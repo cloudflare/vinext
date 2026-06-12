@@ -87,6 +87,7 @@ import {
 import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
+  createServerActionResultFacts,
   isServerActionResult,
   normalizeServerActionThrownValue,
   parseServerActionRevalidationHeader,
@@ -1391,19 +1392,18 @@ function registerServerActionCallback(): void {
     const fetchResponseIsRsc = (fetchResponse.headers.get("content-type") ?? "").startsWith(
       VINEXT_RSC_CONTENT_TYPE,
     );
-    const actionResultDecision = navigationPlanner.classifyServerActionResult({
-      actionRedirectHref: actionRedirectTarget?.href ?? null,
-      actionRedirectType:
-        actionRedirectTarget?.type === "push" || actionRedirectTarget?.type === "replace"
-          ? actionRedirectTarget.type
-          : null,
-      clientCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
-      compatibilityIdHeader: fetchResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
-      currentHref: actionInitiation.href,
-      isRscContentType: fetchResponseIsRsc,
-      origin: window.location.origin,
-      responseUrl: fetchResponse.url,
-    });
+    const actionResultDecision = navigationPlanner.classifyServerActionResult(
+      createServerActionResultFacts({
+        actionRedirectHref: actionRedirectTarget?.href ?? null,
+        actionRedirectType: actionRedirectTarget?.type ?? null,
+        clientCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
+        compatibilityIdHeader: fetchResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
+        contentTypeHeader: fetchResponse.headers.get("content-type"),
+        currentHref: actionInitiation.href,
+        origin: window.location.origin,
+        responseUrl: fetchResponse.url,
+      }),
+    );
     if (
       applyServerActionResultDecision(
         actionResultDecision,
