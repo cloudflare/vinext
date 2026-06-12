@@ -17,6 +17,7 @@ import { isUnknownRecord } from "../utils/record.js";
 import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
 import { getViteMajorVersion } from "../utils/vite-version.js";
+import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
 
 /**
  * Parse a body size limit value (string or number) into bytes.
@@ -798,11 +799,8 @@ export async function resolveNextConfigInput(
  *
  * For `.cjs` (or `.js` in a non-type-module package) Node's loader picks the
  * right format automatically and `require()` just works. For `.js` in a
- * `"type": "module"` package, Node infers ESM from package.json and the file
- * fails with `require is not defined`. In that case we copy the source to a
- * sibling temp `.cjs` (where the explicit extension forces CJS regardless of
- * the parent type field) and require *that*. Relative imports inside the
- * config still resolve against the original directory.
+ * `"type": "module"` package, retry through the shared in-memory CommonJS
+ * loader so nested local `.js` dependencies retain CommonJS semantics too.
  */
 async function loadConfigViaRequire(
   configPath: string,
@@ -813,30 +811,8 @@ async function loadConfigViaRequire(
   try {
     return await unwrapConfig(require(configPath), phase);
   } catch (e) {
-    if (!isCjsError(e) || !configPath.endsWith(".js")) throw e;
-    return await loadConfigViaCjsTempCopy(configPath, root, phase);
-  }
-}
-
-async function loadConfigViaCjsTempCopy(
-  configPath: string,
-  root: string,
-  phase: string,
-): Promise<NextConfig> {
-  const dir = path.dirname(configPath);
-  // Hidden + uniquely-named to avoid clashing with user files or being picked
-  // up by next.js's own config scanner if a concurrent next dev is running.
-  const tmpPath = path.join(dir, `.vinext-next-config.${process.pid}.${Date.now()}.cjs`);
-  fs.copyFileSync(configPath, tmpPath);
-  try {
-    const require = createRequire(path.join(root, "package.json"));
-    return await unwrapConfig(require(tmpPath), phase);
-  } finally {
-    try {
-      fs.unlinkSync(tmpPath);
-    } catch {
-      // Best-effort cleanup; a stray tmp file is harmless.
-    }
+    if (!shouldRetryAsCommonJs(e, configPath)) throw e;
+    return await unwrapConfig(loadCommonJsModule(configPath), phase);
   }
 }
 

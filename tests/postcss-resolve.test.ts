@@ -101,6 +101,25 @@ module.exports.postcss = true;
     }
   });
 
+  it("loads a CommonJS postcss.config.js in an ESM project", async () => {
+    const dir = await createTmpProject(
+      "postcss.config.js",
+      `const plugins = require("./plugins.js");
+module.exports = { plugins };
+`,
+    );
+    const fsp = await import("node:fs/promises");
+    await fsp.writeFile(path.join(dir, "package.json"), JSON.stringify({ type: "module" }));
+    await fsp.writeFile(path.join(dir, "plugins.js"), `module.exports = ["mock-postcss-plugin"];`);
+    try {
+      const result = await resolvePostcssStringPlugins(dir);
+      expect(result?.plugins).toHaveLength(1);
+      expect(result?.plugins[0]).toHaveProperty("postcssPlugin", "mock-postcss-plugin");
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+
   // --- Object form (should be skipped) ---
 
   it("returns undefined for object-form plugins (postcss-load-config handles these)", async () => {

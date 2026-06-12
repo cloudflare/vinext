@@ -109,14 +109,72 @@ describe("loadNextConfig with CJS next.config.js under type:module", () => {
     expect(config?.env?.WRAPPED).toBe("yes");
   });
 
-  it("does not leave temp .cjs files in the project root", async () => {
-    fs.writeFileSync(path.join(tmpDir, "next.config.js"), `module.exports = { basePath: '/x' };\n`);
+  it("loads nested CommonJS .js dependencies", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "config-helper.js"),
+      `const values = require("./config-values.js");
+module.exports = { basePath: values.basePath };
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "config-values.js"),
+      `module.exports = { basePath: "/nested" };
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = require("./config-helper.js");
+`,
+    );
 
-    await loadNextConfig(tmpDir);
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.basePath).toBe("/nested");
+  });
+
+  it("loads nested CommonJS .js dependencies from read-only symlink targets", async () => {
+    const packageDir = path.join(tmpDir, "packages", "config-wrapper");
+    const packageLink = path.join(tmpDir, "node_modules", "config-wrapper");
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.mkdirSync(path.dirname(packageLink), { recursive: true });
+    fs.writeFileSync(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name: "config-wrapper", main: "index.js", type: "module" }),
+    );
+    fs.writeFileSync(path.join(packageDir, "value.js"), `module.exports = "/linked";\n`);
+    fs.writeFileSync(
+      path.join(packageDir, "index.js"),
+      `module.exports = { basePath: require("./value.js") };\n`,
+    );
+    fs.symlinkSync(packageDir, packageLink, "junction");
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = require("config-wrapper");\n`,
+    );
+    fs.chmodSync(packageDir, 0o555);
+
+    try {
+      const config = await loadNextConfig(tmpDir);
+      expect(config?.basePath).toBe("/linked");
+      expect(fs.readdirSync(packageDir).some((name) => name.startsWith(".vinext-"))).toBe(false);
+    } finally {
+      fs.chmodSync(packageDir, 0o755);
+    }
+  });
+
+  it("does not write temporary modules beside the config", async () => {
+    fs.writeFileSync(path.join(tmpDir, "next.config.js"), `module.exports = { basePath: '/x' };\n`);
+    fs.chmodSync(tmpDir, 0o555);
+
+    try {
+      const config = await loadNextConfig(tmpDir);
+      expect(config?.basePath).toBe("/x");
+    } finally {
+      fs.chmodSync(tmpDir, 0o755);
+    }
 
     const stray = fs
       .readdirSync(tmpDir)
-      .filter((name) => name.startsWith(".vinext-next-config.") && name.endsWith(".cjs"));
+      .filter((name) => name.startsWith(".vinext-") && name.endsWith(".cjs"));
     expect(stray).toEqual([]);
   });
 });
