@@ -63,7 +63,9 @@ describe("vinext:extensionless-dynamic-import", () => {
     const transform = createTransform();
     const result = transform("await import(`./components/prefixed-${slug}`)", "/app/page.tsx");
 
-    expect(result.code).toContain('import.meta.glob("./components/**/*")');
+    expect(result.code).toContain(
+      'import.meta.glob(["./components/prefixed-*","./components/prefixed-*/**/*"])',
+    );
   });
 
   it("transforms imports with Webpack magic comments", () => {
@@ -90,6 +92,16 @@ describe("vinext:extensionless-dynamic-import", () => {
     expect(result).toBeNull();
   });
 
+  it("leaves dependency imports unchanged", () => {
+    const transform = createTransform();
+    const result = transform(
+      "await import(`./${locale}`)",
+      "/app/node_modules/example-package/index.js",
+    );
+
+    expect(result).toBeNull();
+  });
+
   it("leaves imports with attributes unchanged", () => {
     const transform = createTransform();
     const result = transform(
@@ -104,6 +116,10 @@ describe("vinext:extensionless-dynamic-import", () => {
     "await import(`./${slug}?raw`)",
     "await import(`./${slug}#section`)",
     "await import(`./[locale]/${slug}`)",
+    "await import(`./${first}*/${second}`)",
+    "await import(`./${first}.bak/${second}`)",
+    "await import(`./${first}?query/${second}`)",
+    "await import(`./file.${extension}`)",
   ])("leaves semantic import modifiers unchanged: %s", (code) => {
     const transform = createTransform();
     expect(transform(code, "/app/page.tsx")).toBeNull();

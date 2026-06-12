@@ -19,7 +19,7 @@ type ExtensionlessImport = {
   end: number;
   sourceStart: number;
   sourceEnd: number;
-  globPattern: string;
+  globPattern: string | readonly string[];
   moduleExtensions: readonly string[];
 };
 
@@ -34,6 +34,7 @@ export function createExtensionlessDynamicImportPlugin(): Plugin {
     },
     transform(code, id) {
       if (!/\bimport\s*\(/.test(code)) return null;
+      if (isDependencyId(id)) return null;
       const lang = langForId(id);
       if (!lang) return null;
 
@@ -76,6 +77,11 @@ function langForId(id: string): "js" | "jsx" | "ts" | "tsx" | null {
   return "jsx";
 }
 
+function isDependencyId(id: string): boolean {
+  const clean = id.split("?", 1)[0].replaceAll("\\", "/");
+  return clean.includes("/node_modules/");
+}
+
 function collectExtensionlessImports(
   ast: unknown,
   code: string,
@@ -109,23 +115,26 @@ function parseExtensionlessImport(
   if (nodeArray(source.expressions).length === 0) return null;
 
   const quasis = nodeArray(source.quasis);
-  const first = templateElementText(quasis[0]);
-  const last = templateElementText(quasis.at(-1));
-  if (first == null || last == null) return null;
+  const quasiTexts = quasis.map(templateElementText);
+  if (quasiTexts.some((text) => text == null)) return null;
+  const texts = quasiTexts as string[];
+  const first = texts[0];
   if (!isImportPrefix(code.slice(node.start, source.start))) return null;
   if (!(first.startsWith("./") || first.startsWith("../"))) return null;
-  if (/[*?[\]{}()!]/.test(first)) return null;
-  if (/[.?#]/.test(last)) return null;
+  if (texts.some((text) => /[*?[\]{}()!?#]/.test(text))) return null;
+  if (texts.slice(1).some((text) => text.includes("."))) return null;
 
   const directoryEnd = first.lastIndexOf("/") + 1;
   const directory = first.slice(0, directoryEnd);
+  const filenamePrefix = first.slice(directoryEnd);
+  if (filenamePrefix.includes(".")) return null;
 
   return {
     start: node.start,
     end: node.end,
     sourceStart: source.start,
     sourceEnd: source.end,
-    globPattern: `${directory}**/*`,
+    globPattern: filenamePrefix.length > 0 ? [`${first}*`, `${first}*/**/*`] : `${directory}**/*`,
     moduleExtensions,
   };
 }
@@ -151,7 +160,7 @@ function getModuleExtensions(config: ResolvedConfig): string[] {
 
 function buildReplacement(
   source: string,
-  globPattern: string,
+  globPattern: string | readonly string[],
   moduleExtensions: readonly string[],
 ): string {
   const extensions = JSON.stringify(moduleExtensions);
