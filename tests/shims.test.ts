@@ -14055,6 +14055,96 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  // When beforePopState cancels a popstate the app stays on the previous
+  // history entry, so the internal current-key tracker must keep pointing at
+  // that entry — otherwise later scroll bookkeeping saves the outgoing
+  // position under the wrong (never-visited) key. Observable via the next
+  // popstate's sessionStorage scroll save, which is keyed off the tracker.
+  it("beforePopState cancellation leaves the current history key unchanged", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalScrollRestorationEnv = process.env.__NEXT_SCROLL_RESTORATION;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win } = createNavWindow();
+
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    // Enable the manual scroll restoration path: the flag also requires
+    // history.scrollRestoration support and a working sessionStorage.
+    (win.history as any).scrollRestoration = "auto";
+    const sessionStore = new Map<string, string>();
+    (win as any).sessionStorage = {
+      getItem: (key: string) => sessionStore.get(key) ?? null,
+      setItem: (key: string, value: string) => void sessionStore.set(key, value),
+      removeItem: (key: string) => void sessionStore.delete(key),
+    };
+    // Pre-stamped router-owned entry so install picks up its key.
+    (win.history as any).state = {
+      __N: true,
+      url: "/",
+      as: "/",
+      options: {},
+      key: "key-initial",
+    };
+
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn();
+    process.env.__NEXT_SCROLL_RESTORATION = "true";
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      const beforePopState = vi.fn(() => false);
+      (win as any).next.router.beforePopState(beforePopState);
+
+      // Back/forward to another entry, cancelled by beforePopState.
+      win.location.pathname = "/other";
+      win.location.href = "http://localhost/other";
+      popstateHandler!({
+        state: { __N: true, url: "/other", as: "/other", options: {}, key: "key-target" },
+      });
+      expect(beforePopState).toHaveBeenCalledTimes(1);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+
+      // A later popstate snapshots the outgoing scroll position under the
+      // tracked current key. The app never left the initial entry, so the
+      // snapshot must land on key-initial — not the cancelled key-target.
+      win.scrollX = 120;
+      win.scrollY = 450;
+      win.location.pathname = "/third";
+      win.location.href = "http://localhost/third";
+      popstateHandler!({
+        state: { __N: true, url: "/third", as: "/third", options: {}, key: "key-other" },
+      });
+
+      expect(sessionStore.get("__next_scroll_key-initial")).toBe(
+        JSON.stringify({ x: 120, y: 450 }),
+      );
+      expect(sessionStore.has("__next_scroll_key-target")).toBe(false);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+      if (originalScrollRestorationEnv === undefined) {
+        delete process.env.__NEXT_SCROLL_RESTORATION;
+      } else {
+        process.env.__NEXT_SCROLL_RESTORATION = originalScrollRestorationEnv;
+      }
+    }
+  });
+
   it("does not prefix a locale-qualified target with the current locale", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;

@@ -2340,10 +2340,6 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     }
   }
 
-  if (targetKey !== undefined) {
-    _currentHistoryKey = targetKey;
-  }
-
   // Check beforePopState callback
   if (_beforePopStateCb !== undefined) {
     const shouldContinue = _beforePopStateCb({
@@ -2354,9 +2350,15 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     if (!shouldContinue) return;
   }
 
-  // Update tracker only after beforePopState confirms navigation proceeds.
-  // If beforePopState cancels, the tracker must retain the previous value
-  // so the next popstate compares against the correct baseline.
+  // Update trackers only after beforePopState confirms navigation proceeds.
+  // If beforePopState cancels, the app stays on the previous history entry,
+  // so both must retain their previous values: `_lastPathnameAndSearch` so
+  // the next popstate compares against the correct baseline, and
+  // `_currentHistoryKey` so subsequent scroll bookkeeping keys off the entry
+  // the app is actually on.
+  if (targetKey !== undefined) {
+    _currentHistoryKey = targetKey;
+  }
   _lastPathnameAndSearch = browserUrl;
 
   if (isHashOnly) {
