@@ -14341,6 +14341,14 @@ describe("Pages Router concurrent navigation", () => {
   // value-imports next/router for compat must not have the browser's native
   // restoration disabled. Upstream only flips history.scrollRestoration in
   // the Pages Router constructor, which never runs on App Router documents.
+  //
+  // This test guards the bootstrap eval-order invariant: the
+  // manualScrollRestoration constant in router.ts reads window.next?.appDir
+  // at module-eval time, which is only correct because installWindowNext in
+  // app-browser-entry.ts stamps appDir: true before the first next/router
+  // value-import evaluates. The failure mode is silent — if that ordering
+  // regressed, manual scroll restoration would flip on under App Router
+  // documents with no error, only subtly broken back/forward scroll.
   it("does not flip history.scrollRestoration to manual on App Router documents", async () => {
     const previousWindow = (globalThis as any).window;
     const originalScrollRestorationEnv = process.env.__NEXT_SCROLL_RESTORATION;
