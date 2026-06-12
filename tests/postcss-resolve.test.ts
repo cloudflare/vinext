@@ -194,26 +194,42 @@ module.exports.postcss = true;
     }
   });
 
-  it("loads CommonJS .js plugins referenced by a .cjs config after init adds type module", async () => {
+  it("loads CommonJS .js plugins from read-only symlink targets in an ESM monorepo", async () => {
     const fsp = await import("node:fs/promises");
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-postcss-local-cjs-"));
+    const packageDir = path.join(dir, "packages", "local-plugin");
+    const pluginLink = path.join(dir, "node_modules", "local-plugin");
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.mkdir(path.dirname(pluginLink), { recursive: true });
     await fsp.writeFile(path.join(dir, "package.json"), JSON.stringify({ type: "module" }));
     await fsp.writeFile(
-      path.join(dir, "plugin.js"),
-      `const plugin = () => ({ postcssPlugin: "local-cjs-plugin", Once() {} });
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name: "local-plugin", main: "plugin.js", type: "module" }),
+    );
+    await fsp.writeFile(path.join(packageDir, "name.js"), `module.exports = "local-cjs-plugin";`);
+    await fsp.writeFile(
+      path.join(packageDir, "plugin.js"),
+      `const name = require("./name.js");
+const plugin = () => ({ postcssPlugin: name, Once() {} });
 plugin.postcss = true;
 module.exports = plugin;`,
     );
+    await fsp.symlink(packageDir, pluginLink, "junction");
     await fsp.writeFile(
       path.join(dir, "postcss.config.cjs"),
-      `module.exports = { plugins: [require.resolve("./plugin")] };`,
+      `module.exports = { plugins: [require.resolve("local-plugin")] };`,
     );
+    await fsp.chmod(packageDir, 0o555);
 
     try {
       const result = await resolvePostcssStringPlugins(dir);
       expect(result?.plugins).toHaveLength(1);
       expect(result?.plugins[0]).toHaveProperty("postcssPlugin", "local-cjs-plugin");
+      expect(
+        (await fsp.readdir(packageDir)).some((name) => name.startsWith(".vinext-postcss-")),
+      ).toBe(false);
     } finally {
+      await fsp.chmod(packageDir, 0o755).catch(() => {});
       await cleanupDir(dir);
     }
   });

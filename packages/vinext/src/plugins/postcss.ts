@@ -1,27 +1,53 @@
 import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
-import { createRequire } from "node:module";
-import { randomUUID } from "node:crypto";
+import { createRequire, Module } from "node:module";
+
+type CommonJsModule = Module & {
+  _compile(content: string, filename: string): void;
+};
+
+const CommonJsModule = Module as typeof Module & {
+  _nodeModulePaths(from: string): string[];
+};
 
 function shouldRetryAsCommonJs(error: unknown, resolvedPath: string): boolean {
   return (
     resolvedPath.endsWith(".js") &&
-    error instanceof ReferenceError &&
-    /(?:module|exports|require) is not defined in ES module scope/.test(error.message)
+    ((error instanceof ReferenceError &&
+      /(?:module|exports|require) is not defined in ES module scope/.test(error.message)) ||
+      (error instanceof Error && "code" in error && error.code === "ERR_REQUIRE_ESM"))
   );
 }
 
-function loadCommonJsPlugin(resolvedPath: string): unknown {
-  const temporaryPath = path.join(
-    path.dirname(resolvedPath),
-    `.vinext-postcss-${randomUUID()}.cjs`,
-  );
-  fs.copyFileSync(resolvedPath, temporaryPath);
+function loadCommonJsPlugin(resolvedPath: string, cache = new Map<string, Module>()): unknown {
+  const cached = cache.get(resolvedPath);
+  if (cached) return cached.exports;
+
+  const mod = new CommonJsModule(resolvedPath) as CommonJsModule;
+  mod.filename = resolvedPath;
+  mod.paths = CommonJsModule._nodeModulePaths(path.dirname(resolvedPath));
+  cache.set(resolvedPath, mod);
+
+  const req = createRequire(resolvedPath);
+  const originalRequire = mod.require.bind(mod);
+  mod.require = ((specifier: string) => {
+    try {
+      return originalRequire(specifier);
+    } catch (error) {
+      const dependencyPath = req.resolve(specifier);
+      if (!shouldRetryAsCommonJs(error, dependencyPath)) throw error;
+      return loadCommonJsPlugin(dependencyPath, cache);
+    }
+  }) as Module["require"];
+
   try {
-    return createRequire(temporaryPath)(temporaryPath);
-  } finally {
-    fs.rmSync(temporaryPath, { force: true });
+    mod._compile(fs.readFileSync(resolvedPath, "utf8"), resolvedPath);
+    mod.loaded = true;
+    return mod.exports;
+  } catch (error) {
+    cache.delete(resolvedPath);
+    throw error;
   }
 }
 
