@@ -1,10 +1,28 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { cookies, headers, setHeadersContext } from "../packages/vinext/src/shims/headers.js";
+import {
+  consumeDynamicUsage,
+  cookies,
+  headers,
+  markDynamicUsage,
+  setHeadersContext,
+} from "../packages/vinext/src/shims/headers.js";
 import { isKnownDynamicAppRoute } from "../packages/vinext/src/server/app-route-handler-runtime.js";
 import {
   executeAppRouteHandler,
   runAppRouteHandler,
 } from "../packages/vinext/src/server/app-route-handler-execution.js";
+
+// The fetch-cache shim captures `originalFetch` from globalThis at import
+// time, so stub fetch BEFORE importing it (same pattern as
+// tests/fetch-cache.test.ts). None of the static imports above pull
+// fetch-cache.js into the runtime module graph — its only reference there is
+// the type-only `FetchCacheState` re-export — so the stub is in place before
+// the capture happens.
+const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+  Response.json({ ok: true }),
+);
+vi.stubGlobal("fetch", fetchMock);
+const { withFetchCache } = await import("../packages/vinext/src/shims/fetch-cache.js");
 
 function createDynamicUsageState(): {
   consumeDynamicUsage: () => boolean;
@@ -256,6 +274,90 @@ describe("app route handler execution helpers", () => {
     expect(response.headers.get("x-vinext-cache")).toBeNull();
     expect(wroteCache).toBe(false);
     await expect(response.json()).resolves.toEqual({ ping: "from-header" });
+  });
+
+  it("skips cache writes and marks the route dynamic when a revalidating handler fetches with no-store", async () => {
+    // Regression test for the patched fetch's explicit no-store branch
+    // calling markDynamicUsage() (upstream patch-fetch parity, where
+    // markCurrentScopeAsDynamic bails ISR for the surrounding scope): a route
+    // handler with `revalidate = 60` that performs
+    // `fetch(url, { cache: "no-store" })` must not write its ISR entry and
+    // must be marked known-dynamic. Uses the real headers-shim
+    // consumeDynamicUsage/markDynamicUsage pair — the same wiring as
+    // app-route-handler-dispatch — so the mark set by the fetch shim flows
+    // into `dynamicUsedInHandler`.
+    const routePattern = "/api/no-store-fetch-" + Date.now();
+    const waitUntilPromises: Promise<unknown>[] = [];
+    let wroteCache = false;
+    const restoreFetchCache = withFetchCache();
+
+    try {
+      // Clear any dynamic usage left over from earlier tests.
+      consumeDynamicUsage();
+
+      const response = await executeAppRouteHandler({
+        buildPageCacheTags(pathname, extraTags) {
+          return [pathname, ...extraTags];
+        },
+        cleanPathname: "/api/no-store-fetch",
+        clearRequestContext() {},
+        consumeDynamicUsage,
+        executionContext: {
+          waitUntil(promise) {
+            waitUntilPromises.push(promise);
+          },
+        },
+        getAndClearPendingCookies() {
+          return [];
+        },
+        getCollectedFetchTags() {
+          return [];
+        },
+        getDraftModeCookieHeader() {
+          return null;
+        },
+        handler: { dynamic: "auto" },
+        async handlerFn() {
+          const upstream = await fetch("https://api.example.com/live", {
+            cache: "no-store",
+          });
+          return Response.json(await upstream.json());
+        },
+        isAutoHead: false,
+        isProduction: true,
+        isrRouteKey(pathname) {
+          return "route:" + pathname;
+        },
+        async isrSet() {
+          wroteCache = true;
+        },
+        markDynamicUsage,
+        method: "GET",
+        middlewareContext: { headers: null, status: null },
+        params: {},
+        reportRequestError() {},
+        request: new Request("https://example.com/api/no-store-fetch"),
+        revalidateSeconds: 60,
+        routePattern,
+        setHeadersAccessPhase() {
+          return "render";
+        },
+      });
+
+      await Promise.all(waitUntilPromises);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.com/live");
+      expect(fetchMock.mock.calls[0]?.[1]?.cache).toBe("no-store");
+      expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
+      expect(wroteCache).toBe(false);
+      expect(response.headers.get("cache-control")).toBeNull();
+      expect(response.headers.get("x-vinext-cache")).toBeNull();
+      await expect(response.json()).resolves.toEqual({ ok: true });
+    } finally {
+      consumeDynamicUsage();
+      restoreFetchCache();
+    }
   });
 
   it("maps special route handler errors and reports generic failures", async () => {
