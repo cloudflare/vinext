@@ -195,25 +195,30 @@ function canUseSessionStorageForScrollRestoration(): boolean {
   }
 }
 
+// The `experimental.scrollRestoration` manual opt-in is Pages-Router-only.
+// Next.js sets `history.scrollRestoration = "manual"` inside the Router
+// class constructor (.nextjs-ref/packages/next/src/shared/lib/router/
+// router.ts around L892), which only runs when client/index.tsx hydrates a
+// Pages Router document — a bare value import of next/router never flips
+// it, and App Router owns its own scroll behavior. The vinext shim installs
+// at module eval instead, so an App Router app that value-imports
+// next/router for compat would otherwise disable the browser's native
+// restoration. The App Router bootstrap stamps `window.next.appDir = true`
+// at entry eval, before any client-component module (and therefore this
+// shim) can evaluate, so it is a reliable router-mode gate even though this
+// constant is computed at module eval. Folding the check into the constant
+// (rather than only into installManualScrollRestoration) keeps every
+// consumer Pages-Router-only — including the popstate handler's
+// sessionStorage save/read branches, which would otherwise rely solely on
+// the `__N: true` state filter to stay inert on App Router documents.
 const manualScrollRestoration =
   __scrollRestoration &&
   typeof window !== "undefined" &&
+  window.next?.appDir !== true &&
   "scrollRestoration" in window.history &&
   canUseSessionStorageForScrollRestoration();
 
 function installManualScrollRestoration(): void {
-  // The `experimental.scrollRestoration` manual opt-in is Pages-Router-only.
-  // Next.js sets `history.scrollRestoration = "manual"` inside the Router
-  // class constructor (.nextjs-ref/packages/next/src/shared/lib/router/
-  // router.ts around L892), which only runs when client/index.tsx hydrates a
-  // Pages Router document — a bare value import of next/router never flips
-  // it, and App Router owns its own scroll behavior. The vinext shim installs
-  // at module eval instead, so an App Router app that value-imports
-  // next/router for compat would otherwise disable the browser's native
-  // restoration. The App Router bootstrap stamps `window.next.appDir = true`
-  // at entry eval, before any client-component module (and therefore this
-  // shim) can evaluate, so it is a reliable router-mode gate here.
-  if (window.next?.appDir === true) return;
   if (manualScrollRestoration) {
     window.history.scrollRestoration = "manual";
   }
