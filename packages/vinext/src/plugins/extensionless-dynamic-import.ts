@@ -142,8 +142,33 @@ function parseExtensionlessImport(
 function isImportPrefix(value: string): boolean {
   const prefix = value.match(/^import\s*\(/)?.[0];
   if (!prefix) return false;
-  const remainder = value.slice(prefix.length);
-  return /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*$/.test(remainder);
+
+  let index = prefix.length;
+  while (index < value.length) {
+    const char = value[index];
+    if (/\s/.test(char)) {
+      index += 1;
+      continue;
+    }
+
+    if (value.startsWith("/*", index)) {
+      const commentEnd = value.indexOf("*/", index + 2);
+      if (commentEnd < 0) return false;
+      index = commentEnd + 2;
+      continue;
+    }
+
+    if (value.startsWith("//", index)) {
+      const lineEnd = value.indexOf("\n", index + 2);
+      if (lineEnd < 0) return true;
+      index = lineEnd + 1;
+      continue;
+    }
+
+    return false;
+  }
+
+  return true;
 }
 
 function templateElementText(value: unknown): string | null {

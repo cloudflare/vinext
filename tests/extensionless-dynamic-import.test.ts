@@ -78,6 +78,14 @@ describe("vinext:extensionless-dynamic-import", () => {
     expect(result.code).toContain("import.meta.glob");
   });
 
+  it("handles repeated block-comment markers without backtracking", () => {
+    const transform = createTransform();
+    const comments = "/*" + "*//*".repeat(10_000) + "*/";
+    const result = transform(`await import(${comments} \`./\${slug}\`)`, "/app/page.tsx");
+
+    expect(result.code).toContain("import.meta.glob");
+  });
+
   it("leaves imports with explicit extensions unchanged", () => {
     const transform = createTransform();
     const result = transform("await import(`./${slug}.tsx`)", "/app/page.tsx");
