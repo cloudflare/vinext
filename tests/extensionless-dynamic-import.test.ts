@@ -18,7 +18,7 @@ describe("vinext:extensionless-dynamic-import", () => {
     const transform = createTransform();
     const result = transform("const moduleExports = await import(`./${slug}`)", "/app/page.tsx");
 
-    expect(result.code).toContain('import.meta.glob("./**/*{.mjs,.js,.mts,.ts,.jsx,.tsx,.json}")');
+    expect(result.code).toContain('import.meta.glob("./**/*")');
     expect(result.code).toContain("__vinextModules[__vinextPath + __vinextExtension]");
     expect(result.code).toContain('__vinextPath + "/index" + __vinextExtension');
     expect(result.code).toContain("Promise.reject(new Error");
@@ -28,8 +28,16 @@ describe("vinext:extensionless-dynamic-import", () => {
     const transform = createTransform([".platform.tsx", ".tsx", ".js", ".json"]);
     const result = transform("await import(`./${slug}`)", "/app/page.tsx");
 
-    expect(result.code).toContain('import.meta.glob("./**/*{.platform.tsx,.tsx,.js,.json}")');
+    expect(result.code).toContain('import.meta.glob("./**/*")');
     expect(result.code).toContain('[".platform.tsx",".tsx",".js",".json"]');
+  });
+
+  it("uses configured single resolver extensions at runtime", () => {
+    const transform = createTransform([".js"]);
+    const result = transform("await import(`./${slug}`)", "/app/page.tsx");
+
+    expect(result.code).toContain('import.meta.glob("./**/*")');
+    expect(result.code).toContain('[".js"]');
   });
 
   it("tries every file extension before directory index files", () => {
@@ -55,9 +63,17 @@ describe("vinext:extensionless-dynamic-import", () => {
     const transform = createTransform();
     const result = transform("await import(`./components/prefixed-${slug}`)", "/app/page.tsx");
 
-    expect(result.code).toContain(
-      'import.meta.glob("./components/**/*{.mjs,.js,.mts,.ts,.jsx,.tsx,.json}")',
+    expect(result.code).toContain('import.meta.glob("./components/**/*")');
+  });
+
+  it("transforms imports with Webpack magic comments", () => {
+    const transform = createTransform();
+    const result = transform(
+      'await import(/* webpackChunkName: "named" */ `./${slug}`)',
+      "/app/page.tsx",
     );
+
+    expect(result.code).toContain("import.meta.glob");
   });
 
   it("leaves imports with explicit extensions unchanged", () => {
@@ -87,7 +103,6 @@ describe("vinext:extensionless-dynamic-import", () => {
   it.each([
     "await import(`./${slug}?raw`)",
     "await import(`./${slug}#section`)",
-    'await import(/* webpackChunkName: "named" */ `./${slug}`)',
     "await import(`./[locale]/${slug}`)",
   ])("leaves semantic import modifiers unchanged: %s", (code) => {
     const transform = createTransform();

@@ -13,8 +13,15 @@ async function getData(slug: string): Promise<{ message: string }> {
 }
 
 async function getPrefixedImport(slug: string): Promise<string> {
-  const moduleExports = await import(`./prefixed-${slug}`);
+  const moduleExports = await import(
+    /* webpackChunkName: "prefixed-module" */ `./prefixed-${slug}`
+  );
   return moduleExports.prefixedImport;
+}
+
+async function getSuffixlessImport(slug: string): Promise<string> {
+  const moduleExports = await import(`./${slug}`);
+  return moduleExports.suffixlessImport;
 }
 
 export default async function Page() {
@@ -22,12 +29,14 @@ export default async function Page() {
   const resolverPriority = await getImport<string>("resolver-priority", "resolverPriority");
   const data = await getData("data");
   const prefixedImport = await getPrefixedImport("module");
+  const suffixlessImport = await getSuffixlessImport("suffixless");
   return (
     <>
       <Button />
       <p>{resolverPriority}</p>
       <p>{data.message}</p>
       <p>{prefixedImport}</p>
+      <p>{suffixlessImport}</p>
     </>
   );
 }

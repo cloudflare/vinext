@@ -112,7 +112,7 @@ function parseExtensionlessImport(
   const first = templateElementText(quasis[0]);
   const last = templateElementText(quasis.at(-1));
   if (first == null || last == null) return null;
-  if (!/^import\s*\(\s*$/.test(code.slice(node.start, source.start))) return null;
+  if (!isImportPrefix(code.slice(node.start, source.start))) return null;
   if (!(first.startsWith("./") || first.startsWith("../"))) return null;
   if (/[*?[\]{}()!]/.test(first)) return null;
   if (/[.?#]/.test(last)) return null;
@@ -125,9 +125,16 @@ function parseExtensionlessImport(
     end: node.end,
     sourceStart: source.start,
     sourceEnd: source.end,
-    globPattern: `${directory}**/*{${moduleExtensions.join(",")}}`,
+    globPattern: `${directory}**/*`,
     moduleExtensions,
   };
+}
+
+function isImportPrefix(value: string): boolean {
+  const prefix = value.match(/^import\s*\(/)?.[0];
+  if (!prefix) return false;
+  const remainder = value.slice(prefix.length);
+  return /^(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*$/.test(remainder);
 }
 
 function templateElementText(value: unknown): string | null {

@@ -136,6 +136,7 @@ describe("Next.js compat: next/dynamic", () => {
     expect(html).toContain("<p>file import</p>");
     expect(html).toContain("<p>json import</p>");
     expect(html).toContain("<p>prefixed import</p>");
+    expect(html).toContain("<p>suffixless import</p>");
   });
 
   // Ported from Next.js: test/e2e/app-dir/next-dynamic-csp-nonce/next-dynamic-csp-nonce.test.ts
