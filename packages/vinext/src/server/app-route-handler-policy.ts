@@ -9,6 +9,7 @@ import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-
 
 export type AppRouteHandlerModule = {
   dynamic?: string;
+  fetchCache?: unknown;
   revalidate?: unknown;
 } & RouteHandlerModule;
 

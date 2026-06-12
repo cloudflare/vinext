@@ -3,6 +3,7 @@ import {
   isEdgeRuntime,
   resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig,
+  resolveAppRouteHandlerFetchCacheMode,
 } from "../packages/vinext/src/server/app-segment-config.js";
 
 describe("resolveAppPageSegmentConfig", () => {
@@ -283,6 +284,21 @@ describe("resolveAppPageSegmentConfig", () => {
     ).toBe("edge");
 
     expect(resolveAppPageSegmentConfig({ page: {} }).runtime).toBeUndefined();
+  });
+});
+
+describe("resolveAppRouteHandlerFetchCacheMode", () => {
+  it("returns the handler module's fetchCache export when valid", () => {
+    expect(resolveAppRouteHandlerFetchCacheMode({ fetchCache: "force-cache" })).toBe("force-cache");
+    expect(resolveAppRouteHandlerFetchCacheMode({ fetchCache: "default-no-store" })).toBe(
+      "default-no-store",
+    );
+  });
+
+  it("returns null for missing or invalid fetchCache values", () => {
+    expect(resolveAppRouteHandlerFetchCacheMode({})).toBeNull();
+    expect(resolveAppRouteHandlerFetchCacheMode({ fetchCache: "bogus" })).toBeNull();
+    expect(resolveAppRouteHandlerFetchCacheMode({ fetchCache: 42 })).toBeNull();
   });
 });
 
