@@ -194,6 +194,30 @@ module.exports.postcss = true;
     }
   });
 
+  it("loads CommonJS .js plugins referenced by a .cjs config after init adds type module", async () => {
+    const fsp = await import("node:fs/promises");
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-postcss-local-cjs-"));
+    await fsp.writeFile(path.join(dir, "package.json"), JSON.stringify({ type: "module" }));
+    await fsp.writeFile(
+      path.join(dir, "plugin.js"),
+      `const plugin = () => ({ postcssPlugin: "local-cjs-plugin", Once() {} });
+plugin.postcss = true;
+module.exports = plugin;`,
+    );
+    await fsp.writeFile(
+      path.join(dir, "postcss.config.cjs"),
+      `module.exports = { plugins: [require.resolve("./plugin")] };`,
+    );
+
+    try {
+      const result = await resolvePostcssStringPlugins(dir);
+      expect(result?.plugins).toHaveLength(1);
+      expect(result?.plugins[0]).toHaveProperty("postcssPlugin", "local-cjs-plugin");
+    } finally {
+      await cleanupDir(dir);
+    }
+  });
+
   // --- Unresolvable string plugin must not crash the build ---
   //
   // Regression for #1509: a CSS-modules + PostCSS app (e.g. a config like
@@ -344,6 +368,67 @@ module.exports.postcss = true;`,
       expect(postcssObj.plugins[0]).toHaveProperty("postcssPlugin", "mock-postcss-plugin");
     } finally {
       await server.close();
+    }
+  }, 30000);
+
+  it("applies a local CommonJS PostCSS plugin to CSS and SCSS modules in an ESM app", async () => {
+    // Ported from Next.js: test/e2e/app-dir/css-modules-rsc-postcss/css-modules-rsc-postcss.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/css-modules-rsc-postcss/css-modules-rsc-postcss.test.ts
+    const fsp = await import("node:fs/promises");
+    const { build } = await import("vite");
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-css-modules-rsc-postcss-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(dir, "node_modules"), "junction");
+    await fsp.writeFile(path.join(dir, "package.json"), JSON.stringify({ type: "module" }));
+    await fsp.writeFile(
+      path.join(dir, "plugin.js"),
+      `const plugin = () => ({
+  postcssPlugin: "color-change",
+  Declaration: { color(declaration) { declaration.value = "green"; } },
+});
+plugin.postcss = true;
+module.exports = plugin;`,
+    );
+    await fsp.writeFile(
+      path.join(dir, "postcss.config.cjs"),
+      `module.exports = { plugins: [require.resolve("./plugin")] };`,
+    );
+    await fsp.writeFile(path.join(dir, "page.module.css"), `.main { color: red; }`);
+    await fsp.writeFile(path.join(dir, "other.module.scss"), `.other { color: red; }`);
+    await fsp.writeFile(
+      path.join(dir, "entry.js"),
+      `import styles from "./page.module.css";
+import other from "./other.module.scss";
+console.log(styles.main, other.other);`,
+    );
+
+    try {
+      await build({
+        root: dir,
+        configFile: false,
+        plugins: [vinext({ disableAppRouter: true })],
+        logLevel: "silent",
+        build: {
+          outDir: "dist",
+          rolldownOptions: { input: path.join(dir, "entry.js") },
+        },
+      });
+      const distDir = path.join(dir, "dist");
+      const entries = await fsp.readdir(distDir, { recursive: true, withFileTypes: true });
+      const cssEntries = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".css"));
+      expect(cssEntries.length).toBeGreaterThan(0);
+      const css = (
+        await Promise.all(
+          cssEntries.map((entry) => fsp.readFile(path.join(entry.parentPath, entry.name), "utf8")),
+        )
+      ).join("\n");
+      expect(css).toContain("color:green");
+      expect(css).toMatch(/_main[_-]/);
+      expect(css).toMatch(/_other[_-]/);
+      expect(css).not.toContain("color:red");
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
     }
   }, 30000);
 });

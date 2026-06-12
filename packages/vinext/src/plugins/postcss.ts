@@ -2,6 +2,38 @@ import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
+import { randomUUID } from "node:crypto";
+
+function shouldRetryAsCommonJs(error: unknown, resolvedPath: string): boolean {
+  return (
+    resolvedPath.endsWith(".js") &&
+    error instanceof ReferenceError &&
+    /(?:module|exports|require) is not defined in ES module scope/.test(error.message)
+  );
+}
+
+function loadCommonJsPlugin(resolvedPath: string): unknown {
+  const temporaryPath = path.join(
+    path.dirname(resolvedPath),
+    `.vinext-postcss-${randomUUID()}.cjs`,
+  );
+  fs.copyFileSync(resolvedPath, temporaryPath);
+  try {
+    return createRequire(temporaryPath)(temporaryPath);
+  } finally {
+    fs.rmSync(temporaryPath, { force: true });
+  }
+}
+
+async function loadPluginExport(resolvedPath: string): Promise<unknown> {
+  try {
+    const mod = await import(pathToFileURL(resolvedPath).href);
+    return mod.default ?? mod;
+  } catch (error) {
+    if (!shouldRetryAsCommonJs(error, resolvedPath)) throw error;
+    return loadCommonJsPlugin(resolvedPath);
+  }
+}
 
 /**
  * PostCSS config file names to search for, in priority order.
@@ -117,8 +149,7 @@ async function resolvePostcssStringPluginsUncached(
       config.plugins.filter(Boolean).map(async (plugin: unknown) => {
         if (typeof plugin === "string") {
           const resolved = req.resolve(plugin);
-          const mod = await import(pathToFileURL(resolved).href);
-          const fn = mod.default ?? mod;
+          const fn = await loadPluginExport(resolved);
           // If the export is a function, call it to get the plugin instance
           return typeof fn === "function" ? fn() : fn;
         }
@@ -126,8 +157,7 @@ async function resolvePostcssStringPluginsUncached(
         if (Array.isArray(plugin) && typeof plugin[0] === "string") {
           const [name, options] = plugin;
           const resolved = req.resolve(name);
-          const mod = await import(pathToFileURL(resolved).href);
-          const fn = mod.default ?? mod;
+          const fn = await loadPluginExport(resolved);
           return typeof fn === "function" ? fn(options) : fn;
         }
         // Already a function or plugin object — pass through
