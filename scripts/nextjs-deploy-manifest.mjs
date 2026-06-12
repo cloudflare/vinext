@@ -110,7 +110,7 @@ async function main() {
     throw new Error(`Expected Next.js deploy manifest version 2, got ${source.version}`);
   }
 
-  let suites = { ...(source.suites ?? {}) };
+  let suites = { ...source.suites };
   for (const [suite, override] of Object.entries(CUSTOM_DEPLOY_ADAPTER_SUITE_OVERRIDES)) {
     const current = suites[suite] ?? {};
     suites[suite] = {
