@@ -1,5 +1,6 @@
 import type { NextI18nConfig } from "../config/next-config.js";
 import type { HeadersAccessPhase } from "vinext/shims/headers";
+import type { CachedRouteValue } from "vinext/shims/cache";
 import type { ISRCacheEntry } from "./isr-cache.js";
 import type { RouteHandlerMiddlewareContext } from "./app-route-handler-response.js";
 import {
@@ -21,6 +22,7 @@ import {
 } from "./app-route-handler-execution.js";
 
 type RouteHandlerCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
+type RouteHandlerCacheDeleter = (key: string) => Promise<void>;
 type RouteHandlerBackgroundRegenerator = (key: string, renderFn: () => Promise<void>) => void;
 type RouteHandlerRevalidationContextRunner = (renderFn: () => Promise<void>) => Promise<void>;
 
@@ -39,6 +41,7 @@ type ReadAppRouteHandlerCacheOptions = {
   trailingSlash?: boolean;
   isAutoHead: boolean;
   isrDebug?: AppRouteDebugLogger;
+  isrDelete: RouteHandlerCacheDeleter;
   isrGet: RouteHandlerCacheGetter;
   isrRouteKey: (pathname: string) => string;
   isrSet: RouteHandlerCacheSetter;
@@ -73,6 +76,10 @@ function getCachedAppRouteValue(entry: ISRCacheEntry | null) {
   return entry?.value.value && entry.value.value.kind === "APP_ROUTE" ? entry.value.value : null;
 }
 
+function hasCachedSetCookie(value: CachedRouteValue): boolean {
+  return Object.keys(value.headers).some((key) => key.toLowerCase() === "set-cookie");
+}
+
 export async function readAppRouteHandlerCacheResponse(
   options: ReadAppRouteHandlerCacheOptions,
 ): Promise<Response | null> {
@@ -81,6 +88,12 @@ export async function readAppRouteHandlerCacheResponse(
   try {
     const cached = await options.isrGet(routeKey);
     const cachedValue = getCachedAppRouteValue(cached);
+
+    if (cachedValue && hasCachedSetCookie(cachedValue)) {
+      await options.isrDelete(routeKey);
+      options.isrDebug?.("invalid route cache deleted (set-cookie)", routeKey);
+      return null;
+    }
 
     if (cachedValue && !cached?.isStale) {
       options.isrDebug?.("HIT (route)", options.cleanPathname);

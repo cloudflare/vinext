@@ -51,6 +51,7 @@ type AppRouteHandlerDispatchRoute = {
 };
 
 type RouteHandlerCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
+type RouteHandlerCacheDeleter = (key: string) => Promise<void>;
 type RouteHandlerBackgroundRegenerationErrorContext = {
   routerKind: "App Router";
   routePath: string;
@@ -72,6 +73,7 @@ type DispatchAppRouteHandlerOptions = {
   isDevelopment?: boolean;
   isProduction?: boolean;
   isrDebug?: AppRouteDebugLogger;
+  isrDelete: RouteHandlerCacheDeleter;
   isrGet: RouteHandlerCacheGetter;
   isrRouteKey: (pathname: string) => string;
   isrSet: RouteHandlerCacheSetter;
@@ -224,6 +226,7 @@ export async function dispatchAppRouteHandler(
       trailingSlash: options.trailingSlash,
       isAutoHead,
       isrDebug: options.isrDebug,
+      isrDelete: options.isrDelete,
       isrGet: options.isrGet,
       isrRouteKey: options.isrRouteKey,
       isrSet: options.isrSet,

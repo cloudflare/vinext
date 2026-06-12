@@ -788,6 +788,7 @@ describe("App Router entry templates", () => {
 
     expect(code).toContain("app-rsc-handler.js");
     expect(code).toContain("export default __createAppRscHandler({");
+    expect(code).toContain("isrDelete: __isrDelete");
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });
 

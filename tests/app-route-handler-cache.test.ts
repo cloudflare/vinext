@@ -73,6 +73,7 @@ describe("app route handler cache helpers", () => {
         throw new Error("should not run");
       },
       isAutoHead: false,
+      async isrDelete() {},
       async isrGet() {
         return buildISRCacheEntry(
           buildCachedRouteValue("from-cache", { "content-type": "text/plain" }),
@@ -111,6 +112,74 @@ describe("app route handler cache helpers", () => {
     expect(didClearRequestContext).toBe(true);
   });
 
+  it.each([false, true])(
+    "deletes legacy %s APP_ROUTE entries containing Set-Cookie",
+    async (isStale) => {
+      let deletedKey: string | null = null;
+      let scheduledRegeneration = false;
+
+      const response = await readAppRouteHandlerCacheResponse({
+        buildPageCacheTags(pathname, extraTags) {
+          return [pathname, ...extraTags];
+        },
+        cleanPathname: "/api/legacy-cookie",
+        clearRequestContext() {},
+        consumeDynamicUsage() {
+          return false;
+        },
+        getAndClearPendingCookies() {
+          return [];
+        },
+        getCollectedFetchTags() {
+          return [];
+        },
+        getDraftModeCookieHeader() {
+          return null;
+        },
+        handlerFn() {
+          throw new Error("legacy cache should be treated as a MISS");
+        },
+        isAutoHead: false,
+        async isrDelete(key) {
+          deletedKey = key;
+        },
+        async isrGet() {
+          return buildISRCacheEntry(
+            buildCachedRouteValue("victim-specific body", {
+              "set-cookie": "session=victim; Path=/; HttpOnly",
+            }),
+            isStale,
+          );
+        },
+        isrRouteKey(pathname) {
+          return "route:" + pathname;
+        },
+        async isrSet() {},
+        markDynamicUsage() {},
+        middlewareContext: { headers: null, status: null },
+        params: {},
+        requestUrl: "https://example.com/api/legacy-cookie",
+        revalidateSearchParams: new URLSearchParams(),
+        revalidateSeconds: 60,
+        routePattern: "/api/legacy-cookie",
+        async runInRevalidationContext(renderFn) {
+          await renderFn();
+        },
+        scheduleBackgroundRegeneration() {
+          scheduledRegeneration = true;
+        },
+        setHeadersAccessPhase() {
+          return "render";
+        },
+        setNavigationContext() {},
+      });
+
+      expect(response).toBeNull();
+      expect(deletedKey).toBe("route:/api/legacy-cookie");
+      expect(scheduledRegeneration).toBe(false);
+    },
+  );
+
   it("returns STALE responses and regenerates cached route handlers in the background", async () => {
     const dynamicUsage = createDynamicUsageState();
     const scheduledRegenerations: Array<() => Promise<void>> = [];
@@ -146,6 +215,7 @@ describe("app route handler cache helpers", () => {
       },
       i18n: { locales: ["en"], defaultLocale: "en" },
       isAutoHead: false,
+      async isrDelete() {},
       async isrGet() {
         return buildISRCacheEntry(buildCachedRouteValue("from-stale"), true);
       },
@@ -220,6 +290,7 @@ describe("app route handler cache helpers", () => {
         return new Response("regenerated");
       },
       isAutoHead: false,
+      async isrDelete() {},
       async isrGet() {
         return buildISRCacheEntry(buildCachedRouteValue("from-stale"), true);
       },
@@ -287,6 +358,7 @@ describe("app route handler cache helpers", () => {
         });
       },
       isAutoHead: false,
+      async isrDelete() {},
       async isrGet() {
         return buildISRCacheEntry(buildCachedRouteValue("from-stale"), true);
       },
@@ -354,6 +426,7 @@ describe("app route handler cache helpers", () => {
         });
       },
       isAutoHead: false,
+      async isrDelete() {},
       async isrGet() {
         return buildISRCacheEntry(buildCachedRouteValue("safe stale body"), true);
       },
@@ -423,6 +496,7 @@ describe("app route handler cache helpers", () => {
         });
       },
       isAutoHead: false,
+      async isrDelete() {},
       async isrGet() {
         return buildISRCacheEntry(buildCachedRouteValue("from-stale"), true);
       },
@@ -491,6 +565,7 @@ describe("app route handler cache helpers", () => {
         throw new Error("should not run");
       },
       isAutoHead: false,
+      async isrDelete() {},
       async isrGet() {
         throw new Error("cache blew up");
       },

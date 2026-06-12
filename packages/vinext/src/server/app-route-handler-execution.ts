@@ -180,10 +180,6 @@ export async function executeAppRouteHandler(
       Boolean(draftCookie) ||
       options.middlewareContext.headers?.has("set-cookie") === true;
 
-    if (hasResponseCookies) {
-      response = preventSharedRouteHandlerCaching(response);
-    }
-
     // The route's cache tags, shared by the response Cache-Tag header (so edge
     // adapters can purge by tag) and the ISR write below. Cheap + side-effect free.
     const routeTags = options.buildPageCacheTags(
@@ -252,7 +248,7 @@ export async function executeAppRouteHandler(
 
     options.clearRequestContext();
 
-    return applyRouteHandlerMiddlewareContext(
+    const finalizedResponse = applyRouteHandlerMiddlewareContext(
       finalizeRouteHandlerResponse(response, {
         pendingCookies,
         draftCookie,
@@ -260,6 +256,10 @@ export async function executeAppRouteHandler(
       }),
       options.middlewareContext,
     );
+
+    return hasResponseCookies
+      ? preventSharedRouteHandlerCaching(finalizedResponse)
+      : finalizedResponse;
   } catch (error) {
     const pendingCookies = options.getAndClearPendingCookies();
     const draftCookie = options.getDraftModeCookieHeader();

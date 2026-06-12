@@ -186,6 +186,10 @@ export async function isrSet(
   });
 }
 
+export async function isrDelete(key: string): Promise<void> {
+  await getCdnCacheAdapter().set(key, null);
+}
+
 export async function isrSetPrerenderedAppPage(
   key: string,
   data: CachedAppPageValue,

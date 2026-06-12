@@ -370,7 +370,12 @@ describe("app route handler execution helpers", () => {
       name: "middleware cookies",
       pendingCookies: [],
       draftCookie: null,
-      middlewareHeaders: new Headers([["set-cookie", "middleware=1; Path=/"]]),
+      middlewareHeaders: new Headers([
+        ["set-cookie", "middleware=1; Path=/"],
+        ["cache-control", "public, s-maxage=300"],
+        ["cdn-cache-control", "public, max-age=300"],
+        ["cache-tag", "unsafe-middleware-response"],
+      ]),
     },
   ])("skips shared route ISR for $name", async (testCase) => {
     const dynamicUsage = createDynamicUsageState();
@@ -422,6 +427,8 @@ describe("app route handler execution helpers", () => {
     expect(response.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cache-tag")).toBeNull();
   });
 
   it("skips cache writes and marks the route dynamic when a revalidating handler fetches with no-store", async () => {

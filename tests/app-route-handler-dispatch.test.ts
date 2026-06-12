@@ -48,6 +48,7 @@ describe("app route handler dispatch", () => {
       i18n: null,
       isDevelopment: false,
       isProduction: false,
+      async isrDelete() {},
       async isrGet() {
         throw new Error("invalid method should not read route cache");
       },
@@ -101,6 +102,7 @@ describe("app route handler dispatch", () => {
       i18n: null,
       isDevelopment: false,
       isProduction: false,
+      async isrDelete() {},
       async isrGet() {
         throw new Error("OPTIONS should not read route cache");
       },
@@ -138,6 +140,7 @@ describe("app route handler dispatch", () => {
       i18n: null,
       isDevelopment: false,
       isProduction: false,
+      async isrDelete() {},
       async isrGet() {
         throw new Error("DELETE should not read route cache");
       },
@@ -181,6 +184,7 @@ describe("app route handler dispatch", () => {
       i18n: null,
       isDevelopment: false,
       isProduction: true,
+      async isrDelete() {},
       async isrGet(key) {
         requestedCacheKey = key;
         return buildISRCacheEntry(buildCachedRouteValue("from-cache"));
@@ -243,6 +247,7 @@ describe("app route handler dispatch", () => {
       i18n: null,
       isDevelopment: false,
       isProduction: true,
+      async isrDelete() {},
       async isrGet() {
         return null;
       },
@@ -279,6 +284,7 @@ describe("app route handler dispatch", () => {
       i18n: null,
       isDevelopment: false,
       isProduction: true,
+      async isrDelete() {},
       async isrGet() {
         return buildISRCacheEntry(buildCachedRouteValue("stale"), true);
       },
@@ -336,6 +342,7 @@ describe("app route handler dispatch", () => {
       i18n: null,
       isDevelopment: false,
       isProduction: true,
+      async isrDelete() {},
       async isrGet() {
         throw new Error("force-dynamic handler should not read route cache");
       },
@@ -390,6 +397,7 @@ describe("app route handler dispatch", () => {
       i18n: null,
       isDevelopment: false,
       isProduction: false,
+      async isrDelete() {},
       async isrGet() {
         return null;
       },
@@ -443,6 +451,7 @@ describe("app route handler dispatch", () => {
       i18n: null,
       isDevelopment: false,
       isProduction: true,
+      async isrDelete() {},
       async isrGet() {
         return buildISRCacheEntry(buildCachedRouteValue("stale"), true);
       },

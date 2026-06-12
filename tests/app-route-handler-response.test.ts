@@ -220,28 +220,6 @@ describe("app route handler response helpers", () => {
     expect(value.headers["set-cookie"]).toBeUndefined();
   });
 
-  it("does not replay Set-Cookie from legacy APP_ROUTE cache values", async () => {
-    const restored = buildRouteHandlerCachedResponse(
-      {
-        kind: "APP_ROUTE",
-        body: new TextEncoder().encode("legacy cache").buffer,
-        status: 200,
-        headers: {
-          "content-type": "text/plain",
-          "set-cookie": ["victim-session=secret; Path=/; HttpOnly"],
-        },
-      },
-      {
-        cacheState: "HIT",
-        isHead: false,
-        revalidateSeconds: 60,
-      },
-    );
-
-    expect(restored.headers.getSetCookie()).toEqual([]);
-    await expect(restored.text()).resolves.toBe("legacy cache");
-  });
-
   it("finalizes route handler responses with cookies and auto-head semantics", async () => {
     const response = new Response("body", {
       status: 202,
