@@ -555,16 +555,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     makeThenableParams: options.makeThenableParams,
   });
   if (metadataRouteResponse) {
-    applyConfigHeadersToResponse(
-      metadataRouteResponse.headers,
-      {
-        basePathState,
-        configHeaders: options.configHeaders,
-        overwriteExisting: STATIC_METADATA_CONFIG_HEADER_OVERRIDES,
-        pathname: matchPathname(cleanPathname),
-        requestContext: preMiddlewareRequestContext,
-      },
-    );
+    applyConfigHeadersToResponse(metadataRouteResponse.headers, {
+      basePathState,
+      configHeaders: options.configHeaders,
+      overwriteExisting: STATIC_METADATA_CONFIG_HEADER_OVERRIDES,
+      pathname: matchPathname(cleanPathname),
+      requestContext: preMiddlewareRequestContext,
+    });
     return applyMiddlewareContextToResponse(metadataRouteResponse, middlewareContext);
   }
 
