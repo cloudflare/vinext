@@ -12,62 +12,15 @@ import * as React from "react";
 import {
   getClientNavigationState,
   getClientNavigationRenderContext,
+  getNavigationContext,
   type ClientNavigationRenderSnapshot,
 } from "../navigation.js";
 
 const isServer = typeof window === "undefined";
 
-// ─── Cross-module-instance server context access ────────────────────────────
-// These globals are the same symbols used by navigation.ts so that separate
-// Vite module instances (SSR entry vs "use client" component) still share
-// the same navigation state. See issue #688 in the vinext repo.
-
-type NavigationContext = {
-  pathname: string;
-  searchParams: URLSearchParams;
-  params: Record<string, string | string[]>;
-};
-
-const _GLOBAL_ACCESSORS_KEY = Symbol.for("vinext.navigation.globalAccessors");
-const _GLOBAL_HYDRATION_CONTEXT_KEY = Symbol.for("vinext.navigation.clientHydrationContext");
-
-type _GlobalWithAccessors = typeof globalThis & {
-  [_GLOBAL_ACCESSORS_KEY]?: {
-    getServerContext: () => NavigationContext | null;
-    setServerContext: (ctx: NavigationContext | null) => void;
-    getInsertedHTMLCallbacks: () => Array<() => unknown>;
-    clearInsertedHTMLCallbacks: () => void;
-  };
-};
-
-type _GlobalWithHydrationContext = typeof globalThis & {
-  [_GLOBAL_HYDRATION_CONTEXT_KEY]?: NavigationContext | null;
-};
-
-function _getGlobalAccessors(): _GlobalWithAccessors[typeof _GLOBAL_ACCESSORS_KEY] | undefined {
-  return (globalThis as _GlobalWithAccessors)[_GLOBAL_ACCESSORS_KEY];
-}
-
-function _getClientHydrationContext(): NavigationContext | null | undefined {
-  const globalState = globalThis as _GlobalWithHydrationContext;
-  if (Object.prototype.hasOwnProperty.call(globalState, _GLOBAL_HYDRATION_CONTEXT_KEY)) {
-    return globalState[_GLOBAL_HYDRATION_CONTEXT_KEY] ?? null;
-  }
-  return undefined;
-}
-
-let _serverContext: NavigationContext | null = null;
-
-function _getServerContext(): NavigationContext | null {
-  if (typeof window !== "undefined") {
-    const hydrationContext = _getClientHydrationContext();
-    return hydrationContext !== undefined ? hydrationContext : _serverContext;
-  }
-  const g = _getGlobalAccessors();
-  return g ? g.getServerContext() : _serverContext;
-}
-
 // ─── Pages Router compat ────────────────────────────────────────────────────
+// The Pages Router accessor is not exported from navigation.ts, so we duplicate
+// only this Symbol-based lookup here.
 
 type PagesNavigationContext = {
   pathname: string | null;
@@ -125,8 +78,11 @@ function useClientNavigationRenderSnapshot(): ClientNavigationRenderSnapshot | n
  * when the render is a missing-params shell — vinext does not yet implement
  * fallback-route-param detection, so this path is not currently reachable.
  *
- * Client: reads directly from the navigation snapshot or location without
- * subscribing to URL changes.
+ * Client: prefers the render snapshot **only during an active navigation**
+ * transition (`navigationSnapshotActiveCount > 0`) so the hook returns the
+ * pending URL, not the stale committed one. After commit, falls back to the
+ * cached pathname so user `pushState`/`replaceState` calls are immediately
+ * reflected.
  *
  * Used by `unstable_catchError` error boundaries to avoid unnecessary re-renders.
  *
@@ -135,13 +91,13 @@ function useClientNavigationRenderSnapshot(): ClientNavigationRenderSnapshot | n
 /* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
 export function useUntrackedPathname(): string | null {
   if (isServer) {
-    const ctx = _getServerContext();
+    const ctx = getNavigationContext();
     if (ctx) return ctx.pathname;
     const pagesCtx = _getPagesNavigationContext();
     return pagesCtx ? pagesCtx.pathname : "/";
   }
   const renderSnapshot = useClientNavigationRenderSnapshot();
-  if (renderSnapshot) {
+  if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
     return renderSnapshot.pathname;
   }
   const pagesCtx = _getPagesNavigationContext();
