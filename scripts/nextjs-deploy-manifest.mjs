@@ -58,6 +58,22 @@ function isAppDirSuite(suite) {
  */
 const APP_ROUTER_NON_APP_DIR_SUITES = ["test/e2e/next-form/default/next-form-prefetch.test.ts"];
 
+/**
+ * Suites that cannot work with Next.js's custom deploy adapter contract.
+ *
+ * `NextDeployInstance` invokes `NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH` once during
+ * deployment setup and stores the returned text as an immutable `cliOutput`
+ * snapshot. This suite makes a request after setup and waits for the resulting
+ * runtime warning to appear in `cliOutput`, so no custom deploy adapter can
+ * satisfy it even when the deployed server logs the correct warning.
+ *
+ * Upstream suite:
+ * https://github.com/vercel/next.js/blob/canary/test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts
+ */
+const CUSTOM_DEPLOY_ADAPTER_INCOMPATIBLE_SUITES = [
+  "test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts",
+];
+
 async function main() {
   const positionals = [];
   let filter = "all";
@@ -124,7 +140,13 @@ async function main() {
     include = matches.map(matchToInclude);
   }
 
-  const exclude = Array.from(new Set([...(source.rules?.exclude ?? []), ...extraExcludes]));
+  const exclude = Array.from(
+    new Set([
+      ...(source.rules?.exclude ?? []),
+      ...extraExcludes,
+      ...CUSTOM_DEPLOY_ADAPTER_INCOMPATIBLE_SUITES,
+    ]),
+  );
 
   const manifest = {
     version: 2,
