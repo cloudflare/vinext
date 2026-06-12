@@ -31,7 +31,7 @@ const Page = ({ id }) => {
       />
       <p>{ready ? "routeChangeComplete" : "loading"}</p>
       <Link
-        href={`/${id + 1}`}
+        href={`/${Number(id) + 1}`}
         id="link"
         style={{
           marginLeft: 5000,

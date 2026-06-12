@@ -2332,6 +2332,9 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
       // Reading window scroll here is only correct because manualScrollRestoration
       // implies history.scrollRestoration = "manual", so the browser hasn't yet
       // moved the viewport to the target entry's position when popstate fires.
+      // Snapshotting eagerly (before the beforePopState gate below) is
+      // intentional: if the traversal is cancelled the app stays on
+      // `currentKey`, so the saved value is still that entry's live scroll.
       saveScrollPositionToSessionStorage(currentKey, getWindowScrollPosition());
     }
 
