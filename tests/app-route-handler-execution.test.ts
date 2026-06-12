@@ -549,7 +549,15 @@ describe("app route handler execution helpers", () => {
       async isrSet() {},
       markDynamicUsage: dynamicUsage.markDynamicUsage,
       method: "GET",
-      middlewareContext: { headers: null, status: null },
+      middlewareContext: {
+        headers: new Headers([
+          ["set-cookie", "redirect=1; Path=/; HttpOnly"],
+          ["cache-control", "public, s-maxage=300"],
+          ["cdn-cache-control", "public, max-age=300"],
+          ["cache-tag", "unsafe-redirect"],
+        ]),
+        status: null,
+      },
       params: {},
       reportRequestError(error) {
         reportedErrors.push(error);
@@ -564,6 +572,12 @@ describe("app route handler execution helpers", () => {
 
     expect(redirectResponse.status).toBe(308);
     expect(redirectResponse.headers.get("location")).toBe("https://example.com/target");
+    expect(redirectResponse.headers.getSetCookie()).toEqual(["redirect=1; Path=/; HttpOnly"]);
+    expect(redirectResponse.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(redirectResponse.headers.get("cdn-cache-control")).toBeNull();
+    expect(redirectResponse.headers.get("cache-tag")).toBeNull();
     expect(reportedErrors).toEqual([]);
 
     const errorResponse = await executeAppRouteHandler({
@@ -595,7 +609,15 @@ describe("app route handler execution helpers", () => {
       async isrSet() {},
       markDynamicUsage: dynamicUsage.markDynamicUsage,
       method: "GET",
-      middlewareContext: { headers: null, status: null },
+      middlewareContext: {
+        headers: new Headers([
+          ["set-cookie", "error=1; Path=/; HttpOnly"],
+          ["cache-control", "public, s-maxage=300"],
+          ["cdn-cache-control", "public, max-age=300"],
+          ["cache-tag", "unsafe-error"],
+        ]),
+        status: null,
+      },
       params: {},
       reportRequestError(error) {
         reportedErrors.push(error);
@@ -609,6 +631,12 @@ describe("app route handler execution helpers", () => {
     });
 
     expect(errorResponse.status).toBe(500);
+    expect(errorResponse.headers.getSetCookie()).toEqual(["error=1; Path=/; HttpOnly"]);
+    expect(errorResponse.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(errorResponse.headers.get("cdn-cache-control")).toBeNull();
+    expect(errorResponse.headers.get("cache-tag")).toBeNull();
     expect(reportedErrors.map((error) => error.message)).toEqual(["boom"]);
 
     errorSpy.mockRestore();

@@ -21,7 +21,6 @@ import {
   buildAppRouteCacheValue,
   finalizeRouteHandlerResponse,
   markRouteHandlerCacheMiss,
-  preventSharedRouteHandlerCaching,
   type RouteHandlerMiddlewareContext,
 } from "./app-route-handler-response.js";
 import {
@@ -248,7 +247,7 @@ export async function executeAppRouteHandler(
 
     options.clearRequestContext();
 
-    const finalizedResponse = applyRouteHandlerMiddlewareContext(
+    return applyRouteHandlerMiddlewareContext(
       finalizeRouteHandlerResponse(response, {
         pendingCookies,
         draftCookie,
@@ -256,10 +255,6 @@ export async function executeAppRouteHandler(
       }),
       options.middlewareContext,
     );
-
-    return hasResponseCookies
-      ? preventSharedRouteHandlerCaching(finalizedResponse)
-      : finalizedResponse;
   } catch (error) {
     const pendingCookies = options.getAndClearPendingCookies();
     const draftCookie = options.getDraftModeCookieHeader();

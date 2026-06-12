@@ -49,17 +49,23 @@ export function applyRouteHandlerMiddlewareContext(
   middlewareContext: RouteHandlerMiddlewareContext,
 ): Response {
   if (!middlewareContext.headers && middlewareContext.status == null) {
-    return response;
+    return response.headers.has("set-cookie")
+      ? preventSharedRouteHandlerCaching(response)
+      : response;
   }
 
   const responseHeaders = new Headers(response.headers);
   mergeMiddlewareResponseHeaders(responseHeaders, middlewareContext.headers);
 
-  return new Response(response.body, {
+  const mergedResponse = new Response(response.body, {
     status: middlewareContext.status ?? response.status,
     statusText: response.statusText,
     headers: responseHeaders,
   });
+
+  return mergedResponse.headers.has("set-cookie")
+    ? preventSharedRouteHandlerCaching(mergedResponse)
+    : mergedResponse;
 }
 
 export function assertSupportedAppRouteHandlerResponse(response: Response): void {

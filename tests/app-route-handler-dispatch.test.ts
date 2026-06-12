@@ -59,7 +59,13 @@ describe("app route handler dispatch", () => {
         throw new Error("invalid method should not write route cache");
       },
       middlewareContext: {
-        headers: new Headers([["x-middleware", "present"]]),
+        headers: new Headers([
+          ["x-middleware", "present"],
+          ["set-cookie", "method-error=1; Path=/; HttpOnly"],
+          ["cache-control", "public, s-maxage=300"],
+          ["cdn-cache-control", "public, max-age=300"],
+          ["cache-tag", "unsafe-method-error"],
+        ]),
         status: null,
       },
       middlewareRequestHeaders: null,
@@ -74,6 +80,14 @@ describe("app route handler dispatch", () => {
 
     expect(invalidMethodResponse.status).toBe(400);
     expect(invalidMethodResponse.headers.get("x-middleware")).toBe("present");
+    expect(invalidMethodResponse.headers.getSetCookie()).toEqual([
+      "method-error=1; Path=/; HttpOnly",
+    ]);
+    expect(invalidMethodResponse.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(invalidMethodResponse.headers.get("cdn-cache-control")).toBeNull();
+    expect(invalidMethodResponse.headers.get("cache-tag")).toBeNull();
     await expect(invalidMethodResponse.text()).resolves.toBe("");
     expect(clearCount).toBe(1);
   });

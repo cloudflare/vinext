@@ -8,7 +8,6 @@ import {
   assertSupportedAppRouteHandlerResponse,
   buildAppRouteCacheValue,
   buildRouteHandlerCachedResponse,
-  preventSharedRouteHandlerCaching,
 } from "./app-route-handler-response.js";
 import { markKnownDynamicAppRoute } from "./app-route-handler-runtime.js";
 import { makeThenableParams } from "vinext/shims/thenable-params";
@@ -81,16 +80,6 @@ function hasCachedSetCookie(value: CachedRouteValue): boolean {
   return Object.keys(value.headers).some((key) => key.toLowerCase() === "set-cookie");
 }
 
-function applyCachedRouteHandlerMiddlewareContext(
-  response: Response,
-  middlewareContext: RouteHandlerMiddlewareContext,
-): Response {
-  const finalizedResponse = applyRouteHandlerMiddlewareContext(response, middlewareContext);
-  return finalizedResponse.headers.has("set-cookie")
-    ? preventSharedRouteHandlerCaching(finalizedResponse)
-    : finalizedResponse;
-}
-
 export async function readAppRouteHandlerCacheResponse(
   options: ReadAppRouteHandlerCacheOptions,
 ): Promise<Response | null> {
@@ -109,7 +98,7 @@ export async function readAppRouteHandlerCacheResponse(
     if (cachedValue && !cached?.isStale) {
       options.isrDebug?.("HIT (route)", options.cleanPathname);
       options.clearRequestContext();
-      return applyCachedRouteHandlerMiddlewareContext(
+      return applyRouteHandlerMiddlewareContext(
         buildRouteHandlerCachedResponse(cachedValue, {
           cacheState: "HIT",
           cacheControl: cached?.value.cacheControl,
@@ -186,7 +175,7 @@ export async function readAppRouteHandlerCacheResponse(
 
       options.isrDebug?.("STALE (route)", options.cleanPathname);
       options.clearRequestContext();
-      return applyCachedRouteHandlerMiddlewareContext(
+      return applyRouteHandlerMiddlewareContext(
         buildRouteHandlerCachedResponse(staleValue, {
           cacheState: "STALE",
           cacheControl: cached.value.cacheControl,
