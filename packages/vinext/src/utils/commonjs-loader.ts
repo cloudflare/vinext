@@ -40,6 +40,9 @@ export function shouldRetryAsCommonJs(error: unknown, resolvedPath: string): boo
   if (!match || !error.stack) return false;
 
   const identifier = match[1];
+  // This validation intentionally assumes the executed config/plugin source
+  // is byte-identical to the on-disk file. Current callers load raw user files;
+  // transformed modules should not use this fallback without source-map logic.
   for (const line of error.stack.split("\n").slice(1)) {
     const location = line.match(/(?:\(|at )(.+):(\d+):(\d+)\)?$/);
     if (!location) continue;
@@ -56,7 +59,7 @@ export function shouldRetryAsCommonJs(error: unknown, resolvedPath: string): boo
       continue;
     }
     const column = Number(columnNumberText) - 1;
-    return sourceLine?.slice(column, column + identifier.length) === identifier;
+    if (sourceLine?.slice(column, column + identifier.length) === identifier) return true;
   }
 
   return false;
@@ -83,6 +86,10 @@ function compileCommonJsModule(resolvedPath: string, parent?: Module): unknown {
     }
 
     if (dependencyPath.endsWith(".cjs")) {
+      // Keep `.cjs` modules inside this loader so their deferred `require()`
+      // calls retain the same `.js` fallback and share Node's module cache.
+      // This deliberately bypasses third-party `require.extensions[".cjs"]`
+      // hooks; the supported config/plugin paths are raw JavaScript modules.
       return compileCommonJsModule(dependencyPath, mod);
     }
 
