@@ -590,6 +590,58 @@ describe("validateServerActionPayload", () => {
     expect(res!.status).toBe(400);
     await expect(res!.text()).resolves.toBe("Invalid server action payload");
   });
+
+  it("validates the first hex chunk id in container references with path suffixes", async () => {
+    for (const reference of ["$Q1:x", "$W1:0:name", "$i1:value"]) {
+      const body = new FormData();
+      body.set("0", JSON.stringify([reference]));
+
+      const res = await validateServerActionPayload(body);
+      expect(res?.status).toBe(400);
+      await expect(res?.text()).resolves.toBe("Invalid server action payload");
+    }
+  });
+
+  it("validates the first duplicate numeric field instead of overwriting it", async () => {
+    const body = new FormData();
+    body.append("0", '["$Q1"]');
+    body.append("0", "[]");
+
+    const res = await validateServerActionPayload(body);
+    expect(res?.status).toBe(400);
+    await expect(res?.text()).resolves.toBe("Invalid server action payload");
+  });
+
+  it("allows duplicate numeric user fields when the first value has no container reference", async () => {
+    const body = new FormData();
+    body.append("0", "first checkbox");
+    body.append("0", "second checkbox");
+
+    await expect(validateServerActionPayload(body)).resolves.toBeNull();
+  });
+
+  it("rejects deeply nested acyclic graphs without overflowing the call stack", async () => {
+    const body = new FormData();
+    const fieldCount = 10_000;
+    for (let index = 0; index < fieldCount; index++) {
+      body.set(String(index), index + 1 < fieldCount ? `["$Q${(index + 1).toString(16)}"]` : "[]");
+    }
+
+    const res = await validateServerActionPayload(body);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(400);
+    await expect(res!.text()).resolves.toBe("Invalid server action payload");
+  });
+
+  it("allows valid container graphs below the depth limit", async () => {
+    const body = new FormData();
+    const fieldCount = 128;
+    for (let index = 0; index < fieldCount; index++) {
+      body.set(String(index), index + 1 < fieldCount ? `["$Q${(index + 1).toString(16)}"]` : "[]");
+    }
+
+    await expect(validateServerActionPayload(body)).resolves.toBeNull();
+  });
 });
 
 // ── validateImageUrl ────────────────────────────────────────────────────

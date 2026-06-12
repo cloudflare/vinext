@@ -410,30 +410,46 @@ export function validateCsrfOrigin(
 export async function validateServerActionPayload(
   body: string | FormData,
 ): Promise<Response | null> {
-  const containerRefRe = /"\$([QWi])(\d+)"/g;
+  const maxNumericFields = 4096;
+  const maxContainerReferences = 16384;
+  const maxContainerDepth = 1024;
+  const containerRefRe = /"\$([QWi])([0-9a-f]+)(?=[:"])/gi;
   const fieldRefs = new Map<string, Set<string>>();
+  let referenceCount = 0;
 
-  const collectRefs = (fieldKey: string, text: string): void => {
+  const invalidPayloadResponse = (): Response =>
+    new Response("Invalid server action payload", {
+      status: 400,
+      headers: { "Content-Type": "text/plain" },
+    });
+
+  const collectRefs = (fieldKey: string, text: string): boolean => {
+    if (fieldRefs.has(fieldKey)) return true;
+    if (fieldRefs.size >= maxNumericFields) return false;
+
     const refs = new Set<string>();
     let match: RegExpExecArray | null;
     containerRefRe.lastIndex = 0;
     while ((match = containerRefRe.exec(text)) !== null) {
-      refs.add(match[2]);
+      const previousSize = refs.size;
+      refs.add(String(Number.parseInt(match[2], 16)));
+      if (refs.size !== previousSize && ++referenceCount > maxContainerReferences) return false;
     }
     fieldRefs.set(fieldKey, refs);
+    return true;
   };
 
   if (typeof body === "string") {
-    collectRefs("0", body);
+    if (!collectRefs("0", body)) return invalidPayloadResponse();
   } else {
     for (const [key, value] of body.entries()) {
       if (!/^\d+$/.test(key)) continue;
       if (typeof value === "string") {
-        collectRefs(key, value);
+        if (!collectRefs(key, value)) return invalidPayloadResponse();
         continue;
       }
       if (typeof value?.text === "function") {
-        collectRefs(key, await value.text());
+        if (!collectRefs(key, await value.text())) return invalidPayloadResponse();
       }
     }
   }
@@ -444,36 +460,36 @@ export async function validateServerActionPayload(
   for (const refs of fieldRefs.values()) {
     for (const ref of refs) {
       if (!knownFields.has(ref)) {
-        return new Response("Invalid server action payload", {
-          status: 400,
-          headers: { "Content-Type": "text/plain" },
-        });
+        return invalidPayloadResponse();
       }
     }
   }
 
-  const visited = new Set<string>();
-  const stack = new Set<string>();
+  const state = new Map<string, "visiting" | "visited">();
 
-  const hasCycle = (node: string): boolean => {
-    if (stack.has(node)) return true;
-    if (visited.has(node)) return false;
+  for (const root of fieldRefs.keys()) {
+    if (state.has(root)) continue;
 
-    visited.add(node);
-    stack.add(node);
-    for (const ref of fieldRefs.get(node) ?? []) {
-      if (hasCycle(ref)) return true;
-    }
-    stack.delete(node);
-    return false;
-  };
+    const stack = [{ node: root, refs: [...(fieldRefs.get(root) ?? [])], nextRef: 0 }];
+    state.set(root, "visiting");
 
-  for (const node of fieldRefs.keys()) {
-    if (hasCycle(node)) {
-      return new Response("Invalid server action payload", {
-        status: 400,
-        headers: { "Content-Type": "text/plain" },
-      });
+    while (stack.length > 0) {
+      if (stack.length > maxContainerDepth) return invalidPayloadResponse();
+
+      const frame = stack[stack.length - 1];
+      const ref = frame.refs[frame.nextRef++];
+      if (ref === undefined) {
+        state.set(frame.node, "visited");
+        stack.pop();
+        continue;
+      }
+
+      const refState = state.get(ref);
+      if (refState === "visiting") return invalidPayloadResponse();
+      if (refState === "visited") continue;
+
+      state.set(ref, "visiting");
+      stack.push({ node: ref, refs: [...(fieldRefs.get(ref) ?? [])], nextRef: 0 });
     }
   }
 

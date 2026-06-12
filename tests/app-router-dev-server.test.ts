@@ -2071,7 +2071,7 @@ describe("App Router integration", () => {
     expect(await res.text()).toBe("Server action not found.");
   });
 
-  it("rejects cyclic multipart server action payloads before decodeReply", async () => {
+  it("returns action-not-found before reading cyclic multipart payloads for stale ids", async () => {
     const body = new FormData();
     body.set("0", '["$Q0"]');
 
@@ -2086,8 +2086,9 @@ describe("App Router integration", () => {
       signal: AbortSignal.timeout(5_000),
     });
 
-    expect(res.status).toBe(400);
-    expect(await res.text()).toBe("Invalid server action payload");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await res.text()).toBe("Server action not found.");
   });
 
   it("blocks server action POST with Origin 'null' (CSRF via sandboxed context)", async () => {

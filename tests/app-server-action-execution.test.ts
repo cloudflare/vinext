@@ -20,7 +20,12 @@ import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
-import { refresh, revalidatePath, revalidateTag } from "../packages/vinext/src/shims/cache.js";
+import {
+  getAndClearActionRevalidationKind,
+  refresh,
+  revalidatePath,
+  revalidateTag,
+} from "../packages/vinext/src/shims/cache.js";
 import {
   cookies,
   setHeadersAccessPhase,
@@ -469,6 +474,54 @@ describe("app server action execution helpers", () => {
     expect((renderedModel.get().returnValue.data as Error).message).toContain("Body exceeded");
   });
 
+  it("bounds chunked multipart bodies after resolving a valid action", async () => {
+    const loadServerAction = vi.fn(() => Promise.resolve(() => "ok"));
+    const renderedModel = captureRenderedModel();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        contentType: "multipart/form-data; boundary=VINEXTDOS",
+        loadServerAction,
+        readFormDataWithLimit() {
+          throw new Error("Request body too large");
+        },
+        renderToReadableStream: renderedModel.capture,
+      }),
+    );
+
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("content-type")).toBe("text/x-component");
+    expect(loadServerAction).toHaveBeenCalledTimes(1);
+    expect(renderedModel.get().returnValue.ok).toBe(false);
+    expect((renderedModel.get().returnValue.data as Error).message).toContain("Body exceeded");
+  });
+
+  it("rejects declared-oversized stale multipart actions before action lookup", async () => {
+    const loadServerAction = vi.fn();
+    const readFormDataWithLimit = vi.fn();
+    const renderedModel = captureRenderedModel();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        actionId: "stale-action-id",
+        contentType: "multipart/form-data; boundary=VINEXTDOS",
+        loadServerAction,
+        maxActionBodySize: 10,
+        readFormDataWithLimit,
+        renderToReadableStream: renderedModel.capture,
+        request: createFetchActionRequest({
+          "content-length": "11",
+          "content-type": "multipart/form-data; boundary=VINEXTDOS",
+        }),
+      }),
+    );
+
+    expect(response?.status).toBe(500);
+    expect(loadServerAction).not.toHaveBeenCalled();
+    expect(readFormDataWithLimit).not.toHaveBeenCalled();
+    expect(renderedModel.get().returnValue.ok).toBe(false);
+  });
+
   it("rejects malformed action payloads before decoding the action", async () => {
     const formData = new FormData();
     formData.set("0", '"$Q1"');
@@ -488,6 +541,30 @@ describe("app server action execution helpers", () => {
     expect(response.status).toBe(400);
     expect(await response.text()).toBe("Invalid server action payload");
     expect(decodeAction).not.toHaveBeenCalled();
+  });
+
+  it("clears pending cookies and revalidation state for rejected progressive payloads", async () => {
+    const formData = new FormData();
+    formData.set("0", '"$Q1:x"');
+    const getAndClearPendingCookies = vi.fn(() => ["session=stale"]);
+    const previousPhase = setHeadersAccessPhase("action");
+    await revalidatePath("/stale");
+    setHeadersAccessPhase(previousPhase);
+
+    const response = requireProgressiveActionResponse(
+      await handleProgressiveServerActionRequest(
+        createOptions({
+          getAndClearPendingCookies,
+          readFormDataWithLimit() {
+            return Promise.resolve(formData);
+          },
+        }),
+      ),
+    );
+
+    expect(response.status).toBe(400);
+    expect(getAndClearPendingCookies).toHaveBeenCalledTimes(1);
+    expect(getAndClearActionRevalidationKind()).toBe(0);
   });
 
   it("executes decoded form actions and converts redirects into 303 responses", async () => {
@@ -1400,6 +1477,69 @@ describe("app server action execution helpers", () => {
     expect(decodeReply).not.toHaveBeenCalled();
   });
 
+  it("rejects adversarial multipart payloads through the real request reader", async () => {
+    const formData = new FormData();
+    formData.append("0", '["$Q1:x"]');
+    formData.append("0", "[]");
+    const request = createMultipartBodyRequest(formData);
+    const decodeReply = vi.fn();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        contentType: request.headers.get("content-type") ?? "",
+        decodeReply,
+        maxActionBodySize: 1024 * 1024,
+        readFormDataWithLimit: readActionFormDataWithLimit,
+        request,
+      }),
+    );
+
+    expect(response?.status).toBe(400);
+    expect(await response?.text()).toBe("Invalid server action payload");
+    expect(decodeReply).not.toHaveBeenCalled();
+  });
+
+  it("rejects cyclic multipart graphs for valid action ids", async () => {
+    const formData = new FormData();
+    formData.set("0", '["$Q0"]');
+    const request = createMultipartBodyRequest(formData);
+    const decodeReply = vi.fn();
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        contentType: request.headers.get("content-type") ?? "",
+        decodeReply,
+        maxActionBodySize: 1024 * 1024,
+        readFormDataWithLimit: readActionFormDataWithLimit,
+        request,
+      }),
+    );
+
+    expect(response?.status).toBe(400);
+    expect(await response?.text()).toBe("Invalid server action payload");
+    expect(decodeReply).not.toHaveBeenCalled();
+  });
+
+  it("clears pending cookies and revalidation state for rejected fetch payloads", async () => {
+    const getAndClearPendingCookies = vi.fn(() => ["session=stale"]);
+    const previousPhase = setHeadersAccessPhase("action");
+    await revalidatePath("/stale");
+    setHeadersAccessPhase(previousPhase);
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        getAndClearPendingCookies,
+        readBodyWithLimit() {
+          return Promise.resolve('{"0":"$Q1:x"}');
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(400);
+    expect(getAndClearPendingCookies).toHaveBeenCalledTimes(1);
+    expect(getAndClearActionRevalidationKind()).toBe(0);
+  });
+
   // Regression coverage for #1340: realistic action ids include `#<exportName>`,
   // but @vitejs/plugin-rsc's reference-validation virtual module only knows the
   // module path portion. The dev-mode "invalid server reference '<id>'" error
@@ -1441,6 +1581,7 @@ describe("app server action execution helpers", () => {
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
   it("returns the Next.js action-not-found response for stale fetch action ids", async () => {
     const decodeReply = vi.fn();
+    const readFormDataWithLimit = vi.fn();
     const renderToReadableStream = vi.fn();
     const reportRequestError = vi.fn();
     const clearRequestContext = vi.fn();
@@ -1449,10 +1590,12 @@ describe("app server action execution helpers", () => {
       createRscOptions({
         actionId: "stale-action-id",
         clearRequestContext,
+        contentType: "multipart/form-data; boundary=VINEXTDOS",
         decodeReply,
         loadServerAction() {
           return Promise.reject(new Error("[vite-rsc] invalid server reference 'stale-action-id'"));
         },
+        readFormDataWithLimit,
         renderToReadableStream,
         reportRequestError,
       }),
@@ -1462,6 +1605,7 @@ describe("app server action execution helpers", () => {
     expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
     expect(response?.headers.get("content-type")).toBe("text/plain");
     expect(await response?.text()).toBe("Server action not found.");
+    expect(readFormDataWithLimit).not.toHaveBeenCalled();
     expect(decodeReply).not.toHaveBeenCalled();
     expect(renderToReadableStream).not.toHaveBeenCalled();
     expect(reportRequestError).not.toHaveBeenCalled();

@@ -320,6 +320,11 @@ function resolveActionRevalidationKind(hasModifiedCookies: boolean): ActionReval
   return revalidationKind;
 }
 
+function clearRejectedActionSideEffects(getAndClearPendingCookies: () => string[]): void {
+  getAndClearPendingCookies();
+  getAndClearActionRevalidationKind();
+}
+
 function cloneActionRedirectHeaders(requestHeaders: Headers): Headers {
   const headers = new Headers(requestHeaders);
   for (const header of ACTION_REDIRECT_RENDER_STRIPPED_HEADERS) {
@@ -791,6 +796,7 @@ export async function handleProgressiveServerActionRequest(
 
     const payloadResponse = await validateServerActionPayload(body);
     if (payloadResponse) {
+      clearRejectedActionSideEffects(options.getAndClearPendingCookies);
       options.clearRequestContext();
       return payloadResponse;
     }
@@ -1037,6 +1043,31 @@ export async function handleServerActionRscRequest<
   }
 
   try {
+    let action: AppServerActionFunction | undefined;
+    if (options.contentType.startsWith("multipart/form-data")) {
+      let loadedAction: unknown;
+      try {
+        loadedAction = await options.loadServerAction(options.actionId);
+      } catch (error) {
+        if (isServerActionNotFoundError(error, options.actionId)) {
+          return createActionNotFoundResponse(options.actionId, {
+            clearRequestContext: options.clearRequestContext,
+            getAndClearPendingCookies: options.getAndClearPendingCookies,
+          });
+        }
+
+        throw error;
+      }
+
+      if (!isAppServerActionFunction(loadedAction)) {
+        return createActionNotFoundResponse(options.actionId, {
+          clearRequestContext: options.clearRequestContext,
+          getAndClearPendingCookies: options.getAndClearPendingCookies,
+        });
+      }
+      action = loadedAction;
+    }
+
     let body: string | FormData;
     try {
       body = options.contentType.startsWith("multipart/form-data")
@@ -1051,29 +1082,33 @@ export async function handleServerActionRscRequest<
 
     const payloadResponse = await validateServerActionPayload(body);
     if (payloadResponse) {
+      clearRejectedActionSideEffects(options.getAndClearPendingCookies);
       options.clearRequestContext();
       return payloadResponse;
     }
 
-    let action: unknown;
-    try {
-      action = await options.loadServerAction(options.actionId);
-    } catch (error) {
-      if (isServerActionNotFoundError(error, options.actionId)) {
+    if (action === undefined) {
+      let loadedAction: unknown;
+      try {
+        loadedAction = await options.loadServerAction(options.actionId);
+      } catch (error) {
+        if (isServerActionNotFoundError(error, options.actionId)) {
+          return createActionNotFoundResponse(options.actionId, {
+            clearRequestContext: options.clearRequestContext,
+            getAndClearPendingCookies: options.getAndClearPendingCookies,
+          });
+        }
+
+        throw error;
+      }
+
+      if (!isAppServerActionFunction(loadedAction)) {
         return createActionNotFoundResponse(options.actionId, {
           clearRequestContext: options.clearRequestContext,
           getAndClearPendingCookies: options.getAndClearPendingCookies,
         });
       }
-
-      throw error;
-    }
-
-    if (!isAppServerActionFunction(action)) {
-      return createActionNotFoundResponse(options.actionId, {
-        clearRequestContext: options.clearRequestContext,
-        getAndClearPendingCookies: options.getAndClearPendingCookies,
-      });
+      action = loadedAction;
     }
 
     const temporaryReferences = options.createTemporaryReferenceSet();
