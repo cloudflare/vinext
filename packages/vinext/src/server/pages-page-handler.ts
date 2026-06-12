@@ -41,6 +41,7 @@ import {
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { reportRequestError } from "./instrumentation.js";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
+import { hasCdnSensitiveRequestHeaders } from "vinext/shims/cdn-cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js";
@@ -182,6 +183,7 @@ type RenderPageOptions = {
   __isInternalErrorRender?: boolean;
   __forcedRoute?: PageRoute;
   err?: unknown;
+  cdnCacheRequestDependent?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -380,6 +382,9 @@ export function createPagesPageHandler(
     const { route, params } = match;
     const uCtx = createRequestContext({
       executionContext: getRequestExecutionContext(),
+      cdnCacheRequestDependent:
+        options?.cdnCacheRequestDependent === true ||
+        hasCdnSensitiveRequestHeaders(request.headers),
     });
 
     return runWithRequestContext(uCtx, async () => {

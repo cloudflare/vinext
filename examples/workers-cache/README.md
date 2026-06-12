@@ -79,6 +79,11 @@ namespace binding — both are configured there.
    header listing both the bare path (`/cached/intro`) and Next.js's internal
    `_N_T_<path>` form. The Workers Cache reads these to cache and tag-purge.
 
+   Responses influenced by `Cookie`, `Authorization`, Cloudflare Access identity
+   headers, or user middleware instead carry `Cache-Control: no-store` and no
+   `CDN-Cache-Control`. This prevents an authenticated request from filling an
+   outer-edge cache entry reusable by an unauthenticated request.
+
 5. **`revalidateTag` / `revalidatePath`** in your route handlers fan out to
    both the KV data cache and `ctx.cache.purge(...)` on the platform layer.
 

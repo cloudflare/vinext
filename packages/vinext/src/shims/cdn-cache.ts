@@ -31,6 +31,7 @@ import {
   type IncrementalCacheValue,
 } from "./cache.js";
 import { getRequestExecutionContext } from "./request-context.js";
+import { getRequestContext, isInsideUnifiedScope } from "./unified-request-context.js";
 // The edge adapter lives with the Cloudflare integration; the resolver below
 // imports it to use as the built-in default when a request-context host cache
 // is present.
@@ -64,7 +65,27 @@ export type CdnCacheableHeaderInput = {
    * The default adapter ignores them.
    */
   tags?: readonly string[];
+  /** True when credentials or middleware influenced the current request. */
+  requestDependent?: boolean;
 };
+
+const CREDENTIAL_HEADERS = new Set(["authorization", "cookie"]);
+
+export function hasCdnSensitiveRequestHeaders(headers: Headers): boolean {
+  for (const [name] of headers) {
+    const normalized = name.toLowerCase();
+    if (CREDENTIAL_HEADERS.has(normalized) || normalized.startsWith("cf-access-")) return true;
+  }
+  return false;
+}
+
+export function markCdnCacheRequestDependent(): void {
+  if (isInsideUnifiedScope()) getRequestContext().cdnCacheRequestDependent = true;
+}
+
+export function isCdnCacheRequestDependent(): boolean {
+  return isInsideUnifiedScope() && getRequestContext().cdnCacheRequestDependent;
+}
 
 /**
  * The serving strategy for page-level ISR. Implement this to delegate

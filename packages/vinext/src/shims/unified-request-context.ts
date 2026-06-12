@@ -41,6 +41,9 @@ export type UnifiedRequestContext = {
   /** Cloudflare Workers ExecutionContext, or null on Node.js dev. */
   executionContext: ExecutionContextLike | null;
 
+  /** Whether credentials or user middleware make this response unsafe for a shared CDN cache. */
+  cdnCacheRequestDependent: boolean;
+
   // ── cache-for-request.ts ──────────────────────────────────────────
   /** Per-request cache for cacheForRequest(). Keyed by factory function reference. */
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
@@ -72,6 +75,10 @@ function _getInheritedExecutionContext(): ExecutionContextLike | null {
     | AsyncLocalStorage<ExecutionContextLike | null>
     | undefined;
   return executionContextAls?.getStore() ?? null;
+}
+
+function _getInheritedCdnCacheRequestDependent(): boolean {
+  return _als.getStore()?.cdnCacheRequestDependent ?? false;
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +116,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     isFetchDedupeActive: false,
     currentFetchDedupeEntries: new Map(),
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
+    cdnCacheRequestDependent: _getInheritedCdnCacheRequestDependent(),
     requestCache: new WeakMap(),
     ssrContext: null,
     ssrHeadChildren: [],

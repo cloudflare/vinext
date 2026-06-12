@@ -15,6 +15,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test"
 import {
   DefaultCdnCacheAdapter,
   getCdnCacheAdapter,
+  hasCdnSensitiveRequestHeaders,
+  markCdnCacheRequestDependent,
   setCdnCacheAdapter,
   type CdnCacheAdapter,
   type CdnCacheableHeaderInput,
@@ -38,6 +40,12 @@ import {
   buildPagesCacheValue,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { setHeadersAccessPhase } from "../packages/vinext/src/shims/headers.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 
 function resetAdapters(): void {
   setDataCacheHandler(new MemoryCacheHandler());
@@ -146,6 +154,85 @@ class EdgeCdnAdapter implements CdnCacheAdapter {
 }
 
 describe("edge CDN adapter integration", () => {
+  it.each([
+    ["Cookie", "session=admin"],
+    ["Authorization", "Bearer secret"],
+    ["CF-Access-Jwt-Assertion", "signed-identity"],
+    ["CF-Access-Authenticated-User-Email", "admin@example.com"],
+  ])("does not publish ISR responses dependent on %s", async (name, value) => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = new Request("https://example.com/admin", { headers: { [name]: value } });
+    const responseHeaders = new Headers();
+
+    await runWithRequestContext(
+      createRequestContext({
+        cdnCacheRequestDependent: hasCdnSensitiveRequestHeaders(request.headers),
+      }),
+      () => {
+        applyCdnResponseHeaders(responseHeaders, {
+          cacheControl: "s-maxage=300, stale-while-revalidate",
+          tags: ["admin"],
+        });
+      },
+    );
+
+    expect(responseHeaders.get("Cache-Control")).toBe("no-store");
+    expect(responseHeaders.get("CDN-Cache-Control")).toBeNull();
+    expect(responseHeaders.get("Cache-Tag")).toBeNull();
+  });
+
+  it("does not publish a middleware-approved ISR response to the outer edge cache", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const responseHeaders = new Headers();
+
+    await runWithRequestContext(createRequestContext(), () => {
+      markCdnCacheRequestDependent();
+      applyCdnResponseHeaders(responseHeaders, {
+        cacheControl: "s-maxage=300, stale-while-revalidate",
+        tags: ["admin"],
+      });
+    });
+
+    expect(responseHeaders.get("Cache-Control")).toBe("no-store");
+    expect(responseHeaders.get("CDN-Cache-Control")).toBeNull();
+    expect(responseHeaders.get("Cache-Tag")).toBeNull();
+  });
+
+  it("preserves middleware dependence across nested render contexts", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const responseHeaders = new Headers();
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      markCdnCacheRequestDependent();
+      await runWithRequestContext(createRequestContext(), () => {
+        applyCdnResponseHeaders(responseHeaders, {
+          cacheControl: "s-maxage=300, stale-while-revalidate",
+        });
+      });
+    });
+
+    expect(responseHeaders.get("Cache-Control")).toBe("no-store");
+    expect(responseHeaders.get("CDN-Cache-Control")).toBeNull();
+  });
+
+  it("continues to publish credential-free public ISR responses", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const responseHeaders = new Headers();
+
+    await runWithRequestContext(createRequestContext(), () => {
+      applyCdnResponseHeaders(responseHeaders, {
+        cacheControl: "s-maxage=300, stale-while-revalidate",
+        tags: ["public-page"],
+      });
+    });
+
+    expect(responseHeaders.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+    expect(responseHeaders.get("CDN-Cache-Control")).toBe(
+      "public, max-age=300, stale-while-revalidate=31536000",
+    );
+    expect(responseHeaders.get("Cache-Tag")).toBe("public-page");
+  });
+
   it("isrGet returns null (origin renders) even after isrSet", async () => {
     setCdnCacheAdapter(new EdgeCdnAdapter());
     await isrSet("app:/p:html", buildPagesCacheValue("<p>cached</p>", {}), 60, []);

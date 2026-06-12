@@ -1,4 +1,8 @@
-import { getCdnCacheAdapter, type CdnCacheableHeaderInput } from "vinext/shims/cdn-cache";
+import {
+  getCdnCacheAdapter,
+  isCdnCacheRequestDependent,
+  type CdnCacheableHeaderInput,
+} from "vinext/shims/cdn-cache";
 
 export const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
 
@@ -21,7 +25,12 @@ export const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
  */
 export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHeaderInput): void {
   headers.delete("Cache-Control");
-  const map = getCdnCacheAdapter().buildResponseHeaders(input);
+  headers.delete("CDN-Cache-Control");
+  headers.delete("Cache-Tag");
+  const map = getCdnCacheAdapter().buildResponseHeaders({
+    ...input,
+    requestDependent: input.requestDependent ?? isCdnCacheRequestDependent(),
+  });
   for (const [name, value] of Object.entries(map)) {
     // Never stamp an empty header. An adapter returns an empty `Cache-Control`
     // only when it has no default for an empty policy (e.g. the default

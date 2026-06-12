@@ -40,6 +40,7 @@ import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 export type PagesRenderOptions = {
   isDataReq?: boolean;
   renderErrorPageOnMiss?: boolean;
+  cdnCacheRequestDependent?: boolean;
 };
 
 export type MiddlewareResult = {
@@ -269,6 +270,7 @@ export async function runPagesRequest(
   let resolvedUrl = pathname + search;
   const middlewareHeaders: HeaderRecord = {};
   let middlewareStatus: number | undefined;
+  const middlewareExecuted = typeof deps.runMiddleware === "function";
 
   if (typeof deps.runMiddleware === "function") {
     const result = await deps.runMiddleware(request, deps.ctx ?? null, { isDataRequest });
@@ -496,11 +498,13 @@ export async function runPagesRequest(
     // on the header). No-op for Node/dev, where a data request already has isDataReq=true.
     const shouldDeferErrorPageOnMiss =
       !isDataReq && !isDataRequest && !!deps.matchPageRoute && !renderPageMatch;
-    const initialRenderOptions: PagesRenderOptions | undefined = shouldDeferErrorPageOnMiss
-      ? { renderErrorPageOnMiss: false }
-      : isDataReq
-        ? { isDataReq: true }
-        : undefined;
+    const initialRenderOptions: PagesRenderOptions = {
+      ...(shouldDeferErrorPageOnMiss ? { renderErrorPageOnMiss: false } : {}),
+      ...(isDataReq ? { isDataReq: true } : {}),
+      ...(middlewareExecuted ? { cdnCacheRequestDependent: true } : {}),
+    };
+    const effectiveInitialRenderOptions =
+      Object.keys(initialRenderOptions).length > 0 ? initialRenderOptions : undefined;
 
     // Convert staged middleware headers to a Web Headers object for renderPage.
     // Adapters that need to inject per-request values (e.g. CSP nonces) into the
@@ -514,7 +518,12 @@ export async function runPagesRequest(
       }
     }
 
-    let response = await deps.renderPage(request, resolvedUrl, initialRenderOptions, stagedHeaders);
+    let response = await deps.renderPage(
+      request,
+      resolvedUrl,
+      effectiveInitialRenderOptions,
+      stagedHeaders,
+    );
 
     // Fallback rewrites if 404 + deferred
     let matchedFallbackRewrite = false;
@@ -536,7 +545,7 @@ export async function runPagesRequest(
         response = await deps.renderPage(
           request,
           mergeRewriteQuery(resolvedUrl, fallbackRewrite),
-          undefined,
+          middlewareExecuted ? { cdnCacheRequestDependent: true } : undefined,
           stagedHeaders,
         );
         matchedFallbackRewrite = true;
@@ -545,7 +554,12 @@ export async function runPagesRequest(
 
     // Deferred 404 re-render
     if (response.status === 404 && shouldDeferErrorPageOnMiss && !matchedFallbackRewrite) {
-      response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
+      response = await deps.renderPage(
+        request,
+        resolvedUrl,
+        middlewareExecuted ? { cdnCacheRequestDependent: true } : undefined,
+        stagedHeaders,
+      );
     }
 
     const merged = mergeHeaders(response, middlewareHeaders, middlewareStatus);
@@ -589,7 +603,13 @@ export async function runPagesRequest(
   return {
     type: "render",
     resolvedUrl,
-    renderOptions: isDataReq ? { isDataReq: true } : undefined,
+    renderOptions:
+      isDataReq || middlewareExecuted
+        ? {
+            ...(isDataReq ? { isDataReq: true } : {}),
+            ...(middlewareExecuted ? { cdnCacheRequestDependent: true } : {}),
+          }
+        : undefined,
     stagedHeaders: middlewareHeaders,
     requestHeaders: request.headers,
     middlewareStatus,

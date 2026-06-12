@@ -143,6 +143,10 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   }
 
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
+    if (input.requestDependent) {
+      return { "Cache-Control": NO_STORE };
+    }
+
     // No cacheable policy → nobody stores it.
     if (!input.cacheControl) {
       return { "Cache-Control": NO_STORE };
