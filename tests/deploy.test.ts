@@ -2,8 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { execFileSync } from "node:child_process";
 import {
   detectProject,
+  deploy,
   generateWranglerConfig,
   generateAppRouterWorkerEntry,
   generatePagesRouterWorkerEntry,
@@ -13,9 +15,13 @@ import {
   getFilesToGenerate,
   ensureESModule,
   renameCJSConfigs,
+  buildNodeCliInvocation,
+  buildWranglerInvocation,
   buildWranglerDeployArgs,
   parseDeployArgs,
   resolveWranglerBin,
+  runWranglerDeploy,
+  validateWranglerEnvName,
   withCloudflareEnv,
   isPackageResolvable,
   viteConfigHasCloudflarePlugin,
@@ -134,6 +140,40 @@ describe("buildWranglerDeployArgs", () => {
   it("treats empty string env as production", () => {
     expect(buildWranglerDeployArgs({ env: "" })).toEqual({ args: ["deploy"], env: undefined });
   });
+
+  it("preserves shell metacharacters as a literal environment argument", () => {
+    const env = "preview & whoami > vinext-pwned.txt & rem";
+    expect(buildWranglerDeployArgs({ env })).toEqual({
+      args: ["deploy", "--env", env],
+      env,
+    });
+  });
+
+  it.each(["production", "preview-1", "staging_eu", "release.2026", "team/app @ 1"])(
+    "accepts Wrangler environment name %s",
+    (env) => {
+      expect(validateWranglerEnvName(env)).toBe(env);
+    },
+  );
+
+  it("rejects null bytes and excessively long environment names", () => {
+    expect(() => validateWranglerEnvName("preview\0prod")).toThrow("null bytes");
+    expect(() => validateWranglerEnvName("a".repeat(256))).toThrow("255 characters");
+  });
+});
+
+describe("deploy environment validation", () => {
+  it("rejects invalid environment names before project side effects", async () => {
+    writeFile(tmpDir, "package.json", '{"name":"unchanged"}\n');
+    const before = fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8");
+
+    await expect(deploy({ root: tmpDir, env: "a".repeat(256), dryRun: true })).rejects.toThrow(
+      "255 characters",
+    );
+
+    expect(fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8")).toBe(before);
+    expect(fs.existsSync(path.join(tmpDir, ".vinext"))).toBe(false);
+  });
 });
 
 // ─── CLOUDFLARE_ENV propagation (issue #1210) ──────────────────────────────
@@ -211,50 +251,105 @@ describe("withCloudflareEnv", () => {
   });
 });
 
-// ─── Wrangler bin resolution (Windows shim handling) ────────────────────────
+// ─── Wrangler JavaScript entrypoint resolution ──────────────────────────────
 
 describe("resolveWranglerBin", () => {
-  it("uses bare name on non-Windows platforms", () => {
-    mkdir(tmpDir, "node_modules/.bin");
-    writeFile(tmpDir, "node_modules/.bin/wrangler", "#!/usr/bin/env node");
+  function writeWranglerPackage(
+    bin: string | Record<string, string> = { wrangler: "bin/wrangler.js" },
+  ) {
+    writeFile(
+      tmpDir,
+      "node_modules/wrangler/package.json",
+      JSON.stringify({ name: "wrangler", bin }),
+    );
+    writeFile(tmpDir, "node_modules/wrangler/bin/wrangler.js", "#!/usr/bin/env node");
+  }
 
-    const resolved = resolveWranglerBin(tmpDir, "linux");
-    expect(resolved).toBe(path.join(tmpDir, "node_modules", ".bin", "wrangler"));
+  function expectedWranglerBin(): string {
+    return fs.realpathSync(path.join(tmpDir, "node_modules", "wrangler", "bin", "wrangler.js"));
+  }
+
+  it("resolves the JavaScript entrypoint from Wrangler's bin map", () => {
+    writeWranglerPackage();
+    expect(resolveWranglerBin(tmpDir)).toBe(expectedWranglerBin());
   });
 
-  it("prefers .CMD shim on Windows when present", () => {
-    mkdir(tmpDir, "node_modules/.bin");
-    writeFile(tmpDir, "node_modules/.bin/wrangler", "#!/usr/bin/env node");
-    writeFile(tmpDir, "node_modules/.bin/wrangler.CMD", "@ECHO off");
-
-    const resolved = resolveWranglerBin(tmpDir, "win32");
-    expect(resolved).toBe(path.join(tmpDir, "node_modules", ".bin", "wrangler.CMD"));
+  it("supports a string-valued package bin", () => {
+    writeWranglerPackage("bin/wrangler.js");
+    expect(resolveWranglerBin(tmpDir)).toBe(expectedWranglerBin());
   });
 
-  it("falls back to bare name on Windows if no .CMD shim exists", () => {
-    mkdir(tmpDir, "node_modules/.bin");
-    writeFile(tmpDir, "node_modules/.bin/wrangler", "#!/usr/bin/env node");
-
-    const resolved = resolveWranglerBin(tmpDir, "win32");
-    expect(resolved).toBe(path.join(tmpDir, "node_modules", ".bin", "wrangler"));
-  });
-
-  it("walks up to a hoisted workspace node_modules on Windows", () => {
+  it("walks up to a hoisted workspace node_modules", () => {
     mkdir(tmpDir, "apps/web");
-    mkdir(tmpDir, "node_modules/.bin");
-    writeFile(tmpDir, "node_modules/.bin/wrangler.CMD", "@ECHO off");
-
-    const resolved = resolveWranglerBin(path.join(tmpDir, "apps", "web"), "win32");
-    expect(resolved).toBe(path.join(tmpDir, "node_modules", ".bin", "wrangler.CMD"));
+    writeWranglerPackage();
+    expect(resolveWranglerBin(path.join(tmpDir, "apps", "web"))).toBe(expectedWranglerBin());
   });
 
-  it("returns platform-appropriate fallback path when nothing is found", () => {
-    expect(resolveWranglerBin(tmpDir, "win32")).toBe(
-      path.join(tmpDir, "node_modules", ".bin", "wrangler.CMD"),
+  it("supports package resolvers such as Yarn Plug'n'Play", () => {
+    writeWranglerPackage();
+    const packageJsonPath = path.join(tmpDir, "node_modules", "wrangler", "package.json");
+    expect(resolveWranglerBin("/virtual/project", () => packageJsonPath)).toBe(
+      path.join(tmpDir, "node_modules", "wrangler", "bin", "wrangler.js"),
     );
-    expect(resolveWranglerBin(tmpDir, "linux")).toBe(
-      path.join(tmpDir, "node_modules", ".bin", "wrangler"),
+  });
+
+  it("returns a clear fallback path when Wrangler is missing", () => {
+    expect(resolveWranglerBin(tmpDir)).toBe(
+      path.join(tmpDir, "node_modules", "wrangler", "bin", "wrangler.js"),
     );
+  });
+
+  it("passes deploy arguments literally to Node without a command shell", () => {
+    writeWranglerPackage();
+    expect(buildWranglerInvocation(tmpDir, { env: "preview-1" }, "node.exe")).toEqual({
+      file: "node.exe",
+      args: [expectedWranglerBin(), "deploy", "--env", "preview-1"],
+      env: "preview-1",
+    });
+  });
+
+  it("keeps Windows shell metacharacters in one literal argument", () => {
+    const payload = "preview & whoami > vinext-pwned.txt & rem";
+    expect(buildNodeCliInvocation("wrangler.js", ["deploy", "--env", payload], "node.exe")).toEqual(
+      {
+        file: "node.exe",
+        args: ["wrangler.js", "deploy", "--env", payload],
+      },
+    );
+  });
+
+  it("executes Wrangler with shell disabled and literal metacharacters", () => {
+    writeWranglerPackage();
+    const payload = "preview & whoami > vinext-pwned.txt & rem";
+    let observed: Parameters<typeof execFileSync> | undefined;
+    const execute = ((...args: Parameters<typeof execFileSync>) => {
+      observed = args;
+      return "";
+    }) as typeof execFileSync;
+
+    runWranglerDeploy(tmpDir, { env: payload }, execute);
+
+    expect(observed?.[0]).toBe(process.execPath);
+    expect(observed?.[1]).toEqual([expectedWranglerBin(), "deploy", "--env", payload]);
+    expect(observed?.[2]).toMatchObject({ shell: false });
+  });
+
+  it("does not execute metacharacters in a real subprocess", () => {
+    const argvPath = path.join(tmpDir, "argv.json");
+    const pwnedPath = path.join(tmpDir, "vinext-pwned.txt");
+    const scriptPath = path.join(tmpDir, "capture-argv.cjs");
+    const payload = `preview & echo pwned > ${pwnedPath} & rem`;
+    writeFile(
+      tmpDir,
+      "capture-argv.cjs",
+      `require("node:fs").writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)))`,
+    );
+    const invocation = buildNodeCliInvocation(scriptPath, ["deploy", "--env", payload]);
+
+    execFileSync(invocation.file, invocation.args, { cwd: tmpDir, shell: false });
+
+    expect(JSON.parse(fs.readFileSync(argvPath, "utf-8"))).toEqual(["deploy", "--env", payload]);
+    expect(fs.existsSync(pwnedPath)).toBe(false);
   });
 });
 
