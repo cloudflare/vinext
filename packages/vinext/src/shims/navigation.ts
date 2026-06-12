@@ -2054,6 +2054,14 @@ if (process.env.__NEXT_GESTURE_TRANSITION) {
     // navigate function — the same check navigateClientSide uses before its
     // non-runtime fallback, which would otherwise perform a real history push
     // here instead of upstream's no-op.
+    //
+    // This guard and navigateClientSide's own `appNavigate` lookup read the
+    // runtime separately, but there is no TOCTOU window between them: every
+    // `await` ahead of that lookup sits in a branch that returns without
+    // reaching it, so when the lookup runs it runs synchronously in this same
+    // task — and runtime registration is monotonic (the browser entry installs
+    // `navigate` once and never unregisters it), so a passed guard cannot go
+    // stale. Revisit if registration ever becomes async or revocable.
     if (!getNavigationRuntime()?.functions.navigate) return;
 
     // navigateClientSide would normalize same-origin absolute URLs itself; this
