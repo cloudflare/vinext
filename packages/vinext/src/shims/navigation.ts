@@ -48,6 +48,7 @@ import { stripBasePath } from "../utils/base-path.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
+import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
 import { retryScrollTo, scrollToHashTarget } from "./hash-scroll.js";
 import {
   beginAppRouterScrollIntent,
@@ -336,11 +337,6 @@ export function _registerStateAccessors(accessors: _StateAccessors): void {
 // loaded for every consumer of next/router, triggering window.history
 // patches in unit tests that only want the router shim.
 // ---------------------------------------------------------------------------
-
-import {
-  getPagesNavigationContext as _getPagesNavigationContext,
-  type PagesNavigationContext,
-} from "./internal/pages-router-accessor.js";
 
 const PAGES_NAVIGATION_NOTIFY_KEY = Symbol.for("vinext.navigation.pagesNavigationNotify");
 type _GlobalWithPagesNotify = typeof globalThis & {
