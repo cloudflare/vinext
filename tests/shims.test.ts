@@ -14171,9 +14171,7 @@ describe("Pages Router concurrent navigation", () => {
       setItem: (key: string, value: string) => void sessionStore.set(key, value),
       removeItem: (key: string) => void sessionStore.delete(key),
     };
-    // Pre-stamped router-owned entry so install picks up its key, plus a
-    // saved snapshot for that entry — the position the user had reached on
-    // the target entry before navigating away from it.
+    // Pre-stamped router-owned entry so install picks up its key.
     (win.history as any).state = {
       __N: true,
       url: "/",
@@ -14181,7 +14179,6 @@ describe("Pages Router concurrent navigation", () => {
       options: {},
       key: "key-initial",
     };
-    sessionStore.set("__next_scroll_key-initial", JSON.stringify({ x: 5, y: 500 }));
 
     (globalThis as any).window = win;
     globalThis.fetch = vi.fn();
@@ -14201,9 +14198,15 @@ describe("Pages Router concurrent navigation", () => {
       const popstateHandler = listeners.get("popstate");
       expect(popstateHandler).toBeDefined();
 
+      // The position the user reached on the initial entry; the hash-only
+      // push below snapshots it under key-initial on departure.
+      win.scrollX = 5;
+      win.scrollY = 500;
+
       // Hash-only push mints a new history entry ("#top" avoids the
       // document-dependent getElementById branch of scrollToHashTarget).
       await (win as any).next.router.push("/#top");
+      expect(sessionStore.get("__next_scroll_key-initial")).toBe(JSON.stringify({ x: 5, y: 500 }));
       const pushedKey = pushState.mock.calls.at(-1)![0].key as string;
       expect(typeof pushedKey).toBe("string");
 
@@ -14243,6 +14246,79 @@ describe("Pages Router concurrent navigation", () => {
       // non-hash popstate to this entry.
       expect(sessionStore.get(`__next_scroll_${pushedKey}`)).toBe(JSON.stringify({ x: 7, y: 70 }));
       expect(sessionStore.get("__next_scroll_key-initial")).toBe(JSON.stringify({ x: 5, y: 500 }));
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+      if (originalScrollRestorationEnv === undefined) {
+        delete process.env.__NEXT_SCROLL_RESTORATION;
+      } else {
+        process.env.__NEXT_SCROLL_RESTORATION = originalScrollRestorationEnv;
+      }
+    }
+  });
+
+  // A hash-only push must snapshot the outgoing entry's scroll under its key
+  // before updateHistory mints the new entry's key — otherwise a later
+  // back-popstate to the departed entry restores {x: 0, y: 0} instead of the
+  // position the user had reached there. Upstream snapshots in Router.push()
+  // itself, ahead of change()'s onlyAHashChange short-circuit, so hash-only
+  // pushes still write `__next_scroll_<key>` for the departed entry.
+  it("hash-only push snapshots the outgoing entry's scroll under the old key", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalScrollRestorationEnv = process.env.__NEXT_SCROLL_RESTORATION;
+    const { win, pushState } = createNavWindow();
+
+    // Enable the manual scroll restoration path: the flag also requires
+    // history.scrollRestoration support and a working sessionStorage.
+    (win.history as any).scrollRestoration = "auto";
+    const sessionStore = new Map<string, string>();
+    (win as any).sessionStorage = {
+      getItem: (key: string) => sessionStore.get(key) ?? null,
+      setItem: (key: string, value: string) => void sessionStore.set(key, value),
+      removeItem: (key: string) => void sessionStore.delete(key),
+    };
+    // Pre-stamped router-owned entry so install picks up its key.
+    (win.history as any).state = {
+      __N: true,
+      url: "/",
+      as: "/",
+      options: {},
+      key: "key-initial",
+    };
+
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn();
+    process.env.__NEXT_SCROLL_RESTORATION = "true";
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+
+      // The live position on the outgoing entry at push time ("#top" avoids
+      // the document-dependent getElementById branch of scrollToHashTarget).
+      win.scrollX = 30;
+      win.scrollY = 300;
+      await (win as any).next.router.push("/#top");
+
+      // Hash-only: no page fetch; a new entry was minted with a fresh key.
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      const pushedKey = pushState.mock.calls.at(-1)![0].key as string;
+      expect(typeof pushedKey).toBe("string");
+      expect(pushedKey).not.toBe("key-initial");
+
+      // The departed entry's position was snapshotted under its own key —
+      // not the freshly minted one — so a later back-popstate restores it.
+      expect(sessionStore.get("__next_scroll_key-initial")).toBe(JSON.stringify({ x: 30, y: 300 }));
+      expect(sessionStore.has(`__next_scroll_${pushedKey}`)).toBe(false);
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {

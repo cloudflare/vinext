@@ -2037,6 +2037,14 @@ async function performNavigation(
 
   // Hash-only change — no page fetch needed
   if (isHashOnlyChange(full)) {
+    // Snapshot the outgoing entry's scroll before updateHistory mints a new
+    // key, so a later back-popstate restores the position the user had
+    // reached here rather than {x: 0, y: 0}. Upstream snapshots inside
+    // Router.push() itself — before change()'s onlyAHashChange short-circuit
+    // — so hash-only pushes still write `__next_scroll_<key>` for the
+    // departed entry.
+    // Mirrors Next.js: packages/next/src/shared/lib/router/router.ts:1034-1046.
+    if (mode === "push") saveScrollPosition();
     const eventUrl = resolveHashUrl(full);
     routerEvents.emit("hashChangeStart", eventUrl, { shallow });
     updateHistory(mode, resolved.startsWith("#") ? resolved : full, navState);
