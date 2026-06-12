@@ -31,6 +31,7 @@ import {
   type RenderObservation,
 } from "../packages/vinext/src/server/cache-proof.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import { connection } from "../packages/vinext/src/shims/server.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
@@ -485,6 +486,24 @@ function createLayoutParamProbe(
 }
 
 describe("app page dispatch", () => {
+  it("does not reuse a speculative connection() page probe", async () => {
+    const probePage = vi.fn(async () => {
+      await connection();
+    });
+    const { options } = createDispatchOptions({ probePage });
+
+    const response = await Promise.race([
+      dispatchAppPage(options),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("dispatch timed out")), 250);
+      }),
+    ]);
+
+    expect(response.status).toBe(200);
+    expect(probePage).toHaveBeenCalledTimes(1);
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+  });
+
   afterEach(() => {
     consumeDynamicUsage();
     consumeRenderRequestApiUsage();

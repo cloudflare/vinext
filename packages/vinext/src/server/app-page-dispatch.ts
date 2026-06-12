@@ -41,6 +41,7 @@ import {
 import { readStreamAsText } from "../utils/text-stream.js";
 import {
   buildAppPageSpecialErrorResponse,
+  probeAppPageThrownError,
   resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture,
   type AppPageFontPreload,
@@ -850,6 +851,21 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         options.searchParams,
         layoutParamAccess,
       );
+    },
+    async probePageSpecialError() {
+      if (
+        !shouldSuppressLoadingBoundaries(options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION) &&
+        route.loading?.default
+      ) {
+        return null;
+      }
+      const pageError = await probeAppPageThrownError({
+        probePage: options.probePage,
+        runWithSuppressedHookWarning(probe) {
+          return options.runWithSuppressedHookWarning(probe);
+        },
+      });
+      return resolveAppPageSpecialError(pageError);
     },
     renderErrorBoundaryPage(buildError) {
       return options.renderErrorBoundaryPage(buildError);
