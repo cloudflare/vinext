@@ -1006,7 +1006,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         const routerModule = await import("next/router");
         const Router = routerModule.default;
         await navigatePagesRouterLink(Router, {
-          href: absoluteHref,
+          href: navigateHref,
           replace,
           scroll,
           shallow,

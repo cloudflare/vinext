@@ -877,6 +877,7 @@ describe("Pages Router Link onClick semantics", () => {
   async function renderPagesRouterLinkAndClick(args: {
     href: string;
     props?: Record<string, unknown>;
+    currentHref?: string;
   }) {
     vi.resetModules();
 
@@ -909,6 +910,7 @@ describe("Pages Router Link onClick semantics", () => {
     const pushState = vi.fn();
     const replaceState = vi.fn();
     const dispatchEvent = vi.fn();
+    const currentUrl = new URL(args.currentHref ?? "https://example.com/current");
     vi.stubGlobal("window", {
       // No vinext.navigationRuntime — that selects the Pages Router branch
       // inside Link's click handler.
@@ -916,8 +918,11 @@ describe("Pages Router Link onClick semantics", () => {
       dispatchEvent,
       history: { pushState, replaceState },
       location: {
-        href: "https://example.com/current",
-        origin: "https://example.com",
+        href: currentUrl.href,
+        origin: currentUrl.origin,
+        pathname: currentUrl.pathname,
+        search: currentUrl.search,
+        hash: currentUrl.hash,
       },
       scrollTo: vi.fn(),
       __NEXT_DATA__: { props: {} },
@@ -981,6 +986,28 @@ describe("Pages Router Link onClick semantics", () => {
     expect(result.clickEvent.defaultPrevented).toBe(true);
     // ...and the Pages Router navigation is actually scheduled.
     expect(result.pagesRouterCalls).toEqual([{ href: "/", replace: false }]);
+  });
+
+  it("preserves a basePath page when navigating to a hash link", async () => {
+    // Ported from Next.js: test/e2e/basepath/query-hash.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/query-hash.test.ts
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+
+    try {
+      const result = await renderPagesRouterLinkAndClick({
+        href: "#hashlink",
+        currentHref: "https://example.com/docs/hello",
+      });
+
+      expect(result.pagesRouterCalls).toEqual([{ href: "#hashlink", replace: false }]);
+    } finally {
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+    }
   });
 
   it("cancels client-side navigation when onClick calls preventDefault", async () => {
