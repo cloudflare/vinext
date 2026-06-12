@@ -2102,7 +2102,11 @@ describe("next/error shim — unstable_catchError", () => {
   it("getDerivedStateFromProps clears the error when pathname changes and retains it when pathname stays the same", async () => {
     const React = (await import("react")).default;
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const { unstable_catchError } = await import("../packages/vinext/src/shims/error.js");
+    const {
+      unstable_catchError,
+      _CatchError,
+    } = await import("../packages/vinext/src/shims/error.js");
+    type _CatchErrorInternalState = import("../packages/vinext/src/shims/error.js")._CatchErrorInternalState;
 
     function Fallback() {
       return null;
@@ -2113,24 +2117,16 @@ describe("next/error shim — unstable_catchError", () => {
     // We must call it inside a React render so React's dispatcher is active.
     let wrapperResult: React.ReactElement | null = null;
     function Capture() {
-      wrapperResult = (Boundary as unknown as (p: Record<string, never>) => React.ReactElement)({});
+      wrapperResult = Boundary({});
       return React.createElement("span");
     }
     renderToStaticMarkup(React.createElement(Capture));
 
-    const InnerCatchError = wrapperResult!.type as unknown as React.ComponentClass<{
-      fallback: typeof Fallback;
-      pathname: string | null;
-      props: Record<string, never>;
-    }> & {
-      getDerivedStateFromProps(
-        props: Pick<{ pathname: string | null }, "pathname">,
-        state: { error: { thrownValue: unknown } | null; previousPathname: string | null },
-      ): { error: { thrownValue: unknown } | null; previousPathname: string | null };
-    };
+    // The rendered element's type is the internal _CatchError class.
+    const InnerCatchError = wrapperResult!.type as typeof _CatchError;
 
     const thrown = new Error("boom");
-    const initialState = {
+    const initialState: _CatchErrorInternalState = {
       error: { thrownValue: thrown },
       previousPathname: "/initial",
     };
