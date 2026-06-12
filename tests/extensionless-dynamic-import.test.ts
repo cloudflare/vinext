@@ -5,48 +5,64 @@ function unwrapHook(hook: any): Function {
   return typeof hook === "function" ? hook : hook?.handler;
 }
 
+function createTransform(extensions?: string[]): Function {
+  const plugin = createExtensionlessDynamicImportPlugin();
+  if (extensions) {
+    unwrapHook(plugin.configResolved).call(plugin, { resolve: { extensions } });
+  }
+  return unwrapHook(plugin.transform).bind(plugin);
+}
+
 describe("vinext:extensionless-dynamic-import", () => {
   it("expands extensionless relative template imports through import.meta.glob", () => {
-    const plugin = createExtensionlessDynamicImportPlugin();
-    const transform = unwrapHook(plugin.transform);
-    const result = transform.call(
-      plugin,
-      "const moduleExports = await import(`./${slug}`)",
-      "/app/page.tsx",
-    );
+    const transform = createTransform();
+    const result = transform("const moduleExports = await import(`./${slug}`)", "/app/page.tsx");
 
-    expect(result.code).toContain(
-      'import.meta.glob("./**/*{.js,.jsx,.ts,.tsx,.mjs,.cjs,.mts,.cts}")',
-    );
+    expect(result.code).toContain('import.meta.glob("./**/*{.mjs,.js,.mts,.ts,.jsx,.tsx}")');
     expect(result.code).toContain("__vinextModules[__vinextPath + __vinextExtension]");
+    expect(result.code).toContain('__vinextPath + "/index" + __vinextExtension');
     expect(result.code).toContain("Promise.reject(new Error");
   });
 
+  it("uses configured resolver extensions in priority order", () => {
+    const transform = createTransform([".platform.tsx", ".tsx", ".js", ".json"]);
+    const result = transform("await import(`./${slug}`)", "/app/page.tsx");
+
+    expect(result.code).toContain('import.meta.glob("./**/*{.platform.tsx,.tsx,.js}")');
+    expect(result.code).toContain('[".platform.tsx",".tsx",".js"]');
+  });
+
   it("leaves imports with explicit extensions unchanged", () => {
-    const plugin = createExtensionlessDynamicImportPlugin();
-    const transform = unwrapHook(plugin.transform);
-    const result = transform.call(plugin, "await import(`./${slug}.tsx`)", "/app/page.tsx");
+    const transform = createTransform();
+    const result = transform("await import(`./${slug}.tsx`)", "/app/page.tsx");
 
     expect(result).toBeNull();
   });
 
   it("leaves bare package imports unchanged", () => {
-    const plugin = createExtensionlessDynamicImportPlugin();
-    const transform = unwrapHook(plugin.transform);
-    const result = transform.call(plugin, "await import(`${packageName}`)", "/app/page.tsx");
+    const transform = createTransform();
+    const result = transform("await import(`${packageName}`)", "/app/page.tsx");
 
     expect(result).toBeNull();
   });
 
   it("leaves imports with attributes unchanged", () => {
-    const plugin = createExtensionlessDynamicImportPlugin();
-    const transform = unwrapHook(plugin.transform);
-    const result = transform.call(
-      plugin,
+    const transform = createTransform();
+    const result = transform(
       'await import(`./${slug}`, { with: { type: "json" } })',
       "/app/page.tsx",
     );
 
     expect(result).toBeNull();
+  });
+
+  it.each([
+    "await import(`./${slug}?raw`)",
+    "await import(`./${slug}#section`)",
+    'await import(/* webpackChunkName: "named" */ `./${slug}`)',
+    "await import(`./[locale]/${slug}`)",
+  ])("leaves semantic import modifiers unchanged: %s", (code) => {
+    const transform = createTransform();
+    expect(transform(code, "/app/page.tsx")).toBeNull();
   });
 });

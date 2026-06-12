@@ -1,9 +1,9 @@
 import MagicString from "magic-string";
-import { parseAst, type Plugin } from "vite";
+import { parseAst, type Plugin, type ResolvedConfig } from "vite";
 import { forEachAstChild, hasRange, isAstRecord, nodeArray, type AstRecord } from "./ast-utils.js";
 
-const MODULE_EXTENSIONS = [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"];
-const TRANSFORMABLE_EXTENSIONS = new Set(MODULE_EXTENSIONS);
+const MODULE_EXTENSIONS = [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx"];
+const TRANSFORMABLE_EXTENSIONS = new Set([...MODULE_EXTENSIONS, ".cjs", ".cts"]);
 
 type ExtensionlessImport = {
   start: number;
@@ -11,12 +11,18 @@ type ExtensionlessImport = {
   sourceStart: number;
   sourceEnd: number;
   globPattern: string;
+  moduleExtensions: readonly string[];
 };
 
 export function createExtensionlessDynamicImportPlugin(): Plugin {
+  let moduleExtensions = MODULE_EXTENSIONS;
+
   return {
     name: "vinext:extensionless-dynamic-import",
     enforce: "pre",
+    configResolved(config) {
+      moduleExtensions = getModuleExtensions(config);
+    },
     transform(code, id) {
       if (!code.includes("import(") && !code.includes("import (")) return null;
       const lang = langForId(id);
@@ -29,7 +35,7 @@ export function createExtensionlessDynamicImportPlugin(): Plugin {
         return null;
       }
 
-      const imports = collectExtensionlessImports(ast);
+      const imports = collectExtensionlessImports(ast, code, moduleExtensions);
       if (imports.length === 0) return null;
 
       const output = new MagicString(code);
@@ -38,7 +44,7 @@ export function createExtensionlessDynamicImportPlugin(): Plugin {
         output.overwrite(
           dynamicImport.start,
           dynamicImport.end,
-          buildReplacement(source, dynamicImport.globPattern),
+          buildReplacement(source, dynamicImport.globPattern, dynamicImport.moduleExtensions),
         );
       }
 
@@ -61,12 +67,16 @@ function langForId(id: string): "js" | "jsx" | "ts" | "tsx" | null {
   return "jsx";
 }
 
-function collectExtensionlessImports(ast: unknown): ExtensionlessImport[] {
+function collectExtensionlessImports(
+  ast: unknown,
+  code: string,
+  moduleExtensions: readonly string[],
+): ExtensionlessImport[] {
   const imports: ExtensionlessImport[] = [];
 
   function visit(value: unknown): void {
     if (!isAstRecord(value)) return;
-    const parsed = parseExtensionlessImport(value);
+    const parsed = parseExtensionlessImport(value, code, moduleExtensions);
     if (parsed) {
       imports.push(parsed);
       return;
@@ -78,7 +88,11 @@ function collectExtensionlessImports(ast: unknown): ExtensionlessImport[] {
   return imports;
 }
 
-function parseExtensionlessImport(node: AstRecord): ExtensionlessImport | null {
+function parseExtensionlessImport(
+  node: AstRecord,
+  code: string,
+  moduleExtensions: readonly string[],
+): ExtensionlessImport | null {
   if (node.type !== "ImportExpression" || !hasRange(node)) return null;
   if (node.options != null) return null;
   const source = node.source;
@@ -89,16 +103,19 @@ function parseExtensionlessImport(node: AstRecord): ExtensionlessImport | null {
   const first = templateElementText(quasis[0]);
   const last = templateElementText(quasis.at(-1));
   if (first == null || last == null) return null;
+  if (!/^import\s*\(\s*$/.test(code.slice(node.start, source.start))) return null;
   if (!(first.startsWith("./") || first.startsWith("../"))) return null;
   if (!first.endsWith("/")) return null;
-  if (last.includes(".")) return null;
+  if (/[*?[\]{}()!]/.test(first)) return null;
+  if (/[.?#]/.test(last)) return null;
 
   return {
     start: node.start,
     end: node.end,
     sourceStart: source.start,
     sourceEnd: source.end,
-    globPattern: `${first}**/*{${MODULE_EXTENSIONS.join(",")}}`,
+    globPattern: `${first}**/*{${moduleExtensions.join(",")}}`,
+    moduleExtensions,
   };
 }
 
@@ -110,7 +127,17 @@ function templateElementText(value: unknown): string | null {
   return typeof cooked === "string" ? cooked : null;
 }
 
-function buildReplacement(source: string, globPattern: string): string {
-  const extensions = JSON.stringify(MODULE_EXTENSIONS);
-  return `((__vinextPath, __vinextModules = import.meta.glob(${JSON.stringify(globPattern)})) => { const __vinextLoader = __vinextModules[__vinextPath] ?? ${extensions}.map((__vinextExtension) => __vinextModules[__vinextPath + __vinextExtension]).find(Boolean); return __vinextLoader ? __vinextLoader() : Promise.reject(new Error("Cannot find module '" + __vinextPath + "'")); })(${source})`;
+function getModuleExtensions(config: ResolvedConfig): string[] {
+  return config.resolve.extensions.filter(
+    (extension) => extension !== ".json" && extension !== ".node",
+  );
+}
+
+function buildReplacement(
+  source: string,
+  globPattern: string,
+  moduleExtensions: readonly string[],
+): string {
+  const extensions = JSON.stringify(moduleExtensions);
+  return `((__vinextPath, __vinextModules = import.meta.glob(${JSON.stringify(globPattern)}), __vinextExtensions = ${extensions}) => { const __vinextLoader = __vinextModules[__vinextPath] ?? __vinextExtensions.map((__vinextExtension) => __vinextModules[__vinextPath + __vinextExtension] ?? __vinextModules[__vinextPath + "/index" + __vinextExtension]).find(Boolean); return __vinextLoader ? __vinextLoader() : Promise.reject(new Error("Cannot find module '" + __vinextPath + "'")); })(${source})`;
 }
