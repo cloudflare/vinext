@@ -36,6 +36,7 @@ import { buildPagesDataHref } from "./internal/pages-data-url.js";
 import {
   getPagesRouterComponentsMap,
   markAppRouteDetectedOnPrefetch,
+  matchesAppRoute,
 } from "./internal/app-route-detection.js";
 import { dedupedPagesDataFetch } from "./internal/pages-data-fetch-dedup.js";
 import { installWindowNext, type PagesRouterPublicInstance } from "../client/window-next.js";
@@ -2074,7 +2075,10 @@ async function performNavigation(
   const appPathNorm = appPath !== null ? removeTrailingSlash(appPath) : null;
   const appPathEntry =
     appPathNorm !== null ? getPagesRouterComponentsMap()[appPathNorm] : undefined;
-  if (appPathEntry !== undefined && "__appRouter" in appPathEntry && appPathEntry.__appRouter) {
+  const appRouteDetected =
+    (appPathEntry !== undefined && "__appRouter" in appPathEntry && appPathEntry.__appRouter) ||
+    matchesAppRoute(resolved, __basePath);
+  if (appRouteDetected) {
     if (mode === "push") window.location.assign(full);
     else window.location.replace(full);
     return new Promise<boolean>(() => {});

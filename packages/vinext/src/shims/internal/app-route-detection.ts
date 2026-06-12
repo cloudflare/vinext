@@ -99,7 +99,7 @@ function resolveSameOriginPathname(href: string, basePath: string): string | nul
  * prefetch manifest (static or dynamic). Returns false when the manifest is
  * absent (Pages-Router-only build), the URL is external, or no route matches.
  */
-function matchesAppRoute(href: string, basePath: string): boolean {
+export function matchesAppRoute(href: string, basePath: string): boolean {
   if (typeof window === "undefined") return false;
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
   if (!routes || routes.length === 0) return false;

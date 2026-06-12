@@ -26,6 +26,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 afterEach(() => {
   vi.resetModules();
+  delete (globalThis as Record<symbol, unknown>)[Symbol.for("vinext.pagesRouter.components")];
   delete (globalThis as { window?: unknown }).window;
   delete (globalThis as { document?: unknown }).document;
 });
@@ -192,6 +193,28 @@ describe("Pages Router records app routes as detected on prefetch", () => {
     //    fast-path return, so `assign` must have fired synchronously by the
     //    time `push()` returns — assert immediately to pin that synchronicity
     //    (the hard navigation must not lose a race against the SPA path).
+    void Router.push("/about");
+
+    expect(fakeWindow.location.assign).toHaveBeenCalledWith(expect.stringContaining("/about"));
+  });
+
+  it("hard-navigates to an App Router route even when prefetch has not completed", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/pages-to-app-routing/pages-to-app-routing.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/pages-to-app-routing/pages-to-app-routing.test.ts
+    //
+    // Link viewport prefetch is asynchronous. A user can click before it has
+    // written the __appRouter marker, so navigation must also consult the
+    // generated App Router route manifest directly.
+    const fakeWindow = installFakeBrowserGlobals([
+      { canPrefetchLoadingShell: false, patternParts: ["about"], isDynamic: false },
+    ]);
+
+    const routerModule = await import("../packages/vinext/src/shims/router.js");
+    const Router = routerModule.default;
+
+    expect(Router.components["/about"]).toBeUndefined();
+
     void Router.push("/about");
 
     expect(fakeWindow.location.assign).toHaveBeenCalledWith(expect.stringContaining("/about"));
