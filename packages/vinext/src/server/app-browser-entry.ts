@@ -85,7 +85,6 @@ import {
   resolveMiddlewareRewriteNavigationInterceptionContext,
 } from "./app-browser-interception-context.js";
 import {
-  applyServerActionResultDecision,
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
   isServerActionResult,
@@ -96,6 +95,7 @@ import {
   type ServerActionRevalidationKind,
   type AppBrowserServerActionResult,
 } from "./app-browser-action-result.js";
+import { applyServerActionResultDecision } from "./app-browser-server-action-navigation.js";
 import {
   consumeInitialFormState,
   createVinextHydrateRootOptions,

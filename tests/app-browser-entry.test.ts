@@ -4,8 +4,8 @@ import {
   createOnUncaughtError,
   prodOnCaughtError,
 } from "../packages/vinext/src/server/app-browser-error.js";
+import { applyServerActionResultDecision } from "../packages/vinext/src/server/app-browser-server-action-navigation.js";
 import {
-  applyServerActionResultDecision,
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
   normalizeServerActionThrownValue,
