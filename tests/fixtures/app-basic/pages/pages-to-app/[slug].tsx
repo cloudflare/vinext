@@ -20,6 +20,9 @@ export default function PagesToAppPage({ params }: Props) {
       <Link id="to-about-link" href="/about">
         To About
       </Link>
+      <Link id="to-rewritten-about-link" href="/rewrite-about">
+        To Rewritten About
+      </Link>
     </>
   );
 }

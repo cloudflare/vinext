@@ -37,6 +37,7 @@
 import type { VinextLinkPrefetchRoute } from "../../client/vinext-next-data.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../../routing/route-matching.js";
 import { stripBasePath, removeTrailingSlash } from "../../utils/base-path.js";
+import { getLocalePathPrefix } from "../../utils/domain-locale.js";
 
 const appRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
 
@@ -91,7 +92,12 @@ function resolveSameOriginPathname(href: string, basePath: string): string | nul
     return null;
   }
   if (url.origin !== window.location.origin) return null;
-  return stripBasePath(url.pathname, basePath);
+  const pathname = stripBasePath(url.pathname, basePath);
+  const locale = getLocalePathPrefix(pathname, window.__VINEXT_LOCALES__);
+  if (!locale) return pathname;
+
+  const localePrefixLength = locale.length + 1;
+  return pathname.length === localePrefixLength ? "/" : pathname.slice(localePrefixLength);
 }
 
 /**

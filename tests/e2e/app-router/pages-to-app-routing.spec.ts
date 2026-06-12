@@ -54,4 +54,14 @@ test.describe("pages-to-app-routing: navigate from Pages Router to App Router vi
     await expect(page.locator("#app-page")).toHaveText("About");
     expect(page.url()).toContain("/about");
   });
+
+  test("clicking a rewrite source navigates to its App Router destination", async ({ page }) => {
+    await page.goto(`${BASE}/pages-to-app/rewrite`);
+    await waitForHydration(page);
+
+    await page.click("#to-rewritten-about-link");
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#app-page")).toHaveText("About");
+    expect(page.url()).toContain("/rewrite-about");
+  });
 });

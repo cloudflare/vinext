@@ -49,6 +49,8 @@ type FakeWindow = {
     patternParts: string[];
     isDynamic: boolean;
   }>;
+  __VINEXT_LOCALES__?: string[];
+  __VINEXT_DEFAULT_LOCALE__?: string;
   next?: unknown;
 };
 
@@ -218,5 +220,56 @@ describe("Pages Router records app routes as detected on prefetch", () => {
     void Router.push("/about");
 
     expect(fakeWindow.location.assign).toHaveBeenCalledWith(expect.stringContaining("/about"));
+  });
+
+  it.each([
+    ["static route", "/about", ["about"]],
+    ["dynamic route", "/blog/hello", ["blog", ":slug"]],
+    ["route-group route", "/grouped", ["grouped"]],
+    ["trailing slash", "/about/", ["about"]],
+    ["query and hash", "/about?from=pages#details", ["about"]],
+    ["interception target", "/photos/123", ["photos", ":id"]],
+  ])("synchronously detects %s destinations", async (_label, href, patternParts) => {
+    const fakeWindow = installFakeBrowserGlobals([
+      {
+        canPrefetchLoadingShell: false,
+        patternParts,
+        isDynamic: patternParts.some((part) => part.startsWith(":")),
+      },
+    ]);
+
+    const { matchesAppRoute } =
+      await import("../packages/vinext/src/shims/internal/app-route-detection.js");
+
+    expect(matchesAppRoute(href, "")).toBe(true);
+    expect(fakeWindow.location.assign).not.toHaveBeenCalled();
+  });
+
+  it("strips basePath and locale prefixes before matching App routes", async () => {
+    const fakeWindow = installFakeBrowserGlobals([
+      { canPrefetchLoadingShell: false, patternParts: ["about"], isDynamic: false },
+    ]);
+    fakeWindow.__VINEXT_LOCALES__ = ["en", "fr"];
+    fakeWindow.__VINEXT_DEFAULT_LOCALE__ = "en";
+
+    const { matchesAppRoute, markAppRouteDetectedOnPrefetch } =
+      await import("../packages/vinext/src/shims/internal/app-route-detection.js");
+
+    expect(matchesAppRoute("/docs/fr/about?from=pages#details", "/docs")).toBe(true);
+    markAppRouteDetectedOnPrefetch("/docs/fr/about", "/docs");
+
+    const routerModule = await import("../packages/vinext/src/shims/router.js");
+    expect(routerModule.default.components["/about"]).toEqual({ __appRouter: true });
+  });
+
+  it("does not classify external URLs as App routes", async () => {
+    installFakeBrowserGlobals([
+      { canPrefetchLoadingShell: false, patternParts: ["about"], isDynamic: false },
+    ]);
+
+    const { matchesAppRoute } =
+      await import("../packages/vinext/src/shims/internal/app-route-detection.js");
+
+    expect(matchesAppRoute("https://example.com/about", "")).toBe(false);
   });
 });
