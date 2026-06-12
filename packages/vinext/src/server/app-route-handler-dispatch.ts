@@ -187,7 +187,9 @@ export async function dispatchAppRouteHandler(
   // page fetches do: upstream's app-route module copies `userland.fetchCache`
   // into the work store and sets `forceDynamic` for `dynamic = "force-dynamic"`,
   // which patch-fetch turns into a no-store default for fetches without
-  // explicit cache config.
+  // explicit cache config. Both setters are new wiring for the route-handler
+  // path (dispatch previously only set fetch soft tags), closing the gap
+  // where handlers ignored their `fetchCache`/`force-dynamic` segment config.
   const fetchCacheMode = resolveAppRouteHandlerFetchCacheMode(handler);
   setCurrentFetchCacheMode(fetchCacheMode);
   setCurrentForceDynamicFetchDefault(handler.dynamic === "force-dynamic");

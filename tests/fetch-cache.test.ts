@@ -1860,6 +1860,22 @@ describe("fetch cache shim", () => {
       expect(consumeDynamicUsage()).toBe(false);
     });
 
+    it("explicit no-store with auth headers marks the page dynamic instead of taking the auth bypass", async () => {
+      await fetch("https://api.example.com/nostore-auth-dynamic", {
+        cache: "no-store",
+        headers: { Authorization: "Bearer alice" },
+      });
+
+      // An explicit `no-store` is an explicit uncached-fetch decision, so it
+      // hits the no-store branch (full markDynamicUsage) before the softer
+      // auth-safety bypass: the page is fully marked dynamic, not merely
+      // downgraded via a dynamic fetch observation.
+      expect(peekDynamicFetchObservations()).toEqual([
+        "https://api.example.com/nostore-auth-dynamic",
+      ]);
+      expect(consumeDynamicUsage()).toBe(true);
+    });
+
     it("X-API-Key header is included in cache key", async () => {
       const res1 = await fetch("https://api.example.com/api-key", {
         headers: { "X-API-Key": "key-alice" },

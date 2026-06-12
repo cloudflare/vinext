@@ -982,6 +982,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // dynamic fetch observation: the per-user response must downgrade the
     // page output to fresh render, or a statically cached page could leak
     // one user's auth-keyed data to everyone else.
+    // Ordering is deliberate: an explicit `no-store`/`no-cache`/`revalidate: 0`
+    // takes the stronger branch above and fully marks the page dynamic even
+    // when auth headers are present — this bypass only handles auth-keyed
+    // fetches that would otherwise be implicitly cacheable.
     const hasExplicitCacheOpt =
       cacheDirective === "force-cache" ||
       nextOpts?.revalidate === false ||
