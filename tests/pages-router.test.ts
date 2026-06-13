@@ -5228,6 +5228,29 @@ describe("Production server next.config.js features (Pages Router)", () => {
     expect(html).toContain("About");
   });
 
+  // Issue #1336 (Next.js test/e2e/i18n-ignore-rewrite-source-locale):
+  // a beforeFiles rewrite whose destination resolves to a public/ file
+  // must serve the file, not return the 404 page. Mirrors Next.js's
+  // `check_fs` step (resolve-routes.ts) which runs between beforeFiles
+  // and afterFiles rewrites.
+  it("serves a public file after a beforeFiles rewrite resolves to one", async () => {
+    const res = await fetch(`${prodUrl}/aliased-asset`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("hello from static-asset.txt");
+  });
+
+  // Same parity guarantee for afterFiles rewrites — bonk review on #1645
+  // flagged that deploy.ts handled both rewrite stages but prod-server
+  // only handled beforeFiles. AGENTS.md requires fixing the same bug in
+  // every affected pipeline.
+  it("serves a public file after an afterFiles rewrite resolves to one", async () => {
+    const res = await fetch(`${prodUrl}/aliased-asset-after`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("hello from static-asset.txt");
+  });
+
   it("applies rewrites with repeated dynamic params in production", async () => {
     const res = await fetch(`${prodUrl}/repeat-rewrite/hello`);
     expect(res.status).toBe(200);

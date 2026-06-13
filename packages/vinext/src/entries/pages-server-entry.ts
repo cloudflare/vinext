@@ -14,6 +14,7 @@ import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
 import { isProxyFile } from "../server/middleware.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
+import { scanPublicFileRoutes } from "../utils/public-routes.js";
 
 const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const _middlewareRuntimePath = resolveEntryPath("../server/middleware-runtime.js", import.meta.url);
@@ -36,9 +37,16 @@ export async function generateServerEntry(
   fileMatcher: ReturnType<typeof createValidFileMatcher>,
   middlewarePath: string | null,
   instrumentationPath: string | null,
+  projectRoot: string | null = null,
 ): Promise<string> {
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
   const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+  // Scan the user's public/ directory once at build time. The resulting set
+  // lets the generated worker entry recognise rewrite/redirect destinations
+  // that resolve to a static asset (e.g. `/file.txt` under `public/`) so it
+  // can serve them from `env.ASSETS` instead of returning a 404.
+  // See issue #1336 (test/e2e/i18n-ignore-rewrite-source-locale).
+  const publicFiles = projectRoot ? scanPublicFileRoutes(projectRoot) : [];
 
   // Generate import statements using absolute paths since virtual
   // modules don't have a real file location for relative resolution.
@@ -121,6 +129,7 @@ export async function generateServerEntry(
     // `.nextjs-ref/packages/next/src/pages/_document.tsx` getScripts().
     disableOptimizedLoading: nextConfig?.disableOptimizedLoading === true,
     clientTraceMetadata: nextConfig?.clientTraceMetadata,
+    publicFiles,
     images: {
       deviceSizes: nextConfig?.images?.deviceSizes,
       imageSizes: nextConfig?.images?.imageSizes,

@@ -585,6 +585,7 @@ const i18nConfig = vinextConfig?.i18n ?? null;
 const configRedirects = vinextConfig?.redirects ?? [];
 const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
 const configHeaders = vinextConfig?.headers ?? [];
+const publicFiles: ReadonlySet<string> = new Set(vinextConfig?.publicFiles ?? []);
 const imageConfig: ImageConfig | undefined = vinextConfig?.images ? {
   qualities: vinextConfig.images.qualities,
   dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
@@ -700,6 +701,16 @@ export default {
         handleApi: typeof handleApiRoute === "function"
           ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx)
           : null,
+        serveStaticFile: async (requestPathname) => {
+          if (
+            (request.method !== "GET" && request.method !== "HEAD") ||
+            !publicFiles.has(requestPathname)
+          ) {
+            return false;
+          }
+          const assetUrl = new URL(requestPathname, request.url);
+          return env.ASSETS.fetch(new Request(assetUrl, { headers: request.headers }));
+        },
       };
 
       const result = await runPagesRequest(request, deps);

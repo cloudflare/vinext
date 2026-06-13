@@ -443,6 +443,49 @@ describe("serveStaticFile", () => {
     expect(result.response.headers.get("Location")).toBe("/elsewhere");
     expect(serveStaticFile).not.toHaveBeenCalled();
   });
+
+  it("serves a public file after a beforeFiles rewrite", async () => {
+    const serveStaticFile = vi.fn(async (pathname: string) => pathname === "/asset.txt");
+    const result = await runPagesRequest(
+      makeRequest("/alias"),
+      baseDeps({
+        configRewrites: {
+          beforeFiles: [{ source: "/alias", destination: "/asset.txt" }],
+          afterFiles: [],
+          fallback: [],
+        },
+        serveStaticFile,
+      }),
+    );
+
+    expect(result).toEqual({ type: "handled" });
+    expect(serveStaticFile).toHaveBeenNthCalledWith(2, "/asset.txt", {});
+  });
+
+  it("returns and merges a Worker asset response after an afterFiles rewrite", async () => {
+    const serveStaticFile = vi.fn(async (pathname: string) =>
+      pathname === "/asset.txt" ? new Response("asset", { headers: { "x-asset": "yes" } }) : false,
+    );
+    const middleware = makeMiddleware({ responseHeaders: [["x-middleware", "yes"]] });
+    const result = await runPagesRequest(
+      makeRequest("/alias"),
+      baseDeps({
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [{ source: "/alias", destination: "/asset.txt" }],
+          fallback: [],
+        },
+        runMiddleware: middleware,
+        serveStaticFile,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(await result.response.text()).toBe("asset");
+    expect(result.response.headers.get("x-asset")).toBe("yes");
+    expect(result.response.headers.get("x-middleware")).toBe("yes");
+  });
 });
 
 // 13. afterFiles rewrite: dynamic page match is re-queried

@@ -108,16 +108,14 @@ export type PagesPipelineDeps = {
    */
   proxyExternal?: ((currentRequest: Request, externalUrl: string) => Promise<Response>) | null;
   /**
-   * Optional public-directory static file server (Node prod only).
+   * Optional public-directory static file server.
    * Called post-middleware (so middleware can intercept/redirect public files) with the
    * original basePath-stripped pathname and the staged middleware response headers.
-   * The callback writes the file to its own output (Node `res`) and resolves `true` when
-   * it served the request; the pipeline then returns `{ type: "handled" }`. Resolves `false`
-   * to fall through to rewrites/render. Worker/dev adapters omit this — their public files
-   * are served by the asset binding / Vite respectively.
+   * Node callbacks write to their own output and return `true`; Worker callbacks return the
+   * asset `Response`. Returning `false` falls through to rewrites/render.
    */
   serveStaticFile?:
-    | ((requestPathname: string, stagedHeaders: HeaderRecord) => Promise<boolean>)
+    | ((requestPathname: string, stagedHeaders: HeaderRecord) => Promise<boolean | Response>)
     | null;
 };
 
@@ -396,6 +394,12 @@ export async function runPagesRequest(
   // writes directly to Node `res`, so a `true` result means the response is already sent.
   if (deps.serveStaticFile) {
     const served = await deps.serveStaticFile(pathname, middlewareHeaders);
+    if (served instanceof Response) {
+      return {
+        type: "response",
+        response: mergeHeaders(served, middlewareHeaders, middlewareStatus),
+      };
+    }
     if (served) {
       return { type: "handled" };
     }
@@ -418,6 +422,21 @@ export async function runPagesRequest(
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       resolvedPathname = resolvedUrl.split("?")[0];
       configRewriteFired = true;
+    }
+  }
+
+  // Next.js checks the filesystem after beforeFiles rewrites. This lets a rewrite
+  // resolve to a public/ file instead of falling through to page rendering.
+  if (configRewriteFired && deps.serveStaticFile) {
+    const served = await deps.serveStaticFile(resolvedPathname, middlewareHeaders);
+    if (served instanceof Response) {
+      return {
+        type: "response",
+        response: mergeHeaders(served, middlewareHeaders, middlewareStatus),
+      };
+    }
+    if (served) {
+      return { type: "handled" };
     }
   }
 
@@ -477,6 +496,19 @@ export async function runPagesRequest(
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       resolvedPathname = resolvedUrl.split("?")[0];
       resolvedPathnameChanged = true;
+    }
+  }
+
+  if (resolvedPathnameChanged && deps.serveStaticFile) {
+    const served = await deps.serveStaticFile(resolvedPathname, middlewareHeaders);
+    if (served instanceof Response) {
+      return {
+        type: "response",
+        response: mergeHeaders(served, middlewareHeaders, middlewareStatus),
+      };
+    }
+    if (served) {
+      return { type: "handled" };
     }
   }
 

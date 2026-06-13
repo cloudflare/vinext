@@ -947,6 +947,28 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
+  // Ported from Next.js: test/e2e/i18n-ignore-rewrite-source-locale/rewrites.test.ts
+  // — "get public file by skipping locale in rewrite". A rewrite with
+  // `locale: false` whose destination resolves to a `public/` file must
+  // serve the file via `env.ASSETS` after the rewrite fires. Without this
+  // branch the rewritten path (`/file.txt`) misses every page route and
+  // returns the 404 page instead of the asset contents (issue #1336).
+  it("serves public files after a beforeFiles rewrite lands on one", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("vinextConfig?.publicFiles");
+    expect(content).toContain("const publicFiles: ReadonlySet<string>");
+    expect(content).toContain("serveStaticFile: async (requestPathname)");
+    expect(content).toContain("publicFiles.has(requestPathname)");
+    expect(content).toContain("env.ASSETS.fetch");
+  });
+
+  it("serves public files after an afterFiles rewrite lands on one", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("serveStaticFile: async (requestPathname)");
+    expect(content).toContain("return env.ASSETS.fetch");
+    expect(content).toContain("runPagesRequest(request, deps)");
+  });
+
   it("handles basePath stripping and creates a new request with stripped URL for middleware", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("basePath");

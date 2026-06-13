@@ -48,6 +48,16 @@ const nextConfig = {
           has: [{ type: "cookie", key: "mw-before-user" }],
           destination: "/about",
         },
+        // Issue #1336 (test/e2e/i18n-ignore-rewrite-source-locale): a
+        // beforeFiles rewrite whose destination is a public/ file must
+        // serve the file rather than 404. Used by Vitest:
+        // pages-router.test.ts to verify the post-rewrite public-file
+        // resolution branch in prod-server (and the analogous worker
+        // branch in deploy.ts).
+        {
+          source: "/aliased-asset",
+          destination: "/static-asset.txt",
+        },
       ],
       afterFiles: [
         {
@@ -66,6 +76,14 @@ const nextConfig = {
           source: "/mw-gated-rewrite",
           has: [{ type: "cookie", key: "mw-user" }],
           destination: "/about",
+        },
+        // Issue #1336 (PR #1645 review): the afterFiles branch must also
+        // re-attempt static file serving once it rewrites to a public/ path.
+        // Without this an afterFiles rewrite to a public file 404s on the
+        // Node prod server even though the equivalent worker entry serves it.
+        {
+          source: "/aliased-asset-after",
+          destination: "/static-asset.txt",
         },
       ],
       fallback: [

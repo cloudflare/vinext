@@ -878,6 +878,61 @@ describe("Pages Router entry template", () => {
     }
   });
 
+  it("embeds the project's public/ file list in vinextConfig.publicFiles", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-public-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    const publicDir = path.join(tmpDir, "public");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.mkdirSync(publicDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+      fs.writeFileSync(path.join(publicDir, "file.txt"), "hello from file.txt");
+      fs.writeFileSync(path.join(publicDir, "logo.svg"), "<svg/>");
+
+      const code = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        null,
+        null,
+        tmpDir,
+      );
+
+      expect(code).toContain('"publicFiles":["/file.txt","/logo.svg"]');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("emits an empty publicFiles list when no project root is provided", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-no-public-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        null,
+        null,
+      );
+
+      expect(code).toContain('"publicFiles":[]');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   // Refs #1474: Pages Router client entry must import the user's
   // `instrumentation-client.ts` (at the project root) as a side-effect import
   // before calling `hydrateRoot()`. Mirrors Next.js's `page-bootstrap.ts`
