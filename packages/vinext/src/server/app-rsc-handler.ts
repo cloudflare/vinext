@@ -262,6 +262,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   ) => Promise<Response | null>;
   i18nConfig: NextI18nConfig | null;
   imageConfig?: ImageConfig;
+  isDev: boolean;
   isMiddlewareProxy: boolean;
   loadPrerenderPagesRoutes?: () => Promise<unknown>;
   makeThenableParams: MakeThenableParams;
@@ -557,6 +558,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         ...(options.imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
       ],
       options.imageConfig?.qualities ?? DEFAULT_IMAGE_QUALITIES,
+      { isDev: options.isDev },
     );
     if (!imageRedirect)
       return new Response("Invalid image optimization parameters", { status: 400 });

@@ -127,6 +127,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain('"deviceSizes":[320,640]');
     expect(code).toContain('"qualities":[60,75]');
     expect(code).toContain("imageConfig: __imageConfig");
+    expect(code).toContain('isDev: process.env.NODE_ENV !== "production"');
   });
 
   it("routes hybrid Pages API misses through the Pages server entry", () => {

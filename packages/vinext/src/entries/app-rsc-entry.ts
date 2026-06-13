@@ -611,6 +611,7 @@ export default __createAppRscHandler({
   configRedirects: __configRedirects,
   configRewrites: __configRewrites,
   imageConfig: __imageConfig,
+  isDev: process.env.NODE_ENV !== "production",
   draftModeSecret: __draftModeSecret,
   dispatchMatchedPage({
     clientReuseManifest,

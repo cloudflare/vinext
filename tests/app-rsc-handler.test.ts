@@ -67,6 +67,7 @@ function createHandler(overrides: Partial<HandlerOptions> = {}) {
     handleServerActionRequest: overrides.handleServerActionRequest ?? (async () => null),
     i18nConfig: overrides.i18nConfig ?? null,
     imageConfig: overrides.imageConfig,
+    isDev: overrides.isDev ?? true,
     isMiddlewareProxy: overrides.isMiddlewareProxy ?? false,
     makeThenableParams,
     matchRoute:
@@ -136,6 +137,17 @@ describe("createAppRscHandler", () => {
         null,
       );
       expect(response.status).toBe(302);
+    }
+  });
+
+  it("rejects Next.js blur width and quality exceptions in production", async () => {
+    const handler = createHandler({ isDev: false });
+    for (const query of ["url=%2Fimg.jpg&w=8&q=75", "url=%2Fimg.jpg&w=640&q=70"]) {
+      const response = await handler(
+        new Request(`https://example.test/docs/_next/image?${query}`),
+        null,
+      );
+      expect(response.status).toBe(400);
     }
   });
 

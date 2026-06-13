@@ -540,41 +540,6 @@ export function isOriginAllowed(origin: string, allowed: string[]): boolean {
 }
 
 /**
- * Validate an image optimization URL parameter.
- *
- * Ensures the URL is a relative path that doesn't escape the origin:
- * - Must start with "/" but not "//"
- * - Backslashes are normalized (browsers treat `\` as `/`)
- * - Origin validation as defense-in-depth
- *
- * @param rawUrl - The raw `url` query parameter value
- * @param requestUrl - The full request URL for origin comparison
- * @returns An error Response if validation fails, or the normalized image URL
- */
-export function validateImageUrl(rawUrl: string | null, requestUrl: string): Response | string {
-  // Normalize backslashes: browsers and the URL constructor treat
-  // /\evil.com as protocol-relative (//evil.com), bypassing the // check.
-  const imgUrl = rawUrl?.replaceAll("\\", "/") ?? null;
-  // Allowlist: must start with "/" but not "//" — blocks absolute URLs,
-  // protocol-relative, backslash variants, and exotic schemes.
-  if (!imgUrl || !imgUrl.startsWith("/") || imgUrl.startsWith("//")) {
-    return new Response(!rawUrl ? "Missing url parameter" : "Only relative URLs allowed", {
-      status: 400,
-    });
-  }
-  // Defense-in-depth origin check. Resolving a root-relative path against
-  // the request's own origin is tautologically same-origin today, but this
-  // guard protects against future changes to the upstream guards that might
-  // let a non-relative path slip through (e.g. a path with encoded slashes).
-  const url = new URL(requestUrl);
-  const resolvedImg = new URL(imgUrl, url.origin);
-  if (resolvedImg.origin !== url.origin) {
-    return new Response("Only relative URLs allowed", { status: 400 });
-  }
-  return imgUrl;
-}
-
-/**
  * Strip internal `x-middleware-*` headers from a Headers object.
  *
  * Middleware uses `x-middleware-*` headers as internal signals (e.g.

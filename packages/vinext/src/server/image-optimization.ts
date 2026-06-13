@@ -83,8 +83,9 @@ export function resolveDevImageRedirect(
   requestUrl: URL,
   allowedWidths: number[] = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES],
   allowedQualities: number[] = DEFAULT_IMAGE_QUALITIES,
+  options: ParseImageParamsOptions = { isDev: true },
 ): string | null {
-  const params = parseImageParams(requestUrl, allowedWidths, allowedQualities, { isDev: true });
+  const params = parseImageParams(requestUrl, allowedWidths, allowedQualities, options);
   if (!params) return null;
   if (
     params.imageUrl.startsWith("/@") ||
