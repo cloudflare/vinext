@@ -1,0 +1,5 @@
+{
+  "name": "app-prefetch-inlining-fixture",
+  "private": true,
+  "type": "module"
+}

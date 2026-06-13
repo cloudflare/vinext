@@ -1,17 +1,161 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  annotateReactFlightThenable,
+  installReactFlightClientReferenceRequire,
+  preloadInitialClientReferencesFromRscStream,
+} from "../packages/vinext/src/server/app-client-reference-loader.js";
 import { createClientReferencePreloader } from "../packages/vinext/src/server/app-client-reference-preloader.js";
 
-function createDeferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolveDeferred: () => void = () => {
+type ReactFlightThenable<T> = Promise<T> & {
+  reason?: unknown;
+  status?: "fulfilled" | "pending" | "rejected";
+  value?: T;
+};
+
+function createDeferred<T = void>(): {
+  promise: Promise<T>;
+  reject: (reason: unknown) => void;
+  resolve: (value: T) => void;
+} {
+  let rejectDeferred: (reason: unknown) => void = () => {
     throw new Error("deferred promise was not initialized");
   };
-  const promise = new Promise<void>((resolve) => {
-    resolveDeferred = () => resolve();
+  let resolveDeferred: (value: T) => void = () => {
+    throw new Error("deferred promise was not initialized");
+  };
+  const promise = new Promise<T>((resolve, reject) => {
+    rejectDeferred = reject;
+    resolveDeferred = resolve;
   });
-  return { promise, resolve: resolveDeferred };
+  return { promise, reject: rejectDeferred, resolve: resolveDeferred };
+}
+
+function textStream(chunks: readonly string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(encoder.encode(chunk));
+      }
+      controller.close();
+    },
+  });
+}
+
+async function readStreamText(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
 }
 
 describe("app client reference preloader", () => {
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, "__vite_rsc_client_require__");
+  });
+
+  it("marks cold client reference promises as React Flight pending thenables", async () => {
+    const deferred = createDeferred<{ ok: true }>();
+    const tracked = annotateReactFlightThenable(deferred.promise);
+
+    expect(tracked.status).toBe("pending");
+    expect(tracked.reason).toBe(tracked);
+
+    deferred.resolve({ ok: true });
+    await expect(tracked).resolves.toEqual({ ok: true });
+    expect(tracked.status).toBe("fulfilled");
+    expect(tracked.value).toEqual({ ok: true });
+    expect(tracked.reason).toBeUndefined();
+  });
+
+  it("preserves real client reference import failures for React Flight", async () => {
+    const deferred = createDeferred<unknown>();
+    const error = new Error("load failed");
+    const tracked = annotateReactFlightThenable(deferred.promise);
+
+    deferred.reject(error);
+
+    await expect(tracked).rejects.toThrow("load failed");
+    expect(tracked.status).toBe("rejected");
+    expect(tracked.reason).toBe(error);
+  });
+
+  it("wraps the browser client reference require once", async () => {
+    const calls: string[] = [];
+    const deferred = createDeferred<{ name: string }>();
+    globalThis.__vite_rsc_client_require__ = (id) => {
+      calls.push(id);
+      return deferred.promise;
+    };
+
+    installReactFlightClientReferenceRequire();
+    installReactFlightClientReferenceRequire();
+
+    const result = globalThis.__vite_rsc_client_require__("comp-a") as ReactFlightThenable<{
+      name: string;
+    }>;
+
+    expect(calls).toEqual(["comp-a"]);
+    expect(result).toBe(deferred.promise);
+    expect(result.status).toBe("pending");
+    expect(result.reason).toBe(result);
+
+    deferred.resolve({ name: "A" });
+    await expect(result).resolves.toEqual({ name: "A" });
+    expect(result.status).toBe("fulfilled");
+  });
+
+  it("preloads initial RSC client reference rows without consuming the render stream", async () => {
+    const calls: string[] = [];
+    const first = createDeferred<void>();
+    const second = createDeferred<void>();
+    const sourceText =
+      '0:{"children":"shell"}\n' +
+      '2:I["comp-a",[],"default",1]\n' +
+      '3:I["comp-b",[],"Widget",1]\n' +
+      '4:["not a client reference"]\n';
+
+    const preloadPromise = preloadInitialClientReferencesFromRscStream(textStream([sourceText]), {
+      clientRequire(id) {
+        calls.push(id);
+        return id === "comp-a" ? first.promise : second.promise;
+      },
+    });
+
+    await expect.poll(() => calls).toEqual(["comp-a", "comp-b"]);
+
+    first.resolve(undefined);
+    second.resolve(undefined);
+
+    const renderStream = await preloadPromise;
+    expect(await readStreamText(renderStream)).toBe(sourceText);
+  });
+
+  it("continues initial RSC hydration after client reference preload failures", async () => {
+    const reported: Array<{ id: string; error: unknown }> = [];
+    const error = new Error("load failed");
+
+    const renderStream = await preloadInitialClientReferencesFromRscStream(
+      textStream(['1:I["comp-a",[],"default",1]\n']),
+      {
+        clientRequire() {
+          return Promise.reject(error);
+        },
+        onPreloadError(id, preloadError) {
+          reported.push({ id, error: preloadError });
+        },
+      },
+    );
+
+    expect(reported).toEqual([{ id: "comp-a", error }]);
+    expect(await readStreamText(renderStream)).toBe('1:I["comp-a",[],"default",1]\n');
+  });
+
   it("shares one in-flight preload across concurrent cold SSR calls", async () => {
     const refs = { "comp-a": true, "comp-b": true, "comp-c": true };
     const calls: string[] = [];
@@ -33,7 +177,7 @@ describe("app client reference preloader", () => {
     expect(third).toBe(first);
     expect(calls).toEqual(["comp-a", "comp-b", "comp-c"]);
 
-    preloadGate.resolve();
+    preloadGate.resolve(undefined);
     await Promise.all([first, second, third]);
 
     await preloader.preload();
@@ -80,7 +224,7 @@ describe("app client reference preloader", () => {
 
     expect(calls).toEqual(["comp-a", "comp-b", "comp-c"]);
 
-    preloadGate.resolve();
+    preloadGate.resolve(undefined);
     await Promise.all([firstRoute, secondRoute]);
 
     await preloader.preload(["comp-b"]);

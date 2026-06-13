@@ -1230,6 +1230,44 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("prefetches App-only visible links before the navigate runtime is installed", async () => {
+    const observer = stubIntersectionObserver();
+    const navigationRuntimeKey = Symbol.for("vinext.navigationRuntime");
+    const requestIdleCallback = vi.fn(() => 1);
+
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: {
+        [navigationRuntimeKey]: {
+          bootstrap: {
+            routeManifest: null,
+            rsc: undefined,
+          },
+          functions: {},
+        },
+        requestIdleCallback,
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(requestIdleCallback).not.toHaveBeenCalled();
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/viewport-prefetch-target",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("re-prefetches visible links after the prefetch cache is invalidated", async () => {
     const observer = stubIntersectionObserver();
 
@@ -1580,20 +1618,16 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("gates prefetchInlining full payload behind a loading-shell request", async () => {
+  it("uses the loading shell as the prefetchInlining pending dedupe entry", async () => {
     vi.stubEnv("__VINEXT_PREFETCH_INLINING", "true");
     const observer = stubIntersectionObserver();
     let resolveShell: ((response: Response) => void) | undefined;
-    let releaseShellBody: (() => void) | undefined;
+    let resolveFull: ((response: Response) => void) | undefined;
     const shellPromise = new Promise<Response>((resolve) => {
       resolveShell = resolve;
     });
-    const shellBody = new ReadableStream<Uint8Array>({
-      start(controller) {
-        releaseShellBody = () => {
-          controller.close();
-        };
-      },
+    const fullPromise = new Promise<Response>((resolve) => {
+      resolveFull = resolve;
     });
     const result = await renderIsolatedLink({
       href: "/intent-prefetch-target",
@@ -1602,18 +1636,18 @@ describe("Link prefetch scheduling", () => {
 
     result.fetch
       .mockImplementationOnce(() => shellPromise)
-      .mockImplementationOnce(() => Promise.resolve(new Response("full")));
+      .mockImplementationOnce(() => fullPromise);
 
     try {
       observer.dispatchIntersectingEntry(result.anchor);
       await waitForFetchCalls(result.fetch, 1);
 
-      const firstInit = result.fetch.mock.calls[0]?.[1];
-      expect(firstInit?.headers).toBeInstanceOf(Headers);
-      if (!(firstInit?.headers instanceof Headers)) {
-        throw new Error("Expected prefetch request headers");
+      const shellFetchInit = result.fetch.mock.calls[0]?.[1];
+      expect(shellFetchInit?.headers).toBeInstanceOf(Headers);
+      if (!(shellFetchInit?.headers instanceof Headers)) {
+        throw new Error("Expected shell prefetch request headers");
       }
-      expect(firstInit.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+      expect(shellFetchInit.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
         APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
       );
 
@@ -1624,22 +1658,26 @@ describe("Link prefetch scheduling", () => {
       if (resolveShell === undefined) {
         throw new Error("Expected shell prefetch resolver");
       }
-      resolveShell(new Response(shellBody));
-      await flushPrefetchTasks();
-      expect(result.fetch).toHaveBeenCalledTimes(1);
-
-      if (releaseShellBody === undefined) {
-        throw new Error("Expected shell body release");
-      }
-      releaseShellBody();
+      resolveShell(new Response("shell"));
       await waitForFetchCalls(result.fetch, 2);
 
-      const secondInit = result.fetch.mock.calls[1]?.[1];
-      expect(secondInit?.headers).toBeInstanceOf(Headers);
-      if (!(secondInit?.headers instanceof Headers)) {
+      const fullFetchInit = result.fetch.mock.calls[1]?.[1];
+      expect(fullFetchInit?.headers).toBeInstanceOf(Headers);
+      if (!(fullFetchInit?.headers instanceof Headers)) {
         throw new Error("Expected full prefetch request headers");
       }
-      expect(secondInit.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
+      expect(fullFetchInit.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
+
+      pingVisibleLinksFromRuntime();
+      await flushPrefetchTasks();
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+
+      if (resolveFull === undefined) {
+        throw new Error("Expected full prefetch resolver");
+      }
+      resolveFull(new Response("full"));
+      await flushPrefetchTasks();
+      expect(result.fetch).toHaveBeenCalledTimes(2);
     } finally {
       result.restoreNodeEnv();
     }

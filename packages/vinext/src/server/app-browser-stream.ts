@@ -46,6 +46,29 @@ function getNavigationRuntimeRscBootstrap(): NavigationRuntimeRscBootstrap | nul
   return getNavigationRuntime()?.bootstrap.rsc ?? null;
 }
 
+function observeDoneMarker(
+  target: object,
+  key: string,
+  initialValue: boolean | undefined,
+  onDone: () => void,
+): void {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  if (descriptor && !descriptor.configurable) return;
+
+  let value = initialValue;
+  Object.defineProperty(target, key, {
+    configurable: true,
+    enumerable: descriptor?.enumerable ?? true,
+    get() {
+      return value;
+    },
+    set(nextValue: boolean | undefined) {
+      value = nextValue;
+      if (nextValue === true) onDone();
+    },
+  });
+}
+
 /**
  * Create a ReadableStream from progressively-embedded RSC chunks.
  *
@@ -97,6 +120,11 @@ export function createProgressiveRscStream(): ReadableStream<Uint8Array> {
       // Capture the bootstrap object before it can be cleared. Inline done
       // scripts mutate this same object, and clearing happens only after the
       // stream has already been consumed or closed.
+      if (liveRuntimeRsc) {
+        observeDoneMarker(liveRuntimeRsc, "done", liveRuntimeRsc.done, closeOnce);
+      } else {
+        observeDoneMarker(vinext, "__VINEXT_RSC_DONE__", vinext.__VINEXT_RSC_DONE__, closeOnce);
+      }
       arr.push = function (...chunks: RscEmbeddedChunk[]): number {
         const length = Array.prototype.push.apply(this, chunks);
 

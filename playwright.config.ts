@@ -21,6 +21,15 @@ const appRouterBfcacheServer = {
   timeout: 30_000,
 };
 
+const appPrefetchInliningServer = {
+  command:
+    "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build --prerender-all && node ../../../packages/vinext/dist/cli.js start --port 4186",
+  cwd: "./tests/fixtures/app-prefetch-inlining",
+  port: 4186,
+  reuseExistingServer: !process.env.CI,
+  timeout: 60_000,
+};
+
 /**
  * Each project maps to a single webServer. Some browser-specific projects share
  * a server with the base project, and shared servers are de-duped by port.
@@ -68,6 +77,11 @@ const projectServers = {
     testDir: "./tests/e2e/app-router-bfcache",
     use: { baseURL: "http://localhost:4183" },
     server: appRouterBfcacheServer,
+  },
+  "app-prefetch-inlining": {
+    testDir: "./tests/e2e/app-prefetch-inlining",
+    use: { baseURL: "http://localhost:4186" },
+    server: appPrefetchInliningServer,
   },
   "catch-error": {
     testDir: "./tests/e2e/catch-error",

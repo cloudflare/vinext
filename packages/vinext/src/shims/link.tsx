@@ -172,7 +172,6 @@ if (typeof window !== "undefined") {
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 /** trailingSlash from next.config.js, injected by the plugin at build time */
 const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
-const __prefetchInlining: boolean = process.env.__VINEXT_PREFETCH_INLINING === "true";
 const linkPrefetchRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
 
 function resolveHref(href: LinkProps["href"]): string {
@@ -284,14 +283,16 @@ function toSameOriginRouteHref(href: string): string | null {
 }
 
 function getLinkPrefetchRouterMode(): LinkPrefetchRouterMode {
-  return hasAppNavigationRuntime() ? "app" : "pages";
+  return hasAppLinkPrefetchRuntime() ? "app" : "pages";
 }
 
-function resolveMatchedAutoAppRoutePrefetch(route: VinextLinkPrefetchRoute): {
+type AutoAppRoutePrefetch = {
   cacheForNavigation: boolean;
-  prefetchShellFirst: boolean;
+  routeIsDynamic: boolean;
   shouldPrefetch: boolean;
-} {
+};
+
+function resolveMatchedAutoAppRoutePrefetch(route: VinextLinkPrefetchRoute): AutoAppRoutePrefetch {
   const hasLoadingShell = route.isDynamic && route.canPrefetchLoadingShell;
   return {
     // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
@@ -299,7 +300,7 @@ function resolveMatchedAutoAppRoutePrefetch(route: VinextLinkPrefetchRoute): {
     // fallbacks are treated as exact-URL full prefetches. The prefetch cache is
     // keyed by the concrete RSC URL, so this cannot reuse data across params.
     cacheForNavigation: !hasLoadingShell,
-    prefetchShellFirst: !route.isDynamic,
+    routeIsDynamic: route.isDynamic,
     shouldPrefetch: true,
   };
 }
@@ -321,26 +322,33 @@ export function canAutoPrefetchFullAppRoute(href: string): boolean {
 
 export function resolveAutoAppRoutePrefetch(href: string): {
   cacheForNavigation: boolean;
-  prefetchShellFirst: boolean;
   shouldPrefetch: boolean;
 } {
+  const result = resolveAutoAppRoutePrefetchForRequest(href);
+  return {
+    cacheForNavigation: result.cacheForNavigation,
+    shouldPrefetch: result.shouldPrefetch,
+  };
+}
+
+function resolveAutoAppRoutePrefetchForRequest(href: string): AutoAppRoutePrefetch {
   if (typeof window === "undefined") {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return { cacheForNavigation: false, routeIsDynamic: false, shouldPrefetch: false };
   }
 
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
   if (!routes) {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return { cacheForNavigation: false, routeIsDynamic: false, shouldPrefetch: false };
   }
 
   const routeHref = toSameOriginRouteHref(href);
   if (routeHref === null) {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return { cacheForNavigation: false, routeIsDynamic: false, shouldPrefetch: false };
   }
 
   const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
   if (!match) {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
+    return { cacheForNavigation: false, routeIsDynamic: false, shouldPrefetch: false };
   }
 
   return resolveMatchedAutoAppRoutePrefetch(match.route);
@@ -360,6 +368,39 @@ export function resolveAutoAppRoutePrefetch(href: string): {
  * Uses `requestIdleCallback` (or `setTimeout` fallback) to avoid blocking
  * the main thread during initial page load.
  */
+const APP_PREFETCH_RUNTIME_RETRY_LIMIT = 5;
+
+function hasAppLinkPrefetchRuntime(): boolean {
+  if (typeof window === "undefined") return false;
+  if (hasAppNavigationRuntime()) return true;
+  return (
+    window.__NEXT_DATA__ === undefined && Array.isArray(window.__VINEXT_LINK_PREFETCH_ROUTES__)
+  );
+}
+
+function isAppMaxPrefetchInliningEnabled(): boolean {
+  return process.env.__VINEXT_PREFETCH_INLINING === "true";
+}
+
+function scheduleAppPrefetchRetry(
+  mode: LinkPrefetchMode,
+  attempt: number,
+  schedulePrefetchAttempt: (nextAttempt: number) => void,
+): boolean {
+  if (
+    mode !== "auto" ||
+    window.__NEXT_DATA__ !== undefined ||
+    attempt >= APP_PREFETCH_RUNTIME_RETRY_LIMIT
+  ) {
+    return false;
+  }
+
+  window.setTimeout(() => {
+    schedulePrefetchAttempt(attempt + 1);
+  }, 16);
+  return true;
+}
+
 function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "high" = "low"): void {
   if (typeof window === "undefined") return;
 
@@ -381,149 +422,206 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
   }
 
   const schedule =
-    priority === "high"
+    priority === "high" || window.__NEXT_DATA__ === undefined
       ? (fn: () => void) => {
           fn();
         }
       : (window.requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100)));
 
-  schedule(() => {
-    void (async () => {
-      if (hasAppNavigationRuntime()) {
-        const autoPrefetch =
-          mode === "auto"
-            ? resolveAutoAppRoutePrefetch(prefetchHref)
-            : { cacheForNavigation: true, prefetchShellFirst: true, shouldPrefetch: true };
-        if (!autoPrefetch.shouldPrefetch) return;
-
-        const interceptionContext = getPrefetchInterceptionContext(fullHref);
-        const mountedSlotsHeader = getMountedSlotsHeader();
-        const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
-        if (isOptimisticRouteShellPrefetch && interceptionContext !== null) return;
-        const headers = createRscRequestHeaders({
-          interceptionContext,
-          renderMode: isOptimisticRouteShellPrefetch
-            ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
-            : undefined,
-        });
-        if (mountedSlotsHeader) {
-          headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
-        }
-        // Distinguish the same visible URL when it is prefetched from different
-        // request contexts such as /feed vs /gallery or different mounted slots.
-        const rscUrl = await createRscRequestUrl(fullHref, headers);
-        const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
-        const prefetched = getPrefetchedUrls();
-        if (prefetched.has(cacheKey)) {
-          if (!autoPrefetch.cacheForNavigation) {
+  const schedulePrefetchAttempt = (attempt: number): void => {
+    schedule(() => {
+      void (async () => {
+        if (hasAppLinkPrefetchRuntime()) {
+          const autoPrefetch =
+            mode === "auto"
+              ? resolveAutoAppRoutePrefetchForRequest(prefetchHref)
+              : { cacheForNavigation: true, routeIsDynamic: false, shouldPrefetch: true };
+          if (!autoPrefetch.shouldPrefetch) {
+            scheduleAppPrefetchRetry(mode, attempt, schedulePrefetchAttempt);
             return;
           }
 
-          const existing = getPrefetchCache().get(cacheKey);
-          if (existing?.cacheForNavigation === false) {
-            existing.cacheForNavigation = true;
+          const interceptionContext = getPrefetchInterceptionContext(fullHref);
+          const mountedSlotsHeader = getMountedSlotsHeader();
+          const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
+          const useMaxPrefetchInlining =
+            mode === "auto" &&
+            isAppMaxPrefetchInliningEnabled() &&
+            autoPrefetch.cacheForNavigation &&
+            !autoPrefetch.routeIsDynamic;
+          if (
+            (isOptimisticRouteShellPrefetch || useMaxPrefetchInlining) &&
+            interceptionContext !== null
+          ) {
+            return;
           }
-        }
-        // A single freshness-aware gate covers both an exact prior prefetch and
-        // an equivalent `_rsc` variant; the helper also deletes any stale exact
-        // entry, so a stale `prefetched` member is harmlessly re-added below.
-        if (
-          autoPrefetch.cacheForNavigation &&
-          hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader)
-        ) {
-          return;
-        }
-        prefetched.add(cacheKey);
-        // Next's `prefetchInlining` Segment Cache path reserves the final
-        // payload while a route-tree request is still pending. Vinext keeps a
-        // unified route payload, so gate that payload behind a loading-shell
-        // request to preserve the same pending/dedup observable contract.
-        const fetchPromise =
-          __prefetchInlining && autoPrefetch.cacheForNavigation && autoPrefetch.prefetchShellFirst
-            ? (async () => {
-                const shellHeaders = createRscRequestHeaders({
-                  interceptionContext,
-                  renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-                });
-                if (mountedSlotsHeader) {
-                  shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
-                }
-                const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
-                const shellResponse = await fetch(shellRscUrl, {
-                  headers: shellHeaders,
-                  credentials: "include",
-                  priority,
-                  // @ts-expect-error — purpose is a valid fetch option in some browsers
-                  purpose: "prefetch",
-                });
-                if (!shellResponse.ok) {
-                  return shellResponse;
-                }
-                await shellResponse.arrayBuffer().catch(() => {});
-                return fetch(rscUrl, {
-                  headers,
-                  credentials: "include",
-                  priority,
-                  // @ts-expect-error — purpose is a valid fetch option in some browsers
-                  purpose: "prefetch",
-                });
-              })()
-            : fetch(rscUrl, {
-                headers,
+          const fullHeaders = createRscRequestHeaders({
+            interceptionContext,
+            renderMode: isOptimisticRouteShellPrefetch
+              ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+              : undefined,
+          });
+          if (mountedSlotsHeader) {
+            fullHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+          }
+          const fullRscUrl = await createRscRequestUrl(fullHref, fullHeaders);
+          const fullCacheKey = AppElementsWire.encodeCacheKey(fullRscUrl, interceptionContext);
+
+          const startFullRoutePrefetch = (): void => {
+            if (
+              autoPrefetch.cacheForNavigation &&
+              hasPrefetchCacheEntryForNavigation(
+                fullRscUrl,
+                interceptionContext,
+                mountedSlotsHeader,
+              )
+            ) {
+              return;
+            }
+            if (getPrefetchedUrls().has(fullCacheKey)) return;
+
+            getPrefetchedUrls().add(fullCacheKey);
+            prefetchRscResponse(
+              fullRscUrl,
+              fetch(fullRscUrl, {
+                headers: fullHeaders,
                 credentials: "include",
                 priority,
                 // @ts-expect-error — purpose is a valid fetch option in some browsers
                 purpose: "prefetch",
-              });
-        prefetchRscResponse(
-          rscUrl,
-          fetchPromise,
-          interceptionContext,
-          mountedSlotsHeader,
-          undefined,
-          {
-            cacheForNavigation: autoPrefetch.cacheForNavigation,
-            optimisticRouteShell: isOptimisticRouteShellPrefetch,
-          },
-        );
-      } else if (window.__NEXT_DATA__) {
-        // Pages Router prefetch. When a code-split loader is registered for
-        // the target route (prod builds expose them on window via the
-        // generated client entry), prefetch the data JSON + warm the page
-        // chunk in parallel — matching the actual navigation, so the click
-        // is a double cache hit. Otherwise (dev, or unmapped route) fall
-        // back to the legacy `<link rel="prefetch" as="document">` so the
-        // browser still preloads the HTML.
-        //
-        // The decision helper + prefetch action live in shims/internal/ so
-        // this file does not pull in the router shim at module init time,
-        // which would create a circular import and grow the SSR module graph.
-        const dataTarget = resolvePagesDataNavigationTarget(fullHref, __basePath);
-        if (dataTarget) {
-          prefetchPagesData(dataTarget);
-        } else {
-          // The target is not a Pages Router route — mark it on the Pages
-          // Router `components` map if it matches an App Router route in the
-          // shared prefetch manifest. Mirrors Next.js's `_bfl` marker write at
-          // `packages/next/src/shared/lib/router/router.ts:2525`; the Next.js
-          // deploy test reads `window.next.router.components[<path>]` to
-          // assert prefetch detection. See issue #1526.
-          markAppRouteDetectedOnPrefetch(fullHref, __basePath);
+              }),
+              interceptionContext,
+              mountedSlotsHeader,
+              undefined,
+              {
+                cacheForNavigation: autoPrefetch.cacheForNavigation,
+                optimisticRouteShell: isOptimisticRouteShellPrefetch,
+              },
+            );
+          };
 
-          // Legacy fallback: hint the browser to preload the HTML document.
-          // Used in dev (no loader map populated) and for routes not in the
-          // client loader map.
-          const link = document.createElement("link");
-          link.rel = "prefetch";
-          link.href = fullHref;
-          link.as = "document";
-          document.head.appendChild(link);
+          if (useMaxPrefetchInlining) {
+            if (
+              hasPrefetchCacheEntryForNavigation(
+                fullRscUrl,
+                interceptionContext,
+                mountedSlotsHeader,
+              )
+            ) {
+              return;
+            }
+            if (getPrefetchedUrls().has(fullCacheKey)) return;
+
+            const shellHeaders = createRscRequestHeaders({
+              interceptionContext,
+              renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+            });
+            if (mountedSlotsHeader) {
+              shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+            }
+            const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
+            const shellCacheKey = AppElementsWire.encodeCacheKey(shellRscUrl, interceptionContext);
+            const shellEntry = getPrefetchCache().get(shellCacheKey);
+            if (getPrefetchedUrls().has(shellCacheKey)) {
+              if (shellEntry?.outcome === "cache-seeded") {
+                startFullRoutePrefetch();
+              }
+              return;
+            }
+
+            getPrefetchedUrls().add(shellCacheKey);
+            prefetchRscResponse(
+              shellRscUrl,
+              fetch(shellRscUrl, {
+                headers: shellHeaders,
+                credentials: "include",
+                priority,
+                // @ts-expect-error — purpose is a valid fetch option in some browsers
+                purpose: "prefetch",
+              }),
+              interceptionContext,
+              mountedSlotsHeader,
+              undefined,
+              {
+                cacheForNavigation: false,
+                optimisticRouteShell: true,
+              },
+            );
+            const pendingShellEntry = getPrefetchCache().get(shellCacheKey);
+            void pendingShellEntry?.pending?.then(() => {
+              if (getPrefetchCache().get(shellCacheKey)?.outcome === "cache-seeded") {
+                startFullRoutePrefetch();
+              }
+            });
+            return;
+          }
+
+          // Distinguish the same visible URL when it is prefetched from different
+          // request contexts such as /feed vs /gallery or different mounted slots.
+          const prefetched = getPrefetchedUrls();
+          if (prefetched.has(fullCacheKey)) {
+            if (!autoPrefetch.cacheForNavigation) {
+              return;
+            }
+
+            const existing = getPrefetchCache().get(fullCacheKey);
+            if (existing?.cacheForNavigation === false) {
+              existing.cacheForNavigation = true;
+            }
+          }
+          // A single freshness-aware gate covers both an exact prior prefetch and
+          // an equivalent `_rsc` variant; the helper also deletes any stale exact
+          // entry, so a stale `prefetched` member is harmlessly re-added below.
+          if (
+            autoPrefetch.cacheForNavigation &&
+            hasPrefetchCacheEntryForNavigation(fullRscUrl, interceptionContext, mountedSlotsHeader)
+          ) {
+            return;
+          }
+          startFullRoutePrefetch();
+        } else if (window.__NEXT_DATA__) {
+          // Pages Router prefetch. When a code-split loader is registered for
+          // the target route (prod builds expose them on window via the
+          // generated client entry), prefetch the data JSON + warm the page
+          // chunk in parallel — matching the actual navigation, so the click
+          // is a double cache hit. Otherwise (dev, or unmapped route) fall
+          // back to the legacy `<link rel="prefetch" as="document">` so the
+          // browser still preloads the HTML.
+          //
+          // The decision helper + prefetch action live in shims/internal/ so
+          // this file does not pull in the router shim at module init time,
+          // which would create a circular import and grow the SSR module graph.
+          const dataTarget = resolvePagesDataNavigationTarget(fullHref, __basePath);
+          if (dataTarget) {
+            prefetchPagesData(dataTarget);
+          } else {
+            // The target is not a Pages Router route — mark it on the Pages
+            // Router `components` map if it matches an App Router route in the
+            // shared prefetch manifest. Mirrors Next.js's `_bfl` marker write at
+            // `packages/next/src/shared/lib/router/router.ts:2525`; the Next.js
+            // deploy test reads `window.next.router.components[<path>]` to
+            // assert prefetch detection. See issue #1526.
+            markAppRouteDetectedOnPrefetch(fullHref, __basePath);
+
+            // Legacy fallback: hint the browser to preload the HTML document.
+            // Used in dev (no loader map populated) and for routes not in the
+            // client loader map.
+            const link = document.createElement("link");
+            link.rel = "prefetch";
+            link.href = fullHref;
+            link.as = "document";
+            document.head.appendChild(link);
+          }
+        } else if (window.__NEXT_DATA__ === undefined) {
+          scheduleAppPrefetchRetry(mode, attempt, schedulePrefetchAttempt);
         }
-      }
-    })().catch((error) => {
-      console.error("[vinext] RSC prefetch setup error:", error);
+      })().catch((error) => {
+        console.error("[vinext] RSC prefetch setup error:", error);
+      });
     });
-  });
+  };
+
+  schedulePrefetchAttempt(0);
 }
 
 function promotePrefetchEntriesForNavigation(href: string): void {

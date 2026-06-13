@@ -103,12 +103,32 @@ describe("App browser stream helpers", () => {
     vinext.__VINEXT_RSC_CHUNKS__!.push("delta");
     expect(await readText(reader)).toEqual({ done: false, text: "delta" });
 
-    vinext.__VINEXT_RSC_DONE__ = true;
     vinext.__VINEXT_RSC_CHUNKS__!.push("final");
+    vinext.__VINEXT_RSC_DONE__ = true;
     expect(await readText(reader)).toEqual({ done: false, text: "final" });
     expect(await readText(reader)).toEqual({ done: true, text: undefined });
 
     expect(listeners.has("DOMContentLoaded")).toBe(true);
+  });
+
+  it("closes legacy global streams when the done marker is set without another push", async () => {
+    setGlobalDocument({
+      readyState: "loading",
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as Document);
+
+    vinext.__VINEXT_RSC_CHUNKS__ = ["shell"];
+    vinext.__VINEXT_RSC_DONE__ = false;
+
+    const reader = createProgressiveRscStream().getReader();
+
+    expect(await readText(reader)).toEqual({ done: false, text: "shell" });
+
+    const pendingRead = readText(reader);
+    vinext.__VINEXT_RSC_DONE__ = true;
+
+    expect(await pendingRead).toEqual({ done: true, text: undefined });
   });
 
   it("streams progressive chunks from the typed navigation runtime", async () => {
@@ -134,11 +154,38 @@ describe("App browser stream helpers", () => {
     runtimeRsc.rsc.push("delta");
     expect(await readText(reader)).toEqual({ done: false, text: "delta" });
 
-    runtimeRsc.done = true;
     runtimeRsc.rsc.push("final");
+    runtimeRsc.done = true;
     expect(await readText(reader)).toEqual({ done: false, text: "final" });
     expect(await readText(reader)).toEqual({ done: true, text: undefined });
 
+    expect(Reflect.has(runtimeWindow, NAVIGATION_RUNTIME_KEY)).toBe(true);
+  });
+
+  it("closes typed navigation runtime streams when the done marker is set without another push", async () => {
+    const runtimeWindow = {};
+    Reflect.set(globalThis, "window", runtimeWindow);
+    setGlobalDocument({
+      readyState: "loading",
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as Document);
+
+    registerNavigationRuntimeBootstrap({ rsc: { rsc: ["shell"], done: false } });
+
+    const reader = createProgressiveRscStream().getReader();
+
+    expect(await readText(reader)).toEqual({ done: false, text: "shell" });
+
+    const runtimeRsc = getNavigationRuntime()?.bootstrap.rsc;
+    if (runtimeRsc === undefined) {
+      throw new Error("Expected navigation runtime RSC bootstrap");
+    }
+
+    const pendingRead = readText(reader);
+    runtimeRsc.done = true;
+
+    expect(await pendingRead).toEqual({ done: true, text: undefined });
     expect(Reflect.has(runtimeWindow, NAVIGATION_RUNTIME_KEY)).toBe(true);
   });
 
@@ -158,8 +205,8 @@ describe("App browser stream helpers", () => {
     expect(await readText(reader)).toEqual({ done: false, text: "alpha" });
     expect(await readText(reader)).toEqual({ done: false, text: "beta" });
 
-    vinext.__VINEXT_RSC_DONE__ = true;
     vinext.__VINEXT_RSC_CHUNKS__!.push("omega");
+    vinext.__VINEXT_RSC_DONE__ = true;
     expect(await readText(reader)).toEqual({ done: false, text: "omega" });
     expect(await readText(reader)).toEqual({ done: true, text: undefined });
   });
@@ -181,8 +228,8 @@ describe("App browser stream helpers", () => {
     vinext.__VINEXT_RSC_CHUNKS__!.push([3, "/wABAgM="]);
     expect(await readBytes(reader)).toEqual({ done: false, bytes: [255, 0, 1, 2, 3] });
 
-    vinext.__VINEXT_RSC_DONE__ = true;
     vinext.__VINEXT_RSC_CHUNKS__!.push("final");
+    vinext.__VINEXT_RSC_DONE__ = true;
     expect(await readText(reader)).toEqual({ done: false, text: "final" });
     expect(await readBytes(reader)).toEqual({ done: true, bytes: undefined });
   });
@@ -223,8 +270,8 @@ describe("App browser stream helpers", () => {
     const reader = createProgressiveRscStream().getReader();
     const pendingRead = readText(reader);
 
-    vinext.__VINEXT_RSC_DONE__ = true;
     vinext.__VINEXT_RSC_CHUNKS__!.push("final");
+    vinext.__VINEXT_RSC_DONE__ = true;
 
     expect(await pendingRead).toEqual({ done: false, text: "final" });
     expect(await readText(reader)).toEqual({ done: true, text: undefined });

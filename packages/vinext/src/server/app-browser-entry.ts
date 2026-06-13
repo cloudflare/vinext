@@ -175,6 +175,10 @@ import {
 } from "./headers.js";
 import { removeStylesheetLinksCoveredByInlineCss } from "./app-inline-css-client.js";
 import { navigationPlanner } from "./navigation-planner.js";
+import {
+  installReactFlightClientReferenceRequire,
+  preloadInitialClientReferencesFromRscStream,
+} from "./app-client-reference-loader.js";
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 
@@ -1561,7 +1565,14 @@ async function main(): Promise<void> {
   // helper so the null-branch structurally cannot reach any RSC bootstrap
   // global assignment, even if a future refactor interposes async work here.
   if (rscStream === null) return;
-  bootstrapHydration(rscStream);
+  const hydrationStream = await preloadInitialClientReferencesFromRscStream(rscStream, {
+    onPreloadError(id, error) {
+      if (import.meta.env.DEV) {
+        console.warn("[vinext] failed to preload initial client ref:", id, error);
+      }
+    },
+  });
+  bootstrapHydration(hydrationStream);
 }
 
 function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
@@ -2281,5 +2292,6 @@ if (typeof document !== "undefined") {
       mpaNavigationScheduler.reset();
     }
   });
+  installReactFlightClientReferenceRequire();
   void main();
 }
