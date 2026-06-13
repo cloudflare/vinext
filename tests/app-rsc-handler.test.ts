@@ -1,11 +1,20 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   computeRscCacheBustingSearchParam,
   createRscRequestHeaders,
   createRscRequestUrl,
+  VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
+import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
+import {
+  createClientReuseManifest,
+  createClientReusePayloadHash,
+} from "../packages/vinext/src/server/client-reuse-manifest.js";
+import { VINEXT_CLIENT_REUSE_MANIFEST_HEADER } from "../packages/vinext/src/server/headers.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 
 type TestRoute = {
@@ -57,6 +66,8 @@ function createHandler(overrides: Partial<HandlerOptions> = {}) {
     handleProgressiveActionRequest: overrides.handleProgressiveActionRequest ?? (async () => null),
     handleServerActionRequest: overrides.handleServerActionRequest ?? (async () => null),
     i18nConfig: overrides.i18nConfig ?? null,
+    imageConfig: overrides.imageConfig,
+    isDev: overrides.isDev ?? true,
     isMiddlewareProxy: overrides.isMiddlewareProxy ?? false,
     makeThenableParams,
     matchRoute:
@@ -71,6 +82,7 @@ function createHandler(overrides: Partial<HandlerOptions> = {}) {
     metadataRoutes: overrides.metadataRoutes ?? [],
     middlewareModule: overrides.middlewareModule ?? null,
     publicFiles: overrides.publicFiles ?? new Set<string>(),
+    registerCacheAdapters: () => {},
     renderNotFound: overrides.renderNotFound ?? (async () => null),
     renderPagesFallback: overrides.renderPagesFallback,
     rootParamNamesByPattern: overrides.rootParamNamesByPattern,
@@ -86,6 +98,59 @@ function prerenderRouteParamsHeader(payload: unknown): string {
 }
 
 describe("createAppRscHandler", () => {
+  it.each([
+    "url=%2Fimg.jpg&w=640junk&q=75",
+    "url=%2Fimg.jpg&w=640&q=75&extra=1",
+    "url=%2Fimg.jpg&w=640&w=640&q=75",
+  ])("rejects malformed pure App Router dev image parameters: %s", async (query) => {
+    const handler = createHandler();
+    const response = await handler(
+      new Request(`https://example.test/docs/_next/image?${query}`),
+      null,
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("uses configured image widths and qualities in pure App Router dev", async () => {
+    const handler = createHandler({
+      imageConfig: { deviceSizes: [320], imageSizes: [16], qualities: [60] },
+    });
+    const allowed = await handler(
+      new Request("https://example.test/docs/_next/image?url=%2Fimg.jpg&w=320&q=60"),
+      null,
+    );
+    expect(allowed.status).toBe(302);
+    expect(allowed.headers.get("location")).toBe("https://example.test/img.jpg");
+
+    const defaultOnly = await handler(
+      new Request("https://example.test/docs/_next/image?url=%2Fimg.jpg&w=640&q=75"),
+      null,
+    );
+    expect(defaultOnly.status).toBe(400);
+  });
+
+  it("allows independent Next.js blur width and quality exceptions in pure App Router dev", async () => {
+    const handler = createHandler();
+    for (const query of ["url=%2Fimg.jpg&w=8&q=75", "url=%2Fimg.jpg&w=640&q=70"]) {
+      const response = await handler(
+        new Request(`https://example.test/docs/_next/image?${query}`),
+        null,
+      );
+      expect(response.status).toBe(302);
+    }
+  });
+
+  it("rejects Next.js blur width and quality exceptions in production", async () => {
+    const handler = createHandler({ isDev: false });
+    for (const query of ["url=%2Fimg.jpg&w=8&q=75", "url=%2Fimg.jpg&w=640&q=70"]) {
+      const response = await handler(
+        new Request(`https://example.test/docs/_next/image?${query}`),
+        null,
+      );
+      expect(response.status).toBe(400);
+    }
+  });
+
   it("wraps dispatch responses with request-scoped finalization", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
     const handler = createHandler({ dispatchMatchedPage });
@@ -96,6 +161,30 @@ describe("createAppRscHandler", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("x-test-header")).toBe("applied");
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
+  });
+
+  it("does not trailing-slash redirect RSC requests built from already-canonical trailingSlash paths", async () => {
+    const headers = createRscRequestHeaders();
+    const requestPath = await createRscRequestUrl("/about/", headers);
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const route = createPageRoute({ pattern: "/about/", routeSegments: ["about"] });
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchRoute(pathname: string) {
+        return pathname === "/about/" ? { params: {}, route } : null;
+      },
+      trailingSlash: true,
+    });
+
+    const response = await handler(
+      new Request(`https://example.test/docs${requestPath}`, { headers }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.has("location")).toBe(false);
+    expect(dispatchMatchedPage).toHaveBeenCalledTimes(1);
   });
 
   it("marks progressive action page renders even when decoded form state is null", async () => {
@@ -543,8 +632,51 @@ describe("createAppRscHandler", () => {
 
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe(
-      `https://example.test/docs/about.rsc?from=old&_rsc=${expectedHash}`,
+      `https://example.test/docs/about?from=old&_rsc=${expectedHash}`,
     );
+  });
+
+  it("preserves the _rsc query on config redirects for .rsc requests without the RSC header (#1529)", async () => {
+    // A `.rsc`-suffixed request is an RSC request even when the `RSC: 1`
+    // header is absent (e.g. a CDN-style or auto-followed fetch). Without the
+    // header the handler can't recompute the cache-busting hash, so the
+    // non-header branch carries the original request query onto the Location
+    // verbatim (mirroring Next.js resolve-routes.ts) rather than dropping it.
+    // (Note: the `.rsc` suffix is not re-applied to the destination, so the
+    // followed request isn't re-detected as RSC purely from `_rsc` — the
+    // guarantee here is query preservation, not RSC re-detection.)
+    const handler = createHandler({
+      configHeaders: [],
+      configRedirects: [{ source: "/old-about", destination: "/about", permanent: true }],
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/old-about.rsc?_rsc=abc123", {
+        headers: { Accept: "text/x-component" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("/docs/about?_rsc=abc123");
+  });
+
+  it("preserves the original request query on config redirects for document requests (#1529)", async () => {
+    // A plain (non-RSC) document request that hits a config redirect must
+    // carry its original query onto the Location, matching Next.js
+    // resolve-routes.ts. The destination's own query wins on key conflicts.
+    const handler = createHandler({
+      configHeaders: [],
+      configRedirects: [{ source: "/old-about", destination: "/about?from=old", permanent: true }],
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/old-about?foo=bar&from=req"),
+      null,
+    );
+
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("/docs/about?from=old&foo=bar");
   });
 
   it("redirects invalid RSC cache-busting requests before middleware", async () => {
@@ -571,6 +703,79 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
+  it("hides internal RSC cache-busting params from middleware nextUrl", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/navigation/middleware.js
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/navigation/middleware.js
+    const middleware = vi.fn(
+      (_: { nextUrl: URL }) => new Response(null, { headers: { "x-middleware-next": "1" } }),
+    );
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+    const rscUrl = await createRscRequestUrl("/docs/about?tab=latest", headers);
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      middlewareModule: { default: middleware },
+    });
+
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(middleware).toHaveBeenCalledTimes(1);
+    const middlewareRequest = middleware.mock.calls[0]?.[0];
+    expect(middlewareRequest?.nextUrl.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)).toBe(
+      false,
+    );
+    expect(middlewareRequest?.nextUrl.search).toBe("?tab=latest");
+    expect(dispatchMatchedPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides internal RSC cache-busting params from external rewrite proxies", async () => {
+    // The fetch-cache instrumentation captures the real `fetch` at module load
+    // and reinstalls a patched copy during request handling, so a global
+    // `fetch` mock can't intercept the proxied request. Use a real loopback
+    // server as the external rewrite destination and record the URL it
+    // receives — that exercises the full handler -> applyRewrite ->
+    // proxyExternalRequest path without fighting the instrumentation.
+    const receivedUrls: string[] = [];
+    const server = createServer((req, res) => {
+      receivedUrls.push(req.url ?? "");
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("upstream");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+    const upstreamBase = `http://127.0.0.1:${address.port}`;
+
+    try {
+      const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+      const rscUrl = await createRscRequestUrl("/docs/proxy?tab=latest", headers);
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [{ source: "/proxy", destination: `${upstreamBase}/proxy` }],
+          afterFiles: [],
+          fallback: [],
+        },
+        matchRoute: () => null,
+      });
+
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(receivedUrls).toHaveLength(1);
+      const forwardedUrl = new URL(`${upstreamBase}${receivedUrls[0]}`);
+      expect(forwardedUrl.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)).toBe(false);
+      expect(forwardedUrl.searchParams.get("tab")).toBe("latest");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("does not render RSC payloads at HTML URLs marked only by RSC headers", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
     const handler = createHandler({
@@ -590,6 +795,45 @@ describe("createAppRscHandler", () => {
       expect.objectContaining({
         cleanPathname: "/about",
         isRscRequest: false,
+      }),
+    );
+  });
+
+  it("passes parsed ClientReuseManifest hints from canonical RSC requests to page dispatch", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    const manifest = createClientReuseManifest({
+      entries: [
+        {
+          artifactCompatibility: createArtifactCompatibilityEnvelope(),
+          id: "layout:/",
+          payloadHash: createClientReusePayloadHash("root-layout"),
+          privacy: "public",
+          variantCacheKey: "cp1:root",
+        },
+      ],
+      visibleCommitVersion: 1,
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about.rsc", {
+        headers: {
+          [VINEXT_CLIENT_REUSE_MANIFEST_HEADER]: JSON.stringify(manifest),
+        },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clientReuseManifest: expect.objectContaining({
+          kind: "parsed",
+        }),
+        isRscRequest: true,
       }),
     );
   });
@@ -738,6 +982,121 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("vary")).toBeNull();
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
     expect(matchRoute).not.toHaveBeenCalled();
+  });
+
+  it("lets middleware Cache-Control override static metadata route defaults", async () => {
+    // Ported from Next.js: test/e2e/app-dir/no-duplicate-headers-middleware/no-duplicate-headers-middleware.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/no-duplicate-headers-middleware/no-duplicate-headers-middleware.test.ts
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: () => null,
+      metadataRoutes: [
+        {
+          type: "favicon",
+          isDynamic: false,
+          filePath: "/tmp/app/favicon.ico",
+          routePrefix: "",
+          routeSegments: [],
+          servedUrl: "/favicon.ico",
+          contentType: "image/x-icon",
+          fileDataBase64: btoa("icon-bytes"),
+        },
+      ],
+      middlewareModule: {
+        middleware() {
+          return new Response(null, {
+            headers: {
+              "Cache-Control": "max-age=1234",
+              "x-middleware-next": "1",
+            },
+          });
+        },
+      },
+    });
+
+    const response = await handler(new Request("https://example.test/docs/favicon.ico"), null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("max-age=1234");
+    expect(response.headers.get("content-type")).toBe("image/x-icon");
+    await expect(response.text()).resolves.toBe("icon-bytes");
+  });
+
+  it("lets next.config headers override static metadata route defaults", async () => {
+    // Ported from Next.js: test/e2e/app-dir/no-duplicate-headers-next-config/no-duplicate-headers-next-config.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-duplicate-headers-next-config/no-duplicate-headers-next-config.test.ts
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/favicon.ico",
+          headers: [
+            { key: "cache-control", value: "max-age=1234" },
+            { key: "content-type", value: "text/plain" },
+          ],
+        },
+      ],
+      matchRoute: () => null,
+      metadataRoutes: [
+        {
+          type: "favicon",
+          isDynamic: false,
+          filePath: "/tmp/app/favicon.ico",
+          routePrefix: "",
+          routeSegments: [],
+          servedUrl: "/favicon.ico",
+          contentType: "image/x-icon",
+          fileDataBase64: btoa("icon-bytes"),
+        },
+      ],
+    });
+
+    const response = await handler(new Request("https://example.test/docs/favicon.ico"), null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("max-age=1234");
+    expect(response.headers.get("content-type")).toBe("image/x-icon");
+    await expect(response.text()).resolves.toBe("icon-bytes");
+  });
+
+  it("keeps middleware Cache-Control above matching config headers for metadata routes", async () => {
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/favicon.ico",
+          headers: [{ key: "cache-control", value: "max-age=1234" }],
+        },
+      ],
+      matchRoute: () => null,
+      metadataRoutes: [
+        {
+          type: "favicon",
+          isDynamic: false,
+          filePath: "/tmp/app/favicon.ico",
+          routePrefix: "",
+          routeSegments: [],
+          servedUrl: "/favicon.ico",
+          contentType: "image/x-icon",
+          fileDataBase64: btoa("icon-bytes"),
+        },
+      ],
+      middlewareModule: {
+        middleware() {
+          return new Response(null, {
+            headers: {
+              "Cache-Control": "max-age=5678",
+              "x-middleware-next": "1",
+            },
+          });
+        },
+      },
+    });
+
+    const response = await handler(new Request("https://example.test/docs/favicon.ico"), null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("max-age=5678");
+    expect(response.headers.get("content-type")).toBe("image/x-icon");
+    await expect(response.text()).resolves.toBe("icon-bytes");
   });
 
   it("lets server actions short-circuit routing while still applying final headers", async () => {

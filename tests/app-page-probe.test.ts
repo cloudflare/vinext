@@ -1,8 +1,15 @@
+import React from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  buildAppPageProbes,
   probeAppPage,
   probeAppPageBeforeRender,
+  probeReactServerSubtree,
 } from "../packages/vinext/src/server/app-page-probe.js";
+import {
+  consumeDynamicUsage,
+  consumeRenderRequestApiUsage,
+} from "../packages/vinext/src/shims/headers.js";
 
 // Mirrors makeThenableParams() from app-rsc-entry.ts — the function that
 // converts raw null-prototype params into objects that work with both
@@ -12,7 +19,127 @@ function makeThenableParams<T extends Record<string, unknown>>(obj: T): Promise<
   return Object.assign(Promise.resolve(plain), plain);
 }
 
+async function registerCachedProbePage<TProps extends Record<string, unknown>, TResult>(
+  fn: (props: TProps) => Promise<TResult>,
+  id: string,
+): Promise<(props: TProps) => Promise<TResult>> {
+  const { registerCachedFunction } = await import("../packages/vinext/src/shims/cache-runtime.js");
+  const { MemoryCacheHandler, setCacheHandler } =
+    await import("../packages/vinext/src/shims/cache.js");
+  setCacheHandler(new MemoryCacheHandler());
+  consumeDynamicUsage();
+  consumeRenderRequestApiUsage();
+  return registerCachedFunction(fn, id);
+}
+
 describe("app page probe helpers", () => {
+  it("probes server components returned below a layout result", async () => {
+    const calls: string[] = [];
+
+    function Child() {
+      calls.push("child");
+      return null;
+    }
+
+    function Layout() {
+      calls.push("layout");
+      return React.createElement("section", null, React.createElement(Child));
+    }
+
+    await probeReactServerSubtree(React.createElement(Layout));
+
+    expect(calls).toEqual(["layout", "child"]);
+  });
+
+  it("probes memo and forwardRef server components returned below a layout result", async () => {
+    const calls: string[] = [];
+
+    const MemoChild = React.memo(function MemoChild() {
+      calls.push("memo");
+      return null;
+    });
+    const ForwardRefChild = React.forwardRef(function ForwardRefChild() {
+      calls.push("forwardRef");
+      return null;
+    });
+    const MemoForwardRefChild = React.memo(
+      React.forwardRef(function MemoForwardRefChild() {
+        calls.push("memoForwardRef");
+        return null;
+      }),
+    );
+
+    function Layout() {
+      calls.push("layout");
+      return React.createElement(
+        "section",
+        null,
+        React.createElement(MemoChild),
+        React.createElement(ForwardRefChild),
+        React.createElement(MemoForwardRefChild),
+      );
+    }
+
+    await probeReactServerSubtree(React.createElement(Layout));
+
+    expect(calls).toEqual(["layout", "memo", "forwardRef", "memoForwardRef"]);
+  });
+
+  it("probes lazy server components returned below a layout result", async () => {
+    const calls: string[] = [];
+
+    const LazyChild = React.lazy(() =>
+      Promise.resolve({
+        default() {
+          calls.push("lazy");
+          return null;
+        },
+      }),
+    );
+
+    function Layout() {
+      calls.push("layout");
+      return React.createElement("section", null, React.createElement(LazyChild));
+    }
+
+    await probeReactServerSubtree(React.createElement(Layout));
+
+    expect(calls).toEqual(["layout", "lazy"]);
+  });
+
+  it("enforces subtree depth limits for nested arrays", async () => {
+    await expect(
+      probeReactServerSubtree([[[React.createElement("span")]]], { maxDepth: 1 }),
+    ).rejects.toThrow("App page layout subtree probe exceeded max depth");
+  });
+
+  it("enforces subtree node limits for large arrays", async () => {
+    await expect(probeReactServerSubtree([1, 2, 3], { maxNodes: 2 })).rejects.toThrow(
+      "App page layout subtree probe exceeded max nodes",
+    );
+  });
+
+  it("does not consume single-use iterables while probing layout children", async () => {
+    function Child() {
+      return null;
+    }
+
+    function* createChildren() {
+      yield React.createElement(Child);
+    }
+
+    const sharedChildren = createChildren();
+
+    function Layout() {
+      return React.createElement("section", null, sharedChildren);
+    }
+
+    await expect(probeReactServerSubtree(React.createElement(Layout))).rejects.toThrow(
+      "App page layout subtree probe cannot safely inspect iterable children",
+    );
+    expect(sharedChildren.next().value).toMatchObject({ type: Child });
+  });
+
   it("handles layout special errors before probing the page", async () => {
     const layoutError = new Error("layout failed");
     const pageProbe = vi.fn(() => "page");
@@ -166,8 +293,8 @@ describe("app page probe helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/admin"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -208,8 +335,8 @@ describe("app page probe helpers", () => {
         getLayoutId(layoutIndex) {
           return ["layout:/", "layout:/admin"][layoutIndex];
         },
-        runWithIsolatedDynamicScope(fn) {
-          return Promise.resolve({ result: fn(), dynamicDetected: false });
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
         },
       },
     });
@@ -461,6 +588,46 @@ describe("probeAppPage", () => {
     expect(Object.keys(received ?? {})).toEqual([]);
   });
 
+  it("does not mark dynamic when a cached page probe only derives its cache key", async () => {
+    const CachedPage = await registerCachedProbePage(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<Record<string, unknown>>;
+      }) => {
+        const params = await props.params;
+        return `slug:${params.slug}`;
+      },
+      "test:probe-page-props-searchparams-inert",
+    );
+
+    await probeAppPage({
+      pageComponent: CachedPage,
+      asyncRouteParams: makeThenableParams({ slug: "intro" }),
+      searchParams: new URLSearchParams("q=hello"),
+    });
+
+    expect(consumeDynamicUsage()).toBe(false);
+    expect(consumeRenderRequestApiUsage()).toEqual([]);
+  });
+
+  it("rejects when a cached page probe awaits searchParams in the page body", async () => {
+    const CachedPage = await registerCachedProbePage(
+      async (props: { searchParams: Promise<{ q?: string }> }) => {
+        const searchParams = await props.searchParams;
+        return searchParams.q ?? "";
+      },
+      "test:probe-page-props-searchparams-observed",
+    );
+
+    await expect(
+      probeAppPage({
+        pageComponent: CachedPage,
+        asyncRouteParams: makeThenableParams({}),
+        searchParams: new URLSearchParams("q=hello"),
+      }),
+    ).rejects.toThrow(/cannot be called inside "use cache"/);
+  });
+
   it("lets redirect()/notFound() throws propagate so the probe lifecycle can catch them", async () => {
     const REDIRECT = new Error("NEXT_REDIRECT");
     async function Page(props: { searchParams: Promise<{ dest?: string }> }) {
@@ -475,5 +642,176 @@ describe("probeAppPage", () => {
     }) as Promise<unknown>;
 
     await expect(result).rejects.toBe(REDIRECT);
+  });
+});
+
+// buildAppPageProbes() fans out the per-request page probes (matched page +
+// active parallel slots + interception page). Extracted out of the generated
+// RSC entry so the fan-out is unit-testable (AGENTS.md: keep generated entries
+// thin). These tests pin which page components get probed for a request.
+describe("buildAppPageProbes", () => {
+  // Loosely-typed adapter matching the helper's `(params: unknown) => unknown`
+  // signature, so the test's generic makeThenableParams can be passed in.
+  const makeThenableParamsLoose = (params: unknown): unknown =>
+    makeThenableParams((params ?? {}) as Record<string, unknown>);
+
+  function recordingPage(label: string, sink: string[]) {
+    return function Page(props: { searchParams: Promise<Record<string, unknown>> }) {
+      void props;
+      sink.push(label);
+      return label;
+    };
+  }
+
+  it("probes the matched page, every slot page, and the interception page", async () => {
+    const probed: string[] = [];
+    const probes = buildAppPageProbes({
+      route: {
+        slots: {
+          modal: { page: { default: recordingPage("modal", probed) } },
+          sidebar: { page: { default: recordingPage("sidebar", probed) } },
+        },
+      },
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({ slug: "intro" }),
+      searchParams: new URLSearchParams("q=hello"),
+      intercept: { page: { default: recordingPage("intercept", probed) } },
+      isRscRequest: true,
+      matchedParams: { slug: "intro" },
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    expect(probes).toHaveLength(4);
+    expect(probed.sort()).toEqual(["intercept", "modal", "page", "sidebar"]);
+  });
+
+  it("ignores the interception match for non-RSC (HTML) requests", async () => {
+    const probed: string[] = [];
+    const probes = buildAppPageProbes({
+      route: {
+        slots: {
+          // On an HTML request interception never fires, so the modal slot
+          // renders its own page and must be probed; the interception page
+          // (which never renders) must NOT be probed.
+          modal: { page: { default: recordingPage("modal", probed) } },
+        },
+      },
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: new URLSearchParams("q=hello"),
+      intercept: {
+        slotKey: "modal",
+        page: { default: recordingPage("intercept", probed) },
+      },
+      isRscRequest: false,
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    expect(probed.sort()).toEqual(["modal", "page"]);
+    expect(probed).not.toContain("intercept");
+  });
+
+  it("probes the interception page in place of the slot it overrides", async () => {
+    const probed: string[] = [];
+    const probes = buildAppPageProbes({
+      route: {
+        slots: {
+          // modal slot is overridden by the active interception below, so its
+          // own page must NOT be probed (it never renders for this request).
+          modal: { page: { default: recordingPage("modal-page", probed) } },
+          sidebar: { page: { default: recordingPage("sidebar", probed) } },
+        },
+      },
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: new URLSearchParams("q=hello"),
+      intercept: {
+        slotKey: "modal",
+        page: { default: recordingPage("intercept", probed) },
+      },
+      isRscRequest: true,
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    // modal-page is skipped (overridden); intercept renders in its place.
+    expect(probed.sort()).toEqual(["intercept", "page", "sidebar"]);
+    expect(probed).not.toContain("modal-page");
+  });
+
+  it("omits the interception probe when no interception matches", async () => {
+    const probed: string[] = [];
+    const probes = buildAppPageProbes({
+      route: { slots: { modal: { page: { default: recordingPage("modal", probed) } } } },
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: null,
+      intercept: null,
+      isRscRequest: true,
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    expect(probes).toHaveLength(2);
+    expect(probed.sort()).toEqual(["modal", "page"]);
+  });
+
+  it("skips slots without a page default export", async () => {
+    const probed: string[] = [];
+    const probes = buildAppPageProbes({
+      route: {
+        slots: {
+          modal: { page: { default: recordingPage("modal", probed) } },
+          // default-only slot: no page component to probe
+          children: { page: null },
+          empty: null,
+        },
+      },
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: null,
+      isRscRequest: true,
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    // One probe per slot is created, but only real page components run.
+    expect(probed.sort()).toEqual(["modal", "page"]);
+  });
+
+  it("falls back to matchedParams when an interception match omits its own params", async () => {
+    const receivedParams: unknown[] = [];
+    function InterceptPage(props: { params: Promise<Record<string, unknown>> }) {
+      receivedParams.push(props.params);
+      return "intercept";
+    }
+
+    const fallbackParams = { username: "ada" };
+    const probes = buildAppPageProbes({
+      route: {},
+      pageComponent: () => "page",
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: null,
+      intercept: { page: { default: InterceptPage } },
+      isRscRequest: true,
+      matchedParams: fallbackParams,
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    expect(receivedParams).toHaveLength(1);
+    expect(await (receivedParams[0] as Promise<Record<string, unknown>>)).toEqual(fallbackParams);
   });
 });

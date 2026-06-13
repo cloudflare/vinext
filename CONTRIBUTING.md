@@ -4,7 +4,7 @@ vinext was born from an experiment in pushing AI to its limits. Almost every lin
 
 ## Recommended setup
 
-We use [OpenCode](https://opencode.ai) with GPT-5.4, set to xhigh reasoning effort. This is the same setup that built the project.
+We use [OpenCode](https://opencode.ai) with Opus 4.8 at high reasoning effort for BigBonk reviews, and GPT-5.5 at high reasoning effort for regular Bonk review passes. This is the same setup that built the project.
 
 ## Before you open a PR
 
@@ -15,7 +15,7 @@ We use [OpenCode](https://opencode.ai) with GPT-5.4, set to xhigh reasoning effo
 
 ## AI code review
 
-Every PR goes through AI code review. When you open a PR, a contributor with write access will request a review from **BigBonk** (GPT-5.4, xhigh reasoning effort). External contributors can't trigger this directly.
+Every PR goes through AI code review. When you open a PR, a contributor with write access will request a review from **BigBonk** (Opus 4.8, high reasoning effort). For lighter review passes, maintainers can use **Bonk** (GPT-5.5, high reasoning effort). External contributors can't trigger this directly.
 
 Our process is to iterate on BigBonk's feedback until there are no unresolved comments. That doesn't mean you have to accept every suggestion verbatim, but we've found it to be very good at finding real problems and very useful for debugging this codebase. Expect multiple review rounds on larger PRs.
 

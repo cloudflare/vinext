@@ -77,6 +77,85 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result.code).not.toContain("fetch(");
   });
 
+  it("transforms fetch(new URL(..., import.meta.url)) with ../-relative path", async () => {
+    // Fixtures like og-routes-custom-font and metadata-font use paths such as
+    // "../../../assets/typewr__.ttf" (three levels up from the route file to
+    // the project-root assets/ directory). The plugin must resolve these just
+    // as it does ./-relative paths.
+    const plugin = createOgInlinePlugin();
+    const transform = unwrapHook(plugin.transform);
+    // Module lives at tmpDir/app/app/og/route.tsx → font is three levels up
+    const routeDir = path.join(tmpDir, "app", "app", "og");
+    await fsp.mkdir(routeDir, { recursive: true });
+    const code = `const data = fetch(new URL("../../../noto-sans.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const moduleId = path.join(routeDir, "route.tsx");
+
+    const result = await transform.call(plugin, code, moduleId);
+    expect(result).not.toBeNull();
+    expect(result.code).toContain(fontBase64);
+    expect(result.code).not.toContain("fetch(");
+  });
+
+  it("transforms fetch().then() that a formatter wrapped across lines with a trailing comma", async () => {
+    // Real-world regression: formatters (Prettier `trailingComma: "all"`, oxfmt)
+    // wrap a long fetch().then() across multiple lines and add a trailing comma:
+    //   const font = await fetch(new URL("../../../assets/noto-sans.ttf", import.meta.url)).then(
+    //     (res) => res.arrayBuffer(),
+    //   );
+    // The earlier regex only matched the single-line, comma-less form, so formatted
+    // source was left as a runtime fetch — which throws "Invalid URL" on Workers
+    // (import.meta.url === "worker") and returns a 500. See the /api/og-custom-font
+    // e2e in tests/e2e/og-image.spec.ts.
+    const plugin = createOgInlinePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `const font = await fetch(new URL("./noto-sans.ttf", import.meta.url)).then((res) =>`,
+      `  res.arrayBuffer(),`,
+      `);`,
+    ].join("\n");
+    const moduleId = path.join(tmpDir, "og.tsx");
+
+    const result = await transform.call(plugin, code, moduleId);
+    expect(result).not.toBeNull();
+    expect(result.code).toContain(fontBase64);
+    expect(result.code).not.toContain("fetch(");
+  });
+
+  it("transforms a block-body .then() callback whose return ends with a semicolon", async () => {
+    // Formatters terminate a block-body `return` with a semicolon:
+    //   .then((res) => {
+    //     return res.arrayBuffer();
+    //   })
+    // The block-body alternative must tolerate the `;` before `}` (and a trailing
+    // comma). Without `;?` this stayed a runtime fetch → "Invalid URL" on Workers.
+    const plugin = createOgInlinePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `const font = await fetch(new URL("./noto-sans.ttf", import.meta.url)).then((res) => {`,
+      `  return res.arrayBuffer();`,
+      `});`,
+    ].join("\n");
+    const moduleId = path.join(tmpDir, "og.tsx");
+
+    const result = await transform.call(plugin, code, moduleId);
+    expect(result).not.toBeNull();
+    expect(result.code).toContain(fontBase64);
+    expect(result.code).not.toContain("fetch(");
+  });
+
+  it("transforms a function-expression .then() callback whose return ends with a semicolon", async () => {
+    // Same as above but with a `function (res) { ... }` callback instead of an arrow.
+    const plugin = createOgInlinePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = `const font = await fetch(new URL("./noto-sans.ttf", import.meta.url)).then(function (res) { return res.arrayBuffer(); });`;
+    const moduleId = path.join(tmpDir, "og.tsx");
+
+    const result = await transform.call(plugin, code, moduleId);
+    expect(result).not.toBeNull();
+    expect(result.code).toContain(fontBase64);
+    expect(result.code).not.toContain("fetch(");
+  });
+
   // ── Pattern 2: readFileSync ──────────────────────────────
 
   it("transforms fs.readFileSync(fileURLToPath(new URL(..., import.meta.url)))", async () => {
@@ -88,6 +167,21 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const result = await transform.call(plugin, code, moduleId);
     expect(result).not.toBeNull();
     // Font contents inlined as base64 and the runtime fs read eliminated.
+    expect(result.code).toContain(fontBase64);
+    expect(result.code).not.toContain("readFileSync");
+  });
+
+  it("transforms fs.readFileSync(fileURLToPath(new URL(..., import.meta.url))) with ../-relative path", async () => {
+    // Same pattern as above but with a ../ path traversal — mirrors metadata-font fixtures.
+    const plugin = createOgInlinePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const routeDir = path.join(tmpDir, "app", "font");
+    await fsp.mkdir(routeDir, { recursive: true });
+    const code = `const buf = fs.readFileSync(fileURLToPath(new URL("../../noto-sans.ttf", import.meta.url)));`;
+    const moduleId = path.join(routeDir, "opengraph-image.tsx");
+
+    const result = await transform.call(plugin, code, moduleId);
+    expect(result).not.toBeNull();
     expect(result.code).toContain(fontBase64);
     expect(result.code).not.toContain("readFileSync");
   });

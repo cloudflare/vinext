@@ -7,6 +7,7 @@ import {
   type NextURL,
 } from "vinext/shims/server";
 import { buildRequestHeadersFromMiddlewareResponse } from "./middleware-request-headers.js";
+import { addBasePathToPathname } from "../utils/base-path.js";
 
 const ROUTE_HANDLER_HTTP_METHODS = [
   "GET",
@@ -99,6 +100,7 @@ type AppRouteRequestMode = "auto" | "force-static" | "error";
 type TrackedAppRouteRequestOptions = {
   basePath?: string;
   i18n?: NextI18nConfig | null;
+  trailingSlash?: boolean;
   middlewareHeaders?: Headers | null;
   onDynamicAccess?: (access: AppRouteDynamicRequestAccess) => void;
   requestMode?: AppRouteRequestMode;
@@ -117,14 +119,16 @@ function bindMethodIfNeeded<T>(value: T, target: object): T {
 function buildNextConfig(options: TrackedAppRouteRequestOptions): {
   basePath?: string;
   i18n?: NextI18nConfig;
+  trailingSlash?: boolean;
 } | null {
-  if (!options.basePath && !options.i18n) {
+  if (!options.basePath && !options.i18n && !options.trailingSlash) {
     return null;
   }
 
   return {
     basePath: options.basePath,
     i18n: options.i18n ?? undefined,
+    trailingSlash: options.trailingSlash,
   };
 }
 
@@ -284,7 +288,24 @@ export function createTrackedAppRouteRequest(
     return new Proxy(nextUrl, nextUrlHandler);
   };
 
-  const wrapRequest = (input: Request): NextRequest => {
+  const wrapRequest = (rawInput: Request): NextRequest => {
+    // App Router route handlers only run for in-basePath requests — the
+    // routing layer strips the basePath prefix before invoking them. Re-add
+    // the configured prefix so the NextRequest mirrors the original URL
+    // Next.js hands to route handlers: request.url keeps the prefix while
+    // NextURL strips it back during construction, so nextUrl.pathname stays
+    // basePath-free and nextUrl.basePath reports the configured value.
+    let input = rawInput;
+    if (options.basePath) {
+      const inputUrl = new URL(rawInput.url);
+      const prefixedPathname = addBasePathToPathname(inputUrl.pathname, options.basePath);
+      if (prefixedPathname !== inputUrl.pathname) {
+        inputUrl.pathname = prefixedPathname;
+        // Branch the body so the caller-owned request stays readable.
+        const bodySource = rawInput.body && !rawInput.bodyUsed ? rawInput.clone() : rawInput;
+        input = new Request(inputUrl, bodySource);
+      }
+    }
     const requestHeaders = options.middlewareHeaders
       ? buildRequestHeadersFromMiddlewareResponse(input.headers, options.middlewareHeaders)
       : null;

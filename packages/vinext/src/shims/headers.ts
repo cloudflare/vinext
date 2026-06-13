@@ -16,7 +16,7 @@ import {
   validateCookieAttributeValue,
   validateCookieName,
 } from "./internal/cookie-serialize.js";
-import { parseCookieHeader } from "./internal/parse-cookie-header.js";
+import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,
@@ -49,12 +49,28 @@ export type VinextHeadersShimState = {
   headersContext: HeadersContext | null;
   dynamicUsageDetected: boolean;
   renderRequestApiUsage: Set<RenderRequestApiKind>;
+  connectionProbe: ConnectionProbeState | null;
   /** Error recorded by throwIfInsideCacheScope for dev diagnostics, persists even if caught by user code. */
   invalidDynamicUsageError: unknown;
   pendingSetCookies: string[];
   draftModeCookieHeader: string | null;
   phase: HeadersAccessPhase;
 };
+
+type ConnectionProbeState = {
+  interrupted: boolean;
+  interrupt: () => void;
+  pending: Promise<never>;
+};
+
+type ConnectionProbeResult<T> =
+  | {
+      completed: true;
+      result: T;
+    }
+  | {
+      completed: false;
+    };
 
 // NOTE:
 // - This shim can be loaded under multiple module specifiers in Vite's
@@ -71,6 +87,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   headersContext: null,
   dynamicUsageDetected: false,
   renderRequestApiUsage: new Set<RenderRequestApiKind>(),
+  connectionProbe: null,
   invalidDynamicUsageError: null,
   pendingSetCookies: [],
   draftModeCookieHeader: null,
@@ -138,7 +155,7 @@ function rebuildCookiesFromHeader(ctx: HeadersContext, cookieHeader: string | nu
   ctx.cookies.clear();
   if (cookieHeader === null) return;
 
-  const nextCookies = parseCookieHeader(cookieHeader);
+  const nextCookies = parseEdgeRequestCookieHeader(cookieHeader);
   for (const [name, value] of nextCookies) {
     ctx.cookies.set(name, value);
   }
@@ -188,6 +205,48 @@ export function markRenderRequestApiUsage(kind: RenderRequestApiKind): void {
   _getState().renderRequestApiUsage.add(kind);
 }
 
+export async function runWithConnectionProbe<T>(
+  fn: () => T | Promise<T>,
+): Promise<ConnectionProbeResult<T>> {
+  const state = _getState();
+  const previousProbe = state.connectionProbe;
+  let interruptProbe: () => void = () => {};
+  const interrupted = new Promise<ConnectionProbeResult<T>>((resolve) => {
+    interruptProbe = () => resolve({ completed: false });
+  });
+
+  const probe: ConnectionProbeState = {
+    interrupted: false,
+    interrupt() {
+      if (probe.interrupted) return;
+      probe.interrupted = true;
+      interruptProbe();
+    },
+    // `connection()` suspends forever inside speculative probes, matching
+    // Next.js's prerender/probe contract: code after `await connection()`
+    // must not run while classifying a route.
+    pending: new Promise<never>(() => {}),
+  };
+
+  state.connectionProbe = probe;
+  try {
+    const completed = Promise.resolve()
+      .then(fn)
+      .then<ConnectionProbeResult<T>>((result) => ({ completed: true, result }));
+    return await Promise.race([completed, interrupted]);
+  } finally {
+    state.connectionProbe = previousProbe;
+  }
+}
+
+export function suspendConnectionProbe(): Promise<never> | null {
+  const probe = _getState().connectionProbe;
+  if (!probe) return null;
+
+  probe.interrupt();
+  return probe.pending;
+}
+
 export function peekRenderRequestApiUsage(): RenderRequestApiKind[] {
   return [..._getState().renderRequestApiUsage].sort();
 }
@@ -213,6 +272,7 @@ const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
 
 type UseCacheGuardContext = {
   variant?: unknown;
+  invalidDynamicUsageError?: unknown;
 };
 
 type CacheScopeStorage = {
@@ -270,6 +330,8 @@ export function throwIfInsideCacheScope(apiName: string): void {
     // packages/next/src/server/app-render/app-render.tsx
     // https://github.com/vercel/next.js/commit/f5e54c06726b571a042fce67417e40a29f6b8689
     try {
+      const cacheCtx = _getUseCacheGuardContext();
+      if (cacheCtx) cacheCtx.invalidDynamicUsageError = error;
       const ctx = getRequestContext();
       if (ctx) ctx.invalidDynamicUsageError = error;
     } catch {
@@ -318,6 +380,17 @@ export function consumeDynamicUsage(): boolean {
   const used = state.dynamicUsageDetected;
   state.dynamicUsageDetected = false;
   return used;
+}
+
+/**
+ * Read the dynamic usage flag without resetting it.
+ * Used by the layout probe to fold a probe-scoped `markDynamicUsage()` into the
+ * per-layout observation before the isolated probe scope is discarded, so the
+ * observation captures `markDynamicUsage()` paths (e.g. `"use cache: private"`)
+ * that leave no other observable trace.
+ */
+export function peekDynamicUsage(): boolean {
+  return _getState().dynamicUsageDetected;
 }
 
 function _setStatePhase(
@@ -399,6 +472,7 @@ export function runWithHeadersContext<T>(
       uCtx.headersContext = ctx;
       uCtx.dynamicUsageDetected = false;
       uCtx.renderRequestApiUsage = new Set();
+      uCtx.connectionProbe = null;
       uCtx.pendingSetCookies = [];
       uCtx.draftModeCookieHeader = null;
       uCtx.phase = "render";
@@ -409,6 +483,7 @@ export function runWithHeadersContext<T>(
     headersContext: ctx,
     dynamicUsageDetected: false,
     renderRequestApiUsage: new Set(),
+    connectionProbe: null,
     invalidDynamicUsageError: null,
     pendingSetCookies: [],
     draftModeCookieHeader: null,
@@ -708,7 +783,7 @@ export function headersContextFromRequest(
     if (_cookies) return _cookies;
     // Read from the proxy so middleware-modified cookie headers are respected.
     const cookieHeader = headersProxy.get("cookie") || "";
-    _cookies = parseCookieHeader(cookieHeader);
+    _cookies = parseEdgeRequestCookieHeader(cookieHeader);
     return _cookies;
   }
 
@@ -862,7 +937,7 @@ export function isDraftModeRequest(request: Request, draftModeSecret: string): b
   const cookieHeader = request.headers.get("cookie");
   if (!cookieHeader) return false;
   return (
-    parseCookieHeader(cookieHeader).get(DRAFT_MODE_COOKIE) ===
+    parseEdgeRequestCookieHeader(cookieHeader).get(DRAFT_MODE_COOKIE) ===
     validateDraftModeSecret(draftModeSecret)
   );
 }

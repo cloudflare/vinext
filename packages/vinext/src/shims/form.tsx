@@ -18,11 +18,30 @@
  *   </Form>
  */
 
-import { forwardRef, useActionState, type FormHTMLAttributes, type ForwardedRef } from "react";
+import {
+  forwardRef,
+  useActionState,
+  useCallback,
+  useEffect,
+  useRef,
+  type FormHTMLAttributes,
+  type ForwardedRef,
+} from "react";
 import { hasAppNavigationRuntime } from "../client/navigation-runtime.js";
-import { navigateClientSide } from "./navigation.js";
+import { useMergedRef } from "./use-merged-ref.js";
+import {
+  getMountedSlotsHeader,
+  getPrefetchInterceptionContext,
+  getPrefetchedUrls,
+  hasPrefetchCacheEntryForNavigation,
+  navigateClientSide,
+  prefetchRscResponse,
+} from "./navigation.js";
 import { isDangerousScheme } from "./url-safety.js";
 import { toSameOriginPath, withBasePath } from "./url-utils.js";
+import { createRscRequestHeaders, createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
+import { AppElementsWire } from "../server/app-elements.js";
+import { VINEXT_MOUNTED_SLOTS_HEADER } from "../server/headers.js";
 
 // Mirrors `__NEXT_ROUTER_BASEPATH` exposure in `next/link` / `next/router`.
 // `addBasePath` is only applied to the form-level `action` prop. A submitter's
@@ -30,6 +49,12 @@ import { toSameOriginPath, withBasePath } from "./url-utils.js";
 // upstream `form.tsx` notes "this should not have basePath added, because we
 // can't add it before hydration").
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+
+// Props that <Form> does not allow users to set directly, matching Next.js's
+// DISALLOWED_FORM_PROPS in packages/next/src/client/form-shared.tsx.
+// These are stripped (with a dev warning) rather than passed to the <form> element.
+const DISALLOWED_FORM_PROPS = ["method", "encType", "target"] as const;
+type DisallowedFormPropKey = (typeof DISALLOWED_FORM_PROPS)[number];
 
 // Re-export useActionState from React 19 to match Next.js's next/form module
 export { useActionState };
@@ -75,12 +100,19 @@ function getSubmitter(nativeEvent: unknown): FormSubmitter | null {
   return null;
 }
 
-function getEffectiveMethod(
-  submitter: FormSubmitter | null,
-  formMethod: FormHTMLAttributes<HTMLFormElement>["method"],
-): string {
-  const override = submitter?.getAttribute("formmethod");
-  return (override ?? formMethod ?? "GET").toUpperCase();
+// A submitter encoding a React Server Action has a `name` like `$ACTION_ID_...`
+// or `$ACTION_REF_...`. Such submissions must not be intercepted for GET
+// navigation. Ported verbatim from Next.js app-dir/form.tsx.
+function hasReactServerActionAttributes(submitter: FormSubmitter): boolean {
+  const name = submitter.getAttribute("name");
+  return Boolean(name && (name.startsWith("$ACTION_ID_") || name.startsWith("$ACTION_REF_")));
+}
+
+// A submitter encoding a React Client Action has `formAction="javascript:..."`.
+// We can't prefetch/navigate to that, so bail. Ported from Next.js form-shared.tsx.
+function hasReactClientActionAttributes(submitter: FormSubmitter): boolean {
+  const action = submitter.getAttribute("formAction");
+  return Boolean(action && /\s*javascript:/i.test(action));
 }
 
 function getEffectiveAction(submitter: FormSubmitter | null, formAction: string): string {
@@ -107,30 +139,38 @@ function checkFormActionUrl(action: string, source: "action" | "formAction"): vo
 }
 
 function hasUnsupportedSubmitterAttributes(submitter: FormSubmitter): boolean {
+  // Each warning is gated behind the dev check (matches Next.js form-shared.tsx);
+  // the `return true` bail itself runs in all environments.
   const formEncType = submitter.getAttribute("formenctype");
   if (formEncType !== null && formEncType !== SUPPORTED_FORM_ENCTYPE) {
-    console.error(
-      `<Form>'s \`encType\` was set to an unsupported value via \`formEncType="${formEncType}"\`. ` +
-        `This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
-    );
+    if (process.env.NODE_ENV !== "production") {
+      console.error(
+        `<Form>'s \`encType\` was set to an unsupported value via \`formEncType="${formEncType}"\`. ` +
+          `This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
+      );
+    }
     return true;
   }
 
   const formMethod = submitter.getAttribute("formmethod");
   if (formMethod !== null && formMethod.toUpperCase() !== SUPPORTED_FORM_METHOD) {
-    console.error(
-      `<Form>'s \`method\` was set to an unsupported value via \`formMethod="${formMethod}"\`. ` +
-        `This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
-    );
+    if (process.env.NODE_ENV !== "production") {
+      console.error(
+        `<Form>'s \`method\` was set to an unsupported value via \`formMethod="${formMethod}"\`. ` +
+          `This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
+      );
+    }
     return true;
   }
 
   const formTarget = submitter.getAttribute("formtarget");
   if (formTarget !== null && formTarget !== SUPPORTED_FORM_TARGET) {
-    console.error(
-      `<Form>'s \`target\` was set to an unsupported value via \`formTarget="${formTarget}"\`. ` +
-        `This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
-    );
+    if (process.env.NODE_ENV !== "production") {
+      console.error(
+        `<Form>'s \`target\` was set to an unsupported value via \`formTarget="${formTarget}"\`. ` +
+          `This will disable <Form>'s navigation functionality. If you need this, use a native <form> element instead.`,
+      );
+    }
     return true;
   }
 
@@ -149,7 +189,19 @@ function createFormSubmitDestinationUrl(
 
   const formData = buildFormData(form, submitter);
   for (const [name, value] of formData) {
-    targetUrl.searchParams.append(name, typeof value === "string" ? value : value.name);
+    if (typeof value !== "string") {
+      // File inputs: use the filename as the value (matches browser behavior).
+      // Reference: https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#converting-an-entry-list-to-a-list-of-name-value-pairs
+      if (process.env.NODE_ENV !== "production") {
+        console.warn(
+          `<Form> only supports file inputs if \`action\` is a function. File inputs cannot be used if \`action\` is a string, ` +
+            `because files cannot be encoded as search params.`,
+        );
+      }
+      targetUrl.searchParams.append(name, value.name);
+    } else {
+      targetUrl.searchParams.append(name, value);
+    }
   }
 
   return toSameOriginPath(targetUrl.href) ?? targetUrl.href;
@@ -176,34 +228,176 @@ type FormProps = {
   replace?: boolean;
   /** Scroll to top after navigation (default: true) */
   scroll?: boolean;
-} & FormHTMLAttributes<HTMLFormElement>;
+  /**
+   * Controls whether the form's target URL is prefetched when the form enters
+   * the viewport. Only applies to App Router with a string `action`.
+   * - `null` (default): prefetch automatically (production only)
+   * - `false`: disable prefetching
+   *
+   * In pages dir, prefetch is not supported and the prop has no effect.
+   */
+  prefetch?: false | null;
+} & Omit<FormHTMLAttributes<HTMLFormElement>, DisallowedFormPropKey>;
 
 const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFormElement>) {
-  const { action, replace = false, scroll = true, onSubmit, ...rest } = props;
+  const { action, replace = false, scroll = true, prefetch = null, onSubmit, ...rest } = props;
 
-  // If action is a function (server action), pass it directly to React
+  // Dev-mode validation, ported verbatim from Next.js app-dir/form.tsx.
+  // Runs before the DISALLOWED_FORM_PROPS strip to match upstream console-output order.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/app-dir/form.tsx
+  const isNavigatingForm = typeof action === "string";
+  if (process.env.NODE_ENV !== "production") {
+    // Validate `action` first, matching upstream's dev-validation order.
+    if (typeof action === "string") {
+      checkFormActionUrl(action, "action");
+    }
+    // Validate `prefetch`: must be `false` or `null` (undefined is the absence
+    // of the prop and is allowed). Read the raw prop so the default doesn't mask it.
+    if (!(props.prefetch === undefined || props.prefetch === false || props.prefetch === null)) {
+      console.error("The `prefetch` prop of <Form> must be `false` or `null`");
+    }
+    // `prefetch` with a function action has no effect.
+    if (props.prefetch !== undefined && !isNavigatingForm) {
+      console.error("Passing `prefetch` to a <Form> whose `action` is a function has no effect.");
+    }
+    // `replace`/`scroll` with a function action have no effect.
+    if (!isNavigatingForm && (props.replace !== undefined || props.scroll !== undefined)) {
+      console.error(
+        "Passing `replace` or `scroll` to a <Form> whose `action` is a function has no effect.\n" +
+          "See the relevant docs to learn how to control this behavior for navigations triggered from actions:\n" +
+          "  `redirect()`       - https://nextjs.org/docs/app/api-reference/functions/redirect#parameters\n" +
+          "  `router.replace()` - https://nextjs.org/docs/app/api-reference/functions/use-router#userouter\n",
+      );
+    }
+  }
+
+  // Strip DISALLOWED_FORM_PROPS and emit dev warnings (matches Next.js form-shared.tsx).
+  // Ported from: packages/next/src/client/app-dir/form.tsx (DISALLOWED_FORM_PROPS loop)
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/app-dir/form.tsx
+  const cleanRest = { ...rest } as Record<string, unknown>;
+  for (const key of DISALLOWED_FORM_PROPS) {
+    if (key in cleanRest) {
+      if (process.env.NODE_ENV !== "production") {
+        console.error(
+          `<Form> does not support changing \`${key}\`. ` +
+            (isNavigatingForm
+              ? `If you'd like to use it to perform a mutation, consider making \`action\` a function instead.\n` +
+                `Learn more: https://nextjs.org/docs/app/building-your-application/data-fetching/server-actions-and-mutations`
+              : ""),
+        );
+      }
+      delete cleanRest[key];
+    }
+  }
+
+  // All hooks must be called unconditionally (React Rules of Hooks).
+  // These are placed before any conditional return.
+
+  // Merge the forwarded ref with our internal ref for viewport prefetching.
+  // Reuse the shared `useMergedRef` helper (same one Next.js's form uses).
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const setFormRef = useCallback((node: HTMLFormElement | null) => {
+    formRef.current = node;
+  }, []);
+  const setRefs = useMergedRef(setFormRef, ref ?? null);
+
+  // Compute actionHref unconditionally (empty string for function actions — unused).
+  const actionHref = typeof action === "string" ? withBasePath(action, __basePath) : "";
+
+  // Viewport-based prefetch: when the form enters the viewport, prefetch the
+  // RSC payload for the action URL. App Router only; disabled in dev (matches
+  // Next.js behavior). Gated by `prefetch !== false` and string action.
+  // Reference: link.tsx IntersectionObserver wiring pattern.
+  useEffect(() => {
+    if (typeof action !== "string") return;
+    if (prefetch === false || process.env.NODE_ENV !== "production") return;
+    // Don't prefetch actions the submit path refuses to navigate to (external
+    // origins, dangerous schemes, protocol-relative). Matches the submit-path gate.
+    if (!isSafeAction(action)) return;
+    if (!hasAppNavigationRuntime()) return;
+    const node = formRef.current;
+    if (!node) return;
+    if (typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting || entry.intersectionRatio > 0) {
+            void (async () => {
+              // Mirror the Link/router prefetch computation so the cache key the
+              // navigation later looks up matches what we prefetch here. Without
+              // this, intercepted routes or pages with mounted parallel slots
+              // would key under a different context and miss the cached payload.
+              // (See link.tsx:373-389 and navigation.ts:1909-1916.)
+              const interceptionContext = getPrefetchInterceptionContext(actionHref);
+              const mountedSlotsHeader = getMountedSlotsHeader();
+              const headers = createRscRequestHeaders({ interceptionContext });
+              if (mountedSlotsHeader) {
+                headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+              }
+              const rscUrl = await createRscRequestUrl(actionHref, headers);
+              const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+              // Dedup: skip if already in-flight or a fresh cache entry exists,
+              // matching the gate link.tsx applies to avoid double-fetching a
+              // payload that a nearby <Link> already prefetched.
+              const prefetched = getPrefetchedUrls();
+              if (prefetched.has(cacheKey)) return;
+              if (
+                hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader)
+              )
+                return;
+              prefetched.add(cacheKey);
+              const fetchPromise = fetch(rscUrl, {
+                headers,
+                credentials: "include",
+                // Match link.tsx: deprioritize the background prefetch and tag it
+                // as a prefetch so it surfaces correctly in devtools / `Sec-Purpose`.
+                priority: "low",
+                // @ts-expect-error — purpose is a valid fetch option in some browsers
+                purpose: "prefetch",
+              });
+              prefetchRscResponse(
+                rscUrl,
+                fetchPromise,
+                interceptionContext,
+                mountedSlotsHeader,
+                undefined,
+                {
+                  cacheForNavigation: true,
+                  optimisticRouteShell: false,
+                },
+              );
+            })();
+            observer.unobserve(node);
+          }
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(node);
+    return () => {
+      observer.unobserve(node);
+    };
+    // `actionHref` is derived purely from `action` (+ the module-constant
+    // `__basePath`), so it's technically redundant alongside `action` here, but
+    // exhaustive-deps requires it to be listed since the effect references it.
+  }, [action, prefetch, actionHref]);
+
+  // If action is a function (server action), pass it directly to React.
+  // Hooks are already called above.
   if (typeof action === "function") {
-    return <form ref={ref} action={action} onSubmit={onSubmit} {...rest} />;
+    return <form ref={setRefs} action={action} onSubmit={onSubmit} {...cleanRest} />;
   }
 
   // Block dangerous action URLs. Render <form> without action attribute
   // so it submits to the current page (safe default).
-  if (process.env.NODE_ENV !== "production") {
-    checkFormActionUrl(action, "action");
-  }
-
+  // (Dev-mode `action` URL validation runs earlier, in the top validation block.)
   if (!isSafeAction(action)) {
     if (process.env.NODE_ENV !== "production") {
       console.warn(`<Form> blocked unsafe action: ${action}`);
     }
-    return <form ref={ref} onSubmit={onSubmit} {...rest} />;
+    return <form ref={setRefs} onSubmit={onSubmit} {...cleanRest} />;
   }
-
-  // Prefix basePath to the navigating `action` prop (matches Next.js's
-  // `addBasePath(actionProp)` in `client/form.tsx` and `client/app-dir/form.tsx`).
-  // This becomes both the rendered `action=` attribute (so JS-disabled
-  // submissions still hit the right URL) and the soft-navigation target.
-  const actionHref = withBasePath(action, __basePath);
 
   async function handleSubmit(e: React.SubmitEvent<HTMLFormElement>) {
     // Call user's onSubmit first
@@ -213,13 +407,26 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     }
 
     const submitter = getSubmitter(e.nativeEvent);
-    if (submitter && hasUnsupportedSubmitterAttributes(submitter)) {
-      return;
+    if (submitter) {
+      // The way server actions are encoded (e.g. `formMethod="post"`) causes
+      // unnecessary dev-mode warnings from `hasUnsupportedSubmitterAttributes`;
+      // we'd bail out anyway, so do it silently. (Matches Next.js form.tsx.)
+      if (process.env.NODE_ENV !== "production" && hasReactServerActionAttributes(submitter)) {
+        return;
+      }
+      if (hasUnsupportedSubmitterAttributes(submitter)) {
+        return;
+      }
+      // Client actions encode as `formAction="javascript:..."` — can't navigate to that.
+      if (hasReactClientActionAttributes(submitter)) {
+        return;
+      }
     }
 
-    // Only intercept GET forms for client-side navigation
-    const method = getEffectiveMethod(submitter, rest.method);
-    if (method !== "GET") return;
+    // No explicit GET check needed (matches upstream app-dir/form.tsx): the
+    // form-level `method` prop is stripped via DISALLOWED_FORM_PROPS, and any
+    // non-GET submitter `formmethod` override is already caught and bailed on by
+    // `hasUnsupportedSubmitterAttributes` above. By this point the method is GET.
 
     // NOTE: a submitter's `formAction` is intentionally NOT base-path-prefixed
     // here, matching Next.js. Upstream `form.tsx` notes: "this should not have
@@ -274,12 +481,12 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
 
   return (
     <form
-      ref={ref}
+      ref={setRefs}
       action={actionHref}
       onSubmit={(event) => {
         void handleSubmit(event);
       }}
-      {...rest}
+      {...cleanRest}
     />
   );
 });

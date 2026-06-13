@@ -129,9 +129,10 @@ function matchMetadataRoute(
   route: MetadataRuntimeRoute,
   cleanPathname: string,
   functions: MetadataRouteFunctions,
+  getUrlParts: () => string[],
 ): MatchedMetadataRoute | null {
   if (route.patternParts) {
-    const urlParts = cleanPathname.split("/").filter(Boolean);
+    const urlParts = getUrlParts();
     if (functions.hasGeneratedImageMetadata && urlParts.length > 0) {
       const params = matchMetadataRoutePattern(urlParts.slice(0, -1), route.patternParts);
       if (params) {
@@ -365,6 +366,12 @@ function serveStaticMetadataRoute(route: MetadataRuntimeRoute): Response {
 export async function handleMetadataRouteRequest(
   options: MetadataRouteRequestOptions,
 ): Promise<Response | null> {
+  // `cleanPathname` is invariant across the loop, so its split is computed
+  // lazily and memoized: only dynamic (`patternParts`) routes need it, and the
+  // common case of zero dynamic metadata routes never splits at all.
+  let urlParts: string[] | undefined;
+  const getUrlParts = () => (urlParts ??= options.cleanPathname.split("/").filter(Boolean));
+
   for (const route of options.metadataRoutes) {
     const functions = getMetadataRouteFunctions(route);
     if (route.type === "sitemap" && route.isDynamic) {
@@ -384,7 +391,7 @@ export async function handleMetadataRouteRequest(
       }
     }
 
-    const match = matchMetadataRoute(route, options.cleanPathname, functions);
+    const match = matchMetadataRoute(route, options.cleanPathname, functions, getUrlParts);
     if (!match) {
       continue;
     }

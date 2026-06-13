@@ -40,6 +40,12 @@ export function isImageOptimizationPath(pathname: string): boolean {
  * Controls SVG handling and security headers for the image endpoint.
  */
 export type ImageConfig = {
+  /** Allowed device widths. Defaults to Next.js device sizes. */
+  deviceSizes?: number[];
+  /** Allowed fixed-image widths. Defaults to Next.js image sizes. */
+  imageSizes?: number[];
+  /** Allowed output qualities. Defaults to Next.js's `[75]`. */
+  qualities?: number[];
   /** Allow SVG through the image optimization endpoint. Default: false. */
   dangerouslyAllowSVG?: boolean;
   /**
@@ -65,41 +71,75 @@ export type ImageConfig = {
  */
 export const DEFAULT_DEVICE_SIZES = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
 export const DEFAULT_IMAGE_SIZES = [16, 32, 48, 64, 96, 128, 256, 384];
+export const DEFAULT_IMAGE_QUALITIES = [75];
+const DEV_BLUR_MAX_WIDTH = 8;
+const DEV_BLUR_QUALITY = 70;
 
-/**
- * Absolute maximum image width. Even if custom deviceSizes/imageSizes are
- * configured, widths above this are always rejected. This prevents resource
- * exhaustion from absurdly large resize requests.
- */
-const ABSOLUTE_MAX_WIDTH = 3840;
+export type ParseImageParamsOptions = {
+  isDev?: boolean;
+};
+
+export function resolveDevImageRedirect(
+  requestUrl: URL,
+  allowedWidths: number[] = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES],
+  allowedQualities: number[] = DEFAULT_IMAGE_QUALITIES,
+  options: ParseImageParamsOptions = { isDev: true },
+): string | null {
+  const params = parseImageParams(requestUrl, allowedWidths, allowedQualities, options);
+  if (!params) return null;
+  if (
+    params.imageUrl.startsWith("/@") ||
+    params.imageUrl.startsWith("/__vite") ||
+    params.imageUrl.startsWith("/node_modules")
+  ) {
+    return null;
+  }
+  const resolved = new URL(params.imageUrl, requestUrl.origin);
+  if (resolved.origin !== requestUrl.origin) return null;
+  return resolved.pathname + resolved.search;
+}
 
 /**
  * Parse and validate image optimization query parameters.
  * Returns null if the request is malformed.
  *
- * When `allowedWidths` is provided, the width must be 0 (no resize) or
- * exactly match one of the allowed values. This matches Next.js behavior
- * where only configured deviceSizes and imageSizes are accepted.
- *
- * When `allowedWidths` is not provided, any width from 0 to ABSOLUTE_MAX_WIDTH
- * is accepted (backwards-compatible fallback).
+ * Ported from Next.js:
+ * test/integration/image-optimizer/test/index.test.ts
+ * https://github.com/vercel/next.js/blob/canary/test/integration/image-optimizer/test/index.test.ts
  */
 export function parseImageParams(
   url: URL,
-  allowedWidths?: number[],
+  allowedWidths: number[] = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES],
+  allowedQualities: number[] = DEFAULT_IMAGE_QUALITIES,
+  options: ParseImageParamsOptions = {},
 ): { imageUrl: string; width: number; quality: number } | null {
+  // Intentional hardening divergence from Next.js: reject duplicate and unknown
+  // parameters so semantically identical transforms cannot occupy distinct
+  // cache keys and amplify image transformation work.
+  const allowedParamNames = new Set(["url", "w", "q"]);
+  for (const name of url.searchParams.keys()) {
+    if (!allowedParamNames.has(name) || url.searchParams.getAll(name).length !== 1) return null;
+  }
+
   const imageUrl = url.searchParams.get("url");
   if (!imageUrl) return null;
+  if (imageUrl.length > 3072) return null;
 
-  const w = parseInt(url.searchParams.get("w") || "0", 10);
-  const q = parseInt(url.searchParams.get("q") || "75", 10);
+  const widthParam = url.searchParams.get("w");
+  const qualityParam = url.searchParams.get("q");
+  if (!widthParam || !/^[0-9]+$/.test(widthParam)) return null;
+  if (!qualityParam || !/^[0-9]+$/.test(qualityParam)) return null;
 
-  // Validate width (0 = no resize, otherwise must be positive and bounded)
-  if (Number.isNaN(w) || w < 0) return null;
-  if (w > ABSOLUTE_MAX_WIDTH) return null;
-  if (allowedWidths && w !== 0 && !allowedWidths.includes(w)) return null;
-  // Validate quality (1-100)
-  if (Number.isNaN(q) || q < 1 || q > 100) return null;
+  const width = Number.parseInt(widthParam, 10);
+  const quality = Number.parseInt(qualityParam, 10);
+  if (String(width) !== widthParam || String(quality) !== qualityParam) return null;
+
+  const isDevBlurWidth = options.isDev && width <= DEV_BLUR_MAX_WIDTH;
+  const isDevBlurQuality = options.isDev && quality === DEV_BLUR_QUALITY;
+  if (width <= 0 || (!allowedWidths.includes(width) && !isDevBlurWidth)) return null;
+  if (quality < 1 || quality > 100 || (!allowedQualities.includes(quality) && !isDevBlurQuality)) {
+    return null;
+  }
 
   // Prevent open redirect / SSRF — only allow path-relative URLs.
   // Normalize backslashes to forward slashes first: browsers and the URL
@@ -123,7 +163,7 @@ export function parseImageParams(
     return null;
   }
 
-  return { imageUrl: normalizedUrl, width: w, quality: q };
+  return { imageUrl: normalizedUrl, width, quality };
 }
 
 /**
@@ -238,7 +278,7 @@ export async function handleImageOptimization(
   imageConfig?: ImageConfig,
 ): Promise<Response> {
   const url = new URL(request.url);
-  const params = parseImageParams(url, allowedWidths);
+  const params = parseImageParams(url, allowedWidths, imageConfig?.qualities);
 
   if (!params) {
     return badRequestResponse();

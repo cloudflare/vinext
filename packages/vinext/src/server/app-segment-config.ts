@@ -9,19 +9,22 @@ type AppRouteSegmentConfigModule = {
   fetchCache?: unknown;
   revalidate?: unknown;
   runtime?: unknown;
+  unstable_dynamicStaleTime?: unknown;
 };
 
 type EffectiveAppPageSegmentConfig = {
   dynamicConfig?: AppRouteSegmentDynamic;
   dynamicParamsConfig?: boolean;
+  dynamicStaleTimeSeconds?: number;
   fetchCache?: FetchCacheMode;
   revalidateSeconds: number | null;
-  runtime?: string;
+  runtime?: "edge" | "experimental-edge" | "nodejs";
 };
 
 type ResolveAppPageSegmentConfigOptions = {
   layouts?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
   page?: AppRouteSegmentConfigModule | null;
+  parallelPages?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
 };
 
 const DYNAMIC_VALUES = new Set<unknown>(["auto", "error", "force-dynamic", "force-static"]);
@@ -43,6 +46,10 @@ function isRouteSegmentFetchCache(value: unknown): value is FetchCacheMode {
   return FETCH_CACHE_VALUES.has(value);
 }
 
+function isRouteSegmentRuntime(value: unknown): value is EffectiveAppPageSegmentConfig["runtime"] {
+  return value === "edge" || value === "experimental-edge" || value === "nodejs";
+}
+
 function resolveRevalidateSeconds(current: number | null, value: unknown): number | null {
   // revalidate = false means "cache indefinitely" in Next.js segment config.
   // Represent it as Infinity so downstream code can distinguish "never
@@ -62,6 +69,17 @@ function resolveRevalidateSeconds(current: number | null, value: unknown): numbe
   }
 
   return value < current ? value : current;
+}
+
+function resolveDynamicStaleTimeSeconds(
+  current: number | undefined,
+  value: unknown,
+): number | undefined {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    return current;
+  }
+
+  return current === undefined ? value : Math.min(current, value);
 }
 
 function isCacheFetchCacheMode(value: FetchCacheMode): boolean {
@@ -103,6 +121,10 @@ export function resolveAppPageSegmentConfig(
 
     if (isRouteSegmentDynamic(segment.dynamic)) {
       config.dynamicConfig = segment.dynamic;
+    }
+
+    if (isRouteSegmentRuntime(segment.runtime)) {
+      config.runtime = segment.runtime;
     }
 
     if (segment.dynamicParams === false) {
@@ -150,21 +172,26 @@ export function resolveAppPageSegmentConfig(
       config.revalidateSeconds,
       segment.revalidate,
     );
+  }
 
-    if (typeof segment.runtime === "string") {
-      config.runtime = segment.runtime;
-    }
+  for (const segment of [options.page, ...(options.parallelPages ?? [])]) {
+    if (!segment) continue;
+    config.dynamicStaleTimeSeconds = resolveDynamicStaleTimeSeconds(
+      config.dynamicStaleTimeSeconds,
+      segment.unstable_dynamicStaleTime,
+    );
   }
 
   if (config.dynamicConfig === "force-dynamic") {
     config.revalidateSeconds = 0;
   }
 
-  // Top-level dynamic modes supply fetchCache defaults unless a segment does.
+  // Static-only dynamic modes supply fetchCache defaults unless a segment does.
+  // `dynamic = "force-dynamic"` is handled at the fetch decision layer: it
+  // defaults no-config fetches to no-store but must not override explicit
+  // per-fetch cache/revalidate options.
   if (config.fetchCache === undefined) {
-    if (config.dynamicConfig === "force-dynamic") {
-      config.fetchCache = "force-no-store";
-    } else if (config.dynamicConfig === "error") {
+    if (config.dynamicConfig === "error") {
       config.fetchCache = "only-cache";
     }
   }
@@ -184,6 +211,19 @@ export function resolveAppPageFetchCacheMode(
   options: ResolveAppPageSegmentConfigOptions,
 ): FetchCacheMode | null {
   return resolveAppPageSegmentConfig(options).fetchCache ?? null;
+}
+
+/**
+ * Resolve the `fetchCache` segment config exported by a route handler module.
+ *
+ * Route handlers have no layout chain, so the module's own export applies
+ * directly. Mirrors upstream's app-route module, which copies
+ * `userland.fetchCache` into the work store before invoking the handler.
+ */
+export function resolveAppRouteHandlerFetchCacheMode(
+  handler: Pick<AppRouteSegmentConfigModule, "fetchCache">,
+): FetchCacheMode | null {
+  return isRouteSegmentFetchCache(handler.fetchCache) ? handler.fetchCache : null;
 }
 
 export function isEdgeRuntime(runtime: string | undefined): boolean {

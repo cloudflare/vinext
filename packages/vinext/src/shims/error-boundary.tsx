@@ -3,7 +3,8 @@
 import React from "react";
 // Import the local shim, not the public next/navigation alias. The built
 // package may execute this file before the plugin's resolveId hook is active.
-import { isRedirectError, usePathname, useRouter } from "./navigation.js";
+import { decodeRedirectError, isRedirectError, usePathname, useRouter } from "./navigation.js";
+import { VINEXT_DEV_ERROR_RECOVERY_EVENT } from "../utils/dev-error-recovery-event.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 
 export type ErrorBoundaryProps = {
@@ -21,28 +22,23 @@ type RedirectBoundaryState = {
   redirectType: "push" | "replace" | null;
 };
 
-type RedirectError = Error & {
-  digest: string;
-  handled?: boolean;
-};
-
 type ErrorBoundaryInnerProps = {
-  pathname: string;
+  pathname: string | null;
 } & ErrorBoundaryProps;
 
 export type ErrorBoundaryState = {
   error: CapturedError | null;
-  previousPathname: string;
+  previousPathname: string | null;
   previousResetKey: string | null;
 };
 
 type BoundaryResetProps = {
-  pathname: string;
+  pathname: string | null;
   resetKey?: string | null;
 };
 
 type BoundaryResetState = {
-  previousPathname: string;
+  previousPathname: string | null;
   previousResetKey: string | null;
 };
 
@@ -71,36 +67,24 @@ function shouldResetBoundary(
   return nextResetState.previousPathname !== previousResetState.previousPathname;
 }
 
-function decodeRedirectTarget(target: string): string {
-  try {
-    return decodeURIComponent(target);
-  } catch {
-    return target;
-  }
+function addDevErrorRecoveryListener(listener: () => void): void {
+  if (typeof window === "undefined") return;
+  window.addEventListener(VINEXT_DEV_ERROR_RECOVERY_EVENT, listener);
 }
 
-function getURLFromRedirectError(error: RedirectError): string | null {
-  const parts = error.digest.split(";");
-  // vinext emits 3-part (redirect: `NEXT_REDIRECT;;<encoded>`) or 4-part
-  // (permanentRedirect: `NEXT_REDIRECT;<type>;<encoded>;308`) digests;
-  // Next.js emits 5-part digests (`NEXT_REDIRECT;<type>;<url>;<status>;<isClient>`).
-  // vinext's `isRedirectError` is more permissive (just `startsWith("NEXT_REDIRECT;")`)
-  // so we branch on length rather than always using `slice(2, -2)`.
-  const encodedTarget = parts.length >= 5 ? parts.slice(2, -2).join(";") : parts[2];
-  return encodedTarget ? decodeRedirectTarget(encodedTarget) : null;
-}
-
-function getRedirectTypeFromError(error: RedirectError): "push" | "replace" {
-  const type = error.digest.split(";", 2)[1];
-  return type === "push" ? "push" : "replace";
+function removeDevErrorRecoveryListener(listener: () => void): void {
+  if (typeof window === "undefined") return;
+  window.removeEventListener(VINEXT_DEV_ERROR_RECOVERY_EVENT, listener);
 }
 
 function HandleRedirect({
   redirect,
   redirectType,
+  reset,
 }: {
   redirect: string;
   redirectType: "push" | "replace";
+  reset: () => void;
 }) {
   const router = useRouter();
 
@@ -111,17 +95,9 @@ function HandleRedirect({
       } else {
         router.replace(redirect);
       }
-      // Intentionally no reset() here. The boundary stays in its "redirect
-      // caught" state (rendering this component, which returns null) until
-      // router.push()/replace() triggers a new render at the destination
-      // route. That naturally unmounts this boundary and mounts a fresh one.
-      // Calling reset() would clear the boundary state, causing React to
-      // re-render children — which re-mounts the page component that threw
-      // redirect() in the first place. For deterministic redirects (e.g.
-      // auth guards), that creates an infinite redirect loop.
-      // Matches Next.js's HandleRedirect in redirect-boundary.tsx.
+      reset();
     });
-  }, [redirect, redirectType, router]);
+  }, [redirect, redirectType, reset, router]);
 
   return null;
 }
@@ -140,13 +116,6 @@ export class RedirectErrorBoundary extends React.Component<
 
   static getDerivedStateFromError(error: unknown): RedirectBoundaryState {
     if (isRedirectError(error)) {
-      // The public `isRedirectError` narrows to `Error & { digest: string }`.
-      // Cast to the local `RedirectError` (which also carries the optional
-      // `handled` field) so the parity logic below compiles. The cast is
-      // safe because every error that matches the prefix predicate is — by
-      // construction — produced by vinext's `redirect()` /
-      // `permanentRedirect()` helpers, which yield `Error` instances.
-      const redirectError = error as RedirectError;
       // Next.js parity: an outer RedirectBoundary that has already started
       // handling a redirect marks the error as `handled` so that, if React
       // re-throws the same error during a retry render, an inner boundary
@@ -154,15 +123,15 @@ export class RedirectErrorBoundary extends React.Component<
       // currently emit `handled` itself (we never assign it on the error
       // object), but we keep the branch so behavior matches Next.js if a
       // host or future change ever does.
-      if (redirectError.handled) {
+      if ("handled" in error && error.handled) {
         return {
           redirect: null,
           redirectType: null,
         };
       }
 
-      const url = getURLFromRedirectError(redirectError);
-      if (url === null) {
+      const result = decodeRedirectError(error.digest);
+      if (!result) {
         // Malformed digest (e.g. `NEXT_REDIRECT;push;` with an empty URL
         // segment). The server-side parser at next-error-digest.ts:51 also
         // rejects this. Re-throw so the error reaches a regular error
@@ -171,8 +140,8 @@ export class RedirectErrorBoundary extends React.Component<
       }
 
       return {
-        redirect: url,
-        redirectType: getRedirectTypeFromError(redirectError),
+        redirect: result.url,
+        redirectType: result.type,
       };
     }
 
@@ -182,7 +151,13 @@ export class RedirectErrorBoundary extends React.Component<
   render() {
     const { redirect, redirectType } = this.state;
     if (redirect !== null && redirectType !== null) {
-      return <HandleRedirect redirect={redirect} redirectType={redirectType} />;
+      return (
+        <HandleRedirect
+          redirect={redirect}
+          redirectType={redirectType}
+          reset={() => this.setState({ redirect: null, redirectType: null })}
+        />
+      );
     }
 
     return this.props.children;
@@ -204,7 +179,10 @@ export class ErrorBoundaryInner extends React.Component<
 > {
   constructor(props: ErrorBoundaryInnerProps) {
     super(props);
-    this.state = { error: null, ...readBoundaryResetState(props) };
+    this.state = {
+      error: null,
+      ...readBoundaryResetState(props),
+    };
   }
 
   static getDerivedStateFromProps(
@@ -215,7 +193,10 @@ export class ErrorBoundaryInner extends React.Component<
     if (state.error && shouldResetBoundary(nextResetState, state)) {
       return { error: null, ...nextResetState };
     }
-    return { error: state.error, ...nextResetState };
+    return {
+      error: state.error,
+      ...nextResetState,
+    };
   }
 
   static getDerivedStateFromError(error: unknown): Partial<ErrorBoundaryState> {
@@ -226,6 +207,22 @@ export class ErrorBoundaryInner extends React.Component<
       throw error;
     }
     return { error: { thrownValue: error } };
+  }
+
+  handleDevErrorRecovery = () => {
+    if (!this.state.error) return;
+    this.setState({
+      error: null,
+      ...readBoundaryResetState(this.props),
+    });
+  };
+
+  componentDidMount(): void {
+    addDevErrorRecoveryListener(this.handleDevErrorRecovery);
+  }
+
+  componentWillUnmount(): void {
+    removeDevErrorRecoveryListener(this.handleDevErrorRecovery);
   }
 
   reset = () => {
@@ -251,6 +248,36 @@ export function ErrorBoundary({ fallback, children, resetKey }: ErrorBoundaryPro
 }
 
 // ---------------------------------------------------------------------------
+// GlobalErrorBoundary — outermost root error boundary whose fallback is the
+// built-in default global-error component. It guards the user's
+// `app/global-error.tsx`: if that boundary itself throws while rendering,
+// React unwinds to this outer boundary and renders the minimal built-in
+// fallback UI instead of crashing the whole request.
+//
+// Mirrors Next.js, which nests the user's global-error inside an outer
+// `RootErrorBoundary errorComponent={DefaultGlobalError}`:
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router.tsx
+// ---------------------------------------------------------------------------
+
+export function GlobalErrorBoundary({
+  fallback,
+  children,
+}: {
+  fallback: React.ComponentType<{ error: unknown; reset: () => void }>;
+  children: React.ReactNode;
+}) {
+  const pathname = usePathname();
+  // No `resetKey`: as the outermost root boundary it resets only on pathname
+  // change (the ErrorBoundaryInner default), matching Next.js's RootErrorBoundary
+  // which also has no per-segment reset key.
+  return (
+    <ErrorBoundaryInner pathname={pathname} fallback={fallback}>
+      {children}
+    </ErrorBoundaryInner>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // NotFoundBoundary — catches notFound() on the client and renders not-found.tsx
 // ---------------------------------------------------------------------------
 
@@ -261,12 +288,12 @@ type NotFoundBoundaryProps = {
 };
 
 type NotFoundBoundaryInnerProps = {
-  pathname: string;
+  pathname: string | null;
 } & NotFoundBoundaryProps;
 
 type NotFoundBoundaryState = {
   notFound: boolean;
-  previousPathname: string;
+  previousPathname: string | null;
   previousResetKey: string | null;
 };
 
@@ -311,7 +338,12 @@ class NotFoundBoundaryInner extends React.Component<
 
   render() {
     if (this.state.notFound) {
-      return this.props.fallback;
+      return (
+        <>
+          <meta name="robots" content="noindex" />
+          {this.props.fallback}
+        </>
+      );
     }
     return this.props.children;
   }
@@ -341,12 +373,12 @@ type ForbiddenBoundaryProps = {
 };
 
 type ForbiddenBoundaryInnerProps = {
-  pathname: string;
+  pathname: string | null;
 } & ForbiddenBoundaryProps;
 
 type ForbiddenBoundaryState = {
   forbidden: boolean;
-  previousPathname: string;
+  previousPathname: string | null;
   previousResetKey: string | null;
 };
 
@@ -382,7 +414,12 @@ export class ForbiddenBoundaryInner extends React.Component<
 
   render() {
     if (this.state.forbidden) {
-      return this.props.fallback;
+      return (
+        <>
+          <meta name="robots" content="noindex" />
+          {this.props.fallback}
+        </>
+      );
     }
     return this.props.children;
   }
@@ -408,12 +445,12 @@ type UnauthorizedBoundaryProps = {
 };
 
 type UnauthorizedBoundaryInnerProps = {
-  pathname: string;
+  pathname: string | null;
 } & UnauthorizedBoundaryProps;
 
 type UnauthorizedBoundaryState = {
   unauthorized: boolean;
-  previousPathname: string;
+  previousPathname: string | null;
   previousResetKey: string | null;
 };
 
@@ -449,7 +486,12 @@ export class UnauthorizedBoundaryInner extends React.Component<
 
   render() {
     if (this.state.unauthorized) {
-      return this.props.fallback;
+      return (
+        <>
+          <meta name="robots" content="noindex" />
+          {this.props.fallback}
+        </>
+      );
     }
     return this.props.children;
   }
@@ -525,6 +567,22 @@ export class DevRecoveryBoundary extends React.Component<
       throw error;
     }
     return { error: { thrownValue: error } };
+  }
+
+  handleDevErrorRecovery = () => {
+    if (!this.state.error) return;
+    this.setState({
+      error: null,
+      previousResetKey: this.props.resetKey,
+    });
+  };
+
+  componentDidMount(): void {
+    addDevErrorRecoveryListener(this.handleDevErrorRecovery);
+  }
+
+  componentWillUnmount(): void {
+    removeDevErrorRecoveryListener(this.handleDevErrorRecovery);
   }
 
   componentDidCatch(): void {

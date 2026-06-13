@@ -1,11 +1,9 @@
 import { redirect } from "next/navigation";
 
-// generateMetadata throws redirect(). In Next.js, metadata resolution is
-// suspended/streamed, so the SSR response stays 200 (the redirect is encoded
-// in the streamed flight payload). Same behavior for the RSC navigation
-// request — see https://github.com/cloudflare/vinext/issues/1347 and Next.js's
-// test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
-// ("should support redirect in generateMetadata").
+// generateMetadata throws redirect(). In Next.js, streaming-capable document
+// requests stay HTTP 200 and receive a refresh meta tag, html-limited bots get
+// a blocking 307, and RSC navigation requests receive the redirect in the
+// flight payload.
 export async function generateMetadata() {
   redirect("/about");
 }

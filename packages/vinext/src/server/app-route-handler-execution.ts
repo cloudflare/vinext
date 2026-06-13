@@ -67,6 +67,7 @@ type RunAppRouteHandlerOptions = {
   dynamicConfig?: string;
   handlerFn: AppRouteHandlerFunction;
   i18n?: NextI18nConfig | null;
+  trailingSlash?: boolean;
   markDynamicUsage: MarkAppRouteDynamicUsageFn;
   middlewareRequestHeaders?: Headers | null;
   /**
@@ -129,6 +130,7 @@ export async function runAppRouteHandler(
   const trackedRequest = createTrackedAppRouteRequest(options.request, {
     basePath: options.basePath,
     i18n: options.i18n,
+    trailingSlash: options.trailingSlash,
     middlewareHeaders: options.middlewareRequestHeaders,
     onDynamicAccess() {
       options.markDynamicUsage();
@@ -168,6 +170,13 @@ export async function executeAppRouteHandler(
       markKnownDynamicAppRoute(options.routePattern);
     }
 
+    // The route's cache tags, shared by the response Cache-Tag header (so edge
+    // adapters can purge by tag) and the ISR write below. Cheap + side-effect free.
+    const routeTags = options.buildPageCacheTags(
+      options.cleanPathname,
+      options.getCollectedFetchTags(),
+    );
+
     if (
       shouldApplyAppRouteHandlerRevalidateHeader({
         dynamicUsedInHandler,
@@ -181,7 +190,12 @@ export async function executeAppRouteHandler(
       if (revalidateSeconds == null) {
         throw new Error("Expected route handler revalidate seconds");
       }
-      applyRouteHandlerRevalidateHeader(response, revalidateSeconds, options.expireSeconds);
+      applyRouteHandlerRevalidateHeader(
+        response,
+        revalidateSeconds,
+        options.expireSeconds,
+        routeTags,
+      );
     }
 
     if (
@@ -202,10 +216,6 @@ export async function executeAppRouteHandler(
       if (revalidateSeconds == null) {
         throw new Error("Expected route handler cache revalidate seconds");
       }
-      const routeTags = options.buildPageCacheTags(
-        options.cleanPathname,
-        options.getCollectedFetchTags(),
-      );
       const routeWritePromise = (async () => {
         try {
           const routeCacheValue = await buildAppRouteCacheValue(routeClone);

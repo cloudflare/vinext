@@ -1,0 +1,37 @@
+{
+  "name": "@vinext/cloudflare",
+  "version": "0.1.1",
+  "description": "Cloudflare cache adapters for vinext (KV data cache + edge CDN cache).",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cloudflare/vinext.git",
+    "directory": "packages/cloudflare"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    "./cache/*": {
+      "types": "./dist/cache/*.d.ts",
+      "import": "./dist/cache/*.js"
+    }
+  },
+  "scripts": {
+    "build": "vp pack",
+    "prepack": "vp run build",
+    "dev": "vp pack --watch"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "vinext": "workspace:*",
+    "vite-plus": "catalog:"
+  },
+  "peerDependencies": {
+    "vinext": ">=0.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

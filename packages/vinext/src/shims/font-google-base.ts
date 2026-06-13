@@ -2,6 +2,7 @@ import { buildGoogleFontsUrl as buildUrlFromAxes } from "../build/google-fonts/b
 import {
   escapeCSSString,
   formatFontClassRule,
+  getFontMimeType,
   resolveSingleFaceStyle,
   sanitizeCSSVarName,
   sanitizeFallback,
@@ -329,17 +330,6 @@ const ssrFontPreloadHrefs = new Set<string>();
  */
 export function getSSRFontPreloads(): Array<{ href: string; type: string }> {
   return [...ssrFontPreloads];
-}
-
-/**
- * Determine the MIME type for a font file based on its extension.
- */
-function getFontMimeType(pathOrUrl: string): string {
-  if (pathOrUrl.endsWith(".woff2")) return "font/woff2";
-  if (pathOrUrl.endsWith(".woff")) return "font/woff";
-  if (pathOrUrl.endsWith(".ttf")) return "font/ttf";
-  if (pathOrUrl.endsWith(".otf")) return "font/opentype";
-  return "font/woff2";
 }
 
 /**

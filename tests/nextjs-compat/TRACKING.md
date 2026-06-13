@@ -64,32 +64,33 @@ Ported from: https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir
 | ---------------- | ----- | ---- | ---- | --- | ---- | ------ |
 | 1. app-rendering | 8     | 6    | 2    | 0   | 0    | Done   |
 | 2. not-found     | 17    | 12   | 0    | 5   | 0    | Done   |
-| 3. global-error  | 11    | 6    | 0    | 5   | 0    | Done   |
+| 3. global-error  | 12    | 7    | 0    | 5   | 0    | Done   |
 | 4. dynamic       | 17    | 8    | 0    | 9   | 0    | Done   |
 
 ---
 
 ## Chunk 3: global-error
 
-**Source**: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-error/basic/index.test.ts
+**Source**: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-error/basic/index.test.ts, https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-error/error-in-global-error/error-in-global-error.test.ts
 **Local**: `tests/nextjs-compat/global-error.test.ts`
-**Fixtures**: `fixtures/app-basic/app/nextjs-compat/global-error-{rsc,ssr}/`, `metadata-error-{with,without}-boundary/`
+**Fixtures**: `fixtures/app-basic/app/nextjs-compat/global-error-{rsc,ssr,self-throw}/`, `metadata-error-{with,without}-boundary/`
 
-| #   | Next.js Test                                                          | Vinext Status | Notes                                                                                                                       |
-| --- | --------------------------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| 1   | error-server-test: server component throw caught by error.tsx         | PASS          | Verified in dev + production preview: vinext renders the local `error.tsx` boundary with HTTP 200.                          |
-| 2   | error-nested-test: nested error caught by inner error.tsx             | PASS          | Verified in dev + production preview: vinext resolves to the nearest matching `error.tsx`, not the parent boundary.         |
-| 3   | Server component throw without local error.tsx returns a response     | PASS          | Verified in dev + production preview: vinext renders `global-error.tsx` with HTTP 200 when no local boundary exists.        |
-| 4   | Client component SSR throw without local error.tsx returns a response | PASS          | Verified in dev + production preview: vinext renders `global-error.tsx` with HTTP 200 for SSR-time client component throws. |
-| 5   | generateMetadata() error caught by local error.tsx boundary           | PASS          | Verified in dev + production preview: vinext renders the co-located `error.tsx` boundary with HTTP 200.                     |
-| 6   | generateMetadata() error without local boundary returns a response    | PASS          | Verified in dev + production preview: vinext escalates to `global-error.tsx` with HTTP 200 when no local boundary exists.   |
-| 7   | Client-side error trigger via button click -> global-error renders    | N/A           | Requires Playwright — client component state change triggers throw                                                          |
-| 8   | Nested client error auto-thrown via useEffect -> global-error         | N/A           | Requires Playwright                                                                                                         |
-| 9   | Dev-only Redbox display verification                                  | N/A           | Tests Next.js-specific dev overlay format, not applicable                                                                   |
-| 10  | Client-side notFound() trigger from button (root)                     | N/A           | Requires Playwright                                                                                                         |
-| 11  | Client-side notFound() trigger from button (nested)                   | N/A           | Requires Playwright                                                                                                         |
+| #   | Next.js Test                                                           | Vinext Status | Notes                                                                                                                                                                                                      |
+| --- | ---------------------------------------------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | error-server-test: server component throw caught by error.tsx          | PASS          | Verified in dev + production preview: vinext renders the local `error.tsx` boundary with HTTP 200.                                                                                                         |
+| 2   | error-nested-test: nested error caught by inner error.tsx              | PASS          | Verified in dev + production preview: vinext resolves to the nearest matching `error.tsx`, not the parent boundary.                                                                                        |
+| 3   | Server component throw without local error.tsx returns a response      | PASS          | Verified in dev + production preview: vinext renders `global-error.tsx` with HTTP 200 when no local boundary exists.                                                                                       |
+| 4   | Client component SSR throw without local error.tsx returns a response  | PASS          | Verified in dev + production preview: vinext renders `global-error.tsx` with HTTP 200 for SSR-time client component throws.                                                                                |
+| 5   | generateMetadata() error caught by local error.tsx boundary            | PASS          | Verified in dev + production preview: vinext renders the co-located `error.tsx` boundary with HTTP 200.                                                                                                    |
+| 6   | generateMetadata() error without local boundary returns a response     | PASS          | Verified in dev + production preview: vinext escalates to `global-error.tsx` with HTTP 200 when no local boundary exists.                                                                                  |
+| 7   | Client-side error trigger via button click -> global-error renders     | N/A           | Requires Playwright — client component state change triggers throw                                                                                                                                         |
+| 8   | Nested client error auto-thrown via useEffect -> global-error          | N/A           | Requires Playwright                                                                                                                                                                                        |
+| 9   | Dev-only Redbox display verification                                   | N/A           | Tests Next.js-specific dev overlay format, not applicable                                                                                                                                                  |
+| 10  | Client-side notFound() trigger from button (root)                      | N/A           | Requires Playwright                                                                                                                                                                                        |
+| 11  | Client-side notFound() trigger from button (nested)                    | N/A           | Requires Playwright                                                                                                                                                                                        |
+| 12  | error-in-global-error: self-throwing global-error -> built-in fallback | PASS          | Verified in dev + production preview: when `global-error.tsx` itself throws, vinext renders the built-in default global-error (`This page couldn't load`) with HTTP 200 instead of a raw 500. Fixes #1548. |
 
-**Result: 6/6 pass (HTTP-level), 0 skip, 5 N/A (browser-only, dev overlay)**
+**Result: 7/7 pass (HTTP-level), 0 skip, 5 N/A (browser-only, dev overlay)**
 
 ### Findings
 

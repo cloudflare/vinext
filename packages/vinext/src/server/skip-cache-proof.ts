@@ -1,16 +1,25 @@
 import {
   evaluateArtifactCompatibility,
+  ARTIFACT_COMPATIBILITY_PROOF_FIELDS,
   type ArtifactCompatibilityEnvelope,
   type ArtifactCompatibilityEvaluationOptions,
 } from "./artifact-compatibility.js";
 import type { StaticLayoutArtifactReuseDecision } from "./cache-proof.js";
 import {
+  CLIENT_REUSE_MANIFEST_SKIP_VERIFICATION_ENTRY_BUDGET,
   createClientReusePayloadHash,
   type ClientReuseManifestEntry,
   type ClientReuseManifestEntryRejection,
+  type ClientReuseManifestParseResult,
+  type ClientReuseManifestRejection,
   type ClientReuseManifestSkipDisposition,
   type ClientReuseManifestTraceFields,
 } from "./client-reuse-manifest.js";
+export {
+  createStaticLayoutClientReuseArtifactCompatibility,
+  createStaticLayoutClientReusePayloadHash,
+  createStaticLayoutClientReuseRouteId,
+} from "./static-layout-client-reuse-proof.js";
 
 export type SkipCacheInvalidationProof =
   | Readonly<{ kind: "invalidated"; invalidationEpoch: string | null }>
@@ -48,21 +57,45 @@ type CrossCheckClientReuseManifestEntryWithCacheInput = Readonly<{
 }> &
   ArtifactCompatibilityEvaluationOptions;
 
-const ARTIFACT_COMPATIBILITY_PROOF_FIELDS: readonly (keyof ArtifactCompatibilityEnvelope)[] = [
-  "schemaVersion",
-  "graphVersion",
-  "deploymentVersion",
-  "appElementsSchemaVersion",
-  "rscPayloadSchemaVersion",
-  "rootBoundaryId",
-  "renderEpoch",
-];
+type ClientReuseSkipTransportPlan =
+  | Readonly<{
+      entryRejections: readonly ClientReuseManifestEntryRejection[];
+      kind: "renderAndSend";
+      manifestRejection?: ClientReuseManifestRejection;
+      skipDisposition: ClientReuseManifestSkipDisposition;
+      skipIneligibleEntryIds: readonly string[];
+      skippedEntryIds: readonly string[];
+    }>
+  | Readonly<{
+      entryRejections: readonly ClientReuseManifestEntryRejection[];
+      kind: "skip";
+      skipDisposition: ClientReuseManifestSkipDisposition;
+      skipIneligibleEntryIds: readonly string[];
+      skippedEntryIds: readonly string[];
+    }>;
+
+type CreateClientReuseSkipTransportPlanInput = Readonly<{
+  manifest: ClientReuseManifestParseResult;
+  maxWireEntriesToVerify?: number;
+  verifyEntry: (entry: ClientReuseManifestEntry) => SkipCacheCrossCheckResult;
+}>;
 
 function createDisabledSkipDisposition(): ClientReuseManifestSkipDisposition {
   return {
     code: "SKIP_MODEL_DISABLED",
     enabled: false,
     mode: "renderAndSend",
+  };
+}
+
+function createStaticLayoutSkipDisposition(
+  skippedEntryIds: readonly string[],
+): ClientReuseManifestSkipDisposition {
+  return {
+    code: "SKIP_STATIC_LAYOUT_VERIFIED",
+    enabled: true,
+    mode: "skipStaticLayout",
+    skippedEntryIds: [...skippedEntryIds],
   };
 }
 
@@ -95,8 +128,43 @@ function collectArtifactCompatibilityProofMismatches(
   return mismatchedFields;
 }
 
+function isExactArtifactCompatibility(
+  artifactCompatibility: ArtifactCompatibilityEnvelope,
+  entryCompatibility: ArtifactCompatibilityEnvelope,
+): boolean {
+  return (
+    collectArtifactCompatibilityProofMismatches(artifactCompatibility, entryCompatibility)
+      .length === 0
+  );
+}
+
 function assertNever(value: never): never {
   throw new Error(`Unhandled skip/cache proof state: ${String(value)}`);
+}
+
+function createRenderAndSendPlan(options: {
+  entryRejections?: readonly ClientReuseManifestEntryRejection[];
+  manifestRejection?: ClientReuseManifestRejection;
+  skipIneligibleEntryIds?: readonly string[];
+}): ClientReuseSkipTransportPlan {
+  return {
+    kind: "renderAndSend",
+    entryRejections: options.entryRejections ?? [],
+    ...(options.manifestRejection ? { manifestRejection: options.manifestRejection } : {}),
+    skipDisposition: createDisabledSkipDisposition(),
+    skipIneligibleEntryIds: options.skipIneligibleEntryIds ?? [],
+    skippedEntryIds: [],
+  };
+}
+
+function createVerificationBudgetExceededRejection(
+  totalWireEntries: number,
+  maxWireEntriesToVerify: number,
+): ClientReuseManifestRejection {
+  return {
+    code: "SKIP_VERIFICATION_BUDGET_EXCEEDED",
+    fields: { totalWireEntries, maxWireEntriesToVerify },
+  };
 }
 
 function crossCheckInvalidationProof(
@@ -196,6 +264,21 @@ export function crossCheckClientReuseManifestEntryWithCache(
   const invalidationRejection = crossCheckInvalidationProof(entry, input.artifact.invalidation);
   if (invalidationRejection) return invalidationRejection;
 
+  // Skip transport requires exact artifact field equality — not just
+  // compatibility-map-based equivalence.  evaluateArtifactCompatibility (above)
+  // returns "compatible" when a declared set bridges differing fields (canary →
+  // rollback), but the skip planner must not elide a fresh render when the two
+  // payloads were built from observably different artifact environments.
+  // isExactArtifactCompatibility performs a distinct field-level walk that
+  // ignores the compatibility map, guaranteeing only bit-identical artifact
+  // envelopes are eligible for transport skip.
+  const skipDisposition = isExactArtifactCompatibility(
+    input.artifact.compatibility,
+    entry.artifactCompatibility,
+  )
+    ? createStaticLayoutSkipDisposition([entry.id])
+    : createDisabledSkipDisposition();
+
   return {
     kind: "verified",
     code: "SKIP_CACHE_CROSS_CHECK_PASSED",
@@ -205,6 +288,79 @@ export function crossCheckClientReuseManifestEntryWithCache(
       reuseClass: proof.reuseClass,
       variantCacheKeyHash: createClientReusePayloadHash(proof.variant.cacheKey),
     },
-    skipDisposition: createDisabledSkipDisposition(),
+    skipDisposition,
+  };
+}
+
+export function createClientReuseSkipTransportPlan(
+  input: CreateClientReuseSkipTransportPlanInput,
+): ClientReuseSkipTransportPlan {
+  const { manifest } = input;
+  if (manifest.kind === "absent") {
+    return createRenderAndSendPlan({});
+  }
+  if (manifest.kind === "rejected") {
+    return createRenderAndSendPlan({ manifestRejection: manifest.rejection });
+  }
+
+  const maxWireEntriesToVerify =
+    input.maxWireEntriesToVerify ?? CLIENT_REUSE_MANIFEST_SKIP_VERIFICATION_ENTRY_BUDGET;
+  if (!Number.isSafeInteger(maxWireEntriesToVerify) || maxWireEntriesToVerify < 0) {
+    throw new RangeError("maxWireEntriesToVerify must be a non-negative safe integer");
+  }
+
+  const totalWireEntries = manifest.manifest.entries.length + manifest.entryRejections.length;
+  if (totalWireEntries > maxWireEntriesToVerify) {
+    return createRenderAndSendPlan({
+      entryRejections: manifest.entryRejections,
+      manifestRejection: createVerificationBudgetExceededRejection(
+        totalWireEntries,
+        maxWireEntriesToVerify,
+      ),
+    });
+  }
+
+  const skippedEntryIds: string[] = [];
+  const skipIneligibleEntryIds: string[] = [];
+  const entryRejections: ClientReuseManifestEntryRejection[] = [...manifest.entryRejections];
+  for (const entry of manifest.manifest.entries) {
+    const verification = input.verifyEntry(entry);
+    if (verification.kind === "rejected") {
+      entryRejections.push(verification.rejection);
+      continue;
+    }
+
+    // The planner must not trust a verifier that returns a verified result
+    // for a different entry than the one it was given.  This is an internal
+    // invariant, not a hostile-client defence.
+    if (verification.entryId !== entry.id) {
+      entryRejections.push({
+        code: "SKIP_CACHE_ENTRY_ID_MISMATCH",
+        entryId: entry.id,
+        fields: {
+          verifierEntryId: verification.entryId,
+          manifestEntryId: entry.id,
+        },
+      });
+      continue;
+    }
+
+    if (verification.skipDisposition.enabled) {
+      skippedEntryIds.push(entry.id);
+    } else {
+      skipIneligibleEntryIds.push(entry.id);
+    }
+  }
+
+  if (skippedEntryIds.length === 0) {
+    return createRenderAndSendPlan({ entryRejections, skipIneligibleEntryIds });
+  }
+
+  return {
+    kind: "skip",
+    entryRejections,
+    skipDisposition: createStaticLayoutSkipDisposition(skippedEntryIds),
+    skipIneligibleEntryIds,
+    skippedEntryIds,
   };
 }

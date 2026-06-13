@@ -9,6 +9,18 @@ const appRouterServer = {
   timeout: 30_000,
 };
 
+// Dedicated server for BFCache/cacheComponents coverage. cacheComponents is an
+// opt-in semantic mode that retains inactive route trees as hidden Activity DOM.
+// Running it on the shared app-basic fixture would change the DOM contract for
+// every unrelated app-router test, so it gets its own isolated fixture instead.
+const appRouterBfcacheServer = {
+  command: "npx vp dev --port 4183",
+  cwd: "./tests/fixtures/app-bfcache",
+  port: 4183,
+  reuseExistingServer: !process.env.CI,
+  timeout: 30_000,
+};
+
 /**
  * Each project maps to a single webServer. Some browser-specific projects share
  * a server with the base project, and shared servers are de-duped by port.
@@ -52,6 +64,23 @@ const projectServers = {
     use: { browserName: "webkit" as const },
     server: null,
   },
+  "app-router-bfcache": {
+    testDir: "./tests/e2e/app-router-bfcache",
+    use: { baseURL: "http://localhost:4183" },
+    server: appRouterBfcacheServer,
+  },
+  "catch-error": {
+    testDir: "./tests/e2e/catch-error",
+    use: { baseURL: "http://localhost:4185" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4185",
+      cwd: "./tests/fixtures/global-not-found-basic",
+      port: 4185,
+      reuseExistingServer: false,
+      timeout: 60_000,
+    },
+  },
   "cloudflare-pages-router": {
     testDir: "./tests/e2e",
     testMatch: [
@@ -73,9 +102,21 @@ const projectServers = {
       // Use node to invoke the CLI directly — npx vinext may not be on PATH
       // in fixture subdirectories since vinext is a workspace dependency.
       command:
-        "npx tsc -p ../../../packages/vinext/tsconfig.json && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4175",
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4175",
       cwd: "./tests/fixtures/pages-basic",
       port: 4175,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
+  "pages-scroll-restoration": {
+    testDir: "./tests/e2e/pages-scroll-restoration",
+    use: { baseURL: "http://localhost:4185" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4185",
+      cwd: "./tests/fixtures/pages-scroll-restoration",
+      port: 4185,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
     },
@@ -138,7 +179,7 @@ const projectServers = {
       // lightweight static file server. No vinext runtime is needed —
       // the output is pure pre-rendered HTML files.
       command:
-        "npx tsc -p ../../../packages/vinext/tsconfig.json && node ../../../packages/vinext/dist/cli.js build && node ../../../tests/e2e/static-export/serve-static.mjs dist/client 4180",
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../tests/e2e/static-export/serve-static.mjs dist/client 4180",
       cwd: "./tests/fixtures/static-export",
       port: 4180,
       reuseExistingServer: !process.env.CI,
@@ -163,9 +204,25 @@ const projectServers = {
       // Build vinext CLI, then build the fixture, then start the standalone
       // server. The standalone server.js reads PORT from the environment.
       command:
-        "npx tsc -p ../../../packages/vinext/tsconfig.json && node ../../../packages/vinext/dist/cli.js build && PORT=4182 node dist/standalone/server.js",
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && PORT=4182 node dist/standalone/server.js",
       cwd: "./tests/fixtures/standalone-output",
       port: 4182,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
+  "root-layout-redirect": {
+    testDir: "./tests/e2e/root-layout-redirect",
+    use: { baseURL: "http://localhost:4184" },
+    server: {
+      // Build vinext CLI, then build the fixture, then start the production
+      // server. This exercises prodOnCaughtError (the fixed code path) rather
+      // than devOnCaughtError, which already filtered navigation-signal errors
+      // before this PR.
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4184",
+      cwd: "./tests/fixtures/root-layout-redirect",
+      port: 4184,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
     },

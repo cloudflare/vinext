@@ -31,6 +31,7 @@
  */
 
 import type { OnRequestErrorHandler } from "./instrumentation.js";
+import { extendTracerProviderForCacheComponents } from "./otel-tracer-extension.js";
 
 let initialized = false;
 let initPromise: Promise<void> | null = null;
@@ -42,6 +43,12 @@ function isOnRequestErrorHandler(value: unknown): value is OnRequestErrorHandler
 /**
  * Ensure the instrumentation module's `register()` and `onRequestError`
  * hooks have been applied exactly once.
+ *
+ * After `register()` runs, we extend the OTel tracer provider so that spans
+ * created inside Cache Component renders (warmup / fallback-resume phases) use
+ * a fresh OTel context rather than inheriting the prerender work unit store.
+ * This mirrors Next.js's `afterRegistration()` call in
+ * `instrumentation-node-extensions.ts`.
  *
  * @param instrumentationModule - The imported `instrumentation.ts` module.
  *   Passed as an argument so the generated entry can import it normally
@@ -58,6 +65,15 @@ export async function ensureInstrumentationRegistered(
     if (typeof instrumentationModule.register === "function") {
       await instrumentationModule.register();
     }
+
+    // Extend the OTel tracer provider after register() so that span creation
+    // inside Cache Component renders exits the workUnitAsyncStorage context.
+    // Without this, spans created during prerender / fallback-resume phases
+    // would inherit the frozen prerender work unit store, causing span IDs to
+    // be reused across requests or not generated at all.
+    // Mirrors Next.js's afterRegistration() in
+    // packages/next/src/server/lib/router-utils/instrumentation-node-extensions.ts.
+    extendTracerProviderForCacheComponents();
 
     // Store the onRequestError handler on globalThis so it is visible to
     // reportRequestError() regardless of which Vite environment module graph

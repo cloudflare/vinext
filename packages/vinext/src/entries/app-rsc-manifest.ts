@@ -1,4 +1,8 @@
-import { convertSegmentsToRouteParts, type AppRoute } from "../routing/app-router.js";
+import {
+  computeAppRouteStaticSiblings,
+  convertSegmentsToRouteParts,
+  type AppRoute,
+} from "../routing/app-router.js";
 import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import { normalizePathSeparators } from "../utils/path.js";
@@ -51,8 +55,42 @@ type BuildAppRscManifestCodeOptions = {
   globalNotFoundPath?: string | null;
 };
 
+function findRootBoundaryRoute(routes: readonly AppRoute[]): AppRoute | undefined {
+  return (
+    routes.find((route) => route.pattern === "/") ??
+    routes.find((route) => route.layouts.length > 0 && route.layoutTreePositions.length > 0)
+  );
+}
+
+function rootRouteLayoutPaths(route: AppRoute | undefined): readonly string[] {
+  if (!route) return [];
+  if (route.pattern === "/") return route.layouts;
+
+  const rootPosition = route.layoutTreePositions[0];
+  return route.layouts.filter((_, index) => route.layoutTreePositions[index] === rootPosition);
+}
+
+function rootRouteBoundaryPath(
+  route: AppRoute | undefined,
+  boundaryPaths: readonly (string | null)[] | undefined,
+  fallbackPath: string | null | undefined,
+): string | null {
+  if (!route) return null;
+  if (route.pattern === "/") return fallbackPath ?? null;
+  // Boundary arrays are ordered from the root layout outward by the route
+  // scanner, so the first entry is the root boundary for non-root routes.
+  return boundaryPaths?.[0] ?? fallbackPath ?? null;
+}
+
 type ImportAllocator = {
   getImportVar(filePath: string): string;
+  /**
+   * Emit a `const load_N = () => import(path)` lazy loader thunk for a module
+   * that should be code-split out of the RSC entry's top-level evaluation
+   * (page modules of static routes, and all route-handler modules). Returns the
+   * loader variable name. Deduplicated independently of eager imports.
+   */
+  getLazyLoaderVar(filePath: string): string;
   importMap: ReadonlyMap<string, string>;
   imports: string[];
 };
@@ -60,7 +98,9 @@ type ImportAllocator = {
 function createImportAllocator(): ImportAllocator {
   const imports: string[] = [];
   const importMap = new Map<string, string>();
+  const lazyMap = new Map<string, string>();
   let importIdx = 0;
+  let lazyIdx = 0;
 
   return {
     importMap,
@@ -75,13 +115,40 @@ function createImportAllocator(): ImportAllocator {
       importMap.set(filePath, varName);
       return varName;
     },
+    getLazyLoaderVar(filePath) {
+      const existing = lazyMap.get(filePath);
+      if (existing) return existing;
+
+      const varName = `load_${lazyIdx++}`;
+      const absPath = normalizePathSeparators(filePath);
+      // `filePath` is a trusted filesystem-scan result (route.pagePath /
+      // route.routePath), the same input and trust model as the eager
+      // `import * as ${var} from ${JSON.stringify(absPath)}` in getImportVar
+      // above. CodeQL flags the `import()` form as dynamic code construction,
+      // but this is a build-time codegen template with a JSON-encoded absolute
+      // path, not runtime-attacker-controlled input — a false positive.
+      imports.push(`const ${varName} = () => import(${JSON.stringify(absPath)});`);
+      lazyMap.set(filePath, varName);
+      return varName;
+    },
   };
 }
 
 function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): void {
   for (const route of routes) {
-    if (route.pagePath) imports.getImportVar(route.pagePath);
-    if (route.routePath) imports.getImportVar(route.routePath);
+    // All page modules are lazy-loaded so route modules — including dynamic
+    // routes and routes nested under a dynamic segment — stay out of the RSC
+    // entry's top-level evaluation. Their generateStaticParams (if any) is
+    // reached via lazy `{ load }` sources in generateStaticParamsMap, resolved
+    // on demand at prerender time.
+    if (route.pagePath) imports.getLazyLoaderVar(route.pagePath);
+    // Route handlers are always lazy: they are never referenced by
+    // generateStaticParamsMap (buildGenerateStaticParamsEntries sources only
+    // from layouts + page, never route.routePath), so unlike dynamic-route
+    // pages they have no module-load-time consumer. (Next.js route handlers can
+    // export generateStaticParams for prerendering, but vinext does not wire
+    // that into the map yet — a separate gap, unaffected by lazy loading.)
+    if (route.routePath) imports.getLazyLoaderVar(route.routePath);
     for (const layout of route.layouts) imports.getImportVar(layout);
     for (const tmpl of route.templates) imports.getImportVar(tmpl);
     if (route.loadingPath) imports.getImportVar(route.loadingPath);
@@ -121,10 +188,18 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       if (slot.loadingPath) imports.getImportVar(slot.loadingPath);
       if (slot.errorPath) imports.getImportVar(slot.errorPath);
       for (const ir of slot.interceptingRoutes) {
-        imports.getImportVar(ir.pagePath);
+        imports.getLazyLoaderVar(ir.pagePath);
         for (const layoutPath of ir.layoutPaths) {
           imports.getImportVar(layoutPath);
         }
+      }
+    }
+    for (const ir of route.siblingIntercepts ?? []) {
+      // Lazy-load the intercepting page (like slot intercepts) so its CSS chunk
+      // stays isolated in production (#1738). Layouts remain eager.
+      imports.getLazyLoaderVar(ir.pagePath);
+      for (const layoutPath of ir.layoutPaths) {
+        imports.getImportVar(layoutPath);
       }
     }
   }
@@ -132,6 +207,12 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
 
 function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string[] {
   return routes.map((route, routeIdx) => {
+    // Pre-compute static-sibling segment names for the matched route's
+    // dynamic URL levels. The client router uses this to decide if a cached
+    // dynamic-route prefetch can be reused when navigating to a static
+    // sibling URL (issue cloudflare/vinext#1525). Emitted only when there are
+    // siblings so static routes get an empty literal and stay lean.
+    const staticSiblings = route.isDynamic ? computeAppRouteStaticSiblings(routes, route) : [];
     const layoutVars = route.layouts.map((l) => imports.getImportVar(l));
     const templateVars = route.templates.map((t) => imports.getImportVar(t));
     const notFoundVars = (route.notFoundPaths ?? []).map((nf) =>
@@ -143,6 +224,18 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
     const unauthorizedVars = (route.unauthorizedPaths ?? []).map((up) =>
       up ? imports.getImportVar(up) : "null",
     );
+    const siblingInterceptEntries = (route.siblingIntercepts ?? []).map(
+      (ir) => `    {
+      convention: ${JSON.stringify(ir.convention)},
+      targetPattern: ${JSON.stringify(ir.targetPattern)},
+      sourceMatchPattern: ${JSON.stringify(ir.sourceMatchPattern)},
+      slotId: ${JSON.stringify(ir.slotId ?? null)},
+      interceptLayouts: [${ir.layoutPaths.map((l) => imports.getImportVar(l)).join(", ")}],
+      page: null,
+      __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
+      params: ${JSON.stringify(ir.params)},
+    }`,
+    );
     const slotEntries = route.parallelSlots.map((slot) => {
       const interceptEntries = slot.interceptingRoutes.map(
         (ir) => `        {
@@ -150,7 +243,8 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
           targetPattern: ${JSON.stringify(ir.targetPattern)},
           sourceMatchPattern: ${JSON.stringify(ir.sourceMatchPattern)},
           interceptLayouts: [${ir.layoutPaths.map((layoutPath) => imports.getImportVar(layoutPath)).join(", ")}],
-          page: ${imports.getImportVar(ir.pagePath)},
+          page: null,
+          __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
           params: ${JSON.stringify(ir.params)},
         }`,
       );
@@ -175,6 +269,12 @@ ${interceptEntries.join(",\n")}
       ep ? imports.getImportVar(ep) : "null",
     );
     const errorVars = (route.errorPaths ?? []).map((ep) => imports.getImportVar(ep));
+    // Page and route handler are always lazy-loaded; hydrated onto route.page /
+    // route.routeHandler by ensureAppRouteModulesLoaded before any read.
+    const loadPageField = route.pagePath ? imports.getLazyLoaderVar(route.pagePath) : "null";
+    const loadRouteHandlerField = route.routePath
+      ? imports.getLazyLoaderVar(route.routePath)
+      : "null";
     return `  {
     __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
     __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(${routeIdx}) : null,
@@ -183,9 +283,12 @@ ${interceptEntries.join(",\n")}
     patternParts: ${JSON.stringify(route.patternParts)},
     isDynamic: ${route.isDynamic},
     params: ${JSON.stringify(route.params)},
+    staticSiblings: ${JSON.stringify(staticSiblings)},
     rootParamNames: ${JSON.stringify(route.rootParamNames ?? [])},
-    page: ${route.pagePath ? imports.getImportVar(route.pagePath) : "null"},
-    routeHandler: ${route.routePath ? imports.getImportVar(route.routePath) : "null"},
+    page: null,
+    __loadPage: ${loadPageField},
+    routeHandler: null,
+    __loadRouteHandler: ${loadRouteHandlerField},
     layouts: [${layoutVars.join(", ")}],
     routeSegments: ${JSON.stringify(route.routeSegments)},
     templateTreePositions: ${JSON.stringify(route.templateTreePositions)},
@@ -197,6 +300,9 @@ ${interceptEntries.join(",\n")}
     slots: {
 ${slotEntries.join(",\n")}
     },
+    siblingIntercepts: [
+${siblingInterceptEntries.join(",\n")}
+    ],
     loading: ${route.loadingPath ? imports.getImportVar(route.loadingPath) : "null"},
     error: ${route.errorPath ? imports.getImportVar(route.errorPath) : "null"},
     notFound: ${route.notFoundPath ? imports.getImportVar(route.notFoundPath) : "null"},
@@ -294,10 +400,13 @@ function buildGenerateStaticParamsEntries(
     }
 
     if (route.pagePath) {
+      // Page modules are lazy; the resolver imports them on demand at prerender
+      // time and reads `.generateStaticParams` then (see
+      // createAppPrerenderStaticParamsResolver).
       appendStaticParamSource(
         sourcesByPattern,
         route.pattern,
-        `${imports.getImportVar(route.pagePath)}?.generateStaticParams`,
+        `{ load: ${imports.getLazyLoaderVar(route.pagePath)} }`,
       );
     }
   }
@@ -325,17 +434,30 @@ export function buildAppRscManifestCode(
   registerRouteModules(options.routes, imports);
   const routeEntries = buildRouteEntries(options.routes, imports);
 
-  const rootRoute = options.routes.find((r) => r.pattern === "/");
-  const rootNotFoundVar = rootRoute?.notFoundPath
-    ? imports.getImportVar(rootRoute.notFoundPath)
+  const rootRoute = findRootBoundaryRoute(options.routes);
+  const rootNotFoundPath = rootRouteBoundaryPath(
+    rootRoute,
+    rootRoute?.notFoundPaths,
+    rootRoute?.notFoundPath,
+  );
+  const rootForbiddenPath = rootRouteBoundaryPath(
+    rootRoute,
+    rootRoute?.forbiddenPaths,
+    rootRoute?.forbiddenPath,
+  );
+  const rootUnauthorizedPath = rootRouteBoundaryPath(
+    rootRoute,
+    rootRoute?.unauthorizedPaths,
+    rootRoute?.unauthorizedPath,
+  );
+  const rootNotFoundVar = rootNotFoundPath ? imports.getImportVar(rootNotFoundPath) : null;
+  const rootForbiddenVar = rootForbiddenPath ? imports.getImportVar(rootForbiddenPath) : null;
+  const rootUnauthorizedVar = rootUnauthorizedPath
+    ? imports.getImportVar(rootUnauthorizedPath)
     : null;
-  const rootForbiddenVar = rootRoute?.forbiddenPath
-    ? imports.getImportVar(rootRoute.forbiddenPath)
-    : null;
-  const rootUnauthorizedVar = rootRoute?.unauthorizedPath
-    ? imports.getImportVar(rootRoute.unauthorizedPath)
-    : null;
-  const rootLayoutVars = rootRoute ? rootRoute.layouts.map((l) => imports.getImportVar(l)) : [];
+  const rootLayoutVars = rootRouteLayoutPaths(rootRoute).map((layoutPath) =>
+    imports.getImportVar(layoutPath),
+  );
   const globalErrorVar = options.globalErrorPath
     ? imports.getImportVar(options.globalErrorPath)
     : null;

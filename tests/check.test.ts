@@ -7,6 +7,7 @@ import {
   analyzeConfig,
   checkLibraries,
   checkConventions,
+  hasFreeCjsGlobal,
   runCheck,
   formatReport,
   type CheckResult,
@@ -309,6 +310,93 @@ describe("analyzeConfig", () => {
     expect(webpackItem?.detail).toContain("Vite replaces webpack");
   });
 
+  it("does not flag webpack when it only appears in a comment", () => {
+    writeFile(
+      "next.config.js",
+      `// We removed our custom webpack config when migrating to vinext.
+      module.exports = {
+        reactStrictMode: true,
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")).toBeUndefined();
+  });
+
+  it("does not flag webpack when it only appears as a substring of a value", () => {
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        env: { RSD: "react-server-dom-webpack" },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")).toBeUndefined();
+  });
+
+  it("does not flag an option mentioned in a comment with trailing punctuation", () => {
+    // Reviewer case: the boundary + `:`/`(`/`=` follower alone would still
+    // match these because the leading space satisfies the boundary. Comment
+    // stripping is what prevents the false positive.
+    writeFile(
+      "next.config.js",
+      `// TODO: webpack: removed, migrate to vite
+      /* old webpack(config) hook lived here */
+      // headers: we no longer set custom headers
+      module.exports = {
+        reactStrictMode: true,
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")).toBeUndefined();
+    expect(items.find((i) => i.name === "headers")).toBeUndefined();
+  });
+
+  it("does not flag an option name embedded in a string value", () => {
+    // Reviewer case: a `"<opt>:..."` value would slip past the optional-quote
+    // branch of the regex; string stripping prevents it.
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        images: { domains: ["webpack:1234"] },
+        env: { X: "(headers:foo)" },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")).toBeUndefined();
+    expect(items.find((i) => i.name === "headers")).toBeUndefined();
+    // The real keys are still detected.
+    expect(items.find((i) => i.name === "images")?.status).toBe("partial");
+    expect(items.find((i) => i.name === "env")?.status).toBe("supported");
+  });
+
+  it("detects webpack when written as a method shorthand", () => {
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        webpack(config) { return config; },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+  });
+
+  it("detects webpack when written as a quoted property key", () => {
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        "webpack": (config) => config,
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+  });
+
   it("detects partial image config", () => {
     writeFile(
       "next.config.mjs",
@@ -336,7 +424,7 @@ describe("analyzeConfig", () => {
   });
 
   // Mirrors Next.js: test/e2e/app-dir/app-shells
-  it("detects experimental.appShells as unsupported", () => {
+  it("detects experimental.appShells as partial (config recognized, behavior not implemented)", () => {
     writeFile(
       "next.config.mjs",
       `export default {
@@ -347,7 +435,7 @@ describe("analyzeConfig", () => {
     );
 
     const items = analyzeConfig(tmpDir);
-    expect(items.find((i) => i.name === "experimental.appShells")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "experimental.appShells")?.status).toBe("partial");
   });
 
   it("detects experimental.serverActions as supported", () => {
@@ -376,6 +464,48 @@ describe("analyzeConfig", () => {
 
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "experimental.prefetchInlining")?.status).toBe("partial");
+  });
+
+  it("detects experimental.varyParams as partial", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        experimental: {
+          varyParams: true,
+        },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.varyParams")?.status).toBe("partial");
+  });
+
+  it("detects experimental.optimisticRouting as partial", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        experimental: {
+          optimisticRouting: true,
+        },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.optimisticRouting")?.status).toBe("partial");
+  });
+
+  it("detects experimental.cachedNavigations as partial", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        experimental: {
+          cachedNavigations: true,
+        },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.cachedNavigations")?.status).toBe("partial");
   });
 
   it("detects experimental.swcEnvOptions as unsupported", () => {
@@ -426,6 +556,171 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "i18n.domains")?.status).toBe("partial");
   });
 
+  it("does not flag i18n.domains when domains belongs to images, not i18n", () => {
+    // Reviewer case: the old check tested parent and child as independent
+    // regexes, so any config with both i18n and images.domains wrongly reported
+    // i18n.domains. Scoping the child lookup to the i18n block fixes this.
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        i18n: { locales: ["en"], defaultLocale: "en" },
+        images: { domains: ["x.com"] },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "i18n.domains")).toBeUndefined();
+    expect(items.find((i) => i.name === "i18n")?.status).toBe("supported");
+  });
+
+  it("does not flag experimental.ppr when ppr is outside the experimental block", () => {
+    writeFile(
+      "next.config.js",
+      `const ppr = true;
+      module.exports = {
+        experimental: { inlineCss: true },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.ppr")).toBeUndefined();
+  });
+
+  it("detects a nested option that only appears in a later same-named block", () => {
+    // The block scan inspects every matching parent block, not just the first,
+    // so a child living in a second `experimental: {}` is still found.
+    writeFile(
+      "next.config.js",
+      `const a = { experimental: { inlineCss: true } };
+      module.exports = { experimental: { ppr: true } };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+  });
+
+  it("detects a nested option under a quoted parent key", () => {
+    writeFile(
+      "next.config.js",
+      `module.exports = {
+        "experimental": { ppr: true },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+  });
+
+  it("detects options when the config is wrapped in a plugin call", () => {
+    writeFile(
+      "next.config.mjs",
+      `import withMDX from "@next/mdx";
+      const nextConfig = { basePath: "/docs", webpack: (c) => c };
+      export default withMDX()(nextConfig);`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+  });
+
+  it("detects options through a `satisfies` annotation", () => {
+    writeFile(
+      "next.config.ts",
+      `export default { trailingSlash: true } satisfies import("next").NextConfig;`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
+  });
+
+  it("detects options in a concise arrow function config", () => {
+    // Documented Next.js function form: (phase) => config
+    writeFile(
+      "next.config.js",
+      `module.exports = (phase) => ({
+        basePath: "/app",
+        webpack: (config) => config,
+      });`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+  });
+
+  it("detects options in a block-body function config (next/constants PHASE_*)", () => {
+    writeFile(
+      "next.config.js",
+      `module.exports = function (phase, { defaultConfig }) {
+        const isDev = phase === "phase-development-server";
+        return {
+          trailingSlash: true,
+          experimental: { ppr: true },
+        };
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+  });
+
+  it("detects options in an `export default function` config", () => {
+    // `export default function (phase) {…}` parses as a FunctionDeclaration,
+    // unlike the `module.exports = function (…)` (FunctionExpression) form.
+    writeFile(
+      "next.config.mjs",
+      `export default function (phase) {
+        return {
+          trailingSlash: true,
+          webpack: (config) => config,
+          experimental: { ppr: true },
+        };
+      }`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+  });
+
+  it("detects options across all branches of a multi-phase function config", () => {
+    // Canonical next/constants multi-phase form: the phase-specific config is in
+    // an early return nested in an `if`, and the default config is the trailing
+    // return. Keys from both branches should be reported.
+    writeFile(
+      "next.config.js",
+      `const { PHASE_DEVELOPMENT_SERVER } = require("next/constants");
+      module.exports = (phase, { defaultConfig }) => {
+        if (phase === PHASE_DEVELOPMENT_SERVER) {
+          return { trailingSlash: true, experimental: { ppr: true } };
+        }
+        return { webpack: (config) => config };
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "experimental.ppr")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "webpack")?.status).toBe("unsupported");
+  });
+
+  it("detects options across both branches of a ternary function config", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default (phase) =>
+        phase === "phase-development-server"
+          ? { trailingSlash: true }
+          : { basePath: "/app" };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
+    expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
+  });
+
   it.each([
     ["experimental.ppr", "experimental", "ppr: true"],
     ["experimental.typedRoutes", "experimental", "typedRoutes: true"],
@@ -433,6 +728,9 @@ describe("analyzeConfig", () => {
     ["experimental.prefetchInlining", "experimental", "prefetchInlining: true"],
     ["experimental.swcEnvOptions", "experimental", 'swcEnvOptions: { mode: "usage" }'],
     ["experimental.appShells", "experimental", "appShells: true"],
+    ["experimental.varyParams", "experimental", "varyParams: true"],
+    ["experimental.optimisticRouting", "experimental", "optimisticRouting: true"],
+    ["experimental.cachedNavigations", "experimental", "cachedNavigations: true"],
     ["i18n.domains", "i18n", "domains: []"],
   ])("detects %s via generic dot-notation handling", (name, parent, body) => {
     writeFile("next.config.mjs", `export default { ${parent}: { ${body} } };`);
@@ -800,6 +1098,71 @@ describe("checkConventions", () => {
     expect(postcss).toBeUndefined();
   });
 
+  it("detects multiline PostCSS string-form plugins", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile(
+      "postcss.config.mjs",
+      `export default {\n  plugins: [\n    "@tailwindcss/postcss",\n    "autoprefixer",\n  ],\n};`,
+    );
+
+    const items = checkConventions(tmpDir);
+    const postcss = items.find((i) => i.name.includes("PostCSS"));
+    expect(postcss?.status).toBe("partial");
+  });
+
+  it("does not flag require()-form PostCSS plugins", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile(
+      "postcss.config.cjs",
+      `module.exports = {\n  plugins: [require("@tailwindcss/postcss"), require("autoprefixer")]\n};`,
+    );
+
+    const items = checkConventions(tmpDir);
+    const postcss = items.find((i) => i.name.includes("PostCSS"));
+    expect(postcss).toBeUndefined();
+  });
+
+  // Regression: a very large config whose `plugins: [` array is never closed used to
+  // send the old `/plugins\s*:\s*\[[\s\S]*?(['"]…['"])[\s\S]*?\]/` regex into quadratic
+  // backtracking, hanging the process / overflowing the regex stack. The anchored
+  // replacement runs in linear time, so this must complete near-instantly.
+  it("handles a huge unterminated PostCSS plugins array without hanging", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    // ~1.2MB of quoted entries inside an array that is never closed with `]`.
+    const huge = `export default {\n  plugins: [\n` + `    "plugin-x",\n`.repeat(200_000);
+    writeFile("postcss.config.mjs", huge);
+
+    const start = Date.now();
+    const items = checkConventions(tmpDir);
+    const elapsed = Date.now() - start;
+
+    // The first element is a bare string, so it is still correctly flagged...
+    const postcss = items.find((i) => i.name.includes("PostCSS"));
+    expect(postcss?.status).toBe("partial");
+    // ...and crucially it returns quickly instead of backtracking for minutes.
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  // Regression: the catastrophic case for the old regex — a large array with quoted
+  // tokens but no closing `]`, where the trailing `[\s\S]*?\]` forced repeated full
+  // re-scans. The anchored regex resolves this in a single linear pass.
+  it("handles a huge unterminated array with no leading string quickly", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    // No leading quote after `[` (require-style head) then a huge unterminated tail.
+    const huge =
+      `export default {\n  plugins: [\n    require("a"),\n` + `    require("x"),\n`.repeat(200_000);
+    writeFile("postcss.config.mjs", huge);
+
+    const start = Date.now();
+    const items = checkConventions(tmpDir);
+    const elapsed = Date.now() - start;
+
+    // require()-style head → not flagged as string-form.
+    const postcss = items.find((i) => i.name.includes("PostCSS"));
+    expect(postcss).toBeUndefined();
+    expect(elapsed).toBeLessThan(2000);
+  });
+
   it("detects __dirname usage in server files", () => {
     writeFile("lib/db.ts", `import path from "path";\nconst dir = path.join(__dirname, "data");`);
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
@@ -904,6 +1267,112 @@ describe("checkConventions", () => {
     expect(cjs?.files).toHaveLength(2);
     expect(cjs?.files).toContain("lib/a.ts");
     expect(cjs?.files).toContain("lib/b.ts");
+  });
+});
+
+// ── hasFreeCjsGlobal ─────────────────────────────────────────────────────────
+
+describe("hasFreeCjsGlobal", () => {
+  it("detects free __dirname / __filename in code", () => {
+    expect(hasFreeCjsGlobal(`const d = __dirname;`)).toBe(true);
+    expect(hasFreeCjsGlobal(`const f = __filename;`)).toBe(true);
+    expect(hasFreeCjsGlobal(`path.join(__dirname, "data")`)).toBe(true);
+  });
+
+  it("ignores occurrences inside strings, comments and plain templates", () => {
+    expect(hasFreeCjsGlobal(`const m = "use __dirname instead";`)).toBe(false);
+    expect(hasFreeCjsGlobal(`const m = 'use __dirname instead';`)).toBe(false);
+    expect(hasFreeCjsGlobal(`// previously used __dirname here`)).toBe(false);
+    expect(hasFreeCjsGlobal(`/* block __dirname comment */`)).toBe(false);
+    expect(hasFreeCjsGlobal("const m = `use __dirname instead`;")).toBe(false);
+  });
+
+  it("detects __dirname inside a template expression", () => {
+    expect(hasFreeCjsGlobal("const dir = `${__dirname}/views`;")).toBe(true);
+    // nested template inside the expression, real use deeper in
+    expect(hasFreeCjsGlobal("const x = `a${ `b${__filename}c` }d`;")).toBe(true);
+    // __dirname only appears in the inner plain-template text → not a free use
+    expect(hasFreeCjsGlobal("const x = `a${ `__dirname` }d`;")).toBe(false);
+  });
+
+  it("does not match identifiers that merely contain the substring", () => {
+    expect(hasFreeCjsGlobal(`const my__dirname = 1;`)).toBe(false);
+    expect(hasFreeCjsGlobal(`const __dirnameSuffix = 1;`)).toBe(false);
+  });
+
+  it("does not let a regex literal hide a later __dirname", () => {
+    // A stray quote/backtick inside a regex literal must not hijack string/template
+    // state and swallow real code that follows it.
+    expect(hasFreeCjsGlobal(`const r = /'/; const d = __dirname;`)).toBe(true);
+    expect(hasFreeCjsGlobal("const r = /`/;\nconst d = __dirname;")).toBe(true);
+    expect(hasFreeCjsGlobal("const r = /['\"`]/; const d = __filename;")).toBe(true);
+    // `/` after a `return` keyword is a regex; the `__dirname` after still counts.
+    expect(hasFreeCjsGlobal(`function f() { return /'/; }\nconst d = __dirname;`)).toBe(true);
+  });
+
+  it("does not treat division as a regex literal", () => {
+    // `/` after a value is division, not a regex — the second operand still scans.
+    expect(hasFreeCjsGlobal(`const x = a / b; const d = __dirname;`)).toBe(true);
+    expect(hasFreeCjsGlobal(`const x = total / __dirname.length;`)).toBe(true);
+  });
+
+  it("ignores __dirname inside a regex literal", () => {
+    expect(hasFreeCjsGlobal(`const r = /__dirname/; const x = 1;`)).toBe(false);
+  });
+
+  it("does not misread division after } or postfix ++/-- as a regex literal", () => {
+    // Division after a postfix `++`/`--` or a `}` must not be parsed as a regex
+    // literal (which would swallow the rest of the line and hide the __dirname).
+    expect(hasFreeCjsGlobal("i++ / 2; const d = __dirname;")).toBe(true);
+    expect(hasFreeCjsGlobal("i-- / 2; const d = __dirname;")).toBe(true);
+    expect(hasFreeCjsGlobal("const x = {a:1} / 2; const d = __dirname;")).toBe(true);
+    expect(hasFreeCjsGlobal("i++ / __dirname / b; z;")).toBe(true);
+    expect(hasFreeCjsGlobal("const half = list.pop() ? a-- / 2 : 0; const root = __dirname;")).toBe(
+      true,
+    );
+  });
+
+  it("still parses a real regex after a prefix ++ or keyword", () => {
+    // Prefix `++i` keeps operator position; the regex that follows is still a regex.
+    expect(hasFreeCjsGlobal("if (++i) { return /'/; }\nconst d = __dirname;")).toBe(true);
+  });
+
+  // Known limitation (documented on hasFreeCjsGlobal): distinguishing a value-position
+  // regex literal from division after `}` needs a real parser. We bias to division, so
+  // a statement-start regex after a block `}` whose body has an unpaired quote can mask
+  // a same-line __dirname. Accepted for an advisory check; pinned here so the gap is
+  // explicit. The multi-line variant is unaffected (string scanning stops at \n).
+  it("does not detect a __dirname hidden by a value-position regex on the same line", () => {
+    expect(hasFreeCjsGlobal("function f(){} /'/.test(x); const d = __dirname;")).toBe(false);
+  });
+
+  it("still detects __dirname on a later line after a value-position regex", () => {
+    expect(hasFreeCjsGlobal("function f(){} /'/.test(x);\nconst d = __dirname;")).toBe(true);
+  });
+
+  // Regression: the old alternation regex's `(?:[^"\\]|\\.)*` string-body loop
+  // overflowed V8's regex stack ("Maximum call stack size exceeded") on very large
+  // files. These inputs reproduce that; the scanner must return in linear time.
+  it("handles a multi-megabyte unterminated string literal without overflowing", () => {
+    const content = `const s = "` + "a".repeat(20_000_000); // ~20MB, no closing quote
+    const start = Date.now();
+    expect(hasFreeCjsGlobal(content)).toBe(false);
+    expect(Date.now() - start).toBeLessThan(2000);
+  });
+
+  it("handles an escape-heavy unterminated string without overflowing", () => {
+    // Unrolling the regex did not help this shape — it still overflowed. The scanner does not.
+    const content = `const s = "` + 'a\\"'.repeat(10_000_000); // ~30MB of escaped quotes
+    const start = Date.now();
+    expect(hasFreeCjsGlobal(content)).toBe(false);
+    expect(Date.now() - start).toBeLessThan(3000);
+  });
+
+  it("still finds a real __dirname after a huge benign string", () => {
+    const content = `const s = "${"x".repeat(5_000_000)}";\nconst d = __dirname;`;
+    const start = Date.now();
+    expect(hasFreeCjsGlobal(content)).toBe(true);
+    expect(Date.now() - start).toBeLessThan(2000);
   });
 });
 

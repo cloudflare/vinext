@@ -58,6 +58,15 @@ function isAppDirSuite(suite) {
  */
 const APP_ROUTER_NON_APP_DIR_SUITES = ["test/e2e/next-form/default/next-form-prefetch.test.ts"];
 
+const CUSTOM_DEPLOY_ADAPTER_SUITE_OVERRIDES = {
+  // Custom deploy adapters snapshot cliOutput during setup, before this test emits runtime logs.
+  "test/e2e/repeated-forward-slashes-error/repeated-forward-slashes-error.test.ts": {
+    failed: [
+      "repeated-forward-slashes-error should log error when href has repeated forward-slashes",
+    ],
+  },
+};
+
 async function main() {
   const positionals = [];
   let filter = "all";
@@ -101,7 +110,14 @@ async function main() {
     throw new Error(`Expected Next.js deploy manifest version 2, got ${source.version}`);
   }
 
-  let suites = source.suites ?? {};
+  let suites = { ...source.suites };
+  for (const [suite, override] of Object.entries(CUSTOM_DEPLOY_ADAPTER_SUITE_OVERRIDES)) {
+    const current = suites[suite] ?? {};
+    suites[suite] = {
+      ...current,
+      failed: Array.from(new Set([...(current.failed ?? []), ...(override.failed ?? [])])),
+    };
+  }
   let extraExcludes = [];
 
   if (filter === "pages") {

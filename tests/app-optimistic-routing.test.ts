@@ -18,6 +18,7 @@ import type {
   GraphVersion,
   RouteManifest,
   RouteManifestRoute,
+  RouteManifestSlotBinding,
 } from "../packages/vinext/src/routing/app-route-graph.js";
 
 function route(input: {
@@ -26,6 +27,7 @@ function route(input: {
   paramNames?: readonly string[];
   pattern: string;
   patternParts: readonly string[];
+  slotIds?: readonly string[];
 }): RouteManifestRoute {
   return {
     id: input.id,
@@ -38,12 +40,15 @@ function route(input: {
     rootBoundaryId: null,
     rootParamNames: [],
     routeHandlerId: null,
-    slotIds: [],
+    slotIds: [...(input.slotIds ?? [])],
     templateIds: [],
   };
 }
 
-function manifest(routes: readonly RouteManifestRoute[]): RouteManifest {
+function manifest(
+  routes: readonly RouteManifestRoute[],
+  slotBindings: readonly RouteManifestSlotBinding[] = [],
+): RouteManifest {
   return {
     graphVersion: "graph:test" as GraphVersion,
     segmentGraph: {
@@ -56,7 +61,7 @@ function manifest(routes: readonly RouteManifestRoute[]): RouteManifest {
       rootBoundaries: new Map(),
       routeHandlers: new Map(),
       routes: new Map(routes.map((entry) => [entry.id, entry])),
-      slotBindings: new Map(),
+      slotBindings: new Map(slotBindings.map((entry) => [entry.id, entry])),
       slots: new Map(),
       templates: new Map(),
     },
@@ -249,6 +254,76 @@ describe("App Router optimistic routing", () => {
 
     expect(navigationPayload?.params).toEqual({ slug: "post-2" });
     expect(navigationPayload?.elements[pageId]).not.toBe(elements[pageId]);
+  });
+
+  it("includes active parallel slot params in optimistic navigation payloads", () => {
+    // Mirrors the immediate pre-dynamic-render assertion in Next.js:
+    // test/e2e/app-dir/parallel-route-navigations/parallel-route-navigations.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-route-navigations/parallel-route-navigations.test.ts
+    const slotId = "slot:/[teamID]/@slot";
+    const routeManifest = manifest(
+      [
+        route({
+          id: "route:/:teamID/sub/:folder",
+          isDynamic: true,
+          paramNames: ["teamID", "folder"],
+          pattern: "/:teamID/sub/:folder",
+          patternParts: [":teamID", "sub", ":folder"],
+          slotIds: [slotId],
+        }),
+      ],
+      [
+        {
+          defaultId: null,
+          id: "route:/:teamID/sub/:folder::slot:/[teamID]/@slot",
+          ownerLayoutId: "layout:/[teamID]",
+          routeId: "route:/:teamID/sub/:folder",
+          routeSegments: ["[...catchAll]"],
+          slotId,
+          slotParamNames: ["teamID", "catchAll"],
+          slotPatternParts: [":teamID", ":catchAll+"],
+          state: "active",
+        },
+      ],
+    );
+    const elements = createBlogLoadingShellElements();
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/vercel/sub/folder.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+
+    if (template === null) {
+      throw new Error("Expected optimistic route template");
+    }
+
+    const navigationPayload = resolveOptimisticNavigationPayload({
+      basePath: "",
+      href: "/vercel/sub/other-folder",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+      templates: new Map([
+        [
+          getOptimisticRouteTemplateKey({
+            interceptionContext: null,
+            mountedSlotsHeader: null,
+            routeId: template.routeId,
+          }),
+          template,
+        ],
+      ]),
+    });
+
+    expect(navigationPayload?.params).toEqual({
+      teamID: "vercel",
+      folder: "other-folder",
+      catchAll: ["sub", "other-folder"],
+    });
   });
 
   it("does not learn routes without a loading boundary", () => {

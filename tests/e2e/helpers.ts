@@ -1,5 +1,21 @@
-import type { Page } from "@playwright/test";
+import type { Page, Request } from "@playwright/test";
 import { expect } from "@playwright/test";
+
+export function isAppRouterRscRequestForPath(request: Request, pathname: string): boolean {
+  const url = new URL(request.url());
+  return (
+    url.pathname === pathname && url.searchParams.has("_rsc") && request.headers()["rsc"] === "1"
+  );
+}
+
+export function isAppRouterServerActionRequestForPath(request: Request, pathname: string): boolean {
+  const url = new URL(request.url());
+  return (
+    request.method() === "POST" &&
+    url.pathname === pathname &&
+    request.headers()["next-action"] !== undefined
+  );
+}
 
 /**
  * Wait for Pages Router hydration to complete.

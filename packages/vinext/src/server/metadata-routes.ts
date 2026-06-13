@@ -56,7 +56,7 @@ export type SitemapEntry = {
   }>;
 };
 
-export type RobotsRule = {
+type RobotsRule = {
   userAgent?: string | string[];
   allow?: string | string[];
   disallow?: string | string[];

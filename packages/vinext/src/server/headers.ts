@@ -46,6 +46,9 @@ export const VINEXT_PARAMS_HEADER = "X-Vinext-Params";
 /** Deduplicated, sorted list of mounted layout slots for cache keying. */
 export const VINEXT_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
 
+/** Per-page dynamic stale time in seconds for App Router RSC responses. */
+export const VINEXT_DYNAMIC_STALE_TIME_HEADER = "X-Vinext-Dynamic-Stale-Time";
+
 /** Route interception context for parallel/intercepting routes. */
 export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context";
 
@@ -88,6 +91,14 @@ export const NEXT_ACTION_HEADER = "next-action";
 
 /** Next.js action-not-found indicator (value "1"). */
 export const NEXTJS_ACTION_NOT_FOUND_HEADER = "x-nextjs-action-not-found";
+
+/**
+ * Deployment ID header used by the Pages Router for deployment-skew
+ * protection. Set on every `/_next/data/` response so the client can detect
+ * when a new deployment has been rolled out and trigger a hard navigation.
+ * Mirrors `NEXT_NAV_DEPLOYMENT_ID_HEADER` from Next.js `lib/constants.ts`.
+ */
+export const NEXTJS_DEPLOYMENT_ID_HEADER = "x-nextjs-deployment-id";
 
 /** Forwarded action marker — set when a request has already been forwarded between workers. */
 export const ACTION_FORWARDED_HEADER = "x-action-forwarded";

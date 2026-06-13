@@ -190,6 +190,35 @@ describe("Next.js compat: global-error", () => {
     expect(html).toContain("Layout viewport error");
   });
 
+  // ── Self-throwing global-error -> built-in default fallback ──
+  // Next.js: it('should render fallback UI when error occurs in global-error', ...)
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-error/error-in-global-error/error-in-global-error.test.ts
+  //
+  // When the user's global-error.tsx throws while rendering, Next.js renders the
+  // built-in default global-error UI ("This page couldn't load") instead of
+  // crashing the request. Vinext must nest the user's global-error inside an
+  // outer boundary whose fallback is the default global-error component.
+  //
+  // PORT NOTE: upstream triggers the throw from the client (a `useEffect` in the
+  // global-error component). This HTTP/SSR suite instead has the shared
+  // global-error.tsx throw synchronously during SSR (keyed on the request
+  // pathname — see fixtures/app-basic/app/global-error.tsx) so the built-in
+  // fallback is observable in the server-rendered HTML without a browser.
+
+  it("self-throwing global-error renders the built-in default fallback", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-self-throw");
+    expect(res.status).toBe(200);
+    // The built-in default global-error UI from
+    // packages/vinext/src/shims/default-global-error.tsx.
+    expect(html).toContain("This page couldn");
+    expect(html).toContain("load");
+    // The user's broken boundary markup must NOT appear.
+    expect(html).not.toContain("Something went wrong!");
+    // Exactly one document even when the inner boundary throws.
+    expect((html.match(/<html/gi) || []).length).toBe(1);
+    expect((html.match(/<body/gi) || []).length).toBe(1);
+  });
+
   // ── Structural integrity: no double <html>/<body> tags ───────
   // global-error.tsx provides its own <html> and <body>. When it renders,
   // the root layout's <html>/<body> must NOT also appear.
@@ -351,5 +380,15 @@ describe("Next.js compat: global-error (production preview)", () => {
     );
     expect(res.status).toBe(200);
     expect(html).toContain("global-error");
+  });
+
+  it("self-throwing global-error renders the built-in default fallback with 200", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-self-throw");
+    expect(res.status).toBe(200);
+    expect(html).toContain("This page couldn");
+    expect(html).toContain("load");
+    expect(html).not.toContain("Something went wrong!");
+    expect((html.match(/<html/gi) || []).length).toBe(1);
+    expect((html.match(/<body/gi) || []).length).toBe(1);
   });
 });

@@ -19,6 +19,7 @@ import {
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "../server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
+import { parseCookieHeader } from "../utils/parse-cookie.js";
 
 /**
  * Cache for compiled regex patterns in matchConfigPattern.
@@ -473,10 +474,10 @@ export function escapeHeaderSource(source: string): string {
  * Callers extract the relevant parts from the incoming Request.
  */
 export type RequestContext = {
-  headers: Headers;
-  cookies: Record<string, string>;
-  query: URLSearchParams;
-  host: string;
+  readonly headers: Headers;
+  readonly cookies: Record<string, string>;
+  readonly query: URLSearchParams;
+  readonly host: string;
 };
 
 /**
@@ -526,27 +527,31 @@ function shouldEvaluateRule(ruleBasePath: false | undefined, state: BasePathMatc
  * Parse a Cookie header string into a key-value record.
  */
 export function parseCookies(cookieHeader: string | null): Record<string, string> {
-  if (!cookieHeader) return {};
-  const cookies: Record<string, string> = {};
-  for (const part of cookieHeader.split(";")) {
-    const eq = part.indexOf("=");
-    if (eq === -1) continue;
-    const key = part.slice(0, eq).trim();
-    const value = part.slice(eq + 1).trim();
-    if (key) cookies[key] = value;
-  }
-  return cookies;
+  return parseCookieHeader(cookieHeader);
 }
 
 /**
  * Build a RequestContext from a Web Request object.
+ *
+ * `cookies` and `query` are lazy memoized getters: they are consumed only by
+ * `has`/`missing` condition evaluation (`checkHasConditions` /
+ * `matchesRuleConditions`), and most apps configure no such conditions. The
+ * cookie split and `searchParams` access are therefore deferred until first
+ * read and computed at most once. Mirrors `headersContextFromRequest` in
+ * `shims/headers.ts`.
  */
 export function requestContextFromRequest(request: Request): RequestContext {
   const url = new URL(request.url);
+  let cookies: Record<string, string> | undefined;
+  let query: URLSearchParams | undefined;
   return {
     headers: request.headers,
-    cookies: parseCookies(request.headers.get("cookie")),
-    query: url.searchParams,
+    get cookies() {
+      return (cookies ??= parseCookies(request.headers.get("cookie")));
+    },
+    get query() {
+      return (query ??= url.searchParams);
+    },
     host: normalizeHost(request.headers.get("host"), url.hostname),
   };
 }
@@ -646,8 +651,8 @@ function matchSingleCondition(
       return _matchConditionValue(headerValue, condition.value);
     }
     case "cookie": {
+      if (!Object.hasOwn(ctx.cookies, condition.key)) return null;
       const cookieValue = ctx.cookies[condition.key];
-      if (cookieValue === undefined) return null;
       return _matchConditionValue(cookieValue, condition.value);
     }
     case "query": {
@@ -1167,6 +1172,55 @@ export function sanitizeDestination(dest: string): string {
  */
 export function isExternalUrl(url: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
+}
+
+/**
+ * Merge the original request's query params into a config-redirect
+ * destination, preserving them on the resulting `Location`.
+ *
+ * Next.js carries the original request query across config redirects
+ * (`prepareDestination({ query: parsedUrl.query })` →
+ * `stringifyQuery(...)` in resolve-routes.ts). This matters for App Router
+ * RSC client navigations: the cache-busting `_rsc` query must survive the
+ * redirect so the browser's auto-followed request to the destination is
+ * still treated as an RSC fetch. Dropping it breaks RSC fetch semantics
+ * (issue #1529).
+ *
+ * Destination query params win — a request param is only carried over when
+ * the destination does not already specify that key. Mirrors the merge
+ * semantics in `proxyExternalRequest`. External destinations are returned
+ * untouched (a config redirect to another origin should not leak the
+ * original request's query).
+ */
+export function preserveRedirectDestinationQuery(
+  destination: string,
+  requestSearch: string,
+): string {
+  if (requestSearch === "" || requestSearch === "?" || isExternalUrl(destination)) {
+    return destination;
+  }
+
+  const requestParams = new URLSearchParams(requestSearch);
+  if ([...requestParams.keys()].length === 0) return destination;
+
+  const hashIndex = destination.indexOf("#");
+  const hash = hashIndex === -1 ? "" : destination.slice(hashIndex);
+  const beforeHash = hashIndex === -1 ? destination : destination.slice(0, hashIndex);
+
+  const queryIndex = beforeHash.indexOf("?");
+  const pathPart = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
+  const destQuery = queryIndex === -1 ? "" : beforeHash.slice(queryIndex + 1);
+
+  const merged = new URLSearchParams(destQuery);
+  const destKeys = new Set(merged.keys());
+  for (const [key, value] of requestParams) {
+    if (!destKeys.has(key)) {
+      merged.append(key, value);
+    }
+  }
+
+  const mergedQuery = merged.toString();
+  return mergedQuery === "" ? `${pathPart}${hash}` : `${pathPart}?${mergedQuery}${hash}`;
 }
 
 /**

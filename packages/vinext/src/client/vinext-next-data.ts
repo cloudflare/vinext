@@ -23,6 +23,8 @@ export type VinextNextData = {
     appModuleUrl?: string;
     /** True when the Pages Router server has middleware/proxy configured. */
     hasMiddleware?: boolean;
+    /** True when build-time rewrites can affect the initial Pages Router ready state. */
+    hasRewrites?: boolean;
   };
 } & NEXT_DATA;
 

@@ -3,6 +3,7 @@ import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
 import type { RouteManifest, RouteManifestRoute } from "../routing/app-route-graph.js";
+import { matchRoutePattern } from "../routing/route-pattern.js";
 import { stripRscCacheBustingSearchParam, stripRscSuffix } from "./app-rsc-cache-busting.js";
 import {
   AppElementsWire,
@@ -212,6 +213,50 @@ export function matchOptimisticRouteManifestRoute(options: {
   return match;
 }
 
+function mergeParams(
+  target: Record<string, string | string[]>,
+  source: Record<string, string | string[]>,
+): void {
+  for (const [key, value] of Object.entries(source)) {
+    target[key] = value;
+  }
+}
+
+function resolveOptimisticNavigationParams(options: {
+  match: OptimisticRouteMatch;
+  routeManifest: RouteManifest;
+  urlParts: readonly string[];
+}): Record<string, string | string[]> {
+  const navigationParams: Record<string, string | string[]> = { ...options.match.params };
+
+  for (const binding of options.routeManifest.segmentGraph.slotBindings.values()) {
+    // Unlike the server-side resolveSlotParamOverrides, this loop doesn't skip
+    // slots whose slotParamNames are all already route params. That's a no-op
+    // merge in practice (identical values) but keeps client-side logic simpler.
+    if (binding.routeId !== options.match.route.id || binding.state !== "active") {
+      continue;
+    }
+
+    const patternParts = binding.slotPatternParts;
+    if (!patternParts) {
+      continue;
+    }
+
+    // Slot params are decoded once (from urlParts via splitPathnameForRouteMatch),
+    // matching the server-side resolveSlotParamOverrides decode pass. Route params
+    // are decoded a second time via decodeMatchedParams(match.params) above — a
+    // pre-existing asymmetry that has no practical effect for normal segments but
+    // means an encoded catch-all (%25/%2F) could differ between route and slot
+    // params in the same payload. TODO: converge the decode passes.
+    const matched = matchRoutePattern(options.urlParts, patternParts);
+    if (matched) {
+      mergeParams(navigationParams, matched);
+    }
+  }
+
+  return navigationParams;
+}
+
 function elementHasSuspenseFallback(value: unknown, depth = 0): boolean {
   if (depth > 100) return false;
   if (Array.isArray(value)) {
@@ -305,6 +350,9 @@ export function resolveOptimisticNavigationPayload(options: {
 }): OptimisticNavigationPayload | null {
   if (options.interceptionContext !== null) return null;
 
+  const urlParts = hrefToRouteParts(options.href, options.basePath);
+  if (urlParts === null) return null;
+
   const match = matchOptimisticRouteManifestRoute({
     basePath: options.basePath,
     href: options.href,
@@ -324,7 +372,11 @@ export function resolveOptimisticNavigationPayload(options: {
 
   return {
     elements: createOptimisticRouteElements(template),
-    params: match.params,
+    params: resolveOptimisticNavigationParams({
+      match,
+      routeManifest: options.routeManifest,
+      urlParts,
+    }),
     template,
   };
 }

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vite-plus/test";
 import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
+import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
 import type { Plugin } from "vite-plus";
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -105,7 +106,10 @@ describe("vinext:image-imports — transform", () => {
   function expectImageBinding(code: string, name: string, fileBasename: string) {
     expect(code).not.toMatch(new RegExp(`import\\s+${name}\\s+from`));
     expect(code).toMatch(new RegExp(`const\\s+${name}\\s*=\\s*\\{[^}]*src\\s*:`));
-    expect(code).toContain(path.join(IMAGES_DIR, fileBasename) + "?vinext-meta");
+    // The meta import specifier uses forward slashes — the transform normalizes
+    // the resolved path so generated output is consistent across platforms.
+    const metaSpecifier = normalizePathSeparators(path.join(IMAGES_DIR, fileBasename));
+    expect(code).toContain(metaSpecifier + "?vinext-meta");
   }
 
   it("transforms a PNG import into StaticImageData", async () => {
@@ -203,6 +207,144 @@ describe("vinext:image-imports — transform", () => {
     const plugin = getImagePlugin();
     const transform = unwrapHook(plugin.transform);
     const result = await transform.call(plugin, `import hero from ${q};`, fakeId);
+    expect(result).not.toBeNull();
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+  });
+
+  // Regression: a regex-based scanner matched `import X from '...img'` text
+  // anywhere it appeared, including inside comments — even when a real image
+  // existed at that path. This generated `const X = { src: __vinext_img_url_X }`
+  // referencing an undefined `__vinext_img_url_X`, crashing SSR (dev + prod 500).
+  // The scan must be AST-based and only rewrite real ImportDeclaration nodes.
+  it("ignores a commented-out image import (line comment)", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import hero from './test-4x3.png';`,
+      `// import ghost from './test-8x6.jpg';`,
+      `console.log(hero);`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, fakeId);
+    expect(result).not.toBeNull();
+    // The real import is rewritten.
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+    // The commented-out import must not produce any synthesized variables.
+    expect(result.code).not.toContain("__vinext_img_url_ghost");
+    expect(result.code).not.toContain("__vinext_img_meta_ghost");
+    expect(result.code).not.toMatch(/const\s+ghost\s*=/);
+    // The comment is preserved verbatim.
+    expect(result.code).toContain(`// import ghost from './test-8x6.jpg';`);
+  });
+
+  it("ignores a commented-out image import (block comment)", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import hero from './test-4x3.png';`,
+      `/* import ghost from './test-8x6.jpg'; */`,
+      `console.log(hero);`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, fakeId);
+    expect(result).not.toBeNull();
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+    expect(result.code).not.toContain("__vinext_img_url_ghost");
+    expect(result.code).not.toMatch(/const\s+ghost\s*=/);
+  });
+
+  it("ignores image-import text inside a string literal", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import hero from './test-4x3.png';`,
+      `const example = "import ghost from './test-8x6.jpg';";`,
+      `console.log(hero, example);`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, fakeId);
+    expect(result).not.toBeNull();
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+    expect(result.code).not.toContain("__vinext_img_url_ghost");
+    expect(result.code).not.toMatch(/const\s+ghost\s*=/);
+  });
+
+  it("does not transform named or namespace image imports", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    // These are not the `import X from '...'` default form, so they're left as-is.
+    const code = [
+      `import * as ns from './test-4x3.png';`,
+      `import { foo } from './test-8x6.jpg';`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, fakeId);
+    expect(result).toBeNull();
+  });
+
+  // Regression: the plugin runs with `enforce: "pre"`, so the handler sees RAW
+  // source containing JSX and TS type annotations. `parseAst` defaults to plain
+  // JS and throws on that syntax; if the handler swallows the error and returns
+  // null, image imports in every real component silently skip transformation
+  // (hero.src/width/height become undefined). These cases use real TSX/TS
+  // syntax that plain-JS parsing would reject.
+  it("transforms an image import in a TSX component (JSX in body)", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import Image from 'next/image';`,
+      `import hero from './test-4x3.png';`,
+      `export default function Home() {`,
+      `  return <Image src={hero} alt="hero" width={100} height={100} />;`,
+      `}`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, fakeId);
+    expect(result).not.toBeNull();
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+    // JSX is left intact for the downstream JSX transform.
+    expect(result.code).toContain(`<Image src={hero}`);
+  });
+
+  it("transforms an image import in a typed .ts file (type annotations)", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import hero from './test-4x3.png';`,
+      `const count: number = 1;`,
+      `function load(arg: string): void { console.log(arg, count); }`,
+      `console.log(hero);`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, path.join(IMAGES_DIR, "page.ts"));
+    expect(result).not.toBeNull();
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+    // Type annotations are preserved for the downstream TS transform.
+    expect(result.code).toContain(`const count: number = 1;`);
+  });
+
+  // Regression: parsing a plain `.ts` file as `tsx` throws on TS-only syntax
+  // because `<T>` is read as the start of a JSX element. The handler swallows
+  // parse errors and returns null, which would silently skip the image
+  // transform (hero.src/width/height become undefined). `.ts` must parse as
+  // `ts`, not `tsx`.
+  it("transforms an image import in a .ts file using an angle-bracket cast", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import hero from './test-4x3.png';`,
+      `const value: unknown = hero;`,
+      `const widened = <{ src: string }>value;`,
+      `console.log(widened.src);`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, path.join(IMAGES_DIR, "cast.ts"));
+    expect(result).not.toBeNull();
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+  });
+
+  it("transforms an image import in a .ts file using a non-comma generic arrow", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import hero from './test-4x3.png';`,
+      `const identity = <T>(x: T): T => x;`,
+      `console.log(identity(hero));`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, path.join(IMAGES_DIR, "arrow.ts"));
     expect(result).not.toBeNull();
     expectImageBinding(result.code, "hero", "test-4x3.png");
   });

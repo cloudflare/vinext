@@ -21,6 +21,16 @@ type ResolveAppPageHttpAccessBoundaryComponentOptions<TModule, TComponent> = {
   statusCode: number;
 };
 
+type ResolveAppPageHttpAccessBoundaryModuleOptions<TModule> = {
+  rootForbiddenModule?: TModule | null;
+  rootNotFoundModule?: TModule | null;
+  rootUnauthorizedModule?: TModule | null;
+  routeForbiddenModule?: TModule | null;
+  routeNotFoundModule?: TModule | null;
+  routeUnauthorizedModule?: TModule | null;
+  statusCode: number;
+};
+
 type ResolveAppPageParentHttpAccessBoundaryModuleOptions<TModule> = {
   layoutIndex: number;
   rootForbiddenModule?: TModule | null;
@@ -101,6 +111,24 @@ type RenderAppPageBoundaryResponseOptions<TElement> = {
 export function resolveAppPageHttpAccessBoundaryComponent<TModule, TComponent>(
   options: ResolveAppPageHttpAccessBoundaryComponentOptions<TModule, TComponent>,
 ): TComponent | null {
+  return (
+    options.getDefaultExport(
+      resolveAppPageHttpAccessBoundaryModule({
+        rootForbiddenModule: options.rootForbiddenModule,
+        rootNotFoundModule: options.rootNotFoundModule,
+        rootUnauthorizedModule: options.rootUnauthorizedModule,
+        routeForbiddenModule: options.routeForbiddenModule,
+        routeNotFoundModule: options.routeNotFoundModule,
+        routeUnauthorizedModule: options.routeUnauthorizedModule,
+        statusCode: options.statusCode,
+      }),
+    ) ?? null
+  );
+}
+
+export function resolveAppPageHttpAccessBoundaryModule<TModule>(
+  options: ResolveAppPageHttpAccessBoundaryModuleOptions<TModule>,
+): TModule | null {
   let boundaryModule: TModule | null | undefined;
 
   if (options.statusCode === 403) {
@@ -111,7 +139,7 @@ export function resolveAppPageHttpAccessBoundaryComponent<TModule, TComponent>(
     boundaryModule = options.routeNotFoundModule ?? options.rootNotFoundModule;
   }
 
-  return options.getDefaultExport(boundaryModule) ?? null;
+  return boundaryModule ?? null;
 }
 
 export function resolveAppPageParentHttpAccessBoundaryModule<TModule>(

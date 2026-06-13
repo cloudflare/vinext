@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   createAppRscRouteMatcher,
   matchAppRscRoutePattern,
+  SIBLING_PAGE_INTERCEPT_SLOT_KEY,
 } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 
 describe("App RSC route matching", () => {
@@ -312,6 +313,38 @@ describe("App RSC route matching", () => {
       expect(matcher.findIntercept("/groups/123/new", null)).toBeNull();
     });
 
+    it("findIntercept matches sibling intercept on soft-nav and misses on hard-nav", () => {
+      const routes: TestRoute[] = [
+        {
+          pattern: "/foo/bar",
+          patternParts: ["foo", "bar"],
+          siblingIntercepts: [
+            {
+              targetPattern: "/hoge",
+              sourceMatchPattern: "/foo/bar",
+              slotId: "slot:__vinext_sibling_intercept:/foo/bar",
+              interceptLayouts: [],
+              page: { default: () => null },
+              params: [],
+            },
+          ],
+        },
+        { pattern: "/hoge", patternParts: ["hoge"] },
+      ];
+      const matcher = createAppRscRouteMatcher(routes as any);
+
+      // Soft-nav from /foo/bar: should match
+      const hit = matcher.findIntercept("/hoge", "/foo/bar");
+      expect(hit).not.toBeNull();
+      expect(hit?.slotKey).toBe(SIBLING_PAGE_INTERCEPT_SLOT_KEY);
+
+      // Hard-nav (no source): must return null
+      expect(matcher.findIntercept("/hoge", null)).toBeNull();
+
+      // Wrong source: must return null
+      expect(matcher.findIntercept("/hoge", "/other")).toBeNull();
+    });
+
     it("matches dynamic segments in the intercepting route pattern", () => {
       // /[lang]/foo/(..)photos has interceptingRoute `/[lang]/foo`,
       // header regex `^/(?<lang>[^/]+)/foo(?:/.*)?$`.
@@ -353,10 +386,20 @@ function route(
   };
 }
 
+type TestSiblingIntercept = {
+  targetPattern: string;
+  sourceMatchPattern: string | null;
+  slotId: string | null;
+  interceptLayouts: readonly unknown[];
+  page: unknown;
+  params: string[];
+};
+
 type TestRoute = {
   pattern: string;
   patternParts: string[];
   slots?: Record<string, { intercepts?: TestIntercept[] }>;
+  siblingIntercepts?: TestSiblingIntercept[];
 };
 
 type TestIntercept = {

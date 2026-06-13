@@ -4,6 +4,7 @@ import { isInvisibleSegment } from "./routing/app-route-graph.js";
 import { appRouteGraph } from "./routing/app-router.js";
 import { patternToNextFormat } from "./routing/route-validation.js";
 import { decodeRouteSegment } from "./routing/utils.js";
+import { compareStrings } from "./utils/compare.js";
 
 type GenerateRouteTypesOptions = {
   root: string;
@@ -363,10 +364,4 @@ function propertyName(name: string): string {
 
 function quote(value: string): string {
   return JSON.stringify(value);
-}
-
-function compareStrings(left: string, right: string): number {
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
 }

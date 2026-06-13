@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { getPhotoLikes } from "./actions";
+import { PhotoModalBfcacheProbe } from "./bfcache-probe";
 import { LikeButton } from "./like-button";
 import { PhotoModalRefreshButton } from "./refresh-button";
+import "./global.css";
 
 // Intercepting route: renders when navigating from /feed to /photos/[id].
 // Shows a modal version of the photo instead of the full page.
@@ -15,6 +17,7 @@ export default async function PhotoModal({ params }: { params: { id: string } })
       <Link href="/photos/43" id="modal-photo-43-link">
         Next Photo
       </Link>
+      <PhotoModalBfcacheProbe />
       <PhotoModalRefreshButton />
       <LikeButton id={params.id} initialLikes={initialLikes} />
     </div>

@@ -18,6 +18,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
+import { getAstName } from "./ast-utils.js";
+import { normalizePathSeparators } from "../utils/path.js";
+import { escapeRegExp } from "../utils/regex.js";
 
 /**
  * Read a file's contents, returning null on any error.
@@ -29,14 +32,6 @@ async function readFileSafe(filepath: string): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-/** Extract the string name from an Identifier ({name}) or Literal ({value}) AST node.
- * Returns null for unexpected node shapes so callers can degrade gracefully rather than crash. */
-function astName(node: { name?: string; value?: string | boolean | number | null }): string | null {
-  if (node.name !== undefined) return node.name;
-  if (typeof node.value === "string") return node.value;
-  return null;
 }
 
 /** Nested conditional exports value (string path or nested conditions). */
@@ -191,6 +186,21 @@ export const DEFAULT_OPTIMIZE_PACKAGES: string[] = [
   "radix-ui",
 ];
 
+export function createOptimizedImportSourceMatcher(
+  packages: Iterable<string>,
+): (code: string) => boolean {
+  const pattern = [...packages].map(escapeRegExp).join("|");
+  if (!pattern) return () => false;
+
+  const importFromPattern = new RegExp(
+    String.raw`(?:^|[;}\n\r])\s*import(?!\s*\()(?:(?!\bfrom\b)[\s\S])*?\bfrom\s*["'](?:${pattern})["']`,
+    "m",
+  );
+
+  return (code: string) =>
+    code.includes("import") && code.includes("from") && importFromPattern.test(code);
+}
+
 /**
  * Resolve a package.json exports value to a string entry path.
  * Prefers node → import → module → default conditions, recursing into nested objects.
@@ -300,18 +310,18 @@ async function resolvePackageEntry(
       if (dotExport) {
         const entryPath = resolveExportsValue(dotExport, preferReactServer);
         if (entryPath) {
-          return path.resolve(pkgDir, entryPath).split(path.sep).join("/");
+          return normalizePathSeparators(path.resolve(pkgDir, entryPath));
         }
       }
     }
 
     const entryField = pkgJson.module ?? pkgJson.main;
     if (typeof entryField === "string") {
-      return path.resolve(pkgDir, entryField).split(path.sep).join("/");
+      return normalizePathSeparators(path.resolve(pkgDir, entryField));
     }
 
     const req = createRequire(path.join(projectRoot, "package.json"));
-    return req.resolve(packageName).split(path.sep).join("/");
+    return normalizePathSeparators(req.resolve(packageName));
   } catch {
     return null;
   }
@@ -367,7 +377,9 @@ async function buildExportMapFromFile(
   >();
   const localDeclarations = new Set<string>();
 
-  const fileDir = path.dirname(filePath);
+  // filePath is already normalized POSIX (every producer normalizes), so
+  // path.posix.dirname is safe.
+  const fileDir = path.posix.dirname(filePath);
 
   /**
    * Normalize a source specifier: resolve relative paths to absolute so that
@@ -375,9 +387,7 @@ async function buildExportMapFromFile(
    * Bare package specifiers (e.g. "@radix-ui/react-slot") are returned unchanged.
    */
   function normalizeSource(source: string): string {
-    return source.startsWith(".")
-      ? path.resolve(fileDir, source).split(path.sep).join("/")
-      : source;
+    return source.startsWith(".") ? path.posix.join(fileDir, source) : source;
   }
 
   function recordLocalDeclaration(node: DeclarationNode | null | undefined): void {
@@ -408,7 +418,7 @@ async function buildExportMapFromFile(
               break;
             case "ImportSpecifier":
               if (spec.imported) {
-                const name = astName(spec.imported);
+                const name = getAstName(spec.imported);
                 if (name !== null) {
                   importBindings.set(spec.local.name, {
                     source,
@@ -448,14 +458,14 @@ async function buildExportMapFromFile(
 
         if (node.exported) {
           // export * as Name from "sub-pkg" — namespace re-export
-          const name = astName(node.exported);
+          const name = getAstName(node.exported);
           if (name !== null) {
             exportMap.set(name, { source: normalizeSource(rawSource), isNamespace: true });
           }
         } else {
           // export * from "./sub" — wildcard: recursively merge sub-module exports
           if (rawSource.startsWith(".")) {
-            const subPath = path.resolve(fileDir, rawSource).split(path.sep).join("/");
+            const subPath = path.posix.join(fileDir, rawSource);
             // Try with the path as-is first, then with common extensions.
             // Includes TypeScript-first (.ts/.tsx/.cts/.mts) and JSX (.jsx) extensions
             // for TypeScript-first internal libraries and monorepo packages that may
@@ -514,8 +524,8 @@ async function buildExportMapFromFile(
           // export { A, B } from "sub-pkg"
           for (const spec of node.specifiers ?? []) {
             if (spec.exported) {
-              const exported = astName(spec.exported);
-              const local = astName(spec.local);
+              const exported = getAstName(spec.exported);
+              const local = getAstName(spec.local);
               if (exported !== null) {
                 exportMap.set(exported, {
                   source,
@@ -529,8 +539,8 @@ async function buildExportMapFromFile(
           // export { X } — look up X in importBindings
           for (const spec of node.specifiers) {
             if (!spec.exported) continue;
-            const exported = astName(spec.exported);
-            const local = astName(spec.local);
+            const exported = getAstName(spec.exported);
+            const local = getAstName(spec.local);
             if (exported === null || local === null) continue;
             const binding = importBindings.get(local);
             if (binding) {
@@ -589,17 +599,19 @@ async function buildExportMapFromFile(
  * Handles: `export * as X from`, `export { A } from`, `import * as X; export { X }`,
  * and `export * from "./sub"` (recursively resolves wildcard re-exports).
  *
- * Returns null if the entry cannot be resolved, the file cannot be read, or
- * the file has a parse error. Returns an empty map if the file is valid but
- * exports nothing.
+ * Returns null if `entryPath` is empty, the file cannot be read, or the file
+ * has a parse error. Returns an empty map if the file is valid but exports
+ * nothing.
+ *
+ * @param entryPath - Pre-resolved absolute path to the barrel entry file (the
+ *   caller owns entry resolution + its caching), or null when it could not be
+ *   resolved.
  */
 export async function buildBarrelExportMap(
-  packageName: string,
-  resolveEntry: (pkg: string) => string | null,
+  entryPath: string | null,
   readFile: (filepath: string) => Promise<string | null>,
   cache?: Map<string, BarrelExportMap>,
 ): Promise<BarrelExportMap | null> {
-  const entryPath = resolveEntry(packageName);
   if (!entryPath) return null;
 
   const exportMapCache = cache ?? new Map<string, BarrelExportMap>();
@@ -651,9 +663,7 @@ export function createOptimizeImportsPlugin(
   // file that imports from the same barrel package.
   const entryPathCache = new Map<string, string | null>();
   let optimizedPackages: Set<string> = new Set();
-  // Pre-built quoted forms used for the per-file quick-check. Computed once in
-  // buildStart so the transform loop doesn't allocate template literals per file.
-  let quotedPackages: string[] = [];
+  let hasOptimizedImportSource: (code: string) => boolean = () => false;
   // Tracks barrel entries whose sub-package origins have already been registered,
   // so repeated imports of the same barrel (across many files) don't redundantly
   // iterate the full export map. Keys are `${envKey}:${barrelEntry}` so that RSC
@@ -678,9 +688,7 @@ export function createOptimizeImportsPlugin(
         ...DEFAULT_OPTIMIZE_PACKAGES,
         ...(nextConfig?.optimizePackageImports ?? []),
       ]);
-      // Pre-build quoted package strings once so the per-file quick-check
-      // doesn't allocate template literals for every transformed file.
-      quotedPackages = [...optimizedPackages].flatMap((pkg) => [`"${pkg}"`, `'${pkg}'`]);
+      hasOptimizedImportSource = createOptimizedImportSourceMatcher(optimizedPackages);
       // Clear all caches across rebuilds so stale data doesn't linger.
       // exportMapCache and subpkgOrigin hold barrel AST analysis and sub-package
       // origin mappings which may change if a dependency is updated mid-dev.
@@ -728,18 +736,11 @@ export function createOptimizeImportsPlugin(
         // Skip virtual modules
         if (id.startsWith("\0")) return null;
 
-        // Quick string check: does the code mention any optimized package?
-        // Use quoted forms to avoid false positives (e.g. "effect" in "useEffect").
-        // quotedPackages is pre-built in buildStart to avoid per-file allocations.
+        // Quick pre-parse check: only transformable static `import ... from "pkg"`
+        // declarations can be rewritten, so skip files that merely mention an
+        // optimized package in ordinary strings, comments, or side-effect imports.
         const packages = optimizedPackages;
-        let hasBarrelImport = false;
-        for (const quoted of quotedPackages) {
-          if (code.includes(quoted)) {
-            hasBarrelImport = true;
-            break;
-          }
-        }
-        if (!hasBarrelImport) return null;
+        if (!hasOptimizedImportSource(code)) return null;
 
         let ast: ReturnType<typeof parseAst>;
         try {
@@ -770,10 +771,7 @@ export function createOptimizeImportsPlugin(
             entryPathCache.set(cacheKey, barrelEntry ?? null);
           }
           const exportMap = await buildBarrelExportMap(
-            importSource,
-            // Entry already resolved above via entryPathCache; the callback is a
-            // no-op resolver that simply returns the pre-resolved barrelEntry.
-            () => barrelEntry ?? null,
+            barrelEntry,
             readFileSafe,
             barrelCaches.exportMapCache,
           );
@@ -825,7 +823,7 @@ export function createOptimizeImportsPlugin(
                   allResolved = false;
                   break;
                 }
-                const imported = astName(spec.imported);
+                const imported = getAstName(spec.imported);
                 if (imported === null) {
                   // Malformed AST node — degrade gracefully by skipping the import
                   allResolved = false;
@@ -856,7 +854,7 @@ export function createOptimizeImportsPlugin(
             if (allResolved === false) {
               for (const spec of node.specifiers ?? []) {
                 if (spec.type === "ImportSpecifier" && spec.imported) {
-                  const imported = astName(spec.imported);
+                  const imported = getAstName(spec.imported);
                   if (imported !== null && !exportMap.has(imported)) {
                     console.debug(
                       `[vinext:optimize-imports] skipping "${importSource}": could not resolve specifier "${imported}" in barrel export map`,

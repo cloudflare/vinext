@@ -15,7 +15,9 @@ import { normalizePageExtensions } from "../routing/file-matcher.js";
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
-import { loadTsconfigPathAliasesForRoot } from "./tsconfig-paths.js";
+import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
+import { getViteMajorVersion } from "../utils/vite-version.js";
+import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
 
 /**
  * Parse a body size limit value (string or number) into bytes.
@@ -200,6 +202,8 @@ export type NextConfig = {
     deviceSizes?: number[];
     /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [16, 32, 48, 64, 96, 128, 256, 384] */
     imageSizes?: number[];
+    /** Allowed image qualities. Defaults to Next.js 16's `[75]`. */
+    qualities?: number[];
     /** Allow SVG images through the image optimization endpoint. SVG can contain scripts, so only enable if you trust all image sources. */
     dangerouslyAllowSVG?: boolean;
     /** Allow image optimization for hostnames that resolve to private IP addresses. This is a security risk (SSRF) — only enable for private networks when you understand the risk. */
@@ -213,6 +217,12 @@ export type NextConfig = {
   output?: "export" | "standalone";
   /** File extensions treated as routable pages/routes (Next.js pageExtensions) */
   pageExtensions?: string[];
+  /** Turbopack-compatible module resolution options. */
+  turbopack?: {
+    resolveAlias?: Record<string, unknown>;
+    resolveExtensions?: string[];
+    [key: string]: unknown;
+  };
   /**
    * Module specifiers that are required for side effects on the client before
    * hydration, in array order, ahead of the user's `instrumentation-client.{ts,js}`.
@@ -223,6 +233,13 @@ export type NextConfig = {
   allowedDevOrigins?: string[];
   /** Maximum age in seconds for stale ISR entries before blocking regeneration. */
   expireTime?: number;
+  /**
+   * Maximum total length (in characters) of the preload `Link` header emitted
+   * during App Router SSR. React drops whole entries once the limit is
+   * exceeded; `0` disables emission entirely. Defaults to 6000.
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/reactMaxHeadersLength
+   */
+  reactMaxHeadersLength?: number;
   /** User agents that require blocking metadata in the initial head. */
   htmlLimitedBots?: RegExp | string;
   /**
@@ -266,6 +283,14 @@ export type NextConfig = {
      */
     defineServer?: Record<string, string | number | boolean>;
   };
+  experimental?: {
+    /**
+     * Enables the experimental App Router gesture transition API:
+     * `useRouter().experimental_gesturePush()`.
+     */
+    gestureTransition?: boolean;
+    [key: string]: unknown;
+  };
   /**
    * Path to a custom cache handler module (e.g., KV, Redis, DynamoDB).
    * Accepts relative paths, absolute paths, or file:// URLs from import.meta.resolve().
@@ -289,7 +314,7 @@ export type NextConfig = {
   [key: string]: unknown;
 };
 
-export type NextConfigFactory = (
+type NextConfigFactory = (
   phase: string,
   opts: { defaultConfig: NextConfig },
 ) => NextConfig | Promise<NextConfig>;
@@ -319,8 +344,21 @@ export type ResolvedNextConfig = {
   trailingSlash: boolean;
   output: "" | "export" | "standalone";
   pageExtensions: string[];
+  resolveExtensions: string[] | null;
+  serverResolveExtensions: string[] | null;
   instrumentationClientInject: string[];
   cacheComponents: boolean;
+  /**
+   * Enables the experimental App Router gesture transition API:
+   * `useRouter().experimental_gesturePush()`.
+   */
+  gestureTransition: boolean;
+  /**
+   * Whether `experimental.prefetchInlining` is configured. Next.js uses this
+   * with the Segment Cache to fetch the route tree before the bundled inlined
+   * segment payload.
+   */
+  prefetchInlining: boolean;
   redirects: NextRedirect[];
   rewrites: {
     beforeFiles: NextRewrite[];
@@ -344,8 +382,15 @@ export type ResolvedNextConfig = {
   inlineCss: boolean;
   /** Parsed body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). Defaults to 1MB. */
   serverActionsBodySizeLimit: number;
+  /** Verbatim body size limit config value (e.g. "2mb") for the "Body exceeded {limit} limit" error. Defaults to "1 MB". */
+  serverActionsBodySizeLimitLabel: string;
   /** Route-level expire fallback in seconds for ISR entries with numeric revalidate. */
   expireTime: number;
+  /**
+   * Maximum total length (in characters) of the preload `Link` header emitted
+   * during App Router SSR. `0` disables emission. Defaults to 6000.
+   */
+  reactMaxHeadersLength: number;
   /** Serialized htmlLimitedBots regexp source from next.config. */
   htmlLimitedBots: string | undefined;
   /**
@@ -356,6 +401,13 @@ export type ResolvedNextConfig = {
   serverExternalPackages: string[];
   /** Enable sourcemaps for prerender error stack traces. Defaults to true. */
   enablePrerenderSourceMaps: boolean;
+  /**
+   * Enable App Shell prefetching (from experimental.appShells).
+   * Plumbing-only in vinext — the flag is accepted and forwarded to the client
+   * bundle via `process.env.__NEXT_APP_SHELLS`, but actual App Shell behavior
+   * requires the segment-cache architecture which is not yet implemented.
+   */
+  appShells: boolean;
   /** Resolved build ID (from generateBuildId, or a random UUID if not provided). */
   buildId: string;
   /** Resolved deployment ID from next.config.js or NEXT_DEPLOYMENT_ID. */
@@ -406,6 +458,13 @@ export type ResolvedNextConfig = {
    * `test/e2e/optimized-loading` test fixture.
    */
   disableOptimizedLoading: boolean;
+  /**
+   * Mirrors Next.js `experimental.scrollRestoration`. When true, the Pages
+   * Router client takes ownership of browser history scroll restoration by
+   * setting `window.history.scrollRestoration = "manual"` and snapshotting
+   * scroll positions per history entry.
+   */
+  scrollRestoration: boolean;
   /**
    * Build-time constant replacement map applied to BOTH client and server
    * bundles. Sourced from `compiler.define` in next.config. Values are
@@ -478,6 +537,13 @@ const CONFIG_FILES = [
   "next.config.cjs",
 ];
 const DEFAULT_EXPIRE_TIME = 31_536_000;
+
+/**
+ * Default cap for the App Router preload `Link` header length, matching the
+ * Next.js `defaultConfig.reactMaxHeadersLength`.
+ * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/reactMaxHeadersLength
+ */
+const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
 
 /**
  * Check whether an error indicates a CJS module was loaded in an ESM context
@@ -704,6 +770,9 @@ function cjsGlobalsInjectorPlugin(configPath: string): {
       const filenameLiteral = JSON.stringify(normalizedTarget);
       const dirnameLiteral = JSON.stringify(dirname);
       const requireBaseLiteral = JSON.stringify(path.join(dirname, "package.json"));
+      const hasOwnDirname = /\b(?:const|let|var)\s+__dirname\b/.test(code);
+      const hasOwnFilename = /\b(?:const|let|var)\s+__filename\b/.test(code);
+      const hasOwnRequire = /\b(?:const|let|var)\s+require\b/.test(code);
 
       // Only wire up the wrapper `module` object — and the corresponding
       // named export read by unwrapConfig — when the source statically looks
@@ -721,10 +790,12 @@ function cjsGlobalsInjectorPlugin(configPath: string): {
       // Preamble runs after ESM imports are hoisted; the const bindings shadow
       // any global lookups the source would otherwise perform.
       const preamble =
-        `import { createRequire as __vinextCreateRequire } from "node:module";\n` +
-        `const __filename = ${filenameLiteral};\n` +
-        `const __dirname = ${dirnameLiteral};\n` +
-        `const require = __vinextCreateRequire(${requireBaseLiteral});\n` +
+        (hasOwnRequire
+          ? ""
+          : `import { createRequire as __vinextCreateRequire } from "node:module";\n`) +
+        (hasOwnFilename ? "" : `const __filename = ${filenameLiteral};\n`) +
+        (hasOwnDirname ? "" : `const __dirname = ${dirnameLiteral};\n`) +
+        (hasOwnRequire ? "" : `const require = __vinextCreateRequire(${requireBaseLiteral});\n`) +
         moduleLines;
 
       return {
@@ -757,11 +828,8 @@ export async function resolveNextConfigInput(
  *
  * For `.cjs` (or `.js` in a non-type-module package) Node's loader picks the
  * right format automatically and `require()` just works. For `.js` in a
- * `"type": "module"` package, Node infers ESM from package.json and the file
- * fails with `require is not defined`. In that case we copy the source to a
- * sibling temp `.cjs` (where the explicit extension forces CJS regardless of
- * the parent type field) and require *that*. Relative imports inside the
- * config still resolve against the original directory.
+ * `"type": "module"` package, retry through the shared in-memory CommonJS
+ * loader so nested local `.js` dependencies retain CommonJS semantics too.
  */
 async function loadConfigViaRequire(
   configPath: string,
@@ -772,30 +840,8 @@ async function loadConfigViaRequire(
   try {
     return await unwrapConfig(require(configPath), phase);
   } catch (e) {
-    if (!isCjsError(e) || !configPath.endsWith(".js")) throw e;
-    return await loadConfigViaCjsTempCopy(configPath, root, phase);
-  }
-}
-
-async function loadConfigViaCjsTempCopy(
-  configPath: string,
-  root: string,
-  phase: string,
-): Promise<NextConfig> {
-  const dir = path.dirname(configPath);
-  // Hidden + uniquely-named to avoid clashing with user files or being picked
-  // up by next.js's own config scanner if a concurrent next dev is running.
-  const tmpPath = path.join(dir, `.vinext-next-config.${process.pid}.${Date.now()}.cjs`);
-  fs.copyFileSync(configPath, tmpPath);
-  try {
-    const require = createRequire(path.join(root, "package.json"));
-    return await unwrapConfig(require(tmpPath), phase);
-  } finally {
-    try {
-      fs.unlinkSync(tmpPath);
-    } catch {
-      // Best-effort cleanup; a stray tmp file is harmless.
-    }
+    if (!shouldRetryAsCommonJs(e, configPath)) throw e;
+    return await unwrapConfig(loadCommonJsModule(configPath), phase);
   }
 }
 
@@ -818,13 +864,27 @@ export async function loadNextConfig(
   if (!configPath) return null;
 
   const filename = path.basename(configPath);
+  const isTypeScriptConfig = /\.[cm]?ts$/.test(configPath);
 
   // Mirror Next.js: read `compilerOptions.paths` from the project's
   // tsconfig.json so aliased imports inside next.config.ts (e.g.
   // `import { foo } from '@/foo'`) resolve at config-load time. Next.js
-  // passes these to SWC; we pass them to Vite's resolver as `resolve.alias`.
+  // passes `paths` and `baseUrl` to SWC; we thread both into Vite's resolver.
   // See packages/next/src/build/next-config-ts/transpile-config.ts.
-  const tsconfigAliases = loadTsconfigPathAliasesForRoot(root);
+  const tsconfigResolution = loadTsconfigResolutionForRoot(root);
+  const tsconfigBaseUrl = isTypeScriptConfig ? tsconfigResolution.baseUrl : null;
+
+  // Vite 8 (Rolldown) resolves tsconfig `baseUrl` bare imports natively via
+  // `resolve.tsconfigPaths` (oxc-resolver). Vite 7 has no equivalent option,
+  // so baseUrl-based imports in `next.config.ts` are a documented Vite 7/8
+  // capability gap (see docs). `paths` aliases still work on both via
+  // `resolve.alias`. Mirrors the Vite-major gate used in index.ts.
+  //
+  // Note: installed packages stay externalized (so CJS config plugins like
+  // `@next/mdx` that call `require`/`require.resolve` at runtime keep working).
+  // baseUrl resolves bare imports that have no installed package of the same
+  // name; it does not shadow an installed package with a baseUrl-local file.
+  const useNativeTsconfigPaths = !!tsconfigBaseUrl && getViteMajorVersion() >= 8;
 
   // Symlink-resolved config path, used by the `commonjs()` filter below to
   // exclude the config file itself. macOS uses /private/var symlinks, so
@@ -839,7 +899,16 @@ export async function loadNextConfig(
       logLevel: "error",
       clearScreen: false,
       resolve: {
-        alias: tsconfigAliases,
+        alias: tsconfigResolution.aliases,
+        // On Vite 8, use native tsconfig resolution (oxc-resolver
+        // `tsconfig: 'auto'`), which mirrors Next.js's SWC `paths` + `baseUrl`
+        // handling: it follows `extends` and resolves baseUrl-local bare imports
+        // via per-importer tsconfig discovery. Installed packages stay
+        // externalized, so a baseUrl-local file does not shadow a package of the
+        // same name. Vite 7 has no native equivalent, so baseUrl bare imports in
+        // next.config.ts are unsupported there (documented gap); `resolve.alias`
+        // still covers `paths` aliases on both.
+        ...(useNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
         // Include `.cjs` and `.cts` so `vite-plugin-commonjs` recognises
         // those extensions (the plugin keys off `config.resolve.extensions`,
         // which on Vite defaults to `[.mjs, .js, .mts, .ts, .jsx, .tsx,
@@ -868,7 +937,7 @@ export async function loadNextConfig(
       // same source produces an `Identifier 'module' has already been
       // declared` syntax error.
       plugins: [
-        ...(/\.[cm]?ts$/.test(configPath) ? [cjsGlobalsInjectorPlugin(configPath)] : []),
+        ...(isTypeScriptConfig ? [cjsGlobalsInjectorPlugin(configPath)] : []),
         commonjs({
           filter: (id: string) => {
             const idPath = id.startsWith("file://") ? fileURLToPath(id) : id.split("?")[0];
@@ -1005,6 +1074,27 @@ function resolveDeploymentId(configDeploymentId: unknown): string | undefined {
   }
 
   return deploymentId;
+}
+
+/**
+ * Resolve the App Router RSC compatibility identity for a build.
+ *
+ * This token is baked into the client bundle and echoed by the server in the
+ * `X-Vinext-RSC-Compatibility-Id` response header; browser navigation rejects
+ * RSC payloads whose token differs (deploy skew) without exposing the raw
+ * build ID. When the user pins a `deploymentId` we reuse it (already stable
+ * across plugin instances); otherwise we mint a random UUID.
+ *
+ * NOTE: like `resolveBuildId`, this is non-deterministic in the no-deploymentId
+ * case, so a single `vinext build` that instantiates the plugin more than once
+ * (App Router `buildApp()` + the hybrid Pages Router `vite.build()`) must
+ * resolve it once and share it — see `__VINEXT_SHARED_RSC_COMPATIBILITY_ID`.
+ */
+export function createRscCompatibilityId(
+  nextConfig: Pick<ResolvedNextConfig, "deploymentId">,
+): string {
+  if (nextConfig.deploymentId) return nextConfig.deploymentId;
+  return randomUUID();
 }
 
 /**
@@ -1173,6 +1263,7 @@ function resolveStaleTimes(experimental: Record<string, unknown> | undefined): {
 export async function resolveNextConfig(
   config: NextConfig | null,
   root: string = process.cwd(),
+  options: { dev?: boolean } = {},
 ): Promise<ResolvedNextConfig> {
   if (!config) {
     const buildId = await resolveBuildId(undefined);
@@ -1184,7 +1275,11 @@ export async function resolveNextConfig(
       trailingSlash: false,
       output: "",
       pageExtensions: normalizePageExtensions(),
+      resolveExtensions: null,
+      serverResolveExtensions: null,
       cacheComponents: false,
+      gestureTransition: false,
+      prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: [],
@@ -1197,18 +1292,22 @@ export async function resolveNextConfig(
       optimizePackageImports: [],
       inlineCss: false,
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      serverActionsBodySizeLimitLabel: "1 MB",
       expireTime: DEFAULT_EXPIRE_TIME,
+      reactMaxHeadersLength: DEFAULT_REACT_MAX_HEADERS_LENGTH,
       htmlLimitedBots: undefined,
       serverExternalPackages: [],
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
       enablePrerenderSourceMaps: true,
+      appShells: false,
       hashSalt: process.env.NEXT_HASH_SALT ?? "",
       buildId,
       deploymentId,
       sassOptions: null,
       removeConsole: false,
       disableOptimizedLoading: false,
+      scrollRestoration: false,
       compilerDefine: {},
       compilerDefineServer: {},
       instrumentationClientInject: [],
@@ -1277,9 +1376,9 @@ export async function resolveNextConfig(
     headers = await config.headers();
   }
 
-  // Probe wrapped webpack config once so alias extraction and MDX extraction
-  // observe the same mock environment.
-  const webpackProbe = await probeWebpackConfig(config, root);
+  // Probe wrapped webpack config for client and server resolution. Alias and
+  // MDX extraction use the client result, matching the previous behavior.
+  const webpackProbe = await probeWebpackConfig(config, root, options.dev ?? false);
   const mdx = webpackProbe.mdx;
   const aliases = {
     ...extractTurboAliases(config, root),
@@ -1292,9 +1391,19 @@ export async function resolveNextConfig(
   const experimental = readOptionalRecord(config.experimental);
   const serverActionsConfig = readOptionalRecord(experimental?.serverActions);
   const serverActionsAllowedOrigins = readStringArray(serverActionsConfig?.allowedOrigins);
-  const serverActionsBodySizeLimit = parseBodySizeLimit(
-    readOptionalBodySizeLimit(serverActionsConfig?.bodySizeLimit),
+  const serverActionsBodySizeLimitConfig = readOptionalBodySizeLimit(
+    serverActionsConfig?.bodySizeLimit,
   );
+  const serverActionsBodySizeLimit = parseBodySizeLimit(serverActionsBodySizeLimitConfig);
+  // Preserve the verbatim config value (e.g. "2mb") for the "Body exceeded
+  // {limit} limit" error message. Next.js surfaces the original string rather
+  // than a value reconstructed from the parsed byte count, so reusing it keeps
+  // the error/log text byte-identical. When unset, Next.js uses its
+  // `defaultBodySizeLimit = '1 MB'` literal (uppercase, spaced) — mirror it.
+  const serverActionsBodySizeLimitLabel =
+    serverActionsBodySizeLimitConfig === undefined
+      ? "1 MB"
+      : String(serverActionsBodySizeLimitConfig);
 
   // Resolve hashSalt from experimental.outputHashSalt config + NEXT_HASH_SALT env var.
   // Next.js concatenates them: config value first, then env var.
@@ -1308,6 +1417,41 @@ export async function resolveNextConfig(
     ? rawOptimize.filter((x): x is string => typeof x === "string")
     : [];
   const inlineCss = experimental?.inlineCss === true;
+  const prefetchInlining =
+    experimental?.prefetchInlining === true || isUnknownRecord(experimental?.prefetchInlining);
+
+  // Validate experimental.appShells co-flags. Next.js requires all of the
+  // following to be enabled when appShells is true:
+  //   cacheComponents, prefetchInlining, varyParams, optimisticRouting, cachedNavigations
+  // vinext does not yet implement varyParams, optimisticRouting, or cachedNavigations,
+  // so we warn when appShells is enabled and explain which co-flags are missing.
+  const appShells = experimental?.appShells === true;
+  if (appShells) {
+    const missingCoFlags: string[] = [];
+    if (!config.cacheComponents) {
+      missingCoFlags.push("cacheComponents");
+    }
+    if (experimental?.prefetchInlining !== true) {
+      missingCoFlags.push("experimental.prefetchInlining");
+    }
+    if (experimental?.varyParams !== true) {
+      missingCoFlags.push("experimental.varyParams");
+    }
+    if (experimental?.optimisticRouting !== true) {
+      missingCoFlags.push("experimental.optimisticRouting");
+    }
+    if (experimental?.cachedNavigations !== true) {
+      missingCoFlags.push("experimental.cachedNavigations");
+    }
+    if (missingCoFlags.length > 0) {
+      // Next.js throws here; vinext warns because the feature is plumbing-only.
+      console.warn(
+        `[vinext] experimental.appShells is enabled but requires the following co-flags which are not yet supported or not enabled: ${missingCoFlags.join(", ")}. ` +
+          "App Shell prefetching behavior is not implemented in vinext (see issue #1614). " +
+          "The flag will be accepted for config compatibility but has no functional effect.",
+      );
+    }
+  }
 
   // Resolve serverExternalPackages — support the current top-level key and the
   // legacy experimental.serverComponentsExternalPackages name that Next.js still
@@ -1354,13 +1498,26 @@ export async function resolveNextConfig(
     );
   }
 
-  // Warn about unsupported webpack usage. We preserve alias injection and
-  // extract MDX settings, but all other webpack customization is still ignored.
+  // Warn when experimental.cachedNavigations is set without cacheComponents.
+  // Next.js throws in this case; vinext warns because the feature is a no-op without it.
+  if (experimental?.cachedNavigations === true && !config.cacheComponents) {
+    console.warn(
+      "[vinext] `experimental.cachedNavigations` requires `cacheComponents: true` to have any effect. " +
+        "Set `cacheComponents: true` in your next.config, or remove `experimental.cachedNavigations`.",
+    );
+  }
+
+  // Warn about unsupported webpack usage. We preserve alias injection,
+  // resolve.extensions, and MDX settings, but other customization is ignored.
   if (config.webpack !== undefined) {
-    if (mdx || Object.keys(webpackProbe.aliases).length > 0) {
+    if (
+      mdx ||
+      Object.keys(webpackProbe.aliases).length > 0 ||
+      webpackProbe.resolveExtensionsCustomized
+    ) {
       console.warn(
         '[vinext] next.config option "webpack" is only partially supported. ' +
-          "vinext preserves resolve.alias entries and MDX loader settings, but other webpack customization is ignored",
+          "vinext preserves resolve.alias, resolve.extensions, and MDX loader settings, but other webpack customization is ignored",
       );
     } else {
       console.warn(
@@ -1375,6 +1532,13 @@ export async function resolveNextConfig(
   }
 
   const pageExtensions = normalizePageExtensions(config.pageExtensions);
+  const experimentalTurbo = readOptionalRecord(experimental?.turbo);
+  const turbopack = readOptionalRecord(config.turbopack);
+  const resolveExtensions = Array.isArray(turbopack?.resolveExtensions)
+    ? readStringArray(turbopack.resolveExtensions)
+    : Array.isArray(experimentalTurbo?.resolveExtensions)
+      ? readStringArray(experimentalTurbo.resolveExtensions)
+      : null;
 
   // Parse i18n config
   let i18n: NextI18nConfig | null = null;
@@ -1423,12 +1587,16 @@ export async function resolveNextConfig(
     trailingSlash: config.trailingSlash ?? false,
     output: output === "export" || output === "standalone" ? output : "",
     pageExtensions,
+    resolveExtensions: resolveExtensions ?? webpackProbe.resolveExtensions,
+    serverResolveExtensions: resolveExtensions ?? webpackProbe.serverResolveExtensions,
     instrumentationClientInject: Array.isArray(config.instrumentationClientInject)
       ? (config.instrumentationClientInject as unknown[]).filter(
           (x): x is string => typeof x === "string",
         )
       : [],
     cacheComponents: config.cacheComponents ?? false,
+    gestureTransition: experimental?.gestureTransition === true,
+    prefetchInlining,
     redirects,
     rewrites,
     headers,
@@ -1441,12 +1609,18 @@ export async function resolveNextConfig(
     optimizePackageImports,
     inlineCss,
     serverActionsBodySizeLimit,
+    serverActionsBodySizeLimitLabel,
     expireTime: typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME,
+    reactMaxHeadersLength:
+      typeof config.reactMaxHeadersLength === "number"
+        ? config.reactMaxHeadersLength
+        : DEFAULT_REACT_MAX_HEADERS_LENGTH,
     htmlLimitedBots,
     serverExternalPackages,
     cacheHandler,
     cacheMaxMemorySize,
     enablePrerenderSourceMaps: config.enablePrerenderSourceMaps ?? true,
+    appShells,
     hashSalt,
     buildId,
     deploymentId,
@@ -1460,6 +1634,7 @@ export async function resolveNextConfig(
     // Next.js stores this under `experimental.disableOptimizedLoading`.
     // Default `false` matches Next.js: page scripts get `defer` in <head>.
     disableOptimizedLoading: experimental?.disableOptimizedLoading === true,
+    scrollRestoration: experimental?.scrollRestoration === true,
     compilerDefine: serializeCompilerDefine(config.compiler?.define),
     compilerDefineServer: serializeCompilerDefine(config.compiler?.defineServer),
     clientTraceMetadata: Array.isArray(experimental?.clientTraceMetadata)
@@ -1497,6 +1672,21 @@ export async function resolveNextConfig(
   return resolved;
 }
 
+/**
+ * Whether an alias target is a relative filesystem path (`./foo`, `../foo`,
+ * or a bare `.`/`..`) that should be resolved against the project root.
+ *
+ * Both Next.js Turbopack `resolveAlias` and webpack `resolve.alias` accept two
+ * kinds of values: relative/absolute file paths AND bare package specifiers
+ * (e.g. `react`, `preact/compat`, `@scope/pkg`). Bare specifiers must be left
+ * verbatim so Vite/Rolldown re-resolves them through node_modules — resolving
+ * them against `root` mangles them into bogus `<root>/react` paths and breaks
+ * the build with "No such file or directory". See cloudflare/vinext#1507.
+ */
+function isRelativeAliasTarget(value: string): boolean {
+  return value === "." || value === ".." || value.startsWith("./") || value.startsWith("../");
+}
+
 function normalizeAliasEntries(
   aliases: Record<string, unknown> | undefined,
   root: string,
@@ -1506,7 +1696,15 @@ function normalizeAliasEntries(
   const normalized: Record<string, string> = {};
   for (const [key, value] of Object.entries(aliases)) {
     if (typeof value !== "string") continue;
-    normalized[key] = path.isAbsolute(value) ? value : path.resolve(root, value);
+    if (path.isAbsolute(value)) {
+      normalized[key] = value;
+    } else if (isRelativeAliasTarget(value)) {
+      normalized[key] = path.resolve(root, value);
+    } else {
+      // Bare package specifier (e.g. `react`, `preact/compat`) — leave as-is so
+      // Vite resolves it through node_modules rather than the filesystem.
+      normalized[key] = value;
+    }
   }
   return normalized;
 }
@@ -1525,34 +1723,31 @@ function extractTurboAliases(config: NextConfig, root: string): Record<string, s
 async function probeWebpackConfig(
   config: NextConfig,
   root: string,
-): Promise<{ aliases: Record<string, string>; mdx: MdxOptions | null }> {
+  dev: boolean,
+): Promise<{
+  aliases: Record<string, string>;
+  mdx: MdxOptions | null;
+  resolveExtensions: string[] | null;
+  serverResolveExtensions: string[] | null;
+  resolveExtensionsCustomized: boolean;
+}> {
   if (typeof config.webpack !== "function") {
-    return { aliases: {}, mdx: null };
+    return {
+      aliases: {},
+      mdx: null,
+      resolveExtensions: null,
+      serverResolveExtensions: null,
+      resolveExtensionsCustomized: false,
+    };
   }
 
-  // oxlint-disable-next-line typescript/no-explicit-any
-  const mockModuleRules: any[] = [];
-  const mockResolve: { alias: Record<string, unknown> } = { alias: {} };
-  const mockConfig = {
-    context: root,
-    resolve: mockResolve,
-    module: { rules: mockModuleRules },
-    // oxlint-disable-next-line typescript/no-explicit-any
-    plugins: [] as any[],
-  };
-  const mockOptions = {
-    defaultLoaders: { babel: { loader: "next-babel-loader" } },
-    isServer: false,
-    dev: false,
-    dir: root,
-  };
-
   try {
-    // oxlint-disable-next-line typescript/no-unsafe-function-type
-    const result = await (config.webpack as Function)(mockConfig, mockOptions);
-    const finalConfig = result ?? mockConfig;
-    // oxlint-disable-next-line typescript/no-explicit-any
-    const rules: any[] = finalConfig.module?.rules ?? mockModuleRules;
+    const clientProbe = await runWebpackConfigProbe(config, root, { dev, isServer: false });
+    const serverProbe = await runWebpackConfigProbe(config, root, {
+      dev,
+      isServer: true,
+      nextRuntime: "nodejs",
+    });
     // Invoke loader callbacks for any side effects on `process.env`.
     // Next.js webpack loaders sometimes mutate `process.env.X = ...` at
     // compile time (see issue #1500), and vinext otherwise never sees the
@@ -1560,14 +1755,74 @@ async function probeWebpackConfig(
     // loader once with a dummy source lets build-time env mutations land in
     // the shared Node process so they become visible to defines and
     // server-side code during the same build.
-    invokeLoaderSideEffects(rules, root);
+    invokeLoaderSideEffects(clientProbe.rules, root);
     return {
-      aliases: normalizeAliasEntries(finalConfig.resolve?.alias, root),
-      mdx: extractMdxOptionsFromRules(rules),
+      aliases: normalizeAliasEntries(clientProbe.config.resolve?.alias, root),
+      mdx: extractMdxOptionsFromRules(clientProbe.rules),
+      resolveExtensions: clientProbe.resolveExtensions,
+      serverResolveExtensions: serverProbe.resolveExtensions,
+      resolveExtensionsCustomized:
+        clientProbe.resolveExtensions !== null || serverProbe.resolveExtensions !== null,
     };
   } catch {
-    return { aliases: {}, mdx: null };
+    return {
+      aliases: {},
+      mdx: null,
+      resolveExtensions: null,
+      serverResolveExtensions: null,
+      resolveExtensionsCustomized: false,
+    };
   }
+}
+
+const DEFAULT_WEBPACK_RESOLVE_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx", ".json", ".wasm"];
+
+async function runWebpackConfigProbe(
+  config: NextConfig,
+  root: string,
+  options: { dev: boolean; isServer: boolean; nextRuntime?: "nodejs" | "edge" },
+): Promise<{
+  // oxlint-disable-next-line typescript/no-explicit-any
+  config: any;
+  // oxlint-disable-next-line typescript/no-explicit-any
+  rules: any[];
+  resolveExtensions: string[] | null;
+}> {
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const rules: any[] = [];
+  const mockConfig = {
+    context: root,
+    resolve: {
+      alias: {} as Record<string, unknown>,
+      extensions: [...DEFAULT_WEBPACK_RESOLVE_EXTENSIONS],
+    },
+    module: { rules },
+    // oxlint-disable-next-line typescript/no-explicit-any
+    plugins: [] as any[],
+  };
+  // oxlint-disable-next-line typescript/no-unsafe-function-type
+  const result = await (config.webpack as Function)(mockConfig, {
+    defaultLoaders: { babel: { loader: "next-babel-loader" } },
+    ...options,
+    dir: root,
+  });
+  const finalConfig = result ?? mockConfig;
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const finalRules: any[] = finalConfig.module?.rules ?? rules;
+  const extensions = Array.isArray(finalConfig.resolve?.extensions)
+    ? readStringArray(finalConfig.resolve.extensions)
+    : null;
+  const customized =
+    extensions !== null &&
+    (extensions.length !== DEFAULT_WEBPACK_RESOLVE_EXTENSIONS.length ||
+      extensions.some(
+        (extension, index) => extension !== DEFAULT_WEBPACK_RESOLVE_EXTENSIONS[index],
+      ));
+  return {
+    config: finalConfig,
+    rules: finalRules,
+    resolveExtensions: customized ? extensions : null,
+  };
 }
 
 /**
@@ -1687,7 +1942,7 @@ export async function extractMdxOptions(
   config: NextConfig,
   root: string = process.cwd(),
 ): Promise<MdxOptions | null> {
-  return (await probeWebpackConfig(config, root)).mdx;
+  return (await probeWebpackConfig(config, root, false)).mdx;
 }
 
 /**

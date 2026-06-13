@@ -68,7 +68,7 @@ function createRenderer(overrides?: {
         },
       },
       getNavigationContext() {
-        return { pathname: "/posts/missing" };
+        return { pathname: "/posts/missing", searchParams: new URLSearchParams(), params: {} };
       },
       globalErrorModule: null,
       loadGlobalNotFoundModule: overrides?.globalNotFoundModule
@@ -447,7 +447,11 @@ describe("app fallback renderer default global error UI", () => {
         getFontPreloads: () => [],
         getFontStyles: () => [],
       },
-      getNavigationContext: () => ({ pathname: "/server-error" }),
+      getNavigationContext: () => ({
+        pathname: "/server-error",
+        searchParams: new URLSearchParams(),
+        params: {},
+      }),
       globalErrorModule: userGlobalErrorModule,
       loadGlobalNotFoundModule: null,
       makeThenableParams: (p) => p,

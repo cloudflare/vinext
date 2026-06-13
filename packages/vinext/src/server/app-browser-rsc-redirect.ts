@@ -4,12 +4,12 @@ import {
   stripRscSuffix,
 } from "./app-rsc-cache-busting.js";
 
-export const MAX_RSC_REDIRECT_DEPTH = 10;
+const MAX_RSC_REDIRECT_DEPTH = 10;
 
 type RscRedirectHistoryUpdateMode = "push" | "replace" | undefined;
 
 type RscRedirectLifecycleDecision =
-  | { kind: "no-redirect" }
+  | { href: string; kind: "no-redirect" }
   | {
       href: string;
       historyUpdateMode: RscRedirectHistoryUpdateMode;
@@ -30,33 +30,33 @@ function toVisibleAppHref(href: string, origin: string): string {
   return `${stripRscSuffix(url.pathname)}${url.search}${url.hash}`;
 }
 
-export function resolveRscRedirectLifecycleHop(options: {
+function toStreamedRedirectVisibleAppHref(href: string, origin: string): string {
+  const url = new URL(href, origin);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function resolveRedirectLifecycleHopFromTarget(options: {
   currentHref: string;
   historyUpdateMode: RscRedirectHistoryUpdateMode;
   maxRedirectDepth?: number;
   origin: string;
+  redirectedHref: string;
   redirectDepth: number;
   requestPreviousNextUrl: string | null;
-  responseUrl: string;
+  targetUrl: URL;
 }): RscRedirectLifecycleDecision {
-  const responseUrl = new URL(options.responseUrl, options.origin);
-
-  if (responseUrl.origin !== options.origin) {
+  if (options.targetUrl.origin !== options.origin) {
     return {
-      href: responseUrl.href,
+      href: options.targetUrl.href,
       kind: "terminal-hard-navigation",
       reason: "externalRedirect",
       redirectDepth: options.redirectDepth,
     };
   }
 
-  const redirectedHref = resolveHardNavigationTargetFromRscResponse(
-    responseUrl.href,
-    options.currentHref,
-    options.origin,
-  );
+  const redirectedHref = options.redirectedHref;
   if (redirectedHref === toVisibleAppHref(options.currentHref, options.origin)) {
-    return { kind: "no-redirect" };
+    return { href: redirectedHref, kind: "no-redirect" };
   }
 
   const maxRedirectDepth = options.maxRedirectDepth ?? MAX_RSC_REDIRECT_DEPTH;
@@ -76,4 +76,47 @@ export function resolveRscRedirectLifecycleHop(options: {
     previousNextUrl: options.requestPreviousNextUrl,
     redirectDepth: options.redirectDepth + 1,
   };
+}
+
+export function resolveRscRedirectLifecycleHop(options: {
+  currentHref: string;
+  historyUpdateMode: RscRedirectHistoryUpdateMode;
+  maxRedirectDepth?: number;
+  origin: string;
+  redirectDepth: number;
+  requestPreviousNextUrl: string | null;
+  responseUrl: string;
+}): RscRedirectLifecycleDecision {
+  const responseUrl = new URL(options.responseUrl, options.origin);
+  return resolveRedirectLifecycleHopFromTarget({
+    ...options,
+    redirectedHref: resolveHardNavigationTargetFromRscResponse(
+      responseUrl.href,
+      options.currentHref,
+      options.origin,
+    ),
+    targetUrl: responseUrl,
+  });
+}
+
+export function resolveStreamedRscRedirectLifecycleHop(options: {
+  currentHref: string;
+  historyUpdateMode: Exclude<RscRedirectHistoryUpdateMode, undefined>;
+  maxRedirectDepth?: number;
+  origin: string;
+  redirectDepth: number;
+  requestPreviousNextUrl: string | null;
+  streamedRedirectTarget: string;
+}): RscRedirectLifecycleDecision {
+  const streamedRedirectUrl = new URL(options.streamedRedirectTarget, options.origin);
+  // Streamed headers are semantic redirect targets, so preserve their target
+  // path/search/hash while the shared same-target guard normalizes currentHref.
+  return resolveRedirectLifecycleHopFromTarget({
+    ...options,
+    redirectedHref: toStreamedRedirectVisibleAppHref(
+      options.streamedRedirectTarget,
+      options.origin,
+    ),
+    targetUrl: streamedRedirectUrl,
+  });
 }

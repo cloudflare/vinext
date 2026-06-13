@@ -1,5 +1,9 @@
 import type { RouteManifest } from "../routing/app-route-graph.js";
-import { matchRoutePattern, matchRoutePatternPrefix } from "../routing/route-pattern.js";
+import {
+  matchRoutePattern,
+  matchRoutePatternPrefix,
+  matchRoutePatternWithOptionalDynamicSegments,
+} from "../routing/route-pattern.js";
 import { splitPathnameForRouteMatch } from "../routing/utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 
@@ -34,6 +38,29 @@ export function resolveManifestNavigationInterceptionContext(
   for (const interception of options.routeManifest.segmentGraph.interceptions.values()) {
     if (!matchRoutePatternPrefix(sourceParts, interception.sourcePatternParts)) continue;
     if (matchRoutePattern(targetParts, interception.targetPatternParts) === null) continue;
+    return currentPathname;
+  }
+
+  return null;
+}
+
+export function resolveMiddlewareRewriteNavigationInterceptionContext(
+  options: ResolveManifestNavigationInterceptionContextOptions,
+): string | null {
+  if (options.routeManifest === null) return null;
+
+  const currentPathname = stripBasePath(options.currentPathname, options.basePath);
+  const targetPathname = stripBasePath(options.targetPathname, options.basePath);
+  const sourceParts = splitPathnameForRouteMatch(currentPathname);
+  const targetParts = splitPathnameForRouteMatch(targetPathname);
+
+  for (const interception of options.routeManifest.segmentGraph.interceptions.values()) {
+    if (!matchRoutePatternPrefix(sourceParts, interception.sourcePatternParts)) continue;
+    if (
+      !matchRoutePatternWithOptionalDynamicSegments(targetParts, interception.targetPatternParts)
+    ) {
+      continue;
+    }
     return currentPathname;
   }
 

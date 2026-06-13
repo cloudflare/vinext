@@ -155,6 +155,11 @@ export async function runMiddleware(
   return runGeneratedMiddleware({
     basePath,
     filePath: middlewarePath,
+    // The dev server only invokes this with Vite-stripped URLs — basePath is
+    // removed before the request reaches the pipeline (the dev adapter
+    // hardcodes `hadBasePath: true` in its PagesPipelineDeps for the same
+    // reason), so it cannot be derived from the request URL here.
+    hadBasePath: true,
     i18nConfig,
     includeErrorDetails: process.env.NODE_ENV !== "production",
     isDataRequest,
