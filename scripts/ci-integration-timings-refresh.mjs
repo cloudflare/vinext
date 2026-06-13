@@ -5,8 +5,9 @@
  * carries provenance (which runs it came from, how many samples, median + p75).
  *
  * Workflow:
- *   # Download blob artifacts from one or more successful CI runs on main:
- *   gh run download <run-id> -p 'blob-report-*' -D /tmp/blobs
+ *   # Download the Linux blob artifacts from one or more successful CI runs on
+ *   # main (Windows shards upload their own blob-report-windows-latest-*):
+ *   gh run download <run-id> -p 'blob-report-ubuntu-latest-*' -D /tmp/blobs
  *   # Aggregate them into the manifest (p75 per file):
  *   node scripts/ci-integration-timings-refresh.mjs /tmp/blobs --run=<run-id> --write
  *
