@@ -11,12 +11,11 @@
  * `sass-embedded`). vinext relies on that built-in handling; this test
  * verifies vinext does not interfere with the pipeline, and that a
  * stylesheet imported via `pages/_app.tsx` reaches the rendered HTML.
+ * `sass` is a root devDependency, so the suite always runs.
  *
  * Uses a per-test tmpdir fixture rather than adding files to a shared
- * `tests/fixtures/*` tree. A shared SCSS fixture would break every test
- * that boots that fixture when `sass` is not installed (CI default),
- * because the route-graph scan trips on the unresolved `.scss` import
- * before any test starts.
+ * `tests/fixtures/*` tree, keeping the SCSS toolchain requirement out
+ * of fixtures shared with non-SCSS tests.
  *
  * Ported from Next.js: test/e2e/app-dir/scss/single-global/single-global.test.ts
  * https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/scss/single-global/single-global.test.ts
@@ -32,23 +31,6 @@ import os from "node:os";
 import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
 import { fetchHtml } from "./helpers.js";
-
-// Skip the suite when `sass` is not installed. SCSS preprocessing is a
-// peer dependency contract: vinext relies on Vite's built-in handling
-// which requires the user to install `sass` (or `sass-embedded`).
-// `@ts-ignore` (not `@ts-expect-error`) because `sass` may or may not be
-// installed depending on the dev environment — when it is, the import
-// resolves and there is no type error to expect.
-let sassAvailable = false;
-try {
-  // @ts-ignore Optional peer dependency, not declared in this repo
-  await import("sass");
-  sassAvailable = true;
-} catch {
-  sassAvailable = false;
-}
-
-const describeIfSass = sassAvailable ? describe : describe.skip;
 
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 
@@ -66,8 +48,8 @@ const RESOLVED_BLUE_REGEX = /rgb\(\s*0\s*,\s*0\s*,\s*255\s*\)|#0000ff\b|#00f\b|\
  * `_app`-imported CSS reaching the served HTML via `<link rel="stylesheet">`.
  *
  * Symlinks the workspace `node_modules` so the fixture can resolve
- * `react`, `react-dom`, `vinext`, and (if installed) `sass` without
- * an extra install step.
+ * `react`, `react-dom`, `vinext`, and `sass` without an extra
+ * install step.
  */
 async function makePagesRouterScssFixture(): Promise<string> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-scss-pages-"));
@@ -99,7 +81,7 @@ async function makePagesRouterScssFixture(): Promise<string> {
   return tmpDir;
 }
 
-describeIfSass("SCSS preprocessing (Pages Router)", () => {
+describe("SCSS preprocessing (Pages Router)", () => {
   let server: ViteDevServer;
   let baseUrl: string;
   let tmpDir: string;

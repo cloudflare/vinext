@@ -18,6 +18,9 @@ export default function HomePage() {
         <Link href="/redirect-test-config" data-testid="redirect-test-link">
           Go to Redirect Test
         </Link>
+        <Link href="/rewritten-use-pathname" data-testid="config-rewrite-pathname-link">
+          Config Rewrite Pathname
+        </Link>
         <Link
           href="/rsc-fetch-redirect-src"
           prefetch={false}

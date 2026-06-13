@@ -71,7 +71,9 @@ describe("loadNextConfig with CJS next.config.js under type:module", () => {
     fs.writeFileSync(
       path.join(tmpDir, "next.config.js"),
       `const path = require('node:path');\n` +
-        `module.exports = { basePath: path.join('/', 'docs') };\n`,
+        // posix.join keeps the result "/docs" on Windows too — the point of
+        // this fixture is exercising require(), not platform join behavior.
+        `module.exports = { basePath: path.posix.join('/', 'docs') };\n`,
     );
 
     const config = await loadNextConfig(tmpDir);
@@ -107,14 +109,72 @@ describe("loadNextConfig with CJS next.config.js under type:module", () => {
     expect(config?.env?.WRAPPED).toBe("yes");
   });
 
-  it("does not leave temp .cjs files in the project root", async () => {
-    fs.writeFileSync(path.join(tmpDir, "next.config.js"), `module.exports = { basePath: '/x' };\n`);
+  it("loads nested CommonJS .js dependencies", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "config-helper.js"),
+      `const values = require("./config-values.js");
+module.exports = { basePath: values.basePath };
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "config-values.js"),
+      `module.exports = { basePath: "/nested" };
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = require("./config-helper.js");
+`,
+    );
 
-    await loadNextConfig(tmpDir);
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.basePath).toBe("/nested");
+  });
+
+  it("loads nested CommonJS .js dependencies from read-only symlink targets", async () => {
+    const packageDir = path.join(tmpDir, "packages", "config-wrapper");
+    const packageLink = path.join(tmpDir, "node_modules", "config-wrapper");
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.mkdirSync(path.dirname(packageLink), { recursive: true });
+    fs.writeFileSync(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name: "config-wrapper", main: "index.js", type: "module" }),
+    );
+    fs.writeFileSync(path.join(packageDir, "value.js"), `module.exports = "/linked";\n`);
+    fs.writeFileSync(
+      path.join(packageDir, "index.js"),
+      `module.exports = { basePath: require("./value.js") };\n`,
+    );
+    fs.symlinkSync(packageDir, packageLink, "junction");
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = require("config-wrapper");\n`,
+    );
+    fs.chmodSync(packageDir, 0o555);
+
+    try {
+      const config = await loadNextConfig(tmpDir);
+      expect(config?.basePath).toBe("/linked");
+      expect(fs.readdirSync(packageDir).some((name) => name.startsWith(".vinext-"))).toBe(false);
+    } finally {
+      fs.chmodSync(packageDir, 0o755);
+    }
+  });
+
+  it("does not write temporary modules beside the config", async () => {
+    fs.writeFileSync(path.join(tmpDir, "next.config.js"), `module.exports = { basePath: '/x' };\n`);
+    fs.chmodSync(tmpDir, 0o555);
+
+    try {
+      const config = await loadNextConfig(tmpDir);
+      expect(config?.basePath).toBe("/x");
+    } finally {
+      fs.chmodSync(tmpDir, 0o755);
+    }
 
     const stray = fs
       .readdirSync(tmpDir)
-      .filter((name) => name.startsWith(".vinext-next-config.") && name.endsWith(".cjs"));
+      .filter((name) => name.startsWith(".vinext-") && name.endsWith(".cjs"));
     expect(stray).toEqual([]);
   });
 });
@@ -226,6 +286,55 @@ describe("loadNextConfig with CJS globals in next.config.ts", () => {
 
     const config = await loadNextConfig(tmpDir);
     expect(config?.env?.VIA).toBe("module.exports");
+  });
+
+  it("does not inject __dirname when user already declares it", async () => {
+    // Regression test for https://github.com/cloudflare/vinext/issues/1345.
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { dirname } from "node:path";\n` +
+        `import { fileURLToPath } from "node:url";\n` +
+        `const __dirname = dirname(fileURLToPath(import.meta.url));\n` +
+        `export default { env: { DIR: __dirname } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    const dir = config?.env?.DIR;
+    expect(typeof dir).toBe("string");
+    expect(fs.realpathSync(dir as string)).toBe(fs.realpathSync(tmpDir));
+  });
+
+  it("does not inject __filename when user already declares it", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { fileURLToPath } from "node:url";\n` +
+        `const __filename = fileURLToPath(import.meta.url);\n` +
+        `export default { env: { FILE: __filename } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    const file = config?.env?.FILE;
+    expect(typeof file).toBe("string");
+    expect(fs.realpathSync(file as string)).toBe(
+      fs.realpathSync(path.join(tmpDir, "next.config.ts")),
+    );
+  });
+
+  it("does not inject require when user already declares it", async () => {
+    // The createRequire polyfill commonly appears alongside the __dirname one
+    // and hits the same duplicate-`const` Rolldown crash if injected blindly.
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { createRequire } from "node:module";\n` +
+        `const require = createRequire(import.meta.url);\n` +
+        `export default { env: { HAS_REQUIRE: typeof require } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.HAS_REQUIRE).toBe("function");
   });
 
   it("loads a pure-ESM next.config.ts without injecting CJS shims", async () => {
@@ -368,12 +477,38 @@ describe("loadNextConfig with tsconfig path aliases", () => {
   // Ported from Next.js: test/e2e/app-dir/next-config-ts/import-alias-paths-only/
   //   https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-config-ts/import-alias-paths-only/
   // and import-alias-paths-with-baseurl/.
-  // Next.js's transpile-config.ts reads compilerOptions.paths from tsconfig.json
-  // and passes them to SWC so that next.config.ts can import via tsconfig
-  // aliases. vinext mirrors this by passing tsconfig paths to Vite as
-  // resolve.alias when calling runnerImport.
+  // Next.js's transpile-config.ts reads compilerOptions.paths/baseUrl from
+  // tsconfig.json and passes them to SWC so that next.config.ts can import via
+  // tsconfig aliases and baseUrl bare specifiers. vinext mirrors this with
+  // Vite resolver settings when calling runnerImport.
 
   let tmpDir: string;
+
+  function writePackage(
+    name: string,
+    packageJson: Record<string, string>,
+    files: Record<string, string>,
+  ): void {
+    const packageDir = path.join(tmpDir, "node_modules", name);
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name, version: "1.0.0", ...packageJson }),
+    );
+    for (const [filename, source] of Object.entries(files)) {
+      fs.writeFileSync(path.join(packageDir, filename), source);
+    }
+  }
+
+  function writeBarePackage(name: string, source: string): void {
+    writePackage(
+      name,
+      { type: "module", exports: "./index.js" },
+      {
+        "index.js": source,
+      },
+    );
+  }
 
   afterEach(() => {
     if (tmpDir) {
@@ -460,6 +595,232 @@ describe("loadNextConfig with tsconfig path aliases", () => {
     expect(config?.env?.BAZ).toBe("baz");
   });
 
+  it("follows extended tsconfig baseUrl when resolving bare imports", async () => {
+    // Ported from Next.js: test/e2e/app-dir/next-config-ts/tsconfig-extends/
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-config-ts/tsconfig-extends/next-config-ts-tsconfig-extends-cjs.test.ts
+    tmpDir = makeTempDir();
+
+    fs.mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "src", "foo.ts"), `export const foo = "foo";\n`);
+    fs.writeFileSync(path.join(tmpDir, "bar.ts"), `export const bar = "bar";\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({
+        type: "module",
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.base.json"),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+          paths: {
+            "@/*": ["./src/*"],
+          },
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        extends: "./tsconfig.base.json",
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { foo } from "@/foo";\n` +
+        `import { bar } from "bar";\n` +
+        `export default { env: { VALUE: foo + bar } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.VALUE).toBe("foobar");
+  });
+
+  it("prefers an installed package over a baseUrl-local file of the same name", async () => {
+    // When a bare import matches both an installed package and a baseUrl-local
+    // file, the installed package wins. vinext keeps installed packages
+    // externalized so that CJS config plugins (e.g. @next/mdx) that call
+    // `require`/`require.resolve` at runtime keep working; the trade-off is
+    // that a baseUrl-local file does not shadow a package of the same name.
+    // (Pure TypeScript baseUrl semantics would prefer the local file, but that
+    // requires de-externalizing every package, which breaks CJS plugins.)
+    tmpDir = makeTempDir();
+
+    fs.writeFileSync(path.join(tmpDir, "bar.ts"), `export const bar = "local";\n`);
+    writeBarePackage("bar", `export const bar = "package";\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { bar } from "bar";\nexport default { env: { BAR: bar } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.BAR).toBe("package");
+  });
+
+  it("loads a CJS config plugin that calls require.resolve at runtime", async () => {
+    // Regression for @next/mdx-style plugins: next.config.ts imports a CJS
+    // package whose factory calls `require.resolve(...)` when invoked. Keeping
+    // installed packages externalized (rather than forcing them through the
+    // module runner) ensures `require` is defined. Reproduces the
+    // app-router-playground deploy failure: "require is not defined".
+    tmpDir = makeTempDir();
+
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+    writePackage(
+      "fake-mdx",
+      { type: "commonjs", main: "index.js" },
+      {
+        "index.js":
+          `module.exports = (opts = {}) => (config = {}) => ({\n` +
+          `  ...config,\n` +
+          `  loaderPath: require.resolve("./loader.js"),\n` +
+          `});\n`,
+        "loader.js": `module.exports = "loader";\n`,
+      },
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { baseUrl: "." } }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import withMDX from "fake-mdx";\n` + `export default withMDX({})({ env: { OK: "yes" } });\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.OK).toBe("yes");
+  });
+
+  it("falls through to packages when baseUrl has no local match", async () => {
+    tmpDir = makeTempDir();
+
+    writeBarePackage("bar", `export const bar = "package";\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { bar } from "bar";\nexport default { env: { BAR: bar } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.BAR).toBe("package");
+  });
+
+  it("does not apply tsconfig baseUrl package shadowing to next.config.mjs", async () => {
+    tmpDir = makeTempDir();
+
+    fs.writeFileSync(path.join(tmpDir, "bar.ts"), `export const bar = "local";\n`);
+    writeBarePackage("bar", `export const bar = "package";\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `import { bar } from "bar";\nexport default { env: { BAR: bar } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.BAR).toBe("package");
+  });
+
+  it("does not apply the app baseUrl to package dependency imports", async () => {
+    tmpDir = makeTempDir();
+
+    fs.writeFileSync(path.join(tmpDir, "shared.ts"), `export const shared = "app";\n`);
+    writeBarePackage(
+      "fake-plugin",
+      `import { shared } from "shared";\nexport const pluginValue = shared;\n`,
+    );
+    writeBarePackage("shared", `export const shared = "package";\n`);
+    fs.writeFileSync(
+      path.join(tmpDir, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import { pluginValue } from "fake-plugin";\n` +
+        `export default { env: { VALUE: pluginValue } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env?.VALUE).toBe("package");
+  });
+
+  it("imports ESM and CommonJS packages from next.config.ts", async () => {
+    // Ported from Next.js: test/e2e/app-dir/next-config-ts/import-from-node-modules/
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-config-ts/import-from-node-modules/next.config.ts
+    tmpDir = makeTempDir();
+
+    writePackage(
+      "cjs",
+      { type: "commonjs", main: "index.cjs" },
+      {
+        "index.cjs": `module.exports = "cjs";\n`,
+      },
+    );
+    writePackage(
+      "mjs",
+      { type: "commonjs", main: "index.mjs" },
+      {
+        "index.mjs": `export default "mjs";\n`,
+      },
+    );
+    writePackage(
+      "js-cjs",
+      { type: "commonjs", main: "index.js" },
+      {
+        "index.js": `module.exports = "jsCJS";\n`,
+      },
+    );
+    writePackage(
+      "js-esm",
+      { type: "module", main: "index.js" },
+      {
+        "index.js": `export default "jsESM";\n`,
+      },
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `import cjs from "cjs";\n` +
+        `import mjs from "mjs";\n` +
+        `import jsCJS from "js-cjs";\n` +
+        `import jsESM from "js-esm";\n` +
+        `export default { env: { cjs, mjs, jsCJS, jsESM } };\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config?.env).toMatchObject({
+      cjs: "cjs",
+      mjs: "mjs",
+      jsCJS: "jsCJS",
+      jsESM: "jsESM",
+    });
+  });
+
   it("loads config without tsconfig.json (no aliases needed)", async () => {
     tmpDir = makeTempDir();
     fs.writeFileSync(
@@ -473,6 +834,130 @@ describe("loadNextConfig with tsconfig path aliases", () => {
 });
 
 describe("resolveNextConfig alias extraction", () => {
+  it("prefers turbopack resolveExtensions and falls back to webpack extensions", async () => {
+    const fallback = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = ["", ".png", ".jsx", ".js"];
+        return webpackConfig;
+      },
+    });
+    expect(fallback.resolveExtensions).toEqual(["", ".png", ".jsx", ".js"]);
+    expect(fallback.serverResolveExtensions).toEqual(["", ".png", ".jsx", ".js"]);
+
+    const preferred = await resolveNextConfig({
+      turbopack: { resolveExtensions: ["", ".web.tsx", ".tsx"] },
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = ["", ".png", ".js"];
+        return webpackConfig;
+      },
+    });
+    expect(preferred.resolveExtensions).toEqual(["", ".web.tsx", ".tsx"]);
+    expect(preferred.serverResolveExtensions).toEqual(["", ".web.tsx", ".tsx"]);
+
+    const explicitlyEmpty = await resolveNextConfig({
+      turbopack: { resolveExtensions: [] },
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = [".png"];
+        return webpackConfig;
+      },
+    });
+    expect(explicitlyEmpty.resolveExtensions).toEqual([]);
+    expect(explicitlyEmpty.serverResolveExtensions).toEqual([]);
+  });
+
+  it("supports legacy experimental.turbo resolveExtensions", async () => {
+    const legacy = await resolveNextConfig({
+      experimental: {
+        turbo: { resolveExtensions: ["", ".legacy.ts", ".ts"] },
+      },
+    });
+    expect(legacy.resolveExtensions).toEqual(["", ".legacy.ts", ".ts"]);
+    expect(legacy.serverResolveExtensions).toEqual(["", ".legacy.ts", ".ts"]);
+
+    const preferred = await resolveNextConfig({
+      experimental: {
+        turbo: { resolveExtensions: ["", ".legacy.ts", ".ts"] },
+      },
+      turbopack: { resolveExtensions: ["", ".modern.ts", ".ts"] },
+    });
+    expect(preferred.resolveExtensions).toEqual(["", ".modern.ts", ".ts"]);
+    expect(preferred.serverResolveExtensions).toEqual(["", ".modern.ts", ".ts"]);
+  });
+
+  it("provides Next.js webpack defaults to resolve.extensions callbacks", async () => {
+    const resolved = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = [".web.tsx", ...webpackConfig.resolve.extensions];
+        return webpackConfig;
+      },
+    });
+    expect(resolved.resolveExtensions).toEqual([
+      ".web.tsx",
+      ".js",
+      ".mjs",
+      ".tsx",
+      ".ts",
+      ".jsx",
+      ".json",
+      ".wasm",
+    ]);
+  });
+
+  it("ignores untouched webpack resolve.extensions defaults", async () => {
+    const untouched = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        return webpackConfig;
+      },
+    });
+    expect(untouched.resolveExtensions).toBeNull();
+
+    const copied = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions = [...webpackConfig.resolve.extensions];
+        return webpackConfig;
+      },
+    });
+    expect(copied.resolveExtensions).toBeNull();
+  });
+
+  it("captures in-place webpack resolve.extensions mutations", async () => {
+    const resolved = await resolveNextConfig({
+      webpack(webpackConfig: any) {
+        webpackConfig.resolve.extensions.unshift(".web.tsx");
+        return webpackConfig;
+      },
+    });
+    expect(resolved.resolveExtensions).toEqual([
+      ".web.tsx",
+      ".js",
+      ".mjs",
+      ".tsx",
+      ".ts",
+      ".jsx",
+      ".json",
+      ".wasm",
+    ]);
+  });
+
+  it("preserves client/server and dev/build webpack resolve.extensions", async () => {
+    const webpack = (webpackConfig: any, options: any) => {
+      webpackConfig.resolve.extensions = [
+        options.isServer ? ".server.ts" : ".client.ts",
+        options.dev ? ".dev.ts" : ".prod.ts",
+        ".ts",
+      ];
+      return webpackConfig;
+    };
+
+    const build = await resolveNextConfig({ webpack });
+    expect(build.resolveExtensions).toEqual([".client.ts", ".prod.ts", ".ts"]);
+    expect(build.serverResolveExtensions).toEqual([".server.ts", ".prod.ts", ".ts"]);
+
+    const dev = await resolveNextConfig({ webpack }, process.cwd(), { dev: true });
+    expect(dev.resolveExtensions).toEqual([".client.ts", ".dev.ts", ".ts"]);
+    expect(dev.serverResolveExtensions).toEqual([".server.ts", ".dev.ts", ".ts"]);
+  });
+
   let tmpDir: string;
 
   afterEach(() => {
@@ -561,6 +1046,101 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "turbopack", "request.ts"));
   });
 
+  // Regression test for #1507. Turbopack `resolveAlias` (and webpack
+  // `resolve.alias`) values can be bare package specifiers — e.g. the upstream
+  // esm-externals fixture aliases `preact/compat` -> `react`. Resolving those
+  // against the project root mangled them into bogus `<root>/react` paths,
+  // which broke the production build with "No such file or directory". Bare
+  // specifiers must be left verbatim so Vite re-resolves them via node_modules.
+  it("leaves bare package specifier turbopack aliases verbatim", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default {
+        turbopack: {
+          resolveAlias: {
+            "preact/compat": "react",
+            "@scope/pkg": "@scope/replacement",
+            "subpath": "react/jsx-runtime"
+          }
+        }
+      };`,
+    );
+
+    const rawConfig = await loadNextConfig(tmpDir);
+    const config = await resolveNextConfig(rawConfig, tmpDir);
+
+    // Bare specifiers stay as-is — NOT resolved against tmpDir.
+    expect(config.aliases["preact/compat"]).toBe("react");
+    expect(config.aliases["@scope/pkg"]).toBe("@scope/replacement");
+    expect(config.aliases["subpath"]).toBe("react/jsx-runtime");
+  });
+
+  it("still resolves relative-path turbopack aliases against the project root", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default {
+        turbopack: {
+          resolveAlias: {
+            "current": ".",
+            "parent": "..",
+            "explicit": "./turbo/request.ts",
+            "up": "../shared/request.ts"
+          }
+        }
+      };`,
+    );
+
+    const rawConfig = await loadNextConfig(tmpDir);
+    const config = await resolveNextConfig(rawConfig, tmpDir);
+
+    expect(config.aliases["current"]).toBe(path.resolve(tmpDir, "."));
+    expect(config.aliases["parent"]).toBe(path.resolve(tmpDir, ".."));
+    expect(config.aliases["explicit"]).toBe(path.join(tmpDir, "turbo", "request.ts"));
+    expect(config.aliases["up"]).toBe(path.resolve(tmpDir, "..", "shared", "request.ts"));
+  });
+
+  it("leaves absolute-path turbopack aliases verbatim", async () => {
+    tmpDir = makeTempDir();
+    const absoluteTarget = path.join(tmpDir, "abs", "request.ts");
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default {
+        turbopack: {
+          resolveAlias: {
+            "absolute": ${JSON.stringify(absoluteTarget)}
+          }
+        }
+      };`,
+    );
+
+    const rawConfig = await loadNextConfig(tmpDir);
+    const config = await resolveNextConfig(rawConfig, tmpDir);
+
+    expect(config.aliases["absolute"]).toBe(absoluteTarget);
+  });
+
+  it("leaves bare package specifier webpack aliases verbatim", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = {
+        webpack(config) {
+          config.resolve = config.resolve || {};
+          config.resolve.alias = config.resolve.alias || {};
+          config.resolve.alias["preact/compat"] = "react";
+          return config;
+        }
+      };`,
+    );
+
+    const rawConfig = await loadNextConfig(tmpDir);
+    const config = await resolveNextConfig(rawConfig, tmpDir);
+
+    expect(config.aliases["preact/compat"]).toBe("react");
+  });
+
   it("does not attribute turbopack aliases to webpack support warnings", async () => {
     tmpDir = makeTempDir();
 
@@ -641,14 +1221,14 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     }
   });
 
-  it("extracts aliases and mdx from a single async webpack probe", async () => {
+  it("extracts aliases and mdx while probing client and server webpack configs", async () => {
     tmpDir = makeTempDir();
 
-    let invocations = 0;
+    const invocations: boolean[] = [];
     const fakeRemarkPlugin = () => {};
     const rawConfig = {
-      webpack: async (webpackConfig: any) => {
-        invocations++;
+      webpack: async (webpackConfig: any, options: any) => {
+        invocations.push(options.isServer);
         webpackConfig.resolve = webpackConfig.resolve || {};
         webpackConfig.resolve.alias = webpackConfig.resolve.alias || {};
         webpackConfig.resolve.alias["wrapped/config"] = "./config/request.ts";
@@ -670,7 +1250,7 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
 
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
-    expect(invocations).toBe(1);
+    expect(invocations).toEqual([false, true]);
     expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "config", "request.ts"));
     expect(config.mdx?.remarkPlugins).toEqual([fakeRemarkPlugin]);
   });
@@ -823,6 +1403,26 @@ describe("resolveNextConfig serverActionsBodySizeLimit", () => {
     expect(resolved.serverActionsBodySizeLimit).toBe(5242880);
   });
 
+  // The verbatim config string drives the "Body exceeded {limit} limit" error
+  // message (matching Next.js), so it must be preserved alongside the parsed
+  // byte count rather than reconstructed from it.
+  it("preserves the verbatim bodySizeLimit label, defaulting to Next.js' 1 MB literal", async () => {
+    const defaulted = await resolveNextConfig(null);
+    expect(defaulted.serverActionsBodySizeLimitLabel).toBe("1 MB");
+
+    const stringLabel = await resolveNextConfig({
+      experimental: { serverActions: { bodySizeLimit: "2mb" } },
+    });
+    expect(stringLabel.serverActionsBodySizeLimitLabel).toBe("2mb");
+
+    const numericLabel = await resolveNextConfig({
+      experimental: { serverActions: { bodySizeLimit: 5242880 } },
+    });
+    expect(numericLabel.serverActionsBodySizeLimitLabel).toBe("5242880");
+  });
+});
+
+describe("resolveNextConfig disableOptimizedLoading", () => {
   // Regression for #1519: `experimental.disableOptimizedLoading` defaults to
   // `false` and is read into the resolved config. The default drives the
   // `defer`-in-head behaviour for Pages Router scripts in production.
@@ -836,6 +1436,51 @@ describe("resolveNextConfig serverActionsBodySizeLimit", () => {
       experimental: { disableOptimizedLoading: true },
     });
     expect(resolved.disableOptimizedLoading).toBe(true);
+  });
+});
+
+describe("resolveNextConfig scrollRestoration", () => {
+  it("defaults scrollRestoration to false", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.scrollRestoration).toBe(false);
+  });
+
+  it("reads experimental.scrollRestoration from next.config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { scrollRestoration: true },
+    });
+    expect(resolved.scrollRestoration).toBe(true);
+  });
+});
+
+describe("resolveNextConfig prefetchInlining", () => {
+  it("reads experimental.prefetchInlining from next.config", async () => {
+    const disabled = await resolveNextConfig({});
+    expect(disabled.prefetchInlining).toBe(false);
+
+    const enabledByBoolean = await resolveNextConfig({
+      experimental: { prefetchInlining: true },
+    });
+    expect(enabledByBoolean.prefetchInlining).toBe(true);
+
+    const enabledByThresholds = await resolveNextConfig({
+      experimental: { prefetchInlining: { maxSize: Infinity, maxBundleSize: Infinity } },
+    });
+    expect(enabledByThresholds.prefetchInlining).toBe(true);
+  });
+});
+
+describe("resolveNextConfig gestureTransition", () => {
+  it("defaults experimental.gestureTransition to false", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.gestureTransition).toBe(false);
+  });
+
+  it("reads experimental.gestureTransition from next.config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { gestureTransition: true },
+    });
+    expect(resolved.gestureTransition).toBe(true);
   });
 });
 
@@ -1104,6 +1749,23 @@ describe("resolveNextConfig expireTime", () => {
   });
 });
 
+describe("resolveNextConfig reactMaxHeadersLength", () => {
+  it("defaults to the Next.js default of 6000", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.reactMaxHeadersLength).toBe(6000);
+  });
+
+  it("uses a configured value", async () => {
+    const resolved = await resolveNextConfig({ reactMaxHeadersLength: 400 });
+    expect(resolved.reactMaxHeadersLength).toBe(400);
+  });
+
+  it("preserves 0 (disables emission) rather than falling back to the default", async () => {
+    const resolved = await resolveNextConfig({ reactMaxHeadersLength: 0 });
+    expect(resolved.reactMaxHeadersLength).toBe(0);
+  });
+});
+
 // Ported from Next.js: packages/next/src/server/config.ts:528-531
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/config.ts
 describe("resolveNextConfig basePath → assetPrefix parity fallback", () => {
@@ -1164,7 +1826,11 @@ describe("detectNextIntlConfig", () => {
       trailingSlash: false,
       output: "",
       pageExtensions: ["tsx", "ts", "jsx", "js"],
+      resolveExtensions: null,
+      serverResolveExtensions: null,
       cacheComponents: false,
+      gestureTransition: false,
+      prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: [],
@@ -1177,18 +1843,22 @@ describe("detectNextIntlConfig", () => {
       optimizePackageImports: [],
       inlineCss: false,
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      serverActionsBodySizeLimitLabel: "1 MB",
       htmlLimitedBots: undefined,
       serverExternalPackages: [],
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
       hashSalt: "",
       enablePrerenderSourceMaps: true,
+      appShells: false,
       expireTime: 31_536_000,
+      reactMaxHeadersLength: 6000,
       buildId: "test-build-id",
       deploymentId: undefined,
       sassOptions: null,
       removeConsole: false,
       disableOptimizedLoading: false,
+      scrollRestoration: false,
       compilerDefine: {},
       compilerDefineServer: {},
       instrumentationClientInject: [],
@@ -1609,6 +2279,68 @@ describe("resolveNextConfig swcEnvOptions warning", () => {
   });
 });
 
+describe("resolveNextConfig cachedNavigations warning", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("emits a warning when experimental.cachedNavigations is set without cacheComponents", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: { cachedNavigations: true },
+    });
+
+    const cachedNavigationsWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("cachedNavigations"),
+    );
+
+    expect(cachedNavigationsWarning).toBeDefined();
+    expect(cachedNavigationsWarning![0]).toContain("experimental.cachedNavigations");
+    expect(cachedNavigationsWarning![0]).toContain("cacheComponents: true");
+  });
+
+  it("does not warn when experimental.cachedNavigations is set with cacheComponents", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      cacheComponents: true,
+      experimental: { cachedNavigations: true },
+    });
+
+    const cachedNavigationsWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("cachedNavigations"),
+    );
+    expect(cachedNavigationsWarning).toBeUndefined();
+  });
+
+  it("does not warn when experimental.cachedNavigations is not set", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: {},
+    });
+
+    const cachedNavigationsWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("cachedNavigations"),
+    );
+    expect(cachedNavigationsWarning).toBeUndefined();
+  });
+
+  it("does not warn when experimental.cachedNavigations is false", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: { cachedNavigations: false },
+    });
+
+    const cachedNavigationsWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("cachedNavigations"),
+    );
+    expect(cachedNavigationsWarning).toBeUndefined();
+  });
+});
+
 describe("resolveNextConfig rootParams deprecation warning", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -1780,5 +2512,68 @@ describe("resolveNextConfig staleTimes (#1490)", () => {
       experimental: { staleTimes: { dynamic: -5, static: -1 } },
     });
     expect(resolved.staleTimes).toEqual({ dynamic: 0, static: 300 });
+  });
+});
+
+describe("resolveNextConfig appShells", () => {
+  it("defaults appShells to false when not set", async () => {
+    const resolved = await resolveNextConfig({});
+    expect(resolved.appShells).toBe(false);
+  });
+
+  it("defaults appShells to false for null config", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.appShells).toBe(false);
+  });
+
+  it("reads appShells: true from experimental config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { appShells: true },
+    });
+    expect(resolved.appShells).toBe(true);
+  });
+
+  it("reads appShells: false from experimental config", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: { appShells: false },
+    });
+    expect(resolved.appShells).toBe(false);
+  });
+
+  it("warns when appShells is enabled without required co-flags", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const resolved = await resolveNextConfig({
+      experimental: { appShells: true },
+    });
+    expect(resolved.appShells).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "experimental.appShells is enabled but requires the following co-flags",
+      ),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("cacheComponents"));
+    warnSpy.mockRestore();
+  });
+
+  it("does not warn when appShells is enabled with all required co-flags", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const resolved = await resolveNextConfig({
+      cacheComponents: true,
+      experimental: {
+        appShells: true,
+        prefetchInlining: true,
+        varyParams: true,
+        optimisticRouting: true,
+        cachedNavigations: true,
+      },
+    });
+    expect(resolved.appShells).toBe(true);
+    // The warning should NOT contain the appShells co-flags message
+    const appShellsWarnings = warnSpy.mock.calls.filter(
+      (call) =>
+        typeof call[0] === "string" && call[0].includes("experimental.appShells is enabled"),
+    );
+    expect(appShellsWarnings).toHaveLength(0);
+    warnSpy.mockRestore();
   });
 });

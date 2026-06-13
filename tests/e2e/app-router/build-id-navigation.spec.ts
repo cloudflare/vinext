@@ -1,9 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
-import { waitForAppRouterHydration } from "../helpers";
+import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 const VISITED_CACHE_MARKER = "__VINEXT_VISITED_CACHE_MARKER__";
 const RSC_NAVIGATION_PROMISE_MARKER = "__VINEXT_TEST_RSC_NAVIGATION_PROMISE__";
+const CLIENT_REUSE_MANIFEST_HEADER = "x-vinext-client-reuse-manifest";
 
 async function pushAppRoute(page: Page, pathname: string): Promise<void> {
   await page.evaluate((target) => {
@@ -74,13 +75,67 @@ async function waitForLastRscNavigation(page: Page): Promise<void> {
 }
 
 test.describe("App Router RSC compatibility navigation", () => {
+  test("sends a client reuse manifest for retained static layouts on soft navigation", async ({
+    page,
+  }) => {
+    const manifestHeaders: string[] = [];
+    page.on("request", (request) => {
+      if (isAppRouterRscRequestForPath(request, "/client-nav-test")) {
+        const manifestHeader = request.headers()[CLIENT_REUSE_MANIFEST_HEADER];
+        if (manifestHeader) {
+          manifestHeaders.push(manifestHeader);
+        }
+      }
+    });
+
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await captureRscNavigationPromises(page);
+
+    const rscResponsePromise = page.waitForResponse(
+      (response) =>
+        isAppRouterRscRequestForPath(response.request(), "/client-nav-test") &&
+        response.request().headers()[CLIENT_REUSE_MANIFEST_HEADER] !== undefined,
+    );
+
+    await pushAppRoute(page, "/client-nav-test");
+    await expect(page.locator("h1")).toHaveText("Client Nav Test");
+    const rscResponse = await rscResponsePromise;
+    await waitForLastRscNavigation(page);
+
+    expect(rscResponse.headers()["cache-control"]).toBe("no-store, must-revalidate");
+    expect(manifestHeaders).toHaveLength(1);
+    const manifest = JSON.parse(manifestHeaders[0]!) as {
+      entries: Array<{ id: string; privacy: string }>;
+      replayWindow: {
+        validFromVisibleCommitVersion: number;
+        validUntilVisibleCommitVersion: number;
+      };
+      visibleCommitVersion: number;
+    };
+    expect(manifest.visibleCommitVersion).toBe(0);
+    expect(manifest.replayWindow).toEqual({
+      validFromVisibleCommitVersion: 0,
+      validUntilVisibleCommitVersion: 0,
+    });
+    expect(manifest.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "layout:/",
+          privacy: "public",
+        }),
+      ]),
+    );
+    expect(manifest.entries.every((entry) => entry.id.startsWith("layout:"))).toBe(true);
+    expect(manifestHeaders[0]!.length).toBeLessThanOrEqual(4096);
+  });
+
   test("refetches unproofed same-build visited RSC payloads instead of reloading", async ({
     page,
   }) => {
     const aboutRscRequests: string[] = [];
     page.on("request", (request) => {
-      const url = new URL(request.url());
-      if (url.pathname === "/about.rsc" && url.searchParams.has("_rsc")) {
+      if (isAppRouterRscRequestForPath(request, "/about")) {
         aboutRscRequests.push(request.url());
       }
     });

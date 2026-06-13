@@ -18,11 +18,18 @@ type HeadProps = {
 // browser. The ALS-backed implementation lives in head-state.ts (server-only).
 
 let _ssrHeadChildren: React.ReactNode[] = [];
-const _clientHeadChildren = new Map<symbol, React.ReactNode>();
+let _documentInitialHead: React.ReactNode[] = [];
+/** @internal — exposed for unit tests of the client head projection. */
+export const _clientHeadChildren = new Map<symbol, React.ReactNode>();
 
 let _getSSRHeadChildren = (): React.ReactNode[] => _ssrHeadChildren;
 let _resetSSRHeadImpl = (): void => {
   _ssrHeadChildren = [];
+  _documentInitialHead = [];
+};
+let _getDocumentInitialHead = (): React.ReactNode[] => _documentInitialHead;
+let _setDocumentInitialHead = (head: React.ReactNode[]): void => {
+  _documentInitialHead = head;
 };
 
 /**
@@ -32,9 +39,17 @@ let _resetSSRHeadImpl = (): void => {
 export function _registerHeadStateAccessors(accessors: {
   getSSRHeadChildren: () => React.ReactNode[];
   resetSSRHead: () => void;
+  getDocumentInitialHead?: () => React.ReactNode[];
+  setDocumentInitialHead?: (head: React.ReactNode[]) => void;
 }): void {
   _getSSRHeadChildren = accessors.getSSRHeadChildren;
   _resetSSRHeadImpl = accessors.resetSSRHead;
+  if (accessors.getDocumentInitialHead) {
+    _getDocumentInitialHead = accessors.getDocumentInitialHead;
+  }
+  if (accessors.setDocumentInitialHead) {
+    _setDocumentInitialHead = accessors.setDocumentInitialHead;
+  }
 }
 
 /** Reset the SSR head collector. Call before render. */
@@ -42,9 +57,56 @@ export function resetSSRHead(): void {
   _resetSSRHeadImpl();
 }
 
+/**
+ * Register head tags returned by a user `_document.getInitialProps()` call.
+ * Mirrors Next.js: `_document` may extend the head array passed to its render,
+ * and those tags are merged into the final `<head>` output. We treat them the
+ * same as `next/head` children — they go through the same dedupe pipeline so
+ * later tags (by key or meta-type) win, matching Next.js semantics.
+ *
+ * Pass an empty array (or simply don't call this) to skip the merge.
+ */
+export function setDocumentInitialHead(head: React.ReactNode[]): void {
+  _setDocumentInitialHead(head);
+}
+
+/**
+ * Default head tags emitted alongside every Pages Router render — charset
+ * first, then viewport. Mirrors Next.js's `defaultHead()` in
+ * `packages/next/src/shared/lib/head.tsx`, which seeds the head array used
+ * by `HeadManagerContext` before any user `<Head>` reduces over it.
+ *
+ * The canonical Next.js order is `<meta charset>` then `<meta viewport>`
+ * then user tags, all with `data-next-head=""`. See assertion in
+ * `test/e2e/next-head/index.test.ts`.
+ */
+function defaultHead(): React.ReactElement[] {
+  return [
+    React.createElement("meta", { charSet: "utf-8", key: "charset" }),
+    React.createElement("meta", {
+      name: "viewport",
+      content: "width=device-width",
+      key: "viewport",
+    }),
+  ];
+}
+
 /** Get collected head HTML. Call after render. */
 export function getSSRHeadHTML(): string {
-  return reduceHeadChildren(_getSSRHeadChildren())
+  // Order mirrors Next.js's `_document.tsx`: defaultHead seeds the head array,
+  // user `next/head` tags reduce over it, and then `_document.getInitialProps`
+  // may extend the array. The final `_document` render emits `{head}` (which
+  // contains the defaults + user tags + initial-props tags) ahead of any
+  // children declared inside `_document`'s own `<Head>`. Because the user
+  // children inside `_document`'s `<Head>` are tracked via React tree render
+  // (not next/head), they don't appear in this collector — so emitting
+  // `defaultHead + user + initialProps` here matches Next.js's serialised
+  // output up to that boundary.
+  return reduceHeadChildren([
+    ...defaultHead(),
+    ..._getSSRHeadChildren(),
+    ..._getDocumentInitialHead(),
+  ])
     .map((child) => headChildToHTML(child.type as string, child.props as Record<string, unknown>))
     .filter(Boolean)
     .join("\n  ");
@@ -63,6 +125,14 @@ const SELF_CLOSING_HEAD_TAGS = new Set(["meta", "link", "base"]);
 
 /** Tags whose content is raw text — closing-tag sequences must be escaped during SSR. */
 const RAW_CONTENT_TAGS = new Set(["script", "style"]);
+
+// Pre-compiled regexes for escapeInlineContent — one per RAW_CONTENT_TAGS member.
+// The capture group preserves original casing in the replacement. `gi` flags,
+// no `lastIndex` hazard since they're only used via String.prototype.replace.
+const INLINE_CLOSE_TAG_RES: Record<string, RegExp> = {
+  script: /<\/(script)/gi,
+  style: /<\/(style)/gi,
+};
 
 type HeadDOMElement = Pick<HTMLElement, "innerHTML" | "setAttribute" | "textContent">;
 
@@ -207,6 +277,30 @@ export function isSafeAttrName(name: string): boolean {
 }
 
 /**
+ * Map React JSX attribute names to their HTML serialised form for the small
+ * set of head-relevant attributes where the two differ. React's own renderer
+ * normalises these automatically, but we serialise tags by hand so they reach
+ * the final HTML in the canonical lowercase / kebab-case shape that browsers
+ * (and Next.js's `test/e2e/next-head/index.test.ts`) expect.
+ */
+const JSX_TO_HTML_ATTR_MAP: Record<string, string> = {
+  charSet: "charset",
+  httpEquiv: "http-equiv",
+  acceptCharset: "accept-charset",
+  itemProp: "itemprop",
+  itemType: "itemtype",
+  itemID: "itemid",
+  itemRef: "itemref",
+  itemScope: "itemscope",
+  crossOrigin: "crossorigin",
+  referrerPolicy: "referrerpolicy",
+};
+
+function jsxAttrToHtml(name: string): string {
+  return JSX_TO_HTML_ATTR_MAP[name] ?? name;
+}
+
+/**
  * Convert props + tag to an HTML string for SSR head injection.
  * Callers must only pass tags that have already been validated against
  * ALLOWED_HEAD_TAGS (e.g. via reduceHeadChildren / collectHeadElements).
@@ -236,10 +330,10 @@ function headChildToHTML(tag: string, props: Record<string, unknown>): string {
       attrs.push(`class="${escapeAttr(String(value))}"`);
     } else if (typeof value === "string") {
       if (!isSafeAttrName(key)) continue;
-      attrs.push(`${key}="${escapeAttr(value)}"`);
+      attrs.push(`${jsxAttrToHtml(key)}="${escapeAttr(value)}"`);
     } else if (typeof value === "boolean" && value) {
       if (!isSafeAttrName(key)) continue;
-      attrs.push(key);
+      attrs.push(jsxAttrToHtml(key));
     }
   }
 
@@ -281,10 +375,8 @@ export function escapeAttr(s: string): string {
  * context but prevents the HTML parser from seeing a closing tag.
  */
 export function escapeInlineContent(content: string, tag: string): string {
-  // Build a pattern like `<\/script` or `<\/style`, case-insensitive.
-  // `tag` is always a literal developer-controlled value ("script" or "style")
-  // guarded by the RAW_CONTENT_TAGS.has(tag) check at all call sites — never user input.
-  const pattern = new RegExp(`<\\/(${tag})`, "gi");
+  const pattern = INLINE_CLOSE_TAG_RES[tag];
+  if (!pattern) return content;
   return content.replace(pattern, "<\\/$1");
 }
 
@@ -316,26 +408,99 @@ export function _applyHeadPropsToElement(
       domEl.setAttribute("class", String(value));
     } else if (typeof value === "boolean" && value) {
       if (!isSafeAttrName(key)) continue;
-      domEl.setAttribute(key, "");
+      // Map JSX attribute names (charSet, httpEquiv, ...) to the HTML form
+      // (charset, http-equiv, ...) so the client-side mutation matches the
+      // SSR output. `setAttribute` is case-insensitive for HTML elements, so
+      // `charSet` would land as `charset` by coincidence, but `httpEquiv`
+      // would lowercase to `httpequiv` rather than `http-equiv` and produce
+      // a hydration mismatch. The shared mapping in jsxAttrToHtml keeps both
+      // paths in lockstep.
+      domEl.setAttribute(jsxAttrToHtml(key), "");
     } else if (typeof value === "string") {
       if (!isSafeAttrName(key)) continue;
-      domEl.setAttribute(key, value);
+      domEl.setAttribute(jsxAttrToHtml(key), value);
     }
   }
 }
 
-function syncClientHead(): void {
-  document.querySelectorAll("[data-next-head]").forEach((el) => el.remove());
+/**
+ * Reconcile the document <head> against the desired projection.
+ *
+ * Mirrors Next.js's client `head-manager.ts` `updateElements()`: rather than
+ * wiping every [data-next-head] node and re-appending (which reorders the
+ * SSR-emitted tags to the end of <head> and causes flicker on each update),
+ * we diff the desired tags against the existing ones with isEqualNode(). Tags
+ * that already match are left untouched in their original DOM position, only
+ * genuinely new tags are inserted, and stale tags are removed.
+ *
+ * The desired list seeds defaultHead() (charset + viewport) ahead of user
+ * tags — matching the SSR path in getSSRHeadHTML() and Next.js's
+ * reduceComponents(), which always concatenates defaultHead() on both server
+ * and client. Without it the first <Head> mount after hydration would drop the
+ * server-rendered defaults. Users can still override via key="charset" /
+ * key="viewport" through the dedupe pipeline.
+ *
+ * @internal — exported for unit tests; called from the Head client effect.
+ */
+export function _syncClientHead(): void {
+  const headEl = document.head;
+  if (!headEl) return;
 
-  for (const child of reduceHeadChildren([..._clientHeadChildren.values()])) {
+  // Existing vinext-managed tags. Also fold in any <meta charset> even if it
+  // somehow lost the marker, so we never end up with a duplicate charset.
+  const oldTags = new Set<Element>(headEl.querySelectorAll("[data-next-head]"));
+  const charsetEl = headEl.querySelector("meta[charset]");
+  if (charsetEl) oldTags.add(charsetEl);
+
+  const newTags: Element[] = [];
+  for (const child of reduceHeadChildren([...defaultHead(), ..._clientHeadChildren.values()])) {
     if (typeof child.type !== "string") continue;
 
     const domEl = document.createElement(child.type);
-    const props = child.props as Record<string, unknown>;
-    _applyHeadPropsToElement(domEl, props);
-
+    _applyHeadPropsToElement(domEl, child.props as Record<string, unknown>);
     domEl.setAttribute("data-next-head", "");
-    document.head.appendChild(domEl);
+
+    // Reuse an identical node already in <head> so its DOM position (and thus
+    // the head ordering produced by SSR) is preserved.
+    //
+    // Note: Next.js routes <title> through document.title rather than
+    // updateElements(), so a title node never moves. We reconcile <title> like
+    // any other tag — on hydration with an unchanged title it is reused in
+    // place via isEqualNode (the common case), and only on a client-side title
+    // *change* does the old node get removed and the new one appended. The
+    // position of <title> in <head> is not observable, so this is cosmetic.
+    let isNew = true;
+    for (const oldTag of oldTags) {
+      if (oldTag.isEqualNode(domEl)) {
+        oldTags.delete(oldTag);
+        isNew = false;
+        break;
+      }
+    }
+    if (isNew) newTags.push(domEl);
+  }
+
+  // Remove tags that are no longer desired.
+  for (const oldTag of oldTags) {
+    oldTag.parentNode?.removeChild(oldTag);
+  }
+
+  // Insert genuinely new tags. Keep <meta charset> first in <head> so the
+  // declared encoding stays at the top.
+  //
+  // This deliberately diverges from Next.js's literal head-manager.ts, which
+  // does `if (charset) headEl.prepend(newTag)` with NO `else` and then
+  // unconditionally `headEl.appendChild(newTag)` — moving a newly-created
+  // charset node twice and landing it last. We use a proper if/else so a new
+  // charset is prepended and only prepended. Don't "fix" this back to match
+  // Next.js's sequence. (This branch only runs on client-only navigation; on
+  // SSR hydration the charset is reused in place via isEqualNode above.)
+  for (const newTag of newTags) {
+    if (newTag.tagName.toLowerCase() === "meta" && newTag.getAttribute("charset") !== null) {
+      headEl.prepend(newTag);
+    } else {
+      headEl.appendChild(newTag);
+    }
   }
 }
 
@@ -358,11 +523,11 @@ function Head({ children }: HeadProps): null {
   useEffect(() => {
     const instanceId = headInstanceIdRef.current!;
     _clientHeadChildren.set(instanceId, children);
-    syncClientHead();
+    _syncClientHead();
 
     return () => {
       _clientHeadChildren.delete(instanceId);
-      syncClientHead();
+      _syncClientHead();
     };
   }, [children]);
 

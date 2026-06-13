@@ -11,6 +11,7 @@ import { describe, it, expect } from "vite-plus/test";
 import { generateBrowserEntry } from "../packages/vinext/src/entries/app-browser-entry.js";
 import { buildAppRscManifestCode } from "../packages/vinext/src/entries/app-rsc-manifest.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import { generateClientEntry } from "../packages/vinext/src/entries/pages-client-entry.js";
 import { generateServerEntry } from "../packages/vinext/src/entries/pages-server-entry.js";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { buildAppRouteGraph } from "../packages/vinext/src/routing/app-route-graph.js";
@@ -43,6 +44,7 @@ const minimalAppRoutes: AppRoute[] = [
     layoutTreePositions: [0],
     isDynamic: false,
     params: [],
+    siblingIntercepts: [],
   },
   {
     pattern: "/about",
@@ -66,6 +68,7 @@ const minimalAppRoutes: AppRoute[] = [
     layoutTreePositions: [0],
     isDynamic: false,
     params: [],
+    siblingIntercepts: [],
   },
   {
     pattern: "/blog/:slug",
@@ -89,6 +92,7 @@ const minimalAppRoutes: AppRoute[] = [
     layoutTreePositions: [0, 1],
     isDynamic: true,
     params: ["slug"],
+    siblingIntercepts: [],
   },
   {
     pattern: "/dashboard",
@@ -112,6 +116,7 @@ const minimalAppRoutes: AppRoute[] = [
     layoutTreePositions: [0, 1],
     isDynamic: false,
     params: [],
+    siblingIntercepts: [],
   },
 ];
 
@@ -143,6 +148,7 @@ describe("App Router generated manifest construction", () => {
         layoutTreePositions: [0, 1],
         isDynamic: false,
         params: [],
+        siblingIntercepts: [],
       },
       {
         pattern: "/docs/:slug",
@@ -166,6 +172,7 @@ describe("App Router generated manifest construction", () => {
         layoutTreePositions: [0],
         isDynamic: true,
         params: ["slug"],
+        siblingIntercepts: [],
       },
       {
         pattern: "/api",
@@ -189,6 +196,7 @@ describe("App Router generated manifest construction", () => {
         layoutTreePositions: [],
         isDynamic: false,
         params: [],
+        siblingIntercepts: [],
       },
     ]);
 
@@ -263,6 +271,7 @@ describe("App Router generated manifest construction", () => {
         layoutTreePositions: [0],
         isDynamic: false,
         params: [],
+        siblingIntercepts: [],
       },
       {
         ids: {
@@ -324,6 +333,7 @@ describe("App Router generated manifest construction", () => {
         isDynamic: true,
         params: ["id"],
         rootParamNames: ["id"],
+        siblingIntercepts: [],
       },
     ] satisfies AppRoute[];
 
@@ -335,17 +345,26 @@ describe("App Router generated manifest construction", () => {
 
     const imports = manifest.imports.join("\n");
     expect(imports.match(/\/tmp\/test\/app\/layout\.tsx/g)).toHaveLength(1);
-    expect(imports).toContain('import * as mod_0 from "/tmp/test/app/page.tsx";');
+    // All page modules are lazy loaders (including the dynamic "/dashboard/:id"
+    // page and intercepting pages); only shared modules
+    // (layouts/templates/boundaries) and global-error stay eager `import * as`.
+    expect(imports).toContain('const load_0 = () => import("/tmp/test/app/page.tsx");');
     expect(imports).toContain(
-      'import * as mod_17 from "/tmp/test/app/dashboard/@modal/(.)photos/[photoId]/page.tsx";',
+      'const load_1 = () => import("/tmp/test/app/dashboard/[id]/page.tsx");',
     );
-    expect(imports).toContain('import * as mod_19 from "/tmp/test/app/global-error.tsx";');
+    expect(imports).toContain(
+      'const load_2 = () => import("/tmp/test/app/dashboard/[id]/route.ts");',
+    );
+    expect(imports).toContain(
+      'const load_3 = () => import("/tmp/test/app/dashboard/@modal/(.)photos/[photoId]/page.tsx");',
+    );
+    expect(imports).toContain('import * as mod_15 from "/tmp/test/app/global-error.tsx";');
 
-    expect(manifest.rootNotFoundVar).toBe("mod_2");
-    expect(manifest.rootForbiddenVar).toBe("mod_3");
-    expect(manifest.rootUnauthorizedVar).toBe("mod_4");
-    expect(manifest.rootLayoutVars).toEqual(["mod_1"]);
-    expect(manifest.globalErrorVar).toBe("mod_19");
+    expect(manifest.rootNotFoundVar).toBe("mod_1");
+    expect(manifest.rootForbiddenVar).toBe("mod_2");
+    expect(manifest.rootUnauthorizedVar).toBe("mod_3");
+    expect(manifest.rootLayoutVars).toEqual(["mod_0"]);
+    expect(manifest.globalErrorVar).toBe("mod_15");
 
     const dynamicRouteEntry = manifest.routeEntries[1];
     expect(dynamicRouteEntry).toContain('"route":"route:/dashboard/:id"');
@@ -354,15 +373,61 @@ describe("App Router generated manifest construction", () => {
     );
     expect(dynamicRouteEntry).toContain('id: "slot:modal:/dashboard"');
     expect(dynamicRouteEntry).toContain('pattern: "/dashboard/:id"');
-    expect(dynamicRouteEntry).toContain("routeHandler: mod_6");
-    expect(dynamicRouteEntry).toContain("layouts: [mod_1, mod_7]");
+    expect(dynamicRouteEntry).toContain("page: null");
+    expect(dynamicRouteEntry).toContain("__loadPage: load_1");
+    expect(dynamicRouteEntry).toContain("routeHandler: null");
+    expect(dynamicRouteEntry).toContain("__loadRouteHandler: load_2");
+    expect(dynamicRouteEntry).toContain("layouts: [mod_0, mod_4]");
     expect(dynamicRouteEntry).toContain('"modal:/tmp/test/app/dashboard/@modal": {');
-    expect(dynamicRouteEntry).toContain("interceptLayouts: [mod_18]");
-    expect(dynamicRouteEntry).toContain("page: mod_17");
+    expect(dynamicRouteEntry).toContain("interceptLayouts: [mod_14]");
+    expect(dynamicRouteEntry).toContain("page: null");
+    expect(dynamicRouteEntry).toContain("__pageLoader: load_3");
     expect(dynamicRouteEntry).toContain('params: ["photoId"]');
     expect(manifest.generateStaticParamsEntries).toEqual([
-      '  "/dashboard/:id": __createAppPrerenderStaticParamsResolver([mod_5?.generateStaticParams], ["id"]),',
+      '  "/dashboard/:id": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["id"]),',
     ]);
+  });
+
+  it("derives route-miss root boundaries when the app has no root page", () => {
+    const routes = [
+      {
+        pattern: "/server",
+        patternParts: ["server"],
+        pagePath: "/tmp/test/app/server/page.tsx",
+        routePath: null,
+        layouts: ["/tmp/test/app/layout.tsx"],
+        templates: [],
+        parallelSlots: [],
+        loadingPath: null,
+        errorPath: null,
+        layoutErrorPaths: [null],
+        notFoundPath: "/tmp/test/app/not-found.tsx",
+        notFoundPaths: ["/tmp/test/app/not-found.tsx"],
+        forbiddenPath: null,
+        forbiddenPaths: ["/tmp/test/app/forbidden.tsx"],
+        unauthorizedPath: null,
+        unauthorizedPaths: ["/tmp/test/app/unauthorized.tsx"],
+        routeSegments: ["server"],
+        templateTreePositions: [],
+        layoutTreePositions: [0],
+        isDynamic: false,
+        params: [],
+        siblingIntercepts: [],
+      },
+    ] satisfies AppRoute[];
+
+    const manifest = buildAppRscManifestCode({
+      routes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+    });
+
+    // The "/server" page is a static route, so it is lazy-loaded (load_0) and
+    // the eager `import * as mod_N` numbering starts at the root layout.
+    expect(manifest.rootLayoutVars).toEqual(["mod_0"]);
+    expect(manifest.rootNotFoundVar).toBe("mod_1");
+    expect(manifest.rootForbiddenVar).toBe("mod_2");
+    expect(manifest.rootUnauthorizedVar).toBe("mod_3");
   });
 
   it("exposes layout-level generateStaticParams to App Router prerender", () => {
@@ -392,6 +457,7 @@ describe("App Router generated manifest construction", () => {
         isDynamic: true,
         params: ["lang", "locale", "slug"],
         rootParamNames: ["lang", "locale"],
+        siblingIntercepts: [],
       },
     ] satisfies AppRoute[];
 
@@ -402,8 +468,8 @@ describe("App Router generated manifest construction", () => {
     });
 
     expect(manifest.generateStaticParamsEntries).toEqual([
-      '  "/:lang/:locale": __createAppPrerenderStaticParamsResolver([mod_1?.generateStaticParams], ["lang","locale"]),',
-      '  "/:lang/:locale/other/:slug": __createAppPrerenderStaticParamsResolver([mod_0?.generateStaticParams], ["lang","locale"]),',
+      '  "/:lang/:locale": __createAppPrerenderStaticParamsResolver([mod_0?.generateStaticParams], ["lang","locale"]),',
+      '  "/:lang/:locale/other/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], ["lang","locale"]),',
     ]);
     expect(manifest.rootParamNameEntries).toEqual([
       '  "/:lang/:locale/other/:slug": ["lang","locale"],',
@@ -436,6 +502,7 @@ describe("App Router generated manifest construction", () => {
         isDynamic: true,
         params: ["lang", "section", "slug"],
         rootParamNames: ["lang", "section"],
+        siblingIntercepts: [],
       },
     ] satisfies AppRoute[];
 
@@ -446,8 +513,8 @@ describe("App Router generated manifest construction", () => {
     });
 
     expect(manifest.generateStaticParamsEntries).toEqual([
-      '  "/:lang/docs v2/:section": __createAppPrerenderStaticParamsResolver([mod_1?.generateStaticParams], ["lang","section"]),',
-      '  "/:lang/docs v2/:section/:slug": __createAppPrerenderStaticParamsResolver([mod_0?.generateStaticParams], ["lang","section"]),',
+      '  "/:lang/docs v2/:section": __createAppPrerenderStaticParamsResolver([mod_0?.generateStaticParams], ["lang","section"]),',
+      '  "/:lang/docs v2/:section/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], ["lang","section"]),',
     ]);
     expect(manifest.rootParamNameEntries).toEqual([
       '  "/:lang/docs v2/:section/:slug": ["lang","section"],',
@@ -623,8 +690,10 @@ describe("App Router entry templates", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
     const globalsImportIndex = code.indexOf("/server-globals.js");
+    // The root page is a static route, so it is emitted as a lazy loader
+    // (`const load_N = () => import(...)`) rather than a static `import * as`.
     const firstUserImportIndex = code.search(
-      /import \* as mod_\d+ from "\/tmp\/test\/app\/page\.tsx";/,
+      /const load_\d+ = \(\) => import\("\/tmp\/test\/app\/page\.tsx"\);/,
     );
 
     expect(globalsImportIndex).toBeGreaterThanOrEqual(0);
@@ -722,6 +791,16 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });
 
+  it("generateRscEntry passes page-slot dynamic stale time config into App page dispatch", () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain(
+      "parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page)",
+    );
+    expect(code).toContain("dynamicStaleTimeSeconds: __segmentConfig.dynamicStaleTimeSeconds");
+  });
+
   it("generateRscEntry threads globalNotFoundPath from config into the fallback renderer", () => {
     // The generated entry's createAppFallbackRenderer call must receive a
     // loader so route-miss 404s can render app/global-not-found.tsx standalone.
@@ -794,6 +873,115 @@ describe("Pages Router entry template", () => {
       expect(globalsImportIndex).toBeGreaterThanOrEqual(0);
       expect(firstUserImportIndex).toBeGreaterThanOrEqual(0);
       expect(globalsImportIndex).toBeLessThan(firstUserImportIndex);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Refs #1474: Pages Router client entry must import the user's
+  // `instrumentation-client.ts` (at the project root) as a side-effect import
+  // before calling `hydrateRoot()`. Mirrors Next.js's `page-bootstrap.ts`
+  // which side-effect-imports `require-instrumentation-client` ahead of
+  // `initialize` / `hydrate` (see
+  // .nextjs-ref/packages/next/src/client/page-bootstrap.ts line 1).
+  //
+  // Ported from Next.js: test/e2e/instrumentation-client-hook/instrumentation-client-hook.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/instrumentation-client-hook/instrumentation-client-hook.test.ts
+  it("imports the user's instrumentation-client.ts before calling hydrateRoot()", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    const instrumentationClientPath = path.join(tmpDir, "instrumentation-client.ts");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        instrumentationClientPath,
+        "(window as any).__INSTRUMENTATION_CLIENT_EXECUTED_AT = performance.now();",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        { instrumentationClientPath },
+      );
+
+      // The user's `instrumentation-client.ts` must be imported as a
+      // side-effect import (no `from`, no `as`) so its top-level statements
+      // execute when the client entry module is evaluated.
+      const userImportIndex = code.indexOf(`import ${JSON.stringify(instrumentationClientPath)}`);
+      const hydrateRootIndex = code.indexOf("hydrateRoot(");
+
+      expect(userImportIndex).toBeGreaterThanOrEqual(0);
+      expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+      expect(userImportIndex).toBeLessThan(hydrateRootIndex);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("omits the user instrumentation-client import when no file is present", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-empty-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        { instrumentationClientPath: null },
+      );
+
+      // Sanity check: the entry still wires up hydration and the hooks alias.
+      expect(code).toContain("hydrateRoot(");
+      expect(code).toContain("vinext/instrumentation-client");
+      // No spurious bare imports referring to a non-existent project file.
+      expect(code).not.toMatch(/import "[^"]*instrumentation-client\.ts"/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("installs the dev error overlay before loading Pages Router modules", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-entry-overlay-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+      );
+
+      const overlayImportIndex = code.indexOf('await import("vinext/dev-error-overlay")');
+      const pageLoadIndex = code.indexOf("const pageModule = await loader()");
+      const hydrateRootIndex = code.indexOf("hydrateRoot(container, element, hydrateRootOptions)");
+
+      expect(overlayImportIndex).toBeGreaterThanOrEqual(0);
+      expect(pageLoadIndex).toBeGreaterThanOrEqual(0);
+      expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+      expect(code).toContain("overlay.installDevErrorOverlay()");
+      expect(code).toContain("overlay.installViteHmrErrorHandler(import.meta.hot)");
+      expect(code).toContain("overlay.reportInitialDevServerErrors()");
+      expect(code).toContain("onCaughtError: overlay.devOnCaughtError");
+      expect(code).toContain("onUncaughtError: overlay.devOnUncaughtError");
+      expect(overlayImportIndex).toBeLessThan(pageLoadIndex);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

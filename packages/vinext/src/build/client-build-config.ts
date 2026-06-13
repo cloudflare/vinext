@@ -1,5 +1,52 @@
 import type { UserConfig } from "vite";
 
+type ClientAssetFileNameInfo = {
+  readonly name?: string;
+  readonly names?: readonly string[];
+  readonly originalFileName?: string;
+  readonly originalFileNames?: readonly string[];
+};
+
+// Next.js emits CSS under `static/css/` and CSS url() dependencies (images,
+// fonts, …) under `static/media/`, both with an 8-char content hash. Mirror
+// that layout so migrated apps keep stable, Next-shaped asset URLs.
+const NEXT_CLIENT_CSS_ASSET_FILE_NAMES = "css/[name].[hash:8][extname]";
+const NEXT_CLIENT_STATIC_MEDIA_FILE_NAMES = "media/[name].[hash:8][extname]";
+
+function joinAssetFileNamePattern(assetsDir: string, pattern: string): string {
+  // Strip trailing slashes without a regex (avoids a needless ReDoS lint flag;
+  // `assetsDir` is build-time config, but a plain loop is clearer and linear).
+  let end = assetsDir.length;
+  while (end > 0 && assetsDir[end - 1] === "/") end -= 1;
+  const normalized = assetsDir.slice(0, end);
+  return normalized ? `${normalized}/${pattern}` : pattern;
+}
+
+/**
+ * Routes client assets into Next-compatible subtrees: `.css` sources go to
+ * `<assetsDir>/css/`, everything else to `<assetsDir>/media/`. Returned as a
+ * function so it can inspect every source-name candidate Rolldown records for
+ * an asset (a single output asset can carry several `originalFileNames`).
+ */
+export function createClientAssetFileNames(assetsDir: string) {
+  const cssAssetFileNames = joinAssetFileNamePattern(assetsDir, NEXT_CLIENT_CSS_ASSET_FILE_NAMES);
+  const mediaAssetFileNames = joinAssetFileNamePattern(
+    assetsDir,
+    NEXT_CLIENT_STATIC_MEDIA_FILE_NAMES,
+  );
+
+  return function getClientAssetFileNames(assetInfo: ClientAssetFileNameInfo): string {
+    const candidates = [
+      ...(assetInfo.names ?? []),
+      assetInfo.name,
+      ...(assetInfo.originalFileNames ?? []),
+      assetInfo.originalFileName,
+    ];
+    const isCss = candidates.some((name) => name?.toLowerCase().endsWith(".css"));
+    return isCss ? cssAssetFileNames : mediaAssetFileNames;
+  };
+}
+
 /**
  * Extract the npm package name from a module ID (file path).
  * Returns null if not in node_modules.
@@ -85,8 +132,21 @@ export function createClientManualChunks(shimsDir: string) {
  * compression efficiency — small files restart the compression dictionary,
  * adding ~5-15% wire overhead vs fewer larger chunks.
  */
-export function createClientOutputConfig(clientManualChunks: (id: string) => string | undefined) {
+export function createClientFileNameConfig(assetsDir: string) {
+  const chunksDir = `${assetsDir}/chunks`;
   return {
+    entryFileNames: `${chunksDir}/[name]-[hash].js`,
+    chunkFileNames: `${chunksDir}/[name]-[hash].js`,
+  };
+}
+
+export function createClientOutputConfig(
+  clientManualChunks: (id: string) => string | undefined,
+  assetsDir: string,
+) {
+  return {
+    ...createClientFileNameConfig(assetsDir),
+    assetFileNames: createClientAssetFileNames(assetsDir),
     manualChunks: clientManualChunks,
     experimentalMinChunkSize: 10_000,
   };
@@ -104,6 +164,69 @@ export function createClientCodeSplittingConfig(
         },
       },
     ],
+  };
+}
+
+/**
+ * Matches React framework packages (and the RSC flight runtime) inside
+ * `node_modules`. Used to split them into a dedicated "framework" chunk in the
+ * RSC server build.
+ *
+ * Why the RSC build needs this: without an explicit framework chunk, the
+ * bundler colocates React into whichever chunk first reaches it — typically the
+ * RSC entry chunk, which also carries the root layout's CSS. Modules that only
+ * import React for runtime helpers (notably `app/global-not-found.tsx`, which
+ * replaces the root layout for route-miss 404s) then import that entry chunk
+ * and inherit the root layout's CSS in their `serverResources` metadata. The
+ * 404 document ends up linking the layout's stylesheet last, so the layout's
+ * rules win the cascade over global-not-found's — the bug tracked in
+ * https://github.com/cloudflare/vinext/issues/1549.
+ *
+ * Splitting React into its own (CSS-free) chunk means global-not-found imports
+ * the framework chunk instead of the layout-bearing entry chunk, so it no
+ * longer inherits the root layout's CSS. The match list mirrors the client
+ * build's `framework` chunk, plus `react-server-dom-webpack` for the RSC flight
+ * runtime that the server environment bundles.
+ *
+ * Uses `[\\/]` rather than `/` for the path separator so it matches on Windows
+ * too, per the rolldown `codeSplitting` docs.
+ */
+const FRAMEWORK_PACKAGES = ["react", "react-dom", "scheduler", "react-server-dom-webpack"] as const;
+
+/**
+ * Regex matching any {@link FRAMEWORK_PACKAGES} package inside `node_modules`.
+ * Derived from the package list so the regex and {@link isRscFrameworkModule}
+ * predicate can't drift.
+ */
+export const RSC_FRAMEWORK_CHUNK_TEST = new RegExp(
+  `[\\\\/]node_modules[\\\\/](${FRAMEWORK_PACKAGES.join("|")})[\\\\/]`,
+);
+
+export function isRscFrameworkModule(id: string): boolean {
+  if (!id.includes("node_modules")) return false;
+  const pkg = getPackageName(id);
+  return pkg !== null && (FRAMEWORK_PACKAGES as readonly string[]).includes(pkg);
+}
+
+/**
+ * Output config that isolates React (and the RSC flight runtime) into a
+ * dedicated "framework" chunk in the RSC server build. Returns the bundler-
+ * appropriate shape: rolldown's `codeSplitting` for Vite 8+, Rollup's
+ * `manualChunks` for Vite 7. See {@link RSC_FRAMEWORK_CHUNK_TEST} for the
+ * motivation (issue #1549).
+ */
+export function createRscFrameworkChunkOutputConfig(viteMajorVersion: number) {
+  if (viteMajorVersion >= 8) {
+    return {
+      codeSplitting: {
+        groups: [{ name: "framework", test: RSC_FRAMEWORK_CHUNK_TEST }],
+      },
+    };
+  }
+  return {
+    manualChunks(id: string): string | undefined {
+      return isRscFrameworkModule(id) ? "framework" : undefined;
+    },
   };
 }
 

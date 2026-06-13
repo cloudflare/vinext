@@ -1,4 +1,3 @@
-import { ImageResponse as VercelImageResponse } from "@vercel/og";
 import type { ImageResponseOptions } from "@vercel/og";
 import type { ReactElement } from "react";
 
@@ -20,6 +19,11 @@ export class ImageResponse extends Response {
   constructor(element: ReactElement, options?: ImageResponseOptions) {
     const readable = new ReadableStream<Uint8Array>({
       async start(controller) {
+        // Lazily import @vercel/og so its ~800 KB runtime (satori + resvg +
+        // embedded wasm/fonts) is code-split into its own chunk instead of being
+        // inlined into the main worker entry, regardless of whether the app
+        // imports next/og statically or dynamically.
+        const { ImageResponse: VercelImageResponse } = await import("@vercel/og");
         const imageResponse = new VercelImageResponse(element, options);
         if (!imageResponse.body) {
           controller.close();

@@ -88,6 +88,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     actionRevalidationKind: 0,
     dynamicUsageDetected: false,
     renderRequestApiUsage: new Set(),
+    connectionProbe: null,
     invalidDynamicUsageError: null,
     pendingSetCookies: [],
     draftModeCookieHeader: null,
@@ -96,11 +97,14 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     serverContext: null,
     serverInsertedHTMLCallbacks: [],
     requestScopedCacheLife: null,
+    unstableCacheObservations: new Map(),
     unstableCacheRevalidation: "foreground",
     _privateCache: null,
+    cacheableFetchUrls: new Set<string>(),
     currentRequestTags: [],
     currentFetchSoftTags: [],
     currentFetchCacheMode: null,
+    currentForceDynamicFetchDefault: false,
     dynamicFetchUrls: new Set<string>(),
     isFetchDedupeActive: false,
     currentFetchDedupeEntries: new Map(),
@@ -108,6 +112,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     requestCache: new WeakMap(),
     ssrContext: null,
     ssrHeadChildren: [],
+    documentInitialHead: [],
     rootParams: null,
     ...opts,
   };
@@ -160,7 +165,8 @@ export function runWithUnifiedStateMutation<T>(
   const childCtx = { ...parentCtx };
   // NOTE: This is a shallow clone. Array fields (pendingSetCookies,
   // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren), Set
-  // fields (renderRequestApiUsage, dynamicFetchUrls), the _privateCache Map,
+  // fields (renderRequestApiUsage, cacheableFetchUrls, dynamicFetchUrls),
+  // Map fields (unstableCacheObservations, _privateCache),
   // requestCache WeakMap, and object fields (headersContext,
   // i18nContext, serverContext, ssrContext, executionContext,
   // requestScopedCacheLife) still share references with the parent until

@@ -122,6 +122,8 @@ type ApplyConfigHeadersOptions = {
    * support `basePath: false` headers must pass this in.
    */
   basePathState?: BasePathMatchState;
+  /** Existing framework-generated headers that matching config rules may replace. */
+  overwriteExisting?: ReadonlySet<string>;
 };
 
 type StaticFileSignalContext = {
@@ -199,7 +201,7 @@ export function applyConfigHeadersToResponse(
     const lowerName = header.key.toLowerCase();
     if (lowerName === "vary" || lowerName === "set-cookie") {
       responseHeaders.append(header.key, header.value);
-    } else if (!responseHeaders.has(lowerName)) {
+    } else if (options.overwriteExisting?.has(lowerName) || !responseHeaders.has(lowerName)) {
       responseHeaders.set(header.key, header.value);
     }
   }
@@ -410,30 +412,46 @@ export function validateCsrfOrigin(
 export async function validateServerActionPayload(
   body: string | FormData,
 ): Promise<Response | null> {
-  const containerRefRe = /"\$([QWi])(\d+)"/g;
+  const maxNumericFields = 4096;
+  const maxContainerReferences = 16384;
+  const maxContainerDepth = 1024;
+  const containerRefRe = /"\$([QWi])([0-9a-f]+)(?=[:"])/gi;
   const fieldRefs = new Map<string, Set<string>>();
+  let referenceCount = 0;
 
-  const collectRefs = (fieldKey: string, text: string): void => {
+  const invalidPayloadResponse = (): Response =>
+    new Response("Invalid server action payload", {
+      status: 400,
+      headers: { "Content-Type": "text/plain" },
+    });
+
+  const collectRefs = (fieldKey: string, text: string): boolean => {
+    if (fieldRefs.has(fieldKey)) return true;
+    if (fieldRefs.size >= maxNumericFields) return false;
+
     const refs = new Set<string>();
     let match: RegExpExecArray | null;
     containerRefRe.lastIndex = 0;
     while ((match = containerRefRe.exec(text)) !== null) {
-      refs.add(match[2]);
+      const previousSize = refs.size;
+      refs.add(String(Number.parseInt(match[2], 16)));
+      if (refs.size !== previousSize && ++referenceCount > maxContainerReferences) return false;
     }
     fieldRefs.set(fieldKey, refs);
+    return true;
   };
 
   if (typeof body === "string") {
-    collectRefs("0", body);
+    if (!collectRefs("0", body)) return invalidPayloadResponse();
   } else {
     for (const [key, value] of body.entries()) {
       if (!/^\d+$/.test(key)) continue;
       if (typeof value === "string") {
-        collectRefs(key, value);
+        if (!collectRefs(key, value)) return invalidPayloadResponse();
         continue;
       }
       if (typeof value?.text === "function") {
-        collectRefs(key, await value.text());
+        if (!collectRefs(key, await value.text())) return invalidPayloadResponse();
       }
     }
   }
@@ -444,36 +462,36 @@ export async function validateServerActionPayload(
   for (const refs of fieldRefs.values()) {
     for (const ref of refs) {
       if (!knownFields.has(ref)) {
-        return new Response("Invalid server action payload", {
-          status: 400,
-          headers: { "Content-Type": "text/plain" },
-        });
+        return invalidPayloadResponse();
       }
     }
   }
 
-  const visited = new Set<string>();
-  const stack = new Set<string>();
+  const state = new Map<string, "visiting" | "visited">();
 
-  const hasCycle = (node: string): boolean => {
-    if (stack.has(node)) return true;
-    if (visited.has(node)) return false;
+  for (const root of fieldRefs.keys()) {
+    if (state.has(root)) continue;
 
-    visited.add(node);
-    stack.add(node);
-    for (const ref of fieldRefs.get(node) ?? []) {
-      if (hasCycle(ref)) return true;
-    }
-    stack.delete(node);
-    return false;
-  };
+    const stack = [{ node: root, refs: [...(fieldRefs.get(root) ?? [])], nextRef: 0 }];
+    state.set(root, "visiting");
 
-  for (const node of fieldRefs.keys()) {
-    if (hasCycle(node)) {
-      return new Response("Invalid server action payload", {
-        status: 400,
-        headers: { "Content-Type": "text/plain" },
-      });
+    while (stack.length > 0) {
+      if (stack.length > maxContainerDepth) return invalidPayloadResponse();
+
+      const frame = stack[stack.length - 1];
+      const ref = frame.refs[frame.nextRef++];
+      if (ref === undefined) {
+        state.set(frame.node, "visited");
+        stack.pop();
+        continue;
+      }
+
+      const refState = state.get(ref);
+      if (refState === "visiting") return invalidPayloadResponse();
+      if (refState === "visited") continue;
+
+      state.set(ref, "visiting");
+      stack.push({ node: ref, refs: [...(fieldRefs.get(ref) ?? [])], nextRef: 0 });
     }
   }
 
@@ -537,41 +555,6 @@ export function isOriginAllowed(origin: string, allowed: string[]): boolean {
     }
   }
   return false;
-}
-
-/**
- * Validate an image optimization URL parameter.
- *
- * Ensures the URL is a relative path that doesn't escape the origin:
- * - Must start with "/" but not "//"
- * - Backslashes are normalized (browsers treat `\` as `/`)
- * - Origin validation as defense-in-depth
- *
- * @param rawUrl - The raw `url` query parameter value
- * @param requestUrl - The full request URL for origin comparison
- * @returns An error Response if validation fails, or the normalized image URL
- */
-export function validateImageUrl(rawUrl: string | null, requestUrl: string): Response | string {
-  // Normalize backslashes: browsers and the URL constructor treat
-  // /\evil.com as protocol-relative (//evil.com), bypassing the // check.
-  const imgUrl = rawUrl?.replaceAll("\\", "/") ?? null;
-  // Allowlist: must start with "/" but not "//" — blocks absolute URLs,
-  // protocol-relative, backslash variants, and exotic schemes.
-  if (!imgUrl || !imgUrl.startsWith("/") || imgUrl.startsWith("//")) {
-    return new Response(!rawUrl ? "Missing url parameter" : "Only relative URLs allowed", {
-      status: 400,
-    });
-  }
-  // Defense-in-depth origin check. Resolving a root-relative path against
-  // the request's own origin is tautologically same-origin today, but this
-  // guard protects against future changes to the upstream guards that might
-  // let a non-relative path slip through (e.g. a path with encoded slashes).
-  const url = new URL(requestUrl);
-  const resolvedImg = new URL(imgUrl, url.origin);
-  if (resolvedImg.origin !== url.origin) {
-    return new Response("Only relative URLs allowed", { status: 400 });
-  }
-  return imgUrl;
 }
 
 /**
@@ -671,6 +654,54 @@ export function cloneRequestWithHeaders(request: Request, headers: Headers): Req
       init.duplex = "half";
     }
     cloned = new Request(request.url, init);
+  }
+  const cf = getRequestCf(request);
+  if (cf !== undefined) {
+    // new Request() does not copy Workers-specific cf, so re-attach it.
+    Object.defineProperty(cloned, "cf", {
+      value: cf,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return cloned;
+}
+
+/**
+ * Clone a Request while overriding the URL, preserving headers and metadata
+ * when possible.
+ *
+ * Mirrors `cloneRequestWithHeaders`, but rewrites the URL instead of the
+ * headers. Workers support `new Request(url, request)` to copy method/headers/
+ * body onto a new URL; Node/undici can throw on a foreign Request instance, so
+ * we fall back to a manual RequestInit. `new Request()` does not copy the
+ * Workers-specific `cf` property and omits `duplex` for streaming bodies, so
+ * both are handled explicitly — the same reasons `cloneRequestWithHeaders`
+ * exists.
+ */
+export function cloneRequestWithUrl(request: Request, url: string): Request {
+  let cloned: Request;
+  try {
+    cloned = new Request(url, request);
+  } catch {
+    const init: RequestInitWithCf = {
+      method: request.method,
+      headers: request.headers,
+      body: request.body ?? undefined,
+      redirect: request.redirect,
+      signal: request.signal,
+      integrity: request.integrity,
+      cache: request.cache,
+      mode: request.mode,
+      credentials: request.credentials,
+      referrer: request.referrer,
+      referrerPolicy: request.referrerPolicy,
+    };
+    if (request.body) {
+      // @ts-expect-error — duplex needed for streaming request bodies
+      init.duplex = "half";
+    }
+    cloned = new Request(url, init);
   }
   const cf = getRequestCf(request);
   if (cf !== undefined) {

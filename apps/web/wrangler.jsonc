@@ -26,7 +26,7 @@
   // Created via: wrangler kv namespace create vinext-web-cache
   "kv_namespaces": [
     {
-      "binding": "VINEXT_CACHE",
+      "binding": "VINEXT_KV_CACHE",
       "id": "08075d24ec854a19a52c13f031723def",
     },
   ],

@@ -1,11 +1,9 @@
 import { existsSync } from "node:fs";
 import { glob } from "node:fs/promises";
+import path from "node:path";
+import { escapeRegExp } from "../utils/regex.js";
 
 const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 export function normalizePageExtensions(pageExtensions?: readonly string[] | null): string[] {
   if (!Array.isArray(pageExtensions) || pageExtensions.length === 0) {
@@ -47,7 +45,7 @@ export function createValidFileMatcher(
 ): ValidFileMatcher {
   const extensions = normalizePageExtensions(pageExtensions);
   const dottedExtensions = extensions.map((ext) => `.${ext}`);
-  const extPattern = `(?:${extensions.map((ext) => escapeRegex(ext)).join("|")})`;
+  const extPattern = `(?:${extensions.map((ext) => escapeRegExp(ext)).join("|")})`;
 
   const extensionRegex = new RegExp(`\\.${extPattern}$`);
   const createLeafPattern = (fileNames: readonly string[]): RegExp => {
@@ -91,6 +89,22 @@ export function findFileWithExtensions(basePath: string, matcher: ValidFileMatch
 }
 
 /**
+ * Find a file by basename and configured page extension in a directory.
+ * Returns the first matching absolute path, or null if not found.
+ */
+export function findFileWithExts(
+  dir: string,
+  name: string,
+  matcher: ValidFileMatcher,
+): string | null {
+  for (const ext of matcher.dottedExtensions) {
+    const filePath = path.posix.join(dir, name + ext);
+    if (existsSync(filePath)) return filePath;
+  }
+  return null;
+}
+
+/**
  * Vite's default `resolve.extensions` covers `.tsx/.ts/.jsx/.js/.json` (and
  * `.mjs/.mts`). When the user configures `pageExtensions` with values Vite
  * does not know about — e.g. `["platform.tsx", "tsx", "mdx"]` from the
@@ -121,6 +135,28 @@ export function buildViteResolveExtensions(
     if (seen.has(ext)) continue;
     seen.add(ext);
     result.push(ext);
+  }
+  return result;
+}
+
+/**
+ * Normalize an explicit Next.js resolver extension list for Vite.
+ *
+ * Unlike `pageExtensions`, both Turbopack's `resolveExtensions` and webpack's
+ * `resolve.extensions` replace their resolver defaults. The empty string is a
+ * webpack/Turbopack convention for trying the import exactly as written; Vite
+ * already does that before appending extensions, so it must be omitted here.
+ */
+export function normalizeViteResolveExtensions(extensions: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const extension of extensions) {
+    const trimmed = extension.trim();
+    if (!trimmed) continue;
+    const dotted = trimmed.startsWith(".") ? trimmed : `.${trimmed}`;
+    if (seen.has(dotted)) continue;
+    seen.add(dotted);
+    result.push(dotted);
   }
   return result;
 }

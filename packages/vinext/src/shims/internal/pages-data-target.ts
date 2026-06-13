@@ -11,6 +11,8 @@ import { stripBasePath } from "../../utils/base-path.js";
 import { getLocalePathPrefix } from "../../utils/domain-locale.js";
 import type { VinextNextData } from "../../client/vinext-next-data.js";
 import { buildPagesDataHref, matchPagesPattern } from "./pages-data-url.js";
+import { dedupedPagesDataFetch } from "./pages-data-fetch-dedup.js";
+import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
 
 export type PagesDataTarget = {
   /** Final fetch URL for the data endpoint, including basePath and search. */
@@ -105,10 +107,15 @@ export function resolvePagesDataNavigationTarget(
 }
 
 /**
- * Inject a `<link rel="prefetch">` for the data JSON and kick off the
- * code-split loader so the chunk is warm by the time the user clicks.
+ * Prefetch the data JSON and kick off the code-split loader so the chunk is
+ * warm by the time the user clicks.
  *
  * Used by both `Router.prefetch()` and `<Link>` hover/viewport prefetch. The
+ * JSON request uses `fetch()` rather than `<link rel="prefetch">` so it can
+ * carry Next.js's `x-deployment-id` skew-protection header. The in-flight
+ * request is shared with a racing navigation; after it settles, the browser's
+ * normal HTTP cache remains responsible for reuse.
+ *
  * loader's returned Promise is intentionally discarded — `import()` caches the
  * result, so a subsequent navigation re-invocation hits the cache without
  * paying for a second round trip. Errors are swallowed: prefetch is
@@ -117,12 +124,15 @@ export function resolvePagesDataNavigationTarget(
 export function prefetchPagesData(target: PagesDataTarget): void {
   if (typeof document === "undefined") return;
 
-  const link = document.createElement("link");
-  link.rel = "prefetch";
-  link.as = "fetch";
-  link.crossOrigin = "anonymous";
-  link.href = target.dataHref;
-  document.head.appendChild(link);
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    purpose: "prefetch",
+    "x-nextjs-data": "1",
+  };
+  const deploymentId = getDeploymentId();
+  if (deploymentId) headers[NEXT_DEPLOYMENT_ID_HEADER] = deploymentId;
+
+  void dedupedPagesDataFetch(target.dataHref, { headers }).catch(() => {});
 
   void target.loader().catch(() => {});
 }

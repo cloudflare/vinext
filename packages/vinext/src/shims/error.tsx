@@ -10,7 +10,9 @@
  * `next/error`'s public surface.
  */
 import React from "react";
-import { appRouterInstance, isNextRouterError } from "./navigation.js";
+import { isNextRouterError } from "./navigation.js";
+import { useUntrackedPathname } from "./internal/navigation-untracked.js";
+import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { RouterContext } from "./internal/router-context.js";
 
 type ErrorProps = {
@@ -95,18 +97,6 @@ export default ErrorComponent;
 //   https://github.com/vercel/next.js/blob/canary/packages/next/src/api/error.react-server.ts
 //
 // Differences from Next.js:
-//   - `unstable_retry()` matches Next.js's App Router behavior on the
-//     client — it calls `appRouterInstance.refresh()` inside a
-//     React.startTransition and then resets the boundary. On the server it
-//     throws (consistent with React class components only running on the
-//     server during SSR setup, where retry isn't meaningful). When the
-//     boundary is rendered under the Pages Router (detected via
-//     `RouterContext` in the wrapper), `unstable_retry()` throws Next.js's
-//     verbatim error message (`unstable_retry() can only be used in the
-//     App Router. Use reset() in the Pages Router.`) — matching
-//     `client/components/catch-error.tsx` in the Next.js source and the
-//     `should throw when unstable_retry is called on Pages Router` test in
-//     `test/e2e/app-dir/catch-error/catch-error.test.ts`.
 //   - Bot-user-agent graceful-degradation, `handleHardNavError`, and
 //     `handleISRError` are not yet supported. Errors always render the
 //     fallback in non-bot contexts.
@@ -128,32 +118,43 @@ export type ErrorInfo = {
 type _UserProps = Record<string, unknown>;
 
 type _CatchErrorState = { thrownValue: unknown } | null;
+type _CatchErrorProps<P extends _UserProps> = {
+  children?: React.ReactNode;
+  fallback: React.ComponentType<{
+    props: P;
+    errorInfo: ErrorInfo;
+  }>;
+  isPagesRouter: boolean;
+  pathname: string | null;
+  props: P;
+};
+
+type _CatchErrorInternalState = {
+  error: _CatchErrorState;
+  previousPathname: string | null;
+};
+
+const _CatchErrorAppRouterContext =
+  AppRouterContext ?? React.createContext<AppRouterInstance | null>(null);
 
 class _CatchError<P extends _UserProps> extends React.Component<
-  {
-    fallback: (props: P, errorInfo: ErrorInfo) => React.ReactNode;
-    forwardedProps: P;
-    children?: React.ReactNode;
-  },
-  { error: _CatchErrorState }
+  _CatchErrorProps<P>,
+  _CatchErrorInternalState
 > {
-  // Read the Pages Router context via class `contextType` (matching Next.js's
-  // pattern in `client/components/catch-error.tsx` which uses
-  // `static contextType = AppRouterContext`). When `this.context` is non-null
-  // we're rendered under a Pages Router page; `unstable_retry()` then throws
-  // the Next.js parity error message. Using `contextType` rather than
-  // `useContext` in the wrapper keeps the wrapper a pure JSX factory so
-  // existing introspection-style unit tests (which invoke the wrapper as a
-  // bare function to extract the inner class) continue to work without
-  // React's render lifecycle.
-  static contextType = RouterContext;
-  declare context: React.ContextType<typeof RouterContext>;
+  static contextType = _CatchErrorAppRouterContext;
+  declare context: AppRouterInstance | null;
 
   // Match Next.js's DevTools label so userland tooling/snapshots align.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/catch-error.tsx
   static displayName = "unstable_catchError(Next.CatchError)";
 
-  state = { error: null as _CatchErrorState };
+  constructor(props: _CatchErrorProps<P>) {
+    super(props);
+    this.state = {
+      error: null,
+      previousPathname: props.pathname,
+    };
+  }
 
   static getDerivedStateFromError(thrownValue: unknown): { error: _CatchErrorState } {
     if (isNextRouterError(thrownValue)) {
@@ -162,6 +163,22 @@ class _CatchError<P extends _UserProps> extends React.Component<
       throw thrownValue;
     }
     return { error: { thrownValue } };
+  }
+
+  static getDerivedStateFromProps(
+    props: Pick<_CatchErrorProps<_UserProps>, "pathname">,
+    state: _CatchErrorInternalState,
+  ): _CatchErrorInternalState {
+    if (props.pathname !== state.previousPathname && state.error) {
+      return {
+        error: null,
+        previousPathname: props.pathname,
+      };
+    }
+    return {
+      error: state.error,
+      previousPathname: props.pathname,
+    };
   }
 
   reset = (): void => {
@@ -176,12 +193,7 @@ class _CatchError<P extends _UserProps> extends React.Component<
     // by `should throw when unstable_retry is called on Pages Router` in
     // test/e2e/app-dir/catch-error/catch-error.test.ts.
     //
-    // `RouterContext` is populated for every page rendered by the vinext
-    // Pages Router runtime (see `shims/router.ts` wrapWithRouterContext); a
-    // non-null value here means we're under Pages Router. Under App Router
-    // the context default is `null` and we fall through to the refresh
-    // branch below.
-    if (this.context !== null) {
+    if (this.props.isPagesRouter) {
       throw new Error(
         "`unstable_retry()` can only be used in the App Router. Use `reset()` in the Pages Router.",
       );
@@ -191,31 +203,21 @@ class _CatchError<P extends _UserProps> extends React.Component<
     // current route, then clear the error so children re-render. Wrapped in
     // startTransition so the in-flight refresh and the reset commit
     // together (no flash of the children rendering with stale data).
-    //
-    // On the server, refresh is meaningless and `appRouterInstance.refresh`
-    // is a no-op; throw a clear error so callers don't silently swallow a
-    // retry attempt during SSR setup. Matches the spirit of Next.js's
-    // server-side throw (which lives in error-boundary.tsx, not here).
-    if (typeof window === "undefined") {
-      throw new Error(
-        "`unstable_retry()` can only be used on the client. Call it from a user " +
-          "interaction handler inside the error fallback.",
-      );
-    }
     React.startTransition(() => {
-      appRouterInstance.refresh();
+      this.context?.refresh();
       this.reset();
     });
   };
 
   render(): React.ReactNode {
     if (this.state.error) {
+      const Fallback = this.props.fallback;
       const errorInfo: ErrorInfo = {
         error: this.state.error.thrownValue,
         reset: this.reset,
         unstable_retry: this.unstable_retry,
       };
-      return this.props.fallback(this.props.forwardedProps, errorInfo);
+      return React.createElement(Fallback, { props: this.props.props, errorInfo });
     }
     return this.props.children;
   }
@@ -232,22 +234,27 @@ class _CatchError<P extends _UserProps> extends React.Component<
 export function unstable_catchError<P extends _UserProps>(
   fallback: (props: P, errorInfo: ErrorInfo) => React.ReactNode,
 ): React.ComponentType<P & { children?: React.ReactNode }> {
-  // The inner class is generic in P, but createElement loses that generic at
-  // the call site. Cast it to a non-generic constructor for the specific P
-  // we close over here so TypeScript can pick the JSX-style createElement
-  // overload without complaining about missing generic instantiation.
-  const TypedCatchError = _CatchError as unknown as React.ComponentType<{
-    fallback: (props: P, errorInfo: ErrorInfo) => React.ReactNode;
-    forwardedProps: P;
-    children?: React.ReactNode;
-  }>;
+  const Fallback = ({ props, errorInfo }: { props: P; errorInfo: ErrorInfo }): React.ReactNode =>
+    fallback(props, errorInfo);
+
+  Fallback.displayName = fallback.name || "CatchErrorFallback";
 
   function CatchErrorBoundary(allProps: P & { children?: React.ReactNode }): React.ReactElement {
     const { children, ...rest } = allProps;
-    const forwardedProps = rest as unknown as P;
+    const pathname = useUntrackedPathname();
+    const isPagesRouter = React.useContext(RouterContext) !== null;
+    // Boundary assertion: React's prop rest type is `Omit<P & { children?: ... }, "children">`;
+    // by construction `children` is the only key removed, so the remaining
+    // object is the user prop bag P that Next passes to the fallback.
+    const forwardedProps = rest as P;
     return React.createElement(
-      TypedCatchError,
-      { fallback, forwardedProps },
+      _CatchError<P>,
+      {
+        fallback: Fallback,
+        isPagesRouter,
+        pathname,
+        props: forwardedProps,
+      },
       children as React.ReactNode,
     );
   }

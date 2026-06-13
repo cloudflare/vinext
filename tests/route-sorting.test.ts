@@ -25,6 +25,7 @@ import {
 } from "../packages/vinext/src/routing/pages-router.js";
 import { appRouter, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
 import { validateRoutePatterns } from "../packages/vinext/src/routing/route-validation.js";
+import { sortRoutes } from "../packages/vinext/src/routing/utils.js";
 
 const PAGES_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic/pages");
 const APP_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
@@ -678,5 +679,76 @@ describe("Pages Router API routes", () => {
       const firstDynamicIdx = routes.indexOf(dynamicRoutes[0]);
       expect(lastStaticIdx).toBeLessThan(firstDynamicIdx);
     }
+  });
+});
+
+// ─── sortRoutes (precomputed precedence) ────────────────────────────────
+
+describe("sortRoutes", () => {
+  const order = (patterns: string[]): string[] =>
+    sortRoutes(patterns.map((pattern) => ({ pattern }))).map((r) => r.pattern);
+
+  it("orders static → dynamic → catch-all → optional catch-all", () => {
+    expect(order(["/:slug*", "/:id+", "/:id", "/about"])).toEqual([
+      "/about",
+      "/:id",
+      "/:id+",
+      "/:slug*",
+    ]);
+  });
+
+  it("prefers a static prefix over a bare dynamic segment at the same depth", () => {
+    // /_sites/:subdomain must sort before /:subdomain (static-prefix reduction).
+    expect(order(["/:subdomain", "/_sites/:subdomain"])).toEqual([
+      "/_sites/:subdomain",
+      "/:subdomain",
+    ]);
+  });
+
+  it("breaks ties lexicographically for a deterministic total order", () => {
+    expect(order(["/zebra", "/apple", "/mango"])).toEqual(["/apple", "/mango", "/zebra"]);
+  });
+
+  it("sorts in place and returns the same array reference", () => {
+    const routes = [{ pattern: "/:id" }, { pattern: "/about" }];
+    const result = sortRoutes(routes);
+    expect(result).toBe(routes);
+    expect(result.map((r) => r.pattern)).toEqual(["/about", "/:id"]);
+  });
+
+  it("is idempotent — sorting an already-sorted array is a no-op", () => {
+    const patterns = ["/about", "/blog/:slug", "/:id", "/:rest+", "/:rest*"];
+    const once = order(patterns);
+    expect(order(once)).toEqual(once);
+  });
+
+  it("produces the same order as comparing precedence inline (decorate-sort parity)", () => {
+    // Shuffled input must still land in the documented precedence order. This
+    // is the property the decorate-sort optimization preserves byte-for-byte.
+    // Scores: "/"=0, "/about"=0, "/blog/:slug"=51, "/:id"=100,
+    // "/blog/:year/:month/:slug"=256, "/:rest+"=1000, "/:rest*"=2000.
+    const patterns = [
+      "/blog/:year/:month/:slug",
+      "/:rest*",
+      "/about",
+      "/blog/:slug",
+      "/:rest+",
+      "/",
+      "/:id",
+    ];
+    expect(order(patterns)).toEqual([
+      "/",
+      "/about",
+      "/blog/:slug",
+      "/:id",
+      "/blog/:year/:month/:slug",
+      "/:rest+",
+      "/:rest*",
+    ]);
+  });
+
+  it("handles empty and single-element arrays", () => {
+    expect(order([])).toEqual([]);
+    expect(order(["/only"])).toEqual(["/only"]);
   });
 });

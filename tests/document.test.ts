@@ -32,20 +32,27 @@ describe("NextScript", () => {
 });
 
 describe("Head", () => {
-  it("injects default charset and viewport meta tags", () => {
+  // Charset and viewport defaults are intentionally NOT emitted by the
+  // `_document` Head shim. They are seeded into `next/head`'s collector via
+  // `defaultHead()` and serialised by `getSSRHeadHTML()` — see the comment in
+  // `shims/document.tsx`. This mirrors Next.js's pipeline, where the defaults
+  // flow through the same `data-next-head=""` dedupe step as user tags.
+  it("renders an empty <head> when given no children (defaults flow via next/head)", () => {
     const html = render(React.createElement(Head));
-    expect(html).toContain('charSet="utf-8"');
-    expect(html).toContain('content="width=device-width, initial-scale=1"');
+    expect(html).toBe("<head></head>");
   });
 
-  it("preserves custom children alongside defaults", () => {
+  it("renders only user-provided children — defaults are not duplicated here", () => {
     const html = render(
       React.createElement(Head, null, React.createElement("title", null, "My App")),
     );
     // Custom content rendered
     expect(html).toContain("<title>My App</title>");
-    // Defaults still present
-    expect(html).toContain('charSet="utf-8"');
+    // The shim must NOT also emit charset/viewport — those flow through
+    // next/head's defaultHead() instead, so they go through the same dedupe
+    // pipeline as user-supplied tags.
+    expect(html).not.toContain("charSet=");
+    expect(html).not.toContain('name="viewport"');
   });
 });
 

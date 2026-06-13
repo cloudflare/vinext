@@ -29,8 +29,8 @@ function entriesFromPackageJson(relativePath: string): string[] {
 export default {
   workspaces: {
     ".": {
-      entry: ["scripts/*.{js,ts}", "tests/**/*.test.ts", "tests/helpers.ts"],
-      project: ["scripts/**/*.{js,ts}", "tests/**/*.{js,ts}", "!tests/fixtures/**"],
+      entry: ["scripts/*.{js,ts,mjs,mts}", "tests/**/*.test.ts", "tests/helpers.ts"],
+      project: ["tests/**/*.{js,ts}", "!tests/fixtures/**"],
     },
     "packages/vinext": {
       entry: [
@@ -45,6 +45,7 @@ export default {
         "src/server/app-page-dispatch.ts",
         "src/server/app-page-head.ts",
         "src/server/app-prerender-static-params.ts",
+        "src/server/app-route-module-loader.ts",
         // Client-side instrumentation bundle: loaded as a side-effect module
         // by the generated hydration entries (import "vinext/instrumentation-client"),
         // so its public surface (clientInstrumentationHooks, getClientInstrumentationHooks)
@@ -74,7 +75,18 @@ export default {
         // #726-CACHE-01/04 defines the disabled proof boundary before runtime
         // observation recording or cache reuse is wired in later slices.
         "src/server/cache-proof.ts",
+        // #726-SKIP layout-safety observation foundation. Consumed by the
+        // planner, dispatch wiring, and render in later slices.
+        "src/server/app-layout-param-observation.ts",
+        // #726-SKIP static layout reuse proof model. Consumed by render in a
+        // later slice; standalone planner + helpers here.
+        "src/server/skip-cache-proof.ts",
+        "src/server/static-layout-client-reuse-proof.ts",
       ],
+      project: ["src/**/*.{ts,tsx}"],
+    },
+    "packages/cloudflare": {
+      entry: [...entriesFromPackageJson("packages/cloudflare/package.json")],
       project: ["src/**/*.{ts,tsx}"],
     },
   },
@@ -92,13 +104,8 @@ export default {
     // probed via require.resolve
     "next-intl",
 
-    // Optional peer dep used by Vite's built-in SCSS preprocessor when the
-    // user installs it. `tests/scss.test.ts` dynamically imports it to skip
-    // the SCSS suite when sass is absent, so we never list it as a hard dep.
-    "sass",
-
-    // vitest reporter used outside CI
-    ...(process.env.CI ? [] : ["agent"]),
+    // Vite+ reporter name used outside CI in vite.config.ts.
+    "agent",
 
     // internal module name, not an actual dependency
     "private-next-instrumentation-client",
@@ -111,6 +118,10 @@ export default {
   ignoreBinaries: [
     // workspace's own bin, invoked in CI
     "vinext",
+    // system/user-project binaries invoked by runtime scripts
+    "ps",
+    "eslint",
+    "gh",
   ],
   ignoreFiles: [
     "tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts",

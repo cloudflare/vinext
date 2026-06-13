@@ -16,11 +16,13 @@ export type NavigationRuntimeRscBootstrap = {
   rsc: NavigationRuntimeRscChunk[];
 };
 
-export type NavigationRuntimeKind = "navigate" | "traverse" | "refresh";
+type NavigationRuntimeKind = "navigate" | "traverse" | "refresh";
 
-export type NavigationRuntimeHistoryUpdateMode = "push" | "replace";
+type NavigationRuntimeHistoryUpdateMode = "push" | "replace";
 
-export type NavigationRuntimeTraversalIntent = {
+export type NavigationRuntimeVisibleCommitMode = "transition" | "synchronous";
+
+type NavigationRuntimeTraversalIntent = {
   direction: "back" | "forward" | "unknown";
   historyState: unknown;
   targetHistoryIndex: number | null;
@@ -35,6 +37,7 @@ export type NavigationRuntimeNavigate = (
   programmaticTransition?: boolean,
   traversalIntent?: NavigationRuntimeTraversalIntent,
   scrollIntent?: AppRouterScrollIntent | null,
+  visibleCommitMode?: NavigationRuntimeVisibleCommitMode,
 ) => Promise<void>;
 
 export type NavigationRuntimeFunctions = {
@@ -44,7 +47,19 @@ export type NavigationRuntimeFunctions = {
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
     scroll: boolean,
   ) => void;
+  navigateExternal?: (
+    href: string,
+    historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
+  ) => Promise<void>;
   navigate?: NavigationRuntimeNavigate;
+  /**
+   * Called at the start of every App Router navigation so the <Link> shim can
+   * reset any link that is still showing a `useLinkStatus()` pending state but
+   * is not the one driving this navigation (e.g. a programmatic router.push or
+   * a shallow-routing transition). Registered by shims/link.tsx; decoupled
+   * through the runtime to avoid a circular import with shims/navigation.ts.
+   */
+  notifyLinkNavigationStart?: () => void;
   pingVisibleLinks?: () => void;
 };
 
@@ -96,7 +111,9 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
   return (
     isOptionalRuntimeFunction(Reflect.get(value, "clearNavigationCaches")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "commitHashNavigation")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigate")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks"))
   );
 }

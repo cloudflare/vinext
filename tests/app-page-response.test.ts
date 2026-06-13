@@ -10,6 +10,7 @@ import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { VINEXT_DYNAMIC_STALE_TIME_HEADER } from "../packages/vinext/src/server/headers.js";
 import { withEnvVar } from "./env-test-helpers.js";
 
 function createBody(text: string): ReadableStream {
@@ -438,6 +439,19 @@ describe("app page response helpers", () => {
     expect(response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
   });
 
+  it("emits per-page dynamic stale time metadata on RSC responses", () => {
+    // Next.js sends the per-page dynamic stale time in the Flight response `d`
+    // field; vinext carries the same response-level contract through an RSC
+    // response header that the client cache can snapshot.
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      dynamicStaleTimeSeconds: 60,
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("60");
+  });
+
   it("keeps the framework compatibility ID when middleware sets the internal header", () => {
     const middlewareHeaders = new Headers({
       [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "middleware-compat",
@@ -483,7 +497,7 @@ describe("app page response helpers", () => {
 
     const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
       draftCookie: "__prerender_bypass=token; Path=/",
-      fontLinkHeader: "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
+      linkHeader: "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
       middlewareContext: {
         headers: middlewareHeaders,
         status: 203,

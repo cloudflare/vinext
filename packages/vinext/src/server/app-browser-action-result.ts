@@ -1,4 +1,6 @@
 import { ACTION_REVALIDATED_HEADER } from "./headers.js";
+import { VINEXT_RSC_CONTENT_TYPE } from "./app-rsc-cache-busting.js";
+import { ServerActionResultFactsV0 } from "./navigation-planner.js";
 
 export type AppBrowserServerActionResult<TRoot> = {
   root?: TRoot;
@@ -70,33 +72,68 @@ export function parseServerActionRevalidationHeader(
   }
 }
 
-type ServerActionRedirectLocation = {
-  href: string;
-  internal: boolean;
+function createServerActionHttpFallbackError(status: number): (Error & { digest: string }) | null {
+  if (status < 400 || status > 599) return null;
+
+  const digest =
+    status === 404 ? "NEXT_HTTP_ERROR_FALLBACK;404" : `NEXT_HTTP_ERROR_FALLBACK;${status}`;
+  const error = new Error(status === 404 ? "NEXT_NOT_FOUND" : `NEXT_HTTP_ERROR_FALLBACK;${status}`);
+  return Object.assign(error, { digest });
+}
+
+export function normalizeServerActionThrownValue(data: unknown, responseStatus: number): unknown {
+  return createServerActionHttpFallbackError(responseStatus) ?? data;
+}
+
+export async function readInvalidServerActionResponseError(
+  response: Pick<Response, "headers" | "status" | "text">,
+  hasRedirectLocation: boolean,
+): Promise<Error | null> {
+  const contentType = response.headers.get("content-type") ?? "";
+  const isRscResponse = contentType.startsWith(VINEXT_RSC_CONTENT_TYPE);
+  if (isRscResponse || hasRedirectLocation) return null;
+
+  // Parity with Next.js' server-action reducer: any non-RSC action response,
+  // including a 2xx, is surfaced to the action caller. Plain text 4xx/5xx
+  // bodies are preserved when available; other responses use a stable generic
+  // message.
+  const message =
+    response.status >= 400 && contentType.toLowerCase().startsWith("text/plain")
+      ? await response.text()
+      : "An unexpected response was received from the server.";
+
+  return new Error(message || "An unexpected response was received from the server.");
+}
+
+export type ServerActionResultResponseFactsInput = {
+  actionRedirectHref: string | null;
+  actionRedirectType: string | null;
+  clientCompatibilityId: string | null;
+  contentTypeHeader: string | null;
+  compatibilityIdHeader: string | null;
+  currentHref: string;
+  origin: string;
+  responseUrl: string | null;
 };
 
 /**
- * Resolve a server-action redirect target against the URL that initiated the
- * action. Dot-relative redirects intentionally resolve as if the current route
- * pathname were a directory, matching Next.js' `assignLocation()` behavior:
- * `./subpage` from `/subdir` lands on `/subdir/subpage`, not `/subpage`.
+ * Converts raw browser response data into the narrow facts expected by the
+ * navigation planner. This is the single place where redirect-type
+ * normalisation and RSC content-type detection happen for server-action
+ * compatibility checks.
  */
-export function resolveServerActionRedirectLocation(options: {
-  currentHref: string;
-  location: string;
-  origin: string;
-}): ServerActionRedirectLocation {
-  const currentUrl = new URL(options.currentHref, options.origin);
-  const redirectUrl = options.location.startsWith(".")
-    ? new URL(
-        options.location,
-        `${currentUrl.origin}${currentUrl.pathname.endsWith("/") ? currentUrl.pathname : `${currentUrl.pathname}/`}`,
-      )
-    : new URL(options.location, currentUrl.href);
-
+export function createServerActionResultFacts(
+  input: ServerActionResultResponseFactsInput,
+): ServerActionResultFactsV0 {
   return {
-    href: redirectUrl.href,
-    internal: redirectUrl.origin === currentUrl.origin,
+    actionRedirectHref: input.actionRedirectHref,
+    actionRedirectType: input.actionRedirectType === "push" ? "push" : "replace",
+    clientCompatibilityId: input.clientCompatibilityId,
+    compatibilityIdHeader: input.compatibilityIdHeader,
+    currentHref: input.currentHref,
+    isRscContentType: (input.contentTypeHeader ?? "").startsWith(VINEXT_RSC_CONTENT_TYPE),
+    origin: input.origin,
+    responseUrl: input.responseUrl,
   };
 }
 

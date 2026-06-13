@@ -7,11 +7,13 @@
 import path from "node:path";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
-import { compareRoutes, decodeRouteSegment } from "./utils.js";
-import { scanWithExtensions, type ValidFileMatcher } from "./file-matcher.js";
+import { decodeRouteSegment, isInvisibleSegment, sortRoutes } from "./utils.js";
+import { findFileWithExts, scanWithExtensions, type ValidFileMatcher } from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
+import { compareStrings } from "../utils/compare.js";
+import { normalizePathSeparators } from "../utils/path.js";
 
-export type InterceptingRoute = {
+type InterceptingRoute = {
   /** The interception convention: "." | ".." | "../.." | "..." */
   convention: string;
   /** The URL pattern this intercepts (e.g. "/photos/:id") */
@@ -38,9 +40,14 @@ export type InterceptingRoute = {
   layoutPaths: string[];
   /** Parameter names for dynamic segments */
   params: string[];
+  /**
+   * Synthetic page-carrier slot id for sibling (slot-less) interception.
+   * Set only when the marker has no `@slot` wrapper; undefined for slot intercepts.
+   */
+  slotId?: string;
 };
 
-export type ParallelSlot = {
+type ParallelSlot = {
   /** Graph-owned semantic slot identity. Required on AppRouteGraphParallelSlot. */
   id?: string;
   /** Stable slot identity (name + owning directory), used for route serialization keys. */
@@ -109,6 +116,12 @@ export type AppRoute = {
   templates: string[];
   /** Parallel route slots (from @slot directories at the route's directory level) */
   parallelSlots: ParallelSlot[];
+  /**
+   * Interception markers not wrapped in an `@slot` directory.
+   * On soft-nav, the intercepting page replaces the entire page response.
+   * Empty array when there are no sibling-style interception markers.
+   */
+  siblingIntercepts: InterceptingRoute[];
   /** Loading component path */
   loadingPath: string | null;
   /** Error component path (leaf directory only) */
@@ -184,7 +197,7 @@ export type AppRouteSemanticIds = {
   slots: Readonly<Record<string, string>>;
 };
 
-export type AppRouteGraphParallelSlot = ParallelSlot & {
+type AppRouteGraphParallelSlot = ParallelSlot & {
   id: string;
 };
 
@@ -214,19 +227,19 @@ export type RouteManifestRoute = {
   slotIds: readonly string[];
 };
 
-export type RouteManifestPage = {
+type RouteManifestPage = {
   id: string;
   routeId: string;
   pattern: string;
 };
 
-export type RouteManifestRouteHandler = {
+type RouteManifestRouteHandler = {
   id: string;
   routeId: string;
   pattern: string;
 };
 
-export type RouteManifestLayout = {
+type RouteManifestLayout = {
   id: string;
   treePath: string;
   patternParts: readonly string[];
@@ -234,7 +247,7 @@ export type RouteManifestLayout = {
   rootBoundaryId: RootBoundaryId | null;
 };
 
-export type RouteManifestTemplate = {
+type RouteManifestTemplate = {
   id: string;
   treePath: string;
   rootBoundaryId: RootBoundaryId | null;
@@ -245,7 +258,7 @@ export type RouteManifestTemplate = {
   };
 };
 
-export type RouteManifestSlot = {
+type RouteManifestSlot = {
   id: string;
   key: string;
   name: string;
@@ -257,7 +270,7 @@ export type RouteManifestSlot = {
   hasPage: boolean;
 };
 
-export type RouteManifestDefault = {
+type RouteManifestDefault = {
   id: string;
   slotId: string;
   ownerTreePath: string;
@@ -265,7 +278,7 @@ export type RouteManifestDefault = {
   rootBoundaryId: RootBoundaryId | null;
 };
 
-export type RouteManifestSlotBindingState = "active" | "default" | "unmatched";
+type RouteManifestSlotBindingState = "active" | "default" | "unmatched";
 
 export type RouteManifestSlotBinding = {
   id: string;
@@ -291,9 +304,9 @@ export type RouteManifestInterception = {
   targetRouteId: string | null;
 };
 
-export type RouteManifestBoundaryOutcome = "error" | "forbidden" | "notFound" | "unauthorized";
+type RouteManifestBoundaryOutcome = "error" | "forbidden" | "notFound" | "unauthorized";
 
-export type RouteManifestBoundary = {
+type RouteManifestBoundary = {
   id: string;
   outcome: RouteManifestBoundaryOutcome;
   treePath: string;
@@ -355,6 +368,13 @@ function createAppRouteGraphDefaultId(slotId: string): string {
   return `default:${slotId}`;
 }
 
+// "__vinext_"-prefixed names are reserved; user-defined parallel routes can
+// never be named @__vinext_sibling_intercept, making slot-id collisions impossible.
+const SIBLING_INTERCEPT_SLOT_NAME = "__vinext_sibling_intercept";
+function createAppRouteGraphSiblingInterceptSlotId(sourcePattern: string): string {
+  return createAppRouteGraphSlotId(SIBLING_INTERCEPT_SLOT_NAME, sourcePattern);
+}
+
 function createAppRouteGraphInterceptionId(
   slotId: string,
   sourcePattern: string,
@@ -367,11 +387,7 @@ function createAppRouteGraphRootBoundaryId(treePath: string): RootBoundaryId {
   return `root-boundary:${treePath}`;
 }
 
-function compareStableStrings(left: string, right: string): number {
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
-}
+const compareStableStrings = compareStrings;
 
 function sortedMapValues<T>(map: ReadonlyMap<string, T>): T[] {
   return Array.from(map.entries())
@@ -554,6 +570,28 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
         route,
         routeIdByPattern,
         slot,
+      });
+    }
+
+    // Emit sibling interception facts (markers without an @slot wrapper).
+    // The synthetic slotId is stored on each InterceptingRoute.
+    for (const ir of route.siblingIntercepts) {
+      if (!ir.slotId) continue;
+      const id = createAppRouteGraphInterceptionId(
+        ir.slotId,
+        ir.sourceMatchPattern,
+        ir.targetPattern,
+      );
+      interceptions.set(id, {
+        id,
+        sourcePattern: ir.sourceMatchPattern,
+        sourcePatternParts: splitRouteManifestPatternParts(ir.sourceMatchPattern),
+        targetPattern: ir.targetPattern,
+        targetPatternParts: splitRouteManifestPatternParts(ir.targetPattern),
+        slotId: ir.slotId,
+        ownerLayoutId: null,
+        interceptingRouteId: routeIdByPattern.get(ir.sourceMatchPattern) ?? null,
+        targetRouteId: routeIdByPattern.get(ir.targetPattern) ?? null,
       });
     }
   }
@@ -845,6 +883,16 @@ export async function buildAppRouteGraph(
   // See https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/interception-routes.ts
   const routes: AppRouteGraphRoute[] = [];
 
+  // Per-scan matcher clone used as the cache key for `findFileProbeCache` (and,
+  // transitively, the slot-subpage cache). Cloning gives every scan a fresh
+  // key, so the convention-file probe memo is scoped to exactly this
+  // `buildAppRouteGraph` call: it captures the heavy cross-route re-probing of
+  // shared ancestor directories, then becomes unreachable when the scan returns.
+  // The clone carries the same extensions/regexes/methods, so probe and scan
+  // results are identical to using `matcher` directly.
+  const scanMatcher: ValidFileMatcher = { ...matcher };
+  findFileProbeCache.set(scanMatcher, new Map());
+
   const excludeDir = (name: string) =>
     (name.startsWith("@") && name !== "@children") ||
     name.startsWith("_") ||
@@ -852,14 +900,24 @@ export async function buildAppRouteGraph(
 
   // Process page files in a single pass
   // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14)
-  for await (const file of scanWithExtensions("**/page", appDir, matcher.extensions, excludeDir)) {
-    const route = fileToAppRoute(file, appDir, "page", matcher);
+  for await (const file of scanWithExtensions(
+    "**/page",
+    appDir,
+    scanMatcher.extensions,
+    excludeDir,
+  )) {
+    const route = fileToAppRoute(file, appDir, "page", scanMatcher);
     if (route) routes.push(route);
   }
 
   // Process route handler files (API routes) in a single pass
-  for await (const file of scanWithExtensions("**/route", appDir, matcher.extensions, excludeDir)) {
-    const route = fileToAppRoute(file, appDir, "route", matcher);
+  for await (const file of scanWithExtensions(
+    "**/route",
+    appDir,
+    scanMatcher.extensions,
+    excludeDir,
+  )) {
+    const route = fileToAppRoute(file, appDir, "route", scanMatcher);
     if (route) routes.push(route);
   }
 
@@ -876,15 +934,15 @@ export async function buildAppRouteGraph(
   for await (const file of scanWithExtensions(
     "**/layout",
     appDir,
-    matcher.extensions,
+    scanMatcher.extensions,
     excludeDir,
   )) {
     const dir = path.dirname(file);
     const routeDir = dir === "." ? appDir : path.join(appDir, dir);
     if (!hasParallelSlotDirectory(routeDir)) continue;
-    if (discoverParallelSlots(routeDir, appDir, matcher).length === 0) continue;
+    if (discoverParallelSlots(routeDir, appDir, scanMatcher).length === 0) continue;
 
-    const route = directoryToAppRoute(dir, appDir, matcher, null, null);
+    const route = directoryToAppRoute(dir, appDir, scanMatcher, null, null);
     if (!route) continue;
     if (routePatterns.has(route.pattern)) {
       ghostParentRoutes.push(route);
@@ -899,24 +957,28 @@ export async function buildAppRouteGraph(
   // In Next.js, pages nested inside @slot directories create additional URL routes.
   // For example, @audience/demographics/page.tsx at app/parallel-routes/ creates
   // a route at /parallel-routes/demographics.
-  const slotSubRoutes = discoverSlotSubRoutes(routes, matcher, ghostParentRoutes);
+  const slotSubRoutes = discoverSlotSubRoutes(routes, scanMatcher, ghostParentRoutes);
   routes.push(...slotSubRoutes);
+
+  // Discover sibling-style interception markers (markers not inside an @slot directory).
+  discoverSiblingInterceptingRoutes(routes, appDir, scanMatcher);
 
   validatePageRouteConflicts(routes, appDir);
   validateRoutePatterns(routes.map((route) => route.pattern));
   const interceptTargetPatterns = [
     ...new Set(
-      routes.flatMap((route) =>
-        route.parallelSlots.flatMap((slot) =>
+      routes.flatMap((route) => [
+        ...route.parallelSlots.flatMap((slot) =>
           slot.interceptingRoutes.map((intercept) => intercept.targetPattern),
         ),
-      ),
+        ...route.siblingIntercepts.map((intercept) => intercept.targetPattern),
+      ]),
     ),
   ];
   validateRoutePatterns(interceptTargetPatterns);
 
   // Sort: static routes first, then dynamic, then catch-all
-  routes.sort(compareRoutes);
+  sortRoutes(routes);
 
   return { routes, routeManifest: createRouteManifest(routes) };
 }
@@ -1097,6 +1159,24 @@ function discoverSlotSubRoutes(
     const childrenDefault = findFile(parentPageDir, "default", matcher);
     if (parentRoute.pagePath && !childrenDefault) continue;
 
+    // When a slot sub-route has no children page of its own (no page.tsx for
+    // the sub-path and no default.tsx for the children slot), Next.js falls
+    // the children prop through to a sibling catch-all page at the parent
+    // level. e.g. `@slot/baz/page.tsx` exists but `baz/page.tsx` does not, so
+    // `/baz` is served by `[...catchAll]/page.tsx` for children and by
+    // `@slot/baz/page.tsx` for the slot. Without this, the synthetic sub-route
+    // shadows the catch-all with an empty children prop and the request hangs.
+    // See test/e2e/app-dir/parallel-routes-catchall ("explicit slot but no page").
+    //
+    // Known limitation: the synthetic route's URL pattern is static (e.g.
+    // `/baz`), so the catch-all children page receives empty params — Next.js
+    // would pass `params.catchAll = ["baz"]`. The route still renders correctly;
+    // only a catch-all children page that *reads* its catch-all param diverges.
+    // Populating that param needs the slot-override style request-time pattern
+    // matching threaded to the children prop; tracked as a follow-up.
+    const childrenCatchAll = childrenDefault ? null : findCatchAllPage(parentPageDir, matcher);
+    const childrenFallback = childrenDefault ?? childrenCatchAll;
+
     for (const { rawSegments, converted: convertedSubRoute, slotPages } of subPathMap.values()) {
       const {
         urlSegments: urlParts,
@@ -1114,7 +1194,16 @@ function discoverSlotSubRoutes(
             `You cannot have two routes that resolve to the same path ("${pattern}").`,
           );
         }
-        applySlotSubPages(existingRoute, slotPages, rawSegments);
+        // When urlParts is empty, all sub-segments are URL-invisible (e.g. route
+        // groups like "(group)"). The slot page is at the same URL level as the
+        // parent route, so discoverParallelSlots already assigned it with the
+        // correct empty routeSegments. Calling applySlotSubPages here would
+        // overwrite routeSegments with the raw filesystem segments (e.g.
+        // ["(group)"]), making useSelectedLayoutSegment return the route-group
+        // name rather than null.
+        if (urlParts.length > 0) {
+          applySlotSubPages(existingRoute, slotPages, rawSegments);
+        }
         continue;
       }
 
@@ -1143,7 +1232,7 @@ function discoverSlotSubRoutes(
       const newRoute: AppRouteGraphRoute = {
         ids: createAppRouteSemanticIds({
           pattern,
-          pagePath: childrenDefault,
+          pagePath: childrenFallback,
           routePath: null,
           routeSegments: [...parentRoute.routeSegments, ...rawSegments],
           layoutTreePositions: parentRoute.layoutTreePositions,
@@ -1151,7 +1240,9 @@ function discoverSlotSubRoutes(
           slots: subSlots,
         }),
         pattern,
-        pagePath: childrenDefault, // children slot uses parent's default.tsx as page
+        // children slot uses the parent's default.tsx, or — when none exists —
+        // a sibling catch-all page so the slot sub-route still renders children.
+        pagePath: childrenFallback,
         routePath: null,
         layouts: parentRoute.layouts,
         templates: parentRoute.templates,
@@ -1172,6 +1263,7 @@ function discoverSlotSubRoutes(
         params: [...parentRoute.params, ...subParams],
         rootParamNames: parentRoute.rootParamNames,
         patternParts: [...parentRoute.patternParts, ...urlParts],
+        siblingIntercepts: [],
       };
       syntheticRoutes.push(newRoute);
       routesByPattern.set(pattern, newRoute);
@@ -1189,14 +1281,14 @@ function discoverSlotSubRoutes(
  */
 type SlotSubPageEntry = { relativePath: string; pagePath: string };
 
-// Per-build memo: a slot directory's sub-pages depend only on the directory
+// Per-scan memo: a slot directory's sub-pages depend only on the directory
 // contents and the matcher's accepted extensions. Inherited slots get scanned
 // once per descendant route, so without memoization a route N segments deep
 // pays O(N) full subtree walks for every shared ancestor slot.
 //
-// Keyed by matcher (one matcher per build) so the cache is naturally scoped
-// to a single build run and gets collected when the build finishes — no
-// cross-build pollution in long-lived dev servers.
+// Keyed by the per-scan matcher clone that `buildAppRouteGraph` registers, so
+// the cache is naturally scoped to a single scan and gets collected when the
+// scan finishes — no cross-scan pollution in long-lived dev servers.
 const findSlotSubPagesCache = new WeakMap<ValidFileMatcher, Map<string, SlotSubPageEntry[]>>();
 
 function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPageEntry[] {
@@ -1234,6 +1326,38 @@ function findSlotSubPages(slotDir: string, matcher: ValidFileMatcher): SlotSubPa
   scan(slotDir);
   perMatcher.set(slotDir, results);
   return results;
+}
+
+/**
+ * Find a sibling catch-all page directly under `dir`, i.e. a `[...slug]` or
+ * `[[...slug]]` directory that contains a `page` file. Returns the absolute
+ * page path, or null when no catch-all sibling exists.
+ *
+ * Used as the children fallback for slot-only sub-routes (an explicit `@slot`
+ * sub-page with no corresponding children page or `default.tsx`): Next.js
+ * serves the children prop from the nearest catch-all, so `/baz` renders
+ * `[...catchAll]/page.tsx` for children while `@slot/baz/page.tsx` fills the
+ * slot. Optional catch-alls (`[[...slug]]`) qualify because they also match a
+ * single extra segment.
+ */
+function findCatchAllPage(dir: string, matcher: ValidFileMatcher): string | null {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const name = entry.name;
+    const isCatchAll =
+      (name.startsWith("[...") && name.endsWith("]")) ||
+      (name.startsWith("[[...") && name.endsWith("]]"));
+    if (!isCatchAll) continue;
+    const page = findFile(path.join(dir, name), "page", matcher);
+    if (page) return page;
+  }
+  return null;
 }
 
 /**
@@ -1364,6 +1488,7 @@ function directoryToAppRoute(
     params,
     rootParamNames: computeRootParamNames(segments, layoutTreePositions),
     patternParts: urlSegments,
+    siblingIntercepts: [],
   };
 }
 
@@ -1877,6 +2002,38 @@ function patternsStructurallyEquivalent(a: readonly string[], b: readonly string
 }
 
 /**
+ * Find a page file at the root URL level of a parallel slot directory, including
+ * through transparent route-group subdirectories (e.g. `@slot/(group)/page.tsx`
+ * is equivalent to `@slot/page.tsx` since `(group)` is invisible in the URL).
+ *
+ * Returns the absolute page path, or null if no root-level page is found.
+ *
+ * Only descends into route-group directories (those whose name starts with `(`
+ * and ends with `)`). Dynamic segments, regular named dirs, and `@slot` dirs
+ * are not transparent and are therefore not searched.
+ */
+function findSlotRootPage(slotDir: string, matcher: ValidFileMatcher): string | null {
+  // Fast path: direct page.tsx at slot root.
+  const directPage = findFile(slotDir, "page", matcher);
+  if (directPage) return directPage;
+
+  // Walk route-group subdirectories (transparent in the URL).
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(slotDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (!entry.name.startsWith("(") || !entry.name.endsWith(")")) continue;
+    const found = findSlotRootPage(path.join(slotDir, entry.name), matcher);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
  * Discover parallel route slots (@team, @analytics, etc.) in a directory.
  * Returns a ParallelSlot for each @-prefixed subdirectory that has a page or default component.
  */
@@ -1902,7 +2059,10 @@ function discoverParallelSlots(
     const slotName = entry.name.slice(1); // "@team" -> "team"
     const slotDir = path.join(dir, entry.name);
 
-    const pagePath = findFile(slotDir, "page", matcher);
+    // A slot page may live inside a route-group subdirectory of the slot
+    // (e.g. @slot/(group)/page.tsx). Route groups are transparent in the URL,
+    // so that page still represents the slot's root-level content.
+    const pagePath = findSlotRootPage(slotDir, matcher);
     const defaultPath = findFile(slotDir, "default", matcher);
     const interceptingRoutes = discoverInterceptingRoutes(slotDir, dir, appDir, matcher);
 
@@ -1984,6 +2144,148 @@ function discoverInterceptingRoutes(
   scanForInterceptingPages(slotDir, routeDir, appDir, results, matcher);
 
   return results;
+}
+
+/**
+ * Discover sibling-style interception markers — interception marker directories
+ * (e.g. `(..)showcase`, `(..)(..)hoge`) that are NOT wrapped inside an `@slot`
+ * directory. Mutates each matching route's `siblingIntercepts` array.
+ *
+ * Sibling intercepts use the same conventions and target-computation logic as
+ * slot intercepts, but their intercepting page replaces the full page response
+ * (not a slot) during soft navigation.
+ */
+function discoverSiblingInterceptingRoutes(
+  routes: AppRouteGraphRoute[],
+  appDir: string,
+  matcher: ValidFileMatcher,
+): void {
+  // Build a map from a route's "owner directory" to the routes it serves.
+  // A route's owner directory is derived from its pagePath or its routePath.
+  // Multiple routes may share a directory (e.g. catch-all + static page),
+  // so we map dir → first matched route (any route in the directory will do).
+  const routesByDir = new Map<string, AppRouteGraphRoute>();
+  for (const route of routes) {
+    const filePath = route.pagePath ?? route.routePath;
+    if (!filePath) continue;
+    // Keys are forward-slash — findOwnerRouteForDir compares in that space.
+    const routeDir = normalizePathSeparators(path.dirname(filePath));
+    if (!routesByDir.has(routeDir)) {
+      routesByDir.set(routeDir, route);
+    }
+  }
+
+  function walk(dir: string): void {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      // Skip private folders (_private convention)
+      if (entry.name.startsWith("_")) continue;
+      // Skip @slot subtrees — their markers are handled by the slot path
+      if (entry.name.startsWith("@")) continue;
+
+      const childDir = path.join(dir, entry.name);
+      const marker = matchInterceptConvention(entry.name);
+
+      if (marker) {
+        // This is a sibling interception marker directory (no @slot wrapper).
+        // Collect all intercept targets from the marker subtree.
+        const restOfName = entry.name.slice(marker.prefix.length);
+        const parentDir = dir; // directory that owns the marker (the "intercepting route" dir)
+        const results: InterceptingRoute[] = [];
+        collectInterceptingPages(
+          childDir,
+          childDir,
+          marker.convention,
+          restOfName,
+          parentDir, // routeDir: the parent directory (no @slot between parent and marker)
+          appDir,
+          parentDir, // interceptParentDir: same as routeDir for sibling case
+          results,
+          matcher,
+        );
+        for (const ir of results) {
+          ir.slotId = createAppRouteGraphSiblingInterceptSlotId(ir.sourceMatchPattern);
+          // Find the route that serves the parentDir. Fall back to scanning all
+          // routes that live under parentDir (handles the case where the route
+          // pattern is a catch-all like /templates/:catchAll+ rather than /templates).
+          const owner = findOwnerRouteForDir(parentDir, appDir, routes, routesByDir);
+          if (owner) {
+            owner.siblingIntercepts.push(ir);
+          }
+        }
+        // collectInterceptingPages already scanned the marker subtree; skip walk into it
+        continue;
+      }
+
+      // Regular directory — keep walking for nested markers
+      walk(childDir);
+    }
+  }
+
+  walk(appDir);
+}
+
+/**
+ * Find the best route to attach a sibling intercept to, given the directory
+ * that contains the interception marker.
+ *
+ * 1. Exact hit: a route whose page/handler lives directly in `dir`.
+ * 2. Subtree hit: shallowest route whose page lives anywhere under `dir`
+ *    (handles catch-all routes like `/templates/:catchAll+`).
+ * 3. Ancestor walk: walk up the directory tree toward `appDir` looking for
+ *    any of the above. This handles the case where the marker directory has
+ *    no sibling pages at all (e.g. `deep/path/(...)target` with no
+ *    `deep/path/page.tsx`).
+ *
+ * All comparisons happen in forward-slash space: `appDir` is forward-slash
+ * (normalized once in the config hook), but `dir` and route file paths
+ * descend through native `path.join`/`path.dirname`, which reintroduce
+ * backslashes on Windows. Without normalizing, the `current === appDir`
+ * termination never fires there and the walk overshoots the app root.
+ * `routesByDir` keys must be forward-slash dirnames of the route file paths.
+ *
+ * Exported for tests.
+ */
+export function findOwnerRouteForDir(
+  dir: string,
+  appDir: string,
+  routes: readonly AppRouteGraphRoute[],
+  routesByDir: Map<string, AppRouteGraphRoute>,
+): AppRouteGraphRoute | null {
+  const appRoot = normalizePathSeparators(appDir);
+  let current = normalizePathSeparators(dir);
+  while (true) {
+    // Exact match: a route whose page/handler file lives directly in `current`
+    const exact = routesByDir.get(current);
+    if (exact) return exact;
+
+    // Subtree match: a route whose page is somewhere under `current` — pick
+    // the one with the fewest pattern parts (shallowest / least specific).
+    const currentWithSep = current + "/";
+    let best: AppRouteGraphRoute | null = null;
+    for (const route of routes) {
+      const filePath = route.pagePath ?? route.routePath;
+      if (!filePath) continue;
+      if (!normalizePathSeparators(filePath).startsWith(currentWithSep)) continue;
+      if (!best || route.patternParts.length < best.patternParts.length) {
+        best = route;
+      }
+    }
+    if (best) return best;
+
+    // Stop if we've reached the app root
+    if (current === appRoot) break;
+    const parent = path.dirname(current);
+    if (parent === current) break; // filesystem root safety guard
+    current = parent;
+  }
+  return null;
 }
 
 /**
@@ -2152,18 +2454,10 @@ function computeInterceptSourceMatchPattern(interceptParentDir: string, appDir: 
   return "/" + urlSegments.join("/");
 }
 
-/**
- * Check whether a path segment is invisible in the URL (route groups, parallel slots, ".").
- *
- * Used by computeInterceptTarget, convertSegmentsToRouteParts, and
- * hasRemainingVisibleSegments — keep this the single source of truth.
- */
-export function isInvisibleSegment(segment: string): boolean {
-  if (segment === ".") return true;
-  if (segment.startsWith("(") && segment.endsWith(")")) return true;
-  if (segment.startsWith("@")) return true;
-  return false;
-}
+// `isInvisibleSegment` (route groups, parallel slots, ".") is defined in the
+// browser-safe ./utils module and re-exported here so existing import sites
+// keep working without pulling node:path/node:fs into client bundles.
+export { isInvisibleSegment };
 
 /**
  * Compute the target URL pattern for an intercepting route.
@@ -2192,9 +2486,15 @@ function computeInterceptTarget(
 
   let baseParts: string[];
   switch (convention) {
-    case ".":
-      baseParts = routeSegments;
+    case ".": {
+      const interceptParentDir = path.dirname(interceptRoot);
+      // Use raw filesystem segments here. Invisible segments (@slot, route
+      // groups) and dynamic [param] syntax are resolved by the single
+      // convertSegmentsToRouteParts call below; feeding already-converted
+      // segments would drop dynamic ancestor params on the second pass.
+      baseParts = path.relative(appDir, interceptParentDir).split(path.sep).filter(Boolean);
       break;
+    }
     case "..":
     case "../..": {
       const levelsToClimb = convention === ".." ? 1 : 2;
@@ -2278,15 +2578,42 @@ function markerForInterceptionConvention(convention: string): string {
 }
 
 /**
- * Find a file by name (without extension) in a directory.
- * Checks configured pageExtensions.
+ * Scan-scoped cache of convention-file probes, keyed by the per-scan matcher
+ * created in `buildAppRouteGraph`. A single scan walks the appDir→leaf chain
+ * separately for every route (layouts, templates, errors, boundaries, slots),
+ * so shared ancestor directories — the `app/` root above all — get re-probed
+ * once per descendant route. The probe result is deterministic within one scan
+ * (the filesystem does not change mid-build), so memoizing it removes the
+ * dominant cross-route redundancy.
+ *
+ * Keyed by matcher so the cache lifetime is exactly one `buildAppRouteGraph`
+ * call: the scan registers a fresh matcher clone, and the entry is unreachable
+ * (and GC-eligible) once the scan returns. A fresh key per scan is also what
+ * makes this concurrency-safe — overlapping builds never share probe state.
+ */
+const findFileProbeCache = new WeakMap<ValidFileMatcher, Map<string, string | null>>();
+
+/**
+ * Find a file by name (without extension) in a directory, checking configured
+ * pageExtensions. Memoizes through `findFileProbeCache` when the matcher has a
+ * registered per-scan cache; otherwise falls back to a direct probe (identical
+ * result). The `null` "not found" outcome is cached too, so repeated misses on
+ * shared ancestors cost a single set of `existsSync` calls per scan.
  */
 function findFile(dir: string, name: string, matcher: ValidFileMatcher): string | null {
-  for (const ext of matcher.dottedExtensions) {
-    const filePath = path.join(dir, name + ext);
-    if (fs.existsSync(filePath)) return filePath;
-  }
-  return null;
+  const cache = findFileProbeCache.get(matcher);
+  if (!cache) return findFileWithExts(dir, name, matcher);
+
+  const key = `${dir}\0${name}`;
+  // `findFileWithExts` returns `string | null`, so a stored miss reads back as
+  // `null` (not `undefined`). Only a genuinely absent key yields `undefined`,
+  // which is what distinguishes a cache miss from a cached not-found result.
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+
+  const result = findFileWithExts(dir, name, matcher);
+  cache.set(key, result);
+  return result;
 }
 
 /**
@@ -2357,4 +2684,64 @@ function hasRemainingVisibleSegments(segments: readonly string[], startIndex: nu
 function joinRoutePattern(basePattern: string, subPath: string): string {
   if (!subPath) return basePattern;
   return basePattern === "/" ? `/${subPath}` : `${basePattern}/${subPath}`;
+}
+
+/**
+ * Returns the unique static sibling segment names at each dynamic URL level
+ * of the matched route. Mirrors Next.js's `getStaticSiblingSegments` from
+ * the next-app-loader: for `/products/[id]` with a sibling route at
+ * `/products/sale`, the dynamic `[id]` segment has `staticSiblings: ['sale']`.
+ *
+ * The returned list flattens siblings across all dynamic positions and is
+ * intended for the RSC payload — the client router uses it to determine if
+ * a cached dynamic-route prefetch can be reused when navigating to a static
+ * sibling URL.
+ *
+ * Ported from Next.js: packages/next/src/build/webpack/loaders/next-app-loader/index.ts
+ * (getStaticSiblingSegments).
+ *
+ * Route group segments and parallel-route slot segments are part of the
+ * filesystem tree but not the URL namespace — sibling computation is done on
+ * the URL-level `patternParts`, so they are correctly transparent here.
+ */
+export function computeAppRouteStaticSiblings(
+  allRoutes: readonly { patternParts?: readonly string[] | null }[],
+  matchedRoute: { patternParts?: readonly string[] | null },
+): string[] {
+  const siblings = new Set<string>();
+  const parts = matchedRoute.patternParts;
+  if (!parts) return [];
+
+  for (let level = 0; level < parts.length; level++) {
+    const segmentAtLevel = parts[level];
+    // Only compute siblings for dynamic segments (`:id`, `:rest+`, `:rest*`).
+    if (!segmentAtLevel.startsWith(":")) continue;
+
+    for (const otherRoute of allRoutes) {
+      const otherParts = otherRoute.patternParts;
+      if (!otherParts || otherParts.length <= level) continue;
+
+      // Parent prefix (segments before `level`) must match exactly. We
+      // intentionally do not normalize dynamic-to-dynamic equivalence here:
+      // siblings are only collected when the prefix is literally the same,
+      // matching Next.js's path-string comparison.
+      let prefixMatches = true;
+      for (let i = 0; i < level; i++) {
+        if (parts[i] !== otherParts[i]) {
+          prefixMatches = false;
+          break;
+        }
+      }
+      if (!prefixMatches) continue;
+
+      const otherSegmentAtLevel = otherParts[level];
+      if (otherSegmentAtLevel === segmentAtLevel) continue;
+      // Only collect static siblings.
+      if (otherSegmentAtLevel.startsWith(":")) continue;
+
+      siblings.add(otherSegmentAtLevel);
+    }
+  }
+
+  return Array.from(siblings);
 }

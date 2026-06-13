@@ -29,7 +29,7 @@
  */
 
 import {
-  getCacheHandler,
+  getDataCacheHandler,
   cacheLifeProfiles,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
@@ -38,6 +38,7 @@ import {
   type CacheLifeConfig,
 } from "./cache.js";
 import { VINEXT_RSC_MARKER_HEADER } from "../server/headers.js";
+import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
   isInsideUnifiedScope,
@@ -49,6 +50,8 @@ import { markDynamicUsage } from "./headers.js";
 // ---------------------------------------------------------------------------
 // Constants for nested-dynamic cache life detection
 // ---------------------------------------------------------------------------
+
+const APP_PAGE_PROPS_CACHE_KEY_MARKER = Symbol.for("vinext.appPagePropsCacheKeyMarker");
 
 /** Threshold below which expire is considered "dynamic" (5 minutes in seconds). */
 const DYNAMIC_EXPIRE = 300;
@@ -130,6 +133,12 @@ export type CacheContext = {
    * cache. Used as `cause` for the nested-dynamic cache error.
    */
   dynamicNestedCacheError: Error | undefined;
+  /**
+   * Dynamic request API error recorded inside this cache scope. This persists
+   * even if user code catches the original throw, so the wrapper can avoid
+   * storing request-specific output under a shared cache key.
+   */
+  invalidDynamicUsageError?: unknown;
 };
 
 // Store on globalThis via Symbol so headers.ts can detect "use cache" scope
@@ -394,9 +403,30 @@ export function clearPrivateCache(): void {
   }
 }
 
+export function markAppPagePropsForUseCache<T extends object>(props: T): T {
+  Object.defineProperty(props, APP_PAGE_PROPS_CACHE_KEY_MARKER, {
+    configurable: false,
+    enumerable: false,
+    value: true,
+    writable: false,
+  });
+  return props;
+}
+
 // ---------------------------------------------------------------------------
 // Core runtime: registerCachedFunction
 // ---------------------------------------------------------------------------
+
+type RegisterCachedFunctionOptions = {
+  /**
+   * Internal transform metadata for file-level `"use cache"` default exports
+   * in App Router `page.*` files. Page components receive framework-owned
+   * `{ params, searchParams }` props. React may copy that props object before
+   * invocation, so this invariant must live at the cached function boundary
+   * rather than on the intermediate createElement config object.
+   */
+  appPageDefaultExport?: boolean;
+};
 
 /**
  * Register a function as a cached function. This is called by the Vite
@@ -411,8 +441,10 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   fn: (...args: TArgs) => Promise<TResult>,
   id: string,
   variant?: string,
+  options: RegisterCachedFunctionOptions = {},
 ): (...args: TArgs) => Promise<TResult> {
   const cacheVariant = variant ?? "";
+  const omitAppPageSearchParamsFromFirstArg = options.appPageDefaultExport === true;
 
   // In dev mode, skip the shared cache so code changes are immediately
   // visible after HMR. Without this, the MemoryCacheHandler returns stale
@@ -431,6 +463,10 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     // from key). Falls back to stableStringify when RSC is unavailable.
     let cacheKey: string;
     try {
+      const processedArgs =
+        args.length > 0
+          ? unwrapThenableObjectArray(args, { omitAppPageSearchParamsFromFirstArg })
+          : [];
       if (rsc && args.length > 0) {
         // Temporary references let encodeReply handle non-serializable values
         // (like React elements in args) by excluding them from the key.
@@ -443,13 +479,12 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         // values (e.g., section:"sports" vs section:"electronics") produce
         // identical cache keys. We must extract the plain data so the actual
         // values are included in the cache key.
-        const processedArgs = unwrapThenableObjectArray(args);
         const encoded = await rsc.encodeReply(processedArgs, {
           temporaryReferences: tempRefs,
         });
         cacheKey = buildUseCacheKey(id, keySeed, await replyToCacheKey(encoded));
       } else {
-        const argsKey = args.length > 0 ? stableStringify(args) : undefined;
+        const argsKey = processedArgs.length > 0 ? stableStringify(processedArgs) : undefined;
         cacheKey = buildUseCacheKey(id, keySeed, argsKey);
       }
     } catch {
@@ -491,12 +526,22 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     }
 
     // Shared cache ("use cache" / "use cache: remote")
-    const handler = getCacheHandler();
+    const handler = getDataCacheHandler();
 
-    // Check cache — deserialize via RSC stream when available, JSON otherwise
-    const existing = await handler.get(cacheKey, { kind: "FETCH" });
+    // Check cache — deserialize via RSC stream when available, JSON otherwise.
+    // Pass soft tags so that revalidatePath() / revalidateTag() invalidation
+    // applies to "use cache" entries even when the entry carries no hard tags.
+    // The soft tags are path-derived implicit tags set by the enclosing route
+    // handler or page dispatch — see setCurrentFetchSoftTags in fetch-cache.ts.
+    const softTags = getCurrentFetchSoftTags();
+    const existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
     if (existing?.value && existing.value.kind === "FETCH" && existing.cacheState !== "stale") {
       try {
+        // Surface the cached entry's tags to the surrounding request so the
+        // enclosing page / route-handler ISR entry carries them even on a data
+        // cache HIT — otherwise `revalidateTag()` could not evict the rendered
+        // output that embeds this cached value (issue #1453).
+        propagateCacheTagsToRequest(existing.value.tags);
         if (rsc && existing.value.data.headers[VINEXT_RSC_MARKER_HEADER] === "1") {
           // RSC-serialized entry: base64 → bytes → stream → deserialize
           const bytes = base64ToUint8(existing.value.data.body);
@@ -522,6 +567,11 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     );
 
     recordRequestScopedCacheLife(effectiveLife);
+    // Bubble the cache scope's tags up to the surrounding request so the
+    // enclosing page / route-handler ISR entry is tagged for on-demand
+    // revalidation (issue #1453). `ctx.tags` already includes any nested
+    // child cache's tags via `runCachedFunctionWithContext`.
+    propagateCacheTagsToRequest(ctx.tags);
     const revalidateSeconds =
       effectiveLife.revalidate ?? cacheLifeProfiles.default.revalidate ?? 900;
 
@@ -571,8 +621,27 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     return result;
   };
 
+  // Preserve the original function's arity on the wrapper. The wrapper is
+  // declared as `(...args)` (arity 0), which hides the original signature.
+  // Callers like `resolveModuleMetadata` rely on `fn.length` to decide whether
+  // to pass optional arguments (e.g. the `parent` metadata) — matching Next.js,
+  // which omits the `parent` argument when a cached `generateMetadata` does not
+  // declare/use it, so non-serializable parent values (like a `URL`
+  // `metadataBase`) never reach the cache-key encoder.
+  // Function `length` is always `configurable: true` per spec, so this is safe.
+  Object.defineProperty(cachedFn, "length", { value: fn.length, configurable: true });
+
+  // Tag the wrapper so callers (e.g. the OTel tracer extension) can detect
+  // that this is a "use cache" function without relying on React server
+  // reference internals.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (cachedFn as any)[USE_CACHE_FUNCTION_SYMBOL] = true;
+
   return cachedFn;
 }
+
+/** @internal Symbol used to identify "use cache" wrapper functions. */
+const USE_CACHE_FUNCTION_SYMBOL = Symbol.for("vinext.useCacheFunction");
 
 function throwPrivateUseCacheInsidePublicUseCacheError(): never {
   const error = new Error(
@@ -593,6 +662,35 @@ function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | un
 
 function recordRequestScopedCacheLife(cacheLife: CacheLifeConfig): void {
   _setRequestScopedCacheLife(cacheLife);
+}
+
+/**
+ * Bubble a `"use cache"` scope's tags toward where they can drive invalidation.
+ *
+ * When this cache is nested inside another (`parentCtx` present), the tags flow
+ * into the parent scope so they end up on the outer cache entry — mirroring
+ * Next.js's `propagateCacheLifeAndTagsToRevalidateStore`. The outermost scope
+ * (no parent) instead records onto the surrounding request's collected tags, so
+ * the enclosing page / route-handler ISR entry carries them and `revalidateTag`
+ * can evict the rendered output (issue #1453).
+ *
+ * Used by both the data cache HIT and MISS paths. On MISS the parent-bubble for
+ * the *executed* scope also happens in `runCachedFunctionWithContext`; this keeps
+ * the HIT path (where that function never runs) correct without dropping a nested
+ * inner entry's stored tags. Deduped to keep tag lists tidy.
+ */
+function propagateCacheTagsToRequest(tags: readonly string[] | undefined): void {
+  if (!tags || tags.length === 0) return;
+  const parentCtx = cacheContextStorage.getStore();
+  if (parentCtx) {
+    for (const tag of tags) {
+      if (!parentCtx.tags.includes(tag)) {
+        parentCtx.tags.push(tag);
+      }
+    }
+    return;
+  }
+  addCollectedRequestTags(tags);
 }
 
 // ---------------------------------------------------------------------------
@@ -693,9 +791,14 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
     hasExplicitRevalidate: false,
     hasExplicitExpire: false,
     dynamicNestedCacheError: undefined,
+    invalidDynamicUsageError: undefined,
   };
 
   const result = await cacheContextStorage.run(ctx, () => fn(...args));
+
+  if (ctx.invalidDynamicUsageError) {
+    throw ctx.invalidDynamicUsageError;
+  }
 
   // Resolve effective cache life from collected configs.
   //
@@ -732,6 +835,16 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
   // suppress the throw — see the longer comment below.)
   if (parentCtx) {
     parentCtx.lifeConfigs.push(effectiveLife);
+    // Bubble this inner cache's tags into the parent cache scope so the
+    // outer entry (and ultimately the request) is invalidated when a tag
+    // declared by a nested `"use cache"` is revalidated. Matches Next.js's
+    // `propagateCacheLifeAndTagsToRevalidateStore`. Deduped to keep the
+    // parent's tag list tidy across many nested calls (issue #1453).
+    for (const tag of ctx.tags) {
+      if (!parentCtx.tags.includes(tag)) {
+        parentCtx.tags.push(tag);
+      }
+    }
   }
 
   // Propagate the eager error to the parent if this inner cache resolved
@@ -845,13 +958,24 @@ async function runCachedFunctionWithContext<T extends (...args: any[]) => Promis
  * Only used for cache key generation — the original Promise-augmented
  * objects are still passed to the actual function on cache miss.
  */
-function unwrapThenableObjects(value: unknown): unknown {
+type UnwrapThenableObjectsOptions = {
+  omitAppPageSearchParamsAtRoot?: boolean;
+};
+
+type UnwrapThenableObjectArrayOptions = {
+  omitAppPageSearchParamsFromFirstArg: boolean;
+};
+
+function unwrapThenableObjects(
+  value: unknown,
+  options: UnwrapThenableObjectsOptions = {},
+): unknown {
   if (value === null || value === undefined || typeof value !== "object") {
     return value;
   }
 
   if (Array.isArray(value)) {
-    return value.map(unwrapThenableObjects);
+    return value.map((item) => unwrapThenableObjects(item));
   }
 
   // Detect thenable (Promise-like) with own enumerable properties —
@@ -874,14 +998,31 @@ function unwrapThenableObjects(value: unknown): unknown {
   // Regular object — recurse into values
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(value)) {
+    if (
+      key === "searchParams" &&
+      (options.omitAppPageSearchParamsAtRoot || isMarkedAppPagePropsObject(value))
+    ) {
+      continue;
+    }
     // oxlint-disable-next-line @typescript-eslint/no-explicit-any
     result[key] = unwrapThenableObjects((value as any)[key]);
   }
   return result;
 }
 
-function unwrapThenableObjectArray(values: readonly unknown[]): unknown[] {
-  return values.map(unwrapThenableObjects);
+function isMarkedAppPagePropsObject(value: object): boolean {
+  return Reflect.get(value, APP_PAGE_PROPS_CACHE_KEY_MARKER) === true;
+}
+
+function unwrapThenableObjectArray(
+  values: readonly unknown[],
+  options: UnwrapThenableObjectArrayOptions,
+): unknown[] {
+  return values.map((value, index) =>
+    unwrapThenableObjects(value, {
+      omitAppPageSearchParamsAtRoot: index === 0 && options.omitAppPageSearchParamsFromFirstArg,
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------

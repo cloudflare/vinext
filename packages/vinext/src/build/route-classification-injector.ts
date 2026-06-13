@@ -6,7 +6,7 @@ import {
 } from "./layout-classification.js";
 import type { ModuleGraphStaticReason } from "./layout-classification-types.js";
 import {
-  buildGenerateBundleReplacement,
+  buildClassificationReplacement,
   buildReasonsReplacement,
   type RouteClassificationManifest,
 } from "./route-classification-manifest.js";
@@ -19,7 +19,7 @@ import {
  * those stubs with build-time decisions once the final RSC module graph exists.
  */
 
-export type RouteClassificationChunk = {
+type RouteClassificationChunk = {
   code: string;
   fileName: string;
 };
@@ -48,9 +48,12 @@ type BuildLayer2ClassificationsOptions = Pick<
 >;
 
 // The `?` after the semicolon is intentional: Rolldown may or may not emit the
-// trailing semicolon depending on minification settings. This regex relies on
-// `__VINEXT_CLASS` retaining its name, which holds because RSC entry chunk
-// bindings are not subject to scope-hoisting renames.
+// trailing semicolon depending on codegen settings. This regex relies on the
+// stub still being in its readable, unminified form (`__VINEXT_CLASS` /
+// `routeIdx` not yet renamed) — which is why the caller patches it from a
+// `renderChunk` hook with `order: "pre"`, before rolldown's minifier mangles
+// top-level names. Patching in `generateBundle` (post-minify) would silently
+// fail to match once `build.minify` is on (the default for server envs).
 const CLASS_STUB_RE = /function __VINEXT_CLASS\(routeIdx\)\s*\{\s*return null;?\s*\}/;
 const REASONS_STUB_RE = /function __VINEXT_CLASS_REASONS\(routeIdx\)\s*\{\s*return null;?\s*\}/;
 
@@ -78,7 +81,7 @@ function findClassificationChunk(
         .map((chunk) => chunk.fileName)
         .join(
           ", ",
-        )} but no chunk contains the stub body. The generator and generateBundle have drifted.`,
+        )} but no chunk contains the stub body. The generator and the classification injector have drifted.`,
     );
   }
 
@@ -144,12 +147,12 @@ export function planRouteClassificationInjection(
 
   if (options.enableDebugReasons && !REASONS_STUB_RE.test(target.code)) {
     throw new Error(
-      "vinext: build-time classification — __VINEXT_CLASS_REASONS stub is missing alongside __VINEXT_CLASS. The generator and generateBundle have drifted.",
+      "vinext: build-time classification — __VINEXT_CLASS_REASONS stub is missing alongside __VINEXT_CLASS. The generator and the classification injector have drifted.",
     );
   }
 
   const layer2PerRoute = buildLayer2Classifications(options);
-  const replacement = buildGenerateBundleReplacement(options.manifest, layer2PerRoute);
+  const replacement = buildClassificationReplacement(options.manifest, layer2PerRoute);
   const patchedBody = `function __VINEXT_CLASS(routeIdx) { return (${replacement})(routeIdx); }`;
   let code = target.code.replace(CLASS_STUB_RE, patchedBody);
 

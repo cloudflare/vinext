@@ -9,12 +9,14 @@
  * existing community adapters (@neshca/cache-handler, @opennextjs/aws, etc.)
  * can be used directly.
  *
- * Configuration (in vite.config.ts or next.config.js):
- *   vinext({ cacheHandler: './my-cache-handler.ts' })
+ * Recommended configuration is declarative, via the `cache` option on the
+ * `vinext()` plugin in vite.config.ts:
+ *   import { kvDataAdapter } from '@vinext/cloudflare/cache/kv-data-adapter';
+ *   vinext({ cache: { data: kvDataAdapter({ binding: 'VINEXT_KV_CACHE' }) } })
  *
- * Or set at runtime:
- *   import { setCacheHandler } from 'next/cache';
- *   setCacheHandler(new MyCacheHandler());
+ * The imperative `setCacheHandler` / `setDataCacheHandler` setters are
+ * deprecated for consumers and retained only as the internal registration
+ * target used by the generated cache-adapter module.
  */
 
 import { getHeadersAccessPhase, markDynamicUsage as _markDynamic } from "./headers.js";
@@ -29,6 +31,7 @@ import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
 import { readCacheControlNumberField } from "../utils/cache-control-metadata.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
+import { getCdnCacheAdapter } from "./cdn-cache.js";
 import type { RenderObservation } from "../server/cache-proof.js";
 
 // ---------------------------------------------------------------------------
@@ -193,15 +196,117 @@ type MemoryEntry = {
   cacheControl?: CacheControlMetadata;
 };
 
+const DEFAULT_MEMORY_CACHE_MAX_SIZE = 50 * 1024 * 1024;
+const MAX_REVALIDATED_TAG_ENTRIES = 10_000;
+
+type MemoryCacheHandlerOptions = Pick<CacheHandlerContext, "maxMemoryCacheSize"> & {
+  cacheMaxMemorySize?: number;
+};
+
+function estimateStringMapSize(map: Record<string, string | string[]> | undefined): number {
+  if (!map) return 0;
+  let size = 0;
+  for (const [key, value] of Object.entries(map)) {
+    size += key.length;
+    if (Array.isArray(value)) {
+      for (const item of value) size += item.length;
+    } else {
+      size += value.length;
+    }
+  }
+  return size;
+}
+
+function estimateIncrementalCacheValueSize(value: IncrementalCacheValue | null): number {
+  if (value === null) return 25;
+
+  switch (value.kind) {
+    case "FETCH":
+      return JSON.stringify(value.data ?? "").length;
+    case "PAGES":
+      return (
+        value.html.length +
+        JSON.stringify(value.pageData ?? {}).length +
+        estimateStringMapSize(value.headers)
+      );
+    case "APP_PAGE":
+      return (
+        value.html.length +
+        (value.rscData?.byteLength ?? 0) +
+        (value.postponed?.length ?? 0) +
+        estimateStringMapSize(value.headers)
+      );
+    case "APP_ROUTE":
+      return value.body.byteLength + estimateStringMapSize(value.headers);
+    case "REDIRECT":
+      return JSON.stringify(value.props ?? {}).length;
+    case "IMAGE":
+      return value.buffer.byteLength + value.extension.length + value.etag.length;
+    default:
+      return JSON.stringify(value).length;
+  }
+}
+
+function resolveMemoryCacheMaxSize(options?: number | MemoryCacheHandlerOptions): number {
+  if (typeof options === "number") return options;
+  if (typeof options?.cacheMaxMemorySize === "number") return options.cacheMaxMemorySize;
+  if (typeof options?.maxMemoryCacheSize === "number") return options.maxMemoryCacheSize;
+  return DEFAULT_MEMORY_CACHE_MAX_SIZE;
+}
+
 function readStringArrayField(ctx: Record<string, unknown> | undefined, field: string): string[] {
   const value = ctx?.[field];
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
 }
 
+/**
+ * In-memory data cache handler. This is the built-in default — vinext installs
+ * it automatically, so consumers should not construct or register it by hand.
+ *
+ * @deprecated Consumers should not instantiate cache handlers directly.
+ * Configure caching declaratively via the `cache` option on the `vinext()`
+ * plugin (see {@link setDataCacheHandler}); the in-memory handler is the
+ * default when nothing is configured, and its size is tuned via the
+ * `cacheMaxMemorySize` plugin option.
+ */
 export class MemoryCacheHandler implements CacheHandler {
   private store = new Map<string, MemoryEntry>();
   private tagRevalidatedAt = new Map<string, number>();
+  private readonly maxMemoryCacheSize: number;
+  private currentMemoryCacheSize = 0;
+
+  constructor(options?: number | MemoryCacheHandlerOptions) {
+    this.maxMemoryCacheSize = resolveMemoryCacheMaxSize(options);
+  }
+
+  private estimateEntrySize(entry: MemoryEntry): number {
+    return (
+      estimateIncrementalCacheValueSize(entry.value) +
+      entry.tags.reduce((sum, tag) => sum + tag.length, 0) +
+      64
+    );
+  }
+
+  private deleteEntry(key: string): void {
+    const existing = this.store.get(key);
+    if (!existing) return;
+    this.currentMemoryCacheSize -= this.estimateEntrySize(existing);
+    this.store.delete(key);
+  }
+
+  private touchEntry(key: string, entry: MemoryEntry): void {
+    this.store.delete(key);
+    this.store.set(key, entry);
+  }
+
+  private evictLeastRecentlyUsed(): void {
+    while (this.maxMemoryCacheSize > 0 && this.currentMemoryCacheSize > this.maxMemoryCacheSize) {
+      const oldestKey = this.store.keys().next().value;
+      if (oldestKey === undefined) return;
+      this.deleteEntry(oldestKey);
+    }
+  }
 
   async get(key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     const entry = this.store.get(key);
@@ -213,7 +318,7 @@ export class MemoryCacheHandler implements CacheHandler {
     for (const tag of entry.tags) {
       const revalidatedAt = this.tagRevalidatedAt.get(tag);
       if (revalidatedAt && revalidatedAt >= entry.lastModified) {
-        this.store.delete(key);
+        this.deleteEntry(key);
         return null;
       }
     }
@@ -228,9 +333,11 @@ export class MemoryCacheHandler implements CacheHandler {
     // Check hard expiry first. Past `expire`, Next.js blocks on fresh
     // regeneration instead of serving stale with background work.
     if (entry.expireAt !== null && Date.now() > entry.expireAt) {
-      this.store.delete(key);
+      this.deleteEntry(key);
       return null;
     }
+
+    this.touchEntry(key, entry);
 
     // Check time-based revalidation — return stale entry with cacheState="stale"
     // instead of deleting, so ISR can serve stale-while-revalidate
@@ -291,14 +398,26 @@ export class MemoryCacheHandler implements CacheHandler {
           : { revalidate: effectiveRevalidate, expire: effectiveExpire }
         : undefined;
 
-    this.store.set(key, {
+    if (this.maxMemoryCacheSize === 0) return;
+
+    const entry = {
       value: data,
       tags,
       lastModified: now,
       revalidateAt,
       expireAt,
       cacheControl,
-    });
+    };
+    const entrySize = this.estimateEntrySize(entry);
+    if (entrySize > this.maxMemoryCacheSize) {
+      this.deleteEntry(key);
+      return;
+    }
+
+    this.deleteEntry(key);
+    this.store.set(key, entry);
+    this.currentMemoryCacheSize += entrySize;
+    this.evictLeastRecentlyUsed();
   }
 
   async revalidateTag(tags: string | string[], _durations?: { expire?: number }): Promise<void> {
@@ -306,6 +425,11 @@ export class MemoryCacheHandler implements CacheHandler {
     const now = Date.now();
     for (const tag of tagList) {
       this.tagRevalidatedAt.set(tag, now);
+      while (this.tagRevalidatedAt.size > MAX_REVALIDATED_TAG_ENTRIES) {
+        const oldest = this.tagRevalidatedAt.keys().next().value;
+        if (oldest === undefined) break;
+        this.tagRevalidatedAt.delete(oldest);
+      }
     }
   }
 
@@ -345,22 +469,66 @@ function _getActiveHandler(): CacheHandler {
   return _gHandler[_HANDLER_KEY] ?? (_gHandler[_HANDLER_KEY] = new MemoryCacheHandler());
 }
 
+export function configureMemoryCacheHandler(options?: MemoryCacheHandlerOptions): void {
+  const current = _gHandler[_HANDLER_KEY];
+  if (current && !(current instanceof MemoryCacheHandler)) return;
+  _gHandler[_HANDLER_KEY] = new MemoryCacheHandler(options);
+}
+
 /**
- * Set a custom CacheHandler. Call this during server startup to
- * plug in Cloudflare KV, Redis, DynamoDB, or any other backend.
+ * Set the **data cache** handler. This backs all data-cache concerns —
+ * `fetch` caching, `"use cache"`, `unstable_cache` — and is also the default
+ * underlying store for page-level ISR (via the default CDN cache adapter).
  *
- * The handler must implement the CacheHandler interface (same shape
- * as Next.js 16's CacheHandler class).
+ * The handler must implement the CacheHandler interface (same shape as
+ * Next.js 16's CacheHandler class).
+ *
+ * @deprecated Don't wire up the data cache imperatively. Configure it
+ * declaratively via the `cache.data` option on the `vinext()` plugin in your
+ * `vite.config.ts`, using a config-time adapter builder. On Cloudflare Workers:
+ *
+ * ```ts
+ * import { vinext } from "vinext";
+ * import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+ *
+ * export default defineConfig({
+ *   plugins: [vinext({ cache: { data: kvDataAdapter({ binding: "VINEXT_KV_CACHE" }) } })],
+ * });
+ * ```
+ *
+ * The plugin defers instantiation to the first request and registers the
+ * handler across every runtime/router entry, so you don't have to call this
+ * from a worker entry. This setter remains as the internal registration target
+ * and for backwards compatibility, but is not the recommended consumer API.
  */
-export function setCacheHandler(handler: CacheHandler): void {
+export function setDataCacheHandler(handler: CacheHandler): void {
   _gHandler[_HANDLER_KEY] = handler;
 }
 
 /**
- * Get the active CacheHandler (for internal use or testing).
+ * Get the active data cache handler (for internal use or testing).
+ */
+export function getDataCacheHandler(): CacheHandler {
+  return _getActiveHandler();
+}
+
+/**
+ * @deprecated Don't wire up the data cache imperatively. Configure it
+ * declaratively via the `cache.data` option on the `vinext()` plugin (e.g.
+ * `kvDataAdapter()` from `@vinext/cloudflare/cache/kv-data-adapter`). See
+ * {@link setDataCacheHandler} for the migration example. Retained as a
+ * backwards-compatible alias — `setCacheHandler` has always configured the
+ * data cache handler.
+ */
+export function setCacheHandler(handler: CacheHandler): void {
+  setDataCacheHandler(handler);
+}
+
+/**
+ * @deprecated Prefer {@link getDataCacheHandler}.
  */
 export function getCacheHandler(): CacheHandler {
-  return _getActiveHandler();
+  return getDataCacheHandler();
 }
 
 // ---------------------------------------------------------------------------
@@ -401,7 +569,24 @@ export async function revalidateTag(
   if (!profile || !durations || durations.expire === 0) {
     markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   }
-  await _getActiveHandler().revalidateTag(encodeCacheTag(tag), durations);
+  await _invalidateEncodedTag(encodeCacheTag(tag), durations);
+}
+
+/**
+ * Invalidate one already-encoded tag across both cache layers.
+ *
+ * Ordering is intentional and load-bearing: invalidate the data cache store
+ * FIRST (covers fetch data, `"use cache"`, and page entries stored there by the
+ * default CDN adapter), THEN ask the CDN adapter to purge its edge (a no-op for
+ * the default adapter). Purging the edge before the store is invalidated would
+ * let the edge re-fetch and re-cache stale data.
+ */
+async function _invalidateEncodedTag(
+  encoded: string,
+  durations?: { expire?: number },
+): Promise<void> {
+  await _getActiveHandler().revalidateTag(encoded, durations);
+  await getCdnCacheAdapter().revalidateTag(encoded, durations);
 }
 
 /**
@@ -424,7 +609,7 @@ export async function revalidatePath(path: string, type?: "page" | "layout"): Pr
   // Strip trailing slash so root "/" becomes "" — avoids double-slash in _N_T_//layout
   const stem = path.endsWith("/") ? path.slice(0, -1) : path;
   const tag = type ? `_N_T_${stem}/${type}` : `_N_T_${stem || "/"}`;
-  await _getActiveHandler().revalidateTag(encodeCacheTag(tag));
+  await _invalidateEncodedTag(encodeCacheTag(tag));
 }
 
 /**
@@ -462,7 +647,7 @@ export async function updateTag(tag: string): Promise<void> {
   }
   markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   // Expire the tag immediately (same as revalidateTag without SWR)
-  await _getActiveHandler().revalidateTag(encodeCacheTag(tag));
+  await _invalidateEncodedTag(encodeCacheTag(tag));
 }
 
 /**
@@ -574,10 +759,18 @@ let _unstableIoWarned = false;
 // ---------------------------------------------------------------------------
 export type UnstableCacheRevalidationMode = "foreground" | "background";
 export type ActionRevalidationKind = 0 | 1 | 2;
+export type UnstableCacheObservation = Readonly<{
+  kind: "unstable_cache";
+  keyHash: string;
+  revalidate: number | false | null;
+  tagCount: number;
+  tagHash: string | null;
+}>;
 
 export type CacheState = {
   actionRevalidationKind: ActionRevalidationKind;
   requestScopedCacheLife: CacheLifeConfig | null;
+  unstableCacheObservations: Map<string, UnstableCacheObservation>;
   unstableCacheRevalidation: UnstableCacheRevalidationMode;
 };
 
@@ -588,6 +781,7 @@ const _cacheAls = getOrCreateAls<CacheState>("vinext.cache.als");
 const _cacheFallbackState = (_g[_FALLBACK_KEY] ??= {
   actionRevalidationKind: 0,
   requestScopedCacheLife: null,
+  unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
   unstableCacheRevalidation: "foreground",
 } satisfies CacheState) as CacheState;
 
@@ -615,12 +809,14 @@ export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> 
     return runWithUnifiedStateMutation((uCtx) => {
       uCtx.actionRevalidationKind = ACTION_DID_NOT_REVALIDATE;
       uCtx.requestScopedCacheLife = null;
+      uCtx.unstableCacheObservations = new Map<string, UnstableCacheObservation>();
       uCtx.unstableCacheRevalidation = "foreground";
     }, fn);
   }
   const state: CacheState = {
     actionRevalidationKind: ACTION_DID_NOT_REVALIDATE,
     requestScopedCacheLife: null,
+    unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
     unstableCacheRevalidation: "foreground",
   };
   return _cacheAls.run(state, fn);
@@ -635,6 +831,7 @@ export function _initRequestScopedCacheState(): void {
   const state = _getCacheState();
   state.actionRevalidationKind = ACTION_DID_NOT_REVALIDATE;
   state.requestScopedCacheLife = null;
+  state.unstableCacheObservations = new Map<string, UnstableCacheObservation>();
 }
 
 function markActionRevalidation(kind: ActionRevalidationKind): void {
@@ -708,6 +905,16 @@ export function _consumeRequestScopedCacheLife(): CacheLifeConfig | null {
   const config = state.requestScopedCacheLife;
   state.requestScopedCacheLife = null;
   return config;
+}
+
+function recordUnstableCacheObservation(observation: UnstableCacheObservation): void {
+  _getCacheState().unstableCacheObservations.set(observation.keyHash, observation);
+}
+
+export function _peekUnstableCacheObservations(): UnstableCacheObservation[] {
+  return [..._getCacheState().unstableCacheObservations.values()].sort((a, b) =>
+    a.keyHash.localeCompare(b.keyHash),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,6 +1254,18 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   const cachedFn = async (...args: Parameters<T>) => {
     const argsKey = JSON.stringify(args);
     const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
+    recordUnstableCacheObservation({
+      kind: "unstable_cache",
+      keyHash: fnv1a64(cacheKey),
+      revalidate:
+        typeof revalidateSeconds === "number"
+          ? revalidateSeconds
+          : revalidateSeconds === false
+            ? false
+            : null,
+      tagCount: tags.length,
+      tagHash: tags.length > 0 ? fnv1a64(JSON.stringify(tags)) : null,
+    });
 
     // Try to get from cache. Stale entries are usable in normal App Router
     // requests, but foreground-refresh inside revalidation scopes so the

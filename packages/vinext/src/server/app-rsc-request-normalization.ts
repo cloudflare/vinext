@@ -40,7 +40,7 @@ export type NormalizedRscRequest = {
   mountedSlotsHeader: string | null;
   /** Semantic RSC payload mode. HTML requests always normalize to "navigation". */
   renderMode: AppRscRenderMode;
-  /** Disabled ClientReuseManifest hint. Never authorizes skip transport in this stage. */
+  /** Parsed ClientReuseManifest hint. Verification and skip authorization happen later. */
   clientReuseManifest: ClientReuseManifestParseResult;
 };
 
@@ -69,7 +69,7 @@ export type NormalizedRscRequest = {
  *   8. Sanitize X-Vinext-Interception-Context — strip null bytes (header injection)
  *   9. Normalize x-vinext-mounted-slots — dedup and sort for canonical cache keys
  *   10. Read semantic render mode for refresh/action payload rendering
- *   11. Parse disabled ClientReuseManifest hints on canonical RSC payload requests
+ *   11. Parse ClientReuseManifest hints on canonical RSC payload requests
  *
  * @returns A 400 or 404 Response for invalid or out-of-scope inputs,
  *          or a NormalizedRscRequest for valid requests.

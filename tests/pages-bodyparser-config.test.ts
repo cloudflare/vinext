@@ -16,7 +16,7 @@
  *   honours `config.api?.bodyParser !== false` and
  *   `config.api?.bodyParser?.sizeLimit`.
  */
-import { PassThrough } from "node:stream";
+import { PassThrough, Transform } from "node:stream";
 import { Buffer } from "node:buffer";
 import http from "node:http";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -29,6 +29,10 @@ import {
   parseSizeLimit,
   resolveBodyParserConfig,
 } from "../packages/vinext/src/server/pages-body-parser-config.js";
+import type {
+  PagesReqResRequest,
+  PagesReqResResponse,
+} from "../packages/vinext/src/server/pages-node-compat.js";
 import type { ModuleImporter } from "../packages/vinext/src/server/instrumentation.js";
 import type { Route } from "../packages/vinext/src/routing/pages-router.js";
 
@@ -434,36 +438,176 @@ function createMatch(
 }
 
 describe("handlePagesApiRoute body parser config (Workers/prod path)", () => {
-  it("bodyParser: false exposes the raw request body as a ReadableStream on req.body", async () => {
-    let received: unknown = "sentinel";
-    let receivedRaw = "";
+  // Next.js delegates Pages API cookies to its compiled `cookie` parser.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/api-utils/get-cookie-parser.ts
+  it("preserves duplicate ordering and the public object API", async () => {
+    const response = await handlePagesApiRoute({
+      match: createMatch((req: PagesReqResRequest, res: PagesReqResResponse) => {
+        res.json({
+          cookies: req.cookies,
+          hasOwnPropertyWorks: req.cookies.hasOwnProperty("session"),
+          hasDefaultToString: req.cookies.toString === Object.prototype.toString,
+          toStringResult: Object.prototype.toString.call(req.cookies),
+          ownsProto: Object.hasOwn(req.cookies, "__proto__"),
+          ownsConstructor: Object.hasOwn(req.cookies, "constructor"),
+          ownsToString: Object.hasOwn(req.cookies, "toString"),
+        });
+      }),
+      request: new Request("https://example.com/api/account", {
+        headers: {
+          cookie:
+            'session=trusted; session=attacker; =empty-name; __proto__=prototype-cookie; constructor=constructor-cookie; toString=string-cookie; encoded=hello%20world; malformed=%E0%A4%A; quoted="quoted value"',
+        },
+      }),
+      url: "/api/account",
+    });
+
+    expect(await response.json()).toEqual({
+      cookies: {
+        session: "trusted",
+        "": "empty-name",
+        encoded: "hello world",
+        malformed: "%E0%A4%A",
+        quoted: "quoted value",
+      },
+      hasOwnPropertyWorks: true,
+      hasDefaultToString: true,
+      toStringResult: "[object Object]",
+      ownsProto: false,
+      ownsConstructor: false,
+      ownsToString: false,
+    });
+  });
+
+  // Ported from Next.js: test/e2e/proxy-request-with-middleware/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/proxy-request-with-middleware/test/index.test.ts
+  //
+  // The upstream fixture pipes the API route's `req` through the deprecated
+  // `request` package and then pipes the proxied response into `res`. That
+  // proves a Pages API route still receives an IncomingMessage/ServerResponse-
+  // shaped stream surface when middleware is present. At this lower boundary
+  // we keep the same observable contract with a local Transform: `req.pipe`
+  // must preserve method, headers, and body, and `res` must be writable.
+  for (const { method, body } of [
+    { method: "GET", body: undefined },
+    { method: "POST", body: JSON.stringify({ key: "value" }) },
+  ]) {
+    it(`bodyParser: false supports req.pipe(...).pipe(res) for ${method}`, async () => {
+      const headers: Record<string, string> = {
+        "content-type": "application/json",
+        "x-custom-header": "some value",
+      };
+      if (body) {
+        headers["content-length"] = String(body.length);
+      }
+
+      const response = await handlePagesApiRoute({
+        match: createMatch(
+          (req: PagesReqResRequest, res: PagesReqResResponse) => {
+            const chunks: Buffer[] = [];
+            const upstream = new Transform({
+              transform(chunk: Buffer, _encoding, callback) {
+                chunks.push(Buffer.from(chunk));
+                callback();
+              },
+              flush(callback) {
+                this.push(
+                  JSON.stringify({
+                    method: req.method,
+                    headers: req.headers,
+                    rawBody: Buffer.concat(chunks).toString("utf8"),
+                  }),
+                );
+                callback();
+              },
+            });
+
+            return req.pipe(upstream).pipe(res);
+          },
+          { api: { bodyParser: false } },
+        ),
+        request: new Request("https://example.com/api", {
+          method,
+          headers,
+          body,
+        }),
+        url: "/api",
+      });
+
+      expect(response.status).toBe(200);
+      const data = (await response.json()) as {
+        method: string;
+        headers: Record<string, string>;
+        rawBody: string;
+      };
+
+      expect(data.method).toBe(method);
+      if (body) {
+        expect(data.headers["content-length"]).toBe(String(body.length));
+        expect(data.rawBody).toBe(body);
+      } else {
+        expect(data.rawBody).toBe("");
+      }
+      expect(data.headers).toEqual(expect.objectContaining(headers));
+    });
+  }
+
+  // Ported from Next.js: test/e2e/middleware-fetches-with-body/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-fetches-with-body/index.test.ts
+  //
+  // The Next.js `body_parser_false` handler iterates `req` directly with
+  // `for await (const chunk of req)` — matching Node's IncomingMessage
+  // contract. Our Workers `req` is a synthetic object, so we must surface
+  // an async-iterator on `req` so this idiom works. Issue #1479.
+  it("bodyParser: false: handler can iterate `req` directly with `for await` (16KiB payload)", async () => {
+    const bodySize = 16 * 1024;
+    const body = "HIJK1L2M3N4O5P6Q7R8S9T0UaVbWcXdY".repeat(bodySize / 32);
 
     const response = await handlePagesApiRoute({
       match: createMatch(
         async (req: any, res: any) => {
-          received = req.body;
-          // Verify it's a ReadableStream and we can read it.
-          if (req.body instanceof ReadableStream) {
-            const reader = (req.body as ReadableStream<Uint8Array>).getReader();
-            const chunks: Uint8Array[] = [];
-            try {
-              for (;;) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                chunks.push(value);
-              }
-            } finally {
-              reader.releaseLock();
-            }
-            const total = chunks.reduce((n, c) => n + c.byteLength, 0);
-            const merged = new Uint8Array(total);
-            let offset = 0;
-            for (const c of chunks) {
-              merged.set(c, offset);
-              offset += c.byteLength;
-            }
-            receivedRaw = new TextDecoder().decode(merged);
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
           }
+          const buf = Buffer.concat(chunks);
+          res.json({ rawBody: buf.toString("utf8"), body: req.body });
+        },
+        { api: { bodyParser: false } },
+      ),
+      request: new Request("https://example.com/api/body_parser_false", {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body,
+      }),
+      url: "/api/body_parser_false",
+    });
+
+    expect(response.status).toBe(200);
+    const data = (await response.json()) as { rawBody: string; body?: unknown };
+    expect(data.body).toBeUndefined();
+    expect(data.rawBody.length).toBe(bodySize);
+    expect(data.rawBody).toBe(body);
+  });
+
+  it("bodyParser: false leaves req.body undefined; handler reads raw bytes by iterating req", async () => {
+    let receivedBody: unknown = "sentinel";
+    let receivedRaw = "";
+
+    const payload = JSON.stringify({ webhook: "stripe", evt: "payment.succeeded" });
+
+    const response = await handlePagesApiRoute({
+      match: createMatch(
+        async (req: any, res: any) => {
+          receivedBody = req.body;
+          // Next.js parity: with bodyParser: false, handler iterates `req`
+          // directly (matching Node IncomingMessage). Cf. test/e2e/middleware-
+          // fetches-with-body fixture `body_parser_false.js`.
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          }
+          receivedRaw = Buffer.concat(chunks).toString("utf8");
           res.json({ ok: true });
         },
         { api: { bodyParser: false } },
@@ -474,14 +618,14 @@ describe("handlePagesApiRoute body parser config (Workers/prod path)", () => {
           "content-type": "application/json",
           "stripe-signature": "v1=abc",
         },
-        body: JSON.stringify({ webhook: "stripe", evt: "payment.succeeded" }),
+        body: payload,
       }),
       url: "/api/webhook",
     });
 
     expect(response.status).toBe(200);
-    expect(received).toBeInstanceOf(ReadableStream);
-    expect(receivedRaw).toBe(JSON.stringify({ webhook: "stripe", evt: "payment.succeeded" }));
+    expect(receivedBody).toBeUndefined();
+    expect(receivedRaw).toBe(payload);
   });
 
   it("bodyParser: { sizeLimit: '4mb' } accepts a 2 MB body that the default would reject", async () => {

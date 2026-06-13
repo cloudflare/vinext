@@ -200,6 +200,12 @@ describe("app route handler runtime helpers", () => {
   });
 
   it("normalizes request.url through nextUrl for stripped internal app route requests", () => {
+    // The App Router routing layer strips basePath before route handlers run,
+    // so createTrackedAppRouteRequest re-adds the configured prefix. Route
+    // handlers then observe the original URL Next.js would hand them:
+    // request.url / nextUrl.href carry the basePath prefix, while
+    // nextUrl.pathname stays basePath- and locale-free and nextUrl.basePath
+    // reports the configured value (getNextPathnameInfo semantics).
     const tracked = createTrackedAppRouteRequest(
       new Request("https://example.com/fr/demo?ping=from-url"),
       {
@@ -208,6 +214,8 @@ describe("app route handler runtime helpers", () => {
       },
     );
 
+    expect(tracked.request.nextUrl.basePath).toBe("/base");
+    expect(tracked.request.nextUrl.pathname).toBe("/demo");
     expect(tracked.request.nextUrl.href).toBe("https://example.com/base/fr/demo?ping=from-url");
     expect(tracked.request.url).toBe("https://example.com/base/fr/demo?ping=from-url");
   });

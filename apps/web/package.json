@@ -17,6 +17,7 @@
   "dependencies": {
     "@cloudflare/kumo": "catalog:",
     "@phosphor-icons/react": "catalog:",
+    "@vinext/cloudflare": "workspace:*",
     "drizzle-orm": "catalog:",
     "next": "catalog:",
     "react": "catalog:",

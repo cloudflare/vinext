@@ -14,6 +14,7 @@ import { Buffer } from "node:buffer";
 import { type Route, matchRoute } from "../routing/pages-router.js";
 import { reportRequestError, importModule, type ModuleImporter } from "./instrumentation.js";
 import { mergeRouteParamsIntoQuery, parseQueryString } from "../utils/query.js";
+import { parseCookieHeader } from "../utils/parse-cookie.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 import { isEdgeApiRuntime } from "./edge-api-runtime.js";
 import {
@@ -21,6 +22,7 @@ import {
   resolveBodyParserConfig,
 } from "./pages-body-parser-config.js";
 import { resolveRequestProtocol, resolveRequestHost } from "./proxy-trust.js";
+import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
 import { NextRequest } from "vinext/shims/server";
 
 /**
@@ -40,6 +42,7 @@ type NextApiResponse = {
   json(data: unknown): void;
   send(data: unknown): void;
   redirect(statusOrUrl: number | string, url?: string): void;
+  revalidate(urlPath: string, opts?: RevalidateOptions): Promise<void>;
 } & ServerResponse;
 
 type EdgeApiRouteModule = {
@@ -133,15 +136,7 @@ async function parseBody(
  * Parse cookies from the Cookie header.
  */
 function parseCookies(req: IncomingMessage): Record<string, string> {
-  const header = req.headers.cookie ?? "";
-  const cookies: Record<string, string> = {};
-  for (const part of header.split(";")) {
-    const [key, ...rest] = part.split("=");
-    if (key) {
-      cookies[key.trim()] = rest.join("=").trim();
-    }
-  }
-  return cookies;
+  return parseCookieHeader(req.headers.cookie);
 }
 
 function isEdgeApiRouteModule(module: Record<string, unknown>): module is EdgeApiRouteModule {
@@ -311,6 +306,14 @@ function enhanceApiObjects(
         this.writeHead(statusOrUrl, { Location: url ?? "" });
       }
       this.end();
+    },
+
+    // `res.revalidate(urlPath)` triggers on-demand ISR regeneration of a Pages
+    // Router route. Delegates to the shared helper so the secret wiring and
+    // success detection stay identical to the dev/Node-compat path. See
+    // `pages-revalidate.ts`.
+    async revalidate(this: NextApiResponse, urlPath: string, opts?: RevalidateOptions) {
+      await performOnDemandRevalidate(req, urlPath, opts);
     },
   });
 

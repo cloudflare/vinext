@@ -17,6 +17,7 @@ export type NEXT_DATA = {
   isFallback?: boolean;
   dynamicIds?: (string | number)[];
   err?: { message: string; statusCode: number; name?: string };
+  isExperimentalCompile?: boolean;
   gsp?: boolean;
   gssp?: boolean;
   customServer?: boolean;

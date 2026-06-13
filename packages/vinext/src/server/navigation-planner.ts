@@ -1,11 +1,24 @@
-import { matchRoutePattern, matchRoutePatternPrefix } from "../routing/route-pattern.js";
+import {
+  matchRoutePattern,
+  matchRoutePatternPrefix,
+  matchRoutePatternWithOptionalDynamicSegments,
+} from "../routing/route-pattern.js";
 import { splitPathnameForRouteMatch } from "../routing/utils.js";
+import { stripBasePath } from "../utils/base-path.js";
 import type {
   RouteManifest,
   RouteManifestInterception,
   RouteManifestRoute,
 } from "../routing/app-route-graph.js";
 import { compareAppElementsSlotIds, type AppElementsSlotBinding } from "./app-elements.js";
+import {
+  resolveRscRedirectLifecycleHop,
+  resolveStreamedRscRedirectLifecycleHop,
+} from "./app-browser-rsc-redirect.js";
+import {
+  resolveHardNavigationTargetFromRscResponse,
+  resolveRscCompatibilityNavigationDecision,
+} from "./app-rsc-cache-busting.js";
 import type {
   CacheEntryReuseDecision,
   CacheEntryReuseProof,
@@ -95,12 +108,12 @@ export type NavigationEvent =
   | { kind: "prefetch"; href: string }
   | { kind: "flightResponseArrived"; token: OperationToken; result: FlightResultV0 };
 
-export type RequestedWork =
+type RequestedWork =
   | { kind: "flight"; href: string; mode: "push" | "replace" | "refresh" }
   | { direction: TraverseDirection; historyState: unknown; kind: "traverseFlight" }
   | { kind: "prefetch"; href: string };
 
-export type CommitProposal = {
+type CommitProposal = {
   cacheEntryReuseDecision?: AcceptedCacheEntryReuseDecision;
   preserveAbsentSlots: boolean;
   preserveElementIds: readonly string[];
@@ -109,8 +122,8 @@ export type CommitProposal = {
   targetSnapshot: RouteSnapshotV0;
 };
 
-export type NoCommitReason = "prefetchOnly";
-export type HardNavigationReason =
+type NoCommitReason = "prefetchOnly";
+type HardNavigationReason =
   | "cacheProofRejected"
   | "interceptionProofRejected"
   | "rootBoundaryChanged";
@@ -151,6 +164,95 @@ export type FlightResultV0 = {
   href: string;
   targetSnapshot: RouteSnapshotV0;
 };
+
+type RscFetchResultSource = "cached" | "live";
+type RscRedirectSignal = "response-url" | "streamed-header";
+
+export type RscFetchResultFactsV0 = {
+  source: RscFetchResultSource;
+  currentHref: string;
+  origin: string;
+  effectiveHistoryUpdateMode: "push" | "replace";
+  redirectDepth: number;
+  requestPreviousNextUrl: string | null;
+  clientCompatibilityId: string | null;
+  responseOk: boolean;
+  isRscContentType: boolean;
+  hasBody: boolean;
+  compatibilityIdHeader: string | null;
+  responseUrl: string | null;
+  streamedRedirectTarget: string | null;
+};
+
+type RscRedirectFollowV0 = {
+  href: string;
+  historyUpdateMode: "push" | "replace";
+  previousNextUrl: string | null;
+  redirectDepth: number;
+};
+
+type RscFetchResultHardNavReason =
+  | "invalidRscPayload"
+  | "rscCompatibilityMismatch"
+  | "externalRedirectTarget"
+  | "redirectDepthExhausted"
+  | "streamedRedirectLoop";
+
+export type RscFetchResultDecisionV0 =
+  | { kind: "proceedToCommit"; discardBody: false; trace: NavigationTrace }
+  | {
+      kind: "followRedirect";
+      discardBody: boolean;
+      redirect: RscRedirectFollowV0;
+      trace: NavigationTrace;
+    }
+  | {
+      kind: "hardNavigate";
+      discardBody: boolean;
+      url: string;
+      reason: RscFetchResultHardNavReason;
+      trace: NavigationTrace;
+    };
+
+// Early navigation intent classification runs before any fetch, on URL-delta
+// facts the executor can collect synchronously at navigation start. It is the
+// pre-flight sibling of classifyRscFetchResult: the planner owns the semantic
+// outcome (same-document scroll vs cache-bypassing flight vs ordinary flight),
+// the executor owns the effects (history mutation, scroll, RSC fetch).
+//
+// V0 only needs the URL delta plus history/scroll intent. Richer planner inputs
+// (route manifest, mounted slots) join later slices once prefetch reuse and the
+// remaining hard-navigation causes route through this surface.
+export type EarlyNavigationIntentFactsV0 = {
+  // App basePath, stripped from both pathnames before comparison.
+  basePath: string;
+  // The current visible document URL (window.location.href at navigation start),
+  // absolute so it can anchor relative target resolution.
+  currentHref: string;
+  // push/replace history intent carried through to the scroll executor.
+  mode: "push" | "replace";
+  // Whether the navigation requested scroll (Link/router scroll option).
+  scroll: boolean;
+  // The navigation target, absolute or relative to currentHref.
+  targetHref: string;
+};
+
+export type EarlyNavigationIntentDecisionV0 =
+  | {
+      kind: "sameDocumentScroll";
+      // Always non-empty: same-document scroll is only chosen for a hash target.
+      hash: string;
+      mode: "push" | "replace";
+      scroll: boolean;
+      trace: NavigationTrace;
+    }
+  | {
+      kind: "flightNavigation";
+      // True for same-path search changes, where a cached full-route payload is
+      // not authoritative because search params are a page input.
+      bypassNavigationCache: boolean;
+      trace: NavigationTrace;
+    };
 
 export type NavigationPlannerInput = {
   // Graph-owned route topology is the semantic authority for root/layout/slot
@@ -227,6 +329,278 @@ function getRequestedWorkTargetHref(work: RequestedWork): string | null {
   }
 }
 
+function createRscFetchResultTraceFields(
+  facts: RscFetchResultFactsV0,
+  fields: NavigationTraceFields = {},
+): NavigationTraceFields {
+  return {
+    fetchResultSource: facts.source,
+    ...fields,
+  };
+}
+
+function createRscFetchResultHardNavigationDecision(options: {
+  discardBody: boolean;
+  facts: RscFetchResultFactsV0;
+  reason: RscFetchResultHardNavReason;
+  reasonCode: NavigationTraceReasonCode;
+  redirectSignal?: RscRedirectSignal;
+  url: string;
+}): RscFetchResultDecisionV0 {
+  return {
+    discardBody: options.discardBody,
+    kind: "hardNavigate",
+    reason: options.reason,
+    trace: createNavigationTrace(
+      options.reasonCode,
+      createRscFetchResultTraceFields(options.facts, {
+        ...(options.redirectSignal !== undefined ? { redirectSignal: options.redirectSignal } : {}),
+        // Terminal redirects report the depth that was evaluated; followed
+        // redirects report the next depth that the executor should request.
+        redirectDepth: options.facts.redirectDepth,
+        targetHref: options.url,
+      }),
+    ),
+    url: options.url,
+  };
+}
+
+function createRscFetchResultFollowRedirectDecision(options: {
+  discardBody: boolean;
+  facts: RscFetchResultFactsV0;
+  redirect: RscRedirectFollowV0;
+  redirectSignal: RscRedirectSignal;
+}): RscFetchResultDecisionV0 {
+  return {
+    discardBody: options.discardBody,
+    kind: "followRedirect",
+    redirect: options.redirect,
+    trace: createNavigationTrace(
+      NavigationTraceReasonCodes.redirectFollow,
+      createRscFetchResultTraceFields(options.facts, {
+        redirectDepth: options.redirect.redirectDepth,
+        redirectSignal: options.redirectSignal,
+        targetHref: options.redirect.href,
+      }),
+    ),
+  };
+}
+
+function mapRscRedirectTerminalReason(reason: "externalRedirect" | "maxRedirectsExceeded"): {
+  hardNavigationReason: RscFetchResultHardNavReason;
+  traceReasonCode: NavigationTraceReasonCode;
+} {
+  switch (reason) {
+    case "externalRedirect":
+      return {
+        hardNavigationReason: "externalRedirectTarget",
+        traceReasonCode: NavigationTraceReasonCodes.redirectTerminalExternal,
+      };
+    case "maxRedirectsExceeded":
+      return {
+        hardNavigationReason: "redirectDepthExhausted",
+        traceReasonCode: NavigationTraceReasonCodes.redirectTerminalDepth,
+      };
+    default: {
+      const _exhaustive: never = reason;
+      throw new Error("[vinext] Unknown RSC redirect terminal reason: " + String(_exhaustive));
+    }
+  }
+}
+
+function classifyRscFetchResult(facts: RscFetchResultFactsV0): RscFetchResultDecisionV0 {
+  if (!facts.responseOk || !facts.isRscContentType || !facts.hasBody) {
+    const url = resolveHardNavigationTargetFromRscResponse(
+      facts.responseUrl,
+      facts.currentHref,
+      facts.origin,
+    );
+    return createRscFetchResultHardNavigationDecision({
+      discardBody: false,
+      facts,
+      reason: "invalidRscPayload",
+      reasonCode: NavigationTraceReasonCodes.invalidRscPayload,
+      url,
+    });
+  }
+
+  const compatibilityDecision = resolveRscCompatibilityNavigationDecision({
+    clientCompatibilityId: facts.clientCompatibilityId,
+    currentHref: facts.currentHref,
+    origin: facts.origin,
+    responseCompatibilityId: facts.compatibilityIdHeader,
+    responseUrl: facts.responseUrl,
+  });
+  if (compatibilityDecision.kind === "hard-navigate") {
+    return createRscFetchResultHardNavigationDecision({
+      discardBody: false,
+      facts,
+      reason: "rscCompatibilityMismatch",
+      reasonCode: NavigationTraceReasonCodes.rscCompatibilityMismatch,
+      url: compatibilityDecision.hardNavigationTarget,
+    });
+  }
+
+  if (facts.responseUrl !== null) {
+    const redirectDecision = resolveRscRedirectLifecycleHop({
+      currentHref: facts.currentHref,
+      historyUpdateMode: facts.effectiveHistoryUpdateMode,
+      origin: facts.origin,
+      redirectDepth: facts.redirectDepth,
+      requestPreviousNextUrl: facts.requestPreviousNextUrl,
+      responseUrl: facts.responseUrl,
+    });
+    if (redirectDecision.kind === "terminal-hard-navigation") {
+      const terminalReason = mapRscRedirectTerminalReason(redirectDecision.reason);
+      return createRscFetchResultHardNavigationDecision({
+        discardBody: false,
+        facts,
+        reason: terminalReason.hardNavigationReason,
+        reasonCode: terminalReason.traceReasonCode,
+        redirectSignal: "response-url",
+        url: redirectDecision.href,
+      });
+    }
+    if (redirectDecision.kind === "follow") {
+      return createRscFetchResultFollowRedirectDecision({
+        discardBody: false,
+        facts,
+        redirect: {
+          href: redirectDecision.href,
+          historyUpdateMode: facts.effectiveHistoryUpdateMode,
+          previousNextUrl: redirectDecision.previousNextUrl,
+          redirectDepth: redirectDecision.redirectDepth,
+        },
+        redirectSignal: "response-url",
+      });
+    }
+  }
+
+  if (facts.streamedRedirectTarget !== null) {
+    const redirectDecision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: facts.currentHref,
+      historyUpdateMode: facts.effectiveHistoryUpdateMode,
+      origin: facts.origin,
+      redirectDepth: facts.redirectDepth,
+      requestPreviousNextUrl: facts.requestPreviousNextUrl,
+      streamedRedirectTarget: facts.streamedRedirectTarget,
+    });
+    if (redirectDecision.kind === "terminal-hard-navigation") {
+      const terminalReason = mapRscRedirectTerminalReason(redirectDecision.reason);
+      return createRscFetchResultHardNavigationDecision({
+        discardBody: true,
+        facts,
+        reason: terminalReason.hardNavigationReason,
+        reasonCode: terminalReason.traceReasonCode,
+        redirectSignal: "streamed-header",
+        url: redirectDecision.href,
+      });
+    }
+    if (redirectDecision.kind === "follow") {
+      return createRscFetchResultFollowRedirectDecision({
+        discardBody: true,
+        facts,
+        redirect: {
+          href: redirectDecision.href,
+          historyUpdateMode: facts.effectiveHistoryUpdateMode,
+          previousNextUrl: redirectDecision.previousNextUrl,
+          redirectDepth: redirectDecision.redirectDepth,
+        },
+        redirectSignal: "streamed-header",
+      });
+    }
+
+    return createRscFetchResultHardNavigationDecision({
+      discardBody: true,
+      facts,
+      reason: "streamedRedirectLoop",
+      reasonCode: NavigationTraceReasonCodes.streamedRedirectLoop,
+      redirectSignal: "streamed-header",
+      url: redirectDecision.href,
+    });
+  }
+
+  return {
+    discardBody: false,
+    kind: "proceedToCommit",
+    trace: createNavigationTrace(
+      NavigationTraceReasonCodes.proceedToCommit,
+      createRscFetchResultTraceFields(facts),
+    ),
+  };
+}
+
+function createEarlyNavigationIntentTrace(
+  reasonCode: NavigationTraceReasonCode,
+  facts: EarlyNavigationIntentFactsV0,
+): NavigationTrace {
+  return createNavigationTrace(reasonCode, { targetHref: facts.targetHref });
+}
+
+function classifyEarlyNavigationIntent(
+  facts: EarlyNavigationIntentFactsV0,
+): EarlyNavigationIntentDecisionV0 {
+  let current: URL;
+  let next: URL;
+  try {
+    current = new URL(facts.currentHref);
+    next = new URL(facts.targetHref, facts.currentHref);
+  } catch {
+    // Unparseable hrefs cannot be reasoned about as a same-document delta. Fall
+    // back to an ordinary flight navigation and let the fetch path surface any
+    // real failure rather than masking it as a same-page outcome.
+    return {
+      bypassNavigationCache: false,
+      kind: "flightNavigation",
+      trace: createEarlyNavigationIntentTrace(
+        NavigationTraceReasonCodes.crossDocumentFlight,
+        facts,
+      ),
+    };
+  }
+
+  // A cross-origin target is never a same-document or same-page navigation, even
+  // when its pathname and search match. The planner is the semantic authority
+  // here, so it cannot assume the caller already filtered same-origin: gate both
+  // same-document outcomes on origin so a different host falls through to an
+  // ordinary flight.
+  const samePathname =
+    current.origin === next.origin &&
+    stripBasePath(current.pathname, facts.basePath) ===
+      stripBasePath(next.pathname, facts.basePath);
+  // Compare serialised search params rather than raw search strings, matching the
+  // previous same-page-search predicate, so encoding differences that parse to
+  // the same query (e.g. "%20" vs "+") are not read as a search change. App
+  // Router snapshots reach currentHref through createSnapshotPathAndSearch();
+  // reparsing and serialising that canonical query is idempotent and preserves
+  // key order. We intentionally do not sort, since query order can be observable.
+  const sameSearch = current.searchParams.toString() === next.searchParams.toString();
+
+  if (samePathname && sameSearch && next.hash !== "") {
+    return {
+      hash: next.hash,
+      kind: "sameDocumentScroll",
+      mode: facts.mode,
+      scroll: facts.scroll,
+      trace: createEarlyNavigationIntentTrace(NavigationTraceReasonCodes.sameDocumentScroll, facts),
+    };
+  }
+
+  if (samePathname && !sameSearch) {
+    return {
+      bypassNavigationCache: true,
+      kind: "flightNavigation",
+      trace: createEarlyNavigationIntentTrace(NavigationTraceReasonCodes.samePageSearch, facts),
+    };
+  }
+
+  return {
+    bypassNavigationCache: false,
+    kind: "flightNavigation",
+    trace: createEarlyNavigationIntentTrace(NavigationTraceReasonCodes.crossDocumentFlight, facts),
+  };
+}
+
 function createSnapshotRouteTopology(snapshot: RouteSnapshotV0): RouteTopologySnapshot {
   return {
     layoutIds: snapshot.layoutIds,
@@ -261,7 +635,7 @@ function findRouteManifestRouteByMatchedUrl(
 ): RouteManifestRoute | null {
   const urlParts = splitMatchedUrlIntoRouteParts(matchedUrl);
 
-  // RouteManifest preserves buildAppRouteGraph's compareRoutes() order, so the
+  // RouteManifest preserves buildAppRouteGraph's sortRoutes() order, so the
   // first pattern match follows the same static/dynamic/catch-all precedence as
   // request-time route matching instead of raw filesystem scan order.
   for (const route of routeManifest.segmentGraph.routes.values()) {
@@ -385,8 +759,18 @@ function findRouteManifestInterceptionForProof(
     if (!matchRoutePatternPrefix(sourceParts, interception.sourcePatternParts)) {
       continue;
     }
-    if (matchRoutePattern(targetParts, interception.targetPatternParts) === null) continue;
-    if (interception.targetRouteId !== null && targetRoute?.id !== interception.targetRouteId) {
+    const exactTargetParams = matchRoutePattern(targetParts, interception.targetPatternParts);
+    const allowsMiddlewareRewriteTarget =
+      exactTargetParams === null &&
+      matchRoutePatternWithOptionalDynamicSegments(targetParts, interception.targetPatternParts);
+    if (exactTargetParams === null && !allowsMiddlewareRewriteTarget) {
+      continue;
+    }
+    if (
+      !allowsMiddlewareRewriteTarget &&
+      interception.targetRouteId !== null &&
+      targetRoute?.id !== interception.targetRouteId
+    ) {
       continue;
     }
     return interception;
@@ -555,7 +939,7 @@ function resolveCurrentRootBoundaryCommitSlotPersistence(options: {
  *
  * Wire absence and UNMATCHED_SLOT markers are not semantic proof.
  */
-function resolveDefaultOrUnmatchedSlotPersistenceForLayouts(options: {
+export function resolveDefaultOrUnmatchedSlotPersistenceForLayouts(options: {
   currentSlotBindings: readonly ParallelSlotBindingSnapshotV0[];
   preservedLayoutIds: readonly string[];
   targetSlotBindings: readonly ParallelSlotBindingSnapshotV0[];
@@ -1028,8 +1412,127 @@ function planNavigation(input: NavigationPlannerInput): NavigationDecisionV0 {
   }
 }
 
+export type ServerActionResultFactsV0 = {
+  actionRedirectHref: string | null;
+  actionRedirectType: "push" | "replace";
+  clientCompatibilityId: string | null;
+  compatibilityIdHeader: string | null;
+  currentHref: string;
+  isRscContentType: boolean;
+  origin: string;
+  responseUrl: string | null;
+};
+
+export type ServerActionResultDecisionV0 =
+  | { kind: "proceed"; trace: NavigationTrace }
+  | {
+      kind: "hardNavigate";
+      url: string;
+      historyMode?: "assign" | "replace";
+      clearClientNavigationCaches: boolean;
+      reason: "serverActionRedirectCompatibilityMismatch" | "serverActionRscCompatibilityMismatch";
+      trace: NavigationTrace;
+    };
+
+export type RscNavigationErrorFactsV0 = {
+  currentHref: string;
+};
+
+export type RscNavigationErrorDecisionV0 = {
+  kind: "hardNavigate";
+  url: string;
+  reason: "rscNavigationError";
+  trace: NavigationTrace;
+};
+
+function classifyServerActionResult(
+  facts: ServerActionResultFactsV0,
+): ServerActionResultDecisionV0 {
+  // A client without a compatibility id cannot prove skew.
+  if (facts.clientCompatibilityId === null) {
+    return {
+      kind: "proceed",
+      trace: createNavigationTrace(NavigationTraceReasonCodes.proceedToCommit, {}),
+    };
+  }
+
+  // Non-RSC action responses are not subject to the cache-busting compatibility
+  // check; the executor will handle them directly.
+  if (!facts.isRscContentType) {
+    return {
+      kind: "proceed",
+      trace: createNavigationTrace(NavigationTraceReasonCodes.proceedToCommit, {}),
+    };
+  }
+
+  const compatibilityDecision = resolveRscCompatibilityNavigationDecision({
+    clientCompatibilityId: facts.clientCompatibilityId,
+    currentHref: facts.currentHref,
+    origin: facts.origin,
+    responseCompatibilityId: facts.compatibilityIdHeader,
+    responseUrl: facts.responseUrl,
+  });
+
+  if (compatibilityDecision.kind === "compatible") {
+    return {
+      kind: "proceed",
+      trace: createNavigationTrace(NavigationTraceReasonCodes.proceedToCommit, {}),
+    };
+  }
+
+  // compatibilityDecision.hardNavigationTarget (derived from responseUrl with _rsc stripped)
+  // is intentionally not used here. For server actions, responseUrl is the action endpoint URL,
+  // not the page URL the user should land on. The authoritative destinations are actionRedirectHref
+  // (explicit redirect) and currentHref (reload in place) — both are set below.
+
+  if (facts.actionRedirectHref !== null) {
+    return {
+      kind: "hardNavigate",
+      url: facts.actionRedirectHref,
+      historyMode: facts.actionRedirectType === "push" ? "assign" : "replace",
+      clearClientNavigationCaches: true,
+      reason: "serverActionRedirectCompatibilityMismatch",
+      trace: createNavigationTrace(
+        NavigationTraceReasonCodes.serverActionRedirectCompatibilityMismatch,
+        { targetHref: facts.actionRedirectHref },
+      ),
+    };
+  }
+
+  // For a no-redirect RSC response, the executor should reload the current
+  // document so the user stays on the same URL (including search params).
+  const targetUrl = facts.currentHref;
+
+  return {
+    kind: "hardNavigate",
+    url: targetUrl,
+    clearClientNavigationCaches: false,
+    reason: "serverActionRscCompatibilityMismatch",
+    trace: createNavigationTrace(NavigationTraceReasonCodes.serverActionRscCompatibilityMismatch, {
+      targetHref: targetUrl,
+    }),
+  };
+}
+
+function classifyRscNavigationError(
+  facts: RscNavigationErrorFactsV0,
+): RscNavigationErrorDecisionV0 {
+  return {
+    kind: "hardNavigate",
+    url: facts.currentHref,
+    reason: "rscNavigationError",
+    trace: createNavigationTrace(NavigationTraceReasonCodes.rscNavigationError, {
+      targetHref: facts.currentHref,
+    }),
+  };
+}
+
 export const navigationPlanner = {
+  classifyEarlyNavigationIntent,
+  classifyRscFetchResult,
+  classifyRscNavigationError,
   classifyRootBoundaryTransition,
+  classifyServerActionResult,
   plan: planNavigation,
   resolveCurrentRootBoundaryElementPersistence,
   resolveMountedParallelSlotPersistence,

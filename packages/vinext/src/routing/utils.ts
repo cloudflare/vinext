@@ -72,14 +72,29 @@ function routePrecedence(pattern: string): number {
 }
 
 /**
- * Sort comparator for routes — lower precedence score sorts first (higher priority).
- * Lexicographic tiebreaker on pattern for determinism.
+ * Sort routes by precedence — lower score sorts first (higher priority), with a
+ * lexicographic tiebreaker on the pattern for determinism. Sorts in place and
+ * returns the same array (mirrors `Array.prototype.sort`).
  *
- * Usage: routes.sort(compareRoutes)
+ * `routePrecedence` is a pure function of the pattern, so each pattern's score
+ * is computed exactly once up front (decorate-sort) instead of ~2·log n times
+ * by a comparator that re-parses on every comparison. The `localeCompare`
+ * tiebreaker already guarantees a total order, so the result is byte-identical
+ * to comparing precedence inline.
+ *
+ * Usage: sortRoutes(routes)
  */
-export function compareRoutes<T extends { pattern: string }>(a: T, b: T): number {
-  const diff = routePrecedence(a.pattern) - routePrecedence(b.pattern);
-  return diff !== 0 ? diff : a.pattern.localeCompare(b.pattern);
+export function sortRoutes<T extends { pattern: string }>(routes: T[]): T[] {
+  const scores = new Map<string, number>();
+  for (const route of routes) {
+    if (!scores.has(route.pattern)) {
+      scores.set(route.pattern, routePrecedence(route.pattern));
+    }
+  }
+  return routes.sort((a, b) => {
+    const diff = (scores.get(a.pattern) ?? 0) - (scores.get(b.pattern) ?? 0);
+    return diff !== 0 ? diff : a.pattern.localeCompare(b.pattern);
+  });
 }
 
 // Matches literal delimiter characters and their percent-encoded equivalents.
@@ -180,4 +195,78 @@ export function decodeMatchedParams(params: Record<string, string | string[]>): 
       params[key] = decodeMatchedParam(value);
     }
   }
+}
+
+/**
+ * Check whether a path segment is invisible in the URL (route groups, parallel
+ * slots, "."). Single source of truth shared by the route graph (Node) and
+ * browser-side bfcache identity logic. Lives in this browser-safe utils module
+ * so importing it does not drag node:path/node:fs into the client bundle.
+ */
+export function isInvisibleSegment(segment: string): boolean {
+  if (segment === ".") return true;
+  if (segment.startsWith("(") && segment.endsWith(")")) return true;
+  if (segment.startsWith("@")) return true;
+  return false;
+}
+
+/** Split a pathname into its non-empty segments without decoding. */
+export function splitPathSegments(pathname: string): string[] {
+  return pathname.split("/").filter(Boolean);
+}
+
+/**
+ * Catch-all filesystem segment, e.g. `[...slug]`. Browser-safe predicate shared
+ * with the route graph's segment parsing (dynamicParamNameFromSegment) so the
+ * bracket conventions live in one place. The length guard rejects empty names
+ * (`[...]`).
+ */
+export function isCatchAllSegment(segment: string): boolean {
+  return segment.startsWith("[...") && segment.endsWith("]") && segment.length > 5;
+}
+
+/**
+ * Optional-catch-all filesystem segment, e.g. `[[...slug]]`. Unlike a catch-all,
+ * this matches zero or more URL segments.
+ */
+export function isOptionalCatchAllSegment(segment: string): boolean {
+  return segment.startsWith("[[...") && segment.endsWith("]]") && segment.length > 7;
+}
+
+/**
+ * Count how many pathname segments a tree path's *visible* segments consume,
+ * given the total number of pathname segments available.
+ *
+ * This is the minimal pure slice of the canonical filesystem-segment →
+ * URL-segment mapping in `app-route-graph.ts` (`convertSegmentsToRouteParts`),
+ * extracted here so browser-side bfcache identity logic can share it without
+ * importing the Node-bound route graph module. `convertSegmentsToRouteParts`
+ * remains the source of truth for how each segment kind maps to a URL part.
+ *
+ * Each ordinary visible segment (static or `[x]`) consumes exactly one pathname
+ * segment. A catch-all (`[...x]`) is terminal and consumes every remaining
+ * pathname segment. An optional-catch-all (`[[...x]]`) is also terminal but may
+ * match zero segments, so it consumes only the remaining pathname segments
+ * (which is zero once preceding segments have already consumed the pathname) —
+ * never more than are actually present.
+ *
+ * @param visibleTreePathSegments URL-visible tree-path segments (callers must
+ *   pre-filter invisible segments via `isInvisibleSegment`).
+ * @param pathnameSegmentCount Total number of pathname segments available.
+ */
+export function countConsumedPathnameSegments(
+  visibleTreePathSegments: readonly string[],
+  pathnameSegmentCount: number,
+): number {
+  let consumed = 0;
+  for (const segment of visibleTreePathSegments) {
+    if (isCatchAllSegment(segment) || isOptionalCatchAllSegment(segment)) {
+      // Terminal: a (possibly optional) catch-all swallows whatever pathname
+      // segments remain. Clamping to the available count keeps an optional
+      // catch-all that matches zero URL segments from over-counting.
+      return Math.max(consumed, pathnameSegmentCount);
+    }
+    consumed += 1;
+  }
+  return consumed;
 }

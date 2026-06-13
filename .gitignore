@@ -44,6 +44,9 @@ reports/
 # Nix
 result
 result-*
+# The Nix `result` pattern above also matches Next.js compat fixture routes
+# named `result`; re-include them so they don't silently fall out of tracking.
+!tests/fixtures/root-layout-redirect/app/result/
 .direnv/
 .corepack/
 

@@ -24,13 +24,17 @@ export async function generateClientEntry(
   pagesDir: string,
   nextConfig: ResolvedNextConfig,
   fileMatcher: ReturnType<typeof createValidFileMatcher>,
-  options: { appPrefetchRoutes?: readonly VinextLinkPrefetchRoute[] } = {},
+  options: {
+    appPrefetchRoutes?: readonly VinextLinkPrefetchRoute[];
+    instrumentationClientPath?: string | null;
+  } = {},
 ): Promise<string> {
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
 
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
   const hasApp = appFilePath !== null;
   const appPrefetchRoutes = options.appPrefetchRoutes ?? [];
+  const instrumentationClientPath = options.instrumentationClientPath ?? null;
 
   // Build a map of route pattern -> dynamic import.
   // Keys must use Next.js bracket format (e.g. "/user/[id]") to match
@@ -46,11 +50,28 @@ export async function generateClientEntry(
 
   const appFileBase = appFilePath ? normalizePathSeparators(appFilePath) : undefined;
 
-  return `
+  // Refs #1474: Side-effect-import the user's `instrumentation-client.{ts,js}`
+  // (when present at project root or in `src/`) BEFORE any other module so its
+  // top-level statements run before `hydrateRoot()` is called. Mirrors
+  // Next.js's `page-bootstrap.ts`, which side-effect-imports
+  // `require-instrumentation-client` ahead of `initialize`/`hydrate`
+  // (.nextjs-ref/packages/next/src/client/page-bootstrap.ts L1).
+  //
+  // The `vinext/instrumentation-client` import below pulls in the hook
+  // surface (`onRouterTransitionStart`) for navigation events. It also
+  // re-imports the user file via the `private-next-instrumentation-client`
+  // alias, but tree-shakers can be conservative about the side effects of
+  // an indirectly-loaded module. Importing the user's file directly here
+  // makes the contract explicit: bare side-effect imports are always
+  // preserved by Vite/Rolldown's import-analysis pipeline.
+  const userInstrumentationImport = instrumentationClientPath
+    ? `import ${JSON.stringify(normalizePathSeparators(instrumentationClientPath))};\n`
+    : "";
+
+  return `${userInstrumentationImport}
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
-import { installPagesRouterRuntime } from "vinext/pages-router-runtime";
 // Statically import next/router as the very first vinext shim so that
 // (a) installWindowNext runs at top-level — \`window.next.router\` is
 //     available to test harnesses and third-party scripts BEFORE
@@ -88,7 +109,7 @@ const appLoader = undefined;
 // Object.keys(pageLoaders), exposed separately so navigateClient() can iterate
 // it without re-keying the map. Ordering is the insertion order of pageRoutes,
 // which pagesRouter() has already sorted by specificity (static → dynamic →
-// catch-all → optional catch-all) via compareRoutes — so matchPagesPattern()
+// catch-all → optional catch-all) via sortRoutes — so matchPagesPattern()
 // can iterate in order and trust the first match.
 window.__VINEXT_PAGE_LOADERS__ = pageLoaders;
 window.__VINEXT_PAGE_PATTERNS__ = Object.keys(pageLoaders);
@@ -114,6 +135,18 @@ async function hydrate() {
   if (!nextData) {
     console.error("[vinext] No __NEXT_DATA__ found");
     return;
+  }
+
+  let hydrateRootOptions;
+  if (import.meta.env.DEV) {
+    const overlay = await import("vinext/dev-error-overlay");
+    overlay.installDevErrorOverlay();
+    overlay.installViteHmrErrorHandler(import.meta.hot);
+    overlay.reportInitialDevServerErrors();
+    hydrateRootOptions = {
+      onCaughtError: overlay.devOnCaughtError,
+      onUncaughtError: overlay.devOnUncaughtError,
+    };
   }
 
   const { pageProps } = nextData.props;
@@ -157,9 +190,8 @@ async function hydrate() {
     return;
   }
 
-  const root = hydrateRoot(container, element);
+  const root = hydrateRoot(container, element, hydrateRootOptions);
   window.__VINEXT_ROOT__ = root;
-  installPagesRouterRuntime();
   const hydratedAt = performance.now();
   window.__VINEXT_HYDRATED_AT = hydratedAt;
   window.__NEXT_HYDRATED = true;

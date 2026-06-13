@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { waitForAppRouterHydration } from "../helpers";
+import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
 const FEED_DRAFT_VALUE = "source draft survives";
@@ -209,8 +209,7 @@ test.describe("Intercepting Routes", () => {
   test("refresh on direct target clears stale intercepted history context", async ({ page }) => {
     const refreshInterceptionHeaders: Array<string | null> = [];
     page.on("request", (request) => {
-      const url = new URL(request.url());
-      if (url.pathname === "/photos/42.rsc") {
+      if (isAppRouterRscRequestForPath(request, "/photos/42")) {
         refreshInterceptionHeaders.push(request.headers()["x-vinext-interception-context"] ?? null);
       }
     });

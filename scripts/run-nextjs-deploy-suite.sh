@@ -62,6 +62,8 @@ if [ "${NEXTJS_PREPARE:-0}" = "1" ]; then
     cd "${NEXTJS_DIR}"
     echo ">>> $(date -Iseconds) pnpm install"
     run_pnpm install
+    echo ">>> $(date -Iseconds) bump playwright to 1.60.0"
+    run_pnpm add -w playwright@1.60.0 playwright-chromium@1.60.0
     echo ">>> $(date -Iseconds) pnpm build"
     run_pnpm build
     echo ">>> $(date -Iseconds) pnpm playwright install"

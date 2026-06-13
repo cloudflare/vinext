@@ -23,6 +23,16 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // (RSC env). A single request should produce exactly one invocation.
   recordMiddlewareInvocation(pathname);
 
+  // Regression for cloudflare/vinext#1480: a node-runtime middleware that
+  // reads the request body on POST (auth, logging, body-size accounting, …)
+  // and then falls through must NOT prevent the downstream server-action POST
+  // from being intercepted and reading its own body. We consume the body here
+  // exactly as Next.js' `middleware-node.js` fixture does, then `.next()`.
+  if (pathname === "/nextjs-compat/action-node-mw" && request.method === "POST") {
+    await request.text();
+    return NextResponse.next();
+  }
+
   // Test NextRequest.cookies - this would fail with TypeError if request is plain Request
   const sessionToken = request.cookies.get("session");
   const acceptsRsc = request.headers.get("accept")?.startsWith("text/x-component") ?? false;
@@ -243,6 +253,21 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.next({ request: { headers } });
   }
 
+  // Locale rewrite for interception-dynamic-segment-middleware suite.
+  // Scoped exclusively to /interception-mw/* to avoid interfering with other tests.
+  // Mirrors Next.js: test/e2e/app-dir/interception-dynamic-segment-middleware/middleware.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/interception-dynamic-segment-middleware/middleware.ts
+  if (pathname.startsWith("/interception-mw/")) {
+    const withoutPrefix = pathname.slice("/interception-mw".length); // → /foo/p/1
+    const locale = "en";
+    const hasLocale = withoutPrefix.startsWith(`/${locale}/`) || withoutPrefix === `/${locale}`;
+    if (!hasLocale) {
+      const target = request.nextUrl.clone();
+      target.pathname = `/interception-mw/${locale}${withoutPrefix}`;
+      return NextResponse.rewrite(target);
+    }
+  }
+
   // Forward search params as a header for RSC testing
   // Ref: opennextjs-cloudflare middleware.ts — search-params header
   const requestHeaders = new Headers(request.headers);
@@ -308,6 +333,16 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
 }
 
 export const config = {
+  // Declare the Node.js runtime so the `/nextjs-compat/action-node-mw`
+  // server-action regression (cloudflare/vinext#1480) faithfully mirrors
+  // Next.js' `middleware-node.js` fixture (`export const config = { runtime:
+  // 'nodejs' }`). vinext runs all middleware on Node regardless of this value:
+  // middleware dispatch reads config only via `middlewareMatcher()` (i.e.
+  // `config.matcher`) with no `config.runtime` branch — see
+  // packages/vinext/src/server/middleware-runtime.ts (resolveMiddlewareModuleHandler /
+  // middlewareMatcher). So this is a behavioural no-op for the other matcher
+  // entries — but it guards the named scenario and documents intent.
+  runtime: "nodejs",
   matcher: [
     "/about",
     "/middleware-redirect",
@@ -334,6 +369,7 @@ export const config = {
     "/pages-script-manual-nonce",
     "/nextjs-compat/dynamic/:path*",
     "/nextjs-compat/action-forward-loop",
+    "/nextjs-compat/action-node-mw",
     "/use-client-page-pathname/:path*",
     "/rsc-fetch-redirect-src",
     "/rsc-fetch-error-target",
@@ -347,6 +383,7 @@ export const config = {
     },
     "/mw-gated-fallback-pages",
     "/photos/:path*",
+    "/interception-mw/:path*",
     "/actions",
     "/beforeinteractive-head-ordering/:path*",
     "/beforeinteractive-head-ordering",

@@ -22,7 +22,11 @@ import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import path from "node:path";
 import os from "node:os";
 import fsp from "node:fs/promises";
-import { buildSassPreprocessorOptions } from "../packages/vinext/src/plugins/sass.js";
+import {
+  buildSassPreprocessorOptions,
+  createSassTildeImporter,
+} from "../packages/vinext/src/plugins/sass.js";
+import { fileURLToPath } from "node:url";
 
 // The vinext config hook mutates process.env.NODE_ENV as a side effect.
 // Save/restore so tests that call config() don't leak between files.
@@ -128,6 +132,73 @@ describe("buildSassPreprocessorOptions", () => {
   });
 });
 
+describe("createSassTildeImporter", () => {
+  let tmpRoot: string;
+  let importer: ReturnType<typeof createSassTildeImporter>;
+
+  beforeEach(async () => {
+    tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-tilde-"));
+    // Create node_modules/mypkg/index.scss so the fast-path can find it
+    await fsp.mkdir(path.join(tmpRoot, "node_modules", "mypkg"), { recursive: true });
+    await fsp.writeFile(path.join(tmpRoot, "node_modules", "mypkg", "index.scss"), "");
+    await fsp.mkdir(path.join(tmpRoot, "node_modules", "@scope", "pkg"), { recursive: true });
+    await fsp.writeFile(path.join(tmpRoot, "node_modules", "@scope", "pkg", "styles.scss"), "");
+    // Create styles/variables.scss for root-relative resolution
+    await fsp.mkdir(path.join(tmpRoot, "styles"), { recursive: true });
+    await fsp.writeFile(path.join(tmpRoot, "styles", "variables.scss"), "$color: red;");
+    importer = createSassTildeImporter(tmpRoot);
+  });
+
+  afterEach(async () => {
+    await fsp.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it("returns null for URLs without a leading tilde", () => {
+    expect(importer.findFileUrl("styles/variables")).toBeNull();
+    expect(importer.findFileUrl("./local")).toBeNull();
+    expect(importer.findFileUrl("mypkg/index")).toBeNull();
+  });
+
+  it("returns null for a bare tilde with no path", () => {
+    expect(importer.findFileUrl("~")).toBeNull();
+  });
+
+  it("resolves ~/path relative to the project root", () => {
+    const result = importer.findFileUrl("~/styles/variables");
+    expect(result).not.toBeNull();
+    const resolved = fileURLToPath(result!.href);
+    // Should point to <root>/styles/variables (Sass will add .scss extension)
+    expect(resolved).toBe(path.join(tmpRoot, "styles/variables"));
+  });
+
+  it("resolves ~pkg/path via node_modules fast-path", () => {
+    const result = importer.findFileUrl("~mypkg/index.scss");
+    expect(result).not.toBeNull();
+    const resolved = fileURLToPath(result!.href);
+    expect(resolved).toBe(path.join(tmpRoot, "node_modules", "mypkg", "index.scss"));
+  });
+
+  it("resolves scoped packages ~@scope/pkg/styles.scss", () => {
+    const result = importer.findFileUrl("~@scope/pkg/styles.scss");
+    expect(result).not.toBeNull();
+    const resolved = fileURLToPath(result!.href);
+    expect(resolved).toBe(path.join(tmpRoot, "node_modules", "@scope", "pkg", "styles.scss"));
+  });
+
+  it("returns null for unknown packages not in node_modules", () => {
+    // 'nonexistent-pkg' has no directory in tmpRoot/node_modules, and
+    // createRequire resolution will also fail.
+    const result = importer.findFileUrl("~nonexistent-pkg/styles.scss");
+    expect(result).toBeNull();
+  });
+
+  it("returns a file: URL object (not a plain string)", () => {
+    const result = importer.findFileUrl("~/styles/variables");
+    expect(result).toBeInstanceOf(URL);
+    expect(result?.protocol).toBe("file:");
+  });
+});
+
 describe("vinext config hook threads sassOptions into css.preprocessorOptions", () => {
   async function runConfigHook(
     nextConfigSrc: string,
@@ -180,11 +251,20 @@ describe("vinext config hook threads sassOptions into css.preprocessorOptions", 
     expect((css as any)?.preprocessorOptions?.scss?.loadPaths).toEqual(["./styles"]);
   }, 15000);
 
-  it("does not set preprocessorOptions when sassOptions is absent", async () => {
+  it("always sets preprocessorOptions (tilde importer is always injected)", async () => {
     const css = await runConfigHook(`export default {};`);
-    // css may still be set if there is a postcss override, but preprocessorOptions
-    // should not appear.
+    // preprocessorOptions is ALWAYS set — even without sassOptions — because
+    // vinext injects the tilde importer unconditionally so that SCSS files can
+    // use webpack-style ~pkg/file and ~/path imports (Next.js / sass-loader
+    // behaviour). See: packages/vinext/src/plugins/sass.ts#createSassTildeImporter
     // oxlint-disable-next-line typescript/no-explicit-any
-    expect((css as any)?.preprocessorOptions).toBeUndefined();
+    const opts = (css as any)?.preprocessorOptions;
+    expect(opts).toBeDefined();
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const scssImporters: any[] = opts.scss.importers;
+    expect(scssImporters.length).toBeGreaterThanOrEqual(1);
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const sassImporters: any[] = opts.sass.importers;
+    expect(sassImporters.length).toBeGreaterThanOrEqual(1);
   }, 15000);
 });

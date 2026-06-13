@@ -2,8 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { execFileSync } from "node:child_process";
 import {
   detectProject,
+  deploy,
   generateWranglerConfig,
   generateAppRouterWorkerEntry,
   generatePagesRouterWorkerEntry,
@@ -13,13 +15,21 @@ import {
   getFilesToGenerate,
   ensureESModule,
   renameCJSConfigs,
+  buildNodeCliInvocation,
+  buildWranglerInvocation,
   buildWranglerDeployArgs,
   parseDeployArgs,
   resolveWranglerBin,
+  runWranglerDeploy,
+  validateWranglerEnvName,
+  withCloudflareEnv,
   isPackageResolvable,
   viteConfigHasCloudflarePlugin,
+  viteConfigHasCacheAdapter,
+  workerEntryHasCacheHandler,
   hasWranglerConfig,
   formatMissingCloudflarePluginError,
+  formatMissingCacheAdapterError,
 } from "../packages/vinext/src/deploy.js";
 import {
   detectPackageManager,
@@ -27,9 +37,13 @@ import {
   findInNodeModules,
   ensureViteConfigCompatibility,
 } from "../packages/vinext/src/utils/project.js";
-import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
 import { computeLazyChunks } from "../packages/vinext/src/utils/lazy-chunks.js";
+import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
+import {
+  computeClientRuntimeMetadata,
+  buildRuntimeGlobalsScript,
+} from "../packages/vinext/src/utils/client-runtime-metadata.js";
 import {
   mergeHeaders,
   resolveStaticAssetSignal,
@@ -53,6 +67,38 @@ function writeFile(dir: string, relativePath: string, content: string): void {
 
 function mkdir(dir: string, relativePath: string): void {
   fs.mkdirSync(path.join(dir, relativePath), { recursive: true });
+}
+
+function readVinextPackageExports(): Record<string, unknown> {
+  const packageJsonPath = path.resolve("packages/vinext/package.json");
+  const parsed: unknown = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
+  if (!isUnknownRecord(parsed) || !isUnknownRecord(parsed.exports)) {
+    throw new Error("packages/vinext/package.json must define an exports object");
+  }
+  return parsed.exports;
+}
+
+function extractVinextImportSubpaths(source: string): string[] {
+  const imports = new Set<string>();
+  const pattern = /\bfrom\s+["']vinext\/([^"']+)["']/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(source)) !== null) {
+    imports.add(`./${match[1]}`);
+  }
+  return [...imports].sort();
+}
+
+function hasPackageExport(exportsMap: Record<string, unknown>, subpath: string): boolean {
+  if (Object.hasOwn(exportsMap, subpath)) return true;
+
+  for (const exportKey of Object.keys(exportsMap)) {
+    if (!exportKey.includes("*")) continue;
+    const [prefix, suffix] = exportKey.split("*");
+    if (prefix === undefined || suffix === undefined) continue;
+    if (subpath.startsWith(prefix) && subpath.endsWith(suffix)) return true;
+  }
+
+  return false;
 }
 
 beforeEach(() => {
@@ -94,52 +140,216 @@ describe("buildWranglerDeployArgs", () => {
   it("treats empty string env as production", () => {
     expect(buildWranglerDeployArgs({ env: "" })).toEqual({ args: ["deploy"], env: undefined });
   });
+
+  it("preserves shell metacharacters as a literal environment argument", () => {
+    const env = "preview & whoami > vinext-pwned.txt & rem";
+    expect(buildWranglerDeployArgs({ env })).toEqual({
+      args: ["deploy", "--env", env],
+      env,
+    });
+  });
+
+  it.each(["production", "preview-1", "staging_eu", "release.2026", "team/app @ 1"])(
+    "accepts Wrangler environment name %s",
+    (env) => {
+      expect(validateWranglerEnvName(env)).toBe(env);
+    },
+  );
+
+  it("rejects null bytes without imposing an artificial length limit", () => {
+    expect(() => validateWranglerEnvName("preview\0prod")).toThrow("null bytes");
+    expect(validateWranglerEnvName("a".repeat(1024))).toBe("a".repeat(1024));
+  });
 });
 
-// ─── Wrangler bin resolution (Windows shim handling) ────────────────────────
+describe("deploy environment validation", () => {
+  it("rejects invalid environment names before project side effects", async () => {
+    writeFile(tmpDir, "package.json", '{"name":"unchanged"}\n');
+    const before = fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8");
+
+    await expect(deploy({ root: tmpDir, env: "preview\0prod", dryRun: true })).rejects.toThrow(
+      "null bytes",
+    );
+
+    expect(fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8")).toBe(before);
+    expect(fs.existsSync(path.join(tmpDir, ".vinext"))).toBe(false);
+  });
+});
+
+// ─── CLOUDFLARE_ENV propagation (issue #1210) ──────────────────────────────
+
+describe("withCloudflareEnv", () => {
+  let priorEnv: string | undefined;
+  let priorHadEnv: boolean;
+
+  beforeEach(() => {
+    priorHadEnv = "CLOUDFLARE_ENV" in process.env;
+    priorEnv = process.env.CLOUDFLARE_ENV;
+    delete process.env.CLOUDFLARE_ENV;
+  });
+
+  afterEach(() => {
+    if (priorHadEnv) {
+      process.env.CLOUDFLARE_ENV = priorEnv;
+    } else {
+      delete process.env.CLOUDFLARE_ENV;
+    }
+  });
+
+  it("sets CLOUDFLARE_ENV for the duration of the callback", async () => {
+    let observed: string | undefined;
+    await withCloudflareEnv("staging", async () => {
+      observed = process.env.CLOUDFLARE_ENV;
+    });
+    expect(observed).toBe("staging");
+  });
+
+  it("restores absence of CLOUDFLARE_ENV after the callback when no prior value existed", async () => {
+    await withCloudflareEnv("hml", async () => {
+      // no-op
+    });
+    expect("CLOUDFLARE_ENV" in process.env).toBe(false);
+  });
+
+  it("restores the prior CLOUDFLARE_ENV value after the callback", async () => {
+    process.env.CLOUDFLARE_ENV = "preview";
+    await withCloudflareEnv("staging", async () => {
+      expect(process.env.CLOUDFLARE_ENV).toBe("staging");
+    });
+    expect(process.env.CLOUDFLARE_ENV).toBe("preview");
+  });
+
+  it("does not touch process.env when env is undefined", async () => {
+    let observed: string | undefined = "sentinel";
+    await withCloudflareEnv(undefined, async () => {
+      observed = process.env.CLOUDFLARE_ENV;
+    });
+    expect(observed).toBeUndefined();
+    expect("CLOUDFLARE_ENV" in process.env).toBe(false);
+  });
+
+  it("does not touch process.env when env is empty string", async () => {
+    await withCloudflareEnv("", async () => {
+      expect("CLOUDFLARE_ENV" in process.env).toBe(false);
+    });
+    expect("CLOUDFLARE_ENV" in process.env).toBe(false);
+  });
+
+  it("restores CLOUDFLARE_ENV after the callback throws", async () => {
+    process.env.CLOUDFLARE_ENV = "preview";
+    await expect(
+      withCloudflareEnv("staging", async () => {
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    expect(process.env.CLOUDFLARE_ENV).toBe("preview");
+  });
+
+  it("returns the callback's resolved value", async () => {
+    const result = await withCloudflareEnv("staging", async () => 42);
+    expect(result).toBe(42);
+  });
+});
+
+// ─── Wrangler JavaScript entrypoint resolution ──────────────────────────────
 
 describe("resolveWranglerBin", () => {
-  it("uses bare name on non-Windows platforms", () => {
-    mkdir(tmpDir, "node_modules/.bin");
-    writeFile(tmpDir, "node_modules/.bin/wrangler", "#!/usr/bin/env node");
+  function writeWranglerPackage(
+    bin: string | Record<string, string> = { wrangler: "bin/wrangler.js" },
+  ) {
+    writeFile(
+      tmpDir,
+      "node_modules/wrangler/package.json",
+      JSON.stringify({ name: "wrangler", bin }),
+    );
+    writeFile(tmpDir, "node_modules/wrangler/bin/wrangler.js", "#!/usr/bin/env node");
+  }
 
-    const resolved = resolveWranglerBin(tmpDir, "linux");
-    expect(resolved).toBe(path.join(tmpDir, "node_modules", ".bin", "wrangler"));
+  function expectedWranglerBin(): string {
+    return fs.realpathSync(path.join(tmpDir, "node_modules", "wrangler", "bin", "wrangler.js"));
+  }
+
+  it("resolves the JavaScript entrypoint from Wrangler's bin map", () => {
+    writeWranglerPackage();
+    expect(resolveWranglerBin(tmpDir)).toBe(expectedWranglerBin());
   });
 
-  it("prefers .CMD shim on Windows when present", () => {
-    mkdir(tmpDir, "node_modules/.bin");
-    writeFile(tmpDir, "node_modules/.bin/wrangler", "#!/usr/bin/env node");
-    writeFile(tmpDir, "node_modules/.bin/wrangler.CMD", "@ECHO off");
-
-    const resolved = resolveWranglerBin(tmpDir, "win32");
-    expect(resolved).toBe(path.join(tmpDir, "node_modules", ".bin", "wrangler.CMD"));
+  it("supports a string-valued package bin", () => {
+    writeWranglerPackage("bin/wrangler.js");
+    expect(resolveWranglerBin(tmpDir)).toBe(expectedWranglerBin());
   });
 
-  it("falls back to bare name on Windows if no .CMD shim exists", () => {
-    mkdir(tmpDir, "node_modules/.bin");
-    writeFile(tmpDir, "node_modules/.bin/wrangler", "#!/usr/bin/env node");
-
-    const resolved = resolveWranglerBin(tmpDir, "win32");
-    expect(resolved).toBe(path.join(tmpDir, "node_modules", ".bin", "wrangler"));
-  });
-
-  it("walks up to a hoisted workspace node_modules on Windows", () => {
+  it("walks up to a hoisted workspace node_modules", () => {
     mkdir(tmpDir, "apps/web");
-    mkdir(tmpDir, "node_modules/.bin");
-    writeFile(tmpDir, "node_modules/.bin/wrangler.CMD", "@ECHO off");
-
-    const resolved = resolveWranglerBin(path.join(tmpDir, "apps", "web"), "win32");
-    expect(resolved).toBe(path.join(tmpDir, "node_modules", ".bin", "wrangler.CMD"));
+    writeWranglerPackage();
+    expect(resolveWranglerBin(path.join(tmpDir, "apps", "web"))).toBe(expectedWranglerBin());
   });
 
-  it("returns platform-appropriate fallback path when nothing is found", () => {
-    expect(resolveWranglerBin(tmpDir, "win32")).toBe(
-      path.join(tmpDir, "node_modules", ".bin", "wrangler.CMD"),
+  it("supports package resolvers such as Yarn Plug'n'Play", () => {
+    writeWranglerPackage();
+    const packageJsonPath = path.join(tmpDir, "node_modules", "wrangler", "package.json");
+    expect(resolveWranglerBin("/virtual/project", () => packageJsonPath)).toBe(
+      path.join(tmpDir, "node_modules", "wrangler", "bin", "wrangler.js"),
     );
-    expect(resolveWranglerBin(tmpDir, "linux")).toBe(
-      path.join(tmpDir, "node_modules", ".bin", "wrangler"),
+  });
+
+  it("returns a clear fallback path when Wrangler is missing", () => {
+    expect(resolveWranglerBin(tmpDir)).toBe(
+      path.join(tmpDir, "node_modules", "wrangler", "bin", "wrangler.js"),
     );
+  });
+
+  it("passes deploy arguments literally to Node without a command shell", () => {
+    writeWranglerPackage();
+    expect(buildWranglerInvocation(tmpDir, { env: "preview-1" }, "node.exe")).toEqual({
+      file: "node.exe",
+      args: [expectedWranglerBin(), "deploy", "--env", "preview-1"],
+      env: "preview-1",
+    });
+  });
+
+  it("keeps Windows shell metacharacters in one literal argument", () => {
+    const payload = "preview & whoami > vinext-pwned.txt & rem";
+    expect(buildNodeCliInvocation("wrangler.js", ["deploy", "--env", payload], "node.exe")).toEqual(
+      {
+        file: "node.exe",
+        args: ["wrangler.js", "deploy", "--env", payload],
+      },
+    );
+  });
+
+  it("executes Wrangler with shell disabled and literal metacharacters", () => {
+    writeWranglerPackage();
+    const payload = "preview & whoami > vinext-pwned.txt & rem";
+    let observed: Parameters<typeof execFileSync> | undefined;
+    const execute = ((...args: Parameters<typeof execFileSync>) => {
+      observed = args;
+      return "";
+    }) as typeof execFileSync;
+
+    runWranglerDeploy(tmpDir, { env: payload }, execute);
+
+    expect(observed?.[0]).toBe(process.execPath);
+    expect(observed?.[1]).toEqual([expectedWranglerBin(), "deploy", "--env", payload]);
+    expect(observed?.[2]).toMatchObject({ shell: false });
+  });
+
+  it("does not execute metacharacters in a real subprocess", () => {
+    const argvPath = path.join(tmpDir, "argv.json");
+    const pwnedPath = path.join(tmpDir, "vinext-pwned.txt");
+    const scriptPath = path.join(tmpDir, "capture-argv.cjs");
+    const payload = `preview & echo pwned > ${pwnedPath} & rem`;
+    writeFile(
+      tmpDir,
+      "capture-argv.cjs",
+      `require("node:fs").writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)))`,
+    );
+    const invocation = buildNodeCliInvocation(scriptPath, ["deploy", "--env", payload]);
+
+    execFileSync(invocation.file, invocation.args, { cwd: tmpDir, shell: false });
+
+    expect(JSON.parse(fs.readFileSync(argvPath, "utf-8"))).toEqual(["deploy", "--env", payload]);
+    expect(fs.existsSync(pwnedPath)).toBe(false);
   });
 });
 
@@ -408,7 +618,7 @@ describe("generateWranglerConfig", () => {
     const parsed = JSON.parse(config);
 
     expect(parsed.kv_namespaces).toBeDefined();
-    expect(parsed.kv_namespaces[0].binding).toBe("VINEXT_CACHE");
+    expect(parsed.kv_namespaces[0].binding).toBe("VINEXT_KV_CACHE");
   });
 
   it("omits KV namespace when no ISR", () => {
@@ -459,6 +669,16 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).toContain("handleImageOptimization");
   });
 
+  it("threads configured image widths and qualities into the App Router worker", () => {
+    const content = generateAppRouterWorkerEntry();
+    expect(content).toContain("process.env.__VINEXT_IMAGE_DEVICE_SIZES");
+    expect(content).toContain("process.env.__VINEXT_IMAGE_SIZES");
+    expect(content).toContain("process.env.__VINEXT_IMAGE_QUALITIES");
+    expect(content).toContain("JSON.stringify(DEFAULT_DEVICE_SIZES)");
+    expect(content).toContain("JSON.stringify(DEFAULT_IMAGE_SIZES)");
+    expect(content).toContain("}, allowedWidths, imageConfig)");
+  });
+
   it("declares Env interface with IMAGES binding", () => {
     const content = generateAppRouterWorkerEntry();
     expect(content).toContain("interface Env");
@@ -480,20 +700,139 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).toContain("env.IMAGES");
   });
 
-  it("does not include KV wiring when hasISR is false", () => {
-    const content = generateAppRouterWorkerEntry(false);
+  it("never wires a cache handler into the Worker entry", () => {
+    // Cache backends are configured declaratively via vinext({ cache }) in
+    // vite.config; the Worker entry must not scaffold setDataCacheHandler.
+    const content = generateAppRouterWorkerEntry();
     expect(content).not.toContain("KVCacheHandler");
-    expect(content).not.toContain("setCacheHandler");
-    expect(content).not.toContain("VINEXT_CACHE");
+    expect(content).not.toContain("setDataCacheHandler");
+    expect(content).not.toContain("setCdnCacheAdapter");
+    expect(content).not.toContain("VINEXT_KV_CACHE");
   });
 
-  it("includes KV wiring when hasISR is true", () => {
-    const content = generateAppRouterWorkerEntry(true);
-    expect(content).toContain('import { KVCacheHandler } from "vinext/cloudflare"');
-    expect(content).toContain('import { setCacheHandler } from "vinext/shims/cache"');
-    expect(content).toContain("VINEXT_CACHE: KVNamespace");
-    expect(content).toContain("new KVCacheHandler(env.VINEXT_CACHE)");
-    expect(content).toContain("setCacheHandler(");
+  it("points users to the declarative cache config", () => {
+    const content = generateAppRouterWorkerEntry();
+    expect(content).toContain("vinext({ cache })");
+  });
+});
+
+describe("viteConfigHasCacheAdapter", () => {
+  it("detects a data field assigned an adapter", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+       export default { plugins: [vinext({ cache: { data: kvDataAdapter() } })] };`,
+    );
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+
+  it("detects a cdn field assigned an adapter", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `export default { plugins: [vinext({ cache: { cdn: cdnAdapter() } })] };`,
+    );
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+
+  it("detects a hand-written descriptor object on the data field", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `export default {
+         plugins: [vinext({ cache: { data: { adapter: "./x.js", options: {} } } })],
+       };`,
+    );
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+
+  it("returns false when the cache object is empty", () => {
+    writeFile(tmpDir, "vite.config.ts", `export default { plugins: [vinext({ cache: {} })] };`);
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(false);
+  });
+
+  it("returns false when cdn/data are explicitly undefined", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `export default { plugins: [vinext({ cache: { cdn: undefined, data: undefined } })] };`,
+    );
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(false);
+  });
+
+  it("returns false when there is no cache config at all", () => {
+    writeFile(tmpDir, "vite.config.ts", `export default { plugins: [vinext()] };`);
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(false);
+  });
+
+  it("returns true (does not block) when there is no Vite config to inspect", () => {
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+});
+
+describe("workerEntryHasCacheHandler", () => {
+  it("detects a setCacheHandler call in worker/index.ts", () => {
+    writeFile(
+      tmpDir,
+      "worker/index.ts",
+      `import { setCacheHandler } from "vinext/shims/cache";
+       setCacheHandler(new KVCacheHandler(env.VINEXT_KV_CACHE));`,
+    );
+    expect(workerEntryHasCacheHandler(tmpDir)).toBe(true);
+  });
+
+  it("detects a setDataCacheHandler call", () => {
+    writeFile(
+      tmpDir,
+      "worker/index.ts",
+      `import { setDataCacheHandler } from "vinext/shims/cache";
+       setDataCacheHandler(handler);`,
+    );
+    expect(workerEntryHasCacheHandler(tmpDir)).toBe(true);
+  });
+
+  it("detects a setCdnCacheAdapter call", () => {
+    writeFile(
+      tmpDir,
+      "worker/index.ts",
+      `import { setCdnCacheAdapter } from "vinext/shims/cdn-cache";
+       setCdnCacheAdapter(adapter);`,
+    );
+    expect(workerEntryHasCacheHandler(tmpDir)).toBe(true);
+  });
+
+  it("detects a setter in worker/index.js", () => {
+    writeFile(
+      tmpDir,
+      "worker/index.js",
+      `setCacheHandler(new KVCacheHandler(env.VINEXT_KV_CACHE));`,
+    );
+    expect(workerEntryHasCacheHandler(tmpDir)).toBe(true);
+  });
+
+  it("returns false when the Worker entry has no cache setter", () => {
+    writeFile(tmpDir, "worker/index.ts", `export default { fetch() {} };`);
+    expect(workerEntryHasCacheHandler(tmpDir)).toBe(false);
+  });
+
+  it("returns false when there is no Worker entry to inspect", () => {
+    expect(workerEntryHasCacheHandler(tmpDir)).toBe(false);
+  });
+});
+
+describe("formatMissingCacheAdapterError", () => {
+  it("names the data adapter builder and the KV namespace command", () => {
+    const msg = formatMissingCacheAdapterError({});
+    expect(msg).toContain("no cache adapter is configured");
+    expect(msg).toContain("kvDataAdapter()");
+    expect(msg).toContain("npx wrangler kv namespace create VINEXT_KV_CACHE");
+  });
+
+  it("no longer references the cdn adapter", () => {
+    const msg = formatMissingCacheAdapterError({});
+    expect(msg).not.toContain("cdnAdapter");
+    expect(msg).not.toContain("cdn-adapter");
   });
 });
 
@@ -520,144 +859,123 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("runs middleware before routing", () => {
     const content = generatePagesRouterWorkerEntry();
-    // Middleware should appear before API route check.
-    // The API check now uses apiLookupPathname (post-locale-strip), but the
-    // ordering invariant still holds (issue #1336 item 3 only changes the
-    // variable name, not the relative position).
-    const middlewarePos = content.indexOf("runMiddleware(request, ctx, { isDataRequest })");
-    const apiRoutePos = content.indexOf('apiLookupPathname.startsWith("/api/")');
-    expect(middlewarePos).toBeGreaterThan(-1);
-    expect(apiRoutePos).toBeGreaterThan(-1);
-    expect(middlewarePos).toBeLessThan(apiRoutePos);
+    // Ordering is now enforced by runPagesRequest (the pipeline owner).
+    // The worker entry wraps runMiddleware via the shared
+    // wrapMiddlewareWithBasePath helper to re-add the basePath before
+    // handing the request to the middleware function, then delegates via
+    // runPagesRequest.
+    expect(content).toContain('typeof runMiddleware === "function"');
+    expect(content).toContain("wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)");
+    expect(content).toContain("runPagesRequest(request, deps)");
   });
 
   it("applies next.config.js redirects before middleware", () => {
     const content = generatePagesRouterWorkerEntry();
-    // Redirect matching uses the locale-normalised `matchPathname` so that
-    // `:locale` placeholders and `locale: false` redirect rules continue to
-    // match default-locale URLs that arrive without a prefix (issue #1336
-    // item 4). It also passes `basePathState` for basePath: false opt-out
-    // gating. Whatever the exact form, redirect matching must still happen
-    // before middleware runs.
-    const redirectPos = content.indexOf(
-      "matchRedirect(matchPathname, configRedirects, reqCtx, basePathState)",
-    );
-    const middlewarePos = content.indexOf("runMiddleware(request, ctx, { isDataRequest })");
-    expect(redirectPos).toBeGreaterThan(-1);
-    expect(middlewarePos).toBeGreaterThan(-1);
-    expect(redirectPos).toBeLessThan(middlewarePos);
+    // Ordering is now enforced by runPagesRequest. The worker passes
+    // configRedirects as a dep and delegates to the pipeline owner.
+    expect(content).toContain("configRedirects,");
+    expect(content).toContain("runPagesRequest(request, deps)");
   });
 
   it("handles middleware redirects", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("result.redirectUrl");
-    expect(content).toContain("result.redirectStatus");
+    // Middleware redirect handling is now inside runPagesRequest.
+    // The worker entry supplies a wrapped runMiddleware dep and checks result.type.
+    expect(content).toContain('typeof runMiddleware === "function"');
+    expect(content).toContain('result.type === "response"');
   });
 
   it("preserves responseHeaders on middleware redirect", () => {
     const content = generatePagesRouterWorkerEntry();
-    // Extract the redirect branch: from "if (result.redirectUrl)" to the
-    // next "if (result.response)". This block must reference responseHeaders
-    // so that Set-Cookie and other headers survive the redirect.
-    const redirectStart = content.indexOf("if (result.redirectUrl)");
-    const redirectEnd = content.indexOf("if (result.response)", redirectStart);
-    const redirectBlock = content.slice(redirectStart, redirectEnd);
-    expect(redirectBlock).toContain("responseHeaders");
+    // responseHeaders handling is now inside runPagesRequest.
+    // Verify the worker passes a wrapped runMiddleware dep (which carries responseHeaders).
+    expect(content).toContain('typeof runMiddleware === "function"');
+    expect(content).toContain("runPagesRequest(request, deps)");
   });
 
   it("handles middleware rewrites", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("result.rewriteUrl");
-    expect(content).toContain("resolvedUrl = result.rewriteUrl");
+    // Middleware rewrite handling is now inside runPagesRequest.
+    // The worker entry supplies a wrapped runMiddleware dep and gets a {type:"response"} result.
+    expect(content).toContain('typeof runMiddleware === "function"');
+    expect(content).toContain("runPagesRequest(request, deps)");
   });
 
   // Ported from Next.js: test/e2e/middleware-rewrites/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
   it("proxies external middleware rewrites before local route handling", () => {
     const content = generatePagesRouterWorkerEntry();
-    const middlewareRewritePos = content.indexOf("resolvedUrl = result.rewriteUrl");
-    const externalCheckPos = content.indexOf("isExternalUrl(resolvedUrl)", middlewareRewritePos);
-    // API check uses apiLookupPathname (post-locale-strip) since #1336 item 3.
-    const localApiRoutePos = content.indexOf('apiLookupPathname.startsWith("/api/")');
-
-    expect(middlewareRewritePos).toBeGreaterThan(-1);
-    expect(externalCheckPos).toBeGreaterThan(middlewareRewritePos);
-    expect(externalCheckPos).toBeLessThan(localApiRoutePos);
-    expect(content).toContain("proxyExternalRequest(request, resolvedUrl)");
-    expect(content).toContain("return mergeHeaders(proxyResponse, middlewareHeaders, undefined)");
+    // External proxy for middleware rewrites is now inside runPagesRequest.
+    // The worker entry supplies a wrapped runMiddleware dep and delegates to the pipeline.
+    expect(content).toContain('typeof runMiddleware === "function"');
+    expect(content).toContain("runPagesRequest(request, deps)");
   });
 
   it("handles middleware access control responses", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("result.response");
-    expect(content).toContain("!result.continue");
+    // Access control (continue=false) is now inside runPagesRequest.
+    // Worker supplies a wrapped runMiddleware dep.
+    expect(content).toContain('typeof runMiddleware === "function"');
+    expect(content).toContain("runPagesRequest(request, deps)");
   });
 
   it("applies next.config.js redirects", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("configRedirects");
-    // Redirect matching uses the default-locale-normalised pathname so that
-    // locale-aware redirect rules with `:locale` placeholders and rules with
-    // `locale: false` still match requests that arrive without a locale
-    // prefix (issue #1336 item 4). Before the fix the call site read
-    // `matchRedirect(pathname, ...)`.
-    expect(content).toContain("matchRedirect(matchPathname");
-    expect(content).toContain("normalizeDefaultLocalePathname");
+    // Redirect matching is now inside runPagesRequest.
+    // Worker passes configRedirects and i18nConfig deps.
+    expect(content).toContain("configRedirects,");
+    expect(content).toContain("i18nConfig,");
+    expect(content).toContain("runPagesRequest(request, deps)");
   });
 
   it("applies next.config.js rewrites (beforeFiles, afterFiles, fallback)", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("configRewrites.beforeFiles");
-    expect(content).toContain("configRewrites.afterFiles");
-    expect(content).toContain("configRewrites.fallback");
-    // Rewrite matching runs against the locale-normalised resolved pathname
-    // via the local `matchResolvedPathname` helper (issue #1336 item 4) and
-    // passes `basePathState` for basePath: false opt-out gating.
-    expect(content).toContain("matchResolvedPathname(resolvedPathname)");
-    expect(content).toMatch(/matchRewrite\(\s*matchResolvedPathname\(resolvedPathname\)/);
-    expect(content).toContain("basePathState");
-    expect(content).toContain("matchPageRoute");
-    expect(content).toContain("matchPageRoute(resolvedPathname, request)");
+    // Rewrite handling is now inside runPagesRequest.
+    // Worker passes configRewrites dep with all three phases.
+    expect(content).toContain("configRewrites,");
+    expect(content).toContain(
+      'matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null',
+    );
+    expect(content).toContain("runPagesRequest(request, deps)");
   });
 
   it("applies next.config.js custom headers", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("configHeaders");
-    expect(content).toContain("applyConfigHeadersToHeaderRecord");
-    expect(content).toContain('from "vinext/server/request-pipeline"');
+    // Config header application is now inside runPagesRequest.
+    // Worker passes configHeaders dep.
+    expect(content).toContain("configHeaders,");
+    expect(content).toContain("runPagesRequest(request, deps)");
   });
 
   it("handles basePath stripping and creates a new request with stripped URL for middleware", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("basePath");
-    expect(content).toContain("function hasBasePath(pathname: string, basePath: string): boolean");
-    expect(content).toContain("function stripBasePath(pathname: string, basePath: string): string");
-    expect(content).toContain('pathname === basePath || pathname.startsWith(basePath + "/")');
+    expect(content).toContain(
+      'import { hasBasePath, stripBasePath } from "vinext/utils/base-path"',
+    );
     expect(content).toContain("const stripped = stripBasePath(pathname, basePath);");
     // After stripping, a new request with the stripped URL must be created
-    // so middleware matchers see the basePath-free pathname (matching prod-server)
-    expect(content).toContain("strippedUrl.pathname = pathname");
+    // in the adapter so runPagesRequest receives a clean basePath-free request.
+    expect(content).toContain("strippedUrl.pathname = stripped");
     expect(content).toContain("new Request(strippedUrl, request)");
   });
 
   it("handles trailing slash normalization", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("trailingSlash");
-    expect(content).toContain("normalizeTrailingSlash");
-    expect(content).toContain('from "vinext/server/request-pipeline"');
+    // Trailing slash normalization is now inside runPagesRequest.
+    // Worker passes trailingSlash dep.
+    expect(content).toContain("trailingSlash,");
+    expect(content).toContain("runPagesRequest(request, deps)");
   });
 
   it("routes /api/ to handleApiRoute using resolved URL and forwards ctx", () => {
     const content = generatePagesRouterWorkerEntry();
-    // Locale prefix is stripped before the /api/ check so /fr/api/ok matches
-    // pages/api/ok (issue #1336 item 3). The resulting URL (apiLookupUrl) is
-    // then used both for the prefix check and for the handleApiRoute call.
-    expect(content).toContain("stripI18nLocaleForApiRoute");
-    expect(content).toContain('apiLookupPathname.startsWith("/api/")');
-    // Forwarding ctx lets handlePagesApiRoute wrap the handler in
-    // runWithExecutionContext so after() and other shims can reach
-    // ctx.waitUntil(). See #1365.
-    expect(content).toContain("handleApiRoute(request, apiLookupUrl, ctx)");
+    // API routing (including locale prefix stripping) is now inside runPagesRequest.
+    // Worker supplies handleApi dep that wraps handleApiRoute with ctx.
+    // Locale stripping, /api/ prefix check, and ctx forwarding are all inside the owner.
+    expect(content).toContain('handleApi: typeof handleApiRoute === "function"');
+    expect(content).toContain("handleApiRoute(req, apiUrl, ctx)");
+    expect(content).toContain("runPagesRequest(request, deps)");
   });
 
   it("includes error handling", () => {
@@ -694,19 +1012,30 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("env.IMAGES");
   });
 
+  it("exports every vinext subpath imported by generated worker entries", () => {
+    const exportsMap = readVinextPackageExports();
+    const generatedImports = [
+      ...extractVinextImportSubpaths(generateAppRouterWorkerEntry()),
+      ...extractVinextImportSubpaths(generatePagesRouterWorkerEntry()),
+    ];
+    const uniqueGeneratedImports = [...new Set(generatedImports)].sort();
+
+    expect(uniqueGeneratedImports.length).toBeGreaterThan(0);
+    expect(
+      uniqueGeneratedImports.filter((subpath) => !hasPackageExport(exportsMap, subpath)),
+    ).toEqual([]);
+  });
+
   it("merges middleware and config headers into responses with correct precedence", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("mergeHeaders");
-    expect(content).toContain("middlewareHeaders");
-    // Response headers must override middleware headers (matching prod-server).
-    // mergeHeaders uses Headers API and getSetCookie() to preserve multi-value cookies.
-    expect(content).toContain("merged.set(k, v)");
-    expect(content).toContain("getSetCookie");
+    // mergeHeaders is now called inside runPagesRequest.
+    // The worker returns result.response directly from the pipeline result.
+    expect(content).toContain("runPagesRequest(request, deps)");
+    expect(content).toContain('result.type === "response"');
+    expect(content).toContain("return result.response");
   });
 
   it("mergeHeaders preserves multiple Set-Cookie headers from both middleware and response", () => {
-    // Behavioral test for the mergeHeaders function inlined in the generated worker entry.
-    // worker-utils.ts exports the same function — kept in sync with the deploy.ts template.
     const response = new Response("body", {
       headers: [
         ["set-cookie", "resp=1; Path=/"],
@@ -851,11 +1180,11 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("generated worker entry includes the no-body and streamed content-length merge guards", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("NO_BODY_RESPONSE_STATUSES");
-    expect(content).toContain("__vinextStreamedHtmlResponse");
-    expect(content).toContain('merged.delete("content-length")');
-    expect(content).toContain("if (isContentLengthHeader(k)) continue;");
-    expect(content).toContain("cancelResponseBody(response)");
+    // mergeHeaders (including no-body and streamed content-length guards) is
+    // now called inside runPagesRequest. The worker delegates to the pipeline.
+    expect(content).toContain("runPagesRequest(request, deps)");
+    expect(content).toContain('result.type === "response"');
+    expect(content).toContain("return result.response");
   });
 
   it("resolveStaticAssetSignal fetches and merges static asset responses with middleware status", async () => {
@@ -890,38 +1219,46 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("preserves x-middleware-request-* headers for prod request override handling", () => {
     const content = generatePagesRouterWorkerEntry();
-    // Worker entry must import applyMiddlewareRequestHeaders from config-matchers
-    // (the logic for unpacking x-middleware-request-* and stripping x-middleware-*
-    // now lives there rather than being inlined in the worker entry).
-    expect(content).toContain("applyMiddlewareRequestHeaders");
-    expect(content).toContain("vinext/config/config-matchers");
+    // applyMiddlewareRequestHeaders is now called inside runPagesRequest.
+    // The worker entry delegates to the pipeline owner via runPagesRequest.
+    expect(content).toContain("runPagesRequest(request, deps)");
+    expect(content).toContain('typeof runMiddleware === "function"');
   });
 
   it("handles external rewrites via proxyExternalRequest", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("isExternalUrl(rewritten)");
-    expect(content).toContain("proxyExternalRequest(request, rewritten)");
+    // External rewrite proxying is now inside runPagesRequest.
+    // The worker entry delegates to the pipeline owner.
+    expect(content).toContain("runPagesRequest(request, deps)");
+    expect(content).toContain("configRewrites,");
   });
 
   it("guards renderPage with typeof check", () => {
     const content = generatePagesRouterWorkerEntry();
+    // The typeof guard is now in the adapter deps wiring.
     expect(content).toContain('typeof renderPage === "function"');
   });
 
   it("does not defer error page rendering for data requests", () => {
     const content = generatePagesRouterWorkerEntry();
+    // shouldDeferErrorPageOnMiss logic is now inside runPagesRequest.
+    // The worker passes isDataReq: false (no buildId normalization) and
+    // matchPageRoute dep so the pipeline computes the right behavior.
+    expect(content).toContain("isDataReq: false,");
     expect(content).toContain(
-      'const shouldDeferErrorPageOnMiss =\n          !isDataRequest && typeof matchPageRoute === "function" && !renderPageMatch;',
+      'matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null',
     );
+    expect(content).toContain("runPagesRequest(request, deps)");
   });
 
   it("builds reqCtx before middleware runs", () => {
     const content = generatePagesRouterWorkerEntry();
-    const reqCtxPos = content.indexOf("requestContextFromRequest(request)");
-    const middlewarePos = content.indexOf("runMiddleware(request, ctx, { isDataRequest })");
-    expect(reqCtxPos).toBeGreaterThan(-1);
-    expect(middlewarePos).toBeGreaterThan(-1);
-    expect(reqCtxPos).toBeLessThan(middlewarePos);
+    // reqCtx is now built inside runPagesRequest before middleware.
+    // The worker passes configRedirects and a wrapped runMiddleware dep; ordering is
+    // guaranteed by the pipeline owner.
+    expect(content).toContain("configRedirects,");
+    expect(content).toContain('typeof runMiddleware === "function"');
+    expect(content).toContain("runPagesRequest(request, deps)");
   });
 
   it("checks image optimization after basePath stripping", () => {
@@ -933,10 +1270,21 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(basePathPos).toBeLessThan(imagePos);
   });
 
+  it("threads configured image widths and qualities into optimization validation", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES");
+    expect(content).toContain("vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES");
+    expect(content).toContain("qualities: vinextConfig.images.qualities");
+    expect(content).toContain("}, allowedWidths, imageConfig)");
+  });
+
   it("uses segment-boundary check before skipping redirect destination prefixing", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("!isExternalUrl(redirect.destination)");
-    expect(content).toContain("!hasBasePath(redirect.destination, basePath)");
+    // Segment-boundary checks for redirect destination prefixing are now
+    // inside runPagesRequest. The worker passes hadBasePath and basePath deps.
+    expect(content).toContain("hadBasePath,");
+    expect(content).toContain("basePath,");
+    expect(content).toContain("runPagesRequest(request, deps)");
   });
 
   // Regression for #1337: invalid `_next/static/*` paths must short-circuit
@@ -955,12 +1303,12 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("isNextStaticPath(pathname, basePath, assetPathPrefix)");
     expect(content).toContain("return notFoundStaticAssetResponse();");
 
-    // The short-circuit must fire BEFORE renderPage so the rich HTML 404
-    // is never rendered for asset misses.
+    // The short-circuit must fire BEFORE runPagesRequest (which invokes renderPage)
+    // so the rich HTML 404 is never rendered for asset misses.
     const staticPos = content.indexOf("isNextStaticPath(pathname, basePath, assetPathPrefix)");
-    const renderPagePos = content.indexOf("renderPage(request, resolvedUrl");
+    const pipelinePos = content.indexOf("runPagesRequest(request, deps)");
     expect(staticPos).toBeGreaterThan(-1);
-    expect(renderPagePos).toBeGreaterThan(staticPos);
+    expect(pipelinePos).toBeGreaterThan(staticPos);
   });
 });
 
@@ -1689,11 +2037,38 @@ describe("detectProject — new detection features", () => {
     expect(info.nativeModulesToStub).toContain("satori");
   });
 
+  it("detects native modules listed only in devDependencies", () => {
+    mkdir(tmpDir, "app");
+    writeFile(
+      tmpDir,
+      "package.json",
+      JSON.stringify({ devDependencies: { sharp: "^0.33.0", lightningcss: "^1.0.0" } }),
+    );
+    const info = detectProject(tmpDir);
+    expect(info.nativeModulesToStub).toContain("sharp");
+    expect(info.nativeModulesToStub).toContain("lightningcss");
+  });
+
   it("nativeModulesToStub is empty when no native deps", () => {
     mkdir(tmpDir, "app");
     writeFile(tmpDir, "package.json", JSON.stringify({ dependencies: { react: "^19.0.0" } }));
     const info = detectProject(tmpDir);
     expect(info.nativeModulesToStub).toEqual([]);
+  });
+
+  it("detects ISR and MDX from a single app/ tree walk", () => {
+    // ISR (`export const revalidate`) and a `.mdx` file live in the same tree;
+    // detection shares one recursive walk and reports both.
+    mkdir(tmpDir, "app");
+    writeFile(
+      tmpDir,
+      "app/posts/page.tsx",
+      "export const revalidate = 60;\nexport default function() { return <div/> }",
+    );
+    writeFile(tmpDir, "app/about/page.mdx", "# About");
+    const info = detectProject(tmpDir);
+    expect(info.hasISR).toBe(true);
+    expect(info.hasMDX).toBe(true);
   });
 });
 
@@ -1951,31 +2326,30 @@ describe("Cloudflare _headers file generation", () => {
 
 describe("Cloudflare closeBundle lazy chunk injection", () => {
   /**
-   * Replicates the closeBundle hook logic for App Router builds.
-   * In #358's architecture, the RSC env IS the worker, so the worker entry
-   * is at dist/server/index.js. The RSC plugin handles __VINEXT_CLIENT_ENTRY__,
-   * but we still need to inject __VINEXT_LAZY_CHUNKS__ and __VINEXT_SSR_MANIFEST__.
+   * Replicates the closeBundle hook logic for App Router builds. Mirrors the
+   * REAL wiring in index.ts: it forwards the same `includeClientEntry` ternary
+   * and serializes globals via the shared `buildRuntimeGlobalsScript` helper, so
+   * the simulator cannot drift from production. `hasPagesDir` exercises the
+   * mixed app+pages branch (where the Pages client entry IS injected).
    */
-  function simulateCloseBundleAppRouter(buildRoot: string, base = "/"): void {
+  function simulateCloseBundleAppRouter(
+    buildRoot: string,
+    base = "/",
+    assetPrefix = "",
+    hasPagesDir = false,
+  ): void {
     const distDir = path.resolve(buildRoot, "dist");
     if (!fs.existsSync(distDir)) return;
 
     const clientDir = path.resolve(buildRoot, "dist", "client");
 
-    // Read build manifest and compute lazy chunks
-    let lazyChunksData: string[] | null = null;
-    const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
-    if (fs.existsSync(buildManifestPath)) {
-      try {
-        const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
-        const lazy = computeLazyChunks(buildManifest).map((file) =>
-          manifestFileWithBase(file, base),
-        );
-        if (lazy.length > 0) lazyChunksData = lazy;
-      } catch {
-        /* ignore */
-      }
-    }
+    const runtimeMetadata = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: base,
+      assetPrefix,
+      // index.ts: `!hasAppDir ? true : hasPagesDir ? "pages-client-entry" : false`
+      includeClientEntry: hasPagesDir ? "pages-client-entry" : false,
+    });
 
     // Read SSR manifest
     let ssrManifestData: Record<string, string[]> | null = null;
@@ -1988,32 +2362,36 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
       }
     }
 
-    // App Router: inject into dist/server/index.js (NOT __VINEXT_CLIENT_ENTRY__)
     const workerEntry = path.resolve(distDir, "server", "index.js");
-    if (fs.existsSync(workerEntry) && (lazyChunksData || ssrManifestData)) {
-      let code = fs.readFileSync(workerEntry, "utf-8");
-      const globals: string[] = [];
-      if (ssrManifestData) {
-        globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
-      }
-      if (lazyChunksData) {
-        globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
-      }
-      code = globals.join("\n") + "\n" + code;
-      fs.writeFileSync(workerEntry, code);
+    if (!fs.existsSync(workerEntry)) return;
+    const script = buildRuntimeGlobalsScript({
+      clientEntryFile: runtimeMetadata.clientEntryFile,
+      ssrManifest: ssrManifestData,
+      lazyChunks: runtimeMetadata.lazyChunks,
+      dynamicPreloads: runtimeMetadata.dynamicPreloads,
+    });
+    if (script) {
+      const code = fs.readFileSync(workerEntry, "utf-8");
+      fs.writeFileSync(workerEntry, script + "\n" + code);
     }
   }
 
   /**
-   * Replicates the closeBundle hook logic for Pages Router builds.
-   * The worker entry is found by scanning dist/ for a directory containing
-   * wrangler.json. All three globals are injected.
+   * Replicates the closeBundle hook logic for Pages Router builds. Mirrors the
+   * real index.ts wiring and serializes via the shared helper.
    */
-  function simulateCloseBundlePagesRouter(buildRoot: string, base = "/"): void {
+  function simulateCloseBundlePagesRouter(buildRoot: string, base = "/", assetPrefix = ""): void {
     const distDir = path.resolve(buildRoot, "dist");
     if (!fs.existsSync(distDir)) return;
 
     const clientDir = path.resolve(buildRoot, "dist", "client");
+
+    const runtimeMetadata = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: base,
+      assetPrefix,
+      includeClientEntry: true,
+    });
 
     // Find worker output directory (contains wrangler.json)
     let workerOutDir: string | null = null;
@@ -2033,28 +2411,6 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     const workerEntry = path.join(workerOutDir, "index.js");
     if (!fs.existsSync(workerEntry)) return;
 
-    // Read build manifest and compute lazy chunks
-    let lazyChunksData: string[] | null = null;
-    let clientEntryFile: string | null = null;
-    const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
-    if (fs.existsSync(buildManifestPath)) {
-      try {
-        const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
-        for (const [, value] of Object.entries(buildManifest) as [string, any][]) {
-          if (value && value.isEntry && value.file) {
-            clientEntryFile = manifestFileWithBase(value.file, base);
-            break;
-          }
-        }
-        const lazy = computeLazyChunks(buildManifest).map((file) =>
-          manifestFileWithBase(file, base),
-        );
-        if (lazy.length > 0) lazyChunksData = lazy;
-      } catch {
-        /* ignore */
-      }
-    }
-
     // Read SSR manifest
     let ssrManifestData: Record<string, string[]> | null = null;
     const ssrManifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
@@ -2066,21 +2422,15 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
       }
     }
 
-    // Pages Router: inject all three globals
-    if (clientEntryFile || ssrManifestData || lazyChunksData) {
-      let code = fs.readFileSync(workerEntry, "utf-8");
-      const globals: string[] = [];
-      if (clientEntryFile) {
-        globals.push(`globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`);
-      }
-      if (ssrManifestData) {
-        globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
-      }
-      if (lazyChunksData) {
-        globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
-      }
-      code = globals.join("\n") + "\n" + code;
-      fs.writeFileSync(workerEntry, code);
+    const script = buildRuntimeGlobalsScript({
+      clientEntryFile: runtimeMetadata.clientEntryFile,
+      ssrManifest: ssrManifestData,
+      lazyChunks: runtimeMetadata.lazyChunks,
+      dynamicPreloads: runtimeMetadata.dynamicPreloads,
+    });
+    if (script) {
+      const code = fs.readFileSync(workerEntry, "utf-8");
+      fs.writeFileSync(workerEntry, script + "\n" + code);
     }
   }
 
@@ -2186,6 +2536,113 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     expect(lazyChunks).not.toContain("assets/framework.js");
   });
 
+  it("App Router: injects __VINEXT_DYNAMIC_PRELOADS__ into dist/server/index.js", () => {
+    setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
+
+    simulateCloseBundleAppRouter(tmpDir);
+
+    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
+    expect(code).toContain("globalThis.__VINEXT_DYNAMIC_PRELOADS__");
+    expect(code).toContain(
+      `"src/components/MermaidChart.tsx":["assets/mermaid-chart.js","assets/mermaid-vendor.js"]`,
+    );
+    expect(code).not.toContain(`"virtual:vinext-app-browser-entry"`);
+  });
+
+  it("App Router: lazy chunks stay base-relative while only dynamic preloads take the assetPrefix", () => {
+    setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
+
+    simulateCloseBundleAppRouter(tmpDir, "/docs/", "/cdn-prefix");
+
+    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
+    const lazyMatch = code.match(/globalThis\.__VINEXT_LAZY_CHUNKS__\s*=\s*(\[.*?\]);/);
+    expect(lazyMatch).not.toBeNull();
+    const lazyChunks = JSON.parse(lazyMatch![1]);
+    // Lazy chunks must stay in the SSR-manifest key-space (basePath only) so the
+    // Pages Router modulepreload-exclusion membership test still matches.
+    expect(lazyChunks).toContain("docs/assets/mermaid-chart.js");
+    expect(lazyChunks).toContain("docs/assets/mermaid-vendor.js");
+    expect(lazyChunks).not.toContain("cdn-prefix/_next/static/assets/mermaid-chart.js");
+
+    // Dynamic preloads render real <link> hrefs, so they DO take the assetPrefix.
+    const preloadMatch = code.match(/globalThis\.__VINEXT_DYNAMIC_PRELOADS__\s*=\s*(\{.*?\});/);
+    expect(preloadMatch).not.toBeNull();
+    const dynamicPreloads = JSON.parse(preloadMatch![1]);
+    expect(dynamicPreloads["src/components/MermaidChart.tsx"]).toEqual([
+      "cdn-prefix/_next/static/assets/mermaid-chart.js",
+      "cdn-prefix/_next/static/assets/mermaid-vendor.js",
+    ]);
+  });
+
+  it("App Router: never emits an absolute-URL assetPrefix into lazy chunks (regression: modulepreload leak)", () => {
+    setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
+
+    simulateCloseBundleAppRouter(tmpDir, "/docs/", "https://cdn.example.com/assets");
+
+    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
+
+    // Dynamic preloads get the absolute URL...
+    expect(code).toContain("https://cdn.example.com/assets/_next/static/assets/mermaid-chart.js");
+
+    // ...but lazy chunks MUST stay base-relative. An absolute URL here would
+    // never match the base-relative SSR-manifest values, so the Pages Router
+    // would fail to exclude lazy chunks and leak them into <link rel=modulepreload>.
+    const lazyMatch = code.match(/globalThis\.__VINEXT_LAZY_CHUNKS__\s*=\s*(\[.*?\]);/);
+    expect(lazyMatch).not.toBeNull();
+    const lazyChunks = JSON.parse(lazyMatch![1]) as string[];
+    expect(lazyChunks).toEqual(["docs/assets/mermaid-chart.js", "docs/assets/mermaid-vendor.js"]);
+    expect(lazyChunks.some((c) => c.startsWith("https://"))).toBe(false);
+  });
+
+  it("App Router (mixed app+pages): injects __VINEXT_CLIENT_ENTRY__ for the Pages fallback entry", () => {
+    setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
+    // A real mixed app+pages build emits a Pages client entry chunk. Place one
+    // on disk so the (recursive) on-disk fallback resolves it under chunks/.
+    const chunksDir = path.join(tmpDir, "dist", "client", "_next", "static", "chunks");
+    fs.mkdirSync(chunksDir, { recursive: true });
+    fs.writeFileSync(path.join(chunksDir, "vinext-client-entry-abcd.js"), "");
+
+    // hasPagesDir = true → includeClientEntry: "pages-client-entry"
+    simulateCloseBundleAppRouter(tmpDir, "/", "", true);
+
+    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
+    expect(code).toContain(
+      'globalThis.__VINEXT_CLIENT_ENTRY__ = "_next/static/chunks/vinext-client-entry-abcd.js";',
+    );
+  });
+
+  it("App Router: dynamic preloads avoid double-prefixing a realistic (already-prefixed) manifest", () => {
+    // A real assetPrefix build bakes the prefix into the manifest `file` fields
+    // (build.assetsDir = `<prefix>/_next/static`). Both lazy chunks and dynamic
+    // preloads must then resolve to the SAME single-prefixed URL.
+    const prefixedManifest = {
+      "virtual:vinext-app-browser-entry": {
+        file: "cdn/_next/static/chunks/app-entry-abc.js",
+        isEntry: true,
+        imports: ["node_modules/react/index.js"],
+        dynamicImports: ["src/components/MermaidChart.tsx"],
+      },
+      "node_modules/react/index.js": { file: "cdn/_next/static/chunks/framework-def.js" },
+      "src/components/MermaidChart.tsx": {
+        file: "cdn/_next/static/chunks/mermaid-chart-ghi.js",
+        isDynamicEntry: true,
+      },
+    };
+    setupAppRouterBuildOutput(tmpDir, prefixedManifest);
+
+    simulateCloseBundleAppRouter(tmpDir, "/", "/cdn");
+
+    const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
+    const lazyMatch = code.match(/globalThis\.__VINEXT_LAZY_CHUNKS__\s*=\s*(\[.*?\]);/);
+    const lazyChunks = JSON.parse(lazyMatch![1]) as string[];
+    expect(lazyChunks).toEqual(["cdn/_next/static/chunks/mermaid-chart-ghi.js"]);
+    // No `cdn/_next/static/cdn/...` double prefix.
+    expect(code).not.toContain("cdn/_next/static/cdn/");
+    expect(code).toContain(
+      `"src/components/MermaidChart.tsx":["cdn/_next/static/chunks/mermaid-chart-ghi.js"]`,
+    );
+  });
+
   it("App Router: does NOT inject __VINEXT_CLIENT_ENTRY__", () => {
     setupAppRouterBuildOutput(tmpDir, manifestWithLazyChunks);
 
@@ -2237,8 +2694,10 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     simulateCloseBundleAppRouter(tmpDir);
 
     const code = fs.readFileSync(path.join(tmpDir, "dist", "server", "index.js"), "utf-8");
-    // No globals should be injected since there are no lazy chunks and no SSR manifest
+    // No globals should be injected since there are no lazy chunks, no dynamic
+    // preload entries, and no SSR manifest
     expect(code).not.toContain("globalThis.__VINEXT_LAZY_CHUNKS__");
+    expect(code).not.toContain("globalThis.__VINEXT_DYNAMIC_PRELOADS__");
     expect(code).not.toContain("globalThis.__VINEXT_SSR_MANIFEST__");
     // Original code untouched
     expect(code).toBe("// RSC worker entry\nexport default { fetch() {} };");
@@ -2258,7 +2717,7 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
 
   // ── Pages Router tests ────────────────────────────────────────────────
 
-  it("Pages Router: injects all three globals into worker entry", () => {
+  it("Pages Router: injects all runtime globals into worker entry", () => {
     const ssrManifest = {
       "pages/index.tsx": ["/assets/page-index.js", "/assets/page-index.css"],
     };
@@ -2270,6 +2729,7 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     expect(code).toContain("globalThis.__VINEXT_CLIENT_ENTRY__");
     expect(code).toContain("globalThis.__VINEXT_SSR_MANIFEST__");
     expect(code).toContain("globalThis.__VINEXT_LAZY_CHUNKS__");
+    expect(code).toContain("globalThis.__VINEXT_DYNAMIC_PRELOADS__");
   });
 
   it("Pages Router: injects correct lazy chunks", () => {
@@ -2287,6 +2747,18 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     expect(lazyChunks).not.toContain("assets/framework.js");
   });
 
+  it("Pages Router: injects __VINEXT_DYNAMIC_PRELOADS__ into worker entry", () => {
+    setupPagesRouterBuildOutput(tmpDir, manifestWithLazyChunks);
+
+    simulateCloseBundlePagesRouter(tmpDir);
+
+    const code = fs.readFileSync(path.join(tmpDir, "dist", "worker", "index.js"), "utf-8");
+    expect(code).toContain("globalThis.__VINEXT_DYNAMIC_PRELOADS__");
+    expect(code).toContain(
+      `"src/components/MermaidChart.tsx":["assets/mermaid-chart.js","assets/mermaid-vendor.js"]`,
+    );
+  });
+
   it("Pages Router: prefixes client entry and lazy chunks with basePath", () => {
     setupPagesRouterBuildOutput(tmpDir, manifestWithLazyChunks);
 
@@ -2300,6 +2772,29 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     const lazyChunks = JSON.parse(match![1]);
     expect(lazyChunks).toContain("docs/assets/mermaid-chart.js");
     expect(lazyChunks).toContain("docs/assets/mermaid-vendor.js");
+    expect(code).toContain(
+      `"src/components/MermaidChart.tsx":["docs/assets/mermaid-chart.js","docs/assets/mermaid-vendor.js"]`,
+    );
+  });
+
+  it("Pages Router: lazy chunks stay base-relative while only dynamic preloads take the assetPrefix", () => {
+    setupPagesRouterBuildOutput(tmpDir, manifestWithLazyChunks);
+
+    simulateCloseBundlePagesRouter(tmpDir, "/docs/", "/cdn-prefix");
+
+    const code = fs.readFileSync(path.join(tmpDir, "dist", "worker", "index.js"), "utf-8");
+    const lazyMatch = code.match(/globalThis\.__VINEXT_LAZY_CHUNKS__\s*=\s*(\[.*?\]);/);
+    expect(lazyMatch).not.toBeNull();
+    const lazyChunks = JSON.parse(lazyMatch![1]);
+    // Pages Router is the actual consumer: lazy chunks MUST stay base-relative so
+    // collectAssetTags' modulepreload-exclusion membership test matches.
+    expect(lazyChunks).toContain("docs/assets/mermaid-chart.js");
+    expect(lazyChunks).toContain("docs/assets/mermaid-vendor.js");
+    expect(lazyChunks).not.toContain("cdn-prefix/_next/static/assets/mermaid-chart.js");
+    // Dynamic preloads still take the assetPrefix.
+    expect(code).toContain(
+      `"src/components/MermaidChart.tsx":["cdn-prefix/_next/static/assets/mermaid-chart.js","cdn-prefix/_next/static/assets/mermaid-vendor.js"]`,
+    );
   });
 
   it("Pages Router: finds worker entry via wrangler.json directory scan", () => {
@@ -2648,12 +3143,12 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     expect(config?.customDomain).toBeUndefined();
   });
 
-  it("extracts KV namespace ID for VINEXT_CACHE", () => {
+  it("extracts KV namespace ID for VINEXT_KV_CACHE", () => {
     writeFile(
       tmpDir,
       "wrangler.json",
       JSON.stringify({
-        kv_namespaces: [{ binding: "VINEXT_CACHE", id: "abc123" }],
+        kv_namespaces: [{ binding: "VINEXT_KV_CACHE", id: "abc123" }],
       }),
     );
     const config = parseWranglerConfig(tmpDir);

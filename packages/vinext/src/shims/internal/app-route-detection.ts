@@ -36,7 +36,8 @@
  */
 import type { VinextLinkPrefetchRoute } from "../../client/vinext-next-data.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../../routing/route-matching.js";
-import { stripBasePath } from "../../utils/base-path.js";
+import { stripBasePath, removeTrailingSlash } from "../../utils/base-path.js";
+import { getLocalePathPrefix } from "../../utils/domain-locale.js";
 
 const appRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
 
@@ -91,7 +92,12 @@ function resolveSameOriginPathname(href: string, basePath: string): string | nul
     return null;
   }
   if (url.origin !== window.location.origin) return null;
-  return stripBasePath(url.pathname, basePath);
+  const pathname = stripBasePath(url.pathname, basePath);
+  const locale = getLocalePathPrefix(pathname, window.__VINEXT_LOCALES__);
+  if (!locale) return pathname;
+
+  const localePrefixLength = locale.length + 1;
+  return pathname.length === localePrefixLength ? "/" : pathname.slice(localePrefixLength);
 }
 
 /**
@@ -99,7 +105,7 @@ function resolveSameOriginPathname(href: string, basePath: string): string | nul
  * prefetch manifest (static or dynamic). Returns false when the manifest is
  * absent (Pages-Router-only build), the URL is external, or no route matches.
  */
-function matchesAppRoute(href: string, basePath: string): boolean {
+export function matchesAppRoute(href: string, basePath: string): boolean {
   if (typeof window === "undefined") return false;
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
   if (!routes || routes.length === 0) return false;
@@ -115,16 +121,22 @@ function matchesAppRoute(href: string, basePath: string): boolean {
  * Pages Router map when the href matches an App Router route. No-op when the
  * manifest is absent, the URL is external, or no app route matches.
  *
- * `pathname` is the basePath-stripped path — matching Next.js's
- * `router.components[urlPathname]` key (see the source link in this file's
- * leading comment).
+ * `pathname` is the basePath-stripped, trailing-slash-stripped path —
+ * matching Next.js's `removeTrailingSlash(removeBasePath(pathname))` key used
+ * at read time (router.ts:1442). Stripping here ensures the write and read
+ * keys agree regardless of whether the caller normalised trailing slashes
+ * first (e.g. `link.tsx` normalises to match `trailingSlash` config before
+ * calling, while `router.prefetch()` passes the raw user-supplied URL).
  */
 export function markAppRouteDetectedOnPrefetch(href: string, basePath: string): void {
   if (typeof window === "undefined") return;
   if (!matchesAppRoute(href, basePath)) return;
 
-  const pathname = resolveSameOriginPathname(href, basePath);
-  if (pathname === null) return;
+  const rawPathname = resolveSameOriginPathname(href, basePath);
+  if (rawPathname === null) return;
 
+  // Normalise to stripped form so the key agrees with the read-side lookup in
+  // performNavigation, which also strips trailing slashes before checking.
+  const pathname = removeTrailingSlash(rawPathname);
   getPagesRouterComponentsMap()[pathname] = { __appRouter: true };
 }

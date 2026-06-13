@@ -21,12 +21,23 @@ import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { detectPackageManager, ensureViteConfigCompatibility } from "./utils/project.js";
+import { randomBytes } from "node:crypto";
+import {
+  detectPackageManager,
+  ensureViteConfigCompatibility,
+  hasAppDir,
+  hasViteConfig,
+} from "./utils/project.js";
 import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
-import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
+import {
+  createRscCompatibilityId,
+  loadNextConfig,
+  resolveNextConfig,
+  PHASE_PRODUCTION_BUILD,
+} from "./config/next-config.js";
 import { emitStandaloneOutput } from "./build/standalone.js";
 import { cleanBuildOutput } from "./build/clean-output.js";
 import { resolveVinextPackageRoot } from "./utils/vinext-root.js";
@@ -197,25 +208,10 @@ function createBuildLogger(vite: ViteModule): import("vite").Logger {
 
 // ─── Auto-configuration ───────────────────────────────────────────────────────
 
-function hasAppDir(): boolean {
-  return (
-    fs.existsSync(path.join(process.cwd(), "app")) ||
-    fs.existsSync(path.join(process.cwd(), "src", "app"))
-  );
-}
-
 function hasPagesDir(): boolean {
   return (
     fs.existsSync(path.join(process.cwd(), "pages")) ||
     fs.existsSync(path.join(process.cwd(), "src", "pages"))
-  );
-}
-
-function hasViteConfig(root = process.cwd()): boolean {
-  return (
-    fs.existsSync(path.join(root, "vite.config.ts")) ||
-    fs.existsSync(path.join(root, "vite.config.js")) ||
-    fs.existsSync(path.join(root, "vite.config.mjs"))
   );
 }
 
@@ -239,7 +235,7 @@ async function loadBuildEmptyOutDir(vite: ViteModule, root: string): Promise<boo
  * If there's no vite.config, this provides everything needed.
  */
 function buildViteConfig(overrides: Record<string, unknown> = {}, logger?: import("vite").Logger) {
-  const hasConfig = hasViteConfig();
+  const hasConfig = hasViteConfig(process.cwd());
 
   // If a vite.config exists, let Vite load it — only set root and overrides.
   // The user's config already has vinext() + rsc() plugins configured.
@@ -449,11 +445,48 @@ async function buildApp() {
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
   const root = process.cwd();
-  const isApp = hasAppDir();
+  const isApp = hasAppDir(process.cwd());
   const resolvedNextConfig = await resolveNextConfig(
     await loadNextConfig(root, PHASE_PRODUCTION_BUILD),
     root,
   );
+
+  // Coordinate a single build ID across every vinext() plugin instance in this
+  // build. A hybrid app+pages build runs the App Router multi-environment build
+  // (buildApp) and a separate Pages Router SSR build (vite.build) as distinct
+  // plugin instances; without this, each resolves its own (potentially random)
+  // ID and the runtime, prerender manifest, and dist/server/BUILD_ID disagree.
+  // We resolve it once here — resolveNextConfig() already ran resolveBuildId()
+  // honoring the user's generateBuildId (including the null→UUID fallback) — and
+  // share that authoritative value via env so every plugin instance adopts it.
+  //
+  // Not cleaned up intentionally: `vinext build` runs once and the process
+  // exits, so there is no in-process reuse to leak into. The var is namespaced
+  // to vinext's build flow and is never read by dev or standalone resolveBuildId.
+  process.env.__VINEXT_SHARED_BUILD_ID = resolvedNextConfig.buildId;
+
+  // Same coordination for the App Router RSC compatibility token. Without a
+  // pinned deploymentId, createRscCompatibilityId() mints a random UUID per
+  // plugin instance, so a hybrid app+pages build would bake two different
+  // compatibility tokens. Resolve it once and share it (see the plugin's
+  // adoption site). Reuses deploymentId when set (already stable across
+  // instances).
+  process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID = createRscCompatibilityId(resolvedNextConfig);
+
+  // On-demand ISR revalidation secret — the vinext analog of Next.js's
+  // prerender-manifest `previewModeId`. `res.revalidate()` loops back into the
+  // server via an internal `fetch()`; on Cloudflare Workers that loopback can
+  // land on a *different* isolate than the sender, so a per-process random
+  // secret would mismatch and false-reject legitimate revalidations. We instead
+  // generate one 256-bit secret here, once per build, and bake it (server-only)
+  // into every server bundle via Vite `define` so all isolates share the exact
+  // same value. Resolved once and shared across plugin instances exactly like
+  // __VINEXT_SHARED_BUILD_ID so a hybrid app+pages build bakes a single secret.
+  // A fresh secret per build means it rotates with every deployment.
+  if (!process.env.__VINEXT_SHARED_REVALIDATE_SECRET) {
+    process.env.__VINEXT_SHARED_REVALIDATE_SECRET = randomBytes(32).toString("hex");
+  }
+
   const outputMode = resolvedNextConfig.output;
   const distDir = path.resolve(root, "dist");
 
@@ -525,7 +558,7 @@ async function buildApp() {
       // will re-register itself, and cloudflare() which must not run here.
       const root = process.cwd();
       let userTransformPlugins: import("vite").PluginOption[] = [];
-      if (hasViteConfig()) {
+      if (hasViteConfig(process.cwd())) {
         const loaded = await vite.loadConfigFromFile(
           { command: "build", mode: "production", isSsrBuild: true },
           undefined,

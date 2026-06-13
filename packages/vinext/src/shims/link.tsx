@@ -31,6 +31,7 @@ import {
   getPrefetchCache,
   getPrefetchedUrls,
   getMountedSlotsHeader,
+  hasPrefetchCacheEntryForNavigation,
   navigateClientSide,
   prefetchRscResponse,
 } from "./navigation.js";
@@ -53,7 +54,6 @@ import {
 import {
   isAbsoluteOrProtocolRelativeUrl,
   normalizePathTrailingSlash,
-  resolveRelativeHref,
   toBrowserNavigationHref,
   toSameOriginAppPath,
   withBasePath,
@@ -71,6 +71,13 @@ import {
 } from "./internal/pages-data-target.js";
 import { markAppRouteDetectedOnPrefetch } from "./internal/app-route-detection.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
+import {
+  clearLinkForCurrentNavigation,
+  notifyLinkNavigationStart,
+  setLinkForCurrentNavigation,
+  type PendingLinkSetter,
+} from "./internal/link-status-registry.js";
+import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-warning.js";
 
 type NavigateEvent = {
   url: URL;
@@ -149,15 +156,35 @@ export function useLinkStatus(): LinkStatusContextValue {
   return useContext(LinkStatusContext);
 }
 
+// Register the link-status reset hook on the navigation runtime as soon as this
+// module evaluates on the client. `navigateClientSide` calls it at the start of
+// every App Router navigation (including router.push and shallow routing), so a
+// stale link's pending state is cleared even when no <Link> initiated the
+// navigation. The registry itself lives in internal/link-status-registry.ts so
+// it can be unit-tested without rendering a <Link>.
+if (typeof window !== "undefined") {
+  registerNavigationRuntimeFunctions({
+    notifyLinkNavigationStart,
+  });
+}
+
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 /** trailingSlash from next.config.js, injected by the plugin at build time */
 const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
+const __prefetchInlining: boolean = process.env.__VINEXT_PREFETCH_INLINING === "true";
 const linkPrefetchRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
 
 function resolveHref(href: LinkProps["href"]): string {
   if (typeof href === "string") return href;
-  let url = href.pathname ?? "/";
+  // When `pathname` is omitted, leave the base empty so the result is a
+  // query-only href (e.g. `?params=foo`) rather than `/?params=foo`. Mirrors
+  // Next.js's `formatUrl()` (`pathname = urlObj.pathname || ''`) so that a
+  // `<Link href={{ query: {...} }} />` resolves against the *current* path at
+  // navigation time instead of collapsing onto the site root. Defaulting to
+  // "/" here recorded the wrong history entry for shallow links, breaking
+  // back/forward traversal (issue #1540).
+  let url = href.pathname ?? "";
   if (href.query) {
     const params = urlQueryToSearchParams(href.query);
     url = appendSearchParamsToUrl(url, params);
@@ -198,10 +225,12 @@ function normalizeRepeatedSlashes(url: string): string {
  * `resolveHref`. We mirror that behaviour (no dedup) for exact parity.
  *
  * Note: Next.js uses `router.pathname` (the route pattern, e.g.
- * `/posts/[id]`) for the "in page" segment of the message. We do not have
- * cheap access to the route pattern from inside the Link shim, so we
- * fall back to `window.location.pathname` (or `"/"` during SSR). The text
- * is cosmetic and is not asserted by the Next.js compat test.
+ * `/posts/[id]`) for the "in page" segment of the message. The Next.js
+ * compat test asserts this exact text (`in page: '/my/path/[name]'`), so we
+ * source it from the current render's route pattern via
+ * `getCurrentRoutePathnameForWarning()`: the Pages Router SSR context's route
+ * pattern on the server, `window.location.pathname` on the client, falling
+ * back to `"/"`.
  */
 function warnAndNormalizeRepeatedSlashesInHref(urlAsString: string): string {
   // Protocol-relative URLs (e.g. "//example.com/path") are treated by vinext
@@ -221,8 +250,7 @@ function warnAndNormalizeRepeatedSlashesInHref(urlAsString: string): string {
   const urlParts = urlAsStringNoProto.split("?", 1);
   if (!(urlParts[0] || "").match(/(\/\/|\\)/)) return urlAsString;
 
-  const pathname =
-    typeof window !== "undefined" && window.location ? window.location.pathname : "/";
+  const pathname = getCurrentRoutePathnameForWarning();
   console.error(
     `Invalid href '${urlAsString}' passed to next/router in page: '${pathname}'. Repeated forward-slashes (//) or backslashes \\ are not valid in the href.`,
   );
@@ -259,6 +287,23 @@ function getLinkPrefetchRouterMode(): LinkPrefetchRouterMode {
   return hasAppNavigationRuntime() ? "app" : "pages";
 }
 
+function resolveMatchedAutoAppRoutePrefetch(route: VinextLinkPrefetchRoute): {
+  cacheForNavigation: boolean;
+  prefetchShellFirst: boolean;
+  shouldPrefetch: boolean;
+} {
+  const hasLoadingShell = route.isDynamic && route.canPrefetchLoadingShell;
+  return {
+    // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
+    // Until that route fact exists, dynamic routes without loading-shell
+    // fallbacks are treated as exact-URL full prefetches. The prefetch cache is
+    // keyed by the concrete RSC URL, so this cannot reuse data across params.
+    cacheForNavigation: !hasLoadingShell,
+    prefetchShellFirst: !route.isDynamic,
+    shouldPrefetch: true,
+  };
+}
+
 export function canAutoPrefetchFullAppRoute(href: string): boolean {
   if (typeof window === "undefined") return false;
 
@@ -271,36 +316,34 @@ export function canAutoPrefetchFullAppRoute(href: string): boolean {
   const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
   if (!match) return false;
 
-  return !match.route.isDynamic;
+  return resolveMatchedAutoAppRoutePrefetch(match.route).cacheForNavigation;
 }
 
 export function resolveAutoAppRoutePrefetch(href: string): {
   cacheForNavigation: boolean;
+  prefetchShellFirst: boolean;
   shouldPrefetch: boolean;
 } {
   if (typeof window === "undefined") {
-    return { cacheForNavigation: false, shouldPrefetch: false };
+    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
   }
 
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
   if (!routes) {
-    return { cacheForNavigation: false, shouldPrefetch: false };
+    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
   }
 
   const routeHref = toSameOriginRouteHref(href);
   if (routeHref === null) {
-    return { cacheForNavigation: false, shouldPrefetch: false };
+    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
   }
 
   const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
   if (!match) {
-    return { cacheForNavigation: false, shouldPrefetch: false };
+    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
   }
 
-  return {
-    cacheForNavigation: !match.route.isDynamic,
-    shouldPrefetch: !match.route.isDynamic || match.route.canPrefetchLoadingShell,
-  };
+  return resolveMatchedAutoAppRoutePrefetch(match.route);
 }
 
 // ---------------------------------------------------------------------------
@@ -328,8 +371,21 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
   if (prefetchHref == null) return;
 
   const fullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
+  const target = new URL(fullHref, window.location.href);
+  if (
+    target.origin === window.location.origin &&
+    target.pathname === window.location.pathname &&
+    target.search === window.location.search
+  ) {
+    return;
+  }
 
-  const schedule = window.requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100));
+  const schedule =
+    priority === "high"
+      ? (fn: () => void) => {
+          fn();
+        }
+      : (window.requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100)));
 
   schedule(() => {
     void (async () => {
@@ -337,7 +393,7 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         const autoPrefetch =
           mode === "auto"
             ? resolveAutoAppRoutePrefetch(prefetchHref)
-            : { cacheForNavigation: true, shouldPrefetch: true };
+            : { cacheForNavigation: true, prefetchShellFirst: true, shouldPrefetch: true };
         if (!autoPrefetch.shouldPrefetch) return;
 
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
@@ -359,24 +415,69 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
         const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
         if (prefetched.has(cacheKey)) {
-          if (autoPrefetch.cacheForNavigation) {
-            const existing = getPrefetchCache().get(cacheKey);
-            if (existing?.cacheForNavigation === false) {
-              existing.cacheForNavigation = true;
-            }
+          if (!autoPrefetch.cacheForNavigation) {
+            return;
           }
+
+          const existing = getPrefetchCache().get(cacheKey);
+          if (existing?.cacheForNavigation === false) {
+            existing.cacheForNavigation = true;
+          }
+        }
+        // A single freshness-aware gate covers both an exact prior prefetch and
+        // an equivalent `_rsc` variant; the helper also deletes any stale exact
+        // entry, so a stale `prefetched` member is harmlessly re-added below.
+        if (
+          autoPrefetch.cacheForNavigation &&
+          hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader)
+        ) {
           return;
         }
         prefetched.add(cacheKey);
+        // Next's `prefetchInlining` Segment Cache path reserves the final
+        // payload while a route-tree request is still pending. Vinext keeps a
+        // unified route payload, so gate that payload behind a loading-shell
+        // request to preserve the same pending/dedup observable contract.
+        const fetchPromise =
+          __prefetchInlining && autoPrefetch.cacheForNavigation && autoPrefetch.prefetchShellFirst
+            ? (async () => {
+                const shellHeaders = createRscRequestHeaders({
+                  interceptionContext,
+                  renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+                });
+                if (mountedSlotsHeader) {
+                  shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+                }
+                const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
+                const shellResponse = await fetch(shellRscUrl, {
+                  headers: shellHeaders,
+                  credentials: "include",
+                  priority,
+                  // @ts-expect-error — purpose is a valid fetch option in some browsers
+                  purpose: "prefetch",
+                });
+                if (!shellResponse.ok) {
+                  return shellResponse;
+                }
+                await shellResponse.arrayBuffer().catch(() => {});
+                return fetch(rscUrl, {
+                  headers,
+                  credentials: "include",
+                  priority,
+                  // @ts-expect-error — purpose is a valid fetch option in some browsers
+                  purpose: "prefetch",
+                });
+              })()
+            : fetch(rscUrl, {
+                headers,
+                credentials: "include",
+                priority,
+                // @ts-expect-error — purpose is a valid fetch option in some browsers
+                purpose: "prefetch",
+              });
         prefetchRscResponse(
           rscUrl,
-          fetch(rscUrl, {
-            headers,
-            credentials: "include",
-            priority,
-            // @ts-expect-error — purpose is a valid fetch option in some browsers
-            purpose: "prefetch",
-          }),
+          fetchPromise,
           interceptionContext,
           mountedSlotsHeader,
           undefined,
@@ -683,10 +784,22 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Track pending state for useLinkStatus()
   const [pending, setPending] = useState(false);
   const mountedRef = useRef(true);
+  // Stable setter so the global navigation registry can reset this link's
+  // pending state from another navigation without depending on render identity.
+  const setPendingRef = useRef<PendingLinkSetter | null>(null);
+  if (setPendingRef.current === null) {
+    setPendingRef.current = (next: boolean) => {
+      if (mountedRef.current) setPending(next);
+    };
+  }
   useEffect(() => {
     mountedRef.current = true;
+    const setter = setPendingRef.current;
     return () => {
       mountedRef.current = false;
+      // Drop our setter from the global registry on unmount so a later
+      // navigation never calls into an unmounted component.
+      if (setter) clearLinkForCurrentNavigation(setter);
     };
   }, []);
 
@@ -831,9 +944,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
 
     e.preventDefault();
 
-    // Resolve relative hrefs (#hash, ?query) against the current URL once so
-    // onNavigate and the actual navigation target stay in sync.
-    const absoluteHref = resolveRelativeHref(navigateHref, window.location.href, __basePath);
+    // Resolve relative hrefs (#hash, ?query) for onNavigate and the hard-navigation fallback.
     const absoluteFullHref = toBrowserNavigationHref(
       navigateHref,
       window.location.href,
@@ -868,11 +979,17 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // App Router: delegate to navigateClientSide which handles scroll save,
     // hash-only changes, RSC fetch, and two-phase URL commit.
     if (getNavigationRuntime()?.functions.navigate) {
+      const setter = setPendingRef.current;
+      // Register this link as the one driving the current navigation. This
+      // resets any previously-pending link (e.g. a different link clicked
+      // moments earlier) so only the last-clicked link shows a pending state.
+      if (setter) setLinkForCurrentNavigation(setter);
       setPending(true);
       React.startTransition(() => {
         void navigateClientSide(navigateHref, replace ? "replace" : "push", scroll, true).finally(
           () => {
             if (mountedRef.current) setPending(false);
+            if (setter) clearLinkForCurrentNavigation(setter);
           },
         );
       });
@@ -886,7 +1003,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         const routerModule = await import("next/router");
         const Router = routerModule.default;
         await navigatePagesRouterLink(Router, {
-          href: absoluteHref,
+          href: navigateHref,
           replace,
           scroll,
           shallow,

@@ -238,13 +238,17 @@ export default defineConfig({
 
 /* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks -- Playwright fixture `use`, not a React hook */
 const test = base.extend<{ productionApp: ProductionApp }>({
-  // oxlint-disable-next-line eslint/no-empty-pattern
-  productionApp: async ({}, use) => {
+  productionApp: async ({ page }, use) => {
     const { fixtureRoot, server, app } = await buildAndServeProductionFixture();
 
     try {
       await use(app);
     } finally {
+      // Close the page before the server so requests scheduled after the test
+      // body (e.g. via requestIdleCallback) can't hit a closed port and log
+      // ERR_CONNECTION_REFUSED, which the consoleErrors fixture would turn
+      // into a flaky failure.
+      await page.close();
       await closeServer(server);
       await fs.rm(fixtureRoot, { recursive: true, force: true });
     }

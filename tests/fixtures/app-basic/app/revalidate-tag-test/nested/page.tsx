@@ -7,7 +7,7 @@
 export const revalidate = 3600;
 
 async function getTaggedData() {
-  await fetch("https://httpbin.org/uuid", {
+  await fetch("data:application/json,%7B%22ok%22%3Atrue%7D", {
     next: { tags: ["test-data"] },
   });
   const timestamp = Date.now();

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { compareRoutes, decodeRouteSegment } from "./utils.js";
+import { decodeRouteSegment, sortRoutes } from "./utils.js";
 import {
   createValidFileMatcher,
   scanWithExtensions,
@@ -88,7 +88,7 @@ async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Prom
   validateRoutePatterns(routes.map((route) => route.pattern));
 
   // Sort: static routes first, then dynamic, then catch-all
-  routes.sort(compareRoutes);
+  sortRoutes(routes);
 
   return routes;
 }
@@ -240,7 +240,7 @@ async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promi
   validateRoutePatterns(routes.map((route) => route.pattern));
 
   // Sort same as page routes
-  routes.sort(compareRoutes);
+  sortRoutes(routes);
 
   return routes;
 }

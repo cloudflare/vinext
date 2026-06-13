@@ -271,15 +271,6 @@ vinext deploy --experimental-tpr --tpr-window 48    # Use 48h of analytics
 
 Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and `CLOUDFLARE_API_TOKEN` with Zone.Analytics read permission.
 
-For production caching (ISR), use the built-in Cloudflare KV cache handler:
-
-```ts
-import { KVCacheHandler } from "vinext/cloudflare";
-import { setCacheHandler } from "next/cache";
-
-setCacheHandler(new KVCacheHandler(env.MY_KV_NAMESPACE));
-```
-
 #### Custom Vite configuration
 
 If you need to customize the Vite config, create a `vite.config.ts`. vinext will merge its config with yours. This is required for Cloudflare Workers deployment with the App Router (RSC needs explicit plugin configuration):
@@ -533,14 +524,58 @@ Override behavior:
 
 ### Caching
 
-The cache is pluggable. The default `MemoryCacheHandler` works out of the box. Swap in your own backend for production:
+The cache is pluggable. The default `MemoryCacheHandler` works out of the box. Swap in your own backend for production.
+
+#### Configuring cache adapters from `vite.config`
+
+Instead of wiring up cache handlers imperatively from a worker entry, you can declare them in the `vinext()` plugin config. The `@vinext/cloudflare` package ships Cloudflare adapters for this:
+
+- **`kvDataAdapter()`** (`@vinext/cloudflare/cache/kv-data-adapter`) — backs the `"use cache"` data cache with a Workers KV namespace.
 
 ```ts
-import { setCacheHandler } from "next/cache";
-setCacheHandler(new MyCacheHandler()); // Redis, DynamoDB, etc.
+import { defineConfig } from "vite";
+import vinext from "vinext";
+import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+
+export default defineConfig({
+  plugins: [
+    vinext({
+      cache: {
+        data: kvDataAdapter(),
+      },
+    }),
+  ],
+});
 ```
 
-The `CacheHandler` interface matches Next.js 16's shape, so community adapters should be compatible.
+The KV data adapter reads `env[binding]` at runtime, so add the matching KV namespace to your `wrangler.jsonc`:
+
+```jsonc
+{
+  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "<your-namespace-id>" }],
+}
+```
+
+`binding` defaults to `VINEXT_KV_CACHE`, so `kvDataAdapter()` with no options works as long as that's your binding name. Other options: `appPrefix` (namespace cache keys to isolate multiple apps in one KV namespace), `ttlSeconds` (default KV `expirationTtl`, default 30 days), and `tagCacheTtlMs` (in-memory tag-invalidation cache TTL, default 5s).
+
+Each builder returns a plain, serializable `{ adapter, options }` descriptor — **it never touches the Workers runtime**, so nothing throws at build or dev time when bindings aren't available. The actual adapter (and its `env` binding lookup) is instantiated lazily on the first request.
+
+Registration is wired into **every router and runtime** — App Router and Pages Router, on Cloudflare Workers as well as the Node.js server (`vinext start`) and dev. It self-guards (instantiated once per isolate) and is resilient: if an adapter can't initialize on a given runtime (e.g. a KV binding doesn't exist on the Node server), vinext logs a warning and falls back to the default handler instead of failing requests.
+
+To write your own adapter, point a slot at any module by path and default-export a factory that receives `{ env, options }` at runtime and returns a data-cache `CacheHandler` (or a CDN adapter):
+
+```ts
+vinext({
+  cache: {
+    data: {
+      adapter: require.resolve("./my-adapter.js"),
+      options: {
+        /* … */
+      },
+    },
+  },
+});
+```
 
 ## What's NOT supported (and won't be)
 
@@ -563,6 +598,7 @@ These are gaps we'd like to close — distinct from the [intentional exclusions]
 - **Route segment config** — `runtime` and `preferredRegion` are ignored (everything runs in the same environment).
 - **Node.js production server (`vinext start`)** works for testing but is less complete than Workers deployment. Cloudflare Workers is the primary target.
 - **Native Node modules (sharp, resvg, satori, lightningcss, @napi-rs/canvas)** crash Vite's RSC dev environment. Dynamic OG image/icon routes using these work in production builds but not in dev mode. These are auto-stubbed during `vinext deploy`.
+- **`next.config.ts` `baseUrl` bare imports require Vite 8.** A `next.config.ts` that imports a bare specifier resolved through `tsconfig.json`'s `compilerOptions.baseUrl` (e.g. `import { bar } from "bar"` resolving to a local `bar.ts`) relies on Vite 8's native `resolve.tsconfigPaths` (Rolldown/oxc-resolver). On Vite 7 there is no native equivalent, so these imports are not resolved. `compilerOptions.paths` aliases (e.g. `@/foo`) work on both Vite 7 and 8. Note that if a bare import matches both a `baseUrl`-local file and an installed package of the same name, the installed package wins (vinext keeps packages externalized so CJS config plugins like `@next/mdx` keep working).
 
 ## Benchmarks
 
@@ -649,8 +685,6 @@ packages/vinext/
       middleware.ts        # middleware.ts / proxy.ts runner
       metadata-routes.ts  # File-based metadata route scanner
       instrumentation.ts  # instrumentation.ts support
-    cloudflare/
-      kv-cache-handler.ts # Cloudflare KV-backed CacheHandler for ISR
     shims/                # One file per next/* module (33 shims + 6 internal)
     build/
       static-export.ts    # output: 'export' support

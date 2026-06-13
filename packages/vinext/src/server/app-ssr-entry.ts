@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import { Fragment, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
+import type { RenderToReadableStreamOptions } from "react-dom/server";
 import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
 import clientReferences from "virtual:vite-rsc/client-references";
 import type { NavigationContext } from "vinext/shims/navigation";
@@ -12,6 +13,7 @@ import {
   ServerInsertedHTMLContext,
   appRouterInstance,
   clearServerInsertedHTML,
+  getBfcacheIdMapContext,
   renderServerInsertedHTML,
   setNavigationContext,
   useServerInsertedHTML,
@@ -36,14 +38,34 @@ import {
   createRscEmbedTransform,
   createTickBufferedTransform,
 } from "./app-ssr-stream.js";
-import { deferUntilStreamConsumed } from "./app-page-stream.js";
+import { deferUntilStreamConsumed, type AppSsrRenderResult } from "./app-page-stream.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
+import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
-import { ElementsContext, Slot } from "vinext/shims/slot";
+import { createBfcacheSegmentStateKeyMap, createInitialBfcacheIdMap } from "./app-browser-state.js";
+import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
+import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+
+/**
+ * `@types/react-dom` does not yet type `maxHeadersLength` (it pairs with the
+ * already-typed `onHeaders` to cap the emitted preload `Link` header). React
+ * supports it at runtime, so augment the option type locally.
+ */
+type SsrRenderOptions = RenderToReadableStreamOptions & {
+  maxHeadersLength?: number;
+};
+
+/**
+ * Default cap for the preload `Link` header, matching Next.js's
+ * `defaultConfig.reactMaxHeadersLength`. Used when no config value threads
+ * through (e.g. error-boundary renders) so React's internal cap agrees with
+ * the response-layer combine cap.
+ */
+const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
 
 export type FontPreload = {
   href: string;
@@ -69,6 +91,7 @@ const clientReferencePreloader = createClientReferencePreloader({
     }
   },
 });
+const BfcacheIdMapContext = getBfcacheIdMapContext();
 
 function ssrErrorDigest(input: string): string {
   let hash = 5381;
@@ -160,11 +183,11 @@ function renderFontHtml(
   const includeStyles = options.includeStyles ?? true;
 
   for (const url of fontData.links ?? []) {
-    fontHTML += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(url)}" />\n`;
+    fontHTML += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(appendAssetDeploymentIdQuery(url))}" />\n`;
   }
 
   for (const preload of fontData.preloads ?? []) {
-    fontHTML += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
+    fontHTML += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(appendAssetDeploymentIdQuery(preload.href))}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
   }
 
   if (includeStyles && fontData.styles && fontData.styles.length > 0) {
@@ -208,7 +231,7 @@ function buildModulePreloadHtml(bootstrapModuleUrl?: string, nonce?: string): st
 }
 
 function buildHeadInjectionHtml(
-  navContext: NavigationContext | null,
+  navContext: NavigationContext,
   bootstrapModuleUrl: string | undefined,
   formState: ReactFormState | null,
   insertedHTML: string,
@@ -216,11 +239,11 @@ function buildHeadInjectionHtml(
   scriptNonce?: string,
 ): string {
   const navPayload = {
-    pathname: navContext?.pathname ?? "/",
-    searchParams: navContext?.searchParams ? [...navContext.searchParams.entries()] : [],
+    pathname: navContext.pathname,
+    searchParams: [...navContext.searchParams.entries()],
   };
   const rscMetadataScript = createInlineScriptTag(
-    createNavigationRuntimeRscMetadataScript(navContext?.params ?? {}, navPayload),
+    createNavigationRuntimeRscMetadataScript(navContext.params, navPayload),
     scriptNonce,
   );
   const formStateScript =
@@ -238,6 +261,17 @@ function buildHeadInjectionHtml(
     insertedHTML +
     fontHTML
   );
+}
+
+function requireNavigationContext(navContext: NavigationContext | null): NavigationContext {
+  if (!navContext) {
+    // Guaranteed by the RSC handler (app-rsc-handler.ts) before every main
+    // render and by the ISR/revalidation path (app-page-dispatch.ts). Fallback
+    // boundary renderers synthesize one (app-page-boundary-render.ts) when
+    // request scope is gone.
+    throw new Error("App SSR requires navigation context for BFCache state keys");
+  }
+  return navContext;
 }
 
 export async function handleSsr(
@@ -260,19 +294,27 @@ export async function handleSsr(
      * SSR head. Undefined or empty disables emission entirely.
      */
     clientTraceMetadata?: readonly string[];
+    /**
+     * Maximum total length (in characters) of the preload `Link` header React
+     * emits during SSR. `0` disables emission. From `reactMaxHeadersLength` in
+     * `next.config`. Undefined falls back to React's own default.
+     */
+    reactMaxHeadersLength?: number;
     rootParams?: RootParams;
+    /** Dev-only: original server error to surface in the browser overlay. */
+    initialDevServerError?: unknown;
     /** When true, wait for the full React tree (including Suspense boundaries)
      *  to resolve before returning the HTML stream. Used for static prerender
      *  and ISR cache writes to avoid caching fallback content. */
     waitForAllReady?: boolean;
   },
-): Promise<ReadableStream<Uint8Array>> {
+): Promise<AppSsrRenderResult> {
   return runWithNavigationContext(async () => {
+    const ssrNavigationContext = requireNavigationContext(navContext);
+
     await clientReferencePreloader.preload();
 
-    if (navContext) {
-      setNavigationContext(navContext);
-    }
+    setNavigationContext(ssrNavigationContext);
 
     clearServerInsertedHTML();
 
@@ -311,11 +353,36 @@ export async function handleSsr(
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);
           const metadata = AppElementsWire.readMetadata(elements);
-          return createReactElement(
+          const routeTree = createReactElement(
             ElementsContext.Provider,
             { value: elements },
             createReactElement(Slot, { id: metadata.routeId }),
           );
+          const stateKeyTree = createReactElement(
+            BfcacheStateKeyMapContext.Provider,
+            {
+              value: createBfcacheSegmentStateKeyMap({
+                elements,
+                // Normalized inside the function to match the client navigation
+                // snapshot pathname (SSR/client Activity key parity).
+                pathname: ssrNavigationContext.pathname,
+              }),
+            },
+            routeTree,
+          );
+          // During SSR we only provide the id *map*, seeded entirely with the
+          // INITIAL_BFCACHE_ID sentinel. BfcacheSlotBoundary may still publish a
+          // BfcacheSegmentIdContext value here, but every map entry is the "0"
+          // sentinel, so formatPublicBfcacheId resolves useRouter().bfcacheId to
+          // the public hydration sentinel ("_b_0_") regardless until the client
+          // context takes over. Per-segment minted ids are browser-only.
+          return BfcacheIdMapContext
+            ? createReactElement(
+                BfcacheIdMapContext.Provider,
+                { value: createInitialBfcacheIdMap(elements) },
+                stateKeyTree,
+              )
+            : stateKeyTree;
         }
 
         const flightRootElement = createReactElement(VinextFlightRoot);
@@ -374,12 +441,35 @@ export async function handleSsr(
         const bootstrapScriptContent = await import.meta.viteRsc.loadBootstrapScriptContent(
           "index",
         );
-        const bootstrapModuleUrl = extractBootstrapModuleUrl(bootstrapScriptContent);
+        const rawBootstrapModuleUrl = extractBootstrapModuleUrl(bootstrapScriptContent);
+        const bootstrapModuleUrl = rawBootstrapModuleUrl
+          ? appendAssetDeploymentIdQuery(rawBootstrapModuleUrl)
+          : undefined;
         const errorMetaRenderer = createSsrErrorMetaRenderer({
           basePath: options?.basePath,
         });
 
-        const htmlStream = await renderToReadableStream(ssrRoot, {
+        // React emits a preload `Link` header (capped to `maxHeadersLength`)
+        // via `onHeaders`. It fires before the shell resolves, so `linkHeader`
+        // is populated by the time `renderToReadableStream` resolves below.
+        // `0` disables emission entirely — skip the callback so React doesn't
+        // warn about a non-positive `maxHeadersLength`. Fall back to the same
+        // 6000 default the response-layer cap uses (React's own default is
+        // 2000) so both caps agree when no config value threads through.
+        let reactLinkHeader = "";
+        const maxHeadersLength = options?.reactMaxHeadersLength ?? DEFAULT_REACT_MAX_HEADERS_LENGTH;
+        const captureHeaders = maxHeadersLength > 0;
+
+        const ssrRenderOptions: SsrRenderOptions = {
+          onHeaders: captureHeaders
+            ? (headers: Headers) => {
+                const link = headers.get("Link");
+                if (link) {
+                  reactLinkHeader = link;
+                }
+              }
+            : undefined,
+          maxHeadersLength: captureHeaders ? maxHeadersLength : undefined,
           // `bootstrapScriptContent` was previously how vinext injected the
           // dynamic-import call. `bootstrapModules` performs the same work
           // natively (and exposes the URL in the DOM), so passing both would
@@ -413,15 +503,9 @@ export async function handleSsr(
 
             return undefined;
           },
-        });
+        };
 
-        // When producing static output (prerender / ISR cache writes), wait for
-        // the full React tree to resolve before emitting bytes. This prevents
-        // Suspense fallback content from being serialized to the cache.
-        // Matches Next.js waitForAllReady forkpoint in renderToNodeFizzStream.
-        if (options?.waitForAllReady === true) {
-          await htmlStream.allReady;
-        }
+        const htmlStream = await renderToReadableStream(ssrRoot, ssrRenderOptions);
 
         // Populated before any SSR request runs: at prod-server startup
         // (prod-server.ts) or via build-time bundle injection (index.ts). Left
@@ -452,14 +536,18 @@ export async function handleSsr(
         const getInsertedHTML = (): string => {
           const insertedHTML = renderInsertedHtml(renderServerInsertedHTML());
           const errorMetaHTML = errorMetaRenderer.flush();
+          const initialDevServerErrorHTML = createInitialDevServerErrorScript(
+            options?.initialDevServerError,
+            options?.scriptNonce,
+          );
           if (didInjectHeadHTML) return insertedHTML + errorMetaHTML;
 
           didInjectHeadHTML = true;
           return buildHeadInjectionHtml(
-            navContext,
+            ssrNavigationContext,
             bootstrapModuleUrl,
             options?.formState ?? null,
-            insertedHTML + errorMetaHTML + getTraceMetaHTML(),
+            insertedHTML + errorMetaHTML + getTraceMetaHTML() + initialDevServerErrorHTML,
             fontHTML,
             options?.scriptNonce,
           );
@@ -476,7 +564,11 @@ export async function handleSsr(
         const getBeforeInteractiveHeadHTML = (): string =>
           renderBeforeInteractiveInlineScripts(beforeInteractiveInlineScripts);
 
-        return deferUntilStreamConsumed(
+        if (options?.waitForAllReady === true) {
+          await htmlStream.allReady;
+        }
+
+        const finalStream = deferUntilStreamConsumed(
           htmlStream.pipeThrough(
             createTickBufferedTransform(
               rscEmbed,
@@ -490,12 +582,27 @@ export async function handleSsr(
           ),
           cleanup,
         );
+
+        return {
+          htmlStream: finalStream,
+          // `metadataReady` resolves eagerly precisely *because* `allReady` was
+          // already awaited above when `waitForAllReady` is set (the prerender
+          // path). At that point the React tree is fully rendered, so all
+          // render-time metadata (cache life, headers, captured RSC errors) is
+          // already settled and there is nothing left for the lifecycle to wait
+          // on. The promise exists to keep `renderAppPageLifecycle` agnostic to
+          // *where* the blocking happens — do not move the `allReady` await onto
+          // this promise expecting it to be load-bearing in production.
+          metadataReady: Promise.resolve(),
+          capturedRscData: options?.capturedRscDataRef?.value ?? null,
+          linkHeader: reactLinkHeader,
+        };
       } catch (error) {
         cleanup();
         throw error;
       }
     });
-  }) as Promise<ReadableStream<Uint8Array>>;
+  }) as Promise<AppSsrRenderResult>;
 }
 
 export default {

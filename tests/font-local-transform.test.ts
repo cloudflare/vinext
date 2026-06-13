@@ -1,9 +1,18 @@
 import { describe, it, expect } from "vite-plus/test";
+import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
 import localFont, { getSSRFontStyles } from "../packages/vinext/src/shims/font-local.js";
 import type { Plugin } from "vite-plus";
 
 // ── Helpers ───────────────────────────────────────────────────
+
+// Absolute path to vinext's own font-local shim — the plugin guards against
+// rewriting any file under its shims directory via a prefix check, so tests
+// that exercise the guard must use the real resolved path.
+const FONT_LOCAL_SHIM_PATH = path.resolve(
+  import.meta.dirname,
+  "../packages/vinext/src/shims/font-local.ts",
+);
 
 /** Unwrap a Vite plugin hook that may use the object-with-filter format */
 function unwrapHook(hook: any): Function {
@@ -37,12 +46,56 @@ describe("vinext:local-fonts plugin", () => {
     expect(result).toBeNull();
   });
 
-  it("returns null for node_modules files", () => {
+  it("transforms node_modules packages that wrap next/font/local", () => {
+    // Regression: npm packages like `geist` ship their own font files and call
+    // localFont() with paths relative to the package's dist/ directory. The
+    // transform previously excluded node_modules, so the raw relative path
+    // (e.g. "./fonts/geist-mono/GeistMono-Variable.woff2") leaked into the
+    // runtime @font-face src and 404'd. Next.js's font loader runs on these
+    // package files, so vinext must too.
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `export const GeistMono = localFont({`,
+      `  src: './fonts/geist-mono/GeistMono-Variable.woff2',`,
+      `  variable: '--font-geist-mono',`,
+      `});`,
+    ].join("\n");
+    const result = transform.call(plugin, code, "/proj/node_modules/geist/dist/mono.js");
+    expect(result).not.toBeNull();
+    expectImported(result.code, "./fonts/geist-mono/GeistMono-Variable.woff2");
+    expect(result.code).toContain(`_vinext: { font: { family: "GeistMono" } }`);
+  });
+
+  it("skips vinext's own font-local shim (it has example paths in comments)", () => {
+    // The shim must never be rewritten. The guard is a prefix check against the
+    // resolved shims directory, so use the real shim path.
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = `import localFont from 'next/font/local';\nconst f = localFont({ src: './font.woff2' });`;
-    const result = transform.call(plugin, code, "node_modules/some-pkg/index.ts");
+    const result = transform.call(plugin, code, FONT_LOCAL_SHIM_PATH);
     expect(result).toBeNull();
+  });
+
+  it("transforms third-party packages whose path contains 'font-local'", () => {
+    // Guard against a loose substring match regressing the fix: a real package
+    // named `font-local-loader` (or one shipping fonts under a `font-local/`
+    // dir) must still be transformed. Only vinext's own shims directory is
+    // skipped, via a precise prefix check.
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `export const Custom = localFont({ src: './font-local/Custom.woff2' });`,
+    ].join("\n");
+    const result = transform.call(
+      plugin,
+      code,
+      "/proj/node_modules/font-local-loader/dist/index.js",
+    );
+    expect(result).not.toBeNull();
+    expectImported(result.code, "./font-local/Custom.woff2");
   });
 
   it("returns null for virtual modules", () => {

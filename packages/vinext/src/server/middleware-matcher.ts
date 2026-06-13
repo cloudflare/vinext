@@ -7,7 +7,7 @@ import {
 import type { HasCondition, NextI18nConfig } from "../config/next-config.js";
 import { removeTrailingSlash } from "../utils/base-path.js";
 
-export type MiddlewareMatcherObject = {
+type MiddlewareMatcherObject = {
   source: string;
   locale?: false;
   has?: HasCondition[];

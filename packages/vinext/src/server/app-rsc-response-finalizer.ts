@@ -1,6 +1,7 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/config-matchers.js";
 import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
+import { applyCdnResponseHeaders } from "./cache-control.js";
 import { applyConfigHeadersToResponse } from "./request-pipeline.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
@@ -53,6 +54,18 @@ export function finalizeAppRscResponse(
 
   if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {
     mergeVaryHeader(response.headers, VINEXT_RSC_VARY_HEADER);
+  }
+
+  // The CDN cache adapter owns the *default* Cache-Control. If no route path
+  // stamped one (e.g. a dynamic page whose policy produced no cacheable value),
+  // let the adapter decide the default: the edge adapter emits `no-store` (so an
+  // unspecified response is never accidentally edge-cached), while the default
+  // origin-managed adapter leaves it absent (unchanged behavior). This runs only
+  // when Cache-Control is absent, so it never clobbers a policy a renderer
+  // already applied — including a real `CDN-Cache-Control`. Redirects are
+  // already skipped above.
+  if (!response.headers.has("Cache-Control")) {
+    applyCdnResponseHeaders(response.headers, { cacheControl: "" });
   }
 
   if (!options.configHeaders.length) {
