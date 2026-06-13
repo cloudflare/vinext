@@ -10,6 +10,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   buildBarrelExportMap,
+  createOptimizedImportSourceMatcher,
   createOptimizeImportsPlugin,
   DEFAULT_OPTIMIZE_PACKAGES,
 } from "../packages/vinext/src/plugins/optimize-imports.js";
@@ -67,6 +68,19 @@ describe("vinext:optimize-imports plugin", () => {
 
     const result = await (transform as any).call(plugin, code, "/app/page.tsx");
     expect(result).toBeNull();
+  });
+
+  it("quick-checks only transformable static import sources", () => {
+    const hasOptimizedImport = createOptimizedImportSourceMatcher(["lucide-react", "radix-ui"]);
+
+    expect(hasOptimizedImport(`import { Sun } from "lucide-react";`)).toBe(true);
+    expect(hasOptimizedImport(`import{Slot}from'radix-ui';`)).toBe(true);
+    expect(hasOptimizedImport(`import type { IconNode } from "lucide-react";`)).toBe(true);
+    expect(hasOptimizedImport(`const source = 'import { Sun } from "lucide-react"';`)).toBe(false);
+    expect(hasOptimizedImport(`// import { Slot } from "radix-ui";`)).toBe(false);
+    expect(hasOptimizedImport(`import "lucide-react";`)).toBe(false);
+    expect(hasOptimizedImport(`import { Sun /*; */ } from "lucide-react";`)).toBe(true);
+    expect(hasOptimizedImport(`function f(){}import { Sun } from "lucide-react";`)).toBe(true);
   });
 
   it("returns null when barrel package mentioned but no resolvable entry", async () => {
