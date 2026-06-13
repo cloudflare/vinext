@@ -15,6 +15,7 @@ import type {
   CacheHandlerValue,
   IncrementalCacheValue,
 } from "../packages/vinext/src/shims/cache.js";
+import { normalizePathSeparators } from "../packages/vinext/src/utils/path.ts";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 describe("vinext next data client helpers", () => {
@@ -18898,7 +18899,10 @@ describe("@vercel/og compatibility resolution", () => {
 
   it("routes direct @vercel/og app imports through the Next-compatible ImageResponse shim", () => {
     const hook = getResolveIdHook();
-    const expectedShim = path.resolve(import.meta.dirname, "../packages/vinext/src/shims/og.tsx");
+    // resolveId returns Vite-style ids: forward slashes on every platform.
+    const expectedShim = normalizePathSeparators(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/shims/og.tsx"),
+    );
 
     expect(hook.filter.id.test("@vercel/og")).toBe(true);
     expect(hook.filter.id.test("@vercel/og.js")).toBe(true);
