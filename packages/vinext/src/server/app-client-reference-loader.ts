@@ -82,21 +82,62 @@ async function preloadClientReferenceIds(
   );
 }
 
-export async function preloadInitialClientReferencesFromRscStream(
+export function preloadInitialClientReferencesFromRscStream(
   stream: ReadableStream<Uint8Array>,
   options: {
     clientRequire?: ClientReferenceRequire;
     onPreloadError?: ClientReferencePreloadErrorHandler;
   } = {},
-): Promise<ReadableStream<Uint8Array>> {
+): { stream: ReadableStream<Uint8Array>; preloaded: Promise<void> } {
   const clientRequire = options.clientRequire ?? globalThis.__vite_rsc_client_require__;
-  if (!clientRequire) return stream;
+  if (!clientRequire) return { stream, preloaded: Promise.resolve() };
 
   const [preloadStream, renderStream] = stream.tee();
+  // Warm up the initial client-reference imports on the preload branch while
+  // React consumes the render branch concurrently. This MUST stay off the
+  // hydration critical path: awaiting full-stream consumption would keep
+  // already-rendered, above-the-fold client components non-interactive until
+  // the tail of a streamed RSC payload (e.g. a slow Suspense boundary) settles.
+  // installReactFlightClientReferenceRequire() already annotates every import
+  // thenable so React tracks in-flight modules on its own, so this is a pure
+  // warm-up, not a correctness gate. The returned `preloaded` promise is only
+  // for diagnostics/tests to observe warm-up completion — callers must not gate
+  // hydration on it.
+  const preloaded = drainAndPreloadClientReferences(
+    preloadStream,
+    clientRequire,
+    options.onPreloadError,
+  );
+  return { stream: renderStream, preloaded };
+}
+
+// Reads the tee'd preload branch to completion, kicking off the import for each
+// client reference id as soon as its row is parsed (rather than batching after
+// the stream closes) so the warm-up overlaps the remainder of the stream.
+async function drainAndPreloadClientReferences(
+  preloadStream: ReadableStream<Uint8Array>,
+  clientRequire: ClientReferenceRequire,
+  onPreloadError?: ClientReferencePreloadErrorHandler,
+): Promise<void> {
   const reader = preloadStream.getReader();
   const decoder = new TextDecoder();
-  const referenceIds = new Set<string>();
+  const started = new Set<string>();
+  const imports: Promise<void>[] = [];
   let pendingText = "";
+
+  const preloadFreshIds = (chunkText: string): void => {
+    const ids = new Set<string>();
+    readClientReferenceIdsFromRscText(chunkText, ids);
+    const fresh: string[] = [];
+    for (const id of ids) {
+      if (started.has(id)) continue;
+      started.add(id);
+      fresh.push(id);
+    }
+    if (fresh.length > 0) {
+      imports.push(preloadClientReferenceIds(fresh, clientRequire, onPreloadError));
+    }
+  };
 
   try {
     while (true) {
@@ -106,18 +147,16 @@ export async function preloadInitialClientReferencesFromRscStream(
       const text = pendingText + decoder.decode(value, { stream: true });
       const lines = text.split("\n");
       pendingText = lines.pop() ?? "";
-      readClientReferenceIdsFromRscText(lines.join("\n"), referenceIds);
+      preloadFreshIds(lines.join("\n"));
     }
 
     pendingText += decoder.decode();
     if (pendingText) {
-      readClientReferenceIdsFromRscText(pendingText, referenceIds);
+      preloadFreshIds(pendingText);
     }
 
-    await preloadClientReferenceIds(referenceIds, clientRequire, options.onPreloadError);
+    await Promise.all(imports);
   } finally {
     reader.releaseLock();
   }
-
-  return renderStream;
 }

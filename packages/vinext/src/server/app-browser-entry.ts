@@ -1565,13 +1565,23 @@ async function main(): Promise<void> {
   // helper so the null-branch structurally cannot reach any RSC bootstrap
   // global assignment, even if a future refactor interposes async work here.
   if (rscStream === null) return;
-  const hydrationStream = await preloadInitialClientReferencesFromRscStream(rscStream, {
-    onPreloadError(id, error) {
-      if (import.meta.env.DEV) {
-        console.warn("[vinext] failed to preload initial client ref:", id, error);
-      }
+  // Tee the initial RSC stream and warm up client-reference imports on the side
+  // branch, but hand the render branch to hydration immediately. Blocking
+  // hydration on the warm-up would strand above-the-fold client components until
+  // a slow Suspense boundary at the stream tail settles; the Flight thenable
+  // annotation installed before main() already lets React track in-flight
+  // imports, so the warm-up is an optimization, not a prerequisite.
+  const { stream: hydrationStream, preloaded } = preloadInitialClientReferencesFromRscStream(
+    rscStream,
+    {
+      onPreloadError(id, error) {
+        if (import.meta.env.DEV) {
+          console.warn("[vinext] failed to preload initial client ref:", id, error);
+        }
+      },
     },
-  });
+  );
+  void preloaded.catch(() => {});
   bootstrapHydration(hydrationStream);
 }
 

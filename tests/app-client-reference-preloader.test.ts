@@ -120,27 +120,81 @@ describe("app client reference preloader", () => {
       '3:I["comp-b",[],"Widget",1]\n' +
       '4:["not a client reference"]\n';
 
-    const preloadPromise = preloadInitialClientReferencesFromRscStream(textStream([sourceText]), {
-      clientRequire(id) {
-        calls.push(id);
-        return id === "comp-a" ? first.promise : second.promise;
+    const { stream: renderStream, preloaded } = preloadInitialClientReferencesFromRscStream(
+      textStream([sourceText]),
+      {
+        clientRequire(id) {
+          calls.push(id);
+          return id === "comp-a" ? first.promise : second.promise;
+        },
       },
-    });
+    );
 
     await expect.poll(() => calls).toEqual(["comp-a", "comp-b"]);
 
     first.resolve(undefined);
     second.resolve(undefined);
 
-    const renderStream = await preloadPromise;
+    await preloaded;
     expect(await readStreamText(renderStream)).toBe(sourceText);
+  });
+
+  it("returns the render stream and warms imports before the RSC stream tail settles", async () => {
+    const calls: string[] = [];
+    const aboveFold = createDeferred<void>();
+    const belowFold = createDeferred<void>();
+    const tail = createDeferred<void>();
+    const encoder = new TextEncoder();
+
+    // The above-the-fold row is available immediately; the tail row does not
+    // arrive until `tail` resolves — modelling a slow Suspense boundary at the
+    // end of a streamed App Router payload. Hydration must not be serialised
+    // behind stream completion.
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('1:I["above-fold",[],"default",1]\n'));
+        void tail.promise.then(() => {
+          controller.enqueue(encoder.encode('2:I["below-fold",[],"default",1]\n'));
+          controller.close();
+        });
+      },
+    });
+
+    const { stream, preloaded } = preloadInitialClientReferencesFromRscStream(source, {
+      clientRequire(id) {
+        calls.push(id);
+        return id === "above-fold" ? aboveFold.promise : belowFold.promise;
+      },
+    });
+
+    // The render branch yields the above-the-fold row without waiting for the
+    // delayed tail. (Destructuring a stream synchronously also proves the call
+    // no longer awaits full-stream consumption before returning.)
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    const firstChunk = await reader.read();
+    expect(decoder.decode(firstChunk.value)).toContain("above-fold");
+
+    // The warm-up has kicked off the above-the-fold import while the tail row is
+    // still outstanding.
+    await expect.poll(() => calls).toEqual(["above-fold"]);
+
+    tail.resolve(undefined);
+    aboveFold.resolve(undefined);
+    belowFold.resolve(undefined);
+    await expect.poll(() => calls).toEqual(["above-fold", "below-fold"]);
+
+    const restChunk = await reader.read();
+    expect(decoder.decode(restChunk.value)).toContain("below-fold");
+    reader.releaseLock();
+    await preloaded;
   });
 
   it("continues initial RSC hydration after client reference preload failures", async () => {
     const reported: Array<{ id: string; error: unknown }> = [];
     const error = new Error("load failed");
 
-    const renderStream = await preloadInitialClientReferencesFromRscStream(
+    const { stream: renderStream, preloaded } = preloadInitialClientReferencesFromRscStream(
       textStream(['1:I["comp-a",[],"default",1]\n']),
       {
         clientRequire() {
@@ -152,6 +206,7 @@ describe("app client reference preloader", () => {
       },
     );
 
+    await preloaded;
     expect(reported).toEqual([{ id: "comp-a", error }]);
     expect(await readStreamText(renderStream)).toBe('1:I["comp-a",[],"default",1]\n');
   });

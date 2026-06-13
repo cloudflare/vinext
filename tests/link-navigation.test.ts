@@ -1268,6 +1268,50 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("yields low-priority App Router prefetch to idle scheduling once the navigate runtime is installed", async () => {
+    const observer = stubIntersectionObserver();
+    // Capture the idle callback instead of running it, so a deferred prefetch is
+    // observable as "queued on idle but not yet fired".
+    const idleCallbacks: Array<() => void> = [];
+    const requestIdleCallback = vi.fn((callback: () => void) => {
+      idleCallbacks.push(callback);
+      return idleCallbacks.length;
+    });
+
+    // appNavigation defaults to true → the full navigate runtime is installed,
+    // so this is a normal low-priority prefetch, not the bootstrap retry window.
+    // `__NEXT_DATA__` is undefined (App Router) but must no longer force the
+    // immediate path once the runtime is up.
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+      windowOverrides: { requestIdleCallback },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+
+      expect(requestIdleCallback).toHaveBeenCalledTimes(1);
+      expect(result.fetch).not.toHaveBeenCalled();
+
+      for (const callback of idleCallbacks) {
+        callback();
+      }
+      await waitForFetchCalls(result.fetch, 1);
+
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/viewport-prefetch-target",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("re-prefetches visible links after the prefetch cache is invalidated", async () => {
     const observer = stubIntersectionObserver();
 
@@ -1613,6 +1657,46 @@ describe("Link prefetch scheduling", () => {
       await flushPrefetchTasks();
 
       expect(result.fetch).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("re-prefetches a visible navigation-cacheable link when only a stale dedupe marker remains", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+    });
+    const { createRscRequestHeaders, createRscRequestUrl } =
+      await import("../packages/vinext/src/server/app-rsc-cache-busting.js");
+    const { getPrefetchCache, getPrefetchedUrls } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    const rscUrl = await createRscRequestUrl(
+      "/viewport-prefetch-target",
+      createRscRequestHeaders(),
+    );
+
+    try {
+      // An orphaned dedupe marker with no live cache entry — the state left
+      // behind when a prior entry became incompatible with the current
+      // mounted-slot context and was skipped (not deleted) by the freshness
+      // check. Freshness, not the marker, must decide: the link still has no
+      // usable prefetch data, so a re-prefetch must fire.
+      getPrefetchedUrls().add(rscUrl);
+      expect(getPrefetchCache().has(rscUrl)).toBe(false);
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/viewport-prefetch-target",
+        expect.objectContaining({
+          credentials: "include",
+          priority: "low",
+        }),
+      );
     } finally {
       result.restoreNodeEnv();
     }

@@ -366,7 +366,11 @@ function resolveAutoAppRoutePrefetchForRequest(href: string): AutoAppRoutePrefet
  * For Pages Router: injects a <link rel="prefetch"> for the page module.
  *
  * Uses `requestIdleCallback` (or `setTimeout` fallback) to avoid blocking
- * the main thread during initial page load.
+ * the main thread during initial page load. The one exception is the App
+ * Router bootstrap window — before the navigate runtime is installed — where
+ * a low-priority prefetch runs immediately so a visible link is not stranded
+ * waiting on idle time while the runtime is still initializing. Once the
+ * runtime is installed, low-priority prefetches yield to idle scheduling again.
  */
 const APP_PREFETCH_RUNTIME_RETRY_LIMIT = 5;
 
@@ -421,8 +425,16 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
     return;
   }
 
+  // Run immediately for high priority, and for the App Router bootstrap retry
+  // window (no `__NEXT_DATA__` and the navigate runtime not yet installed) so a
+  // visible link prefetches without waiting on idle time while the runtime
+  // initializes. Once the runtime is installed, normal low-priority App Router
+  // prefetches fall back to idle scheduling — `__NEXT_DATA__ === undefined`
+  // alone is an App-Router identity check, not a "runtime not ready" signal, so
+  // gating on it without `hasAppNavigationRuntime()` would make every
+  // low-priority prefetch bypass idle scheduling for the page's whole lifetime.
   const schedule =
-    priority === "high" || window.__NEXT_DATA__ === undefined
+    priority === "high" || (window.__NEXT_DATA__ === undefined && !hasAppNavigationRuntime())
       ? (fn: () => void) => {
           fn();
         }
@@ -478,7 +490,17 @@ function prefetchUrl(href: string, mode: LinkPrefetchMode, priority: "low" | "hi
             ) {
               return;
             }
-            if (getPrefetchedUrls().has(fullCacheKey)) return;
+            // For navigation-cacheable entries, freshness is authoritative —
+            // hasPrefetchCacheEntryForNavigation() above already returns true for
+            // a still-pending in-flight prefetch, so it handles concurrent
+            // dedupe. The `prefetchedUrls` marker must NOT gate them: a marker can
+            // outlive its cache entry (e.g. when a prior entry became incompatible
+            // with the current mounted-slot context and was skipped without being
+            // deleted), and letting it block here would suppress a needed
+            // re-prefetch after the cache went stale or missing. The marker is the
+            // sole dedupe signal only for loading-shell entries, which are
+            // invisible to the freshness check (cacheForNavigation === false).
+            if (!autoPrefetch.cacheForNavigation && getPrefetchedUrls().has(fullCacheKey)) return;
 
             getPrefetchedUrls().add(fullCacheKey);
             prefetchRscResponse(
