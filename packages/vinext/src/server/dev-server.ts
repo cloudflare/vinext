@@ -742,9 +742,9 @@ export function createSSRHandler(
           // Render the loading shell for `fallback: true` when the path
           // wasn't pre-rendered. Data requests still resolve real props so
           // the client can swap in after the shell ships.
-          const userAgent = req.headers["user-agent"];
-          const isBotRequest =
-            typeof userAgent === "string" && isBotUserAgent(userAgent, htmlLimitedBots);
+          const userAgentHeader = req.headers["user-agent"];
+          const userAgent = Array.isArray(userAgentHeader) ? userAgentHeader[0] : userAgentHeader;
+          const isBotRequest = !!userAgent && isBotUserAgent(userAgent, htmlLimitedBots);
           if (fallback === true && !isValidPath && !isDataReq && !isBotRequest) {
             isFallbackRender = true;
             if (typeof routerShim.setSSRContext === "function") {
