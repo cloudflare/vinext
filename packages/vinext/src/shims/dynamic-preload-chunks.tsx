@@ -81,8 +81,8 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
   const stylesheets: React.ReactNode[] = [];
   for (const file of files) {
     const assetHref = dynamicPreloadHref(file);
-    const href = appendAssetDeploymentIdQuery(assetHref);
     if (assetHref.endsWith(".css")) {
+      const href = appendAssetDeploymentIdQuery(assetHref);
       stylesheets.push(
         React.createElement("link", {
           key: href,
@@ -103,7 +103,7 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
         fetchPriority: "low",
         nonce,
       };
-      ReactDOM.preload(href, preloadOptions);
+      ReactDOM.preload(assetHref, preloadOptions);
     }
   }
 

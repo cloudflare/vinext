@@ -117,6 +117,12 @@ describe("renderVinextBuiltUrl", () => {
     );
   });
 
+  it("preserves one native ESM module identity for JavaScript hosts", () => {
+    expect(renderVinextBuiltUrl("_next/static/chunk.js", "", "dpl_123", "js")).toBe(
+      "/_next/static/chunk.js",
+    );
+  });
+
   it("combines path asset prefixes and deployment IDs", () => {
     expect(renderVinextBuiltUrl("cdn/_next/static/chunk.js", "/cdn", "dpl_123")).toBe(
       "/cdn/_next/static/chunk.js?dpl=dpl_123",
@@ -381,7 +387,7 @@ describe("assetPrefix end-to-end build", () => {
 
   // Ported from Next.js: test/production/deployment-id-handling/deployment-id-handling.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/production/deployment-id-handling/deployment-id-handling.test.ts
-  it("deployment ID: emits dpl queries in built output and SSR asset URLs", async () => {
+  it("deployment ID: keeps native ESM URLs on one module identity", async () => {
     const built = await buildFixtureWithConfig(`deploymentId: "dpl_123",`, register);
     const clientDir = path.join(built.outDir, "client");
     const builtFiles: string[] = [];
@@ -394,9 +400,9 @@ describe("assetPrefix end-to-end build", () => {
       }
     };
     collectFiles(clientDir);
-    expect(builtFiles.some((file) => fs.readFileSync(file, "utf8").includes("?dpl=dpl_123"))).toBe(
-      true,
-    );
+    for (const file of builtFiles.filter((file) => /\.[cm]?js$/.test(file))) {
+      expect(fs.readFileSync(file, "utf8"), file).not.toContain("?dpl=dpl_123");
+    }
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
     const { server } = await startProdServer({
@@ -415,10 +421,12 @@ describe("assetPrefix end-to-end build", () => {
         (match) => match[1],
       );
       expect(assetUrls.length).toBeGreaterThan(0);
-      expect(
-        assetUrls.every((url) => url.includes("dpl=dpl_123")),
-        JSON.stringify(assetUrls),
-      ).toBe(true);
+      const bootstrapModuleUrl = html.match(/<script[^>]+type="module"[^>]+src="([^"]+)"/)?.[1];
+      expect(bootstrapModuleUrl).toBeDefined();
+      expect(bootstrapModuleUrl).not.toContain("dpl=");
+      for (const assetUrl of assetUrls.filter((url) => /\.js(?:[?#]|$)/.test(url))) {
+        expect(assetUrl).not.toContain("dpl=");
+      }
     } finally {
       server.close();
     }

@@ -441,10 +441,14 @@ export async function handleSsr(
         const bootstrapScriptContent = await import.meta.viteRsc.loadBootstrapScriptContent(
           "index",
         );
-        const rawBootstrapModuleUrl = extractBootstrapModuleUrl(bootstrapScriptContent);
-        const bootstrapModuleUrl = rawBootstrapModuleUrl
-          ? appendAssetDeploymentIdQuery(rawBootstrapModuleUrl)
-          : undefined;
+        // Keep the bootstrap URL exactly as emitted by plugin-rsc. Appending a
+        // deployment query here happens after Vite has generated the client
+        // module graph, so the bootstrap entry gets a different module identity
+        // from references to the same entry inside that graph. That splits the
+        // React/RSC client singleton state and breaks hydration and server-action
+        // FormData encoding. Normal built assets are versioned earlier through
+        // Vite's renderBuiltUrl hook.
+        const bootstrapModuleUrl = extractBootstrapModuleUrl(bootstrapScriptContent);
         const errorMetaRenderer = createSsrErrorMetaRenderer({
           basePath: options?.basePath,
         });
