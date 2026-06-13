@@ -8,7 +8,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { createBuilder } from "vite";
 import vinext from "../packages/vinext/src/index.js";
-import { replaceTypeofWindow } from "../packages/vinext/src/plugins/typeof-window.js";
+import {
+  getTypeofWindowReplacement,
+  replaceTypeofWindow,
+} from "../packages/vinext/src/plugins/typeof-window.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -67,6 +70,34 @@ switch (value) {
     expect(result?.code).toContain("serverOnly()");
   });
 
+  it("keeps function body var bindings out of default parameter scope", () => {
+    const result = replaceTypeofWindow(
+      `function load(value = typeof window !== "undefined" ? import("browser-only") : null) {
+  var window
+  return value
+}`,
+      "undefined",
+    );
+
+    expect(result?.code).not.toContain("browser-only");
+    expect(result?.code).toContain("value = (null)");
+    expect(result?.code).toContain("var window");
+  });
+
+  it("preserves selected conditional expression precedence", () => {
+    const result = replaceTypeofWindow(
+      `const value = typeof window === "undefined" ? (serverValue, fallbackValue) : browserValue`,
+      "undefined",
+    );
+
+    expect(result?.code).toBe("const value = (serverValue, fallbackValue)");
+  });
+
+  it("uses the resolved environment consumer for custom client environments", () => {
+    expect(getTypeofWindowReplacement({ config: { consumer: "client" } })).toBe("object");
+    expect(getTypeofWindowReplacement({ config: { consumer: "server" } })).toBe("undefined");
+  });
+
   it("removes browser-only dynamic imports from server bundles", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-"));
     temporaryDirectories.push(root);
@@ -93,6 +124,11 @@ switch (value) {
 if (typeof window !== 'undefined') {
   import('my-differentiated-files/browser').then((mod) => console.log(mod.default))
 }
+function load(value = typeof window !== 'undefined' ? import('my-differentiated-files/browser') : null) {
+  var window
+  return value
+}
+load()
 export default function Page() { return <h1>Page loaded</h1> }`,
     );
     await fs.writeFile(

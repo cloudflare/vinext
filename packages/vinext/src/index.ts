@@ -173,7 +173,7 @@ import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
-import { replaceTypeofWindow } from "./plugins/typeof-window.js";
+import { getTypeofWindowReplacement, replaceTypeofWindow } from "./plugins/typeof-window.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import { getViteMajorVersion } from "./utils/vite-version.js";
@@ -3923,10 +3923,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       transform: {
         filter: { code: /typeof\s+window/ },
         handler(code) {
-          return replaceTypeofWindow(
-            code,
-            this.environment?.name === "client" ? "object" : "undefined",
-          );
+          return replaceTypeofWindow(code, getTypeofWindowReplacement(this.environment));
         },
       },
     },

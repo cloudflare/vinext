@@ -18,6 +18,12 @@ type Scope = {
   bindings: Set<string>;
 };
 
+type EnvironmentLike = {
+  config: {
+    consumer: "client" | "server";
+  };
+};
+
 function createScope(parent: Scope | null): Scope {
   return { parent, bindings: new Set() };
 }
@@ -70,6 +76,14 @@ function collectVarBindings(node: AstNode, scope: Scope, isRoot = true): void {
   forEachAstChild(node, (child) => collectVarBindings(child, scope, false));
 }
 
+function isFunctionNode(node: AstNode): boolean {
+  return (
+    node.type === "FunctionDeclaration" ||
+    node.type === "FunctionExpression" ||
+    node.type === "ArrowFunctionExpression"
+  );
+}
+
 function createChildScope(node: AstNode, parent: Scope): Scope | null {
   if (
     node.type !== "Program" &&
@@ -80,9 +94,6 @@ function createChildScope(node: AstNode, parent: Scope): Scope | null {
     node.type !== "ForStatement" &&
     node.type !== "ForInStatement" &&
     node.type !== "ForOfStatement" &&
-    node.type !== "FunctionDeclaration" &&
-    node.type !== "FunctionExpression" &&
-    node.type !== "ArrowFunctionExpression" &&
     node.type !== "ClassDeclaration" &&
     node.type !== "ClassExpression"
   ) {
@@ -90,15 +101,7 @@ function createChildScope(node: AstNode, parent: Scope): Scope | null {
   }
 
   const scope = createScope(parent);
-  if (
-    node.type === "FunctionDeclaration" ||
-    node.type === "FunctionExpression" ||
-    node.type === "ArrowFunctionExpression"
-  ) {
-    collectBindingNames(node.id, scope.bindings);
-    for (const parameter of nodeArray(node.params)) collectBindingNames(parameter, scope.bindings);
-    collectVarBindings(node, scope);
-  } else if (node.type === "ClassDeclaration" || node.type === "ClassExpression") {
+  if (node.type === "ClassDeclaration" || node.type === "ClassExpression") {
     collectBindingNames(node.id, scope.bindings);
   } else if (node.type === "CatchClause") {
     collectBindingNames(node.param, scope.bindings);
@@ -110,6 +113,10 @@ function createChildScope(node: AstNode, parent: Scope): Scope | null {
     }
   }
   return scope;
+}
+
+export function getTypeofWindowReplacement(environment: EnvironmentLike): WindowType {
+  return environment.config.consumer === "client" ? "object" : "undefined";
 }
 
 function stringLiteralValue(node: unknown): string | null {
@@ -169,6 +176,26 @@ export function replaceTypeofWindow(code: string, replacement: WindowType) {
   collectVarBindings(ast, rootScope);
 
   function visit(node: AstNode, parentScope: Scope): void {
+    if (isFunctionNode(node)) {
+      const parameterScope = createScope(parentScope);
+      collectBindingNames(node.id, parameterScope.bindings);
+      for (const parameter of nodeArray(node.params)) {
+        collectBindingNames(parameter, parameterScope.bindings);
+        if (isAstRecord(parameter)) visit(parameter, parameterScope);
+      }
+
+      if (isAstRecord(node.body)) {
+        if (node.body.type === "BlockStatement") {
+          const bodyScope = createScope(parameterScope);
+          collectVarBindings(node.body, bodyScope);
+          visit(node.body, bodyScope);
+        } else {
+          visit(node.body, parameterScope);
+        }
+      }
+      return;
+    }
+
     const scope = createChildScope(node, parentScope) ?? parentScope;
 
     if (node.type === "IfStatement" && hasRange(node)) {
@@ -182,6 +209,22 @@ export function replaceTypeofWindow(code: string, replacement: WindowType) {
         } else {
           output.overwrite(node.start, node.end, ";");
         }
+        changed = true;
+        return;
+      }
+    }
+
+    if (node.type === "ConditionalExpression" && hasRange(node)) {
+      const result = evaluateTypeofWindowComparison(node.test, replacement, scope);
+      const selected = result ? node.consequent : node.alternate;
+      if (result !== null && isAstRecord(selected) && hasRange(selected)) {
+        output.overwrite(node.start, selected.start, "(");
+        if (selected.end < node.end) {
+          output.overwrite(selected.end, node.end, ")");
+        } else {
+          output.appendLeft(selected.end, ")");
+        }
+        visit(selected, scope);
         changed = true;
         return;
       }
