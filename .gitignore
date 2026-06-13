@@ -40,6 +40,7 @@ reports/
 .idea/
 .vscode/
 .claude/
+.codex/
 
 # Nix
 result
