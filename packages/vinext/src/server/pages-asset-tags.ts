@@ -65,17 +65,14 @@ export function resolveClientModuleUrl(
   moduleId: string | null | undefined,
   basePath = "",
   assetPrefix = "",
-  deploymentId?: string,
+  _deploymentId?: string,
 ): string | undefined {
   const files = getManifestFilesForModule(resolveSsrManifest(manifest), moduleId);
   if (!files) return undefined;
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     if (!file || !file.endsWith(".js")) continue;
-    return appendDeploymentIdQuery(
-      assetServingUrlFromBaseAnchored(file, basePath, assetPrefix),
-      deploymentId,
-    );
+    return assetServingUrlFromBaseAnchored(file, basePath, assetPrefix);
   }
   return undefined;
 }
@@ -148,11 +145,14 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   // no assetPrefix this is the legacy `"/" + value`.
   const basePath = options.basePath ?? "";
   const assetPrefix = options.assetPrefix ?? "";
-  const href = (value: string): string =>
-    appendDeploymentIdQuery(
-      assetServingUrlFromBaseAnchored(value, basePath, assetPrefix),
-      options.deploymentId,
-    );
+  const href = (value: string): string => {
+    const url = assetServingUrlFromBaseAnchored(value, basePath, assetPrefix);
+    // Native ESM resolves relative imports without inheriting the importing
+    // module's query string. Querying Pages JavaScript entries therefore gives
+    // the entry and its imports different module identities, which can execute
+    // the hydration bootstrap twice when a lazy page chunk imports shared code.
+    return value.endsWith(".js") ? url : appendDeploymentIdQuery(url, options.deploymentId);
+  };
 
   // Load the set of lazy chunk filenames (only reachable via dynamic imports).
   // These should NOT get <link rel="modulepreload"> or <script type="module">
