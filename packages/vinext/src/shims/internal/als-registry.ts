@@ -40,6 +40,36 @@ import { AsyncLocalStorage } from "node:async_hooks";
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
 
 /**
+ * No-op AsyncLocalStorage used when the runtime does not provide a usable
+ * `AsyncLocalStorage` constructor.
+ *
+ * In browser/client bundles `node:async_hooks` can resolve to a stub without a
+ * usable constructor (e.g. Vite's `__vite-browser-external`). Constructing such
+ * a value with `new` throws `TypeError: AsyncLocalStorage is not a constructor`
+ * at module-eval time, crashing every client-reachable shim that calls
+ * `getOrCreateAls` on import (request-context, headers, cache, …).
+ *
+ * Mirrors Next.js' `FakeAsyncLocalStorage` (and this repo's
+ * `async-hooks-stub.ts` client virtual module): `getStore()` returns
+ * `undefined` so shims fall back to their non-ALS code path, and the mutating
+ * methods are best-effort no-ops that still invoke the callback.
+ * See: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/async-local-storage.ts
+ */
+class NoopAsyncLocalStorage<T> {
+  getStore(): T | undefined {
+    return undefined;
+  }
+  run<R>(_store: T, fn: (...args: unknown[]) => R, ...args: unknown[]): R {
+    return fn(...args);
+  }
+  exit<R>(fn: (...args: unknown[]) => R, ...args: unknown[]): R {
+    return fn(...args);
+  }
+  enterWith(_store: T): void {}
+  disable(): void {}
+}
+
+/**
  * Get (or lazily create) the AsyncLocalStorage registered on `globalThis`
  * under `Symbol.for(key)`. Multiple callers — including callers in different
  * module instances — that pass the same `key` receive the same ALS instance.
@@ -49,5 +79,8 @@ const _g = globalThis as unknown as Record<PropertyKey, unknown>;
  */
 export function getOrCreateAls<T>(key: string): AsyncLocalStorage<T> {
   const sym = Symbol.for(key);
-  return (_g[sym] ??= new AsyncLocalStorage<T>()) as AsyncLocalStorage<T>;
+  return (_g[sym] ??=
+    typeof AsyncLocalStorage === "function"
+      ? new AsyncLocalStorage<T>()
+      : new NoopAsyncLocalStorage<T>()) as AsyncLocalStorage<T>;
 }
