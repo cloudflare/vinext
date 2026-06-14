@@ -1800,10 +1800,11 @@ hydrate();
             path: url,
             method: req.method ?? "GET",
             headers: Object.fromEntries(
-              Object.entries(req.headers).map(([k, v]) => [
-                k,
-                Array.isArray(v) ? v.join(", ") : String(v ?? ""),
-              ]),
+              Object.entries(req.headers)
+                // Exclude HTTP/2 pseudo-headers (RFC 7540 §8.1.2.1) — they are
+                // not real request headers. See: cloudflare/vinext#2013
+                .filter(([k]) => !k.startsWith(":"))
+                .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v ?? "")]),
             ),
           },
           {

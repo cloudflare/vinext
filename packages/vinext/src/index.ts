@@ -3531,7 +3531,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               const rawHeaders = new Headers(
                 Object.fromEntries(
                   Object.entries(req.headers)
-                    .filter(([, v]) => v !== undefined)
+                    // Drop `undefined` values and HTTP/2 pseudo-headers
+                    // (`:method`/`:authority`/`:path`/`:scheme`, RFC 7540
+                    // §8.1.2.1) — WHATWG `Headers` rejects `:`-prefixed names.
+                    // See: https://github.com/cloudflare/vinext/issues/2013
+                    .filter(([k, v]) => v !== undefined && !k.startsWith(":"))
                     .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]),
                 ),
               );

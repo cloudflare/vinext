@@ -179,6 +179,10 @@ function createEdgeApiRequest(
 ): Request {
   const headers = new Headers();
   for (const [name, value] of Object.entries(req.headers)) {
+    // Skip HTTP/2 pseudo-headers (`:method`/`:authority`/`:path`/`:scheme`,
+    // RFC 7540 §8.1.2.1) — WHATWG `Headers` rejects `:`-prefixed names.
+    // See: https://github.com/cloudflare/vinext/issues/2013
+    if (name.startsWith(":")) continue;
     if (Array.isArray(value)) {
       for (const item of value) headers.append(name, item);
     } else if (value !== undefined) {
@@ -449,10 +453,11 @@ export async function handleApiRoute(
         path: url,
         method: req.method ?? "GET",
         headers: Object.fromEntries(
-          Object.entries(req.headers).map(([k, v]) => [
-            k,
-            Array.isArray(v) ? v.join(", ") : String(v ?? ""),
-          ]),
+          Object.entries(req.headers)
+            // Exclude HTTP/2 pseudo-headers (RFC 7540 §8.1.2.1) — they are not
+            // real request headers. See: cloudflare/vinext#2013
+            .filter(([k]) => !k.startsWith(":"))
+            .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v ?? "")]),
         ),
       },
       { routerKind: "Pages Router", routePath: match.route.pattern, routeType: "route" },
