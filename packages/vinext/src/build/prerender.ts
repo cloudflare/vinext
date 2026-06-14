@@ -76,6 +76,32 @@ function getErrorMessageWithStack(err: Error): string {
   return err.stack || err.message;
 }
 
+// A user's generateStaticParams/getStaticPaths threw, surfaced by the prerender
+// endpoint as a 500. Distinct from transport/`fetch` failures (a crashed prod
+// server, connection reset) so only genuine user-function errors are marked
+// fatal to the build. Refs cloudflare/vinext#1982
+class PrerenderUserFunctionError extends Error {}
+
+// The prerender static-params / static-paths endpoints return the real error
+// thrown by a user's generateStaticParams/getStaticPaths as `{ error }` in a 500
+// body (app-prerender-endpoints.ts). Extract that message. For our JSON envelope
+// with a missing/empty/non-string `error`, return a generic message rather than
+// echoing the raw `{"error":""}` back; for a non-JSON body, use the raw text.
+// Refs cloudflare/vinext#1982
+function parsePrerenderEndpointError(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown };
+    if (parsed && typeof parsed === "object" && "error" in parsed) {
+      return typeof parsed.error === "string" && parsed.error.length > 0
+        ? parsed.error
+        : "Unknown prerender endpoint error";
+    }
+  } catch {
+    // Non-JSON body — fall through to the raw text.
+  }
+  return text || "Unknown prerender endpoint error";
+}
+
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
 export type PrerenderResult = {
@@ -113,6 +139,13 @@ export type PrerenderRouteResult =
       route: string;
       status: "error";
       error: string;
+      /**
+       * Set when the error must fail the build in ALL modes (default included),
+       * not just `output: 'export'`. Used for a thrown generateStaticParams /
+       * getStaticPaths, which Next.js treats as a fatal build error rather than a
+       * silently-skipped route. Refs cloudflare/vinext#1982
+       */
+      fatal?: true;
     };
 
 /** Called after each route is resolved (rendered, skipped, or error). */
@@ -639,6 +672,15 @@ export async function prerenderPages({
               );
               const text = await res.text();
               if (!res.ok) {
+                // A 500 carries the real error thrown by the user's getStaticPaths
+                // in the JSON body (app-prerender-endpoints.ts). Surface it so the
+                // route fails with the genuine message, matching Next.js — rather
+                // than swallowing it into a misleading no-static-params skip. Other
+                // statuses (e.g. 404 = disabled/stale secret) keep the warn-and-skip
+                // behavior. Refs cloudflare/vinext#1982
+                if (res.status === 500) {
+                  throw new PrerenderUserFunctionError(parsePrerenderEndpointError(text));
+                }
                 console.warn(
                   `[vinext] Warning: /__vinext/prerender/pages-static-paths returned ${res.status} for ${r.pattern}. ` +
                     `Dynamic paths will be skipped. This may indicate a stale or missing prerender secret.`,
@@ -719,7 +761,23 @@ export async function prerenderPages({
           continue;
         }
 
-        const pathsResult = await route.module.getStaticPaths({ locales: [], defaultLocale: "" });
+        // A throwing getStaticPaths (surfaced as a 500 by the proxy above)
+        // becomes a per-route 'error' with the real message instead of crashing
+        // the whole prerender, matching Next.js. Refs cloudflare/vinext#1982
+        let pathsResult: { paths?: Array<StaticPathsEntry>; fallback?: unknown } | undefined;
+        try {
+          pathsResult = await route.module.getStaticPaths({ locales: [], defaultLocale: "" });
+        } catch (e) {
+          results.push({
+            route: route.pattern,
+            status: "error",
+            error: `Failed to call getStaticPaths(): ${(e as Error).message}`,
+            // Only a thrown user getStaticPaths (a 500 from the endpoint) is fatal
+            // to the build; transport/fetch failures stay non-fatal. #1982
+            ...(e instanceof PrerenderUserFunctionError ? { fatal: true as const } : {}),
+          });
+          continue;
+        }
         const fallback = pathsResult?.fallback ?? false;
 
         if (mode === "export" && fallback !== false) {
@@ -1013,6 +1071,16 @@ export async function prerenderApp({
             });
             const text = await res.text();
             if (!res.ok) {
+              // A 500 carries the real error thrown by the user's
+              // generateStaticParams in the JSON body (app-prerender-endpoints.ts).
+              // Surface it so prerenderApp's catch records a per-route 'error' and
+              // the build fails with the genuine message, matching Next.js — rather
+              // than swallowing it into a misleading no-static-params skip. Other
+              // statuses (e.g. 404 = disabled/stale secret) keep the warn-and-skip
+              // behavior. Refs cloudflare/vinext#1982
+              if (res.status === 500) {
+                throw new PrerenderUserFunctionError(parsePrerenderEndpointError(text));
+              }
               console.warn(
                 `[vinext] Warning: /__vinext/prerender/static-params returned ${res.status} for ${pattern}. ` +
                   `Static params will be skipped. This may indicate a stale or missing prerender secret.`,
@@ -1227,6 +1295,9 @@ export async function prerenderApp({
             route: route.pattern,
             status: "error",
             error: `Failed to call generateStaticParams(): ${detail}`,
+            // Only a thrown user generateStaticParams (a 500 from the endpoint) is
+            // fatal to the build; transport/fetch failures stay non-fatal. #1982
+            ...(e instanceof PrerenderUserFunctionError ? { fatal: true as const } : {}),
           });
         }
       } else if (type === "unknown") {

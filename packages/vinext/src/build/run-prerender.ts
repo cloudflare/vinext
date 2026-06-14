@@ -133,6 +133,25 @@ type RunPrerenderOptions = {
  * If a required production bundle does not exist, an error is thrown directing
  * the user to run `vinext build` first.
  */
+/**
+ * Throw if any route is a `fatal` error (a thrown generateStaticParams /
+ * getStaticPaths). These fail the build in ALL modes — default included —
+ * matching `next build`, unlike intentionally-skipped dynamic/SSR routes and
+ * non-fatal errors (e.g. transport failures), which only fail under
+ * `output: 'export'`. Exported for direct unit testing. Refs cloudflare/vinext#1982
+ */
+export function assertNoFatalPrerenderRoutes(routes: readonly PrerenderRouteResult[]): void {
+  const fatalRoutes = routes.filter(
+    (r): r is Extract<PrerenderRouteResult, { status: "error" }> =>
+      r.status === "error" && r.fatal === true,
+  );
+  if (fatalRoutes.length === 0) return;
+  const fatalList = fatalRoutes.map((r) => `  ${r.route}: ${r.error}`).join("\n");
+  throw new Error(
+    `Prerender failed: ${fatalRoutes.length} route${fatalRoutes.length !== 1 ? "s" : ""} errored during static generation.\n${fatalList}`,
+  );
+}
+
 export async function runPrerender(options: RunPrerenderOptions): Promise<PrerenderResult | null> {
   const { root } = options;
 
@@ -337,6 +356,12 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   } finally {
     progress.finish(rendered, skipped, errors);
   }
+
+  // A thrown generateStaticParams/getStaticPaths is a fatal build error in ANY
+  // mode (default included), matching Next.js — unlike intentionally-skipped
+  // dynamic/SSR routes. These are flagged `fatal` by prerenderApp/prerenderPages.
+  // Refs cloudflare/vinext#1982
+  assertNoFatalPrerenderRoutes(allRoutes);
 
   // In export mode, any error route means the build should fail — the app
   // contains dynamic functionality that cannot be statically exported.
