@@ -440,6 +440,56 @@ describe("normalizeTrailingSlash", () => {
     expect(res).not.toBeNull();
     expect(res!.status).toBe(404);
   });
+
+  // Regression coverage for issue #1979 — the Location is built from the
+  // already percent-decoded pathname. A character above U+00FF (e.g. a CJK
+  // slug) makes `new Response(..., { headers: { Location } })` throw
+  // TypeError 'Cannot convert argument to a ByteString' in Workers/undici,
+  // which surfaces as a 500 instead of a 308. Latin-1 chars like spaces do
+  // not throw but emit a malformed, un-percent-encoded Location.
+  // Refs cloudflare/vinext#1979
+  it("percent-encodes non-Latin-1 pathnames in the Location instead of throwing", () => {
+    const res = normalizeTrailingSlash("/日本", "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/%E6%97%A5%E6%9C%AC/");
+  });
+
+  it("percent-encodes spaces in the redirect Location", () => {
+    const res = normalizeTrailingSlash("/about us", "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/about%20us/");
+  });
+
+  // The pathname reaches us with path delimiters already re-encoded
+  // (encodePathDelimiters in routing/utils.ts turns `# ? / \` into
+  // `%23 %3F %2F %5C`). The redirect encoder must NOT re-encode the `%`
+  // of those sequences, otherwise `/foo%23bar` becomes `/foo%2523bar`.
+  it("does not double-encode already-encoded delimiters in the Location", () => {
+    const res = normalizeTrailingSlash("/foo%23bar", "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/foo%23bar/");
+  });
+
+  // Astral characters (emoji) are surrogate pairs in UTF-16; the encoder
+  // must treat them as whole code points, not encode each surrogate half.
+  it("percent-encodes astral characters (emoji) without mangling surrogates", () => {
+    const res = normalizeTrailingSlash("/😀", "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/%F0%9F%98%80/");
+  });
+
+  // Printable-ASCII characters that RFC 3986 forbids raw in a path (e.g. `<>"`)
+  // must be percent-encoded in the Location, not echoed verbatim.
+  it("percent-encodes reserved ASCII characters that are invalid raw in a path", () => {
+    const res = normalizeTrailingSlash('/a<b>"c', "", true, "");
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(308);
+    expect(res!.headers.get("Location")).toBe("/a%3Cb%3E%22c/");
+  });
 });
 
 // ── validateCsrfOrigin ──────────────────────────────────────────────────

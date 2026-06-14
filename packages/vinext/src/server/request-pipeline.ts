@@ -328,9 +328,30 @@ export function normalizeTrailingSlash(
   }
   const normalizedPathname = normalizeTrailingSlashPathname(pathname, trailingSlash);
   if (normalizedPathname === null) return null;
+  // `pathname` arrives segment-wise percent-decoded with path delimiters
+  // already re-encoded (see app-rsc-request-normalization → encodePathDelimiters,
+  // which leaves `%23 %3F %2F %5C` in place). It can still carry raw spaces or
+  // characters above U+00FF (e.g. CJK slugs, emoji). Those must be encoded
+  // before building the Location: an un-encoded space is a malformed redirect
+  // target, and a non-Latin-1 character makes the Headers constructor throw
+  // 'Cannot convert argument to a ByteString' (→ 500 instead of 308).
+  // Percent-encode every character that is not a valid RFC 3986 path character,
+  // i.e. everything outside `pchar`/`/`. We deliberately keep `%` in the safe
+  // set so existing `%xx` escapes are preserved rather than double-encoded
+  // (`encodeURI` would wrongly turn `%23` into `%2523`). Sub-delimiters
+  // (`!$&'()*+,;=`) and `:@` are valid `pchar` and are left raw, matching
+  // Next.js — `+` in particular only carries space semantics in the query
+  // string, which we leave untouched. The `u` flag makes the regex match
+  // astral code points whole, so emoji surrogate pairs aren't split. The query
+  // string comes verbatim from the request URL and is already encoded, so it
+  // must not be re-encoded here. Refs cloudflare/vinext#1979
+  const encodedPathname = normalizedPathname.replace(
+    /[^A-Za-z0-9\-._~!$&'()*+,;=:@/%]/gu,
+    encodeURIComponent,
+  );
   return new Response(null, {
     status: 308,
-    headers: { Location: basePath + normalizedPathname + search },
+    headers: { Location: basePath + encodedPathname + search },
   });
 }
 
