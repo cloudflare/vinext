@@ -73,7 +73,7 @@ export function parseServerActionRevalidationHeader(
 }
 
 function createServerActionHttpFallbackError(status: number): (Error & { digest: string }) | null {
-  if (status < 400 || status > 599) return null;
+  if (status !== 401 && status !== 403 && status !== 404) return null;
 
   const digest =
     status === 404 ? "NEXT_HTTP_ERROR_FALLBACK;404" : `NEXT_HTTP_ERROR_FALLBACK;${status}`;

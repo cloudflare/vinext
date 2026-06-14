@@ -150,11 +150,36 @@ export async function importServerEntryModule(entryPath: string): Promise<any> {
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
+  let cancelled = false;
+  let cleanup = () => {};
+
   return new ReadableStream({
     start(controller) {
-      req.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
-      req.on("end", () => controller.close());
-      req.on("error", (err) => controller.error(err));
+      cleanup = () => {
+        req.off("data", onData);
+        req.off("end", onEnd);
+        req.off("error", onError);
+      };
+      const onData = (chunk: Buffer) => {
+        if (!cancelled) controller.enqueue(new Uint8Array(chunk));
+      };
+      const onEnd = () => {
+        cleanup();
+        if (!cancelled) controller.close();
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        if (!cancelled) controller.error(error);
+      };
+
+      req.on("data", onData);
+      req.on("end", onEnd);
+      req.on("error", onError);
+    },
+    cancel() {
+      cancelled = true;
+      cleanup();
+      req.resume();
     },
   });
 }
@@ -776,9 +801,7 @@ function nodeToWebRequest(
   };
 
   if (hasBody) {
-    // Convert Node.js readable stream to Web ReadableStream for request body.
-    // Readable.toWeb() is available since Node.js 17.
-    init.body = Readable.toWeb(req) as ReadableStream;
+    init.body = readNodeStream(req);
     init.duplex = "half"; // Required for streaming request bodies
   }
 

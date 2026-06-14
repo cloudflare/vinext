@@ -93,7 +93,7 @@ describe("nodeToWebRequest", () => {
   it("urlOverride works for POST requests without affecting the body stream", async () => {
     const bodyContent = JSON.stringify({ hello: "world" });
     // Build a real Readable and graft the IncomingMessage properties onto it
-    // so that Readable.toWeb() (used internally for POST bodies) works correctly.
+    // so the Node request adapter receives a real streaming request body.
     const readable = Readable.from([Buffer.from(bodyContent)]) as unknown as IncomingMessage;
     readable.headers = { host: "localhost:3000", "content-type": "application/json" };
     readable.url = "/raw/unnormalized//api/submit";
