@@ -581,6 +581,30 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  // Ported from Next.js: test/e2e/app-dir/parallel-routes-group-depth/parallel-routes-group-depth.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/parallel-routes-group-depth/parallel-routes-group-depth.test.ts
+  it("keeps a sibling slot active when children are inside a route group", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "group-depth/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "group-depth/(children)/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "group-depth/(children)/page.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "group-depth/@slot/layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "group-depth/@slot/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const route = findRoute(graph.routes, "/group-depth");
+      const slot = route.parallelSlots.find((candidate) => candidate.name === "slot");
+
+      expect(route.pagePath).toBe(path.join(appDir, "group-depth/(children)/page.tsx"));
+      expect(slot).toMatchObject({
+        pagePath: path.join(appDir, "group-depth/@slot/page.tsx"),
+        layoutPath: path.join(appDir, "group-depth/@slot/layout.tsx"),
+        routeSegments: [],
+      });
+    });
+  });
+
   it("keeps route groups transparent in materialized URL patterns", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
