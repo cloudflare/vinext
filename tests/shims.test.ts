@@ -20931,6 +20931,16 @@ describe("default-locale path normalisation (issue #1336, item 4)", () => {
 // runtime object rather than in module-local variables.
 // ---------------------------------------------------------------------------
 describe("Pages Router runtime state sharing", () => {
+  it("shares RouterContext across duplicated next/router module instances", async () => {
+    vi.resetModules();
+    const contextA = await import("../packages/vinext/src/shims/internal/router-context.js");
+
+    vi.resetModules();
+    const contextB = await import("../packages/vinext/src/shims/internal/router-context.js");
+
+    expect(contextB.RouterContext).toBe(contextA.RouterContext);
+  });
+
   it("shares router readiness across duplicated next/router module instances", async () => {
     const previousWindow = (globalThis as any).window;
     const win: any = {
