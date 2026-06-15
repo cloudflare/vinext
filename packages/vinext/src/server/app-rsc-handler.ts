@@ -626,7 +626,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         ...(options.imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
       ],
       options.imageConfig?.qualities,
-      { isDev: options.isDev },
+      { isDev: options.isDev, localPatterns: options.imageConfig?.localPatterns },
     );
     if (!imageRedirect)
       return new Response("Invalid image optimization parameters", { status: 400 });

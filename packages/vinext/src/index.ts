@@ -1360,6 +1360,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           defines["process.env.__VINEXT_IMAGE_QUALITIES"] = JSON.stringify(
             JSON.stringify(nextConfig.images?.qualities ?? null),
           );
+          // Emit the configured local-path allowlist, or `null` when unset so the
+          // runtime permits any local path (matches Next.js: an unset
+          // `images.localPatterns` does not restrict which local paths optimize).
+          defines["process.env.__VINEXT_IMAGE_LOCAL_PATTERNS"] = JSON.stringify(
+            JSON.stringify(nextConfig.images?.localPatterns ?? null),
+          );
         }
         // Expose dangerouslyAllowSVG flag for the image shim's auto-skip logic.
         // When false (default), .svg sources bypass the optimization endpoint.
@@ -2693,6 +2699,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 deviceSizes: nextConfig?.images?.deviceSizes,
                 imageSizes: nextConfig?.images?.imageSizes,
                 qualities: nextConfig?.images?.qualities,
+                localPatterns: nextConfig?.images?.localPatterns,
               },
               hasPagesDir,
               publicFiles: scanPublicFileRoutes(root),
@@ -3529,6 +3536,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   imageRequestUrl,
                   allowedWidths,
                   nextConfig.images?.qualities,
+                  { isDev: true, localPatterns: nextConfig.images?.localPatterns },
                 );
                 if (!encodedLocation) {
                   res.writeHead(400);
@@ -4596,6 +4604,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             deviceSizes: nextConfig?.images?.deviceSizes,
             imageSizes: nextConfig?.images?.imageSizes,
             qualities: nextConfig?.images?.qualities,
+            localPatterns: nextConfig?.images?.localPatterns,
             dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
             contentDispositionType: nextConfig?.images?.contentDispositionType,
             contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,

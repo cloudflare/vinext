@@ -1292,7 +1292,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         ...(imageConfig?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
         ...(imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
       ];
-      const params = parseImageParams(parsedUrl, allowedWidths, imageConfig?.qualities);
+      const params = parseImageParams(parsedUrl, allowedWidths, imageConfig?.qualities, {
+        localPatterns: imageConfig?.localPatterns,
+      });
       if (!params) {
         res.writeHead(400);
         res.end("Bad Request");
@@ -1503,6 +1505,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
         dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
         qualities: vinextConfig.images.qualities,
+        localPatterns: vinextConfig.images.localPatterns,
         contentDispositionType: vinextConfig.images.contentDispositionType,
         contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
       }
@@ -1623,7 +1626,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // ── Image optimization passthrough ──────────────────────────────
     if (isImageOptimizationPath(pathname) || isImageOptimizationPath(staticLookupPath)) {
       const parsedUrl = new URL(rawUrl, "http://localhost");
-      const params = parseImageParams(parsedUrl, allowedImageWidths, pagesImageConfig?.qualities);
+      const params = parseImageParams(parsedUrl, allowedImageWidths, pagesImageConfig?.qualities, {
+        localPatterns: pagesImageConfig?.localPatterns,
+      });
       if (!params) {
         res.writeHead(400);
         res.end("Bad Request");

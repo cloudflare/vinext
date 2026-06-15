@@ -677,6 +677,7 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).toContain("process.env.__VINEXT_IMAGE_DEVICE_SIZES");
     expect(content).toContain("process.env.__VINEXT_IMAGE_SIZES");
     expect(content).toContain("process.env.__VINEXT_IMAGE_QUALITIES");
+    expect(content).toContain("process.env.__VINEXT_IMAGE_LOCAL_PATTERNS");
     expect(content).toContain("JSON.stringify(DEFAULT_DEVICE_SIZES)");
     expect(content).toContain("JSON.stringify(DEFAULT_IMAGE_SIZES)");
     expect(content).toContain("}, allowedWidths, imageConfig)");

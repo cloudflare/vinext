@@ -17990,6 +17990,65 @@ describe("image optimization request parsing", () => {
     ).toBeNull();
   });
 
+  it("parseImageParams rejects url that points back at the optimization endpoint", async () => {
+    // Matches Next.js: the `url` parameter "cannot be recursive".
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    for (const recursive of [
+      "%2F_next%2Fimage",
+      "%2F_next%2Fimage%2Ffoo.png",
+      "%2F_vinext%2Fimage%2Ffoo.png",
+    ]) {
+      expect(
+        parseImageParams(
+          new URL(`http://localhost/_next/image?url=${recursive}&w=640&q=75`),
+        ),
+      ).toBeNull();
+    }
+    // A path that merely starts with the same prefix is not recursive.
+    expect(
+      parseImageParams(
+        new URL("http://localhost/_next/image?url=%2F_next%2Fimagefoo.png&w=640&q=75"),
+      ),
+    ).not.toBeNull();
+  });
+
+  it("parseImageParams enforces localPatterns only when configured", async () => {
+    // Matches Next.js: an unset `images.localPatterns` allows any local path;
+    // when configured, the `url` path must match at least one pattern.
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const allowed = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+    const url = (path: string) =>
+      new URL(`http://localhost/_next/image?url=${encodeURIComponent(path)}&w=640&q=75`);
+
+    // Unset => any local path allowed.
+    expect(parseImageParams(url("/assets/anything.png"))).not.toBeNull();
+
+    // Configured => only matching paths pass.
+    const localPatterns = [{ pathname: "/shop/**" }];
+    expect(parseImageParams(url("/shop/tablet.png"), allowed, undefined, { localPatterns })).not.toBeNull();
+    expect(parseImageParams(url("/shop/a/b/c.png"), allowed, undefined, { localPatterns })).not.toBeNull();
+    expect(parseImageParams(url("/other/x.png"), allowed, undefined, { localPatterns })).toBeNull();
+  });
+
+  it("matchLocalPattern honours pathname globs and exact search", async () => {
+    const { matchLocalPattern } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    // Single-segment `*` does not cross a slash.
+    expect(matchLocalPattern({ pathname: "/img/*" }, new URL("http://n/img/a.png"))).toBe(true);
+    expect(matchLocalPattern({ pathname: "/img/*" }, new URL("http://n/img/a/b.png"))).toBe(false);
+    // `**` crosses slashes.
+    expect(matchLocalPattern({ pathname: "/img/**" }, new URL("http://n/img/a/b.png"))).toBe(true);
+    // Search must match exactly when specified.
+    expect(
+      matchLocalPattern({ pathname: "/img/**", search: "?v=1" }, new URL("http://n/img/a.png?v=1")),
+    ).toBe(true);
+    expect(
+      matchLocalPattern({ pathname: "/img/**", search: "?v=1" }, new URL("http://n/img/a.png?v=2")),
+    ).toBe(false);
+  });
+
   it("parseImageParams blocks backslash-based open redirect (/\\evil.com)", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");

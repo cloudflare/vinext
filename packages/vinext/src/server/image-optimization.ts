@@ -18,6 +18,7 @@
  */
 
 import { badRequestResponse } from "./http-error-responses.js";
+import { globToRegex } from "../utils/glob-pattern.js";
 
 /** The pathname that triggers image optimization (matches Next.js). */
 export const IMAGE_OPTIMIZATION_PATH = "/_next/image";
@@ -36,6 +37,17 @@ export function isImageOptimizationPath(pathname: string): boolean {
 }
 
 /**
+ * A single `images.localPatterns` entry. Restricts which local image paths may
+ * be optimized. Mirrors Next.js's `LocalPattern`.
+ */
+export type LocalPattern = {
+  /** Glob pattern matched against the path (`*` = one segment, `**` = many). Defaults to `**`. */
+  pathname?: string;
+  /** Exact query string (including the leading `?`) the request must carry. */
+  search?: string;
+};
+
+/**
  * Image security configuration from next.config.js `images` section.
  * Controls SVG handling and security headers for the image endpoint.
  */
@@ -50,6 +62,12 @@ export type ImageConfig = {
    * value). When set, only the listed qualities are accepted.
    */
   qualities?: number[];
+  /**
+   * Restricts which local image paths may be optimized. When unset, any local
+   * path is allowed (matches Next.js). When set, the request `url` must match
+   * at least one pattern.
+   */
+  localPatterns?: LocalPattern[];
   /** Allow SVG through the image optimization endpoint. Default: false. */
   dangerouslyAllowSVG?: boolean;
   /**
@@ -80,7 +98,26 @@ const DEV_BLUR_QUALITY = 70;
 
 export type ParseImageParamsOptions = {
   isDev?: boolean;
+  /**
+   * When set, the local `url` path must match at least one of these patterns
+   * (matches Next.js `images.localPatterns`). When unset, any local path is allowed.
+   */
+  localPatterns?: LocalPattern[];
 };
+
+/**
+ * Check whether a local image URL matches a single `localPatterns` entry.
+ * Mirrors Next.js's matchLocalPattern().
+ */
+export function matchLocalPattern(pattern: LocalPattern, url: URL): boolean {
+  if (pattern.search !== undefined && pattern.search !== url.search) return false;
+  return globToRegex(pattern.pathname ?? "**", "/").test(url.pathname);
+}
+
+/** Check whether a local image URL matches any configured `localPatterns` entry. */
+export function hasLocalMatch(localPatterns: LocalPattern[], url: URL): boolean {
+  return localPatterns.some((p) => matchLocalPattern(p, url));
+}
 
 export function resolveDevImageRedirect(
   requestUrl: URL,
@@ -159,13 +196,31 @@ export function parseImageParams(
   }
   // Double-check: after URL construction, the origin must not change.
   // This catches any remaining parser differentials.
+  let resolved: URL;
   try {
     const base = "https://localhost";
-    const resolved = new URL(normalizedUrl, base);
+    resolved = new URL(normalizedUrl, base);
     if (resolved.origin !== base) {
       return null;
     }
   } catch {
+    return null;
+  }
+
+  // Reject URLs that point back at the optimization endpoint (matches Next.js:
+  // the `url` parameter "cannot be recursive"). Decode first so an encoded path
+  // (e.g. %2F_next%2Fimage) can't smuggle the endpoint past the check.
+  let decodedPathname: string;
+  try {
+    decodedPathname = decodeURIComponent(resolved.pathname);
+  } catch {
+    return null;
+  }
+  if (/\/_(?:next|vinext)\/image(?:$|\/)/.test(decodedPathname)) return null;
+
+  // When `images.localPatterns` is configured, the local path must match at
+  // least one pattern (matches Next.js). Unset => any local path is allowed.
+  if (options.localPatterns && !hasLocalMatch(options.localPatterns, resolved)) {
     return null;
   }
 
@@ -284,7 +339,9 @@ export async function handleImageOptimization(
   imageConfig?: ImageConfig,
 ): Promise<Response> {
   const url = new URL(request.url);
-  const params = parseImageParams(url, allowedWidths, imageConfig?.qualities);
+  const params = parseImageParams(url, allowedWidths, imageConfig?.qualities, {
+    localPatterns: imageConfig?.localPatterns,
+  });
 
   if (!params) {
     return badRequestResponse();
