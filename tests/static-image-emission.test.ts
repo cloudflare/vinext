@@ -11,6 +11,8 @@ const PNG_1X1 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4//8/AwAI/AL+X8n26QAAAABJRU5ErkJggg==",
   "base64",
 );
+const PNG_4X3 = fs.readFileSync(path.join(import.meta.dirname, "fixtures/images/test-4x3.png"));
+const SVG_2X3 = `<svg xmlns="http://www.w3.org/2000/svg" width="2" height="3"></svg>`;
 
 const tempDirs: string[] = [];
 const servers: Server[] = [];
@@ -45,6 +47,7 @@ async function createFixture(
     JSON.stringify({ name: `vinext-${router}-static-image`, private: true, type: "module" }),
   );
   writeFixtureFile(root, "test.png", PNG_1X1);
+  writeFixtureFile(root, "test.svg", SVG_2X3);
   writeFixtureFile(root, "tiny.png", PNG_1X1);
   if (options.basePath || options.assetPrefix || options.deploymentId) {
     writeFixtureFile(root, "next.config.mjs", `export default ${JSON.stringify(options)};\n`);
@@ -52,6 +55,7 @@ async function createFixture(
 
   const imageMarkup = `
       <Image id="static-image" alt="static import" src={staticImage} quality={85} />
+      <Image id="static-svg" alt="static svg import" src={staticSvg} />
       <img id="ordinary-asset" alt="ordinary asset" src={tinyUrl} />`;
 
   if (router === "app") {
@@ -82,6 +86,7 @@ export default function ClientImage() {
       "app/page.tsx",
       `import Image from "next/image";
 import staticImage from "../test.png";
+import staticSvg from "../test.svg";
 import tinyUrl from "../tiny.png?url";
 import ClientImage from "./client-image";
 
@@ -96,6 +101,7 @@ export default function Page() {
       "pages/index.tsx",
       `import Image from "next/image";
 import staticImage from "../test.png";
+import staticSvg from "../test.svg";
 import tinyUrl from "../tiny.png?url";
 
 export default function Page() {
@@ -155,6 +161,39 @@ async function buildFixture(root: string, router: "app" | "pages"): Promise<void
   });
 }
 
+type BuildWatcher = {
+  on(event: "event", callback: (event: { code: string; error?: Error }) => void): void;
+  close(): Promise<void>;
+};
+
+function waitForWatchBuild(watcher: BuildWatcher): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("Timed out waiting for watch rebuild")),
+      20_000,
+    );
+    watcher.on("event", (event) => {
+      if (event.code === "ERROR") {
+        clearTimeout(timeout);
+        reject(event.error ?? new Error("Watch build failed"));
+      } else if (event.code === "END") {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+  });
+}
+
+async function readBuiltJavaScript(outDir: string): Promise<string> {
+  const chunks: string[] = [];
+  for (const entry of await readdir(outDir, { withFileTypes: true })) {
+    const entryPath = path.join(outDir, entry.name);
+    if (entry.isDirectory()) chunks.push(await readBuiltJavaScript(entryPath));
+    else if (entry.name.endsWith(".js")) chunks.push(await readFile(entryPath, "utf8"));
+  }
+  return chunks.join("\n");
+}
+
 function getAttribute(html: string, id: string, attribute: string): string {
   const tag = html.match(new RegExp(`<img\\b[^>]*\\bid="${id}"[^>]*>`))?.[0];
   const value = tag?.match(new RegExp(`\\b${attribute}="([^"]+)"`, "i"))?.[1];
@@ -162,15 +201,24 @@ function getAttribute(html: string, id: string, attribute: string): string {
   return value.replaceAll("&amp;", "&");
 }
 
-async function findEmittedImage(root: string, assetPrefix = ""): Promise<string> {
+async function findEmittedAsset(
+  root: string,
+  assetPrefix: string,
+  extension: string,
+): Promise<string> {
   const prefixPath = assetPrefix.startsWith("http")
     ? ""
     : assetPrefix.split("/").filter(Boolean).join("/");
   const mediaDir = path.join(root, "dist/client", prefixPath, "_next/static/media");
   const files = await readdir(mediaDir);
-  const image = files.find((file) => /^test\.[\w-]{8}\.png$/.test(file));
-  if (!image) throw new Error(`Missing emitted test image in ${mediaDir}: ${files.join(", ")}`);
-  return image;
+  const asset = files.find((file) => new RegExp(`^test\\.[\\w-]{8}\\.${extension}$`).test(file));
+  if (!asset)
+    throw new Error(`Missing emitted test.${extension} in ${mediaDir}: ${files.join(", ")}`);
+  return asset;
+}
+
+async function findEmittedImage(root: string, assetPrefix = ""): Promise<string> {
+  return findEmittedAsset(root, assetPrefix, "png");
 }
 
 async function assertStaticImageProductionParity(
@@ -181,6 +229,7 @@ async function assertStaticImageProductionParity(
   await buildFixture(root, router);
   const effectiveAssetPrefix = options.assetPrefix ?? options.basePath ?? "";
   const emittedImage = await findEmittedImage(root, effectiveAssetPrefix);
+  const emittedSvg = await findEmittedAsset(root, effectiveAssetPrefix, "svg");
   const prefixPath = effectiveAssetPrefix.split("/").filter(Boolean).join("/");
   expect(
     await readFile(path.join(root, "dist/client", prefixPath, "_next/static/media", emittedImage)),
@@ -213,11 +262,27 @@ async function assertStaticImageProductionParity(
   }
 
   expect(getAttribute(html, "ordinary-asset", "src")).toMatch(/^data:image\/png/);
+  const managedSvgUrl = `${effectiveAssetPrefix}/_next/static/media/${emittedSvg}${
+    options.deploymentId ? `?dpl=${options.deploymentId}` : ""
+  }`;
+  expect(getAttribute(html, "static-svg", "src")).toBe(managedSvgUrl);
+  expect(getAttribute(html, "static-svg", "src")).not.toContain("/_next/image?");
   const assetResponse = await fetch(
     `http://127.0.0.1:${address.port}${effectiveAssetPrefix}/_next/static/media/${emittedImage}`,
   );
   expect(assetResponse.status).toBe(200);
+  expect(assetResponse.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+  const etag = assetResponse.headers.get("etag");
+  expect(etag).toMatch(/^W\/"[0-9a-f]{8}"$/);
   expect(Buffer.from(await assetResponse.arrayBuffer())).toEqual(PNG_1X1);
+
+  const conditionalResponse = await fetch(
+    `http://127.0.0.1:${address.port}${effectiveAssetPrefix}/_next/static/media/${emittedImage}`,
+    { headers: { "if-none-match": etag! } },
+  );
+  expect(conditionalResponse.status).toBe(304);
+  expect(conditionalResponse.headers.get("etag")).toBe(etag);
+  expect(await conditionalResponse.text()).toBe("");
 }
 
 describe("static image import production emission", () => {
@@ -244,5 +309,54 @@ describe("static image import production emission", () => {
       assetPrefix: "/cdn",
       deploymentId: "static-image-test",
     });
+  }, 60_000);
+
+  it("recomputes changed images and removes deleted imports during watch rebuilds", async () => {
+    const root = await mkdtemp(path.join(import.meta.dirname, ".tmp-static-image-watch-"));
+    tempDirs.push(root);
+    const outDir = path.join(root, "dist/client");
+    const imagePath = path.join(root, "test.png");
+    const entryPath = path.join(root, "entry.ts");
+    writeFixtureFile(root, "test.png", PNG_1X1);
+    writeFixtureFile(root, "entry.ts", `import image from "./test.png"; console.log(image.src);\n`);
+
+    const watcher = (await build({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [vinext()],
+      build: {
+        outDir,
+        emptyOutDir: true,
+        watch: {},
+        rolldownOptions: { input: entryPath },
+      },
+    })) as BuildWatcher;
+
+    try {
+      await waitForWatchBuild(watcher);
+      const firstImage = await findEmittedImage(root);
+      expect(await readFile(path.join(outDir, "_next/static/media", firstImage))).toEqual(PNG_1X1);
+
+      const changedBuild = waitForWatchBuild(watcher);
+      await fs.promises.writeFile(imagePath, PNG_4X3);
+      await changedBuild;
+      const secondImage = await findEmittedImage(root);
+      expect(secondImage).not.toBe(firstImage);
+      expect(await readFile(path.join(outDir, "_next/static/media", secondImage))).toEqual(PNG_4X3);
+      expect(fs.existsSync(path.join(outDir, "_next/static/media", firstImage))).toBe(false);
+      const changedJavaScript = await readBuiltJavaScript(outDir);
+      expect(changedJavaScript).toContain(secondImage);
+      expect(changedJavaScript).toMatch(/width:4[,}]|"width":4/);
+      expect(changedJavaScript).toMatch(/height:3[,}]|"height":3/);
+
+      const removedBuild = waitForWatchBuild(watcher);
+      await fs.promises.writeFile(entryPath, `console.log("no image");\n`);
+      await removedBuild;
+      expect(fs.existsSync(path.join(outDir, "_next/static/media", secondImage))).toBe(false);
+      expect(await readBuiltJavaScript(outDir)).not.toContain(secondImage);
+    } finally {
+      await watcher.close();
+    }
   }, 60_000);
 });

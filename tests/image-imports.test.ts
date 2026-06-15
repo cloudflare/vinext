@@ -42,10 +42,25 @@ describe("vinext:image-imports — resolveId", () => {
 
 // ── load ──────────────────────────────────────────────────────
 describe("vinext:image-imports — load", () => {
+  function createLoadContext(plugin: Plugin) {
+    const watched: string[] = [];
+    return {
+      context: Object.assign(Object.create(plugin), {
+        addWatchFile(filePath: string) {
+          watched.push(filePath);
+        },
+        environment: { config: { command: "build" } },
+      }),
+      watched,
+    };
+  }
+
   it("returns dimensions for a PNG file", async () => {
     const plugin = getImagePlugin();
     const load = plugin.load as Function;
-    const result = await load.call(plugin, `\0vinext-image-meta:${PNG_PATH}`);
+    const { context, watched } = createLoadContext(plugin);
+    const result = await load.call(context, `\0vinext-image-meta:${PNG_PATH}`);
+    expect(watched).toEqual([PNG_PATH]);
     expect(result).toContain("export default");
     const json = result.replace("export default ", "").replace(";", "");
     const dims = JSON.parse(json);
@@ -56,7 +71,9 @@ describe("vinext:image-imports — load", () => {
   it("returns dimensions for a JPEG file", async () => {
     const plugin = getImagePlugin();
     const load = plugin.load as Function;
-    const result = await load.call(plugin, `\0vinext-image-meta:${JPG_PATH}`);
+    const { context, watched } = createLoadContext(plugin);
+    const result = await load.call(context, `\0vinext-image-meta:${JPG_PATH}`);
+    expect(watched).toEqual([JPG_PATH]);
     const json = result.replace("export default ", "").replace(";", "");
     const dims = JSON.parse(json);
     expect(dims.width).toBe(8);
@@ -66,7 +83,9 @@ describe("vinext:image-imports — load", () => {
   it("returns 0x0 for non-existent file", async () => {
     const plugin = getImagePlugin();
     const load = plugin.load as Function;
-    const result = await load.call(plugin, "\0vinext-image-meta:/no/such/file.png");
+    const { context, watched } = createLoadContext(plugin);
+    const result = await load.call(context, "\0vinext-image-meta:/no/such/file.png");
+    expect(watched).toEqual(["/no/such/file.png"]);
     const json = result.replace("export default ", "").replace(";", "");
     const dims = JSON.parse(json);
     expect(dims.width).toBe(0);
@@ -84,10 +103,11 @@ describe("vinext:image-imports — load", () => {
     const plugin = getImagePlugin();
     plugin._dimCache.clear();
     const load = plugin.load as Function;
-    await load.call(plugin, `\0vinext-image-meta:${PNG_PATH}`);
+    const { context } = createLoadContext(plugin);
+    await load.call(context, `\0vinext-image-meta:${PNG_PATH}`);
     expect(plugin._dimCache.has(PNG_PATH)).toBe(true);
     // Second call uses cache (no way to verify directly, but should not throw)
-    const result = await load.call(plugin, `\0vinext-image-meta:${PNG_PATH}`);
+    const result = await load.call(context, `\0vinext-image-meta:${PNG_PATH}`);
     expect(result).toContain('"width":4');
   });
 });

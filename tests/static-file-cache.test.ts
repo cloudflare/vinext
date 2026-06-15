@@ -114,6 +114,15 @@ describe("StaticFileCache", () => {
     expect(entry!.etag).toBe('W/"abc123"');
   });
 
+  it("generates stable weak etag for dot-delimited managed image hashes", async () => {
+    await writeFile(clientDir, "_next/static/media/photo.0123abcd.png", "image bytes");
+
+    const cache = await StaticFileCache.create(clientDir);
+    const entry = cache.lookup("/_next/static/media/photo.0123abcd.png");
+
+    expect(entry!.etag).toBe('W/"0123abcd"');
+  });
+
   it("falls back to mtime etag for non-hashed files", async () => {
     await writeFile(clientDir, "favicon.ico", "icon");
 
@@ -138,6 +147,15 @@ describe("StaticFileCache", () => {
 
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/_next/static/my-library-v2.0.0.js");
+
+    expect(entry!.etag).toMatch(/^W\/"\d+-\d+"$/);
+  });
+
+  it("does not treat arbitrary dot suffixes as managed image hashes", async () => {
+    await writeFile(clientDir, "_next/static/media/photo.deadbeefg.png", "image bytes");
+
+    const cache = await StaticFileCache.create(clientDir);
+    const entry = cache.lookup("/_next/static/media/photo.deadbeefg.png");
 
     expect(entry!.etag).toMatch(/^W\/"\d+-\d+"$/);
   });

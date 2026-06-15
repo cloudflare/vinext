@@ -223,6 +223,14 @@ function isRemoteUrl(src: string): boolean {
   return src.startsWith("http://") || src.startsWith("https://") || src.startsWith("//");
 }
 
+function isSvgUrl(src: string): boolean {
+  try {
+    return new URL(src, "http://vinext.local").pathname.toLowerCase().endsWith(".svg");
+  } catch {
+    return false;
+  }
+}
+
 function getFillStyle(
   style?: React.CSSProperties,
   backgroundStyle?: React.CSSProperties,
@@ -596,7 +604,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // SVG sources auto-skip unless dangerouslyAllowSVG is enabled, matching
   // Next.js behavior where .svg triggers unoptimized=true by default.
   const imgQuality = quality ?? 75;
-  const isSvg = src.endsWith(".svg");
+  const isSvg = isSvgUrl(src);
   const skipOptimization = _unoptimized === true || (isSvg && !__dangerouslyAllowSVG);
 
   // Build srcSet for responsive local images (common breakpoints).
@@ -727,7 +735,7 @@ export function getImageProps(props: ImageProps): {
   // For local images (no loader, not remote), route through optimization endpoint.
   // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
   // SVG sources auto-skip unless dangerouslyAllowSVG is enabled.
-  const isSvg = resolvedSrc.endsWith(".svg");
+  const isSvg = isSvgUrl(resolvedSrc);
   const skipOpt =
     _unoptimized === true ||
     (isSvg && !__dangerouslyAllowSVG) ||

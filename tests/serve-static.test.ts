@@ -778,6 +778,28 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
   });
 
+  it("slow path returns 304 for managed image with matching dot-hash ETag", async () => {
+    await writeFile(clientDir, "_next/static/media/photo.0123abcd.png", "image content");
+
+    const req = mockReq(undefined, { "if-none-match": 'W/"0123abcd"' });
+    const { res, captured } = mockRes();
+
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/_next/static/media/photo.0123abcd.png",
+      false,
+    );
+
+    await captured.ended;
+    expect(served).toBe(true);
+    expect(captured.status).toBe(304);
+    expect(captured.body.length).toBe(0);
+    expect(captured.headers["ETag"]).toBe('W/"0123abcd"');
+    expect(captured.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
+  });
+
   it("slow path returns 200 when ETag does not match", async () => {
     await writeFile(clientDir, "_next/static/etag-slow-miss-xyz999.js", "fresh content");
 
