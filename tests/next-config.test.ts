@@ -1448,9 +1448,19 @@ describe("resolveNextConfig crossOrigin", () => {
     expect(credentials.crossOrigin).toBe("use-credentials");
   });
 
-  it("ignores unsupported crossOrigin values", async () => {
+  it("warns about unsupported crossOrigin values", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const resolved = await resolveNextConfig({ crossOrigin: "invalid" as "anonymous" });
+
     expect(resolved.crossOrigin).toBeUndefined();
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("Invalid next.config options detected"),
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"crossOrigin"'));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("https://nextjs.org/docs/messages/invalid-next-config"),
+    );
   });
 });
 

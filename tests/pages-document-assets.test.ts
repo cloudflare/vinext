@@ -11,8 +11,12 @@ function assertDocumentAssetProps(html: string, requirePreloads: boolean): void 
   expect(html).not.toContain("data-vinext-head-nonce");
   expect(html).not.toContain("data-vinext-script-nonce");
 
-  const scripts = html.match(/<script\b[^>]*>/g) ?? [];
-  const preloads = html.match(/<link\b[^>]*rel="(?:preload|modulepreload)"[^>]*>/g) ?? [];
+  const scripts = (html.match(/<script\b[^>]*>/g) ?? []).filter((tag) =>
+    tag.includes('nonce="test-nonce"'),
+  );
+  const preloads = (html.match(/<link\b[^>]*rel="(?:preload|modulepreload)"[^>]*>/g) ?? []).filter(
+    (tag) => !tag.includes('id="user-preload"'),
+  );
   expect(scripts.length).toBeGreaterThan(0);
   if (requirePreloads) expect(preloads.length).toBeGreaterThan(0);
 
@@ -20,6 +24,13 @@ function assertDocumentAssetProps(html: string, requirePreloads: boolean): void 
     expect(tag).toContain('nonce="test-nonce"');
     expect(tag).toContain('crossorigin="anonymous"');
   }
+
+  expect(html).toMatch(
+    /<script[^>]*id="user-script"[^>]*nonce="user-nonce"[^>]*crossorigin="use-credentials"/,
+  );
+  expect(html).toMatch(
+    /<link[^>]*id="user-preload"[^>]*nonce="user-preload-nonce"[^>]*crossorigin="use-credentials"/,
+  );
 }
 
 // Ported from Next.js: test/e2e/app-document/rendering.test.ts
@@ -54,7 +65,10 @@ describe("Pages _document script and preload props", () => {
       path.join(root, "pages", "_document.tsx"),
       `import { Html, Head, Main, NextScript } from "next/document";
 export default function Document() {
-  return <Html><Head nonce="test-nonce" /><body><Main /><NextScript nonce="test-nonce" /></body></Html>;
+  return <Html><Head nonce="test-nonce">
+    <script id="user-script" src="/user.js" nonce="user-nonce" crossOrigin="use-credentials" />
+    <link id="user-preload" rel="preload" href="/user.js" as="script" nonce="user-preload-nonce" crossOrigin="use-credentials" />
+  </Head><body><Main /><NextScript nonce="test-nonce" /></body></Html>;
 }
 `,
     );
@@ -109,6 +123,14 @@ export default function Document() {
     expect(response.status).toBe(200);
     const html = await response.text();
     assertDocumentAssetProps(html, false);
+    const viteScripts = (html.match(/<script\b[^>]*>/g) ?? []).filter(
+      (tag) => !tag.includes('id="user-script"') && !tag.includes('nonce="test-nonce"'),
+    );
+    expect(viteScripts.length).toBeGreaterThan(0);
+    for (const tag of viteScripts) {
+      expect(tag).not.toContain("nonce=");
+      expect(tag).not.toContain("crossorigin=");
+    }
   });
 
   it("propagates props in production", async () => {

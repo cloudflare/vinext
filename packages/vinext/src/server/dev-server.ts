@@ -287,7 +287,6 @@ async function streamPageToResponse(
 
   // Build the document shell with a placeholder for the body
   let shellTemplate: string;
-  let documentAssetProps = {};
 
   if (DocumentComponent) {
     // When the renderPage path already invoked getInitialProps (rendered or
@@ -301,7 +300,6 @@ async function streamPageToResponse(
       ? React.createElement(DocumentComponent, docProps)
       : React.createElement(DocumentComponent);
     const renderedDocument = extractDocumentAssetProps(await renderToStringAsync(docElement));
-    documentAssetProps = renderedDocument.props;
     let docHtml = renderedDocument.html;
     const generatedFontHeadHTML = applyDocumentAssetProps(
       fontHeadHTML,
@@ -339,11 +337,7 @@ async function streamPageToResponse(
 
   // Apply Vite's HTML transforms (injects HMR client, etc.) on the full
   // shell template, then split at the body marker.
-  const transformedShell = applyDocumentAssetProps(
-    await server.transformIndexHtml(url, shellTemplate),
-    documentAssetProps,
-    crossOrigin,
-  );
+  const transformedShell = await server.transformIndexHtml(url, shellTemplate);
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
   const prefix = transformedShell.slice(0, markerIdx);
   const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);

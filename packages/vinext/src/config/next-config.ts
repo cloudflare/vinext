@@ -1329,6 +1329,18 @@ export async function resolveNextConfig(
     return resolved;
   }
 
+  if (
+    config.crossOrigin !== undefined &&
+    config.crossOrigin !== "anonymous" &&
+    config.crossOrigin !== "use-credentials"
+  ) {
+    console.warn(
+      "Invalid next.config options detected:\n" +
+        '    Invalid option at "crossOrigin": expected "anonymous" or "use-credentials"\n' +
+        "See more info here: https://nextjs.org/docs/messages/invalid-next-config",
+    );
+  }
+
   // Resolve redirects
   let redirects: NextRedirect[] = [];
   if (config.redirects) {
