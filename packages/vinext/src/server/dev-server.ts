@@ -1567,6 +1567,7 @@ export function createSSRHandler(
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
+import Router, { wrapWithRouterContext, _initializePagesRouterReadyFromNextData } from "next/router";
 
 const nextDataElement = document.getElementById("__NEXT_DATA__");
 if (nextDataElement?.textContent) {
@@ -1575,7 +1576,6 @@ if (nextDataElement?.textContent) {
   window.__VINEXT_LOCALES__ = window.__NEXT_DATA__.locales;
   window.__VINEXT_DEFAULT_LOCALE__ = window.__NEXT_DATA__.defaultLocale;
 }
-const { default: Router, wrapWithRouterContext, _initializePagesRouterReadyFromNextData } = await import("next/router");
 const nextData = window.__NEXT_DATA__;
 _initializePagesRouterReadyFromNextData(nextData);
 const props = nextData.props && typeof nextData.props === "object" ? nextData.props : {};

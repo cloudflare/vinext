@@ -97,6 +97,10 @@ export async function generateClientEntry(
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
+import Router, {
+  wrapWithRouterContext,
+  _initializePagesRouterReadyFromNextData,
+} from "next/router";
 
 const pageLoaders = {
 ${loaderEntries.join(",\n")}
@@ -156,10 +160,6 @@ if (nextDataElement?.textContent) {
   window.__VINEXT_DEFAULT_LOCALE__ = window.__NEXT_DATA__.defaultLocale;
 }
 
-// The router reads __NEXT_DATA__ while initializing its readiness state, so
-// canonical JSON must be parsed before this module executes.
-const { default: Router, wrapWithRouterContext, _initializePagesRouterReadyFromNextData } =
-  await import("next/router");
 _initializePagesRouterReadyFromNextData(window.__NEXT_DATA__);
 
 async function hydrate() {
