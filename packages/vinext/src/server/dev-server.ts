@@ -207,6 +207,8 @@ async function streamPageToResponse(
      * into `getSSRHeadHTML()`'s output. Called before `getHeadHTML()`.
      */
     setDocumentInitialHead?: (head: React.ReactNode[]) => void;
+    /** Buffer the body before writing headers so error-page fallback remains safe. */
+    bufferBodyBeforeHeaders?: boolean;
   },
 ): Promise<void> {
   const {
@@ -222,6 +224,7 @@ async function streamPageToResponse(
     scriptNonce,
     documentContext,
     setDocumentInitialHead,
+    bufferBodyBeforeHeaders = false,
   } = options;
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
@@ -328,6 +331,7 @@ async function streamPageToResponse(
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
   const prefix = transformedShell.slice(0, markerIdx);
   const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
+  const bufferedBody = bufferBodyBeforeHeaders ? await new Response(bodyStream).text() : null;
 
   // Send headers and start streaming.
   // Set array-valued headers (e.g. Set-Cookie from gSSP) via setHeader()
@@ -350,6 +354,11 @@ async function streamPageToResponse(
 
   // Write the document prefix (head, opening body)
   res.write(prefix);
+
+  if (bufferedBody !== null) {
+    res.end(bufferedBody + suffix);
+    return;
+  }
 
   // Pipe the React body stream through (Suspense content streams progressively)
   const reader = bodyStream.getReader();
@@ -1759,6 +1768,7 @@ hydrate();
             typeof headShim.setDocumentInitialHead === "function"
               ? headShim.setDocumentInitialHead
               : undefined,
+          bufferBodyBeforeHeaders: true,
         });
         _renderEnd = now();
 
@@ -2000,6 +2010,7 @@ async function renderErrorPage(
       }
       return;
     } catch {
+      if (res.headersSent || res.writableEnded) return;
       // This candidate doesn't exist, try next
       continue;
     }
