@@ -744,6 +744,7 @@ export function createPagesPageHandler(
           pageProps,
           props: renderProps,
           params,
+          query,
           renderDocumentToString(element) {
             return renderToStringAsync(element);
           },

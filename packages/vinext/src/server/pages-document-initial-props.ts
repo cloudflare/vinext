@@ -85,6 +85,10 @@ export type RenderPageEnhancers = {
   enhanceComponent?: (Comp: ComponentType<unknown>) => any;
 };
 
+export type RenderPageEnhancer =
+  | RenderPageEnhancers
+  | ((Comp: ComponentType<unknown>) => ComponentType<unknown>);
+
 type DocumentInitialProps = {
   html: string;
   head?: ReactNode[];
@@ -189,10 +193,12 @@ export async function runDocumentRenderPage(
 
   let renderPageCalled = false;
   const renderPage = async (
-    opts: RenderPageEnhancers = {},
+    opts: RenderPageEnhancer = {},
   ): Promise<{ html: string; head: ReactNode[] }> => {
     renderPageCalled = true;
-    const enhancedElement = enhancePageElement(opts);
+    const enhancers: RenderPageEnhancers =
+      typeof opts === "function" ? { enhanceComponent: opts } : opts;
+    const enhancedElement = enhancePageElement(enhancers);
     // Nonce responsibility lives here so prod and dev produce identical
     // output — callers' `enhancePageElement` must not apply it themselves.
     const wrapped = withScriptNonce(enhancedElement as React.ReactElement, input.scriptNonce);

@@ -185,6 +185,7 @@ type RenderPagesPageResponseOptions = {
   pageProps: Record<string, unknown>;
   props?: Record<string, unknown>;
   params: Record<string, unknown>;
+  query?: Record<string, unknown>;
   renderDocumentToString: (element: ReactNode) => Promise<string>;
   renderToReadableStream: (element: ReactNode) => Promise<ReadableStream<Uint8Array>>;
   resetSSRHead?: (() => void) | undefined;
@@ -520,7 +521,7 @@ export async function renderPagesPageResponse(
     scriptNonce: options.scriptNonce,
     context: {
       pathname: options.routePattern,
-      query: options.params,
+      query: options.query ?? options.params,
       asPath: options.routeUrl,
     },
   });
