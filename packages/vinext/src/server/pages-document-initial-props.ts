@@ -86,7 +86,7 @@ export type RenderPageEnhancers = {
   enhanceComponent?: (Comp: ComponentType<unknown>) => any;
 };
 
-export type RenderPageEnhancer =
+type RenderPageEnhancer =
   | RenderPageEnhancers
   | ((Comp: ComponentType<unknown>) => ComponentType<unknown>);
 
