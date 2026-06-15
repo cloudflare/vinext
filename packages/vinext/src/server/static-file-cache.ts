@@ -23,6 +23,7 @@ export const CONTENT_TYPES: Record<string, string> = {
   ".css": "text/css",
   ".html": "text/html",
   ".json": "application/json",
+  ".txt": "text/plain; charset=utf-8",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",

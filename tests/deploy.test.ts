@@ -46,6 +46,7 @@ import {
   computeClientRuntimeMetadata,
   buildRuntimeGlobalsScript,
 } from "../packages/vinext/src/utils/client-runtime-metadata.js";
+import { fetchWorkerFilesystemRoute } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import {
   mergeHeaders,
   resolveStaticAssetSignal,
@@ -1022,9 +1023,9 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("re-enters the ASSETS binding after beforeFiles rewrites", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain("serveStaticFile: async");
-    expect(content).toContain("env.ASSETS.fetch(new Request(assetUrl, request))");
-    expect(content).toContain("response.status === 404 ? false : response");
+    expect(content).toContain("serveFilesystemRoute: async");
+    expect(content).toContain("fetchWorkerFilesystemRoute(");
+    expect(content).toContain("env.ASSETS.fetch(assetRequest)");
   });
 
   it("exports every vinext subpath imported by generated worker entries", () => {
@@ -1324,6 +1325,70 @@ describe("generatePagesRouterWorkerEntry", () => {
     const pipelinePos = content.indexOf("runPagesRequest(request, deps)");
     expect(staticPos).toBeGreaterThan(-1);
     expect(pipelinePos).toBeGreaterThan(staticPos);
+  });
+});
+
+describe("fetchWorkerFilesystemRoute", () => {
+  it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
+    "fetches rewritten assets during %s",
+    async (phase) => {
+      const fetchAsset = vi.fn(
+        async (request: Request) =>
+          new Response(`asset:${new URL(request.url).pathname}`, {
+            headers: { "content-type": "text/plain" },
+          }),
+      );
+      const result = await fetchWorkerFilesystemRoute(
+        new Request("https://example.com/sv/source?ignored=1"),
+        "/file.txt",
+        phase,
+        fetchAsset,
+      );
+
+      expect(result).toBeInstanceOf(Response);
+      if (!(result instanceof Response)) return;
+      await expect(result.text()).resolves.toBe("asset:/file.txt");
+      expect(fetchAsset).toHaveBeenCalledOnce();
+      expect(new URL(fetchAsset.mock.calls[0][0].url).search).toBe("");
+    },
+  );
+
+  it("falls through on asset misses and preserves HEAD", async () => {
+    const fetchAsset = vi.fn(async (request: Request) => {
+      expect(request.method).toBe("HEAD");
+      return new Response(null, { status: 404 });
+    });
+    const result = await fetchWorkerFilesystemRoute(
+      new Request("https://example.com/source", { method: "HEAD" }),
+      "/missing.txt",
+      "afterFiles",
+      fetchAsset,
+    );
+
+    expect(result).toBe(false);
+    expect(fetchAsset).toHaveBeenCalledOnce();
+  });
+
+  it("skips direct and API filesystem probes", async () => {
+    const fetchAsset = vi.fn(async () => new Response("unexpected"));
+
+    expect(
+      await fetchWorkerFilesystemRoute(
+        new Request("https://example.com/file.txt"),
+        "/file.txt",
+        "direct",
+        fetchAsset,
+      ),
+    ).toBe(false);
+    expect(
+      await fetchWorkerFilesystemRoute(
+        new Request("https://example.com/source"),
+        "/api/hello",
+        "fallback",
+        fetchAsset,
+      ),
+    ).toBe(false);
+    expect(fetchAsset).not.toHaveBeenCalled();
   });
 });
 

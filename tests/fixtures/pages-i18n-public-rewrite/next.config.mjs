@@ -22,8 +22,24 @@ export default {
           locale: false,
         },
       ],
-      afterFiles: [],
-      fallback: [],
+      afterFiles: [
+        {
+          source: "/:locale/after-files/:path*",
+          destination: "/:path*",
+          locale: false,
+        },
+        {
+          source: "/after-control",
+          destination: "/file.txt",
+        },
+      ],
+      fallback: [
+        {
+          source: "/:locale/fallback-files/:path*",
+          destination: "/:path*",
+          locale: false,
+        },
+      ],
     };
   },
 };

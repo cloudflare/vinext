@@ -75,6 +75,13 @@ async function assertPublicRewrite(baseUrl: string, locale: "en" | "sv"): Promis
   await expect(response.text()).resolves.toContain("hello from file.txt");
 }
 
+async function assertFilesystemRewrite(baseUrl: string, pathname: string): Promise<void> {
+  const response = await fetch(`${baseUrl}${pathname}`);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("content-type")).toContain("text/plain");
+  await expect(response.text()).resolves.toContain("hello from file.txt");
+}
+
 // Ported from Next.js: test/e2e/i18n-ignore-rewrite-source-locale/rewrites.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-ignore-rewrite-source-locale/rewrites.test.ts
 describe("Pages i18n locale:false public rewrites", () => {
@@ -96,6 +103,62 @@ describe("Pages i18n locale:false public rewrites", () => {
 
     it("serves the rewritten public file for a non-default locale", async () => {
       await assertPublicRewrite(baseUrl, "sv");
+    });
+
+    it("re-enters public files after afterFiles and fallback rewrites", async () => {
+      await assertFilesystemRewrite(baseUrl, "/sv/after-files/file.txt");
+      await assertFilesystemRewrite(baseUrl, "/sv/fallback-files/file.txt");
+    });
+
+    it("re-enters API routes after afterFiles and fallback rewrites", async () => {
+      const afterFiles = await fetch(`${baseUrl}/sv/after-files/api/hello`);
+      const fallback = await fetch(`${baseUrl}/sv/fallback-files/api/hello`);
+      await expect(afterFiles.text()).resolves.toContain("hello from api");
+      await expect(fallback.text()).resolves.toContain("hello from api");
+    });
+
+    it("serves rewritten public files with Vite HEAD, range, cache, and MIME semantics", async () => {
+      const pathname = "/sv/after-files/file.txt";
+      const initial = await fetch(`${baseUrl}${pathname}`);
+      const etag = initial.headers.get("etag");
+      expect(initial.headers.get("content-type")).toContain("text/plain");
+      expect(etag).toBeTruthy();
+
+      const head = await fetch(`${baseUrl}${pathname}`, { method: "HEAD" });
+      expect(head.status).toBe(200);
+      expect(await head.text()).toBe("");
+      expect(head.headers.get("content-length")).toBe(initial.headers.get("content-length"));
+
+      const range = await fetch(`${baseUrl}${pathname}`, {
+        headers: { Range: "bytes=0-4" },
+      });
+      expect(range.status).toBe(206);
+      await expect(range.text()).resolves.toBe("hello");
+
+      const notModified = await fetch(`${baseUrl}${pathname}`, {
+        headers: { "If-None-Match": etag! },
+      });
+      expect(notModified.status).toBe(304);
+    });
+
+    it("serves rewritten /_next/static through Vite in every rewrite phase", async () => {
+      for (const pathname of [
+        "/sv/rewrite-files/_next/static/dev-asset.js",
+        "/sv/after-files/_next/static/dev-asset.js",
+        "/sv/fallback-files/_next/static/dev-asset.js",
+      ]) {
+        const staticResponse = await fetch(`${baseUrl}${pathname}`);
+        expect(staticResponse.status, pathname).toBe(200);
+        expect(staticResponse.headers.get("content-type"), pathname).toContain("text/javascript");
+        await expect(staticResponse.text(), pathname).resolves.toContain(
+          "__vinextDevStaticRewrite",
+        );
+      }
+    });
+
+    it("preserves page precedence over afterFiles rewrites", async () => {
+      const pageResponse = await fetch(`${baseUrl}/after-control`);
+      await expect(pageResponse.text()).resolves.toContain("afterFiles page wins");
     });
   });
 
@@ -130,6 +193,24 @@ describe("Pages i18n locale:false public rewrites", () => {
       await assertPublicRewrite(prodBaseUrl, "sv");
     });
 
+    it("re-enters public files after afterFiles and fallback rewrites", async () => {
+      await assertFilesystemRewrite(prodBaseUrl, "/sv/after-files/file.txt");
+      await assertFilesystemRewrite(prodBaseUrl, "/sv/fallback-files/file.txt");
+    });
+
+    it("re-enters API routes after afterFiles and fallback rewrites", async () => {
+      const afterFiles = await fetch(`${prodBaseUrl}/sv/after-files/api/hello`);
+      const fallback = await fetch(`${prodBaseUrl}/sv/fallback-files/api/hello`);
+      await expect(afterFiles.text()).resolves.toContain("hello from api");
+      await expect(fallback.text()).resolves.toContain("hello from api");
+    });
+
+    it("preserves page precedence over afterFiles rewrites", async () => {
+      const response = await fetch(`${prodBaseUrl}/after-control`);
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toContain("afterFiles page wins");
+    });
+
     it("preserves API, page, and built static destinations", async () => {
       const apiResponse = await fetch(`${prodBaseUrl}/en/rewrite-api/hello`);
       const pageResponse = await fetch(`${prodBaseUrl}/en/rewrite-page`);
@@ -140,10 +221,14 @@ describe("Pages i18n locale:false public rewrites", () => {
         .split(path.sep)
         .join("/");
       const staticResponse = await fetch(`${prodBaseUrl}/en/rewrite-files/${staticPath}`);
+      const afterFilesStaticResponse = await fetch(`${prodBaseUrl}/en/after-files/${staticPath}`);
+      const fallbackStaticResponse = await fetch(`${prodBaseUrl}/en/fallback-files/${staticPath}`);
 
       await expect(apiResponse.text()).resolves.toContain("hello from api");
       await expect(pageResponse.text()).resolves.toContain("about page");
       expect(staticResponse.status).toBe(200);
+      expect(afterFilesStaticResponse.status).toBe(200);
+      expect(fallbackStaticResponse.status).toBe(200);
     });
   });
 });

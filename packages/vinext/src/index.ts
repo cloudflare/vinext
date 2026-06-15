@@ -39,7 +39,6 @@ import {
 } from "./server/image-optimization.js";
 
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
-import { CONTENT_TYPES } from "./server/static-file-cache.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
@@ -3314,6 +3313,75 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
         // Return a function to register middleware AFTER Vite's built-in middleware
         return () => {
+          const viteFilesystemMiddlewares = server.middlewares.stack
+            .filter(({ handle }) => {
+              const name = typeof handle === "function" ? handle.name : "";
+              return name === "viteServePublicMiddleware" || name === "viteServeStaticMiddleware";
+            })
+            .map(({ handle }) => handle)
+            .filter(
+              (handle): handle is import("vite").Connect.NextHandleFunction =>
+                typeof handle === "function",
+            );
+
+          const serveRewrittenViteFilesystemRoute = async (
+            req: import("node:http").IncomingMessage,
+            res: import("node:http").ServerResponse,
+            requestPathname: string,
+            stagedHeaders: Record<string, string | string[]>,
+          ): Promise<boolean> => {
+            const originalUrl = req.url;
+            const originalStatusCode = res.statusCode;
+            const originalStatusMessage = res.statusMessage;
+            const originalHeaders = res.getHeaders();
+
+            req.url = requestPathname;
+            for (const [key, value] of Object.entries(stagedHeaders)) {
+              res.setHeader(key, value);
+            }
+
+            const restore = () => {
+              req.url = originalUrl;
+              res.statusCode = originalStatusCode;
+              res.statusMessage = originalStatusMessage;
+              for (const key of Object.keys(res.getHeaders())) res.removeHeader(key);
+              for (const [key, value] of Object.entries(originalHeaders)) {
+                if (value !== undefined) res.setHeader(key, value);
+              }
+            };
+
+            try {
+              for (const middleware of viteFilesystemMiddlewares) {
+                const outcome = await new Promise<"next" | "served">((resolve, reject) => {
+                  let settled = false;
+                  const settle = (value: "next" | "served", error?: unknown) => {
+                    if (settled) return;
+                    settled = true;
+                    res.off("finish", onServed);
+                    res.off("close", onServed);
+                    if (error) reject(error);
+                    else resolve(value);
+                  };
+                  const onServed = () => settle("served");
+                  res.once("finish", onServed);
+                  res.once("close", onServed);
+                  middleware(req, res, (error?: unknown) => settle("next", error));
+                  if (res.writableEnded) settle("served");
+                });
+                if (outcome === "served") {
+                  req.url = originalUrl;
+                  return true;
+                }
+              }
+            } catch (error) {
+              restore();
+              throw error;
+            }
+
+            restore();
+            return false;
+          };
+
           // Run instrumentation.ts register() if present (once at server startup).
           // Must be inside the returned function so that all environments are
           // fully registered before getPagesRunner() inspects them.
@@ -3684,7 +3752,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 },
               );
               const rewriteRequestContext = requestContextFromRequest(rewriteContextRequest);
-              const filePathMatchesRewrite = (nextConfig?.rewrites.beforeFiles ?? []).some(
+              const filePathMatchesRewrite = [
+                ...(nextConfig?.rewrites.beforeFiles ?? []),
+                ...(nextConfig?.rewrites.afterFiles ?? []),
+                ...(nextConfig?.rewrites.fallback ?? []),
+              ].some(
                 (rewrite) =>
                   matchRewrite(pathname, [rewrite], rewriteRequestContext, {
                     basePath: bp,
@@ -3868,9 +3940,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   const reqWithBody = new Request(new URL(url, requestOrigin), externalInit);
                   return proxyExternalRequest(reqWithBody, externalUrl);
                 },
-                serveStaticFile: async (requestPathname, _stagedHeaders, options) => {
+                serveFilesystemRoute: async (requestPathname, stagedHeaders, phase) => {
                   if (
-                    !options?.afterBeforeFilesRewrite ||
+                    phase === "direct" ||
                     (req.method !== "GET" && req.method !== "HEAD") ||
                     requestPathname === "/" ||
                     requestPathname === "/api" ||
@@ -3878,36 +3950,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   ) {
                     return false;
                   }
-
-                  let decodedPathname: string;
-                  try {
-                    decodedPathname = decodeURIComponent(requestPathname);
-                  } catch {
-                    return false;
-                  }
-
-                  const publicDir = path.resolve(root, "public");
-                  const publicFile = path.resolve(publicDir, `.${decodedPathname}`);
-                  if (
-                    publicFile !== publicDir &&
-                    !publicFile.startsWith(`${publicDir}${path.sep}`)
-                  ) {
-                    return false;
-                  }
-
-                  try {
-                    const stat = await fs.promises.stat(publicFile);
-                    if (!stat.isFile()) return false;
-                    const body = await fs.promises.readFile(publicFile);
-                    return new Response(body, {
-                      headers: {
-                        "Content-Type":
-                          CONTENT_TYPES[path.extname(publicFile)] ?? "application/octet-stream",
-                      },
-                    });
-                  } catch {
-                    return false;
-                  }
+                  return serveRewrittenViteFilesystemRoute(
+                    req,
+                    res,
+                    requestPathname,
+                    stagedHeaders,
+                  );
                 },
                 // handleApi and renderPage are omitted — pipeline emits intents
               };
