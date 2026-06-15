@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import { createBuilder, parseAst } from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import {
+  hasExportAllCandidate as _hasExportAllCandidate,
   hasServerExportCandidate as _hasServerExportCandidate,
   stripServerExports as _stripServerExports,
   validatePageExports as _validatePageExports,
@@ -2423,6 +2424,14 @@ describe("stripServerExports", () => {
       _hasServerExportCandidate("export const getServerSideProps = () => ({ props: {} })"),
     ).toBe(true);
     expect(_hasServerExportCandidate("export default function Page() {}")).toBe(false);
+  });
+
+  it("cheaply identifies export-all syntax without matching multiplication", () => {
+    expect(_hasExportAllCandidate(`export * from './other-page';`)).toBe(true);
+    expect(_hasExportAllCandidate(`export\n*\nfrom './other-page';`)).toBe(true);
+    expect(_hasExportAllCandidate(`export /* comment */ * from './other-page';`)).toBe(true);
+    expect(_hasExportAllCandidate(`export // comment\n* from './other-page';`)).toBe(true);
+    expect(_hasExportAllCandidate(`export const area = width * height;`)).toBe(false);
   });
 
   it("rejects export-all declarations in page modules", () => {

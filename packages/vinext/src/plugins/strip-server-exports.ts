@@ -30,6 +30,12 @@ export function hasServerExportCandidate(code: string): boolean {
   return [...SERVER_EXPORTS].some((name) => code.includes(name));
 }
 
+const EXPORT_ALL_CANDIDATE = /\bexport(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*\*/;
+
+export function hasExportAllCandidate(code: string): boolean {
+  return EXPORT_ALL_CANDIDATE.test(code);
+}
+
 type Binding = {
   name: string;
   node: PositionedNode;
@@ -285,7 +291,7 @@ function findLexicalScope(ancestors: PositionedNode[]): PositionedNode | undefin
 }
 
 export function validatePageExports(code: string): void {
-  if (!code.includes("export") || !code.includes("*")) return;
+  if (!hasExportAllCandidate(code)) return;
   let ast: ParsedAst;
   try {
     ast = parseAst(code);
@@ -308,7 +314,7 @@ export function validatePageExports(code: string): void {
  * - crates/next-custom-transforms/src/transforms/strip_page_exports.rs
  */
 export function stripServerExports(code: string): string | null {
-  if (!hasServerExportCandidate(code) && !code.includes("export *")) {
+  if (!hasServerExportCandidate(code) && !hasExportAllCandidate(code)) {
     return null;
   }
 

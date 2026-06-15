@@ -182,6 +182,7 @@ import {
   type BundleBackfillChunk,
 } from "./build/ssr-manifest.js";
 import {
+  hasExportAllCandidate,
   hasServerExportCandidate,
   stripServerExports,
   validatePageExports,
@@ -4037,12 +4038,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       transform: {
         handler(code, id) {
           if (this.environment?.name !== "client") return null;
-          if (
-            !hasPagesDir ||
-            id.startsWith("\0") ||
-            !code.includes("export") ||
-            !code.includes("*")
-          ) {
+          if (!hasPagesDir || id.startsWith("\0") || !hasExportAllCandidate(code)) {
             return null;
           }
           const modulePath = stripViteModuleQuery(id);
