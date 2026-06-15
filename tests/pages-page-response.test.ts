@@ -8,6 +8,29 @@ import {
 } from "../packages/vinext/src/server/pages-page-response.js";
 import { resolvePagesPageData } from "../packages/vinext/src/server/pages-page-data.js";
 
+function getStartTags(html: string, tagName: string): string[] {
+  const tags: string[] = [];
+  const normalizedHtml = html.toLowerCase();
+  const marker = `<${tagName.toLowerCase()}`;
+  let offset = 0;
+
+  while (offset < html.length) {
+    const start = normalizedHtml.indexOf(marker, offset);
+    if (start === -1) break;
+    const boundary = normalizedHtml[start + marker.length];
+    if (boundary !== ">" && !/\s/.test(boundary ?? "")) {
+      offset = start + marker.length;
+      continue;
+    }
+    const end = normalizedHtml.indexOf(">", start + marker.length);
+    if (end === -1) break;
+    tags.push(html.slice(start, end + 1));
+    offset = end + 1;
+  }
+
+  return tags;
+}
+
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
@@ -340,11 +363,14 @@ describe("pages page response", () => {
     const html = await response.text();
     expect(html).not.toContain("data-vinext-head-nonce");
     expect(html).not.toContain("data-vinext-script-nonce");
-    for (const tag of html.match(/<script\b[^>]*>/g) ?? []) {
+    for (const tag of getStartTags(html, "script")) {
       expect(tag).toContain('nonce="test-nonce"');
       expect(tag).toContain('crossorigin="anonymous"');
     }
-    for (const tag of html.match(/<link\b[^>]*rel="(?:preload|modulepreload)"[^>]*>/g) ?? []) {
+    const preloads = getStartTags(html, "link").filter(
+      (tag) => tag.includes('rel="preload"') || tag.includes('rel="modulepreload"'),
+    );
+    for (const tag of preloads) {
       expect(tag).toContain('nonce="test-nonce"');
       expect(tag).toContain('crossorigin="anonymous"');
     }

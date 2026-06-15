@@ -7,15 +7,38 @@ import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
 import { startProdServer } from "../packages/vinext/src/server/prod-server.js";
 
+function getStartTags(html: string, tagName: string): string[] {
+  const tags: string[] = [];
+  const normalizedHtml = html.toLowerCase();
+  const marker = `<${tagName.toLowerCase()}`;
+  let offset = 0;
+
+  while (offset < html.length) {
+    const start = normalizedHtml.indexOf(marker, offset);
+    if (start === -1) break;
+    const boundary = normalizedHtml[start + marker.length];
+    if (boundary !== ">" && !/\s/.test(boundary ?? "")) {
+      offset = start + marker.length;
+      continue;
+    }
+    const end = normalizedHtml.indexOf(">", start + marker.length);
+    if (end === -1) break;
+    tags.push(html.slice(start, end + 1));
+    offset = end + 1;
+  }
+
+  return tags;
+}
+
 function assertDocumentAssetProps(html: string, requirePreloads: boolean): void {
   expect(html).not.toContain("data-vinext-head-nonce");
   expect(html).not.toContain("data-vinext-script-nonce");
 
-  const scripts = (html.match(/<script\b[^>]*>/g) ?? []).filter((tag) =>
-    tag.includes('nonce="test-nonce"'),
-  );
-  const preloads = (html.match(/<link\b[^>]*rel="(?:preload|modulepreload)"[^>]*>/g) ?? []).filter(
-    (tag) => !tag.includes('id="user-preload"'),
+  const scripts = getStartTags(html, "script").filter((tag) => tag.includes('nonce="test-nonce"'));
+  const preloads = getStartTags(html, "link").filter(
+    (tag) =>
+      (tag.includes('rel="preload"') || tag.includes('rel="modulepreload"')) &&
+      !tag.includes('id="user-preload"'),
   );
   expect(scripts.length).toBeGreaterThan(0);
   if (requirePreloads) expect(preloads.length).toBeGreaterThan(0);
@@ -25,12 +48,12 @@ function assertDocumentAssetProps(html: string, requirePreloads: boolean): void 
     expect(tag).toContain('crossorigin="anonymous"');
   }
 
-  expect(html).toMatch(
-    /<script[^>]*id="user-script"[^>]*nonce="user-nonce"[^>]*crossorigin="use-credentials"/,
-  );
-  expect(html).toMatch(
-    /<link[^>]*id="user-preload"[^>]*nonce="user-preload-nonce"[^>]*crossorigin="use-credentials"/,
-  );
+  const userScript = getStartTags(html, "script").find((tag) => tag.includes('id="user-script"'));
+  expect(userScript).toContain('nonce="user-nonce"');
+  expect(userScript).toContain('crossorigin="use-credentials"');
+  const userPreload = getStartTags(html, "link").find((tag) => tag.includes('id="user-preload"'));
+  expect(userPreload).toContain('nonce="user-preload-nonce"');
+  expect(userPreload).toContain('crossorigin="use-credentials"');
 }
 
 // Ported from Next.js: test/e2e/app-document/rendering.test.ts
@@ -123,7 +146,7 @@ export default function Document() {
     expect(response.status).toBe(200);
     const html = await response.text();
     assertDocumentAssetProps(html, false);
-    const viteScripts = (html.match(/<script\b[^>]*>/g) ?? []).filter(
+    const viteScripts = getStartTags(html, "script").filter(
       (tag) => !tag.includes('id="user-script"') && !tag.includes('nonce="test-nonce"'),
     );
     expect(viteScripts.length).toBeGreaterThan(0);
@@ -137,5 +160,62 @@ export default function Document() {
     const response = await fetch(prodUrl);
     expect(response.status).toBe(200);
     assertDocumentAssetProps(await response.text(), true);
+  });
+
+  it("applies configured crossOrigin without a custom _document in development", async () => {
+    const noDocumentRoot = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "vinext-document-assets-default-"),
+    );
+    let noDocumentServer: ViteDevServer | undefined;
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(noDocumentRoot, "node_modules"),
+        "junction",
+      );
+      await fsp.mkdir(path.join(noDocumentRoot, "pages"));
+      await fsp.writeFile(
+        path.join(noDocumentRoot, "package.json"),
+        JSON.stringify({ type: "module" }),
+      );
+      await fsp.writeFile(
+        path.join(noDocumentRoot, "next.config.mjs"),
+        'export default { crossOrigin: "anonymous" };\n',
+      );
+      await fsp.writeFile(
+        path.join(noDocumentRoot, "pages", "index.tsx"),
+        "export default function Page() { return <main>ok</main>; }\n",
+      );
+
+      noDocumentServer = await createServer({
+        root: noDocumentRoot,
+        configFile: false,
+        plugins: [vinext({ disableAppRouter: true })],
+        server: { host: "127.0.0.1", port: 0 },
+        logLevel: "silent",
+      });
+      await noDocumentServer.listen();
+      const address = noDocumentServer.httpServer!.address() as { port: number };
+      const response = await fetch(`http://127.0.0.1:${address.port}`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      const generatedScripts = getStartTags(html, "script").filter(
+        (tag) => tag.includes("src=") && !tag.includes('src="/@vite/client"'),
+      );
+      expect(generatedScripts.length).toBeGreaterThan(0);
+      for (const tag of generatedScripts) {
+        expect(tag).toContain('crossorigin="anonymous"');
+      }
+      const viteScripts = getStartTags(html, "script").filter((tag) =>
+        tag.includes('src="/@vite/client"'),
+      );
+      expect(viteScripts.length).toBeGreaterThan(0);
+      for (const tag of viteScripts) {
+        expect(tag).not.toContain("crossorigin=");
+      }
+    } finally {
+      await noDocumentServer?.close();
+      fs.rmSync(noDocumentRoot, { recursive: true, force: true });
+    }
   });
 });

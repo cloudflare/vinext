@@ -159,6 +159,8 @@ function writeGsspRedirect(
 
 /** Body placeholder used to split the document shell for streaming. */
 const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
+const GENERATED_SCRIPTS_START = "<!--VINEXT_GENERATED_SCRIPTS_START-->";
+const GENERATED_SCRIPTS_END = "<!--VINEXT_GENERATED_SCRIPTS_END-->";
 
 /**
  * Stream a Pages Router page response using progressive SSR.
@@ -323,21 +325,41 @@ async function streamPageToResponse(
     // charset + viewport are emitted via getSSRHeadHTML() (next/head's
     // defaultHead seeds them with data-next-head=""), matching Next.js's
     // canonical ordering. Don't duplicate them here.
+    const generatedFontHeadHTML = applyDocumentAssetProps(fontHeadHTML, {}, crossOrigin);
     shellTemplate = `<!DOCTYPE html>
 <html>
 <head>
-  ${fontHeadHTML}${headHTML}
+  ${generatedFontHeadHTML}${headHTML}
 </head>
 <body>
   <div id="__next">${STREAM_BODY_MARKER}</div>
-  ${scripts}
+  ${GENERATED_SCRIPTS_START}${scripts}${GENERATED_SCRIPTS_END}
 </body>
 </html>`;
   }
 
   // Apply Vite's HTML transforms (injects HMR client, etc.) on the full
   // shell template, then split at the body marker.
-  const transformedShell = await server.transformIndexHtml(url, shellTemplate);
+  let transformedShell = await server.transformIndexHtml(url, shellTemplate);
+  const generatedScriptsStart = transformedShell.indexOf(GENERATED_SCRIPTS_START);
+  if (generatedScriptsStart !== -1) {
+    const generatedScriptsEnd = transformedShell.indexOf(
+      GENERATED_SCRIPTS_END,
+      generatedScriptsStart,
+    );
+    if (generatedScriptsEnd !== -1) {
+      const scriptsStart = generatedScriptsStart + GENERATED_SCRIPTS_START.length;
+      const generatedScripts = applyDocumentAssetProps(
+        transformedShell.slice(scriptsStart, generatedScriptsEnd),
+        {},
+        crossOrigin,
+      );
+      transformedShell =
+        transformedShell.slice(0, generatedScriptsStart) +
+        generatedScripts +
+        transformedShell.slice(generatedScriptsEnd + GENERATED_SCRIPTS_END.length);
+    }
+  }
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
   const prefix = transformedShell.slice(0, markerIdx);
   const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
