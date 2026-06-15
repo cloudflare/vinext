@@ -705,6 +705,21 @@ export default {
         handleApi: typeof handleApiRoute === "function"
           ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx)
           : null,
+        serveStaticFile: async (requestPathname, _stagedHeaders, options) => {
+          if (
+            !options?.afterBeforeFilesRewrite ||
+            (request.method !== "GET" && request.method !== "HEAD") ||
+            requestPathname === "/api" ||
+            requestPathname.startsWith("/api/")
+          ) {
+            return false;
+          }
+          const assetUrl = new URL(request.url);
+          assetUrl.pathname = requestPathname;
+          assetUrl.search = "";
+          const response = await env.ASSETS.fetch(new Request(assetUrl, request));
+          return response.status === 404 ? false : response;
+        },
       };
 
       const result = await runPagesRequest(request, deps);

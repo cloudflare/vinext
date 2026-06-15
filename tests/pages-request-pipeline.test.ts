@@ -582,6 +582,105 @@ describe("serveStaticFile", () => {
     expect(result.response.headers.get("Location")).toBe("/elsewhere");
     expect(serveStaticFile).not.toHaveBeenCalled();
   });
+
+  // Ported from Next.js: test/e2e/i18n-ignore-rewrite-source-locale/rewrites.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-ignore-rewrite-source-locale/rewrites.test.ts
+  it("re-enters filesystem matching after a locale:false beforeFiles rewrite", async () => {
+    const serveStaticFile = vi.fn(async (pathname: string) => pathname === "/file.txt");
+    const result = await runPagesRequest(
+      makeRequest("/sv/rewrite-files/file.txt"),
+      baseDeps({
+        i18nConfig: { locales: ["en", "sv", "nl"], defaultLocale: "en" },
+        configRewrites: {
+          beforeFiles: [
+            {
+              source: "/:locale/rewrite-files/:path*",
+              destination: "/:path*",
+              locale: false,
+            },
+          ],
+          afterFiles: [],
+          fallback: [],
+        },
+        serveStaticFile,
+      }),
+    );
+
+    expect(result.type).toBe("handled");
+    expect(serveStaticFile).toHaveBeenNthCalledWith(1, "/sv/rewrite-files/file.txt", {});
+    expect(serveStaticFile).toHaveBeenNthCalledWith(
+      2,
+      "/file.txt",
+      {},
+      {
+        afterBeforeFilesRewrite: true,
+      },
+    );
+  });
+
+  it("returns a Worker-style asset response after a beforeFiles rewrite", async () => {
+    const serveStaticFile = vi.fn(async (pathname: string) =>
+      pathname === "/file.txt"
+        ? new Response("worker asset", { headers: { "content-type": "text/plain" } })
+        : false,
+    );
+    const result = await runPagesRequest(
+      makeRequest("/en/rewrite-files/file.txt"),
+      baseDeps({
+        i18nConfig: { locales: ["en", "sv", "nl"], defaultLocale: "en" },
+        configRewrites: {
+          beforeFiles: [
+            {
+              source: "/:locale/rewrite-files/:path*",
+              destination: "/:path*",
+              locale: false,
+            },
+          ],
+          afterFiles: [],
+          fallback: [],
+        },
+        serveStaticFile,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(200);
+    await expect(result.response.text()).resolves.toBe("worker asset");
+  });
+
+  it("continues rewritten API and page routing when no filesystem target exists", async () => {
+    const serveStaticFile = vi.fn(async () => false);
+    const handleApi = vi.fn(async () => new Response("api"));
+    const renderPage = makeRenderPage(200, "page");
+    const rewrites = {
+      beforeFiles: [
+        { source: "/rewrite-api/:path*", destination: "/api/:path*" },
+        { source: "/rewrite-page", destination: "/about" },
+      ],
+      afterFiles: [],
+      fallback: [],
+    };
+
+    const apiResult = await runPagesRequest(
+      makeRequest("/rewrite-api/hello"),
+      baseDeps({ configRewrites: rewrites, serveStaticFile, handleApi, renderPage }),
+    );
+    const pageResult = await runPagesRequest(
+      makeRequest("/rewrite-page"),
+      baseDeps({ configRewrites: rewrites, serveStaticFile, handleApi, renderPage }),
+    );
+
+    expect(apiResult.type).toBe("response");
+    expect(handleApi).toHaveBeenCalledWith(expect.any(Request), "/api/hello", null);
+    expect(pageResult.type).toBe("response");
+    expect(renderPage).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/about",
+      undefined,
+      expect.any(Headers),
+    );
+  });
 });
 
 // 13. afterFiles rewrite: dynamic page match is re-queried

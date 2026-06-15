@@ -113,16 +113,18 @@ export type PagesPipelineDeps = {
    */
   proxyExternal?: ((currentRequest: Request, externalUrl: string) => Promise<Response>) | null;
   /**
-   * Optional public-directory static file server (Node prod only).
+   * Optional filesystem/static-asset probe supplied by each runtime adapter.
    * Called post-middleware (so middleware can intercept/redirect public files) with the
    * original basePath-stripped pathname and the staged middleware response headers.
-   * The callback writes the file to its own output (Node `res`) and resolves `true` when
-   * it served the request; the pipeline then returns `{ type: "handled" }`. Resolves `false`
-   * to fall through to rewrites/render. Worker/dev adapters omit this — their public files
-   * are served by the asset binding / Vite respectively.
+   * Node may write directly to `res` and return true; dev/Workers return a Response.
+   * Resolves false to continue through rewrites, API routes, and page rendering.
    */
   serveStaticFile?:
-    | ((requestPathname: string, stagedHeaders: HeaderRecord) => Promise<boolean>)
+    | ((
+        requestPathname: string,
+        stagedHeaders: HeaderRecord,
+        options?: { afterBeforeFilesRewrite: boolean },
+      ) => Promise<boolean | Response>)
     | null;
 };
 
@@ -399,14 +401,19 @@ export async function runPagesRequest(
     };
   }
 
-  // Step 8b: Public-directory static files (post-middleware, Node prod only).
+  // Step 8b: Public-directory static files (post-middleware).
   // Served after middleware so middleware can intercept/redirect public files, and
   // before rewrites so a real public file wins over a fallback rewrite — matching the
-  // pre-refactor prod-server ordering. Only Node supplies `serveStaticFile`; the
-  // callback owns the path guards (skip "/", "/api/", and the asset-prefix dir) and
-  // writes directly to Node `res`, so a `true` result means the response is already sent.
+  // pre-refactor prod-server ordering. Adapter callbacks own their path guards;
+  // a true result means Node already wrote the response.
   if (deps.serveStaticFile) {
     const served = await deps.serveStaticFile(pathname, middlewareHeaders);
+    if (served instanceof Response) {
+      return {
+        type: "response",
+        response: mergeHeaders(served, middlewareHeaders, middlewareStatus),
+      };
+    }
     if (served) {
       return { type: "handled" };
     }
@@ -431,6 +438,26 @@ export async function runPagesRequest(
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
       configRewriteFired = true;
+    }
+  }
+
+  // beforeFiles destinations re-enter filesystem matching before API/page
+  // routing. This is how locale:false rewrites can target public files and
+  // built static assets while preserving API/page precedence when no file
+  // exists. Node writes static responses directly and returns true; Workers
+  // return the ASSETS response; dev serves public files through its adapter.
+  if (configRewriteFired && deps.serveStaticFile) {
+    const served = await deps.serveStaticFile(resolvedPathname, middlewareHeaders, {
+      afterBeforeFilesRewrite: true,
+    });
+    if (served instanceof Response) {
+      return {
+        type: "response",
+        response: mergeHeaders(served, middlewareHeaders, middlewareStatus),
+      };
+    }
+    if (served) {
+      return { type: "handled" };
     }
   }
 

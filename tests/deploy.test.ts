@@ -1020,6 +1020,13 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("env.IMAGES");
   });
 
+  it("re-enters the ASSETS binding after beforeFiles rewrites", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("serveStaticFile: async");
+    expect(content).toContain("env.ASSETS.fetch(new Request(assetUrl, request))");
+    expect(content).toContain("response.status === 404 ? false : response");
+  });
+
   it("exports every vinext subpath imported by generated worker entries", () => {
     const exportsMap = readVinextPackageExports();
     const generatedImports = [

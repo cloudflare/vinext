@@ -39,6 +39,7 @@ import {
 } from "./server/image-optimization.js";
 
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
+import { CONTENT_TYPES } from "./server/static-file-cache.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
@@ -113,7 +114,11 @@ import {
   pagesRouteHasPriorityOverAppRoute,
   validateHybridRouteConflicts,
 } from "./server/hybrid-route-priority.js";
-import { proxyExternalRequest } from "./config/config-matchers.js";
+import {
+  matchRewrite,
+  proxyExternalRequest,
+  requestContextFromRequest,
+} from "./config/config-matchers.js";
 import { detectPackageManager } from "./utils/project.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
 import { ASSET_PREFIX_URL_DIR, resolveAssetsDir } from "./utils/asset-prefix.js";
@@ -3663,7 +3668,34 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // Skip requests for files with extensions (static assets) after
               // trailing-slash canonicalization so file-looking dynamic routes
               // like /catch-all/hello.world/ still get the Next.js redirect.
-              if (pathname.includes(".") && !pathname.endsWith(".html")) {
+              const rewriteContextHeaders = new Headers();
+              for (const [key, value] of Object.entries(req.headers)) {
+                if (value === undefined || key.startsWith(":")) continue;
+                if (Array.isArray(value)) {
+                  for (const item of value) rewriteContextHeaders.append(key, item);
+                } else {
+                  rewriteContextHeaders.set(key, value);
+                }
+              }
+              const rewriteContextRequest = new Request(
+                new URL(url, `http://${req.headers.host ?? "localhost"}`),
+                {
+                  headers: rewriteContextHeaders,
+                },
+              );
+              const rewriteRequestContext = requestContextFromRequest(rewriteContextRequest);
+              const filePathMatchesRewrite = (nextConfig?.rewrites.beforeFiles ?? []).some(
+                (rewrite) =>
+                  matchRewrite(pathname, [rewrite], rewriteRequestContext, {
+                    basePath: bp,
+                    hadBasePath: true,
+                  }) !== null,
+              );
+              if (
+                pathname.includes(".") &&
+                !pathname.endsWith(".html") &&
+                !filePathMatchesRewrite
+              ) {
                 return next();
               }
 
@@ -3836,6 +3868,47 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   const reqWithBody = new Request(new URL(url, requestOrigin), externalInit);
                   return proxyExternalRequest(reqWithBody, externalUrl);
                 },
+                serveStaticFile: async (requestPathname, _stagedHeaders, options) => {
+                  if (
+                    !options?.afterBeforeFilesRewrite ||
+                    (req.method !== "GET" && req.method !== "HEAD") ||
+                    requestPathname === "/" ||
+                    requestPathname === "/api" ||
+                    requestPathname.startsWith("/api/")
+                  ) {
+                    return false;
+                  }
+
+                  let decodedPathname: string;
+                  try {
+                    decodedPathname = decodeURIComponent(requestPathname);
+                  } catch {
+                    return false;
+                  }
+
+                  const publicDir = path.resolve(root, "public");
+                  const publicFile = path.resolve(publicDir, `.${decodedPathname}`);
+                  if (
+                    publicFile !== publicDir &&
+                    !publicFile.startsWith(`${publicDir}${path.sep}`)
+                  ) {
+                    return false;
+                  }
+
+                  try {
+                    const stat = await fs.promises.stat(publicFile);
+                    if (!stat.isFile()) return false;
+                    const body = await fs.promises.readFile(publicFile);
+                    return new Response(body, {
+                      headers: {
+                        "Content-Type":
+                          CONTENT_TYPES[path.extname(publicFile)] ?? "application/octet-stream",
+                      },
+                    });
+                  } catch {
+                    return false;
+                  }
+                },
                 // handleApi and renderPage are omitted — pipeline emits intents
               };
 
@@ -3850,9 +3923,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 return next();
               }
 
-              // The dev adapter never supplies `serveStaticFile` (Vite serves public
-              // files), so the pipeline never returns `handled` here. Narrow it out so
-              // the render/api branches below see only the intent variants.
+              // The dev static adapter returns a Response rather than writing directly,
+              // so `handled` remains a Node-production-only result here.
               if (pipelineResult.type === "handled") {
                 return;
               }
