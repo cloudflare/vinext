@@ -162,7 +162,7 @@ export function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array>
       };
       const onData = (chunk: Buffer) => {
         if (cancelled) return;
-        controller.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+        controller.enqueue(new Uint8Array(chunk));
         if ((controller.desiredSize ?? 0) <= 0) req.pause();
       };
       const onEnd = () => {

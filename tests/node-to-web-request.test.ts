@@ -139,6 +139,23 @@ describe("nodeToWebRequest", () => {
     await reader.cancel();
   });
 
+  it("owns queued bytes when Node reuses a pooled chunk buffer", async () => {
+    const request = new Readable({ read() {} });
+    const body = readNodeStream(request as IncomingMessage);
+    const reader = body.getReader();
+    const pooledChunk = Buffer.allocUnsafe(8);
+    pooledChunk.write("original");
+
+    request.emit("data", pooledChunk);
+    pooledChunk.write("mutated!");
+    request.emit("end");
+
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+    expect(Buffer.from(first.value ?? []).toString()).toBe("original");
+    expect(await reader.read()).toEqual({ done: true, value: undefined });
+  });
+
   it("cancels without destroying the Node request and drains the remainder", async () => {
     const request = new Readable({
       read() {},
