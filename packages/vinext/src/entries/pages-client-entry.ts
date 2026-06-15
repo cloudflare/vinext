@@ -97,19 +97,6 @@ export async function generateClientEntry(
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
-// Statically import next/router as the very first vinext shim so that
-// (a) installWindowNext runs at top-level — \`window.next.router\` is
-//     available to test harnesses and third-party scripts BEFORE
-//     hydrate() resolves (see .nextjs-ref/packages/next/src/client/next.ts
-//     line 13, which also sets window.next as a top-level side effect),
-// and (b) the popstate handler is registered before
-//     installPagesRouterRuntime() runs, removing the race window where a
-//     popstate event could fire between hydration and runtime install.
-//
-// Mirrors Next.js's bootstrap order: client/next.ts statically imports
-// from './' before calling initialize/hydrate, so window.next is set up
-// before any async work.
-import Router, { wrapWithRouterContext } from "next/router";
 
 const pageLoaders = {
 ${loaderEntries.join(",\n")}
@@ -168,6 +155,12 @@ if (nextDataElement?.textContent) {
   window.__VINEXT_LOCALES__ = window.__NEXT_DATA__.locales;
   window.__VINEXT_DEFAULT_LOCALE__ = window.__NEXT_DATA__.defaultLocale;
 }
+
+// The router reads __NEXT_DATA__ while initializing its readiness state, so
+// canonical JSON must be parsed before this module executes.
+const { default: Router, wrapWithRouterContext, _initializePagesRouterReadyFromNextData } =
+  await import("next/router");
+_initializePagesRouterReadyFromNextData(window.__NEXT_DATA__);
 
 async function hydrate() {
   const nextData = window.__NEXT_DATA__;

@@ -1214,6 +1214,15 @@ function markPagesRouterReady(): boolean {
   return true;
 }
 
+function initializePagesRouterReadyFromNextData(nextData: VinextNextData): void {
+  if (typeof window === "undefined") return;
+  routerRuntimeState.pagesRouterReady = getPagesNavigationIsReadyFromSerializedState(
+    nextData.page,
+    window.location.search,
+    nextData,
+  );
+}
+
 function markPagesRouterHydrated(): void {
   if (typeof window === "undefined" || window.__NEXT_HYDRATED === true) return;
 
@@ -3064,5 +3073,6 @@ const _PAGES_NAVIGATION_ACCESSOR_KEY = Symbol.for(
 // Internal export for unit tests that need to drive the readiness transition
 // without relying on React effect timing in a Node test environment.
 export { markPagesRouterReady as _markPagesRouterReady };
+export { initializePagesRouterReadyFromNextData as _initializePagesRouterReadyFromNextData };
 
 export default Router;

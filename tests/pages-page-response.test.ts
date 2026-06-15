@@ -178,8 +178,16 @@ describe("pages page response", () => {
     expect(html).toContain("<div>live-body</div>");
     expect(html).toContain('<meta name="test-head" content="1" />');
     expect(html).toContain('<link rel="stylesheet" href="/font.css" />');
-    expect(html).toContain("window.__NEXT_DATA__");
-    expect(html).toContain("__VINEXT_LOCALE__");
+    expect(html).toContain('<script id="__NEXT_DATA__" type="application/json">');
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
+    expect(nextDataMatch).not.toBeNull();
+    expect(JSON.parse(nextDataMatch![1]!)).toMatchObject({
+      locale: "en",
+      locales: ["en", "fr"],
+      defaultLocale: "en",
+    });
 
     expect(common.clearSsrContext).toHaveBeenCalledTimes(1);
     expect(common.renderDocumentToString).toHaveBeenCalledTimes(1);
@@ -703,7 +711,7 @@ describe("pages page response", () => {
 
     const html = await response.text();
     expect(html).toContain("live-body");
-    expect(html).toContain("window.__NEXT_DATA__");
+    expect(html).toContain('<script id="__NEXT_DATA__" type="application/json">');
   });
 
   it("buffers the response for Google-PageRenderer and attaches an ETag", async () => {
