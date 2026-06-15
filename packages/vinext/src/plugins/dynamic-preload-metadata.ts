@@ -3,6 +3,7 @@ import { parseAst } from "vite";
 import MagicString from "magic-string";
 import path from "node:path";
 import { isUnknownRecord as isRecord } from "../utils/record.js";
+import { hasTrailingComma } from "../utils/has-trailing-comma.js";
 import { relativeWithinRoot, tryRealpathSync } from "../build/ssr-manifest.js";
 
 type AstRecord = Record<string, unknown>;
@@ -438,10 +439,6 @@ function appendObjectProperty(
   return true;
 }
 
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
-}
-
 function insertSecondOptionsArgument(
   output: MagicString,
   code: string,
@@ -461,14 +458,14 @@ function insertSecondOptionsArgument(
   // dropping it. The call's close paren is always past the whole argument list.
   const closeParen = callEnd - 1;
 
-  // Decide the separator with a COMMENT-AWARE trailing-comma check: strip
-  // comments from the gap between the first argument and the close paren, then
-  // look for a real trailing comma. A pre-existing trailing comma
-  // (`dynamic(loader,)`) must NOT get a second one (`,,` is a syntax error), and
-  // a comma living inside a comment must NOT be mistaken for a real one (the old
-  // substring scan overwrote — and thus ate — such comments).
-  const between = stripComments(code.slice(firstArgEnd, closeParen)).trimEnd();
-  const separator = between.endsWith(",") ? " " : ", ";
+  // Decide the separator with a COMMENT-AWARE trailing-comma check:
+  // `hasTrailingComma` inspects only the gap between the first argument and the
+  // close paren, ignoring trailing whitespace/comments (and never treating a
+  // `//`/`/*` inside a string literal as a comment). A pre-existing trailing
+  // comma (`dynamic(loader,)`) must NOT get a second one (`,,` is a syntax
+  // error), and a comma living inside a comment must NOT be mistaken for a real
+  // one (the old substring scan overwrote — and thus ate — such comments).
+  const separator = hasTrailingComma(code.slice(firstArgEnd, closeParen)) ? " " : ", ";
   output.appendLeft(closeParen, `${separator}${optionsLiteral}`);
   return true;
 }
