@@ -137,12 +137,11 @@ type DocumentRenderPageInput = {
  *                  the head nodes returned by `getInitialProps` (forward them to
  *                  `setDocumentInitialHead()` — do NOT call
  *                  `callDocumentGetInitialProps()` as well).
- *   - `consumed` — `getInitialProps` WAS invoked but no body was produced
- *                  (it never called `renderPage`, returned no `{ html }`, or
- *                  threw). Callers must NOT re-invoke `getInitialProps` (that
- *                  would call it a second time) — render the streaming body,
- *                  spread `docProps` (possibly empty) onto `<Document>`, and
- *                  forward `head` to `setDocumentInitialHead()`.
+ *   - `consumed` — `getInitialProps` WAS invoked but never called `renderPage`.
+ *                  Callers must NOT re-invoke `getInitialProps` (that would
+ *                  call it a second time) — render the streaming body, spread
+ *                  `docProps` onto `<Document>`, and forward `head` to
+ *                  `setDocumentInitialHead()`.
  */
 type RunDocumentRenderPageResult =
   | { status: "skipped" }
@@ -167,9 +166,8 @@ type RunDocumentRenderPageResult =
  *
  * `getInitialProps` is invoked at most once here. When this returns `consumed`
  * or `rendered`, callers MUST treat that as the single invocation and must not
- * call `loadUserDocumentInitialProps` (which would invoke it again — and, for a
- * throwing override, surface the error as a 500 rather than the clean fallback
- * this contract guarantees).
+ * call `loadUserDocumentInitialProps` again. Errors intentionally propagate to
+ * the Pages Router's normal error-page pipeline, matching Next.js.
  *
  * @see .nextjs-ref/packages/next/src/server/render.tsx (search `renderPage`)
  */
@@ -207,33 +205,25 @@ export async function runDocumentRenderPage(
     return { html, head: [] };
   };
 
-  let docInitialProps: DocumentInitialProps;
-  try {
-    docInitialProps = await DocCtor.getInitialProps({
-      // Minimal `DocumentContext` shim — vinext does not yet thread the full
-      // context (req/res/AppTree/locale). Subclasses that just forward to
-      // `ctx.renderPage` (the styled-components / emotion pattern) work
-      // without those fields.
-      renderPage,
-      defaultGetInitialProps: async (ctx: { renderPage?: typeof renderPage }) => {
-        // Mirrors Next.js's `ctx.defaultGetInitialProps`: wrap App in an
-        // identity enhancer so renderPage is still invoked even when a user
-        // doesn't pass any enhancers themselves.
-        const inner = ctx.renderPage ?? renderPage;
-        const result = await inner({
-          // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-          enhanceApp: (App) => (props: any) => React.createElement(App, props),
-        });
-        return { html: result.html, head: result.head ?? [], styles: undefined };
-      },
-      ...input.context,
-    });
-  } catch (err) {
-    // Falls back cleanly: render the streaming body and a bare Document.
-    // `getInitialProps` was already invoked, so the caller must not re-call it.
-    console.error("[vinext] _document.getInitialProps() threw:", err);
-    return { status: "consumed", docProps: {}, head: [] };
-  }
+  const docInitialProps = await DocCtor.getInitialProps({
+    // Minimal `DocumentContext` shim — vinext does not yet thread the full
+    // context (req/res/AppTree/locale). Subclasses that just forward to
+    // `ctx.renderPage` (the styled-components / emotion pattern) work
+    // without those fields.
+    renderPage,
+    defaultGetInitialProps: async (ctx: { renderPage?: typeof renderPage }) => {
+      // Mirrors Next.js's `ctx.defaultGetInitialProps`: wrap App in an
+      // identity enhancer so renderPage is still invoked even when a user
+      // doesn't pass any enhancers themselves.
+      const inner = ctx.renderPage ?? renderPage;
+      const result = await inner({
+        // oxlint-disable-next-line @typescript-eslint/no-explicit-any
+        enhanceApp: (App) => (props: any) => React.createElement(App, props),
+      });
+      return { html: result.html, head: result.head ?? [], styles: undefined };
+    },
+    ...input.context,
+  });
 
   // Strip the contract fields the pipeline consumes itself so the rest can be
   // spread onto `<Document>` like Next.js does. `html` is the body; `head`/

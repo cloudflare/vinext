@@ -607,11 +607,8 @@ describe("pages page response", () => {
     expect(html).toContain("<p>page</p>");
   });
 
-  // Edge case: a user `getInitialProps` that throws must not crash the render —
-  // the pipeline logs and falls back to the normal streaming page render.
-  it("falls back to streaming render when _document.getInitialProps throws", async () => {
+  it("propagates _document.getInitialProps errors without rendering the page", async () => {
     const common = createCommonOptions();
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     function MyDocument() {
       return null;
@@ -622,24 +619,15 @@ describe("pages page response", () => {
 
     const enhancePageElement = vi.fn(() => React.createElement("p", null, "enhanced"));
 
-    const response = await renderPagesPageResponse({
-      ...common.options,
-      DocumentComponent: MyDocument as unknown as React.ComponentType,
-      enhancePageElement,
-    });
+    await expect(
+      renderPagesPageResponse({
+        ...common.options,
+        DocumentComponent: MyDocument as unknown as React.ComponentType,
+        enhancePageElement,
+      }),
+    ).rejects.toThrow("boom");
 
-    const html = await response.text();
-    // Fell back to the default streaming render (the common mock body), not
-    // the enhanced renderPage output.
-    expect(html).toContain("live-body");
-    expect(html).not.toContain("enhanced");
-    // enhancePageElement is only reached inside renderPage, which never ran.
     expect(enhancePageElement).not.toHaveBeenCalled();
-    expect(errorSpy).toHaveBeenCalledWith(
-      "[vinext] _document.getInitialProps() threw:",
-      expect.any(Error),
-    );
-    errorSpy.mockRestore();
   });
 
   // Edge case: a user `getInitialProps` that never calls `renderPage` (it only
@@ -1263,12 +1251,8 @@ describe("pages page response", () => {
     }
   });
 
-  // Edge case: `renderPage` is called but the underlying stream render throws.
-  // The error propagates out of `getInitialProps`, is caught by the shared
-  // helper, and the pipeline falls back to the normal streaming render.
-  it("falls back to streaming render when renderPage's stream render throws", async () => {
+  it("propagates renderPage errors without a fallback render", async () => {
     const common = createCommonOptions();
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     function MyDocument() {
       return null;
@@ -1284,30 +1268,90 @@ describe("pages page response", () => {
 
     const enhancePageElement = vi.fn(() => React.createElement("p", null, "enhanced"));
 
-    let renderCall = 0;
-    const response = await renderPagesPageResponse({
-      ...common.options,
-      DocumentComponent: MyDocument as unknown as React.ComponentType,
-      enhancePageElement,
-      renderToReadableStream: vi.fn(async () => {
-        renderCall += 1;
-        // First call is renderPage's render (throw); a later fallback call must
-        // succeed so the page still renders.
-        if (renderCall === 1) throw new Error("stream render failed");
-        return createStream(["<div>live-body</div>"]);
-      }),
+    const renderToReadableStream = vi.fn(async () => {
+      throw new Error("stream render failed");
     });
+    await expect(
+      renderPagesPageResponse({
+        ...common.options,
+        DocumentComponent: MyDocument as unknown as React.ComponentType,
+        enhancePageElement,
+        renderToReadableStream,
+      }),
+    ).rejects.toThrow("stream render failed");
 
-    const html = await response.text();
-    // renderPage was reached (enhancePageElement ran) but the throw bubbled up
-    // and the pipeline fell back to the normal streaming render.
     expect(enhancePageElement).toHaveBeenCalledTimes(1);
-    expect(html).toContain("live-body");
-    expect(html).not.toContain("enhanced");
-    expect(errorSpy).toHaveBeenCalledWith(
-      "[vinext] _document.getInitialProps() threw:",
-      expect.any(Error),
+    expect(renderToReadableStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates a throwing enhancer without rendering the page", async () => {
+    const common = createCommonOptions();
+
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      renderPage: (enhancer: (Comp: React.ComponentType) => React.ComponentType) => Promise<{
+        html: string;
+      }>;
+    }) =>
+      ctx.renderPage(() => {
+        throw new Error("enhancer failed");
+      });
+
+    const enhancePageElement = vi.fn(
+      (opts: {
+        enhanceApp?: (App: React.ComponentType<{ children?: React.ReactNode }>) => unknown;
+        enhanceComponent?: (Comp: React.ComponentType<unknown>) => unknown;
+      }) => {
+        opts.enhanceComponent?.(() => null);
+        return React.createElement("p", null, "unreachable");
+      },
     );
-    errorSpy.mockRestore();
+    const renderToReadableStream = vi.fn(async () => createStream(["unreachable"]));
+
+    await expect(
+      renderPagesPageResponse({
+        ...common.options,
+        DocumentComponent: MyDocument as unknown as React.ComponentType,
+        enhancePageElement,
+        renderToReadableStream,
+      }),
+    ).rejects.toThrow("enhancer failed");
+
+    expect(enhancePageElement).toHaveBeenCalledTimes(1);
+    expect(renderToReadableStream).not.toHaveBeenCalled();
+  });
+
+  it("propagates a throwing page after one renderer invocation", async () => {
+    const common = createCommonOptions();
+
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      renderPage: () => Promise<{ html: string }>;
+    }) => ctx.renderPage();
+
+    function ThrowingPage(): React.ReactNode {
+      throw new Error("page failed");
+    }
+    const enhancePageElement = vi.fn(() => React.createElement(ThrowingPage));
+    const reactDomServer = await import("react-dom/server.edge");
+    const renderToReadableStream = vi.fn(async (element: React.ReactNode) =>
+      reactDomServer.renderToReadableStream(element as React.ReactElement),
+    );
+
+    await expect(
+      renderPagesPageResponse({
+        ...common.options,
+        DocumentComponent: MyDocument as unknown as React.ComponentType,
+        enhancePageElement,
+        renderToReadableStream,
+      }),
+    ).rejects.toThrow("page failed");
+
+    expect(enhancePageElement).toHaveBeenCalledTimes(1);
+    expect(renderToReadableStream).toHaveBeenCalledTimes(1);
   });
 });

@@ -5323,27 +5323,68 @@ describe("Pages _document renderPage enhancers", () => {
 `,
     );
     await fsp.writeFile(
+      path.join(fixtureRoot, "render-counts.ts"),
+      `export const renderCounts = { enhancer: 0, page: 0 };
+`,
+    );
+    await fsp.writeFile(
       path.join(fixtureRoot, "pages", "index.tsx"),
-      `export default function Page() {
+      `import { renderCounts } from "../render-counts";
+export function getServerSideProps({ query }: any) {
+  renderCounts.enhancer = 0;
+  renderCounts.page = 0;
+  return { props: { throwPage: query.throwPage === "true" } };
+}
+export default function Page({ throwPage }: { throwPage: boolean }) {
+  if (throwPage) {
+    renderCounts.page += 1;
+    throw new Error("page render failed");
+  }
   return <p id="page-content">PAGE</p>;
 }
 `,
     );
     await fsp.writeFile(
+      path.join(fixtureRoot, "pages", "_error.tsx"),
+      `import { renderCounts } from "../render-counts";
+function ErrorPage({ message }: { message: string }) {
+  return (
+    <div id="error-page">
+      <p id="error-message">{message}</p>
+      <p id="enhancer-render-count">{renderCounts.enhancer}</p>
+      <p id="page-render-count">{renderCounts.page}</p>
+    </div>
+  );
+}
+ErrorPage.getInitialProps = ({ err }: any) => ({
+  message: err instanceof Error ? err.message : String(err),
+});
+export default ErrorPage;
+`,
+    );
+    await fsp.writeFile(
       path.join(fixtureRoot, "pages", "_document.tsx"),
       `import Document, { Html, Head, Main, NextScript } from "next/document";
+import { renderCounts } from "../render-counts";
 export default class CustomDocument extends Document {
   static async getInitialProps(ctx: any) {
+    if (!ctx.renderPage) return Document.getInitialProps(ctx);
     const enhanceComponent = (Component: any) => (props: any) => (
       <div><span id="render-page-enhance-component">RENDERED</span><Component {...props} /></div>
     );
     const enhanceApp = (App: any) => (props: any) => (
       <div><span id="render-page-enhance-app">RENDERED</span><App {...props} /></div>
     );
+    const throwEnhancer = (_Component: any) => {
+      renderCounts.enhancer += 1;
+      throw new Error("enhancer render failed");
+    };
     let options;
-    if (ctx.query.withEnhancer) {
+    if (ctx.pathname !== "/_error" && ctx.query?.throwEnhancer) {
+      options = throwEnhancer;
+    } else if (ctx.query?.withEnhancer) {
       options = enhanceComponent;
-    } else if (ctx.query.withEnhanceComponent || ctx.query.withEnhanceApp) {
+    } else if (ctx.query?.withEnhanceComponent || ctx.query?.withEnhanceApp) {
       options = {
         enhanceComponent: ctx.query.withEnhanceComponent ? enhanceComponent : undefined,
         enhanceApp: ctx.query.withEnhanceApp ? enhanceApp : undefined,
@@ -5397,6 +5438,35 @@ export default class CustomDocument extends Document {
       }
     }
   });
+
+  it.each(["dev", "prod"] as const)(
+    "routes throwing renderPage enhancers through the error page once in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/?throwEnhancer=true`);
+      expect(response.status).toBe(500);
+      const html = await response.text();
+      expect(html).toContain('id="error-page"');
+      expect(html).toContain('id="error-message">enhancer render failed');
+      expect(html).toContain('id="enhancer-render-count">1');
+      expect(html).toContain('id="page-render-count">0');
+      expect(html).not.toContain('id="page-content"');
+    },
+  );
+
+  it.each(["dev", "prod"] as const)(
+    "routes throwing page renders through the error page once in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/?throwPage=true`);
+      expect(response.status).toBe(500);
+      const html = await response.text();
+      expect(html).toContain('id="error-page"');
+      expect(html).toContain('id="error-message">page render failed');
+      expect(html).toContain('id="enhancer-render-count">0');
+      expect(html).not.toContain('id="page-content"');
+    },
+  );
 });
 
 describe("Production Pages Router SSR streaming", () => {
