@@ -1189,8 +1189,30 @@ function getPathnameAndQuery(): {
   }
   const query = { ...searchQuery, ...routeQuery };
   // asPath uses the resolved browser path, not the route pattern
-  const asPath = resolvedPath + window.location.search + window.location.hash;
+  const asPath =
+    getCurrentHistoryAsPath() ?? resolvedPath + window.location.search + window.location.hash;
   return { pathname, query, asPath };
+}
+
+function getCurrentHistoryAsPath(): string | null {
+  const state = window.history?.state;
+  if (!isNextRouterState(state) || typeof state.as !== "string") return null;
+
+  try {
+    const browserUrl = new URL(window.location.href);
+    const stateUrl = new URL(
+      toBrowserNavigationHref(state.as, window.location.href, __basePath),
+      window.location.href,
+    );
+    if (stateUrl.pathname !== browserUrl.pathname || stateUrl.search !== browserUrl.search) {
+      return null;
+    }
+    const stateAs = stripHash(state.as);
+    const visibleAs = `${stripBasePath(window.location.pathname, __basePath)}${window.location.search}`;
+    return `${stateAs || visibleAs}${window.location.hash}`;
+  } catch {
+    return null;
+  }
 }
 
 export function getPagesNavigationIsReadyFromSerializedState(

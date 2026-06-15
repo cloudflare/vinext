@@ -2637,6 +2637,123 @@ describe("window.next debug global", () => {
     },
   );
 
+  it.each(["push", "replace"] as const)(
+    "preserves a bare trailing question mark in router.asPath after %s",
+    async (method) => {
+      const previousWindow = (globalThis as any).window;
+      const win: any = {
+        location: {
+          pathname: "/rewrite-navigation/0",
+          search: "",
+          hash: "",
+          href: "http://localhost/rewrite-navigation/0",
+          origin: "http://localhost",
+        },
+        history: {
+          state: null as unknown,
+          pushState(state: unknown, _title: string, url: string) {
+            this.state = state;
+            const nextUrl = new URL(url, win.location.href);
+            win.location.pathname = nextUrl.pathname;
+            win.location.search = nextUrl.search;
+            win.location.hash = nextUrl.hash;
+            win.location.href = nextUrl.href;
+          },
+          replaceState(state: unknown, _title: string, url?: string) {
+            this.state = state;
+            if (url === undefined) return;
+            const nextUrl = new URL(url, win.location.href);
+            win.location.pathname = nextUrl.pathname;
+            win.location.search = nextUrl.search;
+            win.location.hash = nextUrl.hash;
+            win.location.href = nextUrl.href;
+          },
+        },
+        addEventListener() {},
+        dispatchEvent() {},
+        scrollTo() {},
+        scrollX: 0,
+        scrollY: 0,
+        __NEXT_DATA__: {
+          page: "/rewrite-navigation/[id]/destination",
+          query: { id: "0" },
+          isFallback: false,
+        },
+      };
+      (globalThis as any).window = win;
+
+      try {
+        vi.resetModules();
+        const routerModule = await import("../packages/vinext/src/shims/router.js");
+        await routerModule.default[method]({ search: "?" }, undefined, { shallow: true });
+
+        expect(win.location.search).toBe("");
+        expect(win.history.state.as).toBe("/rewrite-navigation/0?");
+        expect(routerModule.default.asPath).toBe("/rewrite-navigation/0?");
+      } finally {
+        if (previousWindow === undefined) delete (globalThis as any).window;
+        else (globalThis as any).window = previousWindow;
+        vi.resetModules();
+      }
+    },
+  );
+
+  it.each([
+    ["/", "", "/#section"],
+    ["/posts", "?tab=1", "/posts?tab=1#section"],
+  ])(
+    "preserves the visible path and search in router.asPath after hash-only navigation from %s%s",
+    async (pathname, search, expectedAsPath) => {
+      const previousWindow = (globalThis as any).window;
+      const win: any = {
+        location: {
+          pathname,
+          search,
+          hash: "",
+          href: `http://localhost${pathname}${search}`,
+          origin: "http://localhost",
+        },
+        history: {
+          state: null as unknown,
+          pushState(state: unknown, _title: string, url: string) {
+            this.state = state;
+            const nextUrl = new URL(url, win.location.href);
+            win.location.pathname = nextUrl.pathname;
+            win.location.search = nextUrl.search;
+            win.location.hash = nextUrl.hash;
+            win.location.href = nextUrl.href;
+          },
+          replaceState() {},
+        },
+        addEventListener() {},
+        dispatchEvent() {},
+        scrollTo() {},
+        scrollX: 0,
+        scrollY: 0,
+        __NEXT_DATA__: { page: pathname, query: {}, isFallback: false },
+      };
+      (globalThis as any).window = win;
+      (globalThis as any).document = {
+        getElementById: vi.fn(() => null),
+        getElementsByName: vi.fn(() => []),
+      };
+
+      try {
+        vi.resetModules();
+        const routerModule = await import("../packages/vinext/src/shims/router.js");
+        await routerModule.default.push("#section");
+
+        expect(win.history.state.as).toBe("");
+        expect(routerModule.default.asPath).toBe(expectedAsPath);
+      } finally {
+        if (previousWindow === undefined) delete (globalThis as any).window;
+        else (globalThis as any).window = previousWindow;
+        delete (globalThis as any).document;
+        vi.resetModules();
+      }
+    },
+  );
+
   it("query-only push replaces the current locale under basePath", async () => {
     const previousWindow = (globalThis as any).window;
     const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;

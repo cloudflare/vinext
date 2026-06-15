@@ -100,6 +100,9 @@ test.describe("Client-side navigation", () => {
     await expect(page).toHaveURL(`${BASE}/rewrite-navigation/0?id=3`);
     await expect(page.locator('[data-testid="as-path"]')).toHaveText("/rewrite-navigation/0?id=3");
     await expect(page.locator('[data-testid="query-id"]')).toHaveText("0");
+    await expect(page.locator('[data-testid="navigate-url"]')).toHaveText(
+      "/rewrite-navigation/0?id=3",
+    );
   });
 
   test("UrlObject search overrides query and preserves hash on rewritten paths", async ({
@@ -114,6 +117,32 @@ test.describe("Client-side navigation", () => {
       "/rewrite-navigation/0?id=6#result",
     );
     await expect(page.locator('[data-testid="query-id"]')).toHaveText("0");
+  });
+
+  test("bare UrlObject search remains visible in router.asPath", async ({ page }) => {
+    await page.goto(`${BASE}/rewrite-navigation/0?existing=1`);
+    await waitForHydration(page);
+
+    await page.click('[data-testid="bare-search-push"]');
+    await expect(page).toHaveURL(`${BASE}/rewrite-navigation/0?`);
+    await expect(page.locator('[data-testid="as-path"]')).toHaveText("/rewrite-navigation/0?");
+    expect(await page.evaluate(() => window.location.search)).toBe("");
+    expect(await page.evaluate(() => (window as any).next.router.asPath)).toBe(
+      "/rewrite-navigation/0?",
+    );
+  });
+
+  test("bare Link query remains visible in router.asPath", async ({ page }) => {
+    await page.goto(`${BASE}/rewrite-navigation/0?existing=1`);
+    await waitForHydration(page);
+
+    await page.click('[data-testid="bare-query-link"]');
+    await expect(page).toHaveURL(`${BASE}/rewrite-navigation/0?`);
+    await expect(page.locator('[data-testid="as-path"]')).toHaveText("/rewrite-navigation/0?");
+    expect(await page.evaluate(() => window.location.search)).toBe("");
+    expect(await page.evaluate(() => (window as any).next.router.asPath)).toBe(
+      "/rewrite-navigation/0?",
+    );
   });
 
   test("router.push(url, as) uses the masked URL while resolving the real route", async ({

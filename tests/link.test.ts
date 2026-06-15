@@ -21,7 +21,10 @@ import Link, {
   resolveLinkPrefetchMode,
   useLinkStatus,
 } from "../packages/vinext/src/shims/link.js";
-import { navigatePagesRouterLink } from "../packages/vinext/src/client/pages-router-link-navigation.js";
+import {
+  navigatePagesRouterLink,
+  resolvePagesRouterQueryOnlyHref,
+} from "../packages/vinext/src/client/pages-router-link-navigation.js";
 
 // Internal helpers re-exported or accessible via the router shim
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
@@ -30,6 +33,7 @@ import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/ro
 // rendering occurs (same as dev-server.ts and pages-server-entry.ts do).
 import { runWithI18nState } from "../packages/vinext/src/shims/i18n-state.js";
 import { setI18nContext } from "../packages/vinext/src/shims/i18n-context.js";
+import { addLocalePrefix } from "../packages/vinext/src/utils/domain-locale.js";
 
 import {
   isAbsoluteOrProtocolRelativeUrl,
@@ -446,6 +450,60 @@ describe("Link resolveHref", () => {
       React.createElement(Link, { href: { query: { page: "2", sort: "name" } } }, "x"),
     );
     expect(html).toMatch(/href="\?page=2&(?:amp;)?sort=name"/);
+  });
+
+  it("resolves query-only Pages Links against a rewritten path before locale application", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    (globalThis as any).window = {
+      location: {
+        pathname: "/docs/fr/rewrite-navigation/0",
+        search: "?existing=1",
+        hash: "",
+        href: "http://localhost/docs/fr/rewrite-navigation/0?existing=1",
+        origin: "http://localhost",
+        hostname: "localhost",
+      },
+      history: {
+        state: null,
+        pushState() {},
+        replaceState() {},
+      },
+      addEventListener() {},
+      next: { router: { asPath: "/rewrite-navigation/0?existing=1", reload() {} } },
+      __VINEXT_LOCALE__: "fr",
+      __VINEXT_LOCALES__: ["en", "fr", "de"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    };
+    try {
+      const resolvedHref = resolvePagesRouterQueryOnlyHref("?id=1", {
+        asPath: "/rewrite-navigation/0?existing=1",
+        basePath: "/docs",
+        fallbackHref: (globalThis as any).window.location.href,
+        locales: ["en", "fr", "de"],
+      });
+      const localizedHref = addLocalePrefix(resolvedHref, "de", "en");
+
+      expect(
+        toBrowserNavigationHref(localizedHref, (globalThis as any).window.location.href, "/docs"),
+      ).toBe("/docs/de/rewrite-navigation/0?id=1");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+    }
+  });
+
+  it("preserves a bare query delimiter when resolving Pages Links", () => {
+    expect(
+      resolvePagesRouterQueryOnlyHref("?", {
+        asPath: "/rewrite-navigation/0?existing=1",
+        basePath: "",
+        fallbackHref: "http://localhost/rewrite-navigation/0?existing=1",
+      }),
+    ).toBe("/rewrite-navigation/0?");
   });
 });
 
