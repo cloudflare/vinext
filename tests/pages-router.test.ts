@@ -569,7 +569,9 @@ describe("Pages Router integration", () => {
     );
 
     const html = await res.text();
-    expect(html).toContain('<script nonce="pages-response">window.__NEXT_DATA__ = ');
+    expect(html).toContain(
+      '<script id="__NEXT_DATA__" type="application/json" nonce="pages-response">',
+    );
   });
 
   it("does not serve cached Pages ISR HTML to CSP nonce requests", async () => {
@@ -594,7 +596,9 @@ describe("Pages Router integration", () => {
     expect(second.headers.get("cache-control")).toBe("no-store, must-revalidate");
     expect(second.headers.get("x-vinext-cache")).toBeNull();
     const secondHtml = await second.text();
-    expect(secondHtml).toContain('<script nonce="pages-isr">window.__NEXT_DATA__ = ');
+    expect(secondHtml).toContain(
+      '<script id="__NEXT_DATA__" type="application/json" nonce="pages-isr">',
+    );
   });
 
   it("renders the SSR page with getServerSideProps data", async () => {
@@ -4694,7 +4698,9 @@ describe("Production server middleware (Pages Router)", () => {
     );
 
     const html = await res.text();
-    expect(html).toContain('<script nonce="pages-prod">window.__NEXT_DATA__ = ');
+    expect(html).toContain(
+      '<script id="__NEXT_DATA__" type="application/json" nonce="pages-prod">',
+    );
     expect(html).toMatch(/<script type="module" defer nonce="pages-prod" src="\/[^"]+"/);
     expect(html).toMatch(/<link rel="modulepreload" nonce="pages-prod" href="\/[^"]+"/);
   });
@@ -4740,7 +4746,9 @@ describe("Production server middleware (Pages Router)", () => {
     expect(second.headers.get("cache-control")).toBe("no-store, must-revalidate");
     expect(second.headers.get("x-vinext-cache")).toBeNull();
     const secondHtml = await second.text();
-    expect(secondHtml).toContain('<script nonce="pages-prod-isr">window.__NEXT_DATA__ = ');
+    expect(secondHtml).toContain(
+      '<script id="__NEXT_DATA__" type="application/json" nonce="pages-prod-isr">',
+    );
   });
 
   it("rewrites /rewritten to render /ssr content", async () => {
