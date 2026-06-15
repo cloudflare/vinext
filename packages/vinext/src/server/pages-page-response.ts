@@ -150,6 +150,7 @@ type RenderPagesPageResponseOptions = {
    */
   enhancePageElement?: ((opts: RenderPageEnhancers) => ReactNode) | undefined;
   DocumentComponent: ComponentType | null;
+  err?: Error;
   flushPreloads?: (() => Promise<void> | void) | undefined;
   fontLinkHeader: string;
   fontPreloads: PagesFontPreload[];
@@ -520,6 +521,7 @@ export async function renderPagesPageResponse(
       readStreamAsText(await options.renderToReadableStream(element)),
     scriptNonce: options.scriptNonce,
     context: {
+      err: options.err,
       pathname: options.routePattern,
       query: options.query ?? options.params,
       asPath: options.routeUrl,

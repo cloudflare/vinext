@@ -5297,6 +5297,25 @@ describe("Pages _document renderPage enhancers", () => {
     ],
   ] as const;
 
+  function expectErrorDocument(
+    html: string,
+    expectedMessage: string | RegExp,
+    expectedQueryKey: string,
+  ): void {
+    expect(html).toContain('id="error-page"');
+    if (typeof expectedMessage === "string") {
+      expect(html).toContain(`id="error-message">${expectedMessage}`);
+    } else {
+      expect(html).toMatch(expectedMessage);
+    }
+    expect(html).toContain(`id="document-error-context">/_error|${expectedQueryKey}|`);
+    expect(html.match(/id="document-error-enhancer"/g)).toHaveLength(1);
+    expect(html.match(/data-error-document-style/g)).toHaveLength(1);
+    expect(html).toContain(".error-document{color:red}");
+    expect(html).toContain('id="error-render-count">1');
+    expect(html).not.toContain('id="page-content"');
+  }
+
   beforeAll(async () => {
     fixtureRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-document-enhancers-"));
     outDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-document-enhancers-out-"));
@@ -5324,7 +5343,7 @@ describe("Pages _document renderPage enhancers", () => {
     );
     await fsp.writeFile(
       path.join(fixtureRoot, "render-counts.ts"),
-      `export const renderCounts = { enhancer: 0, page: 0 };
+      `export const renderCounts = { enhancer: 0, page: 0, error: 0 };
 `,
     );
     await fsp.writeFile(
@@ -5333,6 +5352,7 @@ describe("Pages _document renderPage enhancers", () => {
 export function getServerSideProps({ query }: any) {
   renderCounts.enhancer = 0;
   renderCounts.page = 0;
+  renderCounts.error = 0;
   return { props: { throwPage: query.throwPage === "true" } };
 }
 export default function Page({ throwPage }: { throwPage: boolean }) {
@@ -5348,11 +5368,13 @@ export default function Page({ throwPage }: { throwPage: boolean }) {
       path.join(fixtureRoot, "pages", "_error.tsx"),
       `import { renderCounts } from "../render-counts";
 function ErrorPage({ message }: { message: string }) {
+  renderCounts.error += 1;
   return (
     <div id="error-page">
       <p id="error-message">{message}</p>
       <p id="enhancer-render-count">{renderCounts.enhancer}</p>
       <p id="page-render-count">{renderCounts.page}</p>
+      <p id="error-render-count">{renderCounts.error}</p>
     </div>
   );
 }
@@ -5368,7 +5390,6 @@ export default ErrorPage;
 import { renderCounts } from "../render-counts";
 export default class CustomDocument extends Document {
   static async getInitialProps(ctx: any) {
-    if (!ctx.renderPage) return Document.getInitialProps(ctx);
     const enhanceComponent = (Component: any) => (props: any) => (
       <div><span id="render-page-enhance-component">RENDERED</span><Component {...props} /></div>
     );
@@ -5382,6 +5403,9 @@ export default class CustomDocument extends Document {
     const ThrowingStyle = () => {
       throw new Error("style serialization failed");
     };
+    const enhanceErrorComponent = (Component: any) => (props: any) => (
+      <div id="document-error-enhancer"><Component {...props} /></div>
+    );
     let options;
     if (ctx.pathname !== "/_error" && ctx.query?.throwEnhancer) {
       options = throwEnhancer;
@@ -5395,20 +5419,29 @@ export default class CustomDocument extends Document {
     }
     if (ctx.pathname !== "/_error" && ctx.query?.invalidDocumentHtml) return { html: null };
     const originalRenderPage = ctx.renderPage;
-    ctx.renderPage = () => originalRenderPage(options);
+    ctx.renderPage = () =>
+      originalRenderPage(
+        ctx.pathname === "/_error" ? { enhanceComponent: enhanceErrorComponent } : options,
+      );
     const initialProps = await Document.getInitialProps(ctx);
     return {
       ...initialProps,
       styles:
-        ctx.pathname !== "/_error" && ctx.query?.throwStyles
-          ? <ThrowingStyle />
-          : initialProps.styles,
+        ctx.pathname === "/_error"
+          ? <style data-error-document-style>{".error-document{color:red}"}</style>
+          : ctx.query?.throwStyles
+            ? <ThrowingStyle />
+            : initialProps.styles,
       documentProp: "DOCUMENT",
+      documentErrorContext:
+        ctx.pathname === "/_error"
+          ? [ctx.pathname, Object.keys(ctx.query ?? {})[0] ?? "", ctx.err?.message ?? ""].join("|")
+          : "",
     };
   }
   render() {
     return (
-      <Html><Head /><body><p id="document-prop">{(this.props as any).documentProp}</p><Main /><NextScript /></body></Html>
+      <Html><Head /><body><p id="document-prop">{(this.props as any).documentProp}</p><p id="document-error-context">{(this.props as any).documentErrorContext}</p><Main /><NextScript /></body></Html>
     );
   }
 }
@@ -5460,11 +5493,9 @@ export default class CustomDocument extends Document {
       const response = await fetch(`${url}/?throwEnhancer=true`);
       expect(response.status).toBe(500);
       const html = await response.text();
-      expect(html).toContain('id="error-page"');
-      expect(html).toContain('id="error-message">enhancer render failed');
+      expectErrorDocument(html, "enhancer render failed", "throwEnhancer");
       expect(html).toContain('id="enhancer-render-count">1');
       expect(html).toContain('id="page-render-count">0');
-      expect(html).not.toContain('id="page-content"');
     },
   );
 
@@ -5475,10 +5506,8 @@ export default class CustomDocument extends Document {
       const response = await fetch(`${url}/?throwPage=true`);
       expect(response.status).toBe(500);
       const html = await response.text();
-      expect(html).toContain('id="error-page"');
-      expect(html).toContain('id="error-message">page render failed');
+      expectErrorDocument(html, "page render failed", "throwPage");
       expect(html).toContain('id="enhancer-render-count">0');
-      expect(html).not.toContain('id="page-content"');
     },
   );
 
@@ -5489,9 +5518,11 @@ export default class CustomDocument extends Document {
       const response = await fetch(`${url}/?invalidDocumentHtml=true`);
       expect(response.status).toBe(500);
       const html = await response.text();
-      expect(html).toContain('id="error-page"');
-      expect(html).toContain("should resolve to an object with a");
-      expect(html).not.toContain('id="page-content"');
+      expectErrorDocument(
+        html,
+        /id="error-message">(?:&quot;|").+?\.getInitialProps\(\)(?:&quot;|") should resolve to an object with a (?:&quot;|")html(?:&quot;|") prop set with a valid html string/,
+        "invalidDocumentHtml",
+      );
     },
   );
 
@@ -5502,9 +5533,7 @@ export default class CustomDocument extends Document {
       const response = await fetch(`${url}/?throwStyles=true`);
       expect(response.status).toBe(500);
       const html = await response.text();
-      expect(html).toContain('id="error-page"');
-      expect(html).toContain('id="error-message">style serialization failed');
-      expect(html).not.toContain('id="page-content"');
+      expectErrorDocument(html, "style serialization failed", "throwStyles");
     },
   );
 });

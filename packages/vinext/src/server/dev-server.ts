@@ -1914,24 +1914,7 @@ async function renderErrorPage(
         }
       }
 
-      let element: React.ReactElement;
-      if (AppComponent) {
-        element = createElement(AppComponent, {
-          Component: ErrorComponent,
-          pageProps: errorProps,
-        });
-      } else {
-        element = createElement(ErrorComponent, errorProps);
-      }
-
-      if (wrapFn) {
-        element = wrapFn(element);
-      }
-
-      const bodyHtml = await renderToStringAsync(element);
-
       // Try custom _document
-      let html: string;
       // oxlint-disable-next-line typescript/no-explicit-any
       let DocumentComponent: any = null;
       const docPathErr = path.join(pagesDir, "_document");
@@ -1944,17 +1927,64 @@ async function renderErrorPage(
         }
       }
 
+      const createErrorElement = (
+        // oxlint-disable-next-line typescript/no-explicit-any
+        FinalApp: any,
+        // oxlint-disable-next-line typescript/no-explicit-any
+        FinalComponent: any,
+      ): React.ReactElement => {
+        let errorElement: React.ReactElement = FinalApp
+          ? createElement(FinalApp, {
+              Component: FinalComponent,
+              pageProps: errorProps,
+            })
+          : createElement(FinalComponent, errorProps);
+        if (wrapFn) errorElement = wrapFn(errorElement);
+        return errorElement;
+      };
+
+      const element = createErrorElement(AppComponent, ErrorComponent);
+      const headShim = await importModule(runner, "next/head");
+      if (typeof headShim.resetSSRHead === "function") headShim.resetSSRHead();
+
       if (DocumentComponent) {
-        const docProps = await loadUserDocumentInitialProps(DocumentComponent);
-        const docElement = docProps
-          ? createElement(DocumentComponent, docProps)
-          : createElement(DocumentComponent);
-        let docHtml = await renderToStringAsync(docElement);
-        docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
-        docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", "");
-        html = docHtml;
+        const errorPathname = candidate === "_error" ? "/_error" : `/${candidate}`;
+        await streamPageToResponse(res, element, {
+          url,
+          server,
+          fontHeadHTML: "",
+          scripts: "",
+          DocumentComponent,
+          statusCode,
+          documentContext: {
+            err,
+            pathname: errorPathname,
+            query: parseQuery(url),
+            asPath: url,
+            req,
+            res,
+          },
+          enhancePageElement: (renderPageOpts) => {
+            let FinalApp = AppComponent;
+            let FinalComponent = ErrorComponent;
+            if (renderPageOpts.enhanceApp && FinalApp) {
+              FinalApp = renderPageOpts.enhanceApp(FinalApp);
+            }
+            if (renderPageOpts.enhanceComponent) {
+              FinalComponent = renderPageOpts.enhanceComponent(FinalComponent);
+            }
+            return createErrorElement(FinalApp, FinalComponent);
+          },
+          getHeadHTML: () =>
+            typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "",
+          setDocumentInitialHead:
+            typeof headShim.setDocumentInitialHead === "function"
+              ? headShim.setDocumentInitialHead
+              : undefined,
+        });
       } else {
-        html = `<!DOCTYPE html>
+        const bodyHtml = await renderToStringAsync(element);
+        const html = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8" />
@@ -1964,11 +1994,10 @@ async function renderErrorPage(
   <div id="__next">${bodyHtml}</div>
 </body>
 </html>`;
+        const transformedHtml = await server.transformIndexHtml(url, html);
+        res.writeHead(statusCode, { "Content-Type": "text/html" });
+        res.end(transformedHtml);
       }
-
-      const transformedHtml = await server.transformIndexHtml(url, html);
-      res.writeHead(statusCode, { "Content-Type": "text/html" });
-      res.end(transformedHtml);
       return;
     } catch {
       // This candidate doesn't exist, try next
