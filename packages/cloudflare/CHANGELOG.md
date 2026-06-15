@@ -4,7 +4,7 @@
 
 ### Bug Fixes
 
-- **App Router:** recover SSR shell render errors via **next_error** document (#1908)
+- **Cache:** Support stripping CDN ISR headers (#1908)
 
 ### Contributors
 
