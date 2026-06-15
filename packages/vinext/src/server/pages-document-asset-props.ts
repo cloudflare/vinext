@@ -85,10 +85,3 @@ export function applyDocumentAssetProps(
       ),
     );
 }
-
-export const documentAssetMarkerAttributes = {
-  headNonce: HEAD_NONCE_ATTR,
-  headCrossOrigin: HEAD_CROSS_ORIGIN_ATTR,
-  scriptNonce: SCRIPT_NONCE_ATTR,
-  scriptCrossOrigin: SCRIPT_CROSS_ORIGIN_ATTR,
-} as const;

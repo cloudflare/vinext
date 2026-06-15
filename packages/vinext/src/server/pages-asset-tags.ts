@@ -138,9 +138,10 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   // upstream tests (e.g. test/e2e/optimized-loading) assert the literal `defer`
   // attribute, and adding it preserves parity without changing browser behaviour.
   const deferAttr = options.disableOptimizedLoading ? "" : " defer";
-  const crossOriginAttr = options.crossOrigin
+  const scriptCrossOriginAttr = options.crossOrigin
     ? ` crossorigin="${options.crossOrigin}"`
     : " crossorigin";
+  const preloadCrossOriginAttr = options.crossOrigin ? ` crossorigin="${options.crossOrigin}"` : "";
 
   // SSR-manifest / client-entry values are base-anchored (so the lazy-chunk
   // membership test below matches the base-anchored __VINEXT_LAZY_CHUNKS__), but
@@ -175,7 +176,7 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
         ' href="' +
         href(entry) +
         '"' +
-        crossOriginAttr +
+        preloadCrossOriginAttr +
         " />",
     );
     tags.push(
@@ -185,7 +186,7 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
         ' src="' +
         href(entry) +
         '"' +
-        crossOriginAttr +
+        scriptCrossOriginAttr +
         "></script>",
     );
   }
@@ -257,7 +258,7 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
             ' href="' +
             href(tf) +
             '"' +
-            crossOriginAttr +
+            preloadCrossOriginAttr +
             " />",
         );
         tags.push(
@@ -267,7 +268,7 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
             ' src="' +
             href(tf) +
             '"' +
-            crossOriginAttr +
+            scriptCrossOriginAttr +
             "></script>",
         );
       }
