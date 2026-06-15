@@ -107,6 +107,7 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
 } {
   const routeTrie = buildRouteTrie(routes);
   const interceptLookup = createInterceptLookup(routes);
+  const routeIndexes = new Map<Route, number>(routes.map((route, index) => [route, index]));
 
   return {
     matchRoute(url) {
@@ -122,6 +123,7 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
 
       const urlParts = appRscPathnameParts(pathname);
       const sourceParts = appRscPathnameParts(sourcePathname);
+      const matchedSourceRoute = trieMatch(routeTrie, sourceParts);
 
       for (const entry of interceptLookup) {
         // Primary gate: when the intercept declares a `sourceMatchPattern`
@@ -134,10 +136,17 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
         const params = matchAppRscRoutePattern(urlParts, entry.targetPatternParts);
         if (params === null) continue;
 
-        const sourceRoute = routes[entry.sourceRouteIndex];
-        const matchedSourceParams = sourceRoute
-          ? matchAppRscRoutePattern(sourceParts, sourceRoute.patternParts)
-          : null;
+        const concreteSourceRouteIndex =
+          matchedSourceRoute && entry.sourceMatchPatternParts !== null
+            ? (routeIndexes.get(matchedSourceRoute.route) ?? entry.sourceRouteIndex)
+            : entry.sourceRouteIndex;
+        const sourceRoute = routes[concreteSourceRouteIndex];
+        const matchedSourceParams =
+          matchedSourceRoute && entry.sourceMatchPatternParts !== null
+            ? matchedSourceRoute.params
+            : sourceRoute
+              ? matchAppRscRoutePattern(sourceParts, sourceRoute.patternParts)
+              : null;
 
         // Secondary gate (from #1249): when the entry has no
         // `sourceMatchPatternParts` declared (older manifest shapes), reject
@@ -152,7 +161,11 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
           continue;
         }
         const sourceParams = matchedSourceParams ?? createRouteParams();
-        return { ...entry, matchedParams: mergeMatchedParams(sourceParams, params) };
+        return {
+          ...entry,
+          sourceRouteIndex: concreteSourceRouteIndex,
+          matchedParams: mergeMatchedParams(sourceParams, params),
+        };
       }
       return null;
     },
