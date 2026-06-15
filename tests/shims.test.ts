@@ -2561,6 +2561,7 @@ describe("window.next debug global", () => {
     [{ query: {} }, "/rewrite-navigation/[id]/destination", "/rewrite-navigation/[id]/destination"],
     [{ search: "flag" }, "/rewrite-navigation/0?flag", "/rewrite-navigation/0?flag"],
     [{ search: "q=a%20b" }, "/rewrite-navigation/0?q=a%20b", "/rewrite-navigation/0?q=a%20b"],
+    [{ search: "q=a#b" }, "/rewrite-navigation/0?q=a%23b", "/rewrite-navigation/0?q=a%23b"],
     [{ search: "?" }, "/rewrite-navigation/0?", "/rewrite-navigation/0?"],
     [
       { query: { id: "ignored" }, search: "id=3" },
@@ -2571,6 +2572,11 @@ describe("window.next debug global", () => {
       { search: "q=a%20b", hash: "result" },
       "/rewrite-navigation/0?q=a%20b#result",
       "/rewrite-navigation/0?q=a%20b",
+    ],
+    [
+      { search: "q=a#b", hash: "result" },
+      "/rewrite-navigation/0?q=a%23b#result",
+      "/rewrite-navigation/0?q=a%23b",
     ],
     [
       { query: { id: "ignored" }, search: "?id=3", hash: "#result" },
