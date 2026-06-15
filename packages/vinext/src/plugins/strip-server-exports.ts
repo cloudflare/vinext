@@ -30,10 +30,50 @@ export function hasServerExportCandidate(code: string): boolean {
   return [...SERVER_EXPORTS].some((name) => code.includes(name));
 }
 
-const EXPORT_ALL_CANDIDATE = /\bexport(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*\*/;
-
 export function hasExportAllCandidate(code: string): boolean {
-  return EXPORT_ALL_CANDIDATE.test(code);
+  let searchFrom = 0;
+  while (searchFrom < code.length) {
+    const exportStart = code.indexOf("export", searchFrom);
+    if (exportStart === -1) return false;
+    searchFrom = exportStart + "export".length;
+    const previous = code.charCodeAt(exportStart - 1);
+    const next = code.charCodeAt(searchFrom);
+    if (
+      (previous >= 48 && previous <= 57) ||
+      (previous >= 65 && previous <= 90) ||
+      previous === 95 ||
+      (previous >= 97 && previous <= 122) ||
+      (next >= 48 && next <= 57) ||
+      (next >= 65 && next <= 90) ||
+      next === 95 ||
+      (next >= 97 && next <= 122)
+    ) {
+      continue;
+    }
+
+    let position = searchFrom;
+    while (position < code.length) {
+      const char = code[position];
+      if (/\s/.test(char)) {
+        position++;
+        continue;
+      }
+      if (char === "/" && code[position + 1] === "*") {
+        const commentEnd = code.indexOf("*/", position + 2);
+        if (commentEnd === -1) break;
+        position = commentEnd + 2;
+        continue;
+      }
+      if (char === "/" && code[position + 1] === "/") {
+        const lineEnd = code.indexOf("\n", position + 2);
+        position = lineEnd === -1 ? code.length : lineEnd + 1;
+        continue;
+      }
+      if (char === "*") return true;
+      break;
+    }
+  }
+  return false;
 }
 
 type Binding = {
