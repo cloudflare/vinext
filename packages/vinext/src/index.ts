@@ -3962,8 +3962,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 return next();
               }
 
-              // The dev static adapter returns a Response rather than writing directly,
-              // so `handled` remains a Node-production-only result here.
+              // `handled` means an adapter wrote the response directly, including
+              // Vite's filesystem middleware for rewritten public/static files.
               if (pipelineResult.type === "handled") {
                 return;
               }
