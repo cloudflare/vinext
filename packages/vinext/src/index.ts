@@ -337,6 +337,22 @@ function resolveTsconfigPathCandidate(candidate: string): string | null {
   return null;
 }
 
+/**
+ * Normalize a tsconfig `extends` field into a list of specifier strings.
+ *
+ * TypeScript 5.0+ allows `extends` to be either a string or an array of
+ * strings. Matches Next.js's handling in
+ * packages/next/src/build/next-config-ts/transpile-config.ts, where parents
+ * are iterated in order and later entries override earlier ones.
+ */
+function normalizeTsconfigExtends(extendsField: unknown): string[] {
+  if (typeof extendsField === "string") return [extendsField];
+  if (Array.isArray(extendsField)) {
+    return extendsField.filter((value): value is string => typeof value === "string");
+  }
+  return [];
+}
+
 function resolveTsconfigExtends(configPath: string, specifier: string): string | null {
   const fromDir = path.dirname(configPath);
   if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("\\")) {
@@ -431,10 +447,12 @@ function loadTsconfigPathAliases(
   if (!parsed) return {};
 
   let aliases: Record<string, string> = {};
-  if (typeof parsed.extends === "string") {
-    const extendedPath = resolveTsconfigExtends(normalizedPath, parsed.extends);
+  // `extends` may be a string or (TypeScript 5.0+) an array; iterate parents in
+  // order so later entries override earlier ones (matching Next.js).
+  for (const extendsSpecifier of normalizeTsconfigExtends(parsed.extends)) {
+    const extendedPath = resolveTsconfigExtends(normalizedPath, extendsSpecifier);
     if (extendedPath) {
-      aliases = loadTsconfigPathAliases(extendedPath, projectRoot, seen);
+      aliases = { ...aliases, ...loadTsconfigPathAliases(extendedPath, projectRoot, seen) };
     }
   }
 

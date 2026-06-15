@@ -49,6 +49,22 @@ function resolveTsconfigPathCandidate(candidate: string): string | null {
   return null;
 }
 
+/**
+ * Normalize a tsconfig `extends` field into a list of specifier strings.
+ *
+ * TypeScript 5.0+ allows `extends` to be either a string or an array of
+ * strings. Matches Next.js's handling in
+ * packages/next/src/build/next-config-ts/transpile-config.ts, where parents
+ * are iterated in order and later entries override earlier ones.
+ */
+function normalizeExtends(extendsField: unknown): string[] {
+  if (typeof extendsField === "string") return [extendsField];
+  if (Array.isArray(extendsField)) {
+    return extendsField.filter((value): value is string => typeof value === "string");
+  }
+  return [];
+}
+
 function resolveTsconfigExtends(configPath: string, specifier: string): string | null {
   const fromDir = path.dirname(configPath);
   if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("\\")) {
@@ -122,7 +138,9 @@ function loadResolutionFromTsconfigFile(
   if (!parsed) return emptyResolution();
 
   let resolution = emptyResolution();
-  const extendsList = typeof parsed.extends === "string" ? [parsed.extends] : [];
+  // TypeScript 5.0+ allows `extends` to be an array of specifiers (later
+  // entries override earlier ones). Normalize both forms to a string list.
+  const extendsList = normalizeExtends(parsed.extends);
 
   for (const extendsSpecifier of extendsList) {
     const extendedPath = resolveTsconfigExtends(configPath, extendsSpecifier);
