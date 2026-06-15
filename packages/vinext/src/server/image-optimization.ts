@@ -44,7 +44,11 @@ export type ImageConfig = {
   deviceSizes?: number[];
   /** Allowed fixed-image widths. Defaults to Next.js image sizes. */
   imageSizes?: number[];
-  /** Allowed output qualities. Defaults to Next.js's `[75]`. */
+  /**
+   * Allowed output qualities. When unset, any quality from 1-100 is permitted
+   * (matches Next.js: an unset `images.qualities` is not restricted to a single
+   * value). When set, only the listed qualities are accepted.
+   */
   qualities?: number[];
   /** Allow SVG through the image optimization endpoint. Default: false. */
   dangerouslyAllowSVG?: boolean;
@@ -71,7 +75,6 @@ export type ImageConfig = {
  */
 export const DEFAULT_DEVICE_SIZES = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
 export const DEFAULT_IMAGE_SIZES = [16, 32, 48, 64, 96, 128, 256, 384];
-export const DEFAULT_IMAGE_QUALITIES = [75];
 const DEV_BLUR_MAX_WIDTH = 8;
 const DEV_BLUR_QUALITY = 70;
 
@@ -82,7 +85,7 @@ export type ParseImageParamsOptions = {
 export function resolveDevImageRedirect(
   requestUrl: URL,
   allowedWidths: number[] = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES],
-  allowedQualities: number[] = DEFAULT_IMAGE_QUALITIES,
+  allowedQualities?: number[],
   options: ParseImageParamsOptions = { isDev: true },
 ): string | null {
   const params = parseImageParams(requestUrl, allowedWidths, allowedQualities, options);
@@ -110,7 +113,7 @@ export function resolveDevImageRedirect(
 export function parseImageParams(
   url: URL,
   allowedWidths: number[] = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES],
-  allowedQualities: number[] = DEFAULT_IMAGE_QUALITIES,
+  allowedQualities?: number[],
   options: ParseImageParamsOptions = {},
 ): { imageUrl: string; width: number; quality: number } | null {
   // Intentional hardening divergence from Next.js: reject duplicate and unknown
@@ -137,7 +140,10 @@ export function parseImageParams(
   const isDevBlurWidth = options.isDev && width <= DEV_BLUR_MAX_WIDTH;
   const isDevBlurQuality = options.isDev && quality === DEV_BLUR_QUALITY;
   if (width <= 0 || (!allowedWidths.includes(width) && !isDevBlurWidth)) return null;
-  if (quality < 1 || quality > 100 || (!allowedQualities.includes(quality) && !isDevBlurQuality)) {
+  if (quality < 1 || quality > 100) return null;
+  // Only enforce the quality allowlist when `images.qualities` is configured.
+  // Matches Next.js: an unset `qualities` permits any quality from 1-100.
+  if (allowedQualities && !allowedQualities.includes(quality) && !isDevBlurQuality) {
     return null;
   }
 

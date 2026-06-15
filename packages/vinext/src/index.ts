@@ -32,7 +32,6 @@ import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
 import {
   DEFAULT_DEVICE_SIZES,
-  DEFAULT_IMAGE_QUALITIES,
   DEFAULT_IMAGE_SIZES,
   isImageOptimizationPath,
   resolveDevImageRedirect,
@@ -1355,8 +1354,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             JSON.stringify(deviceSizes),
           );
           defines["process.env.__VINEXT_IMAGE_SIZES"] = JSON.stringify(JSON.stringify(imageSizes));
+          // Emit the configured qualities allowlist, or `null` when unset so the
+          // runtime permits any quality 1-100 (matches Next.js: an unset
+          // `images.qualities` is not restricted to a single value).
           defines["process.env.__VINEXT_IMAGE_QUALITIES"] = JSON.stringify(
-            JSON.stringify(nextConfig.images?.qualities ?? DEFAULT_IMAGE_QUALITIES),
+            JSON.stringify(nextConfig.images?.qualities ?? null),
           );
         }
         // Expose dangerouslyAllowSVG flag for the image shim's auto-skip logic.
@@ -3526,7 +3528,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 const encodedLocation = resolveDevImageRedirect(
                   imageRequestUrl,
                   allowedWidths,
-                  nextConfig.images?.qualities ?? DEFAULT_IMAGE_QUALITIES,
+                  nextConfig.images?.qualities,
                 );
                 if (!encodedLocation) {
                   res.writeHead(400);

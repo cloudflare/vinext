@@ -17953,6 +17953,43 @@ describe("image optimization request parsing", () => {
     ).toBeNull();
   });
 
+  it("parseImageParams permits any quality 1-100 when qualities is unset", async () => {
+    // Matches Next.js: an unset `images.qualities` is not restricted to a single
+    // value. Regression test for non-75 qualities (e.g. `<Image quality={90}>`)
+    // returning 400 from the image optimization endpoint.
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    for (const q of [1, 50, 75, 90, 100]) {
+      const params = parseImageParams(
+        new URL(`http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=${q}`),
+      );
+      expect(params).not.toBeNull();
+      expect(params!.quality).toBe(q);
+    }
+  });
+
+  it("parseImageParams enforces the allowlist only when qualities is configured", async () => {
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const allowed = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+    // Quality in the configured allowlist passes.
+    expect(
+      parseImageParams(
+        new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=90"),
+        allowed,
+        [75, 90],
+      ),
+    ).not.toBeNull();
+    // Quality outside the configured allowlist is rejected.
+    expect(
+      parseImageParams(
+        new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=50"),
+        allowed,
+        [75, 90],
+      ),
+    ).toBeNull();
+  });
+
   it("parseImageParams blocks backslash-based open redirect (/\\evil.com)", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
@@ -18052,7 +18089,9 @@ describe("image optimization request parsing", () => {
     ).toBeNull();
   });
 
-  it("parseImageParams defaults allowed qualities to 75", async () => {
+  it("parseImageParams allows any quality 1-100 when qualities is unset", async () => {
+    // Matches Next.js: an unset `images.qualities` does not restrict the quality
+    // to a single value — any integer from 1-100 is accepted.
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     expect(
@@ -18060,7 +18099,7 @@ describe("image optimization request parsing", () => {
     ).not.toBeNull();
     expect(
       parseImageParams(new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=80")),
-    ).toBeNull();
+    ).not.toBeNull();
   });
 
   it("parseImageParams accepts configured qualities", async () => {

@@ -490,7 +490,7 @@ const imageConfig: ImageConfig = {
   imageSizes: JSON.parse(
     process.env.__VINEXT_IMAGE_SIZES ?? JSON.stringify(DEFAULT_IMAGE_SIZES),
   ),
-  qualities: JSON.parse(process.env.__VINEXT_IMAGE_QUALITIES ?? "[75]"),
+  qualities: JSON.parse(process.env.__VINEXT_IMAGE_QUALITIES ?? "null") ?? undefined,
   dangerouslyAllowSVG: process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG === "true",
 };
 
