@@ -14,19 +14,19 @@
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
  * (search for `loadDocumentInitialProps` and `documentElement`).
  *
- * vinext only forwards `docProps`. The full `DocumentContext`
- * (`renderPage`, `defaultGetInitialProps`, `pathname`, `query`, `req`, `res`,
- * `err`, `asPath`) is not yet plumbed through. The common upstream pattern
+ * `runDocumentRenderPage()` supplies `renderPage`, `defaultGetInitialProps`,
+ * and the request pathname/query/asPath fields needed by the common upstream
+ * pattern:
  *
  *   static async getInitialProps(ctx) {
  *     const initialProps = await Document.getInitialProps(ctx)
  *     return { ...initialProps, docValue }
  *   }
  *
- * works because the base `Document.getInitialProps` shim in
- * `shims/document.tsx` returns `{ html: "" }` and ignores `ctx`. User
- * overrides that *only* read `ctx` will see `undefined` fields — that is a
- * separate gap tracked alongside the shim TODO.
+ * The standalone `loadUserDocumentInitialProps()` compatibility path supplies
+ * an empty default render result because it is only used after the body has
+ * already been produced. Request-only fields such as req/res remain outside
+ * that compatibility helper.
  *
  * Returns `null` when the user did not override the base shim (the static
  * `getInitialProps` reference still points at the shim's stub) so callers
@@ -69,11 +69,12 @@ export async function loadUserDocumentInitialProps(
   // fast path keeps the same number of awaits as before this helper landed.
   if (getInitialProps === BASE_GET_INITIAL_PROPS) return null;
 
-  // Pass ctx as `{}`. Most upstream overrides only use ctx to delegate
-  // back to `Document.getInitialProps`, which the shim ignores. Errors
-  // propagate — matching Next.js's `loadGetInitialProps`, which has no
-  // catch and surfaces user bugs as 500s.
-  const result = await getInitialProps({});
+  // This compatibility path renders an already-produced body, so provide the
+  // base Document delegation with an empty shell. The full Pages render path
+  // uses `runDocumentRenderPage()` and supplies the real render callback.
+  const result = await getInitialProps({
+    defaultGetInitialProps: async () => ({ html: "" }),
+  });
   return result && typeof result === "object" ? (result as Record<string, unknown>) : null;
 }
 
@@ -211,12 +212,11 @@ export async function runDocumentRenderPage(
     // `ctx.renderPage` (the styled-components / emotion pattern) work
     // without those fields.
     renderPage,
-    defaultGetInitialProps: async (ctx: { renderPage?: typeof renderPage }) => {
+    defaultGetInitialProps: async (ctx: { renderPage: typeof renderPage }) => {
       // Mirrors Next.js's `ctx.defaultGetInitialProps`: wrap App in an
       // identity enhancer so renderPage is still invoked even when a user
       // doesn't pass any enhancers themselves.
-      const inner = ctx.renderPage ?? renderPage;
-      const result = await inner({
+      const result = await ctx.renderPage({
         // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         enhanceApp: (App) => (props: any) => React.createElement(App, props),
       });
@@ -235,31 +235,25 @@ export async function runDocumentRenderPage(
   const { html: _html, head: rawHead, styles: _styles, ...docProps } = docInitialProps ?? {};
   const head: ReactNode[] = Array.isArray(rawHead) ? (rawHead as ReactNode[]) : [];
 
+  if (!docInitialProps || typeof docInitialProps.html !== "string") {
+    throw new Error(
+      `"${DocCtor.displayName ?? DocCtor.name ?? "Document"}.getInitialProps()" should resolve to an object with a "html" prop set with a valid html string`,
+    );
+  }
+
   // If the user implemented getInitialProps but never invoked renderPage
   // (uncommon — but possible if they only return head/styles), fall back to
   // the streaming render so the body content is produced normally.
   if (!renderPageCalled) return { status: "consumed", docProps, head };
 
-  if (!docInitialProps || typeof docInitialProps.html !== "string") {
-    console.error(
-      `[vinext] "${DocCtor.displayName ?? DocCtor.name ?? "Document"}.getInitialProps()" did not return an object with a string "html" prop`,
-    );
-    return { status: "consumed", docProps, head };
-  }
-
   // Render `styles` returned by `getInitialProps()` (e.g. collected
   // styled-components / emotion <style> tags) to a string ready for the SSR
   // head. Matches Next.js's render.tsx where `styles` flows into the head.
-  // Failures are swallowed so a buggy styles element doesn't crash the render.
   let stylesHTML = "";
   if (docInitialProps.styles != null) {
-    try {
-      stylesHTML = await input.renderStylesToString(
-        React.createElement(React.Fragment, null, docInitialProps.styles),
-      );
-    } catch (err) {
-      console.error("[vinext] Failed to render _document.getInitialProps() styles:", err);
-    }
+    stylesHTML = await input.renderStylesToString(
+      React.createElement(React.Fragment, null, docInitialProps.styles),
+    );
   }
 
   return { status: "rendered", bodyHtml: docInitialProps.html, stylesHTML, docProps, head };

@@ -62,7 +62,7 @@ export type DocumentContext = {
   // and the inherited `NextPageContext` (`pathname`, `query`, `req`, `res`,
   // `err`, `asPath`, ...). They're declared as optional because the dev error
   // renderer and compatibility paths may provide only a partial context.
-  renderPage?: (
+  renderPage: (
     options?:
       | {
           enhanceApp?: (
@@ -72,7 +72,7 @@ export type DocumentContext = {
         }
       | ((Comp: React.ComponentType<unknown>) => React.ComponentType<unknown>),
   ) => DocumentInitialProps | Promise<DocumentInitialProps>;
-  defaultGetInitialProps?: (
+  defaultGetInitialProps: (
     ctx: DocumentContext,
     options?: { nonce?: string },
   ) => Promise<DocumentInitialProps>;
@@ -106,13 +106,12 @@ export type DocumentInitialProps = {
 // oxlint-disable-next-line @typescript-eslint/no-empty-object-type
 export default class Document<P = {}> extends React.Component<P & { children?: React.ReactNode }> {
   /**
-   * `getInitialProps` is invoked by the SSR pipeline. The default implementation
-   * returns an empty shell because the runtime-provided
-   * `ctx.defaultGetInitialProps()` owns the actual page render and style
-   * collection when custom Documents delegate through it.
+   * `getInitialProps` is invoked by the SSR pipeline. The runtime-provided
+   * `ctx.defaultGetInitialProps()` owns the page render and style collection,
+   * matching Next.js's canonical CSS-in-JS integration path.
    */
-  static async getInitialProps(_ctx: DocumentContext): Promise<DocumentInitialProps> {
-    return { html: "" };
+  static getInitialProps(ctx: DocumentContext): Promise<DocumentInitialProps> {
+    return ctx.defaultGetInitialProps(ctx);
   }
 
   render(): React.ReactNode {

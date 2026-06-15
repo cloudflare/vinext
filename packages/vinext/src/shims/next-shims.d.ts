@@ -66,7 +66,7 @@ declare module "next/document" {
     styles?: ReactElement[] | Iterable<ReactNode> | ReactElement;
   };
   export type DocumentContext = {
-    renderPage?: (
+    renderPage: (
       options?:
         | {
             enhanceApp?: (
@@ -76,7 +76,7 @@ declare module "next/document" {
           }
         | ((Comp: ComponentType<unknown>) => ComponentType<unknown>),
     ) => DocumentInitialProps | Promise<DocumentInitialProps>;
-    defaultGetInitialProps?: (
+    defaultGetInitialProps: (
       ctx: DocumentContext,
       options?: { nonce?: string },
     ) => Promise<DocumentInitialProps>;

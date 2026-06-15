@@ -5379,6 +5379,9 @@ export default class CustomDocument extends Document {
       renderCounts.enhancer += 1;
       throw new Error("enhancer render failed");
     };
+    const ThrowingStyle = () => {
+      throw new Error("style serialization failed");
+    };
     let options;
     if (ctx.pathname !== "/_error" && ctx.query?.throwEnhancer) {
       options = throwEnhancer;
@@ -5390,7 +5393,18 @@ export default class CustomDocument extends Document {
         enhanceApp: ctx.query.withEnhanceApp ? enhanceApp : undefined,
       };
     }
-    return { ...(await ctx.renderPage(options)), documentProp: "DOCUMENT" };
+    if (ctx.pathname !== "/_error" && ctx.query?.invalidDocumentHtml) return { html: null };
+    const originalRenderPage = ctx.renderPage;
+    ctx.renderPage = () => originalRenderPage(options);
+    const initialProps = await Document.getInitialProps(ctx);
+    return {
+      ...initialProps,
+      styles:
+        ctx.pathname !== "/_error" && ctx.query?.throwStyles
+          ? <ThrowingStyle />
+          : initialProps.styles,
+      documentProp: "DOCUMENT",
+    };
   }
   render() {
     return (
@@ -5464,6 +5478,32 @@ export default class CustomDocument extends Document {
       expect(html).toContain('id="error-page"');
       expect(html).toContain('id="error-message">page render failed');
       expect(html).toContain('id="enhancer-render-count">0');
+      expect(html).not.toContain('id="page-content"');
+    },
+  );
+
+  it.each(["dev", "prod"] as const)(
+    "routes invalid document html through the error page in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/?invalidDocumentHtml=true`);
+      expect(response.status).toBe(500);
+      const html = await response.text();
+      expect(html).toContain('id="error-page"');
+      expect(html).toContain("should resolve to an object with a");
+      expect(html).not.toContain('id="page-content"');
+    },
+  );
+
+  it.each(["dev", "prod"] as const)(
+    "routes document style serialization failures through the error page in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/?throwStyles=true`);
+      expect(response.status).toBe(500);
+      const html = await response.text();
+      expect(html).toContain('id="error-page"');
+      expect(html).toContain('id="error-message">style serialization failed');
       expect(html).not.toContain('id="page-content"');
     },
   );

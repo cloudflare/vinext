@@ -630,33 +630,62 @@ describe("pages page response", () => {
     expect(enhancePageElement).not.toHaveBeenCalled();
   });
 
-  // Edge case: a user `getInitialProps` that never calls `renderPage` (it only
-  // returns head/styles) must fall back to the normal streaming render so the
-  // body content is still produced.
-  it("falls back to streaming render when getInitialProps never calls renderPage", async () => {
+  it.each([undefined, null, 42, {}])(
+    "rejects invalid _document html %j without rendering the page",
+    async (html) => {
+      const common = createCommonOptions();
+
+      function MyDocument() {
+        return null;
+      }
+      (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async () => ({
+        html,
+      });
+
+      const enhancePageElement = vi.fn(() => React.createElement("p", null, "enhanced"));
+      const renderToReadableStream = vi.fn(common.options.renderToReadableStream);
+
+      await expect(
+        renderPagesPageResponse({
+          ...common.options,
+          DocumentComponent: MyDocument as unknown as React.ComponentType,
+          enhancePageElement,
+          renderToReadableStream,
+        }),
+      ).rejects.toThrow('should resolve to an object with a "html" prop');
+
+      expect(enhancePageElement).not.toHaveBeenCalled();
+      expect(renderToReadableStream).not.toHaveBeenCalled();
+    },
+  );
+
+  it("propagates _document style serialization errors", async () => {
     const common = createCommonOptions();
 
     function MyDocument() {
       return null;
     }
-    // Returns props without ever invoking ctx.renderPage.
-    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async () => ({
-      custom: "value",
-    });
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async (ctx: {
+      renderPage: () => Promise<{ html: string }>;
+    }) => ({ ...(await ctx.renderPage()), styles: React.createElement("style") });
 
     const enhancePageElement = vi.fn(() => React.createElement("p", null, "enhanced"));
-
-    const response = await renderPagesPageResponse({
-      ...common.options,
-      DocumentComponent: MyDocument as unknown as React.ComponentType,
-      enhancePageElement,
+    const renderToReadableStream = vi.fn(async () => {
+      if (renderToReadableStream.mock.calls.length === 1) return createStream(["enhanced"]);
+      throw new Error("style serialization failed");
     });
 
-    const html = await response.text();
-    // Body came from the streaming fallback, not renderPage.
-    expect(html).toContain("live-body");
-    expect(html).not.toContain("enhanced");
-    expect(enhancePageElement).not.toHaveBeenCalled();
+    await expect(
+      renderPagesPageResponse({
+        ...common.options,
+        DocumentComponent: MyDocument as unknown as React.ComponentType,
+        enhancePageElement,
+        renderToReadableStream,
+      }),
+    ).rejects.toThrow("style serialization failed");
+
+    expect(enhancePageElement).toHaveBeenCalledTimes(1);
+    expect(renderToReadableStream).toHaveBeenCalledTimes(2);
   });
 
   // ---------------------------------------------------------------------------
