@@ -230,8 +230,8 @@ describe("Image SSR rendering", () => {
       }),
     );
 
-    expect(html).toContain(`src="${src.replace("&", "&amp;")}"`);
-    expect(html).toContain(`srcSet="${src.replace("&", "&amp;")}`);
+    expect(html).toContain(`src="${src.replaceAll("&", "&amp;")}"`);
+    expect(html).toContain(`srcSet="${src.replaceAll("&", "&amp;")}`);
     expect(html).not.toContain("/_next/image?");
   });
 
