@@ -1103,7 +1103,7 @@ export function MetadataHead({ metadata, pathname = "/", trailingSlash }: Metada
       }
     }
     // Twitter player cards
-    if (tw.players) {
+    if (tw.card === "player" && tw.players) {
       const players = Array.isArray(tw.players) ? tw.players : [tw.players];
       for (const player of players) {
         const playerUrl = player.playerUrl.toString();
@@ -1121,7 +1121,7 @@ export function MetadataHead({ metadata, pathname = "/", trailingSlash }: Metada
       }
     }
     // Twitter app cards
-    if (tw.app) {
+    if (tw.card === "app" && tw.app) {
       const { app } = tw;
       for (const platform of ["iphone", "ipad", "googleplay"] as const) {
         if (app.name) {
@@ -1129,7 +1129,7 @@ export function MetadataHead({ metadata, pathname = "/", trailingSlash }: Metada
             <meta key={key++} name={`twitter:app:name:${platform}`} content={app.name} />,
           );
         }
-        if (app.id[platform] !== undefined) {
+        if (app.id[platform]) {
           elements.push(
             <meta
               key={key++}
@@ -1138,7 +1138,7 @@ export function MetadataHead({ metadata, pathname = "/", trailingSlash }: Metada
             />,
           );
         }
-        if (app.url?.[platform] !== undefined) {
+        if (app.url?.[platform]) {
           const appUrl = app.url[platform]!.toString();
           elements.push(
             <meta key={key++} name={`twitter:app:url:${platform}`} content={resolveUrl(appUrl)} />,
