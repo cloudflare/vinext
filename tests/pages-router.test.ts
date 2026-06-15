@@ -2202,6 +2202,90 @@ describe("Pages Router integration", () => {
   });
 });
 
+describe("Pages Router dev dot-path rewrite preflight", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-dot-path-rewrite-"));
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.mkdir(path.join(tmpDir, "public"), { recursive: true });
+    await fsp.symlink(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(tmpDir, "node_modules"),
+      "junction",
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "about.tsx"),
+      `export default function About() { return <div>rewritten download page</div>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "public", "unrelated.txt"), "unrelated asset");
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default {
+  async rewrites() {
+    return {
+      beforeFiles: [{
+        source: "/download.txt",
+        has: [{ type: "header", key: "x-download-rewrite", value: "enabled" }],
+        destination: "/about",
+      }],
+      afterFiles: [],
+      fallback: [],
+    };
+  },
+};
+`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "middleware.ts"),
+      `import { NextResponse } from "next/server";
+
+export default function middleware(request) {
+  if (new URL(request.url).searchParams.has("rewrite")) {
+    const headers = new Headers(request.headers);
+    headers.set("x-download-rewrite", "enabled");
+    return NextResponse.next({ request: { headers } });
+  }
+  return NextResponse.next();
+}
+
+export const config = { matcher: "/download.txt" };
+`,
+    );
+
+    ({ server, baseUrl } = await startFixtureServer(tmpDir));
+  }, 30000);
+
+  afterAll(async () => {
+    await server?.close();
+    await fsp.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("runs middleware before evaluating has conditions for dot-path rewrites", async () => {
+    const response = await fetch(`${baseUrl}/download.txt?rewrite`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(await response.text()).toContain("rewritten download page");
+  });
+
+  it("does not apply the rewrite when the post-middleware condition is false", async () => {
+    const response = await fetch(`${baseUrl}/download.txt`);
+
+    expect(response.status).toBe(404);
+    expect(await response.text()).not.toContain("rewritten download page");
+  });
+
+  it("does not route unrelated dot-path assets through rewrite handling", async () => {
+    const response = await fetch(`${baseUrl}/unrelated.txt`);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("unrelated asset");
+  });
+});
+
 describe("Pages Router dev server origin check", () => {
   let server: ViteDevServer;
   let baseUrl: string;
