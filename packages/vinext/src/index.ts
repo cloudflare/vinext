@@ -181,7 +181,7 @@ import {
   relativeWithinRoot,
   type BundleBackfillChunk,
 } from "./build/ssr-manifest.js";
-import { stripServerExports } from "./plugins/strip-server-exports.js";
+import { stripServerExports, validatePageExports } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
@@ -771,6 +771,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const viteMajorVersion = getViteMajorVersion();
   let root: string;
   let pagesDir: string;
+  let canonicalPagesDir: string;
   let appDir: string;
   let hasAppDir = false;
   let hasPagesDir = false;
@@ -1189,6 +1190,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
 
         pagesDir = path.posix.join(baseDir, "pages");
+        canonicalPagesDir = canonicalize(pagesDir);
         appDir = path.posix.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
@@ -4006,11 +4008,67 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         };
       },
     },
-    // Match Next.js's server-only boundary for browser/client graphs. The
-    // marker is valid in App Router Server Components and middleware/server
-    // targets, but importing it from client-reachable code (including Pages
-    // Router browser bundles) must fail instead of silently resolving to the
-    // empty shim.
+    // Next.js rejects `export * from "..."` in every Pages Router page file,
+    // including API routes and special pages. This validation is separate from
+    // client-only data export stripping because server builds still need their
+    // actual exports.
+    {
+      name: "vinext:validate-page-exports",
+      transform: {
+        handler(code, id) {
+          if (!hasPagesDir) return null;
+          const canonicalId = canonicalize(stripViteModuleQuery(id));
+          if (
+            canonicalId !== canonicalPagesDir &&
+            !canonicalId.startsWith(`${canonicalPagesDir}/`)
+          ) {
+            return null;
+          }
+          if (!fileMatcher.isPageFile(canonicalId)) return null;
+          validatePageExports(code);
+          return null;
+        },
+      },
+    },
+    // Strip server-only data-fetching exports (getServerSideProps, getStaticProps,
+    // getStaticPaths) from page modules in the client bundle. These functions
+    // often import server-only modules (database drivers, fs, etc.) that would
+    // break or bloat the client bundle. Next.js does this via an SWC transform
+    // (next-ssg-transform); we use Vite's parseAst + MagicString.
+    //
+    // Only applies to client builds (not SSR) and only to files under the
+    // pages/ directory.
+    {
+      name: "vinext:strip-server-exports",
+      transform: {
+        handler(code, id) {
+          const ssr = this.environment?.name !== "client";
+          if (ssr) return null;
+          if (!hasPagesDir) return null;
+          // Only transform files under the pages/ directory
+          const canonicalId = canonicalize(stripViteModuleQuery(id));
+          if (
+            canonicalId !== canonicalPagesDir &&
+            !canonicalId.startsWith(`${canonicalPagesDir}/`)
+          ) {
+            return null;
+          }
+          if (!fileMatcher.isPageFile(canonicalId)) return null;
+          // Skip API routes, _app, _document, _error
+          const relativePath = canonicalId.slice(canonicalPagesDir.length);
+          if (relativePath.startsWith("/api/") || relativePath === "/api") return null;
+          if (/^\/(?:_app|_document|_error)(?:\.[^/]*)?$/.test(relativePath)) return null;
+
+          const result = stripServerExports(code);
+          if (!result) return null;
+          return { code: result, map: null };
+        },
+      },
+    },
+    // Match Next.js's server-only boundary for browser/client graphs. This
+    // must run after the Pages data-export transform so a valid
+    // `export { getServerSideProps } from "./server"` boundary is removed
+    // before the browser graph resolves and validates the server module.
     //
     // Ported behavior from Next.js:
     // test/development/acceptance/server-component-compiler-errors-in-pages.test.ts
@@ -4028,36 +4086,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           throw new Error(
             `You're importing a module that depends on "server-only". This API is only available in Server Components in the App Router, but this module is reachable from a client bundle.`,
           );
-        },
-      },
-    },
-    // Strip server-only data-fetching exports (getServerSideProps, getStaticProps,
-    // getStaticPaths) from page modules in the client bundle. These functions
-    // often import server-only modules (database drivers, fs, etc.) that would
-    // break or bloat the client bundle. Next.js does this via an SWC transform
-    // (next-ssg-transform); we use Vite's parseAst + MagicString.
-    //
-    // Only applies to client builds (not SSR) and only to files under the
-    // pages/ directory.
-    {
-      name: "vinext:strip-server-exports",
-      transform: {
-        // Only match page source files, not node_modules
-        filter: { id: /\.(tsx?|jsx?|mjs)$/ },
-        handler(code, id) {
-          const ssr = this.environment?.name !== "client";
-          if (ssr) return null;
-          if (!hasPagesDir) return null;
-          // Only transform files under the pages/ directory
-          if (!id.startsWith(pagesDir)) return null;
-          // Skip API routes, _app, _document, _error
-          const relativePath = id.slice(pagesDir.length);
-          if (relativePath.startsWith("/api/") || relativePath === "/api") return null;
-          if (/\/_(?:app|document|error)\b/.test(relativePath)) return null;
-
-          const result = stripServerExports(code);
-          if (!result) return null;
-          return { code: result, map: null };
         },
       },
     },
