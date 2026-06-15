@@ -23,6 +23,7 @@ import Link, {
 } from "../packages/vinext/src/shims/link.js";
 import {
   navigatePagesRouterLink,
+  navigatePagesRouterLinkWithFallback,
   resolvePagesRouterQueryOnlyHref,
 } from "../packages/vinext/src/client/pages-router-link-navigation.js";
 
@@ -818,6 +819,36 @@ describe("Link locale handling", () => {
 
     expect(push).toHaveBeenCalledWith("/fr/about", undefined, { scroll: true, locale: "fr" });
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("rethrows missing-required-param interpolation errors instead of using Link fallback", async () => {
+    const interpolationError = new Error(
+      "The provided `href` (/catalog/[category]/[item]?category=music) value is missing query values (item) to be interpolated properly. Read more: https://nextjs.org/docs/messages/href-interpolation-failed",
+    );
+    const fallback = vi.fn();
+    const loadRouter = vi.fn();
+    const router = {
+      push: vi.fn(async () => {
+        throw interpolationError;
+      }),
+      replace: vi.fn(async () => true),
+    };
+
+    await expect(
+      navigatePagesRouterLinkWithFallback({
+        router,
+        loadRouter,
+        navigation: {
+          href: "/catalog/books/old?category=music",
+          replace: false,
+          scroll: true,
+          interpolateDynamicRoute: true,
+        },
+        fallback,
+      }),
+    ).rejects.toBe(interpolationError);
+    expect(loadRouter).not.toHaveBeenCalled();
+    expect(fallback).not.toHaveBeenCalled();
   });
 
   // Regression for #1332 sub-problem 3: `<Link shallow>` must reach

@@ -63,7 +63,7 @@ import { addLocalePrefix, getDomainLocaleUrl, type DomainLocale } from "../utils
 import { getI18nContext } from "./i18n-context.js";
 import type { VinextLinkPrefetchRoute, VinextNextData } from "../client/vinext-next-data.js";
 import {
-  navigatePagesRouterLink,
+  navigatePagesRouterLinkWithFallback,
   resolvePagesRouterQueryOnlyHref,
 } from "../client/pages-router-link-navigation.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../routing/route-matching.js";
@@ -1071,26 +1071,28 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       // Pages Router still executes instrumentation-client side effects
       // during startup, but it does not invoke the named export on navigation.
       // Pages Router: use the Router singleton
-      try {
-        const Router = window.next?.appDir === true ? undefined : window.next?.router;
-        const pagesRouter =
-          Router && "reload" in Router ? Router : (await import("next/router")).default;
-        await navigatePagesRouterLink(pagesRouter, {
+      const Router = window.next?.appDir === true ? undefined : window.next?.router;
+      const pagesRouter = Router && "reload" in Router ? Router : undefined;
+      await navigatePagesRouterLinkWithFallback({
+        router: pagesRouter,
+        loadRouter: async () => (await import("next/router")).default,
+        navigation: {
           href: pagesNavigateHref,
           replace,
           scroll,
           shallow,
           locale,
-        });
-      } catch {
-        // Fallback to hard navigation if router fails
-        if (replace) {
-          window.history.replaceState({}, "", absoluteFullHref);
-        } else {
-          window.history.pushState({}, "", absoluteFullHref);
-        }
-        window.dispatchEvent(new PopStateEvent("popstate"));
-      }
+          interpolateDynamicRoute: resolvedHref.startsWith("?"),
+        },
+        fallback: () => {
+          if (replace) {
+            window.history.replaceState({}, "", absoluteFullHref);
+          } else {
+            window.history.pushState({}, "", absoluteFullHref);
+          }
+          window.dispatchEvent(new PopStateEvent("popstate"));
+        },
+      });
     }
   };
 

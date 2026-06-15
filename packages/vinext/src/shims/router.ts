@@ -66,7 +66,11 @@ import {
   type UrlQuery,
   urlQueryToSearchParams,
 } from "../utils/query.js";
-import { matchRoutePattern, routePatternParts } from "../routing/route-pattern.js";
+import {
+  fillRoutePatternSegments,
+  matchRoutePattern,
+  routePatternParts,
+} from "../routing/route-pattern.js";
 import { scrollToHashTarget } from "./hash-scroll.js";
 import {
   installPagesRouterRuntime,
@@ -373,6 +377,7 @@ type TransitionOptions = {
   shallow?: boolean;
   scroll?: boolean;
   locale?: string | false;
+  _vinextInterpolateDynamicRoute?: boolean;
 };
 
 type RouterEvents = {
@@ -527,6 +532,72 @@ function resolveNavigationTarget(
   replaceExistingLocale = false,
 ): string {
   return applyNavigationLocale(as ?? resolveUrl(url), locale, replaceExistingLocale);
+}
+
+class HrefInterpolationError extends Error {}
+
+function interpolateCurrentDynamicRoute(resolved: string): string {
+  if (typeof window === "undefined") return resolved;
+
+  const routePattern = window.__NEXT_DATA__?.page;
+  if (!routePattern || extractRouteParamNames(routePattern).length === 0) return resolved;
+
+  try {
+    const target = new URL(resolved, "http://vinext.local");
+    const currentOrigin = getWindowOrigin();
+    if (
+      currentOrigin &&
+      target.origin !== "http://vinext.local" &&
+      target.origin !== currentOrigin
+    ) {
+      return resolved;
+    }
+    const visiblePath = stripBasePath(window.location.pathname, __basePath);
+    const visibleLocale = getLocalePathPrefix(visiblePath, window.__VINEXT_LOCALES__);
+    const routePath = visibleLocale ? visiblePath.slice(visibleLocale.length + 1) || "/" : visiblePath;
+    if (extractRouteParamsFromPath(routePattern, routePath) === null) return resolved;
+
+    const query = parseQueryString(target.search);
+    const missingParams = routePatternParts(routePattern)
+      .filter((part) => part.startsWith(":") && !part.endsWith("*"))
+      .map((part) => part.slice(1, part.endsWith("+") ? -1 : undefined))
+      .filter((paramName) => {
+        const value = query[paramName];
+        return value === undefined || value === "" || (Array.isArray(value) && value.length === 0);
+      });
+    if (missingParams.length > 0) {
+      const href = `${routePattern}${target.search}${target.hash}`;
+      throw new HrefInterpolationError(
+        `The provided \`href\` (${href}) value is missing query values (${missingParams.join(
+          ", ",
+        )}) to be interpolated properly. Read more: https://nextjs.org/docs/messages/href-interpolation-failed`,
+      );
+    }
+
+    const routeParams = getRouteParamsFromQuery(routePattern, query);
+    if (!routeParams) return resolved;
+
+    const encodedRouteParams = Object.fromEntries(
+      Object.entries(routeParams).map(([key, value]) => [
+        key,
+        Array.isArray(value) ? value.map(encodeURIComponent) : encodeURIComponent(value),
+      ]),
+    );
+    const pathname = fillRoutePatternSegments(routePattern, encodedRouteParams);
+    if (!pathname) return resolved;
+
+    const targetLocale = getLocalePathPrefix(target.pathname, window.__VINEXT_LOCALES__);
+    target.pathname = targetLocale ? `/${targetLocale}${pathname}` : pathname;
+    for (const paramName of extractRouteParamNames(routePattern)) {
+      target.searchParams.delete(paramName);
+    }
+    return target.href.slice(target.origin.length);
+  } catch (error) {
+    if (error instanceof HrefInterpolationError) {
+      throw error;
+    }
+    return resolved;
+  }
 }
 
 function getCurrentUrlLocale(): string | undefined {
@@ -2289,6 +2360,16 @@ async function performNavigation(
       (typeof url.search === "string" && url.search.length > 0) ||
       (typeof url.hash === "string" && url.hash.length > 0));
   let resolved = resolveNavigationTarget(url, as, navigationLocale, replaceInheritedLocale);
+  const inheritsCurrentPath =
+    as === undefined &&
+    ((typeof url === "string" && options?._vinextInterpolateDynamicRoute === true) ||
+      (typeof url !== "string" &&
+        url.pathname === undefined &&
+        ((url.query !== undefined && Object.keys(url.query).length > 0) ||
+          (typeof url.search === "string" && url.search.length > 0))));
+  if (inheritsCurrentPath) {
+    resolved = interpolateCurrentDynamicRoute(resolved);
+  }
 
   // External URLs — delegate to browser (unless same-origin)
   if (isExternalUrl(resolved)) {

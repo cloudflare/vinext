@@ -145,6 +145,74 @@ test.describe("Client-side navigation", () => {
     );
   });
 
+  test("same-segment rewrite interpolates router.push route params", async ({ page }) => {
+    // Ported from Next.js: test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+    await page.goto(`${BASE}/rewrite-navigation-same/0`);
+    await waitForHydration(page);
+    await trackNavigation(page);
+
+    await page.click('[data-testid="router-push"]');
+
+    await expect(page.locator('[data-testid="query-id"]')).toHaveText("1");
+    await expect(page).toHaveURL(`${BASE}/rewrite-navigation-same/1`);
+    await expect(page.locator('[data-testid="as-path"]')).toHaveText(
+      "/rewrite-navigation-same/1",
+    );
+    expect(await page.evaluate(() => (window as any).__REWRITE_NAV_HISTORY__.at(-1))).toBe("push");
+    expect(await page.evaluate(() => (window as any).__REWRITE_NAV_EVENTS__)).toEqual([
+      "routeChangeStart:/rewrite-navigation-same/1",
+      "beforeHistoryChange:/rewrite-navigation-same/1",
+      "routeChangeComplete:/rewrite-navigation-same/1",
+    ]);
+  });
+
+  test("same-segment rewrite interpolates router.replace route params", async ({ page }) => {
+    // Ported from Next.js: test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+    await page.goto(`${BASE}/rewrite-navigation-same/0`);
+    await waitForHydration(page);
+    await trackNavigation(page);
+
+    await page.click('[data-testid="router-replace"]');
+
+    await expect(page.locator('[data-testid="query-id"]')).toHaveText("2");
+    await expect(page).toHaveURL(`${BASE}/rewrite-navigation-same/2`);
+    await expect(page.locator('[data-testid="as-path"]')).toHaveText(
+      "/rewrite-navigation-same/2",
+    );
+    expect(await page.evaluate(() => (window as any).__REWRITE_NAV_HISTORY__.at(-1))).toBe(
+      "replace",
+    );
+    expect(await page.evaluate(() => (window as any).__REWRITE_NAV_EVENTS__)).toEqual([
+      "routeChangeStart:/rewrite-navigation-same/2",
+      "beforeHistoryChange:/rewrite-navigation-same/2",
+      "routeChangeComplete:/rewrite-navigation-same/2",
+    ]);
+  });
+
+  test("same-segment rewrite interpolates Link route params", async ({ page }) => {
+    // Ported from Next.js: test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+    await page.goto(`${BASE}/rewrite-navigation-same/0`);
+    await waitForHydration(page);
+    await trackNavigation(page);
+
+    await page.click('[data-testid="query-link"]');
+
+    await expect(page.locator('[data-testid="query-id"]')).toHaveText("3");
+    await expect(page).toHaveURL(`${BASE}/rewrite-navigation-same/3`);
+    await expect(page.locator('[data-testid="as-path"]')).toHaveText(
+      "/rewrite-navigation-same/3",
+    );
+    expect(await page.evaluate(() => (window as any).__REWRITE_NAV_HISTORY__.at(-1))).toBe("push");
+    expect(await page.evaluate(() => (window as any).__REWRITE_NAV_EVENTS__)).toEqual([
+      "routeChangeStart:/rewrite-navigation-same/3",
+      "beforeHistoryChange:/rewrite-navigation-same/3",
+      "routeChangeComplete:/rewrite-navigation-same/3",
+    ]);
+  });
+
   test("router.push(url, as) uses the masked URL while resolving the real route", async ({
     page,
   }) => {
@@ -261,3 +329,27 @@ test.describe("Client-side navigation", () => {
     );
   });
 });
+
+async function trackNavigation(page: import("@playwright/test").Page) {
+  await page.evaluate(() => {
+    const router = (window as any).next.router;
+    const events: string[] = [];
+    for (const event of ["routeChangeStart", "beforeHistoryChange", "routeChangeComplete"]) {
+      router.events.on(event, (url: string) => events.push(`${event}:${url}`));
+    }
+    (window as any).__REWRITE_NAV_EVENTS__ = events;
+
+    const historyMethods: string[] = [];
+    const pushState = window.history.pushState.bind(window.history);
+    const replaceState = window.history.replaceState.bind(window.history);
+    window.history.pushState = (...args) => {
+      historyMethods.push("push");
+      return pushState(...args);
+    };
+    window.history.replaceState = (...args) => {
+      historyMethods.push("replace");
+      return replaceState(...args);
+    };
+    (window as any).__REWRITE_NAV_HISTORY__ = historyMethods;
+  });
+}
