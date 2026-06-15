@@ -473,7 +473,7 @@ describe("next/navigation shim", () => {
 
       await navigateClientSide("#content", "push", true, true);
 
-      expect(replaceState).toHaveBeenCalledWith(
+      expect(replaceState).toHaveBeenLastCalledWith(
         expect.objectContaining({ __vinext_scrollX: 12, __vinext_scrollY: 345 }),
         "",
         undefined,
@@ -2551,6 +2551,159 @@ describe("window.next debug global", () => {
         "/rewrite-navigation/0?id=1",
       );
     } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it.each([
+    [{}, "/rewrite-navigation/[id]/destination", "/rewrite-navigation/[id]/destination"],
+    [{ query: {} }, "/rewrite-navigation/[id]/destination", "/rewrite-navigation/[id]/destination"],
+    [{ search: "id=2" }, "/rewrite-navigation/0?id=2", "/rewrite-navigation/0?id=2"],
+    [
+      { query: { id: "ignored" }, search: "id=3", hash: "result" },
+      "/rewrite-navigation/0?id=3#result",
+      "/rewrite-navigation/0?id=3",
+    ],
+    [
+      { hash: "section" },
+      "/rewrite-navigation/0?existing=1#section",
+      "/rewrite-navigation/0?existing=1",
+    ],
+  ])(
+    "formats Pages Router UrlObjects with Next.js semantics: %j",
+    async (url, expected, stateAs) => {
+      const previousWindow = (globalThis as any).window;
+      const previousDocument = (globalThis as any).document;
+      const pushState = vi.fn();
+      const win: any = {
+        location: {
+          pathname: "/rewrite-navigation/0",
+          search: "?existing=1",
+          hash: "",
+          href: "http://localhost/rewrite-navigation/0?existing=1",
+          origin: "http://localhost",
+        },
+        history: { state: null, pushState, replaceState() {} },
+        addEventListener() {},
+        dispatchEvent() {},
+        scrollTo() {},
+        __NEXT_DATA__: {
+          page: "/rewrite-navigation/[id]/destination",
+          query: { id: "0" },
+          isFallback: false,
+        },
+      };
+      (globalThis as any).window = win;
+      (globalThis as any).document = {
+        getElementById: vi.fn(() => null),
+        getElementsByName: vi.fn(() => []),
+      };
+
+      try {
+        vi.resetModules();
+        const routerModule = await import("../packages/vinext/src/shims/router.js");
+        await routerModule.default.push(url, undefined, { shallow: true });
+
+        expect(pushState).toHaveBeenCalledWith(
+          expect.objectContaining({ as: stateAs }),
+          "",
+          expected,
+        );
+      } finally {
+        (globalThis as any).window = previousWindow;
+        if (previousDocument === undefined) delete (globalThis as any).document;
+        else (globalThis as any).document = previousDocument;
+        vi.resetModules();
+      }
+    },
+  );
+
+  it("query-only push replaces the current locale under basePath", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const pushState = vi.fn();
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    const win: any = {
+      location: {
+        pathname: "/docs/fr/rewrite-navigation/0",
+        search: "",
+        hash: "",
+        href: "http://localhost/docs/fr/rewrite-navigation/0",
+        origin: "http://localhost",
+        hostname: "localhost",
+      },
+      history: { state: null, pushState, replaceState() {} },
+      addEventListener() {},
+      dispatchEvent() {},
+      scrollTo() {},
+      __VINEXT_LOCALE__: "fr",
+      __VINEXT_LOCALES__: ["en", "fr", "nl"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      await routerModule.default.push({ query: { id: "1" } }, undefined, {
+        locale: "nl",
+        shallow: true,
+      });
+
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ as: "/nl/rewrite-navigation/0?id=1" }),
+        "",
+        "/docs/nl/rewrite-navigation/0?id=1",
+      );
+    } finally {
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("query-only replace with locale false removes the current locale under basePath", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const replaceState = vi.fn();
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    const win: any = {
+      location: {
+        pathname: "/docs/fr/rewrite-navigation/0",
+        search: "",
+        hash: "",
+        href: "http://localhost/docs/fr/rewrite-navigation/0",
+        origin: "http://localhost",
+        hostname: "localhost",
+      },
+      history: { state: null, pushState() {}, replaceState },
+      addEventListener() {},
+      dispatchEvent() {},
+      scrollTo() {},
+      __VINEXT_LOCALE__: "fr",
+      __VINEXT_LOCALES__: ["en", "fr"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      await routerModule.default.replace({ search: "id=2" }, undefined, {
+        locale: false,
+        shallow: true,
+      });
+
+      expect(replaceState).toHaveBeenCalledWith(
+        expect.objectContaining({ as: "/rewrite-navigation/0?id=2" }),
+        "",
+        "/docs/rewrite-navigation/0?id=2",
+      );
+    } finally {
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
       (globalThis as any).window = previousWindow;
       vi.resetModules();
     }

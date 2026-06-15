@@ -19,6 +19,13 @@ export default function RewriteNavigationPage() {
       <Link data-testid="query-link" href="?id=3">
         Link query
       </Link>
+      <button
+        data-testid="search-push"
+        onClick={() => router.push({ query: { id: "ignored" }, search: "id=6", hash: "result" })}
+      >
+        Push search and hash
+      </button>
+      <div id="result">Hash result</div>
     </main>
   );
 }

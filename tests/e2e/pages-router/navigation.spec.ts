@@ -102,6 +102,20 @@ test.describe("Client-side navigation", () => {
     await expect(page.locator('[data-testid="query-id"]')).toHaveText("0");
   });
 
+  test("UrlObject search overrides query and preserves hash on rewritten paths", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/rewrite-navigation/0`);
+    await waitForHydration(page);
+
+    await page.click('[data-testid="search-push"]');
+    await expect(page).toHaveURL(`${BASE}/rewrite-navigation/0?id=6#result`);
+    await expect(page.locator('[data-testid="as-path"]')).toHaveText(
+      "/rewrite-navigation/0?id=6#result",
+    );
+    await expect(page.locator('[data-testid="query-id"]')).toHaveText("0");
+  });
+
   test("router.push(url, as) uses the masked URL while resolving the real route", async ({
     page,
   }) => {
