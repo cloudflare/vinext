@@ -117,11 +117,7 @@ async function handleRequest(
     if (prerenderRouteParamsHeader !== null) {
       filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
     }
-    const sourceRequest = request;
-    request = cloneRequestWithHeaders(sourceRequest, filteredHeaders);
-    if (process.env.NODE_ENV !== "development" && sourceRequest.body) {
-      void sourceRequest.body.cancel().catch(() => {});
-    }
+    request = cloneRequestWithHeaders(request, filteredHeaders);
   }
 
   // Do NOT decode/normalize the pathname here. The RSC handler
