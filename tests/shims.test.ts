@@ -2559,9 +2559,21 @@ describe("window.next debug global", () => {
   it.each([
     [{}, "/rewrite-navigation/[id]/destination", "/rewrite-navigation/[id]/destination"],
     [{ query: {} }, "/rewrite-navigation/[id]/destination", "/rewrite-navigation/[id]/destination"],
-    [{ search: "id=2" }, "/rewrite-navigation/0?id=2", "/rewrite-navigation/0?id=2"],
+    [{ search: "flag" }, "/rewrite-navigation/0?flag", "/rewrite-navigation/0?flag"],
+    [{ search: "q=a%20b" }, "/rewrite-navigation/0?q=a%20b", "/rewrite-navigation/0?q=a%20b"],
+    [{ search: "?" }, "/rewrite-navigation/0?", "/rewrite-navigation/0?"],
     [
-      { query: { id: "ignored" }, search: "id=3", hash: "result" },
+      { query: { id: "ignored" }, search: "id=3" },
+      "/rewrite-navigation/0?id=3",
+      "/rewrite-navigation/0?id=3",
+    ],
+    [
+      { search: "q=a%20b", hash: "result" },
+      "/rewrite-navigation/0?q=a%20b#result",
+      "/rewrite-navigation/0?q=a%20b",
+    ],
+    [
+      { query: { id: "ignored" }, search: "?id=3", hash: "#result" },
       "/rewrite-navigation/0?id=3#result",
       "/rewrite-navigation/0?id=3",
     ],

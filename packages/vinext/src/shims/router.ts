@@ -495,7 +495,7 @@ function resolveUrl(url: string | UrlObject): string {
         : (window.__NEXT_DATA__?.page ?? stripBasePath(window.location.pathname, __basePath))
       : "/");
   if (hasSearch) {
-    result = appendSearchParamsToUrl(result, new URLSearchParams(url.search));
+    result += url.search!.startsWith("?") ? url.search : `?${url.search}`;
   } else if (hasQuery) {
     const params = urlQueryToSearchParams(url.query!);
     result = appendSearchParamsToUrl(result, params);
