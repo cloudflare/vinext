@@ -14933,6 +14933,136 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("superseded JSON page loader failures do not hard-navigate or emit a second error", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const hrefAssignments = trackHrefAssignments(win);
+    const loaderA = createDeferred<{ default: () => null }>();
+    const pageALoader = vi.fn(() => loaderA.promise);
+    Object.assign(win.location, { origin: "http://localhost" });
+    Object.assign(win as unknown as Window, {
+      __NEXT_DATA__: { ...win.__NEXT_DATA__, buildId: "test-build" },
+      __VINEXT_PAGE_LOADERS__: {
+        "/page-a": pageALoader,
+        "/page-b": vi.fn(async () => ({ default: () => null })),
+      },
+      __VINEXT_PAGE_PATTERNS__: ["/page-a", "/page-b"],
+    });
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ pageProps: {} }), {
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const errors: Array<{ error: Error & { cancelled?: boolean }; url: string }> = [];
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      Router.events.on("routeChangeError", (error: unknown, url: unknown) => {
+        errors.push({ error: error as Error & { cancelled?: boolean }, url: String(url) });
+      });
+
+      const navigationA = Router.push("/page-a");
+      await vi.waitFor(() => expect(pageALoader).toHaveBeenCalled());
+      await expect(Router.push("/page-b")).resolves.toBe(true);
+      hrefAssignments.length = 0;
+      loaderA.reject(new Error("stale chunk failed"));
+      await expect(navigationA).resolves.toBe(true);
+
+      expect(win.location.pathname).toBe("/page-b");
+      expect(hrefAssignments).toEqual([]);
+      expect(errors.filter(({ url }) => url === "/page-a")).toHaveLength(1);
+      expect(errors[0]?.error).toHaveProperty("cancelled", true);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("superseded HTML page loader failures do not hard-navigate or emit a second error", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const hrefAssignments = trackHrefAssignments(win);
+    const loaderA = createDeferred<{ default: () => null }>();
+    const pageALoader = vi.fn(() => loaderA.promise);
+    Object.assign(win as unknown as Window, {
+      __VINEXT_PAGE_LOADERS__: {
+        "/page-a": pageALoader,
+        "/page-b": vi.fn(async () => ({ default: () => null })),
+      },
+      __VINEXT_PAGE_PATTERNS__: [],
+    });
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+      const pathname = new URL(getFetchHref(url), "http://localhost").pathname;
+      return new Response(buildNavHtml(pathname, `/@fs/pages${pathname}.js`));
+    });
+    const errors: Array<{ error: Error & { cancelled?: boolean }; url: string }> = [];
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      Router.events.on("routeChangeError", (error: unknown, url: unknown) => {
+        errors.push({ error: error as Error & { cancelled?: boolean }, url: String(url) });
+      });
+
+      const navigationA = Router.push("/page-a");
+      await vi.waitFor(() => expect(pageALoader).toHaveBeenCalled());
+      await expect(Router.push("/page-b")).resolves.toBe(true);
+      hrefAssignments.length = 0;
+      loaderA.reject(new Error("stale chunk failed"));
+      await expect(navigationA).resolves.toBe(true);
+
+      expect(win.location.pathname).toBe("/page-b");
+      expect(hrefAssignments).toEqual([]);
+      expect(errors.filter(({ url }) => url === "/page-a")).toHaveLength(1);
+      expect(errors[0]?.error).toHaveProperty("cancelled", true);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("active HTML page loader failures still hard-navigate", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const hrefAssignments = trackHrefAssignments(win);
+    Object.assign(win as unknown as Window, {
+      __VINEXT_PAGE_LOADERS__: {
+        "/failing-page": vi.fn(async () => {
+          throw new Error("chunk failed");
+        }),
+      },
+      __VINEXT_PAGE_PATTERNS__: [],
+    });
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(
+      async () => new Response(buildNavHtml("/failing-page", "/@fs/pages/failing-page.js")),
+    );
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+
+      await expect(Router.push("/failing-page")).resolves.toBe(false);
+      expect(hrefAssignments).toEqual(["/failing-page"]);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   it("fetches default-locale root through a locale-qualified URL without changing the browser URL", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;

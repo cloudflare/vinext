@@ -1633,6 +1633,7 @@ async function navigateClientData(
   try {
     pageModule = await target.loader();
   } catch (err) {
+    assertStillCurrent();
     console.error("[vinext] Page loader threw during navigation:", err);
     scheduleHardNavigationAndThrow(url, "Data navigation failed: page loader threw");
   }
@@ -1828,7 +1829,12 @@ async function navigateClientHtml(
     // React component identity stable for same-route param changes. Importing
     // the extracted chunk URL directly can evaluate a duplicate module when
     // the router runtime is split across entry and page chunks.
-    pageModule = await loader();
+    try {
+      pageModule = await loader();
+    } catch (err) {
+      assertStillCurrent();
+      throw err;
+    }
   } else if (!pageModuleUrl) {
     scheduleHardNavigationAndThrow(browserUrl, "Navigation failed: no page module URL found");
   } else {

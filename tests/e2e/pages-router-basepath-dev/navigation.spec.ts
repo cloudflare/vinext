@@ -1,5 +1,13 @@
 import { expect, test } from "@playwright/test";
 
+const basePath = "/docs";
+
+async function openRouterEventsPage(page: import("@playwright/test").Page) {
+  await page.goto(`${basePath}/hello`);
+  await page.waitForFunction(() => Boolean((window as any).__VINEXT_ROOT__));
+  await page.evaluate(() => (window as any)._clearEventLog());
+}
+
 // Ported from Next.js: test/e2e/basepath/router-events.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/router-events.test.ts
 test("loads the target page module through the dev server basePath", async ({ page }) => {
@@ -87,4 +95,70 @@ test("soft navigates with basePath module URLs after ISR regeneration", async ({
   expect(moduleRequests).toContain("/docs/pages/isr-basepath.tsx?import");
   expect(moduleRequests).not.toContain("/pages/isr-basepath.tsx?import");
   expect(moduleRequests.every((moduleRequest) => moduleRequest.startsWith("/docs/"))).toBe(true);
+});
+
+// Ported from Next.js: test/e2e/basepath/router-events.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/router-events.test.ts
+test.describe("basePath router events", () => {
+  test("uses basePath URLs for successful route changes", async ({ page }) => {
+    await openRouterEventsPage(page);
+    await page.locator("#other-page-link").click();
+    await expect(page.locator("#other-page-title")).toBeVisible();
+
+    expect(await page.evaluate(() => (window as any)._getEventLog())).toEqual([
+      ["routeChangeStart", `${basePath}/about`, { shallow: false }],
+      ["beforeHistoryChange", `${basePath}/about`, { shallow: false }],
+      ["routeChangeComplete", `${basePath}/about`, { shallow: false }],
+    ]);
+  });
+
+  test("uses basePath URLs for hash changes", async ({ page }) => {
+    await openRouterEventsPage(page);
+    await page.locator("#hash-change").click();
+
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._getEventLog()))
+      .toEqual([
+        ["hashChangeStart", `${basePath}/hello#some-hash`, { shallow: false }],
+        ["hashChangeComplete", `${basePath}/hello#some-hash`, { shallow: false }],
+      ]);
+  });
+
+  test("uses basePath URLs for cancelled route changes", async ({ page }) => {
+    await openRouterEventsPage(page);
+    await page.locator("#slow-route").click();
+    await page.locator("#other-page-link").click();
+    await expect(page.locator("#other-page-title")).toBeVisible();
+
+    expect(await page.evaluate(() => (window as any)._getEventLog())).toEqual([
+      ["routeChangeStart", `${basePath}/slow-route`, { shallow: false }],
+      ["routeChangeError", "Route Cancelled", true, `${basePath}/slow-route`, { shallow: false }],
+      ["routeChangeStart", `${basePath}/about`, { shallow: false }],
+      ["beforeHistoryChange", `${basePath}/about`, { shallow: false }],
+      ["routeChangeComplete", `${basePath}/about`, { shallow: false }],
+    ]);
+  });
+
+  test("uses basePath URLs for failed route changes", async ({ page }) => {
+    await openRouterEventsPage(page);
+    await page.locator("#error-route").click();
+
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const data = sessionStorage.getItem("router-event-log");
+          return data ? JSON.parse(data) : [];
+        }),
+      )
+      .toEqual([
+        ["routeChangeStart", `${basePath}/error-route`, { shallow: false }],
+        [
+          "routeChangeError",
+          "Failed to load static props",
+          null,
+          `${basePath}/error-route`,
+          { shallow: false },
+        ],
+      ]);
+  });
 });
