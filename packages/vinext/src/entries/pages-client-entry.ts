@@ -160,14 +160,14 @@ if (nextDataElement?.textContent) {
   window.__VINEXT_DEFAULT_LOCALE__ = window.__NEXT_DATA__.defaultLocale;
 }
 
-_initializePagesRouterReadyFromNextData(window.__NEXT_DATA__);
-
 async function hydrate() {
   const nextData = window.__NEXT_DATA__;
   if (!nextData) {
     console.error("[vinext] No __NEXT_DATA__ found");
     return;
   }
+
+  _initializePagesRouterReadyFromNextData(nextData);
 
   let hydrateRootOptions;
   if (import.meta.env.DEV) {
