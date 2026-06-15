@@ -54,7 +54,6 @@ import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import {
   DEFAULT_DEVICE_SIZES,
-  DEFAULT_IMAGE_QUALITIES,
   DEFAULT_IMAGE_SIZES,
   isImageOptimizationPath,
   resolveDevImageRedirect,
@@ -626,8 +625,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         ...(options.imageConfig?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
         ...(options.imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
       ],
-      options.imageConfig?.qualities ?? DEFAULT_IMAGE_QUALITIES,
-      { isDev: options.isDev },
+      options.imageConfig?.qualities,
+      { isDev: options.isDev, localPatterns: options.imageConfig?.localPatterns },
     );
     if (!imageRedirect)
       return new Response("Invalid image optimization parameters", { status: 400 });
