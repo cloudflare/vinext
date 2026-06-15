@@ -677,7 +677,7 @@ describe("ISR (Pages Router)", () => {
     // __NEXT_DATA__ must also contain the fresh timestamp, proving both the
     // server-rendered HTML and the hydration data are in sync.
     const nextDataMatch = hitHtml.match(
-      /window\.__NEXT_DATA__\s*=\s*(\{[\s\S]*?\})(?:;|<\/script>)/,
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
     );
     expect(nextDataMatch).toBeTruthy();
     const nextData = JSON.parse(nextDataMatch![1]);
@@ -1213,7 +1213,9 @@ export default function About({ locale, locales, defaultLocale }) {
     const res = await fetch(`${i18nBaseUrl}/fr/about`);
     const html = await res.text();
     // Extract the JSON object from __NEXT_DATA__ (handles nested braces)
-    const dataMatch = html.match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
+    const dataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(dataMatch).not.toBeNull();
     const data = JSON.parse(dataMatch![1]);
     expect(data.locale).toBe("fr");
@@ -1224,7 +1226,9 @@ export default function About({ locale, locales, defaultLocale }) {
   it("includes locale info in __NEXT_DATA__ for default locale", async () => {
     const res = await fetch(`${i18nBaseUrl}/about`);
     const html = await res.text();
-    const dataMatch = html.match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
+    const dataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(dataMatch).not.toBeNull();
     const data = JSON.parse(dataMatch![1]);
     expect(data.locale).toBe("en");
@@ -4718,7 +4722,9 @@ describe("Next.js edge cases", () => {
     expect(html).toMatch(/Article ID:.*1/);
     // Query params should NOT affect the rendered page content (they may appear in Vite module URLs)
     // Check the __NEXT_DATA__ doesn't leak query params into getStaticProps
-    const dataMatch = html.match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
+    const dataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(dataMatch).not.toBeNull();
     const data = JSON.parse(dataMatch![1]);
     expect(data.props.pageProps.id).toBe("1");
@@ -4731,7 +4737,9 @@ describe("Next.js edge cases", () => {
   it("__NEXT_DATA__ query contains dynamic params for static pages", async () => {
     const res = await fetch(`${edgeBaseUrl}/articles/2?extra=value`);
     const html = await res.text();
-    const dataMatch = html.match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
+    const dataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(dataMatch).not.toBeNull();
     const data = JSON.parse(dataMatch![1]);
     // query should contain the dynamic segment
@@ -5748,7 +5756,9 @@ export default function NestedProps({ user }) {
     const res = await fetch(`${edgeBaseUrl}/nested-props`);
     const html = await res.text();
     // __NEXT_DATA__ is injected as: <script>window.__NEXT_DATA__ = {...}</script>
-    const match = html.match(/window\.__NEXT_DATA__\s*=\s*(\{[\s\S]*?\})(?:;|<)/);
+    const match = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/,
+    );
     expect(match).not.toBeNull();
     const data = JSON.parse(match![1]);
     expect(data.props.pageProps.user.name).toBe("Alice");
