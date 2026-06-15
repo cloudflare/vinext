@@ -496,7 +496,9 @@ function resolveUrl(url: string | UrlObject): string {
       : "/");
   if (hasSearch) {
     const search = url.search!.startsWith("?") ? url.search! : `?${url.search}`;
-    result += search.replaceAll("#", "%23");
+    const hashIndex = search.indexOf("#");
+    result +=
+      hashIndex === -1 ? search : `${search.slice(0, hashIndex)}%23${search.slice(hashIndex + 1)}`;
   } else if (hasQuery) {
     const params = urlQueryToSearchParams(url.query!);
     result = appendSearchParamsToUrl(result, params);
