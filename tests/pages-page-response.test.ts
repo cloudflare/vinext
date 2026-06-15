@@ -321,6 +321,35 @@ describe("pages page response", () => {
     );
   });
 
+  // Ported from Next.js: test/e2e/app-document/rendering.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-document/rendering.test.ts
+  it("applies _document nonce and configured crossOrigin to generated scripts and preloads", async () => {
+    const common = createCommonOptions();
+    common.renderDocumentToString.mockResolvedValue(
+      '<!DOCTYPE html><html><head data-vinext-head-nonce="test-nonce"></head><body><div id="__next">__NEXT_MAIN__</div><span data-vinext-script-nonce="test-nonce"><!-- __NEXT_SCRIPTS__ --></span></body></html>',
+    );
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      assetTags:
+        '<link rel="modulepreload" href="/entry.js" />\n' +
+        '<script type="module" src="/entry.js"></script>',
+      crossOrigin: "anonymous",
+    });
+
+    const html = await response.text();
+    expect(html).not.toContain("data-vinext-head-nonce");
+    expect(html).not.toContain("data-vinext-script-nonce");
+    for (const tag of html.match(/<script\b[^>]*>/g) ?? []) {
+      expect(tag).toContain('nonce="test-nonce"');
+      expect(tag).toContain('crossorigin="anonymous"');
+    }
+    for (const tag of html.match(/<link\b[^>]*rel="(?:preload|modulepreload)"[^>]*>/g) ?? []) {
+      expect(tag).toContain('nonce="test-nonce"');
+      expect(tag).toContain('crossorigin="anonymous"');
+    }
+  });
+
   it("renders page before collecting SSR head HTML to prevent style race conditions", async () => {
     // Ported from Next.js: vercel/next.js@9853944
     // styled-jsx (and <Head>) styles must be collected AFTER rendering completes,

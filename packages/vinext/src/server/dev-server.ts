@@ -37,6 +37,10 @@ import { runWithHeadState } from "vinext/shims/head-state";
 import { runWithServerInsertedHTMLState } from "vinext/shims/navigation-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
+import {
+  applyDocumentAssetProps,
+  extractDocumentAssetProps,
+} from "./pages-document-asset-props.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
@@ -207,6 +211,7 @@ async function streamPageToResponse(
      * into `getSSRHeadHTML()`'s output. Called before `getHeadHTML()`.
      */
     setDocumentInitialHead?: (head: React.ReactNode[]) => void;
+    crossOrigin?: string;
   },
 ): Promise<void> {
   const {
@@ -222,6 +227,7 @@ async function streamPageToResponse(
     scriptNonce,
     documentContext,
     setDocumentInitialHead,
+    crossOrigin,
   } = options;
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
@@ -281,6 +287,7 @@ async function streamPageToResponse(
 
   // Build the document shell with a placeholder for the body
   let shellTemplate: string;
+  let documentAssetProps = {};
 
   if (DocumentComponent) {
     // When the renderPage path already invoked getInitialProps (rendered or
@@ -293,17 +300,25 @@ async function streamPageToResponse(
     const docElement = docProps
       ? React.createElement(DocumentComponent, docProps)
       : React.createElement(DocumentComponent);
-    let docHtml = await renderToStringAsync(docElement);
+    const renderedDocument = extractDocumentAssetProps(await renderToStringAsync(docElement));
+    documentAssetProps = renderedDocument.props;
+    let docHtml = renderedDocument.html;
+    const generatedFontHeadHTML = applyDocumentAssetProps(
+      fontHeadHTML,
+      { headNonce: renderedDocument.props.headNonce },
+      renderedDocument.props.headCrossOrigin ?? crossOrigin,
+    );
+    const generatedScripts = applyDocumentAssetProps(scripts, renderedDocument.props, crossOrigin);
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
     // Inject head tags
-    if (headHTML || fontHeadHTML) {
-      docHtml = docHtml.replace("</head>", `  ${fontHeadHTML}${headHTML}\n</head>`);
+    if (headHTML || generatedFontHeadHTML) {
+      docHtml = docHtml.replace("</head>", `  ${generatedFontHeadHTML}${headHTML}\n</head>`);
     }
     // Inject scripts: replace placeholder or append before </body>
-    docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", scripts);
+    docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", generatedScripts);
     if (!docHtml.includes("__NEXT_DATA__")) {
-      docHtml = docHtml.replace("</body>", `  ${scripts}\n</body>`);
+      docHtml = docHtml.replace("</body>", `  ${generatedScripts}\n</body>`);
     }
     shellTemplate = docHtml;
   } else {
@@ -324,7 +339,11 @@ async function streamPageToResponse(
 
   // Apply Vite's HTML transforms (injects HMR client, etc.) on the full
   // shell template, then split at the body marker.
-  const transformedShell = await server.transformIndexHtml(url, shellTemplate);
+  const transformedShell = applyDocumentAssetProps(
+    await server.transformIndexHtml(url, shellTemplate),
+    documentAssetProps,
+    crossOrigin,
+  );
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
   const prefix = transformedShell.slice(0, markerIdx);
   const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
@@ -426,6 +445,7 @@ export function createSSRHandler(
    */
   clientTraceMetadata?: readonly string[],
   htmlLimitedBots?: string,
+  crossOrigin?: string,
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -1759,6 +1779,7 @@ hydrate();
             typeof headShim.setDocumentInitialHead === "function"
               ? headShim.setDocumentInitialHead
               : undefined,
+          crossOrigin,
         });
         _renderEnd = now();
 

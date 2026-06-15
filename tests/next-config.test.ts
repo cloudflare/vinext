@@ -1440,6 +1440,20 @@ describe("resolveNextConfig disableOptimizedLoading", () => {
   });
 });
 
+describe("resolveNextConfig crossOrigin", () => {
+  it("reads supported crossOrigin values", async () => {
+    const anonymous = await resolveNextConfig({ crossOrigin: "anonymous" });
+    const credentials = await resolveNextConfig({ crossOrigin: "use-credentials" });
+    expect(anonymous.crossOrigin).toBe("anonymous");
+    expect(credentials.crossOrigin).toBe("use-credentials");
+  });
+
+  it("ignores unsupported crossOrigin values", async () => {
+    const resolved = await resolveNextConfig({ crossOrigin: "invalid" as "anonymous" });
+    expect(resolved.crossOrigin).toBeUndefined();
+  });
+});
+
 describe("resolveNextConfig scrollRestoration", () => {
   it("defaults scrollRestoration to false", async () => {
     const resolved = await resolveNextConfig({});
@@ -1874,6 +1888,7 @@ describe("detectNextIntlConfig", () => {
       sassOptions: null,
       removeConsole: false,
       disableOptimizedLoading: false,
+      crossOrigin: undefined,
       scrollRestoration: false,
       compilerDefine: {},
       compilerDefineServer: {},

@@ -23,6 +23,10 @@ import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+import {
+  applyDocumentAssetProps,
+  extractDocumentAssetProps,
+} from "./pages-document-asset-props.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -192,6 +196,7 @@ type RenderPagesPageResponseOptions = {
   routeUrl: string;
   safeJsonStringify: (value: unknown) => string;
   scriptNonce?: string;
+  crossOrigin?: string;
   statusCode?: number;
   vinext?: VinextNextData["__vinext"];
   nextData?: PagesNextDataExtras;
@@ -318,6 +323,7 @@ async function buildPagesShellHtml(
      * second time). `null` means use the normal fast path.
      */
     resolvedDocProps?: Record<string, unknown> | null;
+    crossOrigin?: string;
   },
 ): Promise<string> {
   if (options.DocumentComponent) {
@@ -326,17 +332,35 @@ async function buildPagesShellHtml(
     const docElement = docProps
       ? React.createElement(options.DocumentComponent, docProps)
       : React.createElement(options.DocumentComponent);
-    let html = await options.renderDocumentToString(docElement);
+    const renderedDocument = extractDocumentAssetProps(
+      await options.renderDocumentToString(docElement),
+    );
+    let html = renderedDocument.html;
+    const generatedFontHeadHTML = applyDocumentAssetProps(
+      fontHeadHTML,
+      { headNonce: renderedDocument.props.headNonce },
+      renderedDocument.props.headCrossOrigin ?? options.crossOrigin,
+    );
+    const generatedAssetTags = applyDocumentAssetProps(
+      options.assetTags,
+      renderedDocument.props,
+      options.crossOrigin,
+    );
+    const generatedNextDataScript = applyDocumentAssetProps(
+      nextDataScript,
+      renderedDocument.props,
+      options.crossOrigin,
+    );
     html = html.replace("__NEXT_MAIN__", bodyMarker);
-    if (options.ssrHeadHTML || options.assetTags || fontHeadHTML) {
+    if (options.ssrHeadHTML || generatedAssetTags || generatedFontHeadHTML) {
       html = html.replace(
         "</head>",
-        `  ${fontHeadHTML}${options.ssrHeadHTML}\n  ${options.assetTags}\n</head>`,
+        `  ${generatedFontHeadHTML}${options.ssrHeadHTML}\n  ${generatedAssetTags}\n</head>`,
       );
     }
-    html = html.replace("<!-- __NEXT_SCRIPTS__ -->", nextDataScript);
+    html = html.replace("<!-- __NEXT_SCRIPTS__ -->", generatedNextDataScript);
     if (!html.includes("__NEXT_DATA__")) {
-      html = html.replace("</body>", `  ${nextDataScript}\n</body>`);
+      html = html.replace("</body>", `  ${generatedNextDataScript}\n</body>`);
     }
     return html;
   }
@@ -344,14 +368,16 @@ async function buildPagesShellHtml(
   // charset + viewport are emitted via getSSRHeadHTML() (next/head's
   // defaultHead seeds them with data-next-head=""), matching Next.js's
   // canonical ordering. Don't duplicate them here.
-  return (
+  return applyDocumentAssetProps(
     "<!DOCTYPE html>\n<html>\n<head>\n" +
-    `  ${fontHeadHTML}${options.ssrHeadHTML}\n` +
-    `  ${options.assetTags}\n` +
-    "</head>\n<body>\n" +
-    `  <div id="__next">${bodyMarker}</div>\n` +
-    `  ${nextDataScript}\n` +
-    "</body>\n</html>"
+      `  ${fontHeadHTML}${options.ssrHeadHTML}\n` +
+      `  ${options.assetTags}\n` +
+      "</head>\n<body>\n" +
+      `  <div id="__next">${bodyMarker}</div>\n` +
+      `  ${nextDataScript}\n` +
+      "</body>\n</html>",
+    {},
+    options.crossOrigin,
   );
 }
 
@@ -586,6 +612,7 @@ export async function renderPagesPageResponse(
     // consumed), reuse its resolved props instead of calling it a second time.
     // `skipped` means it was never invoked → fall through to the fast path.
     resolvedDocProps: documentRenderPage.status === "skipped" ? null : documentRenderPage.docProps,
+    crossOrigin: options.crossOrigin,
   });
 
   options.clearSsrContext();

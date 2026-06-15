@@ -109,6 +109,7 @@ type CollectAssetTagsOptions = {
   basePath?: string;
   assetPrefix?: string;
   deploymentId?: string;
+  crossOrigin?: string;
 };
 
 /**
@@ -137,6 +138,9 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   // upstream tests (e.g. test/e2e/optimized-loading) assert the literal `defer`
   // attribute, and adding it preserves parity without changing browser behaviour.
   const deferAttr = options.disableOptimizedLoading ? "" : " defer";
+  const crossOriginAttr = options.crossOrigin
+    ? ` crossorigin="${options.crossOrigin}"`
+    : " crossorigin";
 
   // SSR-manifest / client-entry values are base-anchored (so the lazy-chunk
   // membership test below matches the base-anchored __VINEXT_LAZY_CHUNKS__), but
@@ -165,14 +169,24 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   if (typeof globalThis !== "undefined" && globalThis.__VINEXT_CLIENT_ENTRY__) {
     const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
     seen.add(entry);
-    tags.push('<link rel="modulepreload"' + nonceAttr + ' href="' + href(entry) + '" />');
+    tags.push(
+      '<link rel="modulepreload"' +
+        nonceAttr +
+        ' href="' +
+        href(entry) +
+        '"' +
+        crossOriginAttr +
+        " />",
+    );
     tags.push(
       '<script type="module"' +
         deferAttr +
         nonceAttr +
         ' src="' +
         href(entry) +
-        '" crossorigin></script>',
+        '"' +
+        crossOriginAttr +
+        "></script>",
     );
   }
 
@@ -237,14 +251,24 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
         // Membership test uses the base-anchored `tf` (same key-space as
         // __VINEXT_LAZY_CHUNKS__), NOT the re-anchored href.
         if (lazySet && lazySet.has(tf)) continue;
-        tags.push('<link rel="modulepreload"' + nonceAttr + ' href="' + href(tf) + '" />');
+        tags.push(
+          '<link rel="modulepreload"' +
+            nonceAttr +
+            ' href="' +
+            href(tf) +
+            '"' +
+            crossOriginAttr +
+            " />",
+        );
         tags.push(
           '<script type="module"' +
             deferAttr +
             nonceAttr +
             ' src="' +
             href(tf) +
-            '" crossorigin></script>',
+            '"' +
+            crossOriginAttr +
+            "></script>",
         );
       }
     }
