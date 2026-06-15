@@ -556,7 +556,7 @@ export async function renderPagesPageResponse(
   // Fold any head tags returned by `_document.getInitialProps()` into the
   // dedupe pipeline before getSSRHeadHTML serialises the final <head>. Mirrors
   // Next.js's `_document` contract. `runDocumentRenderPage` already invokes
-  // `getInitialProps` for the renderPage contract (rendered/consumed), so reuse
+  // `getInitialProps` for the renderPage contract, so reuse
   // the head it surfaced rather than calling it a second time. Only the
   // `skipped` path (no override, or no `enhancePageElement` wired) falls back to
   // the standalone helper — which itself skips the unmodified default shim.
@@ -585,8 +585,8 @@ export async function renderPagesPageResponse(
     DocumentComponent: options.DocumentComponent,
     renderDocumentToString: options.renderDocumentToString,
     ssrHeadHTML,
-    // When the renderPage path already invoked getInitialProps (rendered or
-    // consumed), reuse its resolved props instead of calling it a second time.
+    // When the renderPage path already invoked getInitialProps, reuse its
+    // resolved props instead of calling it a second time.
     // `skipped` means it was never invoked → fall through to the fast path.
     resolvedDocProps: documentRenderPage.status === "skipped" ? null : documentRenderPage.docProps,
   });

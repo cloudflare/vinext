@@ -607,6 +607,43 @@ describe("pages page response", () => {
     expect(html).toContain("<p>page</p>");
   });
 
+  it("uses custom document html and styles without calling renderPage", async () => {
+    const common = createCommonOptions();
+
+    function MyDocument() {
+      return null;
+    }
+    (MyDocument as unknown as { getInitialProps: unknown }).getInitialProps = async () => ({
+      html: '<article id="manual-document-html">MANUAL</article>',
+      styles: React.createElement(
+        "style",
+        { "data-manual-document-style": true },
+        ".manual{color:blue}",
+      ),
+    });
+
+    const enhancePageElement = vi.fn(() => React.createElement("p", null, "page"));
+    const reactDomServer = await import("react-dom/server.edge");
+    const renderToReadableStream = vi.fn(async (element: React.ReactNode) =>
+      reactDomServer.renderToReadableStream(element as React.ReactElement),
+    );
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: MyDocument as unknown as React.ComponentType,
+      enhancePageElement,
+      renderToReadableStream,
+    });
+    const html = await response.text();
+
+    expect(html).toContain('id="manual-document-html">MANUAL');
+    expect(html).toContain("data-manual-document-style");
+    expect(html).toContain(".manual{color:blue}");
+    expect(html).not.toContain("live-body");
+    expect(enhancePageElement).not.toHaveBeenCalled();
+    expect(renderToReadableStream).toHaveBeenCalledTimes(1);
+  });
+
   it("propagates _document.getInitialProps errors without rendering the page", async () => {
     const common = createCommonOptions();
 

@@ -5418,6 +5418,14 @@ export default class CustomDocument extends Document {
       };
     }
     if (ctx.pathname !== "/_error" && ctx.query?.invalidDocumentHtml) return { html: null };
+    if (ctx.query?.manualDocumentHtml) {
+      return {
+        html: '<article id="manual-document-html">MANUAL</article>',
+        styles: <style data-manual-document-style>{".manual{color:blue}"}</style>,
+        documentProp: "DOCUMENT",
+        documentErrorContext: "",
+      };
+    }
     const originalRenderPage = ctx.renderPage;
     ctx.renderPage = () =>
       originalRenderPage(
@@ -5485,6 +5493,21 @@ export default class CustomDocument extends Document {
       }
     }
   });
+
+  it.each(["dev", "prod"] as const)(
+    "uses direct document html and styles without rendering the page in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/?manualDocumentHtml=true`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(html).toContain('id="manual-document-html">MANUAL');
+      expect(html).toContain("data-manual-document-style");
+      expect(html).toContain(".manual{color:blue}");
+      expect(html).not.toContain('id="page-content"');
+      expect(html).not.toContain('id="app-shell"');
+    },
+  );
 
   it.each(["dev", "prod"] as const)(
     "routes throwing renderPage enhancers through the error page once in %s",

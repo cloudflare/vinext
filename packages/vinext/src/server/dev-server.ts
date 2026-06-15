@@ -259,7 +259,7 @@ async function streamPageToResponse(
   // Fold any head tags returned by `_document.getInitialProps()` into the same
   // dedupe pipeline as user `next/head` tags. Matches Next.js's `_document`
   // contract. `runDocumentRenderPage` already invokes `getInitialProps` for the
-  // renderPage contract (rendered/consumed), so reuse the head it surfaced
+  // renderPage contract, so reuse the head it surfaced
   // rather than calling it a second time. Only the `skipped` path (no override,
   // or no `enhancePageElement` wired) falls back to the standalone helper, which
   // itself skips the unmodified default from vinext's `next/document` shim —
@@ -283,8 +283,8 @@ async function streamPageToResponse(
   let shellTemplate: string;
 
   if (DocumentComponent) {
-    // When the renderPage path already invoked getInitialProps (rendered or
-    // consumed), reuse its resolved props instead of calling it a second time.
+    // When the renderPage path already invoked getInitialProps, reuse its
+    // resolved props instead of calling it a second time.
     // `skipped` means it was never invoked → fall through to the fast path.
     const docProps =
       documentRenderPage.status === "skipped"

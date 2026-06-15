@@ -138,11 +138,6 @@ type DocumentRenderPageInput = {
  *                  the head nodes returned by `getInitialProps` (forward them to
  *                  `setDocumentInitialHead()` — do NOT call
  *                  `callDocumentGetInitialProps()` as well).
- *   - `consumed` — `getInitialProps` WAS invoked but never called `renderPage`.
- *                  Callers must NOT re-invoke `getInitialProps` (that would
- *                  call it a second time) — render the streaming body, spread
- *                  `docProps` onto `<Document>`, and forward `head` to
- *                  `setDocumentInitialHead()`.
  */
 type RunDocumentRenderPageResult =
   | { status: "skipped" }
@@ -152,8 +147,7 @@ type RunDocumentRenderPageResult =
       stylesHTML: string;
       docProps: Record<string, unknown>;
       head: ReactNode[];
-    }
-  | { status: "consumed"; docProps: Record<string, unknown>; head: ReactNode[] };
+    };
 
 /**
  * Run a user `_document.getInitialProps()` with a `ctx.renderPage()` that
@@ -165,10 +159,10 @@ type RunDocumentRenderPageResult =
  * prod (`pages-page-response.ts`) and dev (`dev-server.ts`) SSR pipelines so
  * the `getInitialProps` + `renderPage` contract lives in one place.
  *
- * `getInitialProps` is invoked at most once here. When this returns `consumed`
- * or `rendered`, callers MUST treat that as the single invocation and must not
- * call `loadUserDocumentInitialProps` again. Errors intentionally propagate to
- * the Pages Router's normal error-page pipeline, matching Next.js.
+ * `getInitialProps` is invoked at most once here. When this returns `rendered`,
+ * callers MUST treat that as the single invocation and must not call
+ * `loadUserDocumentInitialProps` again. Errors intentionally propagate to the
+ * Pages Router's normal error-page pipeline, matching Next.js.
  *
  * @see .nextjs-ref/packages/next/src/server/render.tsx (search `renderPage`)
  */
@@ -190,11 +184,9 @@ export async function runDocumentRenderPage(
   if (!input.enhancePageElement) return { status: "skipped" };
   const enhancePageElement = input.enhancePageElement;
 
-  let renderPageCalled = false;
   const renderPage = async (
     opts: RenderPageEnhancer = {},
   ): Promise<{ html: string; head: ReactNode[] }> => {
-    renderPageCalled = true;
     const enhancers: RenderPageEnhancers =
       typeof opts === "function" ? { enhanceComponent: opts } : opts;
     const enhancedElement = enhancePageElement(enhancers);
@@ -240,11 +232,6 @@ export async function runDocumentRenderPage(
       `"${DocCtor.displayName ?? DocCtor.name ?? "Document"}.getInitialProps()" should resolve to an object with a "html" prop set with a valid html string`,
     );
   }
-
-  // If the user implemented getInitialProps but never invoked renderPage
-  // (uncommon — but possible if they only return head/styles), fall back to
-  // the streaming render so the body content is produced normally.
-  if (!renderPageCalled) return { status: "consumed", docProps, head };
 
   // Render `styles` returned by `getInitialProps()` (e.g. collected
   // styled-components / emotion <style> tags) to a string ready for the SSR
