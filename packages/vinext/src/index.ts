@@ -181,7 +181,11 @@ import {
   relativeWithinRoot,
   type BundleBackfillChunk,
 } from "./build/ssr-manifest.js";
-import { stripServerExports, validatePageExports } from "./plugins/strip-server-exports.js";
+import {
+  hasServerExportCandidate,
+  stripServerExports,
+  validatePageExports,
+} from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
@@ -813,6 +817,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // module graph for. The shim files exist in the vinext package before plugin
   // init, so realpath is safe to evaluate eagerly.
   const canonicalize = (p: string): string => tryRealpathSync(p) ?? p;
+  const pageTransformCanonicalPaths = new Map<string, string>();
+  const canonicalizePageTransformPath = (modulePath: string): string => {
+    const cached = pageTransformCanonicalPaths.get(modulePath);
+    if (cached) return cached;
+    const canonicalPath = canonicalize(modulePath);
+    pageTransformCanonicalPaths.set(modulePath, canonicalPath);
+    return canonicalPath;
+  };
+  const isWithinPagesDirectory = (modulePath: string): boolean =>
+    modulePath === pagesDir ||
+    modulePath.startsWith(`${pagesDir}/`) ||
+    modulePath === canonicalPagesDir ||
+    modulePath.startsWith(`${canonicalPagesDir}/`);
+  const isApiPage = (canonicalId: string): boolean => {
+    const relativePath = fileMatcher.stripExtension(canonicalId.slice(canonicalPagesDir.length));
+    return relativePath === "/api" || relativePath.startsWith("/api/");
+  };
   const dynamicShimPaths: ReadonlySet<string> = new Set(
     [
       resolveShimModulePath(shimsDir, "headers"),
@@ -4008,23 +4029,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         };
       },
     },
-    // Next.js rejects `export * from "..."` in every Pages Router page file,
-    // including API routes and special pages. This validation is separate from
-    // client-only data export stripping because server builds still need their
-    // actual exports.
+    // Next.js rejects `export * from "..."` when compiling Pages Router files
+    // for the client. API routes have no client compilation, so they are
+    // excluded here along with virtual and non-page modules.
     {
       name: "vinext:validate-page-exports",
       transform: {
         handler(code, id) {
-          if (!hasPagesDir) return null;
-          const canonicalId = canonicalize(stripViteModuleQuery(id));
+          if (this.environment?.name !== "client") return null;
           if (
-            canonicalId !== canonicalPagesDir &&
-            !canonicalId.startsWith(`${canonicalPagesDir}/`)
+            !hasPagesDir ||
+            id.startsWith("\0") ||
+            !code.includes("export") ||
+            !code.includes("*")
           ) {
             return null;
           }
+          const modulePath = stripViteModuleQuery(id);
+          if (!isWithinPagesDirectory(modulePath)) return null;
+          const canonicalId = canonicalizePageTransformPath(modulePath);
+          if (!isWithinPagesDirectory(canonicalId)) return null;
           if (!fileMatcher.isPageFile(canonicalId)) return null;
+          if (isApiPage(canonicalId)) return null;
           validatePageExports(code);
           return null;
         },
@@ -4042,21 +4068,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       name: "vinext:strip-server-exports",
       transform: {
         handler(code, id) {
-          const ssr = this.environment?.name !== "client";
-          if (ssr) return null;
-          if (!hasPagesDir) return null;
+          if (this.environment?.name !== "client") return null;
+          if (!hasPagesDir || id.startsWith("\0") || !hasServerExportCandidate(code)) return null;
           // Only transform files under the pages/ directory
-          const canonicalId = canonicalize(stripViteModuleQuery(id));
-          if (
-            canonicalId !== canonicalPagesDir &&
-            !canonicalId.startsWith(`${canonicalPagesDir}/`)
-          ) {
-            return null;
-          }
+          const modulePath = stripViteModuleQuery(id);
+          if (!isWithinPagesDirectory(modulePath)) return null;
+          const canonicalId = canonicalizePageTransformPath(modulePath);
+          if (!isWithinPagesDirectory(canonicalId)) return null;
           if (!fileMatcher.isPageFile(canonicalId)) return null;
           // Skip API routes, _app, _document, _error
           const relativePath = canonicalId.slice(canonicalPagesDir.length);
-          if (relativePath.startsWith("/api/") || relativePath === "/api") return null;
+          if (isApiPage(canonicalId)) return null;
           if (/^\/(?:_app|_document|_error)(?:\.[^/]*)?$/.test(relativePath)) return null;
 
           const result = stripServerExports(code);

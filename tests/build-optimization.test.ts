@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import { createBuilder, parseAst } from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import {
+  hasServerExportCandidate as _hasServerExportCandidate,
   stripServerExports as _stripServerExports,
   validatePageExports as _validatePageExports,
 } from "../packages/vinext/src/plugins/strip-server-exports.js";
@@ -2417,6 +2418,13 @@ describe("vinext:async-hooks-stub", () => {
 // Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/unit/babel-plugin-next-ssg-transform.test.ts
 describe("stripServerExports", () => {
+  it("cheaply identifies modules that can contain server data exports", () => {
+    expect(
+      _hasServerExportCandidate("export const getServerSideProps = () => ({ props: {} })"),
+    ).toBe(true);
+    expect(_hasServerExportCandidate("export default function Page() {}")).toBe(false);
+  });
+
   it("rejects export-all declarations in page modules", () => {
     // Ported from Next.js: test/production/re-export-all-exports-from-page-disallowed/
     // re-export-all-exports-from-page-disallowed.test.ts
@@ -2424,6 +2432,9 @@ describe("stripServerExports", () => {
       "Using `export * from '...'` in a page is disallowed.",
     );
     expect(() => _validatePageExports(`export\n*\nfrom './other-page';`)).toThrow(
+      "Using `export * from '...'` in a page is disallowed.",
+    );
+    expect(() => _validatePageExports(`export /* comment */ * from './other-page';`)).toThrow(
       "Using `export * from '...'` in a page is disallowed.",
     );
   });
@@ -2856,6 +2867,40 @@ export async function getServerSideProps() {
     expect(result).not.toContain("dropServerOnly");
     expect(result).not.toContain("loadSecret");
     expect(result).not.toContain(".query");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("sweeps recursive arrow helpers used only by a server export", () => {
+    const result = _stripServerExports(`
+const recurse = () => recurse();
+
+export function getStaticProps() {
+  recurse();
+  return { props: {} };
+}
+
+export default function Page() { return null; }
+`);
+    expect(result).not.toContain("recurse");
+    expect(result).toContain("export default function Page");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("sweeps mutually recursive arrow helpers used only by a server export", () => {
+    const result = _stripServerExports(`
+const first = () => second();
+const second = () => first();
+
+export function getStaticProps() {
+  first();
+  return { props: {} };
+}
+
+export default function Page() { return null; }
+`);
+    expect(result).not.toContain("first");
+    expect(result).not.toContain("second");
+    expect(result).toContain("export default function Page");
     expect(() => parseAst(result!)).not.toThrow();
   });
 

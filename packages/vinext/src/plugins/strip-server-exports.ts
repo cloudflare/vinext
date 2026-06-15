@@ -26,6 +26,10 @@ const SERVER_PROPS_SSG_CONFLICT =
 const EXPORT_ALL_IN_PAGE_ERROR =
   "Using `export * from '...'` in a page is disallowed. Please use `export { default } from '...'` instead.\nRead more: https://nextjs.org/docs/messages/export-all-in-page";
 
+export function hasServerExportCandidate(code: string): boolean {
+  return [...SERVER_EXPORTS].some((name) => code.includes(name));
+}
+
 type Binding = {
   name: string;
   node: PositionedNode;
@@ -281,7 +285,7 @@ function findLexicalScope(ancestors: PositionedNode[]): PositionedNode | undefin
 }
 
 export function validatePageExports(code: string): void {
-  if (!/\bexport\s*\*/.test(code)) return;
+  if (!code.includes("export") || !code.includes("*")) return;
   let ast: ParsedAst;
   try {
     ast = parseAst(code);
@@ -304,7 +308,7 @@ export function validatePageExports(code: string): void {
  * - crates/next-custom-transforms/src/transforms/strip_page_exports.rs
  */
 export function stripServerExports(code: string): string | null {
-  if (![...SERVER_EXPORTS].some((name) => code.includes(name)) && !code.includes("export *")) {
+  if (!hasServerExportCandidate(code) && !code.includes("export *")) {
     return null;
   }
 
@@ -552,24 +556,54 @@ export function stripServerExports(code: string): string | null {
       if (!renderedLeft && addDeadRange(statement)) changed = true;
     }
 
-    for (const [name, binding] of bindings) {
+    const removableBindings = new Set<string>();
+    for (const [name] of bindings) {
+      if (
+        forcedBindings.has(name) ||
+        candidateBindings.has(name) ||
+        (references.get(name) ?? []).some((position) => isInsideRanges(position, deadRanges))
+      ) {
+        removableBindings.add(name);
+      }
+    }
+    let closureChanged = true;
+    while (closureChanged) {
+      closureChanged = false;
+      const implementations = [...removableBindings]
+        .map((name) => bindings.get(name)?.implementation)
+        .filter((implementation): implementation is PositionedNode => Boolean(implementation));
+      for (const [name] of bindings) {
+        if (removableBindings.has(name)) continue;
+        if (
+          (references.get(name) ?? []).some((position) => isInsideRanges(position, implementations))
+        ) {
+          removableBindings.add(name);
+          closureChanged = true;
+        }
+      }
+    }
+    let pruneChanged = true;
+    while (pruneChanged) {
+      pruneChanged = false;
+      const implementations = [...removableBindings]
+        .map((name) => bindings.get(name)?.implementation)
+        .filter((implementation): implementation is PositionedNode => Boolean(implementation));
+      for (const name of removableBindings) {
+        if (forcedBindings.has(name)) continue;
+        const hasLiveReference = (references.get(name) ?? []).some(
+          (position) =>
+            !isInsideRanges(position, deadRanges) && !isInsideRanges(position, implementations),
+        );
+        if (hasLiveReference) {
+          removableBindings.delete(name);
+          pruneChanged = true;
+        }
+      }
+    }
+    for (const name of removableBindings) {
       if (deadBindings.has(name)) continue;
-      const isForced = forcedBindings.has(name);
-      const isCandidate = candidateBindings.has(name);
-      const referencedByDeadCode = (references.get(name) ?? []).some((position) =>
-        isInsideRanges(position, deadRanges),
-      );
-      if (!isForced && !isCandidate && !referencedByDeadCode) continue;
-      const hasLiveReference = (references.get(name) ?? []).some(
-        (position) =>
-          !isInsideRanges(position, deadRanges) &&
-          !(
-            (binding.kind === "function" || binding.kind === "class") &&
-            isInsideRanges(position, [binding.implementation])
-          ),
-      );
-      if (!isForced && hasLiveReference) continue;
-
+      const binding = bindings.get(name);
+      if (!binding) continue;
       deadBindings.add(name);
       changed = true;
       if (binding.kind === "function" || binding.kind === "class") {

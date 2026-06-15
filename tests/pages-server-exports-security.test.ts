@@ -178,21 +178,21 @@ export default function Page() { return null; }
     );
   });
 
-  it("rejects export-all declarations in API page files", async () => {
-    const pageSource = `
-export * from "../../server/api";
+  it.each([path.join("pages", "api.ts"), path.join("pages", "api", "index.ts")])(
+    "allows export-all declarations in API page file %s",
+    async (pagePath) => {
+      const pageSource = `
+export * from "node:path";
 export default function handler() {}
 `;
-    await expect(
-      buildPagesFixture(
+      const fixtureDir = await buildPagesFixture(
         pageSource,
         "vinext-pages-api-export-all-parity-",
-        path.join("pages", "api", "test.ts"),
-      ),
-    ).rejects.toThrow(
-      "Using `export * from '...'` in a page is disallowed. Please use `export { default } from '...'` instead.",
-    );
-  });
+        pagePath,
+      );
+      await fsp.rm(fixtureDir, { recursive: true, force: true });
+    },
+  );
 
   it("rejects mixed SSR and SSG exports with the Next.js error", async () => {
     const pageSource = `
