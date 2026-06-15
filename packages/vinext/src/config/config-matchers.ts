@@ -261,18 +261,251 @@ function stripHopByHopRequestHeaders(headers: Headers): void {
 }
 
 /**
+ * Read an unbounded quantifier at `idx`. Returns true for `*`, `+`, and the
+ * open-ended brace form `{n,}`. Bounded forms (`{n}`, `{n,m}`) and the optional
+ * `?` are NOT unbounded and so cannot drive exponential backtracking.
+ */
+function isUnboundedQuantifierAt(pattern: string, idx: number): boolean {
+  const c = pattern[idx];
+  if (c === "*" || c === "+") return true;
+  if (c !== "{") return false;
+  let j = idx + 1;
+  while (j < pattern.length && pattern[j] >= "0" && pattern[j] <= "9") j++;
+  // `{n,}` (comma immediately followed by `}`) is unbounded; `{n}`/`{n,m}` are not.
+  return pattern[j] === "," && pattern[j + 1] === "}";
+}
+
+/**
+ * Strip a group-body prefix so the remaining text is a plain alternation.
+ * Non-capturing groups (`?:`) are unwrapped. Lookarounds, named groups, and
+ * inline-flag groups (`?=`, `?!`, `?<=`, `?<name>`, `?i:`, …) are skipped
+ * (returns null) — analysing them textually would be unreliable, so we simply
+ * don't flag them here (the nested-quantifier pass still applies).
+ */
+function alternationBodyOf(groupBody: string): string | null {
+  if (!groupBody.startsWith("?")) return groupBody;
+  if (groupBody.startsWith("?:")) return groupBody.slice(2);
+  return null;
+}
+
+/** Split a group body into its top-level (depth-0) `|` alternatives. */
+function splitTopLevelAlternatives(body: string): string[] {
+  const branches: string[] = [];
+  let current = "";
+  let depth = 0;
+  let inClass = false;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch === "\\") {
+      current += ch + (body[i + 1] ?? "");
+      i++;
+      continue;
+    }
+    if (inClass) {
+      current += ch;
+      if (ch === "]") inClass = false;
+      continue;
+    }
+    if (ch === "[") {
+      inClass = true;
+      current += ch;
+      continue;
+    }
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    else if (ch === "|" && depth === 0) {
+      branches.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  branches.push(current);
+  return branches;
+}
+
+/**
+ * Conservatively detect overlapping alternatives. Two branches overlap when one
+ * is equal to, or a textual prefix of, the other (e.g. `a|a`, `a|ab`,
+ * `\d|\d\d`). Distinct-token alternations like `foo|bar` or `GET|POST` do not
+ * overlap and are left alone.
+ */
+function hasOverlappingAlternatives(branches: readonly string[]): boolean {
+  const trimmed = branches.map((b) => b.trim()).filter((b) => b.length > 0);
+  for (let a = 0; a < trimmed.length; a++) {
+    for (let b = a + 1; b < trimmed.length; b++) {
+      const longer = trimmed[a].length >= trimmed[b].length ? trimmed[a] : trimmed[b];
+      const shorter = trimmed[a].length >= trimmed[b].length ? trimmed[b] : trimmed[a];
+      if (longer.startsWith(shorter)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Extract the inner body of every TOP-LEVEL (depth-1) parenthesised group that
+ * appears anywhere in `branch`, regardless of what surrounds it. A group that
+ * spans the whole branch (`(a|a)` from the wrapped `((a|a))*`) is returned just
+ * as readily as one concatenated with other tokens — the "concatenated group"
+ * shape — e.g. `(a|a)b`, `b(a|a)`, `b(a|a)c`.
+ *
+ * Such a group is still repeated by the same outer unbounded quantifier, so an
+ * overlapping alternation inside it is just as exponential as a directly
+ * quantified one: `((a|a)b)*` against `"abab…!"` backtracks exponentially even
+ * though `(a|a)` is glued to a literal `b`. Returns each group's inner text
+ * (parentheses stripped); nested deeper groups are reached by the caller's
+ * recursion, not flattened here.
+ *
+ * Escapes and character classes are tracked so `\(` and `[(]` are never treated
+ * as group openers.
+ */
+function topLevelGroupBodies(branch: string): string[] {
+  const bodies: string[] = [];
+  let depth = 0;
+  let groupStart = -1;
+  let inClass = false;
+  for (let i = 0; i < branch.length; i++) {
+    const ch = branch[i];
+    if (ch === "\\") {
+      i++;
+      continue;
+    }
+    if (inClass) {
+      if (ch === "]") inClass = false;
+      continue;
+    }
+    if (ch === "[") {
+      inClass = true;
+      continue;
+    }
+    if (ch === "(") {
+      if (depth === 0) groupStart = i + 1;
+      depth++;
+    } else if (ch === ")") {
+      depth--;
+      if (depth === 0 && groupStart !== -1) {
+        bodies.push(branch.slice(groupStart, i));
+        groupStart = -1;
+      }
+    }
+  }
+  return bodies;
+}
+
+/**
+ * Decide whether a quantified group's body contains an overlapping alternation,
+ * accounting for redundant wrapper groups and concatenated sub-groups. The
+ * detector that calls this only inspects the *directly* quantified group, so
+ * without descending, trivial transforms of `(a|a)*` slip through while staying
+ * exponential:
+ *
+ *   - `((a|a))*`    — body is the sole group `(a|a)`
+ *   - `((a|a)|x)*`  — branch `(a|a)` is a nested overlapping group
+ *   - `(x|(a|a))*`  — branch `(a|a)` is a nested overlapping group
+ *   - `((a|a)b)*`   — branch `(a|a)b` is a group concatenated with a literal
+ *   - `(b(a|a)c)*`  — overlapping group concatenated on both sides
+ *
+ * Strategy: split the body into top-level alternatives. If two or more of them
+ * overlap, it's ambiguous. Otherwise, recurse into every top-level sub-group of
+ * each branch (peeling its parentheses, then normalising any `?:` prefix) — a
+ * nested ambiguous alternation under the same unbounded quantifier is just as
+ * exponential as a direct one, whether the sub-group is the whole branch
+ * (`((a|a))*`) or merely concatenated within it (`((a|a)b)*`).
+ *
+ * Precision is preserved: disjoint/bounded alternations (`(ab|cd)*`,
+ * `((ab|cd))*`, `((en|fr|de)x)*`, `(/(en|fr)/foo)*`) recurse to non-overlapping
+ * branches and stay safe — only an *overlapping* inner alternation trips the
+ * guard. A bounded recursion depth caps work on adversarial nesting.
+ */
+function bodyHasOverlappingAlternation(body: string, depth = 0): boolean {
+  // Cap recursion so deeply/adversarially nested wrappers can't blow up the
+  // scan. Real config regexes nest a handful of levels at most.
+  if (depth > 32) return false;
+
+  const branches = splitTopLevelAlternatives(body);
+  if (branches.length >= 2 && hasOverlappingAlternatives(branches)) return true;
+
+  // Recurse into every top-level sub-group of each branch. This catches the
+  // wrapped (`((a|a))*`), nested (`(x|(a|a))*`), and concatenated-group
+  // (`((a|a)b)*`, `(b(a|a)c)*`) variants: each inner group is repeated by the
+  // same outer unbounded quantifier, so an overlapping alternation inside it is
+  // exponential too. `topLevelGroupBodies` returns the body of a sole-group
+  // branch (`(a|a)` from `((a|a))*`) just as readily as a concatenated one.
+  for (const branch of branches) {
+    for (const inner of topLevelGroupBodies(branch)) {
+      const normalised = alternationBodyOf(inner);
+      if (normalised === null) continue;
+      if (bodyHasOverlappingAlternation(normalised, depth + 1)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Detect an alternation with overlapping branches that is directly repeated by
+ * an UNBOUNDED quantifier, e.g. `(a|a)*`, `(a|ab)+`, `(\d|\d\d){2,}`.
+ *
+ * This is the complement of the nested-quantifier check below: such a group
+ * contains no inner quantifier, yet still backtracks exponentially because the
+ * ambiguous alternatives give the engine multiple ways to consume the same
+ * input on every repetition (`(a|a)*` against `"aaaa…!"` is exponential).
+ */
+function hasAmbiguousUnboundedAlternation(pattern: string): boolean {
+  const groupStartStack: number[] = [];
+  let inClass = false;
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === "\\") {
+      i++;
+      continue;
+    }
+    if (inClass) {
+      if (ch === "]") inClass = false;
+      continue;
+    }
+    if (ch === "[") {
+      inClass = true;
+      continue;
+    }
+    if (ch === "(") {
+      groupStartStack.push(i + 1);
+      continue;
+    }
+    if (ch === ")") {
+      const start = groupStartStack.pop();
+      if (start === undefined) continue;
+      if (!isUnboundedQuantifierAt(pattern, i + 1)) continue;
+      const body = alternationBodyOf(pattern.slice(start, i));
+      if (body === null) continue;
+      // Analyse the body recursively so wrapped/nested alternations are caught
+      // too — `((a|a))*`, `((a|a)|x)*`, `(x|(a|a))*` are all exponential.
+      if (bodyHasOverlappingAlternation(body)) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Detect regex patterns vulnerable to catastrophic backtracking (ReDoS).
  *
- * Uses a lightweight heuristic: scans the pattern string for nested quantifiers
- * (a quantifier applied to a group that itself contains a quantifier). This
- * catches the most common pathological patterns like `(a+)+`, `(.*)*`,
- * `([^/]+)+`, `(a|a+)+` without needing a full regex parser.
+ * Uses a lightweight heuristic without a full regex parser. Two pathological
+ * shapes are rejected:
+ *
+ *   1. Nested quantifiers — a quantifier applied to a group that itself
+ *      contains a quantifier, e.g. `(a+)+`, `(.*)*`, `([^/]+)+`, `(a|a+)+`.
+ *   2. An overlapping alternation under an UNBOUNDED quantifier, e.g. `(a|a)*`,
+ *      `(a|ab)+`, `(\d|\d\d){2,}`. These contain no inner quantifier but still
+ *      backtrack exponentially because the ambiguous branches give the engine
+ *      multiple ways to consume the same input on each repetition.
  *
  * Returns true if the pattern appears safe, false if it's potentially dangerous.
  */
 export function isSafeRegex(pattern: string): boolean {
-  // Track parenthesis nesting depth and whether we've seen a quantifier
-  // at each depth level.
+  // (2) Ambiguous alternation repeated by an unbounded quantifier.
+  if (hasAmbiguousUnboundedAlternation(pattern)) return false;
+
+  // (1) Nested quantifiers — track parenthesis nesting depth and whether we've
+  // seen a quantifier at each depth level.
   const quantifierAtDepth: boolean[] = [];
   let depth = 0;
   let i = 0;
@@ -384,8 +617,9 @@ export function safeRegExp(pattern: string, flags?: string): RegExp | null {
   if (!isSafeRegex(pattern)) {
     console.warn(
       `[vinext] Ignoring potentially unsafe regex pattern (ReDoS risk): ${pattern}\n` +
-        `  Patterns with nested quantifiers (e.g. (a+)+) can cause catastrophic backtracking.\n` +
-        `  Simplify the pattern to avoid nested repetition.`,
+        `  Nested quantifiers (e.g. (a+)+) and overlapping alternations repeated by an\n` +
+        `  unbounded quantifier (e.g. (a|a)*, (a|ab)+) can cause catastrophic backtracking.\n` +
+        `  Simplify the pattern to avoid nested repetition and ambiguous alternatives.`,
     );
     return null;
   }

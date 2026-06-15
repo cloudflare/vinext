@@ -9846,6 +9846,126 @@ describe("isSafeRegex", () => {
     expect(isSafeRegex("(foo|bar)*")).toBe(true);
   });
 
+  // Overlapping alternation under an unbounded quantifier — no inner quantifier,
+  // but still exponential because the ambiguous branches give the engine
+  // multiple ways to consume the same input on each repetition. `(a|a)*` matched
+  // against "aaaa…!" takes seconds at ~30 chars. These complement the
+  // nested-quantifier checks above (which `(a|a)*` slips past).
+  it("rejects overlapping alternation repeated by *: (a|a)*", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(isSafeRegex("(a|a)*")).toBe(false);
+    expect(isSafeRegex("(a|a)*$")).toBe(false);
+    expect(isSafeRegex("^(a|a)*!")).toBe(false);
+  });
+
+  it("rejects overlapping alternation repeated by +: (a|a|a)+, (foo|foo)+", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(isSafeRegex("(a|a|a)+")).toBe(false);
+    expect(isSafeRegex("(foo|foo)+")).toBe(false);
+  });
+
+  it("rejects prefix-overlapping alternation: (a|ab)*, (\\d|\\d\\d)+", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(isSafeRegex("(a|ab)*")).toBe(false);
+    expect(isSafeRegex("(\\d|\\d\\d)+")).toBe(false);
+    expect(isSafeRegex("(ab|abc)+")).toBe(false);
+  });
+
+  it("rejects overlapping alternation repeated by unbounded brace: (a|a){2,}", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(isSafeRegex("(a|a){2,}")).toBe(false);
+  });
+
+  it("rejects overlapping alternation in a non-capturing group: (?:a|a)*", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(isSafeRegex("(?:a|a)*")).toBe(false);
+  });
+
+  it("accepts disjoint alternation under a quantifier (no overlap)", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Distinct-token alternations are unambiguous and safe.
+    expect(isSafeRegex("(foo|bar)*")).toBe(true);
+    expect(isSafeRegex("(foo|bar|baz)+")).toBe(true);
+    expect(isSafeRegex("(en|fr|de)*")).toBe(true);
+    expect(isSafeRegex("(a|b)*")).toBe(true);
+    expect(isSafeRegex("(GET|POST|PUT)+")).toBe(true);
+  });
+
+  it("accepts overlapping alternation only under BOUNDED repetition", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Bounded repetition cannot blow up exponentially.
+    expect(isSafeRegex("(a|a){2,5}")).toBe(true);
+    expect(isSafeRegex("(a|a){3}")).toBe(true);
+    // Optional (zero-or-one) is only 2 paths.
+    expect(isSafeRegex("(a|a)?")).toBe(true);
+    // No quantifier at all.
+    expect(isSafeRegex("(a|a)")).toBe(true);
+  });
+
+  // Wrapping an overlapping alternation in a redundant group must NOT let it
+  // slip past the unbounded-quantifier check. These are trivial transforms of
+  // `(a|a)*` and remain exponential (~7s on ~26 chars). Without unwrapping the
+  // sole/nested child group, the top-level split sees a single non-overlapping
+  // branch and rates them safe.
+  it("rejects a wrapped overlapping alternation: ((a|a))*", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(isSafeRegex("((a|a))*")).toBe(false);
+    expect(isSafeRegex("((a|a))+")).toBe(false);
+    expect(isSafeRegex("((a|a)){2,}")).toBe(false);
+    // Multiple redundant wrapper layers and a non-capturing wrapper.
+    expect(isSafeRegex("(((a|a)))*")).toBe(false);
+    expect(isSafeRegex("(?:(?:a|a))*")).toBe(false);
+  });
+
+  it("rejects a nested overlapping alternation branch: ((a|a)|x)* and (x|(a|a))*", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(isSafeRegex("((a|a)|x)*")).toBe(false);
+    expect(isSafeRegex("(x|(a|a))*")).toBe(false);
+    // Prefix-overlap nested in a branch, repeated by +.
+    expect(isSafeRegex("(x|(a|ab)|y)+")).toBe(false);
+  });
+
+  it("keeps disjoint wrapped/nested alternations SAFE (no false positives)", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Distinct-token branches are unambiguous even when wrapped or nested.
+    expect(isSafeRegex("(ab|cd)*")).toBe(true);
+    expect(isSafeRegex("((ab|cd))*")).toBe(true);
+    expect(isSafeRegex("((ab|cd)|ef)*")).toBe(true);
+    expect(isSafeRegex("(x|(ab|cd))*")).toBe(true);
+    // A wrapped locale alternation (common in real config) stays safe.
+    expect(isSafeRegex("((en|fr|de))*")).toBe(true);
+  });
+
+  // Concatenating an overlapping alternation group with another token inside the
+  // quantified body keeps it exponential: each inner group is still repeated by
+  // the same outer unbounded quantifier. `((a|a)b)*` against "abab…!" backtracks
+  // exponentially (~30ms at n=22, exponential thereafter) even though the
+  // overlapping `(a|a)` is glued to a literal `b`. A sole-group unwrap misses
+  // these because `(a|a)b` is not wholly a single group.
+  it("rejects a concatenated overlapping-alternation group: ((a|a)b)* and (b(a|a))*", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(isSafeRegex("((a|a)b)*")).toBe(false);
+    expect(isSafeRegex("(b(a|a))*")).toBe(false);
+    expect(isSafeRegex("(b(a|a)c)*")).toBe(false);
+    expect(isSafeRegex("((a|a)b)+")).toBe(false);
+    expect(isSafeRegex("((a|a)b){2,}")).toBe(false);
+    // Wrapped around a concatenated group, and prefix-overlap concatenated.
+    expect(isSafeRegex("(((a|a)b))*")).toBe(false);
+    expect(isSafeRegex("((a|ab)x)+")).toBe(false);
+    // Overlapping group with a bounded inner quantifier is still exponential
+    // under the outer unbounded `*` (the ambiguity per outer repetition remains).
+    expect(isSafeRegex("((a|a){2}b)*")).toBe(false);
+  });
+
+  it("keeps disjoint concatenated-group alternations SAFE (no false positives)", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    // A disjoint locale group concatenated with a literal — common config shape.
+    expect(isSafeRegex("((en|fr|de)x)*")).toBe(true);
+    expect(isSafeRegex("(/(en|fr)/foo)*")).toBe(true);
+    expect(isSafeRegex("(x(ab|cd)y)*")).toBe(true);
+    expect(isSafeRegex("((foo|bar)/(baz|qux))+")).toBe(true);
+  });
+
   it("treats escaped characters as safe", async () => {
     const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
     // \\+ is a literal +, not a quantifier
