@@ -310,7 +310,9 @@ describe("pages page response", () => {
     });
 
     const html = await response.text();
-    expect(html).toContain('<script nonce="pages-test-nonce">window.__NEXT_DATA__ = ');
+    expect(html).toContain(
+      '<script id="__NEXT_DATA__" type="application/json" nonce="pages-test-nonce">',
+    );
     expect(html).toContain('<link rel="stylesheet" nonce="pages-test-nonce" href="/font.css" />');
     expect(html).toContain(
       '<link rel="preload" nonce="pages-test-nonce" href="/font.woff2" as="font" type="font/woff2" crossorigin />',

@@ -11,7 +11,7 @@ import {
 } from "./isr-decision.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
-import { createInlineScriptTag, createNonceAttribute, escapeHtmlAttr } from "./html.js";
+import { createNonceAttribute, escapeHtmlAttr } from "./html.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { reportRequestError } from "./instrumentation.js";
 import {
@@ -290,16 +290,7 @@ export function buildPagesNextDataScript(
     };
   }
 
-  const localeGlobals = options.i18n.locales
-    ? `;window.__VINEXT_LOCALE__=${options.safeJsonStringify(options.i18n.locale)}` +
-      `;window.__VINEXT_LOCALES__=${options.safeJsonStringify(options.i18n.locales)}` +
-      `;window.__VINEXT_DEFAULT_LOCALE__=${options.safeJsonStringify(options.i18n.defaultLocale)}`
-    : "";
-
-  return createInlineScriptTag(
-    `window.__NEXT_DATA__ = ${options.safeJsonStringify(nextDataPayload)}${localeGlobals}`,
-    options.scriptNonce,
-  );
+  return `<script id="__NEXT_DATA__" type="application/json"${createNonceAttribute(options.scriptNonce)}>${options.safeJsonStringify(nextDataPayload)}</script>`;
 }
 
 async function buildPagesShellHtml(

@@ -29,6 +29,16 @@ function commitRenderedPagesRouterElement(element: unknown): void {
 }
 
 describe("vinext next data client helpers", () => {
+  it("extracts Next.js-compatible application/json data scripts", () => {
+    const json = '{"props":{"pageProps":{"nested":{"value":"}"}}},"page":"/","query":{}}';
+
+    expect(
+      extractVinextNextDataJson(
+        `<script id="__NEXT_DATA__" type="application/json">${json}</script>`,
+      ),
+    ).toBe(json);
+  });
+
   it("extracts __NEXT_DATA__ after carriage-return whitespace", () => {
     const json = '{"props":{},"page":"/","query":{}}';
 

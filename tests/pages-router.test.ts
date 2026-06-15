@@ -6344,6 +6344,14 @@ describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
   let routerServer: ViteDevServer;
   let routerBaseUrl: string;
 
+  function readNextData(html: string) {
+    const match = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json"(?: nonce="[^"]+")?>([\s\S]*?)<\/script>/,
+    );
+    expect(match).toBeTruthy();
+    return JSON.parse(match![1]);
+  }
+
   beforeAll(async () => {
     ({ server: routerServer, baseUrl: routerBaseUrl } = await startFixtureServer(FIXTURE_DIR));
   });
@@ -6356,9 +6364,7 @@ describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
     const res = await fetch(`${routerBaseUrl}/blog/hello-world`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
-    expect(match).toBeTruthy();
-    const nextData = JSON.parse(match![1]);
+    const nextData = readNextData(html);
     expect(nextData.query).toEqual({ slug: "hello-world" });
     expect(nextData.page).toBe("/blog/[slug]");
   });
@@ -6367,8 +6373,7 @@ describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
     const res = await fetch(`${routerBaseUrl}/posts/hello-world`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
-    const nextData = JSON.parse(match![1]);
+    const nextData = readNextData(html);
     expect(nextData.page).toBe("/posts/[id]");
     expect(nextData.query.id).toBe("hello-world");
   });
@@ -6377,33 +6382,38 @@ describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
     const res = await fetch(`${routerBaseUrl}/docs/a/b/c`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
-    const nextData = JSON.parse(match![1]);
+    const nextData = readNextData(html);
     expect(nextData.page).toBe("/docs/[...slug]");
   });
 
   it("__NEXT_DATA__ includes isFallback: false", async () => {
     const res = await fetch(`${routerBaseUrl}/blog/hello-world`);
     const html = await res.text();
-    const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
-    const nextData = JSON.parse(match![1]);
+    const nextData = readNextData(html);
     expect(nextData.isFallback).toBe(false);
   });
 
   it("static page __NEXT_DATA__.page is the pathname", async () => {
     const res = await fetch(`${routerBaseUrl}/about`);
     const html = await res.text();
-    const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
-    const nextData = JSON.parse(match![1]);
+    const nextData = readNextData(html);
     expect(nextData.page).toBe("/about");
+  });
+
+  // Ported from Next.js: test/e2e/prerender.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/prerender.test.ts
+  it("omits gsp from __NEXT_DATA__ for non-GSP pages", async () => {
+    const res = await fetch(`${routerBaseUrl}/about`);
+    const html = await res.text();
+    const nextData = readNextData(html);
+    expect("gsp" in nextData).toBe(false);
   });
 
   it("shallow-test page returns correct __NEXT_DATA__ with GSSP props", async () => {
     const res = await fetch(`${routerBaseUrl}/shallow-test`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
-    const nextData = JSON.parse(match![1]);
+    const nextData = readNextData(html);
     expect(nextData.page).toBe("/shallow-test");
     expect(nextData.props.pageProps.gsspCallId).toBeGreaterThan(0);
   });
@@ -6464,9 +6474,7 @@ export default function middleware() {
         const res = await fetch(`${baseUrl}/docs/first`);
         expect(res.status).toBe(200);
         const html = await res.text();
-        const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*({.*?})<\/script>/);
-        expect(match).toBeTruthy();
-        const nextData = JSON.parse(match![1]);
+        const nextData = readNextData(html);
         expect(nextData.page).toBe("/[...path]");
         expect(nextData.query).toEqual({ path: ["first"] });
         expect(html).toContain("CatchAll");

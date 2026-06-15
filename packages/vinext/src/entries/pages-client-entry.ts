@@ -161,6 +161,14 @@ window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(appPrefetchRoutes)};
 window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(pagesPrefetchRoutes)};
 window.__VINEXT_CLIENT_REWRITES__ = ${JSON.stringify(nextConfig.rewrites)};
 
+const nextDataElement = document.getElementById("__NEXT_DATA__");
+if (nextDataElement?.textContent) {
+  window.__NEXT_DATA__ = JSON.parse(nextDataElement.textContent);
+  window.__VINEXT_LOCALE__ = window.__NEXT_DATA__.locale;
+  window.__VINEXT_LOCALES__ = window.__NEXT_DATA__.locales;
+  window.__VINEXT_DEFAULT_LOCALE__ = window.__NEXT_DATA__.defaultLocale;
+}
+
 async function hydrate() {
   const nextData = window.__NEXT_DATA__;
   if (!nextData) {

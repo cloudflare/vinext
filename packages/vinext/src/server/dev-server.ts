@@ -1219,18 +1219,20 @@ export function createSSRHandler(
                         },
                       };
 
-                      const freshNextData = `<script>window.__NEXT_DATA__ = ${safeJsonStringify({
-                        props: freshRenderProps,
-                        page: patternToNextFormat(route.pattern),
-                        query: params,
-                        buildId: process.env.__VINEXT_BUILD_ID,
-                        isFallback: false,
-                        locale: locale ?? currentDefaultLocale,
-                        locales: i18nConfig?.locales,
-                        defaultLocale: currentDefaultLocale,
-                        domainLocales,
-                        ...freshPagesNextData,
-                      })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}</script>`;
+                      const freshNextData = `<script id="__NEXT_DATA__" type="application/json">${safeJsonStringify(
+                        {
+                          props: freshRenderProps,
+                          page: patternToNextFormat(route.pattern),
+                          query: params,
+                          buildId: process.env.__VINEXT_BUILD_ID,
+                          isFallback: false,
+                          locale: locale ?? currentDefaultLocale,
+                          locales: i18nConfig?.locales,
+                          defaultLocale: currentDefaultLocale,
+                          domainLocales,
+                          ...freshPagesNextData,
+                        },
+                      )}</script>`;
 
                       const hydrationMatch = cachedHtml.match(
                         /<script type="module">[\s\S]*?<\/script>/,
@@ -1567,6 +1569,13 @@ import React from "react";
 import { hydrateRoot } from "react-dom/client";
 import Router, { wrapWithRouterContext } from "next/router";
 
+const nextDataElement = document.getElementById("__NEXT_DATA__");
+if (nextDataElement?.textContent) {
+  window.__NEXT_DATA__ = JSON.parse(nextDataElement.textContent);
+  window.__VINEXT_LOCALE__ = window.__NEXT_DATA__.locale;
+  window.__VINEXT_LOCALES__ = window.__NEXT_DATA__.locales;
+  window.__VINEXT_DEFAULT_LOCALE__ = window.__NEXT_DATA__.defaultLocale;
+}
 const nextData = window.__NEXT_DATA__;
 const props = nextData.props && typeof nextData.props === "object" ? nextData.props : {};
 const rawPageProps = props.pageProps;
@@ -1625,8 +1634,8 @@ async function hydrate() {
 hydrate();
 </script>`;
 
-        const nextDataScript = createInlineScriptTag(
-          `window.__NEXT_DATA__ = ${safeJsonStringify({
+        const nextDataScript = `<script id="__NEXT_DATA__" type="application/json"${nonceAttr}>${safeJsonStringify(
+          {
             props: renderProps,
             page: patternToNextFormat(route.pattern),
             query: params,
@@ -1637,9 +1646,8 @@ hydrate();
             defaultLocale: currentDefaultLocale,
             domainLocales,
             ...serializedPagesNextData,
-          })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}`,
-          scriptNonce,
-        );
+          },
+        )}</script>`;
 
         // Try to load custom _document.tsx
         const docPath = path.join(pagesDir, "_document");
