@@ -1707,10 +1707,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       const protocol = resolveRequestProtocol(req);
       const hostHeader = resolveHost(req, `${host}:${port}`);
       const rawReqHeaders = nodeHeadersToWebHeaders(req.headers);
-      // Capture `x-nextjs-data` before filterInternalHeaders strips it — the
-      // middleware redirect protocol needs to know whether the inbound request
-      // was a `_next/data` fetch to emit `x-nextjs-redirect` instead of a 3xx.
-      const isDataRequest = rawReqHeaders.get("x-nextjs-data") === "1";
+      // Only a successfully parsed `/_next/data/...json` URL is a data
+      // request. The inbound x-nextjs-data header is internal and must not let
+      // callers opt normal URLs into the data redirect protocol.
+      const isDataRequest = isDataReq;
       // Strip internal headers from inbound requests before any handler or
       // middleware sees them.
       const reqHeaders = filterInternalHeaders(rawReqHeaders);

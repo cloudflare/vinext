@@ -3616,6 +3616,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }
               }
 
+              // When @cloudflare/vite-plugin is present, delegate the entire
+              // Pages Router request pipeline to the Worker/miniflare side
+              // before mutating _next/data URLs. The generated Worker entry
+              // owns build-ID-aware data normalization and trusted protocol
+              // classification.
+              if (hasCloudflarePlugin) return next();
+
               // ── `_next/data` normalization (Pages Router) ──────────────
               // Client-side navigations in the Pages Router fetch
               // `/_next/data/<buildId>/<page>.json`. Normalize the URL to the
@@ -3667,13 +3674,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 return next();
               }
 
-              // When @cloudflare/vite-plugin is present, delegate the entire
-              // Pages Router request pipeline to the Worker/miniflare side.
-              // That keeps middleware, headers, redirects, rewrites, API
-              // routes, and rendering in one place instead of mutating the
-              // host request and forwarding post-middleware state downstream.
-              if (hasCloudflarePlugin) return next();
-
               // Snapshot of req.headers before middleware runs. Used for both
               // preMiddlewareReqCtx and the middleware Request itself. Intentionally
               // captured once here — applyRequestHeadersToNodeRequest() mutates
@@ -3689,11 +3689,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]),
                 ),
               );
-              // Capture `x-nextjs-data` before filterInternalHeaders strips it
-              // — the middleware redirect protocol needs to know whether the
-              // inbound request was a `_next/data` fetch to emit
-              // `x-nextjs-redirect` instead of a 3xx.
-              const isDataRequest = rawHeaders.get("x-nextjs-data") === "1";
+              // Only a successfully parsed `/_next/data/...json` URL is a data
+              // request. The inbound x-nextjs-data header is internal and must
+              // not let callers opt normal URLs into the data redirect protocol.
+              const isDataRequest = isDataReq;
               // Strip internal headers from inbound requests so they cannot be
               // forged to influence routing or impersonate internal state.
               // Both the middleware Request (built below) and the SSR handler

@@ -76,7 +76,7 @@ export type PagesPipelineDeps = {
   // Pre-computed per-request values (adapter sets these)
   hadBasePath: boolean; // adapter computes: !basePath || hasBasePath(originalPathname, basePath)
   isDataReq: boolean; // true if this was a /_next/data/ request (already normalized by adapter)
-  isDataRequest: boolean; // true if x-nextjs-data: 1 header was present (for middleware opts)
+  isDataRequest: boolean; // trusted data classification for middleware protocol handling
   ctx?: unknown; // Cloudflare ExecutionContext or undefined (for Node)
   // Raw, un-re-encoded query string (incl. leading "?") for building redirect Location
   // headers. Node adapters that build the Web Request from a raw req.url string should
@@ -548,11 +548,7 @@ export async function runPagesRequest(
       }
     }
     // A data request must not defer-render the error page or run fallback rewrites.
-    // Node/dev signal this via `isDataReq` (set when a `/_next/data/` path is
-    // normalized); the worker never normalizes those paths (no buildId at request
-    // scope), so it relies on the `x-nextjs-data: 1` header captured as `isDataRequest`.
-    // Gate on both so the worker matches the pre-refactor behavior (it previously gated
-    // on the header). No-op for Node/dev, where a data request already has isDataReq=true.
+    // All adapters normalize real `/_next/data/` URLs before this point.
     const shouldDeferErrorPageOnMiss =
       !isDataReq && !isDataRequest && !!deps.matchPageRoute && !renderPageMatch;
     const initialRenderOptions: PagesRenderOptions | undefined = shouldDeferErrorPageOnMiss

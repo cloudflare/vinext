@@ -562,7 +562,7 @@ import { assetPrefixPathname, isNextStaticPath } from "vinext/utils/asset-prefix
 import { hasBasePath, stripBasePath } from "vinext/utils/base-path";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
-import { renderPage, handleApiRoute, runMiddleware, vinextConfig, matchPageRoute } from "virtual:vinext-server-entry";
+import { renderPage, handleApiRoute, runMiddleware, normalizeDataRequest, vinextConfig, matchPageRoute } from "virtual:vinext-server-entry";
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 
@@ -626,11 +626,6 @@ export default {
         return notFoundStaticAssetResponse();
       }
 
-      // Capture x-nextjs-data before filterInternalHeaders strips it -- the
-      // middleware redirect protocol needs to know whether the inbound request
-      // was a _next/data fetch to emit x-nextjs-redirect instead of a 3xx.
-      const isDataRequest = request.headers.get("x-nextjs-data") === "1";
-
       // Strip internal headers from inbound requests so they cannot be
       // forged to influence routing or impersonate internal state.
       // Request.headers is immutable in Workers, so build a clean copy.
@@ -652,6 +647,14 @@ export default {
           request = cloneRequestWithUrl(request, strippedUrl.toString());
           pathname = stripped;
         }
+      }
+
+      const dataNorm = normalizeDataRequest(request);
+      if (dataNorm.notFoundResponse) return dataNorm.notFoundResponse;
+      const isDataReq = dataNorm.isDataReq;
+      if (isDataReq) {
+        request = dataNorm.request;
+        pathname = dataNorm.normalizedPathname;
       }
 
       // ── Image optimization via Cloudflare Images binding ──────────
@@ -682,12 +685,8 @@ export default {
         configRewrites,
         configHeaders,
         hadBasePath,
-        // The worker adapter does not do _next/data URL normalization (no
-        // buildId available at request time). isDataReq is used by the pipeline
-        // only for renderPage options and shouldDeferErrorPageOnMiss -- false
-        // is correct here.
-        isDataReq: false,
-        isDataRequest,
+        isDataReq,
+        isDataRequest: isDataReq,
         ctx,
         matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,
         // Pass the original (pre-basePath-stripping) URL to middleware so that

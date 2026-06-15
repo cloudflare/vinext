@@ -853,6 +853,21 @@ describe("scanPublicFileRoutes", () => {
 });
 
 describe("generatePagesRouterWorkerEntry", () => {
+  it("keeps Cloudflare dev _next/data URLs intact for Worker normalization", () => {
+    const indexSource = fs.readFileSync(
+      path.join(import.meta.dirname, "../packages/vinext/src/index.ts"),
+      "utf8",
+    );
+    const delegation = indexSource.indexOf("if (hasCloudflarePlugin) return next();");
+    const dataNormalization = indexSource.indexOf(
+      "// ── `_next/data` normalization (Pages Router) ──────────────",
+    );
+
+    expect(delegation).toBeGreaterThanOrEqual(0);
+    expect(dataNormalization).toBeGreaterThanOrEqual(0);
+    expect(delegation).toBeLessThan(dataNormalization);
+  });
+
   it("generates valid TypeScript", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("export default");
@@ -869,6 +884,8 @@ describe("generatePagesRouterWorkerEntry", () => {
     // runPagesRequest.
     expect(content).toContain('typeof runMiddleware === "function"');
     expect(content).toContain("wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)");
+    expect(content).toContain("const dataNorm = normalizeDataRequest(request)");
+    expect(content).toContain("isDataRequest: isDataReq");
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
@@ -1250,9 +1267,10 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("does not defer error page rendering for data requests", () => {
     const content = generatePagesRouterWorkerEntry();
     // shouldDeferErrorPageOnMiss logic is now inside runPagesRequest.
-    // The worker passes isDataReq: false (no buildId normalization) and
-    // matchPageRoute dep so the pipeline computes the right behavior.
-    expect(content).toContain("isDataReq: false,");
+    // The worker normalizes the build-ID-aware URL before the pipeline and
+    // passes the trusted classification alongside matchPageRoute.
+    expect(content).toContain("isDataReq,");
+    expect(content).toContain("isDataRequest: isDataReq");
     expect(content).toContain(
       'matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null',
     );

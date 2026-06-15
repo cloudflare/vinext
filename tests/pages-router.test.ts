@@ -2027,6 +2027,25 @@ describe("Pages Router integration", () => {
     // value matches the prod-server's embedded buildId.
     const BUILD_ID = "test-build-id";
 
+    // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+    it("does not treat a normal URL as a data request from x-nextjs-data alone", async () => {
+      const res = await fetch(`${baseUrl}/old-page`, {
+        redirect: "manual",
+        headers: { "x-nextjs-data": "1" },
+      });
+      expect(res.status).toBe(307);
+      expect(res.headers.get("location")).toContain("/about");
+      expect(res.headers.get("x-nextjs-redirect")).toBeNull();
+    });
+
+    it("adds x-nextjs-rewrite for a real data URL rewritten by middleware", async () => {
+      const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/rewritten.json`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-nextjs-rewrite")).toBe("/ssr");
+      expect(res.headers.get("x-middleware-rewrite")).toBeNull();
+    });
+
     it("returns { pageProps } JSON for a getServerSideProps page", async () => {
       const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/ssr.json`);
       expect(res.status).toBe(200);
@@ -5229,6 +5248,25 @@ describe("Production server middleware (Pages Router)", () => {
   describe("/_next/data JSON endpoint", () => {
     // pages-basic's next.config.mjs pins the build id to "test-build-id".
     const BUILD_ID = "test-build-id";
+
+    // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+    it("does not treat a normal URL as a data request from x-nextjs-data alone", async () => {
+      const res = await fetch(`${prodUrl}/old-page`, {
+        redirect: "manual",
+        headers: { "x-nextjs-data": "1" },
+      });
+      expect(res.status).toBe(307);
+      expect(res.headers.get("location")).toContain("/about");
+      expect(res.headers.get("x-nextjs-redirect")).toBeNull();
+    });
+
+    it("adds x-nextjs-rewrite for a real data URL rewritten by middleware", async () => {
+      const res = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/rewritten.json`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-nextjs-rewrite")).toBe("/ssr");
+      expect(res.headers.get("x-middleware-rewrite")).toBeNull();
+    });
 
     it("returns { pageProps } JSON for a getServerSideProps page", async () => {
       const res = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/ssr.json`);

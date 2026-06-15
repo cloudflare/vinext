@@ -857,6 +857,41 @@ describe("App Router entry templates", () => {
 // ── Pages Router entry template runtime bootstrap ─────────────────────
 
 describe("Pages Router entry template", () => {
+  it("reports trusted _next/data classification from URL normalization", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-data-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    const middlewarePath = path.join(tmpDir, "middleware.ts");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        middlewarePath,
+        'export function middleware() { return new Response(null, { headers: { "x-middleware-next": "1" } }); }',
+      );
+
+      const code = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({
+          basePath: "/root",
+          generateBuildId: () => "test-build-id",
+        }),
+        createValidFileMatcher(),
+        middlewarePath,
+        null,
+      );
+
+      expect(code).toContain("export function normalizeDataRequest(request)");
+      expect(code).toContain("return __normalizePagesDataRequest(request, buildId)");
+      expect(code).not.toContain('request.headers.get("x-nextjs-data")');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("installs server globals before Pages Router user modules are imported", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-entry-"));
     const pagesDir = path.join(tmpDir, "pages");

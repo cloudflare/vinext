@@ -141,6 +141,30 @@ describe("middleware", () => {
     expect(result.response.status).toBe(307);
   });
 
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+  it("does not classify a normal request as data from x-nextjs-data alone", async () => {
+    const runMiddleware = vi.fn(async () => ({
+      continue: false,
+      redirectUrl: "http://localhost/somewhere",
+      redirectStatus: 307,
+    }));
+
+    const result = await runPagesRequest(
+      makeRequest("/redirect-to-somewhere", { "x-nextjs-data": "1" }),
+      baseDeps({ runMiddleware }),
+    );
+
+    expect(runMiddleware).toHaveBeenCalledWith(expect.any(Request), null, {
+      isDataRequest: false,
+    });
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(307);
+    expect(result.response.headers.get("Location")).toBe("http://localhost/somewhere");
+    expect(result.response.headers.get("x-nextjs-redirect")).toBeNull();
+  });
+
   // 5. Middleware rewrite: resolvedUrl changes, pipeline continues
   it("middleware rewrite changes resolved URL, pipeline continues to render", async () => {
     const renderPage = makeRenderPage(200, "rewrite target");
@@ -164,23 +188,36 @@ describe("middleware", () => {
     );
   });
 
-  it("exposes the middleware rewrite target on Pages data responses", async () => {
-    const result = await runPagesRequest(
-      makeRequest("/to-blog/post"),
-      baseDeps({
-        isDataRequest: true,
-        runMiddleware: makeMiddleware({
-          continue: true,
-          rewriteUrl: "/fallback-true-blog/post",
+  it.each([
+    { i18nConfig: null, requestPath: "/ssr-page", rewritePath: "/ssr-page-2" },
+    {
+      i18nConfig: { locales: ["en", "fr"], defaultLocale: "en" },
+      requestPath: "/en/ssr-page",
+      rewritePath: "/en/ssr-page-2",
+    },
+  ])(
+    "exposes the middleware rewrite target on real Pages data responses ($requestPath)",
+    async ({ i18nConfig, requestPath, rewritePath }) => {
+      const result = await runPagesRequest(
+        makeRequest(requestPath),
+        baseDeps({
+          isDataReq: true,
+          isDataRequest: true,
+          i18nConfig,
+          runMiddleware: makeMiddleware({
+            continue: true,
+            rewriteUrl: rewritePath,
+          }),
+          renderPage: makeRenderPage(200, '{"pageProps":{"message":"Bye Cruel World"}}'),
         }),
-        renderPage: makeRenderPage(200, '{"pageProps":{"slug":"post"}}'),
-      }),
-    );
+      );
 
-    expect(result.type).toBe("response");
-    if (result.type !== "response") return;
-    expect(result.response.headers.get("x-nextjs-rewrite")).toBe("/fallback-true-blog/post");
-  });
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("x-nextjs-rewrite")).toBe(rewritePath);
+      expect(result.response.headers.get("x-middleware-rewrite")).toBeNull();
+    },
+  );
 
   it("does not expose the middleware rewrite target on HTML responses", async () => {
     const result = await runPagesRequest(
