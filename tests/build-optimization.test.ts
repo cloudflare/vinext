@@ -2772,6 +2772,48 @@ export const getStaticPaths = () => [
     expect(result).toContain("export const getStaticPaths = undefined;");
     expect(result).not.toContain("a;b");
   });
+
+  // Regression test for #1972: a server export sharing one `const` statement
+  // with a sibling binding must not drop the sibling.
+  // Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
+  // "should not remove extra named export variable declarations"
+  // https://github.com/vercel/next.js/blob/canary/test/unit/babel-plugin-next-ssg-transform.test.ts
+  it("preserves sibling bindings sharing a declaration with a server export", () => {
+    const code = `
+export const keep = 1, getStaticProps = () => ({ props: {} });
+
+export default function Page() {
+  return null;
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    // The non-server sibling binding must survive untouched.
+    expect(result).toContain("keep = 1");
+    // The server export is stubbed, not its initializer kept.
+    expect(result).toContain("getStaticProps = undefined");
+    expect(result).not.toContain("props: {}");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  // Regression test for #1972: two server exports sharing one declaration must
+  // each be stubbed without collapsing the statement (no double-overwrite).
+  it("stubs every server export when several share one declaration", () => {
+    const code = `
+export const getStaticPaths = () => ({ paths: [] }), getStaticProps = () => ({ props: {} });
+
+export default function Page() {
+  return null;
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("getStaticPaths = undefined");
+    expect(result).toContain("getStaticProps = undefined");
+    expect(result).not.toContain("paths: []");
+    expect(result).not.toContain("props: {}");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
 });
 
 // ─── getClientTreeshakeConfigForVite ──────────────────────────────────────────

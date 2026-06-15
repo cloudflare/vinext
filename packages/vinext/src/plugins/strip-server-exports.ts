@@ -42,9 +42,15 @@ export function stripServerExports(code: string): string | null {
         );
         changed = true;
       } else if (decl.type === "VariableDeclaration") {
+        // Stub each matched declarator in place rather than overwriting the
+        // whole statement. This preserves any sibling bindings sharing the
+        // declaration (`export const a = 1, getStaticProps = ...`) and avoids
+        // a double-overwrite collapse when two server exports share one
+        // declaration. Matches Next.js's next-ssg, which removes only the
+        // matched declarator and retains the rest.
         for (const declarator of decl.declarations) {
           if (declarator.id?.type === "Identifier" && SERVER_EXPORTS.has(declarator.id.name)) {
-            s.overwrite(node.start, node.end, `export const ${declarator.id.name} = undefined;`);
+            s.overwrite(declarator.start, declarator.end, `${declarator.id.name} = undefined`);
             changed = true;
           }
         }
