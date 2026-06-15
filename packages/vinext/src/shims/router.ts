@@ -1416,10 +1416,9 @@ async function resolveMiddlewareDataEffect(
   const dataUrl = getMiddlewarePagesDataFetchUrl(browserUrl);
   if (!dataUrl) return null;
 
-  // We deliberately do NOT thread `signal` into the shared fetch — see the
-  // dedup helper for why. Stale callers bail out via `assertStillCurrent()`
-  // after the await; we still surface a pre-await abort via this check so
-  // callers see the documented AbortError on supersession.
+  // The dedup helper uses `signal` to release this caller's waiter. It keeps
+  // the shared request alive for any identical waiter, and aborts only when
+  // this was the final waiter.
   if (signal.aborted) {
     throw new DOMException("Aborted", "AbortError");
   }
@@ -1430,6 +1429,7 @@ async function resolveMiddlewareDataEffect(
         Accept: "application/json",
         "x-nextjs-data": "1",
       },
+      signal,
     });
     return {
       redirectLocation: res.headers.get("x-nextjs-redirect"),
@@ -1506,11 +1506,10 @@ async function navigateClientData(
   //
   // We dedupe by URL: concurrent `Router.push` calls (or back-to-back link
   // clicks) for the same destination share a single underlying request.
-  // The shared fetch deliberately ignores `controller.signal` — each caller
-  // still bails out of their navigation via `assertStillCurrent()` after the
-  // await, but the shared network request itself runs to completion so other
-  // racing callers still benefit. This matches Next.js's `inflightCache`
-  // semantics in `fetchNextData()`.
+  // The shared fetch uses `controller.signal` to release this caller's waiter.
+  // The network request stays alive while another identical navigation is
+  // waiting, and aborts once the final waiter cancels. This matches Next.js's
+  // combination of in-flight reuse and per-navigation cancellation.
   //
   // Pre-await abort still throws so callers see the documented cancellation
   // surface when supersession happened before the fetch was even attempted.
@@ -1526,7 +1525,10 @@ async function navigateClientData(
       };
       const deploymentId = getDeploymentId();
       if (deploymentId) headers[NEXT_DEPLOYMENT_ID_HEADER] = deploymentId;
-      res = await dedupedPagesDataFetch(initialTarget.dataHref, { headers });
+      res = await dedupedPagesDataFetch(initialTarget.dataHref, {
+        headers,
+        signal: controller.signal,
+      });
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === "AbortError") {
         throw new NavigationCancelledError(url);
@@ -1897,8 +1899,12 @@ async function navigateClient(
 ): Promise<void> {
   if (typeof window === "undefined") return;
 
-  // Cancel any in-flight navigation (abort its fetch, settle its render-commit wait)
-  routerRuntimeState.activeAbortController?.abort();
+  // Supersede the prior navigation immediately via navigationId below, but
+  // defer its AbortSignal by one microtask. A synchronous identical push can
+  // then join the shared _next/data fetch before the prior waiter releases;
+  // different destinations still abort the abandoned request in this turn.
+  const previousAbortController = routerRuntimeState.activeAbortController;
+  if (previousAbortController) queueMicrotask(() => previousAbortController.abort());
   cancelPreviousRenderCommit();
   const controller = new AbortController();
   routerRuntimeState.activeAbortController = controller;

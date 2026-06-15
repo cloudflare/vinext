@@ -16643,6 +16643,64 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it("dedupes deferred identical pushes while cancelling only the stale navigation", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const slowLoader = vi.fn(async () => makePageModule("slow"));
+    const { win, render, pushState } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/slow": slowLoader },
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    let resolveFetch: (response: Response) => void = () => {};
+    const deferredResponse = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchMock = vi.fn(() => deferredResponse);
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+      const routeChangeErrors: unknown[] = [];
+      const routeChangeComplete = vi.fn();
+      Router.events.on("routeChangeError", (error) => routeChangeErrors.push(error));
+      Router.events.on("routeChangeComplete", routeChangeComplete);
+
+      const firstPush = Router.push("/slow?value=one");
+      const secondPush = Router.push("/slow?value=one");
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(pushState).toHaveBeenCalledTimes(2);
+
+      resolveFetch(
+        new Response(JSON.stringify({ pageProps: { hit: 1 } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+      await expect(Promise.all([firstPush, secondPush])).resolves.toEqual([true, true]);
+      expect(routeChangeErrors).toHaveLength(1);
+      expect(routeChangeErrors[0]).toMatchObject({ cancelled: true });
+      expect(routeChangeComplete).toHaveBeenCalledTimes(1);
+      expect(slowLoader).toHaveBeenCalledTimes(1);
+      expect(render).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__).toMatchObject({
+        page: "/slow",
+        query: { value: "one" },
+        props: { pageProps: { hit: 1 } },
+      });
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   it("threads full Pages props through _app during data navigation", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -16987,6 +17045,7 @@ describe("Pages Router _next/data client navigation", () => {
           purpose: "prefetch",
           "x-nextjs-data": "1",
         },
+        signal: expect.any(AbortSignal),
       });
       expect(appendedLinks).toEqual([]);
       // The loader was warmed (chunk fetch kicked off).
