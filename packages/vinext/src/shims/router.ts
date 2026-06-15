@@ -554,7 +554,9 @@ function interpolateCurrentDynamicRoute(resolved: string): string {
     }
     const visiblePath = stripBasePath(window.location.pathname, __basePath);
     const visibleLocale = getLocalePathPrefix(visiblePath, window.__VINEXT_LOCALES__);
-    const routePath = visibleLocale ? visiblePath.slice(visibleLocale.length + 1) || "/" : visiblePath;
+    const routePath = visibleLocale
+      ? visiblePath.slice(visibleLocale.length + 1) || "/"
+      : visiblePath;
     if (extractRouteParamsFromPath(routePattern, routePath) === null) return resolved;
 
     const query = parseQueryString(target.search);

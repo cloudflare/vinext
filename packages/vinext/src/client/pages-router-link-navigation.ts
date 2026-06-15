@@ -68,8 +68,8 @@ export async function navigatePagesRouterLink(
   const routerOptions: PagesRouterLinkTransitionOptions = {
     scroll,
     locale,
-    _vinextInterpolateDynamicRoute: interpolateDynamicRoute,
   };
+  if (interpolateDynamicRoute) routerOptions._vinextInterpolateDynamicRoute = true;
   if (shallow !== undefined) routerOptions.shallow = shallow;
   if (replace) {
     await router.replace(href, undefined, routerOptions);

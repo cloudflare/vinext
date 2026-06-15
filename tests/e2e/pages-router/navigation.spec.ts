@@ -156,9 +156,7 @@ test.describe("Client-side navigation", () => {
 
     await expect(page.locator('[data-testid="query-id"]')).toHaveText("1");
     await expect(page).toHaveURL(`${BASE}/rewrite-navigation-same/1`);
-    await expect(page.locator('[data-testid="as-path"]')).toHaveText(
-      "/rewrite-navigation-same/1",
-    );
+    await expect(page.locator('[data-testid="as-path"]')).toHaveText("/rewrite-navigation-same/1");
     expect(await page.evaluate(() => (window as any).__REWRITE_NAV_HISTORY__.at(-1))).toBe("push");
     expect(await page.evaluate(() => (window as any).__REWRITE_NAV_EVENTS__)).toEqual([
       "routeChangeStart:/rewrite-navigation-same/1",
@@ -178,9 +176,7 @@ test.describe("Client-side navigation", () => {
 
     await expect(page.locator('[data-testid="query-id"]')).toHaveText("2");
     await expect(page).toHaveURL(`${BASE}/rewrite-navigation-same/2`);
-    await expect(page.locator('[data-testid="as-path"]')).toHaveText(
-      "/rewrite-navigation-same/2",
-    );
+    await expect(page.locator('[data-testid="as-path"]')).toHaveText("/rewrite-navigation-same/2");
     expect(await page.evaluate(() => (window as any).__REWRITE_NAV_HISTORY__.at(-1))).toBe(
       "replace",
     );
@@ -202,9 +198,7 @@ test.describe("Client-side navigation", () => {
 
     await expect(page.locator('[data-testid="query-id"]')).toHaveText("3");
     await expect(page).toHaveURL(`${BASE}/rewrite-navigation-same/3`);
-    await expect(page.locator('[data-testid="as-path"]')).toHaveText(
-      "/rewrite-navigation-same/3",
-    );
+    await expect(page.locator('[data-testid="as-path"]')).toHaveText("/rewrite-navigation-same/3");
     expect(await page.evaluate(() => (window as any).__REWRITE_NAV_HISTORY__.at(-1))).toBe("push");
     expect(await page.evaluate(() => (window as any).__REWRITE_NAV_EVENTS__)).toEqual([
       "routeChangeStart:/rewrite-navigation-same/3",
