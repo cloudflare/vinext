@@ -697,6 +697,157 @@ describe("App Router generated manifest construction", () => {
 // ── App Router entry template error paths ────────────────────────────
 
 describe("App Router entry templates", () => {
+  it("applies inherited edge runtime to the complete route graph without mixed identities", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-edge-graph-"));
+    const file = (relativePath: string, source = "export default null;") => {
+      const filePath = path.join(tmpDir, relativePath);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, source);
+      return filePath;
+    };
+
+    try {
+      const rootLayout = file("app/layout.tsx", 'export const runtime = "edge";');
+      const edgePage = file("app/edge/page.tsx");
+      const edgeTemplate = file("app/edge/template.tsx");
+      const edgeLoading = file("app/edge/loading.tsx");
+      const edgeError = file("app/edge/error.tsx");
+      const edgeNotFound = file("app/edge/not-found.tsx");
+      const edgeForbidden = file("app/edge/forbidden.tsx");
+      const edgeUnauthorized = file("app/edge/unauthorized.tsx");
+      const slotPage = file("app/edge/@modal/page.tsx");
+      const slotDefault = file("app/edge/@modal/default.tsx");
+      const slotLayout = file("app/edge/@modal/layout.tsx");
+      const slotLoading = file("app/edge/@modal/loading.tsx");
+      const slotError = file("app/edge/@modal/error.tsx");
+      const interceptPage = file("app/edge/@modal/(.)photo/page.tsx");
+      const interceptLayout = file("app/edge/@modal/(.)photo/layout.tsx");
+      const siblingPage = file("app/edge/(.)sibling/page.tsx");
+      const siblingLayout = file("app/edge/(.)sibling/layout.tsx");
+      const nodePage = file("app/node/page.tsx", 'export const runtime = "nodejs";');
+
+      const routes = [
+        {
+          pattern: "/edge",
+          patternParts: ["edge"],
+          pagePath: edgePage,
+          routePath: null,
+          layouts: [rootLayout],
+          templates: [edgeTemplate],
+          parallelSlots: [
+            {
+              key: "modal",
+              name: "modal",
+              ownerDir: path.join(tmpDir, "app", "edge"),
+              ownerTreePath: "edge",
+              hasPage: true,
+              pagePath: slotPage,
+              defaultPath: slotDefault,
+              layoutPath: slotLayout,
+              loadingPath: slotLoading,
+              errorPath: slotError,
+              interceptingRoutes: [
+                {
+                  convention: ".",
+                  targetPattern: "/photo",
+                  sourceMatchPattern: "/edge",
+                  pagePath: interceptPage,
+                  layoutPaths: [interceptLayout],
+                  params: [],
+                },
+              ],
+              layoutIndex: 0,
+              routeSegments: ["@modal"],
+            },
+          ],
+          loadingPath: edgeLoading,
+          errorPath: edgeError,
+          layoutErrorPaths: [edgeError],
+          errorPaths: [edgeError],
+          notFoundPath: edgeNotFound,
+          notFoundPaths: [edgeNotFound],
+          forbiddenPath: edgeForbidden,
+          forbiddenPaths: [edgeForbidden],
+          unauthorizedPath: edgeUnauthorized,
+          unauthorizedPaths: [edgeUnauthorized],
+          routeSegments: ["edge"],
+          templateTreePositions: [0],
+          layoutTreePositions: [0],
+          isDynamic: false,
+          params: [],
+          siblingIntercepts: [
+            {
+              convention: ".",
+              targetPattern: "/sibling",
+              sourceMatchPattern: "/edge",
+              sourcePageSegments: ["edge"],
+              pagePath: siblingPage,
+              layoutPaths: [siblingLayout],
+              params: [],
+            },
+          ],
+        },
+        {
+          pattern: "/node",
+          patternParts: ["node"],
+          pagePath: nodePage,
+          routePath: null,
+          layouts: [rootLayout],
+          templates: [],
+          parallelSlots: [],
+          loadingPath: null,
+          errorPath: null,
+          layoutErrorPaths: [null],
+          notFoundPath: null,
+          notFoundPaths: [null],
+          forbiddenPath: null,
+          forbiddenPaths: [null],
+          unauthorizedPath: null,
+          unauthorizedPaths: [null],
+          routeSegments: ["node"],
+          templateTreePositions: [],
+          layoutTreePositions: [0],
+          isDynamic: false,
+          params: [],
+          siblingIntercepts: [],
+        },
+      ] satisfies AppRoute[];
+
+      const imports = buildAppRscManifestCode({ routes }).imports.join("\n");
+      const marker = "?__vinext_runtime_condition=edge-light-react-server";
+      for (const filePath of [
+        edgePage,
+        edgeTemplate,
+        edgeLoading,
+        edgeError,
+        edgeNotFound,
+        edgeForbidden,
+        edgeUnauthorized,
+        slotPage,
+        slotDefault,
+        slotLayout,
+        slotLoading,
+        slotError,
+        interceptPage,
+        interceptLayout,
+        siblingPage,
+        siblingLayout,
+      ]) {
+        expect(imports).toContain(`${filePath}${marker}`);
+        expect(imports).not.toMatch(
+          new RegExp(`${filePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(["'])`),
+        );
+      }
+
+      expect(imports).toContain(`${rootLayout}${marker}`);
+      expect(imports).toContain(`from ${JSON.stringify(rootLayout)}`);
+      expect(imports).toContain(`import(${JSON.stringify(nodePage)})`);
+      expect(imports).not.toContain(`${nodePage}${marker}`);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("installs server globals before App Router user modules are imported", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
@@ -857,6 +1008,39 @@ describe("App Router entry templates", () => {
 // ── Pages Router entry template runtime bootstrap ─────────────────────
 
 describe("Pages Router entry template", () => {
+  it("marks edge routes and middleware for runtime export conditions", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-entry-conditions-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    const middlewarePath = path.join(tmpDir, "middleware.ts");
+
+    try {
+      fs.mkdirSync(path.join(pagesDir, "api"), { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        'export const config = { runtime: "experimental-edge" }; export default function Page() { return null; }',
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "api", "node.ts"),
+        'export const config = { runtime: "nodejs" }; export default function handler() {}',
+      );
+      fs.writeFileSync(middlewarePath, "export function middleware() {}");
+
+      const code = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        middlewarePath,
+        null,
+      );
+
+      expect(code).toContain("index.tsx?__vinext_runtime_condition=edge-light");
+      expect(code).not.toContain("node.ts?__vinext_runtime_condition=edge-light");
+      expect(code).toContain("middleware.ts?__vinext_runtime_condition=middleware");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("installs server globals before Pages Router user modules are imported", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-entry-"));
     const pagesDir = path.join(tmpDir, "pages");

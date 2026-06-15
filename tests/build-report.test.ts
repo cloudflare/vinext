@@ -12,6 +12,7 @@ import fs from "node:fs/promises";
 import {
   hasNamedExport,
   extractExportConstString,
+  extractExportConstObjectString,
   extractExportConstNumber,
   extractGetStaticPropsRevalidate,
   classifyPagesRoute,
@@ -130,6 +131,35 @@ export const dynamic = "force-dynamic";
 
   it("returns null for non-string value", () => {
     expect(extractExportConstString("export const revalidate = 60;", "revalidate")).toBeNull();
+  });
+});
+
+describe("extractExportConstObjectString", () => {
+  it("extracts a static property from an exported config object", () => {
+    expect(
+      extractExportConstObjectString(
+        'export const config = { runtime: "experimental-edge", matcher: "/api/:path*" };',
+        "config",
+        "runtime",
+      ),
+    ).toBe("experimental-edge");
+  });
+
+  it("returns null for computed or non-string properties", () => {
+    expect(
+      extractExportConstObjectString(
+        'export const config = { ["runtime"]: "edge" };',
+        "config",
+        "runtime",
+      ),
+    ).toBeNull();
+    expect(
+      extractExportConstObjectString(
+        "export const config = { runtime: getRuntime() };",
+        "config",
+        "runtime",
+      ),
+    ).toBeNull();
   });
 });
 

@@ -2,6 +2,8 @@ import fs from "node:fs";
 import type { Plugin } from "vite";
 import { stripViteModuleQuery } from "../utils/path.js";
 
+const OG_WASM_FALLBACK_PREFIX = "\0vinext-og-wasm-fallback:";
+
 /**
  * vinext:wasm-module-import — handle `import x from '*.wasm?module'`.
  *
@@ -31,22 +33,9 @@ export function createWasmModuleImportPlugin(): Plugin {
         // instead of silently shipping TLA into a client chunk.
         if (this.environment?.name === "client") return null;
 
-        // Skip imports originating from @vercel/og — vinext:og-font-patch
-        // converts those to dynamic imports whose .catch() fallback reads from
-        // disk on Node.js.  If we intercept them here and inline the bytes as
-        // base64, the dynamic import succeeds on Node.js too, defeating the
-        // fallback, causing the ~1.3 MB resvg WASM to be shipped twice, and
-        // breaking findEmittedWasmAsset dedup in vinext:og-assets.
-        //
-        // The substring predicate deliberately mirrors the
-        // vinext:og-font-patch transform filter (`id.includes("@vercel/og")`
-        // in index.ts) — the two must never diverge, or an id matched by the
-        // font-patch transform could slip past this guard and reintroduce
-        // the double-shipped-WASM bug.
         const importerPath = importer
           ? (importer.startsWith("\0") ? importer.slice(1) : importer).split("?")[0]
           : "";
-        if (importerPath.includes("@vercel/og")) return null;
 
         // Let Vite's resolver find the absolute path (it handles
         // relative specifiers, tsconfig paths, etc.), then strip the
@@ -55,14 +44,23 @@ export function createWasmModuleImportPlugin(): Plugin {
         if (!resolved) return null;
         if (resolved.external) return resolved;
         const filePath = stripViteModuleQuery(resolved.id);
+        if (importerPath.includes("@vercel/og")) {
+          return `${OG_WASM_FALLBACK_PREFIX}${filePath}`;
+        }
         return `\0vinext-wasm-module:${filePath}`;
       },
     },
 
     load: {
       // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
-      filter: { id: /^\u0000vinext-wasm-module:/ },
+      filter: { id: /^\u0000vinext-(?:og-wasm-fallback|wasm-module):/ },
       handler(id: string) {
+        if (id.startsWith(OG_WASM_FALLBACK_PREFIX)) {
+          const filePath = id.slice(OG_WASM_FALLBACK_PREFIX.length);
+          this.addWatchFile(filePath);
+          return `throw new Error(${JSON.stringify(`Use the @vercel/og disk fallback for ${filePath}`)}); export default undefined;`;
+        }
+
         // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
         const filePath = id.replace(/^\u0000vinext-wasm-module:/, "");
         // Record the dependency on the underlying .wasm file so editing it

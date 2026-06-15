@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { copyMissingOgWasm } from "../packages/vinext/src/plugins/og-assets.js";
+import {
+  copyMissingOgWasm,
+  createOgAssetsPlugin as createOgAssetsPluginImpl,
+} from "../packages/vinext/src/plugins/og-assets.js";
 import type { Plugin } from "vite-plus";
 import fsp from "node:fs/promises";
 import fs from "node:fs";
@@ -13,7 +16,10 @@ function unwrapHook(hook: any): Function {
   return typeof hook === "function" ? hook : hook?.handler;
 }
 
-function createOgAssetsPlugin(): Plugin {
+function createOgAssetsPlugin(resolveOgDistDir?: () => string): Plugin {
+  if (resolveOgDistDir) {
+    return createOgAssetsPluginImpl(resolveOgDistDir);
+  }
   const plugins = vinext() as Plugin[];
   const plugin = plugins.find((p) => p.name === "vinext:og-assets");
   if (!plugin) throw new Error("vinext:og-assets plugin not found");
@@ -22,6 +28,7 @@ function createOgAssetsPlugin(): Plugin {
 
 // A `this` context that mimics the rsc environment so the hooks run.
 const rscCtx = { environment: { name: "rsc" } };
+const ssrCtx = { environment: { name: "ssr" } };
 
 /** Build a fake output bundle (chunk + optional emitted wasm assets). */
 function makeBundle(opts: {
@@ -218,17 +225,49 @@ describe("vinext:og-assets plugin", () => {
     });
   });
 
+  describe("Pages Router SSR output", () => {
+    it("copies referenced fallback WASM assets into the server output", async () => {
+      const sourceDir = path.join(tmpDir, "pages-ssr-og-dist");
+      await fsp.mkdir(sourceDir, { recursive: true });
+      await fsp.writeFile(path.join(sourceDir, "resvg.wasm"), Buffer.from([0, 1, 2]));
+      await fsp.writeFile(path.join(sourceDir, "yoga.wasm"), Buffer.from([3, 4, 5]));
+
+      const plugin = createOgAssetsPlugin(() => sourceDir);
+      const generateBundle = unwrapHook(plugin.generateBundle);
+      const writeBundle = unwrapHook(plugin.writeBundle);
+      const outDir = path.join(tmpDir, "pages-ssr");
+      await fsp.mkdir(outDir, { recursive: true });
+
+      const bundle = makeBundle({
+        chunkCode: [
+          'new URL("./resvg.wasm", import.meta.url);',
+          'new URL("./yoga.wasm", import.meta.url);',
+        ].join("\n"),
+      });
+
+      generateBundle.call(ssrCtx, {}, bundle);
+      await writeBundle.call(ssrCtx, { dir: outDir }, bundle);
+
+      expect(fs.statSync(path.join(outDir, "_next", "static", "resvg.wasm")).size).toBeGreaterThan(
+        0,
+      );
+      expect(fs.statSync(path.join(outDir, "_next", "static", "yoga.wasm")).size).toBeGreaterThan(
+        0,
+      );
+    });
+  });
+
   describe("guards", () => {
-    it("ignores non-rsc environments", () => {
+    it("ignores client environments", () => {
       const plugin = createOgAssetsPlugin();
       const generateBundle = unwrapHook(plugin.generateBundle);
 
       const chunkCode = "new URL(`./resvg.wasm`,import.meta.url);";
       const bundle = makeBundle({ chunkCode, resvgAsset: "_next/static/resvg-BBB.wasm" });
 
-      generateBundle.call({ environment: { name: "ssr" } }, {}, bundle);
+      generateBundle.call({ environment: { name: "client" } }, {}, bundle);
 
-      // Untouched: the ssr environment is not handled.
+      // Untouched: browser output cannot use the Node.js disk fallback.
       expect(bundle["_next/static/index.edge-AAA.js"].code).toContain(
         "new URL(`./resvg.wasm`,import.meta.url)",
       );

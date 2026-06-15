@@ -8,12 +8,15 @@
  * Extracted from index.ts.
  */
 import { resolveEntryPath } from "./runtime-entry-module.js";
+import fs from "node:fs";
 import { normalizePathSeparators } from "../utils/path.js";
 import { pagesRouter, apiRouter, type Route } from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
 import { isProxyFile } from "../server/middleware.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
+import { extractExportConstObjectString } from "../build/report.js";
+import { withRuntimeExportCondition } from "../plugins/runtime-export-conditions.js";
 
 const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const _middlewareRuntimePath = resolveEntryPath("../server/middleware-runtime.js", import.meta.url);
@@ -40,16 +43,28 @@ export async function generateServerEntry(
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
   const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
 
+  const isEdgeRoute = (filePath: string): boolean => {
+    const source = fs.readFileSync(filePath, "utf8");
+    const runtime = extractExportConstObjectString(source, "config", "runtime");
+    return runtime === "edge" || runtime === "experimental-edge";
+  };
+
   // Generate import statements using absolute paths since virtual
   // modules don't have a real file location for relative resolution.
   const pageImports = pageRoutes.map((r: Route, i: number) => {
     const absPath = normalizePathSeparators(r.filePath);
-    return `import * as page_${i} from ${JSON.stringify(absPath)};`;
+    const specifier = isEdgeRoute(r.filePath)
+      ? withRuntimeExportCondition(absPath, "edge-light")
+      : absPath;
+    return `import * as page_${i} from ${JSON.stringify(specifier)};`;
   });
 
   const apiImports = apiRoutes.map((r: Route, i: number) => {
     const absPath = normalizePathSeparators(r.filePath);
-    return `import * as api_${i} from ${JSON.stringify(absPath)};`;
+    const specifier = isEdgeRoute(r.filePath)
+      ? withRuntimeExportCondition(absPath, "edge-light")
+      : absPath;
+    return `import * as api_${i} from ${JSON.stringify(specifier)};`;
   });
 
   // Build the route table — include filePath for SSR manifest lookup
@@ -161,7 +176,7 @@ if (typeof _instrumentation.onRequestError === "function") {
 
   // Generate middleware code if middleware.ts exists
   const middlewareImportCode = middlewarePath
-    ? `import * as middlewareModule from ${JSON.stringify(normalizePathSeparators(middlewarePath))};`
+    ? `import * as middlewareModule from ${JSON.stringify(withRuntimeExportCondition(normalizePathSeparators(middlewarePath), "middleware"))};`
     : "";
 
   // The matcher config is read from the middleware module at request time.

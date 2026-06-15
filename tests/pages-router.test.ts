@@ -4089,6 +4089,13 @@ export default function CounterPage() {
       });
     }
 
+    expect(
+      fs.statSync(path.join(outDir, "server", "_next", "static", "resvg.wasm")).size,
+    ).toBeGreaterThan(0);
+    expect(
+      fs.statSync(path.join(outDir, "server", "_next", "static", "yoga.wasm")).size,
+    ).toBeGreaterThan(0);
+
     // Import the server entry
     const serverEntry = await import(pathToFileURL(serverEntryPath).href);
     const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));

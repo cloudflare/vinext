@@ -194,6 +194,33 @@ export function extractExportConstString(code: string, name: string): string | n
   return extractStringFromConstInitializer(initializer);
 }
 
+export function extractExportConstObjectString(
+  code: string,
+  name: string,
+  propertyName: string,
+): string | null {
+  const initializer = findExportedConstInitializer(code, name);
+  if (initializer === null) return null;
+
+  const expression = unwrapStaticExpression(initializer);
+  if (expression.type !== "ObjectExpression") return null;
+
+  for (const property of expression.properties) {
+    if (property.type !== "Property" || property.kind !== "init" || property.computed) continue;
+    const key = property.key;
+    const keyName =
+      key.type === "Identifier"
+        ? key.name
+        : key.type === "Literal" && typeof key.value === "string"
+          ? key.value
+          : null;
+    if (keyName !== propertyName) continue;
+    return extractStringFromConstInitializer(property.value as Expression);
+  }
+
+  return null;
+}
+
 function extractExportConstStringFromProgram(program: Program, name: string): string | null {
   return extractStringFromConstInitializer(findExportedConstInitializerInProgram(program, name));
 }

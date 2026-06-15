@@ -22,6 +22,7 @@ import type { AppRoute } from "../routing/app-router.js";
 import { generateDevOriginCheckCode } from "../server/dev-origin-check.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import { isProxyFile } from "../server/middleware.js";
+import { withRuntimeExportCondition } from "../plugins/runtime-export-conditions.js";
 
 const DEFAULT_EXPIRE_TIME = 31_536_000;
 const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
@@ -268,7 +269,7 @@ import { getNavigationContext as _getNavigationContext } from "next/navigation";
 import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "next/cache";
 import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
-${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(normalizePathSeparators(middlewarePath))};` : ""}
+${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(withRuntimeExportCondition(normalizePathSeparators(middlewarePath), "middleware"))};` : ""}
 ${
   instrumentationPath
     ? `import * as _instrumentation from ${JSON.stringify(normalizePathSeparators(instrumentationPath))};

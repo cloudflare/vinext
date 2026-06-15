@@ -127,6 +127,7 @@ import {
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
+import { runtimeExportConditionsPlugin } from "./plugins/runtime-export-conditions.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
@@ -1118,6 +1119,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         middlewarePath ? (tryRealpathSync(middlewarePath) ?? middlewarePath) : null,
       serverOnlyShimPath: resolveShimModulePath(shimsDir, "server-only"),
     }),
+    runtimeExportConditionsPlugin(),
     // Resolve `data:text/css[+module],...` imports into virtual CSS files so
     // Vite's CSS pipeline (LightningCSS, CSS modules) processes them instead
     // of leaving the data URL as a runtime import that Node/workerd cannot
