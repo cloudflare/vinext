@@ -149,11 +149,11 @@ export async function importServerEntryModule(entryPath: string): Promise<any> {
 }
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
-function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
+export function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
   let cancelled = false;
   let cleanup = () => {};
 
-  return new ReadableStream({
+  const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       cleanup = () => {
         req.off("data", onData);
@@ -161,7 +161,9 @@ function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
         req.off("error", onError);
       };
       const onData = (chunk: Buffer) => {
-        if (!cancelled) controller.enqueue(new Uint8Array(chunk));
+        if (cancelled) return;
+        controller.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+        if ((controller.desiredSize ?? 0) <= 0) req.pause();
       };
       const onEnd = () => {
         cleanup();
@@ -175,6 +177,10 @@ function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
       req.on("data", onData);
       req.on("end", onEnd);
       req.on("error", onError);
+      req.pause();
+    },
+    pull() {
+      if (!cancelled) req.resume();
     },
     cancel() {
       cancelled = true;
@@ -182,6 +188,7 @@ function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
       req.resume();
     },
   });
+  return stream;
 }
 
 export type ProdServerOptions = {
@@ -805,7 +812,8 @@ function nodeToWebRequest(
     init.duplex = "half"; // Required for streaming request bodies
   }
 
-  return new Request(url, init);
+  const request = new Request(url, init);
+  return request;
 }
 
 /**

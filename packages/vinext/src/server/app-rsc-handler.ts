@@ -1065,6 +1065,9 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
       filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
     }
     const request = cloneRequestWithHeaders(rawRequest, filteredHeaders);
+    if (process.env.NODE_ENV !== "development" && rawRequest.body) {
+      void rawRequest.body.cancel().catch(() => {});
+    }
 
     const executionContext = isExecutionContextLike(ctx)
       ? ctx

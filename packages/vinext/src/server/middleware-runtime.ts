@@ -314,6 +314,10 @@ export async function executeMiddleware(
       response: internalServerErrorResponse(message),
       waitUntilPromises,
     };
+  } finally {
+    if (process.env.NODE_ENV !== "development" && nextRequest.body) {
+      void nextRequest.body.cancel().catch(() => {});
+    }
   }
 
   const waitUntilPromises = drainFetchEvent(fetchEvent);

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vite-plus/test";
+import { describe, it, expect, beforeAll, vi } from "vite-plus/test";
 import type { IncomingMessage } from "node:http";
 import { Readable } from "node:stream";
 
@@ -22,10 +22,12 @@ function mockReq(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
 
 describe("nodeToWebRequest", () => {
   let nodeToWebRequest: (typeof import("../packages/vinext/src/server/prod-server.js"))["nodeToWebRequest"];
+  let readNodeStream: (typeof import("../packages/vinext/src/server/prod-server.js"))["readNodeStream"];
 
   beforeAll(async () => {
     const mod = await import("../packages/vinext/src/server/prod-server.js");
     nodeToWebRequest = mod.nodeToWebRequest;
+    readNodeStream = mod.readNodeStream;
   });
 
   it("uses req.url when no urlOverride is provided", () => {
@@ -110,5 +112,46 @@ describe("nodeToWebRequest", () => {
     expect(webReq.body).not.toBeNull();
     const text = await webReq.text();
     expect(text).toBe(bodyContent);
+  });
+
+  it("reads from paused Node streams only as Web stream demand advances", async () => {
+    let produced = 0;
+    const request = new Readable({
+      highWaterMark: 1,
+      read() {
+        if (produced === 100) {
+          this.push(null);
+          return;
+        }
+        produced += 1;
+        this.push(Buffer.alloc(64 * 1024, produced));
+      },
+    });
+    const reader = readNodeStream(request as IncomingMessage).getReader();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(produced).toBeLessThan(100);
+    expect(request.readableFlowing).not.toBe(true);
+
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+    expect(first.value?.byteLength).toBe(64 * 1024);
+    await reader.cancel();
+  });
+
+  it("cancels without destroying the Node request and drains the remainder", async () => {
+    const request = new Readable({
+      read() {},
+    });
+    const resume = vi.spyOn(request, "resume");
+    const destroy = vi.spyOn(request, "destroy");
+    const body = readNodeStream(request as IncomingMessage);
+    const reader = body.getReader();
+
+    await reader.cancel();
+
+    expect(resume).toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
+    expect(request.readableFlowing).toBe(true);
   });
 });
