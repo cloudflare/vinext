@@ -991,7 +991,11 @@ describe("Pages Router entry template", () => {
       expect(code).toContain(
         'const pageProps = rawPageProps && typeof rawPageProps === "object" ? rawPageProps : {};',
       );
-      expect(code).toContain('import Router, { wrapWithRouterContext } from "next/router";');
+      expect(code).toContain("import Router, {");
+      expect(code).toContain("wrapWithRouterContext,");
+      expect(code).toContain("_initializePagesRouterReadyFromNextData,");
+      expect(code).toContain('} from "next/router";');
+      expect(code).toContain("_initializePagesRouterReadyFromNextData(window.__NEXT_DATA__);");
       expect(code).toContain("router: Router,");
       expect(code).toContain("pageProps: rawPageProps,");
       expect(code).toContain("element = wrapWithRouterContext(element, resolveHydrationCommit);");
