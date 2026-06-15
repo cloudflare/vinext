@@ -416,6 +416,24 @@ describe("KVCacheHandler", () => {
       expect((result!.value as any).html).toBe("<div>hi</div>");
     });
 
+    it("round-trips never-revalidate cache metadata", async () => {
+      await handler.set(
+        "pages-static",
+        {
+          kind: "PAGES",
+          html: "<html>static</html>",
+          pageData: {},
+          headers: undefined,
+          status: undefined,
+        },
+        { cacheControl: { revalidate: false }, revalidate: false },
+      );
+
+      const result = await handler.get("pages-static");
+      expect(result?.cacheControl?.revalidate).toBe(false);
+      expect(result?.cacheState).toBeUndefined();
+    });
+
     it("preserves slash-based path tags for Workers invalidation", async () => {
       await handler.set(
         "rt-path-tags",

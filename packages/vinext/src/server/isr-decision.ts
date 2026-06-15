@@ -72,7 +72,7 @@ type DecideIsrOptions = {
 
 /** Resolve effective revalidate/expire, preferring per-entry metadata. */
 function resolveRevalidate(options: DecideIsrOptions): {
-  effectiveRevalidate: number;
+  effectiveRevalidate: number | false;
   effectiveExpire: number | undefined;
 } {
   const effectiveRevalidate = options.cacheControlMeta?.revalidate ?? options.revalidateSeconds;
@@ -95,9 +95,10 @@ function resolveRevalidate(options: DecideIsrOptions): {
 function buildCacheControl(
   disposition: "HIT" | "STALE",
   kind: IsrPolicyKind,
-  revalidate: number,
+  revalidate: number | false,
   expire: number | undefined,
 ): string {
+  if (revalidate === false) return STATIC_CACHE_CONTROL;
   if (kind === "app-route") {
     if (revalidate === 0) return NEVER_CACHE_CONTROL;
     if (revalidate === Infinity) return STATIC_CACHE_CONTROL;

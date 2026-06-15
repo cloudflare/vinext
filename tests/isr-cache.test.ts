@@ -17,6 +17,10 @@ import {
   isrGet,
   isrSet,
   buildPagesCacheValue,
+  beginPagesIsrGeneration,
+  cancelPagesIsrGeneration,
+  commitPagesIsrGeneration,
+  waitForPagesIsrGeneration,
   buildAppPageCacheValue,
   normalizeMountedSlotsHeader,
   setRevalidateDuration,
@@ -423,6 +427,153 @@ describe("ISR expire ceiling", () => {
     });
 
     await expect(isrGet("expired-handler-entry")).resolves.toBeNull();
+  });
+
+  it("replaces a prior numeric TTL with never-revalidate metadata", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000);
+
+    await isrSet("ttl-transition", buildPagesCacheValue("<html>numeric</html>", {}), 1);
+    await isrSet("ttl-transition", buildPagesCacheValue("<html>static</html>", {}), false);
+
+    vi.setSystemTime(10_000);
+    const entry = await isrGet("ttl-transition");
+    expect(entry?.isStale).toBe(false);
+    expect(entry?.value.cacheControl?.revalidate).toBe(false);
+    expect(entry?.value.value).toEqual(
+      expect.objectContaining({ kind: "PAGES", html: "<html>static</html>" }),
+    );
+  });
+
+  it("round-trips a Pages notFound tombstone", async () => {
+    await isrSet("pages:not-found-tombstone", null, false);
+
+    const entry = await isrGet("pages:not-found-tombstone");
+    expect(entry).toMatchObject({
+      isStale: false,
+      value: {
+        value: null,
+        cacheControl: { revalidate: false },
+      },
+    });
+  });
+});
+
+describe("Pages ISR generation coordination", () => {
+  it("skips a stale write when a later on-demand generation finishes first", async () => {
+    const key = "pages:coordination-stale-first";
+    const writes: string[] = [];
+    const staleGeneration = beginPagesIsrGeneration(key, "stale");
+    let finishStaleRender: (() => void) | undefined;
+    const staleRender = new Promise<void>((resolve) => {
+      finishStaleRender = resolve;
+    });
+
+    const staleCommit = staleRender.then(() =>
+      commitPagesIsrGeneration(staleGeneration, async () => {
+        writes.push("stale");
+      }),
+    );
+
+    const onDemandGeneration = beginPagesIsrGeneration(key, "on-demand");
+    await commitPagesIsrGeneration(onDemandGeneration, async () => {
+      writes.push("on-demand");
+    });
+    finishStaleRender?.();
+
+    await expect(staleCommit).resolves.toBe(false);
+    expect(writes).toEqual(["on-demand"]);
+  });
+
+  it("does not start stale work after on-demand generation begins", async () => {
+    const key = "pages:coordination-on-demand-first";
+    const onDemandGeneration = beginPagesIsrGeneration(key, "on-demand");
+
+    expect(beginPagesIsrGeneration(key, "stale")).toBeNull();
+
+    await expect(commitPagesIsrGeneration(onDemandGeneration, async () => {})).resolves.toBe(true);
+  });
+
+  it("serializes concurrent on-demand generations and preserves both results", async () => {
+    const key = "pages:coordination-concurrent-on-demand";
+    const writes: string[] = [];
+    const first = beginPagesIsrGeneration(key, "on-demand");
+    const second = beginPagesIsrGeneration(key, "on-demand");
+    let secondStarted = false;
+
+    const secondRun = (async () => {
+      await waitForPagesIsrGeneration(second);
+      secondStarted = true;
+      return commitPagesIsrGeneration(second, async () => {
+        writes.push("second");
+      });
+    })();
+
+    await Promise.resolve();
+    expect(secondStarted).toBe(false);
+    await expect(
+      commitPagesIsrGeneration(first, async () => {
+        writes.push("first");
+      }),
+    ).resolves.toBe(true);
+    await expect(secondRun).resolves.toBe(true);
+    expect(writes).toEqual(["first", "second"]);
+  });
+
+  it("propagates an authoritative failure to a queued on-demand generation", async () => {
+    const key = "pages:coordination-on-demand-failure";
+    const first = beginPagesIsrGeneration(key, "on-demand");
+    const second = beginPagesIsrGeneration(key, "on-demand");
+    const secondTurn = waitForPagesIsrGeneration(second);
+
+    await expect(
+      commitPagesIsrGeneration(first, async () => {
+        throw new Error("authoritative write failed");
+      }),
+    ).rejects.toThrow("authoritative write failed");
+    await expect(secondTurn).rejects.toThrow("authoritative write failed");
+    cancelPagesIsrGeneration(second, new Error("authoritative write failed"));
+
+    const later = beginPagesIsrGeneration(key, "on-demand");
+    await expect(waitForPagesIsrGeneration(later)).resolves.toBeUndefined();
+    cancelPagesIsrGeneration(later);
+  });
+
+  it("cleans failed and cancelled generations without retaining priority state", async () => {
+    const failedKey = "pages:coordination-failed-cleanup";
+    const failedGeneration = beginPagesIsrGeneration(failedKey, "on-demand");
+    await expect(
+      commitPagesIsrGeneration(failedGeneration, async () => {
+        throw new Error("cache write failed");
+      }),
+    ).rejects.toThrow("cache write failed");
+    await Promise.resolve();
+
+    const afterFailure = beginPagesIsrGeneration(failedKey, "stale");
+    expect(afterFailure).toMatchObject({ version: 1, kind: "stale" });
+    cancelPagesIsrGeneration(afterFailure);
+
+    const cancelledKey = "pages:coordination-cancelled-cleanup";
+    const cancelledGeneration = beginPagesIsrGeneration(cancelledKey, "on-demand");
+    cancelPagesIsrGeneration(cancelledGeneration);
+    await Promise.resolve();
+
+    const afterCancellation = beginPagesIsrGeneration(cancelledKey, "stale");
+    expect(afterCancellation).toMatchObject({ version: 1, kind: "stale" });
+    cancelPagesIsrGeneration(afterCancellation);
+  });
+
+  it("does not delete a newer generation during older-tail cleanup", async () => {
+    const key = "pages:coordination-cleanup-race";
+    const first = beginPagesIsrGeneration(key, "ordinary");
+    let second: ReturnType<typeof beginPagesIsrGeneration> = null;
+
+    await commitPagesIsrGeneration(first, async () => {
+      second = beginPagesIsrGeneration(key, "ordinary");
+    });
+    await Promise.resolve();
+
+    await expect(commitPagesIsrGeneration(second, async () => {})).resolves.toBe(true);
   });
 });
 

@@ -601,3 +601,77 @@ describe("createPagesPageHandler — x-nextjs-deployment-id", () => {
     }
   });
 });
+
+describe("createPagesPageHandler — on-demand ISR lifecycle", () => {
+  it("releases authoritative generation when a nonce disables the cache write", async () => {
+    const {
+      beginPagesIsrGeneration,
+      cancelPagesIsrGeneration,
+      getRevalidateSecret,
+      PRERENDER_REVALIDATE_HEADER,
+    } = await import("../packages/vinext/src/server/isr-cache.js");
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({
+              async getStaticProps() {
+                return { props: { ok: true }, revalidate: 60 };
+              },
+            }),
+          ),
+        ],
+      }),
+    );
+    const request = new Request("http://localhost/", {
+      headers: {
+        [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret(),
+        "content-security-policy": "script-src 'nonce-lifecycle-test'",
+      },
+    });
+
+    const response = await handler(request, "/", null, null, null);
+    expect(response.status).toBe(200);
+
+    const stale = beginPagesIsrGeneration("pages:/", "stale");
+    expect(stale).not.toBeNull();
+    cancelPagesIsrGeneration(stale);
+  });
+
+  it("releases authoritative generation when rendering throws", async () => {
+    const {
+      beginPagesIsrGeneration,
+      cancelPagesIsrGeneration,
+      getRevalidateSecret,
+      PRERENDER_REVALIDATE_HEADER,
+    } = await import("../packages/vinext/src/server/isr-cache.js");
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({
+              async getStaticProps() {
+                return { props: { ok: true }, revalidate: 60 };
+              },
+            }),
+          ),
+        ],
+        renderToReadableStream: async () => {
+          throw new Error("render lifecycle failure");
+        },
+      }),
+    );
+    const request = new Request("http://localhost/", {
+      headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
+    });
+
+    const response = await handler(request, "/", null, null, null);
+    expect(response.status).toBe(500);
+
+    const stale = beginPagesIsrGeneration("pages:/", "stale");
+    expect(stale).not.toBeNull();
+    cancelPagesIsrGeneration(stale);
+  });
+});

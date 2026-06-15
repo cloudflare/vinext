@@ -1,10 +1,16 @@
 import type { ReactNode } from "react";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   renderPagesIsrHtml,
   resolvePagesPageData,
   type ResolvePagesPageDataOptions,
 } from "../packages/vinext/src/server/pages-page-data.js";
+import { commitPagesIsrGeneration } from "../packages/vinext/src/server/isr-cache.js";
+
+afterEach(() => {
+  const coordination = Reflect.get(globalThis, Symbol.for("vinext.pagesIsr.coordination"));
+  if (coordination instanceof Map) coordination.clear();
+});
 
 function createOptions(
   overrides: Partial<ResolvePagesPageDataOptions> = {},
@@ -371,6 +377,56 @@ describe("pages page data", () => {
     expect(result.response.status).toBe(404);
     expect(result.response.headers.get("content-type")).toBe("application/json");
     await expect(result.response.text()).resolves.toBe("{}");
+  });
+
+  it("persists and awaits an on-demand notFound tombstone", async () => {
+    let releaseWrite: (() => void) | undefined;
+    const writePending = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const isrSet = vi.fn(async () => writePending);
+    let settled = false;
+    const resultPromise = resolvePagesPageData(
+      createOptions({
+        isOnDemandRevalidate: true,
+        isrSet,
+        pageModule: {
+          async getStaticProps() {
+            return { notFound: true };
+          },
+        },
+      }),
+    ).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    await vi.waitFor(() => expect(isrSet).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    expect(isrSet).toHaveBeenCalledWith("pages:/posts/post", null, false, undefined, 300);
+    releaseWrite?.();
+
+    await expect(resultPromise).resolves.toEqual({ kind: "notFound" });
+  });
+
+  it("serves a persisted notFound tombstone without rerunning getStaticProps", async () => {
+    const getStaticProps = vi.fn(async () => ({ props: {} }));
+    const result = await resolvePagesPageData(
+      createOptions({
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: false,
+          value: {
+            lastModified: 1,
+            cacheControl: { revalidate: false },
+            value: null,
+          },
+        }),
+        pageModule: { getStaticProps },
+      }),
+    );
+
+    expect(result).toEqual({ kind: "notFound" });
+    expect(getStaticProps).not.toHaveBeenCalled();
   });
 
   it("returns JSON 404 envelope for data requests when getServerSideProps returns notFound", async () => {
@@ -761,7 +817,7 @@ describe("pages page data", () => {
         html: expect.stringContaining("<div>fresh-body</div>"),
         pageData: { pageProps: { title: "fresh" } },
       }),
-      15,
+      false,
       undefined,
       300,
     );
@@ -772,10 +828,125 @@ describe("pages page data", () => {
         html: expect.stringContaining('"__vinext":{"hasMiddleware":true}'),
         pageData: { pageProps: { title: "fresh" } },
       }),
-      15,
+      false,
       undefined,
       300,
     );
+  });
+
+  it("does not let stale regeneration overwrite a later on-demand generation", async () => {
+    let staleRenderStarted: (() => void) | undefined;
+    let finishStaleRender: (() => void) | undefined;
+    const staleStarted = new Promise<void>((resolve) => {
+      staleRenderStarted = resolve;
+    });
+    const staleMayFinish = new Promise<void>((resolve) => {
+      finishStaleRender = resolve;
+    });
+    let staleRegeneration: Promise<void> | undefined;
+    const isrSet = vi.fn(async () => {});
+    const triggerBackgroundRegeneration = vi.fn((_key: string, renderFn: () => Promise<void>) => {
+      staleRegeneration = renderFn();
+    });
+    const staleCacheEntry = {
+      isStale: true,
+      value: {
+        lastModified: 1,
+        cacheState: "stale",
+        cacheControl: { revalidate: 5 },
+        value: {
+          kind: "PAGES" as const,
+          html: "<html>stale</html>",
+          pageData: { reason: "build" },
+          headers: undefined,
+          status: undefined,
+        },
+      },
+    };
+
+    await resolvePagesPageData(
+      createOptions({
+        isrGet: vi.fn().mockResolvedValue(staleCacheEntry),
+        isrSet,
+        pageModule: {
+          async getStaticProps() {
+            staleRenderStarted?.();
+            await staleMayFinish;
+            return { props: { reason: "stale" }, revalidate: 5 };
+          },
+        },
+        triggerBackgroundRegeneration,
+      }),
+    );
+    await staleStarted;
+
+    const onDemandResult = await resolvePagesPageData(
+      createOptions({
+        isOnDemandRevalidate: true,
+        isrGet: vi.fn().mockResolvedValue(staleCacheEntry),
+        isrSet,
+        pageModule: {
+          async getStaticProps() {
+            return { props: { reason: "on-demand" } };
+          },
+        },
+      }),
+    );
+    expect(onDemandResult.kind).toBe("render");
+    if (onDemandResult.kind !== "render") throw new Error("expected render result");
+    await commitPagesIsrGeneration(onDemandResult.isrGeneration, async () => {});
+
+    finishStaleRender?.();
+    await staleRegeneration;
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
+  it("skips a stale write when the backend entry advanced in another isolate", async () => {
+    let staleRegeneration: Promise<void> | undefined;
+    const isrSet = vi.fn(async () => {});
+    const staleCacheEntry = {
+      isStale: true,
+      value: {
+        lastModified: 1,
+        cacheState: "stale",
+        cacheControl: { revalidate: 5 },
+        value: {
+          kind: "PAGES" as const,
+          html: "<html>stale</html>",
+          pageData: { reason: "build" },
+          headers: undefined,
+          status: undefined,
+        },
+      },
+    };
+    const advancedCacheEntry = {
+      ...staleCacheEntry,
+      isStale: false,
+      value: { ...staleCacheEntry.value, lastModified: 2, cacheState: "fresh" },
+    };
+    const isrGet = vi
+      .fn<ResolvePagesPageDataOptions["isrGet"]>()
+      .mockResolvedValueOnce(staleCacheEntry)
+      .mockResolvedValueOnce(advancedCacheEntry);
+
+    await resolvePagesPageData(
+      createOptions({
+        isrGet,
+        isrSet,
+        pageModule: {
+          async getStaticProps() {
+            return { props: { reason: "stale" }, revalidate: 5 };
+          },
+        },
+        triggerBackgroundRegeneration: vi.fn((_key, renderFn) => {
+          staleRegeneration = renderFn();
+        }),
+      }),
+    );
+
+    await staleRegeneration;
+    expect(isrGet).toHaveBeenCalledTimes(2);
+    expect(isrSet).not.toHaveBeenCalled();
   });
 
   it("preserves _app.getInitialProps app-level props during stale ISR regeneration", async () => {
@@ -1115,6 +1286,7 @@ describe("pages page data", () => {
       kind: "render",
       gsspRes: null,
       isrRevalidateSeconds: 30,
+      isrGeneration: expect.objectContaining({ key: "pages:/posts/post" }),
       pageProps: { title: "hello" },
       props: { pageProps: { title: "hello" } },
       isFallback: false,
@@ -1205,6 +1377,23 @@ describe("pages page data", () => {
     expect(received).toBe("on-demand");
   });
 
+  it("persists on-demand output for static pages without an explicit revalidate value", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isOnDemandRevalidate: true,
+        pageModule: {
+          async getStaticProps() {
+            return { props: { reason: "on-demand" } };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("render");
+    if (result.kind !== "render") throw new Error("expected render result");
+    expect(result.isrRevalidateSeconds).toBe(false);
+  });
+
   it("passes revalidateReason: 'stale' to getStaticProps for runtime cache-miss requests", async () => {
     let received: unknown = "untouched";
     await resolvePagesPageData(
@@ -1280,6 +1469,7 @@ describe("pages page data", () => {
     await expect(
       resolvePagesPageData(
         createOptions({
+          isBuildTimePrerendering: true,
           pageModule: {
             async getStaticProps() {
               return { props: { date: new Date(0) } };
@@ -1294,22 +1484,46 @@ describe("pages page data", () => {
     );
   });
 
-  it("throws a Next.js-style error when getServerSideProps returns non-serializable props", async () => {
-    await expect(
-      resolvePagesPageData(
-        createOptions({
-          pageModule: {
-            async getServerSideProps() {
-              return { props: { fn: () => "nope" } };
-            },
+  it("allows non-serializable getServerSideProps values in production", async () => {
+    const date = new Date(0);
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getServerSideProps() {
+            return { props: { date } };
           },
-          routePattern: "/gssp-bad",
-          routeUrl: "/gssp-bad",
-        }),
-      ),
-    ).rejects.toThrow(
-      /Error serializing `\.fn` returned from `getServerSideProps` in "\/gssp-bad"\.\s*Reason: `function` cannot be serialized as JSON/,
+        },
+        routePattern: "/non-json",
+        routeUrl: "/non-json",
+      }),
     );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { date },
+      props: { __N_SSP: true, pageProps: { date } },
+    });
+  });
+
+  it("allows non-serializable getStaticProps values during runtime regeneration", async () => {
+    const date = new Date(0);
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticProps() {
+            return { props: { date } };
+          },
+        },
+        routePattern: "/non-json",
+        routeUrl: "/non-json",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { date },
+      props: { pageProps: { date } },
+    });
   });
 
   // ── x-nextjs-deployment-id header ─────────────────────────────────────────

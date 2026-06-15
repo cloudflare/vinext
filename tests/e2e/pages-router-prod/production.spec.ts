@@ -32,6 +32,16 @@ test.describe("Pages Router Production Build", () => {
     );
   });
 
+  test("client navigation renders non-JSON getServerSideProps values", async ({ page }) => {
+    // Ported from Next.js: test/e2e/getserversideprops/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/getserversideprops/test/index.test.ts
+    await page.goto(`${BASE}/`);
+    await page.locator('[data-testid="gssp-non-json-link"]').click();
+
+    await expect(page.locator('[data-testid="gssp-non-json"]')).toContainText("hello ");
+    expect(page.url()).toBe(`${BASE}/gssp-non-json`);
+  });
+
   test("__NEXT_DATA__ is present with page props", async ({ page }) => {
     await page.goto(`${BASE}/ssr`);
     const nextData = await page.evaluate(() => (window as any).__NEXT_DATA__);

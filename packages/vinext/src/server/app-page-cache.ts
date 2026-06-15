@@ -479,8 +479,11 @@ export async function readAppPageCacheResponse(
       // the stale payload and will fall through to a fresh render.
       options.scheduleBackgroundRegeneration(regenerationKey, async () => {
         const revalidatedPage = await options.renderFreshPageForCache();
+        const revalidatedPageRevalidate = revalidatedPage.cacheControl?.revalidate;
         const revalidateSeconds =
-          revalidatedPage.cacheControl?.revalidate ?? options.revalidateSeconds;
+          revalidatedPageRevalidate === false
+            ? Infinity
+            : (revalidatedPageRevalidate ?? options.revalidateSeconds);
         const expireSeconds = revalidatedPage.cacheControl?.expire ?? options.expireSeconds;
         const writes = [
           options.isrSet(

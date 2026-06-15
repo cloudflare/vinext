@@ -686,6 +686,45 @@ describe("app page cache helpers", () => {
     ]);
   });
 
+  it("normalizes static cache metadata during stale regeneration", async () => {
+    const scheduledRegenerations: Array<() => Promise<void>> = [];
+    const revalidateSeconds: number[] = [];
+    const rscData = new TextEncoder().encode("fresh-flight").buffer;
+
+    await readAppPageCacheResponse({
+      cleanPathname: "/static",
+      clearRequestContext() {},
+      isRscRequest: false,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedAppPageValue("<h1>stale</h1>"), true);
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet(_key, _data, revalidate) {
+        revalidateSeconds.push(revalidate);
+      },
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        return {
+          cacheControl: { revalidate: false },
+          html: "<h1>fresh</h1>",
+          rscData,
+          tags: ["/static", "_N_T_/static"],
+        };
+      },
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRegenerations.push(renderFn);
+      },
+    });
+
+    await scheduledRegenerations[0]();
+    expect(revalidateSeconds).toEqual([Infinity, Infinity]);
+  });
+
   it("serves stale static fallback shells without regenerating the shared shell key", async () => {
     const debugCalls: Array<[string, string]> = [];
 

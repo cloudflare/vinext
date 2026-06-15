@@ -19,6 +19,10 @@ import {
   isrSet,
   isrCacheKey,
   buildPagesCacheValue,
+  beginPagesIsrGeneration,
+  cancelPagesIsrGeneration,
+  commitPagesIsrGeneration,
+  waitForPagesIsrGeneration,
   triggerBackgroundRegeneration,
   setRevalidateDuration,
   getRevalidateDuration,
@@ -572,6 +576,7 @@ export function createSSRHandler(
     const requestContext = createRequestContext();
     return runWithRequestContext(requestContext, async () => {
       ensureFetchPatch();
+      let pagesIsrGeneration: ReturnType<typeof beginPagesIsrGeneration> | null = null;
       try {
         await _alsRegistration;
 
@@ -692,7 +697,7 @@ export function createSSRHandler(
         // Collect page props via data fetching methods
         let pageProps: Record<string, unknown> = {};
         let renderProps: Record<string, unknown> = { pageProps };
-        let isrRevalidateSeconds: number | null = null;
+        let isrRevalidateSeconds: number | false | null = null;
         // Set when `getStaticPaths: { fallback: true }` is configured and the
         // requested path is NOT in the pre-rendered list. Triggers the loading
         // shell render below: `getStaticProps`/`getServerSideProps` are skipped
@@ -999,6 +1004,24 @@ export function createSSRHandler(
           const isOnDemandRevalidate = isOnDemandRevalidateRequest(
             req.headers[PRERENDER_REVALIDATE_HEADER],
           );
+          if (isOnDemandRevalidate) {
+            pagesIsrGeneration = beginPagesIsrGeneration(cacheKey, "on-demand");
+            await waitForPagesIsrGeneration(pagesIsrGeneration);
+          }
+
+          if (!isOnDemandRevalidate && cached && !cached.isStale && cached.value.value === null) {
+            await renderErrorPage(
+              server,
+              runner,
+              req,
+              res,
+              url,
+              pagesDir,
+              404,
+              routerShim.wrapWithRouterContext,
+            );
+            return;
+          }
 
           if (
             !isOnDemandRevalidate &&
@@ -1049,6 +1072,8 @@ export function createSSRHandler(
             triggerBackgroundRegeneration(
               cacheKey,
               async () => {
+                const generation = beginPagesIsrGeneration(cacheKey, "stale");
+                if (!generation) return;
                 const regenContext = createRequestContext({
                   // Dev never has a Workers ExecutionContext. Set it
                   // explicitly so background regeneration cannot inherit
@@ -1073,180 +1098,186 @@ export function createSSRHandler(
                       }
                     : null,
                 });
-                return runWithRequestContext(regenContext, async () => {
-                  ensureFetchPatch();
-                  let freshPageProps: Record<string, unknown> = {};
-                  let freshRenderProps: Record<string, unknown> = { pageProps: freshPageProps };
+                try {
+                  await runWithRequestContext(regenContext, async () => {
+                    ensureFetchPatch();
+                    let freshPageProps: Record<string, unknown> = {};
+                    let freshRenderProps: Record<string, unknown> = { pageProps: freshPageProps };
 
-                  // oxlint-disable-next-line typescript/no-explicit-any
-                  let RegenApp: any = null;
-                  const appPath = path.join(pagesDir, "_app");
-                  if (findFileWithExtensions(appPath, matcher)) {
-                    try {
-                      const appMod = (await runner.import(appPath)) as Record<string, unknown>;
-                      RegenApp = appMod.default ?? null;
-                    } catch {
-                      // _app failed to load
+                    // oxlint-disable-next-line typescript/no-explicit-any
+                    let RegenApp: any = null;
+                    const appPath = path.join(pagesDir, "_app");
+                    if (findFileWithExtensions(appPath, matcher)) {
+                      try {
+                        const appMod = (await runner.import(appPath)) as Record<string, unknown>;
+                        RegenApp = appMod.default ?? null;
+                      } catch {
+                        // _app failed to load
+                      }
                     }
-                  }
 
-                  if (RegenApp && hasPagesGetInitialProps(RegenApp)) {
-                    const regenReq = { url: req.url, headers: req.headers, method: req.method };
-                    const regenRes = {
-                      headersSent: false,
-                      writableEnded: false,
-                      statusCode: 200,
-                      getHeaders() {
-                        return {};
-                      },
-                    };
-                    const initialProps = await loadPagesGetInitialProps(RegenApp, {
-                      AppTree: (appTreeProps: Record<string, unknown>) => {
-                        const appTree = React.createElement(RegenApp, {
-                          ...appTreeProps,
-                          Component: pageModule.default,
-                          pageProps: appTreeProps.pageProps,
-                          router: routerShim.default,
-                        });
-                        return typeof routerShim.wrapWithRouterContext === "function"
-                          ? routerShim.wrapWithRouterContext(appTree)
-                          : appTree;
-                      },
-                      Component: pageModule.default,
-                      router: {
-                        pathname: patternToNextFormat(route.pattern),
-                        query,
-                        asPath: requestAsPath,
-                      },
-                      ctx: {
-                        req: regenReq,
-                        res: regenRes,
-                        pathname: patternToNextFormat(route.pattern),
-                        query,
-                        asPath: requestAsPath,
-                        locale: locale ?? currentDefaultLocale,
-                        locales: i18nConfig?.locales,
-                        defaultLocale: currentDefaultLocale,
-                      },
-                    });
-                    if (regenRes.headersSent || regenRes.writableEnded) return;
-                    if (initialProps) {
-                      freshRenderProps = initialProps;
-                      freshPageProps = isUnknownRecord(initialProps.pageProps)
-                        ? initialProps.pageProps
-                        : {};
-                    }
-                  }
-
-                  const freshResult = await pageModule.getStaticProps({
-                    params: userFacingParams,
-                    locale: locale ?? currentDefaultLocale,
-                    locales: i18nConfig?.locales,
-                    defaultLocale: currentDefaultLocale,
-                    // Stale-while-revalidate background regeneration — mirrors
-                    // Next.js `render.tsx`'s `revalidateReason` resolution.
-                    revalidateReason: "stale",
-                  });
-                  if (freshResult && "props" in freshResult) {
-                    const revalidate =
-                      typeof freshResult.revalidate === "number"
-                        ? freshResult.revalidate
-                        : (cached.value.cacheControl?.revalidate ?? 0);
-                    if (revalidate > 0) {
-                      freshPageProps = { ...freshPageProps, ...freshResult.props };
-                      freshRenderProps = { ...freshRenderProps, pageProps: freshPageProps };
-
-                      if (typeof routerShim.setSSRContext === "function") {
-                        routerShim.setSSRContext({
+                    if (RegenApp && hasPagesGetInitialProps(RegenApp)) {
+                      const regenReq = { url: req.url, headers: req.headers, method: req.method };
+                      const regenRes = {
+                        headersSent: false,
+                        writableEnded: false,
+                        statusCode: 200,
+                        getHeaders() {
+                          return {};
+                        },
+                      };
+                      const initialProps = await loadPagesGetInitialProps(RegenApp, {
+                        AppTree: (appTreeProps: Record<string, unknown>) => {
+                          const appTree = React.createElement(RegenApp, {
+                            ...appTreeProps,
+                            Component: pageModule.default,
+                            pageProps: appTreeProps.pageProps,
+                            router: routerShim.default,
+                          });
+                          return typeof routerShim.wrapWithRouterContext === "function"
+                            ? routerShim.wrapWithRouterContext(appTree)
+                            : appTree;
+                        },
+                        Component: pageModule.default,
+                        router: {
                           pathname: patternToNextFormat(route.pattern),
                           query,
                           asPath: requestAsPath,
-                          navigationIsReady,
+                        },
+                        ctx: {
+                          req: regenReq,
+                          res: regenRes,
+                          pathname: patternToNextFormat(route.pattern),
+                          query,
+                          asPath: requestAsPath,
+                          locale: locale ?? currentDefaultLocale,
+                          locales: i18nConfig?.locales,
+                          defaultLocale: currentDefaultLocale,
+                        },
+                      });
+                      if (regenRes.headersSent || regenRes.writableEnded) return;
+                      if (initialProps) {
+                        freshRenderProps = initialProps;
+                        freshPageProps = isUnknownRecord(initialProps.pageProps)
+                          ? initialProps.pageProps
+                          : {};
+                      }
+                    }
+
+                    const freshResult = await pageModule.getStaticProps({
+                      params: userFacingParams,
+                      locale: locale ?? currentDefaultLocale,
+                      locales: i18nConfig?.locales,
+                      defaultLocale: currentDefaultLocale,
+                      // Stale-while-revalidate background regeneration — mirrors
+                      // Next.js `render.tsx`'s `revalidateReason` resolution.
+                      revalidateReason: "stale",
+                    });
+                    if (freshResult && "props" in freshResult) {
+                      const revalidate =
+                        typeof freshResult.revalidate === "number"
+                          ? freshResult.revalidate
+                          : (cached.value.cacheControl?.revalidate ?? 0);
+                      if (revalidate > 0) {
+                        freshPageProps = { ...freshPageProps, ...freshResult.props };
+                        freshRenderProps = { ...freshRenderProps, pageProps: freshPageProps };
+
+                        if (typeof routerShim.setSSRContext === "function") {
+                          routerShim.setSSRContext({
+                            pathname: patternToNextFormat(route.pattern),
+                            query,
+                            asPath: requestAsPath,
+                            navigationIsReady,
+                            locale: locale ?? currentDefaultLocale,
+                            locales: i18nConfig?.locales,
+                            defaultLocale: currentDefaultLocale,
+                            domainLocales,
+                          });
+                        }
+                        if (i18nConfig) {
+                          await runner.import("vinext/i18n-state");
+                          const i18nCtx = await importModule(runner, "vinext/i18n-context");
+                          if (typeof i18nCtx.setI18nContext === "function") {
+                            i18nCtx.setI18nContext({
+                              locale: locale ?? currentDefaultLocale,
+                              locales: i18nConfig.locales,
+                              defaultLocale: currentDefaultLocale,
+                              domainLocales,
+                              hostname: req.headers.host?.split(":", 1)[0],
+                            });
+                          }
+                        }
+
+                        let el = RegenApp
+                          ? React.createElement(RegenApp, {
+                              ...freshRenderProps,
+                              Component: pageModule.default,
+                              pageProps: freshRenderProps.pageProps,
+                              router: routerShim.default,
+                            })
+                          : React.createElement(pageModule.default, freshPageProps);
+                        if (routerShim.wrapWithRouterContext) {
+                          el = routerShim.wrapWithRouterContext(el);
+                        }
+                        const freshBody = await renderIsrPassToStringAsync(
+                          withScriptNonce(el, scriptNonce),
+                        );
+
+                        // Rebuild __NEXT_DATA__ with fresh props. The hydration
+                        // script (module URLs) is stable across regenerations —
+                        // extract it from the cached HTML to avoid duplication.
+                        const viteRoot = server.config?.root;
+                        const regenPageUrl = viteRoot
+                          ? "/" + path.relative(viteRoot, route.filePath)
+                          : route.filePath;
+                        const regenAppUrl = RegenApp
+                          ? viteRoot
+                            ? "/" + path.relative(viteRoot, path.join(pagesDir, "_app"))
+                            : path.join(pagesDir, "_app")
+                          : null;
+                        const freshPagesNextData = {
+                          ...pagesNextData,
+                          __vinext: {
+                            ...pagesNextData.__vinext,
+                            pageModuleUrl: regenPageUrl,
+                            appModuleUrl: regenAppUrl,
+                            hasMiddleware,
+                          },
+                        };
+
+                        const freshNextData = `<script>window.__NEXT_DATA__ = ${safeJsonStringify({
+                          props: freshRenderProps,
+                          page: patternToNextFormat(route.pattern),
+                          query: params,
+                          buildId: process.env.__VINEXT_BUILD_ID,
+                          isFallback: false,
                           locale: locale ?? currentDefaultLocale,
                           locales: i18nConfig?.locales,
                           defaultLocale: currentDefaultLocale,
                           domainLocales,
-                        });
+                          ...freshPagesNextData,
+                        })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}</script>`;
+
+                        const hydrationMatch = cachedHtml.match(
+                          /<script type="module">[\s\S]*?<\/script>/,
+                        );
+                        const hydrationScript = hydrationMatch?.[0] ?? "";
+
+                        const freshHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${freshBody}</div>${freshNextData}\n  ${hydrationScript}</body></html>`;
+                        await commitPagesIsrGeneration(generation, () =>
+                          isrSet(
+                            cacheKey,
+                            buildPagesCacheValue(freshHtml, freshRenderProps),
+                            revalidate,
+                          ),
+                        );
+                        setRevalidateDuration(cacheKey, revalidate);
                       }
-                      if (i18nConfig) {
-                        await runner.import("vinext/i18n-state");
-                        const i18nCtx = await importModule(runner, "vinext/i18n-context");
-                        if (typeof i18nCtx.setI18nContext === "function") {
-                          i18nCtx.setI18nContext({
-                            locale: locale ?? currentDefaultLocale,
-                            locales: i18nConfig.locales,
-                            defaultLocale: currentDefaultLocale,
-                            domainLocales,
-                            hostname: req.headers.host?.split(":", 1)[0],
-                          });
-                        }
-                      }
-
-                      let el = RegenApp
-                        ? React.createElement(RegenApp, {
-                            ...freshRenderProps,
-                            Component: pageModule.default,
-                            pageProps: freshRenderProps.pageProps,
-                            router: routerShim.default,
-                          })
-                        : React.createElement(pageModule.default, freshPageProps);
-                      if (routerShim.wrapWithRouterContext) {
-                        el = routerShim.wrapWithRouterContext(el);
-                      }
-                      const freshBody = await renderIsrPassToStringAsync(
-                        withScriptNonce(el, scriptNonce),
-                      );
-
-                      // Rebuild __NEXT_DATA__ with fresh props. The hydration
-                      // script (module URLs) is stable across regenerations —
-                      // extract it from the cached HTML to avoid duplication.
-                      const viteRoot = server.config?.root;
-                      const regenPageUrl = viteRoot
-                        ? "/" + path.relative(viteRoot, route.filePath)
-                        : route.filePath;
-                      const regenAppUrl = RegenApp
-                        ? viteRoot
-                          ? "/" + path.relative(viteRoot, path.join(pagesDir, "_app"))
-                          : path.join(pagesDir, "_app")
-                        : null;
-                      const freshPagesNextData = {
-                        ...pagesNextData,
-                        __vinext: {
-                          ...pagesNextData.__vinext,
-                          pageModuleUrl: regenPageUrl,
-                          appModuleUrl: regenAppUrl,
-                          hasMiddleware,
-                        },
-                      };
-
-                      const freshNextData = `<script>window.__NEXT_DATA__ = ${safeJsonStringify({
-                        props: freshRenderProps,
-                        page: patternToNextFormat(route.pattern),
-                        query: params,
-                        buildId: process.env.__VINEXT_BUILD_ID,
-                        isFallback: false,
-                        locale: locale ?? currentDefaultLocale,
-                        locales: i18nConfig?.locales,
-                        defaultLocale: currentDefaultLocale,
-                        domainLocales,
-                        ...freshPagesNextData,
-                      })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}</script>`;
-
-                      const hydrationMatch = cachedHtml.match(
-                        /<script type="module">[\s\S]*?<\/script>/,
-                      );
-                      const hydrationScript = hydrationMatch?.[0] ?? "";
-
-                      const freshHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${freshBody}</div>${freshNextData}\n  ${hydrationScript}</body></html>`;
-                      await isrSet(
-                        cacheKey,
-                        buildPagesCacheValue(freshHtml, freshRenderProps),
-                        revalidate,
-                      );
-                      setRevalidateDuration(cacheKey, revalidate);
                     }
-                  }
-                });
+                  });
+                } finally {
+                  cancelPagesIsrGeneration(generation);
+                }
               },
               {
                 routerKind: "Pages Router",
@@ -1319,6 +1350,15 @@ export function createSSRHandler(
             return;
           }
           if (result && "notFound" in result && result.notFound) {
+            if (isOnDemandRevalidate) {
+              const revalidateSeconds =
+                typeof result.revalidate === "number" && result.revalidate > 0
+                  ? result.revalidate
+                  : false;
+              await commitPagesIsrGeneration(pagesIsrGeneration, () =>
+                isrSet(cacheKey, null, revalidateSeconds),
+              );
+            }
             if (isDataReq) {
               // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
               // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.
@@ -1358,6 +1398,8 @@ export function createSSRHandler(
           // Extract revalidate period for ISR caching after render
           if (typeof result?.revalidate === "number" && result.revalidate > 0) {
             isrRevalidateSeconds = result.revalidate;
+          } else if (isOnDemandRevalidate) {
+            isrRevalidateSeconds = false;
           } else if (
             cached?.value.value?.kind === "PAGES" &&
             cached.value.value.generatedFromDataRequest
@@ -1412,19 +1454,24 @@ export function createSSRHandler(
           if (shouldPersistFallbackData) {
             const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
             const revalidateSeconds = isrRevalidateSeconds ?? 31_536_000;
-            await isrSet(
-              cacheKey,
-              {
-                kind: "PAGES",
-                html: "",
-                pageData: renderProps,
-                generatedFromDataRequest: true,
-                headers: undefined,
-                status: undefined,
-              },
-              revalidateSeconds,
+            const generation = beginPagesIsrGeneration(cacheKey, "ordinary");
+            await commitPagesIsrGeneration(generation, () =>
+              isrSet(
+                cacheKey,
+                {
+                  kind: "PAGES",
+                  html: "",
+                  pageData: renderProps,
+                  generatedFromDataRequest: true,
+                  headers: undefined,
+                  status: undefined,
+                },
+                revalidateSeconds,
+              ),
             );
-            setRevalidateDuration(cacheKey, revalidateSeconds);
+            if (typeof revalidateSeconds === "number") {
+              setRevalidateDuration(cacheKey, revalidateSeconds);
+            }
           }
           const dataHeaders: Record<string, string | string[] | number> = {
             "Content-Type": "application/json",
@@ -1671,11 +1718,13 @@ hydrate();
         const extraHeaders: Record<string, string | string[]> = {
           ...gsspExtraHeaders,
         };
-        if (isrRevalidateSeconds) {
+        if (isrRevalidateSeconds !== null) {
           if (scriptNonce) {
             extraHeaders["Cache-Control"] = ISR_NO_STORE_CACHE_CONTROL;
           } else {
-            extraHeaders["Cache-Control"] = buildMissIsrCacheControl(isrRevalidateSeconds);
+            extraHeaders["Cache-Control"] = buildMissIsrCacheControl(
+              isrRevalidateSeconds === false ? 31_536_000 : isrRevalidateSeconds,
+            );
             Object.assign(extraHeaders, buildCacheStateHeaders("MISS"));
           }
         }
@@ -1770,7 +1819,7 @@ hydrate();
         // If ISR is enabled, we need the full HTML for caching.
         // For ISR, re-render synchronously to get the complete HTML string.
         // This runs after the stream is already sent, so it doesn't affect TTFB.
-        if (!scriptNonce && isrRevalidateSeconds !== null && isrRevalidateSeconds > 0) {
+        if (!scriptNonce && isrRevalidateSeconds !== null) {
           let isrElement = AppComponent
             ? createElement(AppComponent, {
                 ...renderProps,
@@ -1786,10 +1835,16 @@ hydrate();
           );
           const isrHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
           const cacheKey = pagesIsrCacheKey(url.split("?")[0]);
-          await isrSet(cacheKey, buildPagesCacheValue(isrHtml, pageProps), isrRevalidateSeconds);
-          setRevalidateDuration(cacheKey, isrRevalidateSeconds);
+          const generation = pagesIsrGeneration ?? beginPagesIsrGeneration(cacheKey, "ordinary");
+          await commitPagesIsrGeneration(generation, () =>
+            isrSet(cacheKey, buildPagesCacheValue(isrHtml, pageProps), isrRevalidateSeconds),
+          );
+          if (typeof isrRevalidateSeconds === "number") {
+            setRevalidateDuration(cacheKey, isrRevalidateSeconds);
+          }
         }
       } catch (e) {
+        cancelPagesIsrGeneration(pagesIsrGeneration, e);
         // ssrFixStacktrace() is specific to ssrLoadModule and is not applicable
         // when using ModuleRunner — no stack trace fixup is needed here.
         console.error(e);
@@ -1837,7 +1892,7 @@ hydrate();
           res.end(`Internal Server Error: ${(fallbackErr as Error).message}`);
         }
       } finally {
-        // Cleanup is handled by unified ALS scope unwinding.
+        cancelPagesIsrGeneration(pagesIsrGeneration);
       }
     });
   };

@@ -657,7 +657,7 @@ function throwPrivateUseCacheInsidePublicUseCacheError(): never {
 function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | undefined): void {
   if (cacheControl === undefined) return;
   _setRequestScopedCacheLife({
-    revalidate: cacheControl.revalidate,
+    revalidate: typeof cacheControl.revalidate === "number" ? cacheControl.revalidate : undefined,
     expire: cacheControl.expire,
   });
 }

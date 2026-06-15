@@ -6,7 +6,15 @@ import type { CachedPagesValue, CacheControlMetadata } from "vinext/shims/cache"
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
-import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
+import {
+  beginPagesIsrGeneration,
+  buildPagesCacheValue,
+  cancelPagesIsrGeneration,
+  commitPagesIsrGeneration,
+  waitForPagesIsrGeneration,
+  type ISRCacheEntry,
+  type PagesIsrGeneration,
+} from "./isr-cache.js";
 import {
   buildPagesNextDataScript,
   etagMatches,
@@ -153,8 +161,8 @@ export type ResolvePagesPageDataOptions = {
   isrGet: (key: string) => Promise<ISRCacheEntry | null>;
   isrSet: (
     key: string,
-    data: CachedPagesValue,
-    revalidateSeconds: number,
+    data: CachedPagesValue | null,
+    revalidateSeconds: number | false,
     tags?: string[],
     expireSeconds?: number,
   ) => Promise<void>;
@@ -240,7 +248,8 @@ export type ResolvePagesPageDataOptions = {
 type ResolvePagesPageDataRenderResult = {
   kind: "render";
   gsspRes: PagesGsspResponse | null;
-  isrRevalidateSeconds: number | null;
+  isrRevalidateSeconds: number | false | null;
+  isrGeneration: PagesIsrGeneration | null;
   pageProps: Record<string, unknown>;
   props: PagesRenderProps;
   /**
@@ -686,6 +695,7 @@ export async function resolvePagesPageData(
         kind: "render",
         gsspRes: null,
         isrRevalidateSeconds: null,
+        isrGeneration: null,
         pageProps,
         props: renderProps,
         isFallback: true,
@@ -741,28 +751,36 @@ export async function resolvePagesPageData(
       return buildPagesNotFoundResult(options);
     }
 
-    // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getServerSideProps", data.props)`
-    // check, gated on `!metadata.isRedirect && !metadata.isNotFound` (both
-    // short-circuit above). Throws a friendly `SerializableError` so the
-    // caller's existing try/catch surfaces a clear 500 instead of rendering
-    // an empty page. See
-    // .nextjs-ref/packages/next/src/server/render.tsx (~line 1200) and
-    // .nextjs-ref/packages/next/src/lib/is-serializable-props.ts. Tracked in
-    // vinext#1478.
-    if (result?.props !== undefined) {
-      isSerializableProps(options.routePattern, "getServerSideProps", pageProps);
-    }
-
     gsspRes = res;
   }
 
-  let isrRevalidateSeconds: number | null = null;
+  let isrRevalidateSeconds: number | false | null = null;
+  let isrGeneration: PagesIsrGeneration | null = null;
 
   if (typeof options.pageModule.getStaticProps === "function") {
     const pathname = options.routeUrl.split("?")[0];
     const cacheKey = options.isrCacheKey("pages", pathname);
-    const cached = await options.isrGet(cacheKey);
+    if (options.isOnDemandRevalidate) {
+      isrGeneration = beginPagesIsrGeneration(cacheKey, "on-demand");
+      try {
+        await waitForPagesIsrGeneration(isrGeneration);
+      } catch (error) {
+        cancelPagesIsrGeneration(isrGeneration, error);
+        throw error;
+      }
+    }
+    let cached: ISRCacheEntry | null;
+    try {
+      cached = await options.isrGet(cacheKey);
+    } catch (error) {
+      cancelPagesIsrGeneration(isrGeneration, error);
+      throw error;
+    }
     const cachedValue = cached?.value.value;
+
+    if (!options.isOnDemandRevalidate && cached && !cached.isStale && cachedValue === null) {
+      return buildPagesNotFoundResult(options);
+    }
 
     // On-demand revalidation (`res.revalidate()`) must regenerate the entry
     // synchronously with `revalidateReason: "on-demand"`, so the fresh/stale
@@ -809,73 +827,95 @@ export async function resolvePagesPageData(
       !options.scriptNonce &&
       !options.isDataReq
     ) {
+      const staleEntryLastModified = cached.value.lastModified;
       options.triggerBackgroundRegeneration(
         cacheKey,
         async function () {
-          return options.runInFreshUnifiedContext(async () => {
-            options.applyRequestContexts();
-            // Rebuild the full App render props before re-running getStaticProps
-            // so the regenerated HTML / __NEXT_DATA__ still contains app-level
-            // props from _app.getInitialProps. Mirrors the foreground path.
-            const freshAppResult = await loadPagesAppInitialRenderProps(options, () =>
-              options.createGsspReqRes(),
-            );
-            if (freshAppResult.kind === "response") {
-              // _app.getInitialProps short-circuited the request during background
-              // regeneration. We cannot turn that into an HTTP response here, so
-              // skip the cache write and let the stale entry remain.
-              return;
-            }
-            let freshPageProps = freshAppResult.pageProps;
-            let freshRenderProps = freshAppResult.renderProps;
+          const generation = beginPagesIsrGeneration(cacheKey, "stale");
+          if (!generation) return;
+          try {
+            await options.runInFreshUnifiedContext(async () => {
+              options.applyRequestContexts();
+              // Rebuild the full App render props before re-running getStaticProps
+              // so the regenerated HTML / __NEXT_DATA__ still contains app-level
+              // props from _app.getInitialProps. Mirrors the foreground path.
+              const freshAppResult = await loadPagesAppInitialRenderProps(options, () =>
+                options.createGsspReqRes(),
+              );
+              if (freshAppResult.kind === "response") {
+                // _app.getInitialProps short-circuited the request during background
+                // regeneration. We cannot turn that into an HTTP response here, so
+                // skip the cache write and let the stale entry remain.
+                return;
+              }
+              let freshPageProps = freshAppResult.pageProps;
+              let freshRenderProps = freshAppResult.renderProps;
 
-            const freshResult = await options.pageModule.getStaticProps?.({
-              params: userFacingParams,
-              locale: options.i18n.locale,
-              locales: options.i18n.locales,
-              defaultLocale: options.i18n.defaultLocale,
-              // Background regeneration for an entry that is already in the
-              // cache is always a stale-while-revalidate refresh — mirrors
-              // Next.js `render.tsx` (`isBuildTimeSSG ? "build" : "stale"`,
-              // and we're not at build time here).
-              revalidateReason: "stale",
-            });
-
-            if (freshResult?.props) {
-              freshPageProps = { ...freshPageProps, ...freshResult.props };
-              freshRenderProps = { ...freshRenderProps, pageProps: freshPageProps };
-            }
-
-            const freshRevalidateSeconds =
-              typeof freshResult?.revalidate === "number" && freshResult.revalidate > 0
-                ? freshResult.revalidate
-                : cached.value.cacheControl?.revalidate;
-
-            if (freshResult?.props && freshRevalidateSeconds && freshRevalidateSeconds > 0) {
-              const freshHtml = await renderPagesIsrHtml({
-                buildId: options.buildId,
-                cachedHtml: cachedValue.html,
-                createPageElement: options.createPageElement,
-                i18n: options.i18n,
-                pageProps: freshPageProps,
-                props: freshRenderProps,
-                params: options.params,
-                renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
-                routePattern: options.routePattern,
-                safeJsonStringify: options.safeJsonStringify,
-                nextData: options.nextData,
-                vinext: options.vinext,
+              const freshResult = await options.pageModule.getStaticProps?.({
+                params: userFacingParams,
+                locale: options.i18n.locale,
+                locales: options.i18n.locales,
+                defaultLocale: options.i18n.defaultLocale,
+                // Background regeneration for an entry that is already in the
+                // cache is always a stale-while-revalidate refresh — mirrors
+                // Next.js `render.tsx` (`isBuildTimeSSG ? "build" : "stale"`,
+                // and we're not at build time here).
+                revalidateReason: "stale",
               });
 
-              await options.isrSet(
-                cacheKey,
-                buildPagesCacheValue(freshHtml, freshRenderProps, options.statusCode),
-                freshRevalidateSeconds,
-                undefined,
-                options.expireSeconds,
-              );
-            }
-          });
+              if (freshResult?.props) {
+                freshPageProps = { ...freshPageProps, ...freshResult.props };
+                freshRenderProps = { ...freshRenderProps, pageProps: freshPageProps };
+              }
+
+              const freshRevalidateSeconds =
+                typeof freshResult?.revalidate === "number" && freshResult.revalidate > 0
+                  ? freshResult.revalidate
+                  : false;
+
+              if (freshResult?.props) {
+                const freshHtml = await renderPagesIsrHtml({
+                  buildId: options.buildId,
+                  cachedHtml: cachedValue.html,
+                  createPageElement: options.createPageElement,
+                  i18n: options.i18n,
+                  pageProps: freshPageProps,
+                  props: freshRenderProps,
+                  params: options.params,
+                  renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
+                  routePattern: options.routePattern,
+                  safeJsonStringify: options.safeJsonStringify,
+                  nextData: options.nextData,
+                  vinext: options.vinext,
+                });
+
+                await commitPagesIsrGeneration(generation, async () => {
+                  // This re-read prevents a stale renderer in another isolate
+                  // from overwriting an on-demand result that is already
+                  // visible through the configured cache backend. The check
+                  // and write are not atomic: CacheHandler/CdnCacheAdapter do
+                  // not currently expose CAS or conditional-set primitives,
+                  // so cross-isolate ordering cannot be guaranteed here.
+                  const current = await options.isrGet(cacheKey);
+                  if (
+                    current?.value.lastModified !== undefined &&
+                    current.value.lastModified > staleEntryLastModified
+                  ) {
+                    return;
+                  }
+                  await options.isrSet(
+                    cacheKey,
+                    buildPagesCacheValue(freshHtml, freshRenderProps, options.statusCode),
+                    freshRevalidateSeconds,
+                    undefined,
+                    options.expireSeconds,
+                  );
+                });
+              }
+            });
+          } finally {
+            cancelPagesIsrGeneration(generation);
+          }
         },
         {
           routerKind: "Pages Router",
@@ -911,23 +951,33 @@ export async function resolvePagesPageData(
       isUnknownRecord(cachedValue.pageData)
         ? cachedValue.pageData
         : null;
-    if (!generatedPageData) {
-      const shortCircuit = await loadForegroundAppInitialRenderProps();
-      if (shortCircuit) return shortCircuit;
+    isrGeneration ??= beginPagesIsrGeneration(cacheKey);
+    let result: Awaited<ReturnType<NonNullable<PagesPageModule["getStaticProps"]>>> | null;
+    try {
+      if (!generatedPageData) {
+        const shortCircuit = await loadForegroundAppInitialRenderProps();
+        if (shortCircuit) {
+          cancelPagesIsrGeneration(isrGeneration);
+          return shortCircuit;
+        }
+      }
+      result = generatedPageData
+        ? null
+        : await options.pageModule.getStaticProps({
+            params: userFacingParams,
+            locale: options.i18n.locale,
+            locales: options.i18n.locales,
+            defaultLocale: options.i18n.defaultLocale,
+            revalidateReason: options.isOnDemandRevalidate
+              ? "on-demand"
+              : options.isBuildTimePrerendering
+                ? "build"
+                : "stale",
+          });
+    } catch (error) {
+      cancelPagesIsrGeneration(isrGeneration, error);
+      throw error;
     }
-    const result = generatedPageData
-      ? null
-      : await options.pageModule.getStaticProps({
-          params: userFacingParams,
-          locale: options.i18n.locale,
-          locales: options.i18n.locales,
-          defaultLocale: options.i18n.defaultLocale,
-          revalidateReason: options.isOnDemandRevalidate
-            ? "on-demand"
-            : options.isBuildTimePrerendering
-              ? "build"
-              : "stale",
-        });
 
     if (generatedPageData) {
       renderProps = generatedPageData as PagesRenderProps;
@@ -940,6 +990,7 @@ export async function resolvePagesPageData(
     }
 
     if (result?.redirect) {
+      cancelPagesIsrGeneration(isrGeneration);
       return {
         kind: "response",
         response: buildPagesRedirectResponse(result.redirect, options, renderProps),
@@ -947,6 +998,17 @@ export async function resolvePagesPageData(
     }
 
     if (result?.notFound) {
+      if (options.isOnDemandRevalidate) {
+        const revalidateSeconds =
+          typeof result.revalidate === "number" && result.revalidate > 0
+            ? result.revalidate
+            : false;
+        await commitPagesIsrGeneration(isrGeneration, () =>
+          options.isrSet(cacheKey, null, revalidateSeconds, undefined, options.expireSeconds),
+        );
+      } else {
+        cancelPagesIsrGeneration(isrGeneration);
+      }
       return buildPagesNotFoundResult(options);
     }
 
@@ -958,31 +1020,40 @@ export async function resolvePagesPageData(
     // .nextjs-ref/packages/next/src/server/render.tsx (~line 982) and
     // .nextjs-ref/packages/next/src/lib/is-serializable-props.ts. Tracked in
     // vinext#1478.
-    if (result?.props !== undefined) {
-      isSerializableProps(options.routePattern, "getStaticProps", pageProps);
+    if (options.isBuildTimePrerendering && result?.props !== undefined) {
+      try {
+        isSerializableProps(options.routePattern, "getStaticProps", pageProps);
+      } catch (error) {
+        cancelPagesIsrGeneration(isrGeneration, error);
+        throw error;
+      }
     }
 
     if (typeof result?.revalidate === "number" && result.revalidate > 0) {
       isrRevalidateSeconds = result.revalidate;
+    } else if (options.isOnDemandRevalidate) {
+      isrRevalidateSeconds = false;
     } else if (cachedValue?.kind === "PAGES" && cachedValue.generatedFromDataRequest) {
       isrRevalidateSeconds = cached?.value.cacheControl?.revalidate ?? 31_536_000;
     }
 
     if (shouldPersistFallbackData) {
       const revalidateSeconds = isrRevalidateSeconds ?? 31_536_000;
-      await options.isrSet(
-        cacheKey,
-        {
-          kind: "PAGES",
-          html: "",
-          pageData: renderProps,
-          generatedFromDataRequest: true,
-          headers: undefined,
-          status: undefined,
-        },
-        revalidateSeconds,
-        undefined,
-        options.expireSeconds,
+      await commitPagesIsrGeneration(isrGeneration, () =>
+        options.isrSet(
+          cacheKey,
+          {
+            kind: "PAGES",
+            html: "",
+            pageData: renderProps,
+            generatedFromDataRequest: true,
+            headers: undefined,
+            status: undefined,
+          },
+          revalidateSeconds,
+          undefined,
+          options.expireSeconds,
+        ),
       );
     }
   }
@@ -1034,6 +1105,7 @@ export async function resolvePagesPageData(
     kind: "render",
     gsspRes,
     isrRevalidateSeconds,
+    isrGeneration,
     pageProps,
     props: renderProps,
     isFallback: false,

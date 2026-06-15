@@ -73,7 +73,7 @@ export type CacheHandlerValue = {
 };
 
 export type CacheControlMetadata = {
-  revalidate: number;
+  revalidate: number | false;
   expire?: number;
 };
 
@@ -374,9 +374,14 @@ export class MemoryCacheHandler implements CacheHandler {
 
     // Resolve effective revalidate — data overrides ctx.
     // revalidate: 0 means "don't cache", so skip storage entirely.
-    let effectiveRevalidate: number | undefined;
+    let effectiveRevalidate: number | false | undefined;
     let effectiveExpire: number | undefined;
     effectiveRevalidate = readCacheControlNumberField(ctx, "revalidate");
+    if (ctx?.cacheControl && (ctx.cacheControl as Record<string, unknown>).revalidate === false) {
+      effectiveRevalidate = false;
+    } else if (ctx?.revalidate === false) {
+      effectiveRevalidate = false;
+    }
     effectiveExpire = readCacheControlNumberField(ctx, "expire");
     if (data && "revalidate" in data && typeof data.revalidate === "number") {
       effectiveRevalidate = data.revalidate;
@@ -392,8 +397,8 @@ export class MemoryCacheHandler implements CacheHandler {
       typeof effectiveExpire === "number" && effectiveExpire > 0
         ? now + effectiveExpire * 1000
         : null;
-    const cacheControl =
-      typeof effectiveRevalidate === "number"
+    const cacheControl: CacheControlMetadata | undefined =
+      typeof effectiveRevalidate === "number" || effectiveRevalidate === false
         ? effectiveExpire === undefined
           ? { revalidate: effectiveRevalidate }
           : { revalidate: effectiveRevalidate, expire: effectiveExpire }

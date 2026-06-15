@@ -7,6 +7,7 @@ import {
   etagMatches,
 } from "../packages/vinext/src/server/pages-page-response.js";
 import { resolvePagesPageData } from "../packages/vinext/src/server/pages-page-data.js";
+import type { CachedPagesValue } from "../packages/vinext/src/shims/cache.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -52,7 +53,15 @@ function createCommonOptions() {
       "data-page": typeof pageProps.title === "string" ? pageProps.title : "",
     }),
   );
-  const isrSet = vi.fn(async () => {});
+  const isrSet = vi.fn(
+    async (
+      _key: string,
+      _data: CachedPagesValue | null,
+      _revalidateSeconds: number | false,
+      _tags?: string[],
+      _expireSeconds?: number,
+    ) => {},
+  );
   const renderDocumentToString = vi.fn(
     async () =>
       '<!DOCTYPE html><html><head></head><body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>',
@@ -240,6 +249,113 @@ describe("pages page response", () => {
       undefined,
       300,
     );
+  });
+
+  it("awaits the ISR cache write for synchronous on-demand revalidation", async () => {
+    const common = createCommonOptions();
+    let finishCacheWrite: (() => void) | undefined;
+    common.isrSet.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishCacheWrite = resolve;
+        }),
+    );
+
+    let settled = false;
+    const responsePromise = renderPagesPageResponse({
+      ...common.options,
+      awaitIsrCacheWrite: true,
+      isrRevalidateSeconds: 60,
+    }).then((response) => {
+      settled = true;
+      return response;
+    });
+
+    await vi.waitFor(() => expect(common.isrSet).toHaveBeenCalledTimes(1));
+    expect(settled).toBe(false);
+
+    finishCacheWrite?.();
+    const response = await responsePromise;
+    expect(settled).toBe(true);
+    await expect(response.text()).resolves.toContain("<div>live-body</div>");
+  });
+
+  it("propagates awaited on-demand ISR cache write failures", async () => {
+    const common = createCommonOptions();
+    common.isrSet.mockRejectedValue(new Error("cache write failed"));
+
+    await expect(
+      renderPagesPageResponse({
+        ...common.options,
+        awaitIsrCacheWrite: true,
+        isrRevalidateSeconds: 60,
+      }),
+    ).rejects.toThrow("cache write failed");
+  });
+
+  it("uses one-year cache-control compatibility for false revalidate metadata", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      awaitIsrCacheWrite: true,
+      isrRevalidateSeconds: false,
+    });
+
+    expect(response.headers.get("cache-control")).toBe("s-maxage=31536000, stale-while-revalidate");
+    await response.text();
+    expect(common.isrSet).toHaveBeenCalledWith(
+      "pages:/posts/post",
+      expect.any(Object),
+      false,
+      undefined,
+      undefined,
+    );
+  });
+
+  it("orders an on-demand cache write after an earlier asynchronous write", async () => {
+    const common = createCommonOptions();
+    let finishFirstWrite: (() => void) | undefined;
+    const writes: string[] = [];
+    common.isrSet.mockImplementation(async (_key, value) => {
+      if (!value) throw new Error("expected Pages cache value");
+      const pageData = value.pageData as Record<string, unknown>;
+      const title = String(pageData.title);
+      writes.push(title);
+      if (title === "stale") {
+        await new Promise<void>((resolve) => {
+          finishFirstWrite = resolve;
+        });
+      }
+    });
+
+    const staleResponse = await renderPagesPageResponse({
+      ...common.options,
+      isrRevalidateSeconds: 60,
+      pageProps: { title: "stale" },
+    });
+    await staleResponse.text();
+    await vi.waitFor(() => expect(writes).toEqual(["stale"]));
+
+    let onDemandSettled = false;
+    const onDemandResponsePromise = renderPagesPageResponse({
+      ...common.options,
+      awaitIsrCacheWrite: true,
+      isrRevalidateSeconds: 60,
+      pageProps: { title: "on-demand" },
+    }).then((response) => {
+      onDemandSettled = true;
+      return response;
+    });
+
+    await settleMicrotasks();
+    expect(writes).toEqual(["stale"]);
+    expect(onDemandSettled).toBe(false);
+
+    finishFirstWrite?.();
+    const onDemandResponse = await onDemandResponsePromise;
+    expect(writes).toEqual(["stale", "on-demand"]);
+    await expect(onDemandResponse.text()).resolves.toContain("<div>live-body</div>");
   });
 
   it("records split UTF-8 chunks without corrupting cached ISR HTML", async () => {
