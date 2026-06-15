@@ -963,6 +963,9 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       window.location.href,
       __basePath,
     );
+    const pagesNavigateHref = navigateHref.startsWith("?")
+      ? (toSameOriginAppPath(absoluteFullHref, __basePath) ?? navigateHref)
+      : navigateHref;
 
     // Call onNavigate callback if provided (Next.js 16 View Transitions support)
     if (onNavigate) {
@@ -1037,10 +1040,11 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       // during startup, but it does not invoke the named export on navigation.
       // Pages Router: use the Router singleton
       try {
-        const routerModule = await import("next/router");
-        const Router = routerModule.default;
-        await navigatePagesRouterLink(Router, {
-          href: navigateHref,
+        const Router = window.next?.appDir === true ? undefined : window.next?.router;
+        const pagesRouter =
+          Router && "reload" in Router ? Router : (await import("next/router")).default;
+        await navigatePagesRouterLink(pagesRouter, {
+          href: pagesNavigateHref,
           replace,
           scroll,
           shallow,

@@ -2515,6 +2515,47 @@ describe("window.next debug global", () => {
     }
   });
 
+  it("query-only UrlObjects preserve the current visible pathname", async () => {
+    const previousWindow = (globalThis as any).window;
+    const pushState = vi.fn();
+    const win: any = {
+      location: {
+        pathname: "/rewrite-navigation/0",
+        search: "",
+        hash: "",
+        href: "http://localhost/rewrite-navigation/0",
+        origin: "http://localhost",
+      },
+      history: { state: null, pushState, replaceState() {} },
+      addEventListener() {},
+      dispatchEvent() {},
+      scrollTo() {},
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+
+      const result = await routerModule.default.push({ query: { id: "1" } }, undefined, {
+        shallow: true,
+      });
+
+      expect(result).toBe(true);
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "/rewrite-navigation/0?id=1",
+          as: "/rewrite-navigation/0?id=1",
+        }),
+        "",
+        "/rewrite-navigation/0?id=1",
+      );
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
   // Issue #1522 — shallow `Router.push(url, as, { shallow: true })` must
   // update history to `as` (the visible URL) without fetching the server,
   // even when `as` matches a server-side redirect rule (e.g. `/redirect-1`

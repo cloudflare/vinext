@@ -481,7 +481,9 @@ function getPagesRouterRuntimeComponents(): PagesRouterRuntimeComponents {
 
 function resolveUrl(url: string | UrlObject): string {
   if (typeof url === "string") return url;
-  let result = url.pathname ?? "/";
+  let result =
+    url.pathname ??
+    (typeof window !== "undefined" ? stripBasePath(window.location.pathname, __basePath) : "/");
   if (url.query) {
     const params = urlQueryToSearchParams(url.query);
     result = appendSearchParamsToUrl(result, params);

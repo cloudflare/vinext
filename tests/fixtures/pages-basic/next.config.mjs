@@ -39,6 +39,10 @@ const nextConfig = {
           source: "/repeat-rewrite/:id",
           destination: "/docs/:id/:id",
         },
+        {
+          source: "/rewrite-navigation/:id",
+          destination: "/rewrite-navigation/:id/destination",
+        },
         // Used by Vitest: pages-router.test.ts — beforeFiles rewrite gated on
         // a cookie injected by middleware. Middleware injects mw-before-user=1
         // when ?mw-auth is present. The beforeFiles rewrite should see this

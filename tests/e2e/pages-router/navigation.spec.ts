@@ -62,6 +62,46 @@ test.describe("Client-side navigation", () => {
     expect(page.url()).toBe(`${BASE}/about`);
   });
 
+  test("query-only navigation preserves the visible dynamic rewrite path", async ({ page }) => {
+    // Ported from Next.js: test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/use-router-with-rewrites/use-router-with-rewrites.test.ts
+    await page.goto(`${BASE}/rewrite-navigation/0`);
+    await waitForHydration(page);
+    await expect(page.locator("h1")).toHaveText("Rewrite Navigation Destination");
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "/rewrite-navigation/[id]/destination",
+    );
+    await expect(page.locator('[data-testid="as-path"]')).toHaveText("/rewrite-navigation/0");
+    await expect(page.locator('[data-testid="query-id"]')).toHaveText("0");
+
+    await page.evaluate(() => {
+      window.scrollTo(0, 600);
+      (window as any).__REWRITE_NAV_MARKER__ = true;
+    });
+    await page.click('[data-testid="router-push"]');
+
+    await expect(page).toHaveURL(`${BASE}/rewrite-navigation/0?id=1`);
+    await expect(page.locator('[data-testid="as-path"]')).toHaveText("/rewrite-navigation/0?id=1");
+    await expect(page.locator('[data-testid="query-id"]')).toHaveText("0");
+    expect(await page.evaluate(() => (window as any).__REWRITE_NAV_MARKER__)).toBe(true);
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  });
+
+  test("replace and Link preserve the visible dynamic rewrite path", async ({ page }) => {
+    await page.goto(`${BASE}/rewrite-navigation/0`);
+    await waitForHydration(page);
+
+    await page.click('[data-testid="router-replace"]');
+    await expect(page).toHaveURL(`${BASE}/rewrite-navigation/0?id=2`);
+    await expect(page.locator('[data-testid="as-path"]')).toHaveText("/rewrite-navigation/0?id=2");
+    await expect(page.locator('[data-testid="query-id"]')).toHaveText("0");
+
+    await page.click('[data-testid="query-link"]');
+    await expect(page).toHaveURL(`${BASE}/rewrite-navigation/0?id=3`);
+    await expect(page.locator('[data-testid="as-path"]')).toHaveText("/rewrite-navigation/0?id=3");
+    await expect(page.locator('[data-testid="query-id"]')).toHaveText("0");
+  });
+
   test("router.push(url, as) uses the masked URL while resolving the real route", async ({
     page,
   }) => {
