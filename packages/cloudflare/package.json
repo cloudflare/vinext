@@ -1,6 +1,6 @@
 {
   "name": "@vinext/cloudflare",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Cloudflare cache adapters for vinext (KV data cache + edge CDN cache).",
   "license": "MIT",
   "repository": {

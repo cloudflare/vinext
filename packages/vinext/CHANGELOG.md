@@ -1,5 +1,80 @@
 # vinext
 
+## 0.1.3
+
+### Bug Fixes
+
+#### App Router
+
+- align router autoscroll with Next (#2004)
+- recover SSR shell render errors via **next_error** document (#1908)
+- preserve front redirects through fallback route handlers (#2000)
+- expose active source page on window.next (#1995)
+- fold typeof window before resolution (#1956)
+- support extensionless variable imports (#1958)
+- preserve page notFound precedence during metadata failure (#1957)
+
+#### Deploy
+
+- preserve app module identity with deployment ids (#2005)
+- prevent Windows shell injection (#1946)
+- improve deployment id parity (#1949)
+
+#### Pages
+
+- preserve app props for GSSP requests (#1996)
+- preserve module identity with deployment ids (#2012)
+- harden cookie parsing (#1947)
+
+#### Pages Router
+
+- pass rewrite URL to edge API requests (#1998)
+- block fallback shell for crawler UAs on prerender (#1543) (#1663)
+- restore scroll across reload history traversal (#1905)
+
+#### Router
+
+- honor hybrid pages route priority (#1997)
+- share Pages Router context across chunks (#2010)
+- restore pages scroll traversal state (#1999)
+- hard navigate Pages links to App routes (#1960)
+
+#### Shims
+
+- guard AsyncLocalStorage construction for browser bundles (#2020)
+- add useUntrackedPathname hook for error boundary parity (#1933)
+- match next/error RSC diagnostic (#1939)
+
+#### Misc
+
+- **Image:** allow any quality 1-100 when images.qualities is unset (#2023)
+- **Server:** strip HTTP/2 pseudo-headers before building Headers (#2021)
+- **Prerender:** surface thrown generateStaticParams/getStaticPaths errors (#2017)
+- **Routing:** re-encode trailing-slash Location for non-Latin-1 paths (#2011)
+- **PPR:** gate fallback shells until request-time resume is supported (#1716)
+- **Build:** honour experimental.lightningCssFeatures include/exclude (#1498) (#1664)
+- **Image:** prevent optimizer cache-key amplification (#1944)
+- **Actions:** bound Flight payload graph validation (#1942)
+- **Link:** preserve basePath hash navigation (#1952)
+- **Headers:** prioritize config cache headers for metadata assets (#1953)
+- **Config:** share CommonJS module fallback (#1990)
+- **Config:** honor resolve extensions and improve webpack config processing (#1959)
+- **CSS:** load local CommonJS PostCSS plugins (#1961)
+- **Cache:** honor fetch opt-outs and force-dynamic revalidate parity (#1907)
+
+### Performance
+
+- skip unnecessary import parsing (#1991)
+- cache fs probes and precompute route sort keys in scan/deploy paths (#1930)
+
+### Contributors
+
+- @Divkix
+- @james-elicx
+- @JaredStowell
+- @NathanDrake2406
+- @Xplod13
+
 ## 0.1.2
 
 ### Bug Fixes

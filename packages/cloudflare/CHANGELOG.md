@@ -1,5 +1,15 @@
 # @vinext/cloudflare
 
+## 0.1.2
+
+### Bug Fixes
+
+- **App Router:** recover SSR shell render errors via **next_error** document (#1908)
+
+### Contributors
+
+- @NathanDrake2406
+
 ## 0.1.1
 
 ### Bug Fixes
