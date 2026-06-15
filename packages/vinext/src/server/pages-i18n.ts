@@ -200,8 +200,12 @@ export function parseCookieLocaleFromHeader(
     return null;
   }
 
-  if (i18nConfig.locales.includes(value)) return value;
-  return null;
+  // Match case-insensitively and return the canonical configured locale, so a
+  // cookie like `NEXT_LOCALE=EN-US` resolves to a configured `en-US`. Mirrors
+  // Next.js's `getLocaleFromCookie` (get-locale-redirect.ts), which lowercases
+  // the cookie value and finds the matching configured locale.
+  const lowerValue = value.toLowerCase();
+  return i18nConfig.locales.find((locale) => locale.toLowerCase() === lowerValue) ?? null;
 }
 
 function formatLocalizedRootPath(
