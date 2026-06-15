@@ -144,10 +144,9 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("renderPagesFallback as __renderPagesFallback");
     expect(code).toContain("server/app-pages-bridge.js");
     expect(code).toContain("return __renderPagesFallback(");
-    expect(code).toContain(
-      "{ allowRscDocumentFallback, appRouteMatch, isRscRequest, matchKind, middlewareContext, pathname, request, url }",
-    );
+    expect(code).toContain("pagesDataRequest");
     expect(code).toContain('return import.meta.viteRsc.loadModule("ssr", "index");');
+    expect(code).toContain("buildId: process.env.__VINEXT_BUILD_ID ?? null");
     expect(code).toContain("buildRequestHeaders: __buildRequestHeadersFromMiddlewareResponse");
     expect(code).toContain(
       "applyRouteHandlerMiddlewareContext: __applyRouteHandlerMiddlewareContext",
