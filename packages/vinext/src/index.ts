@@ -198,7 +198,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 import { normalizePathSeparators, stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
 import { getViteMajorVersion } from "./utils/vite-version.js";
@@ -962,6 +962,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   }
 
   const imageImportDimCache = new Map<string, { width: number; height: number }>();
+  const staticImageAssets = new Map<string, { fileName: string; source: Buffer }>();
 
   // Shared state for the MDX proxy plugin. We auto-inject @mdx-js/rollup when
   // MDX is detected in app/pages during config(), and lazily on first plain
@@ -4176,16 +4177,43 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       _dimCache: imageImportDimCache,
 
       resolveId: {
-        filter: { id: /\?vinext-meta$/ },
+        filter: { id: /\?vinext-(?:image-url|meta)$/ },
         handler(source, _importer) {
-          if (!source.endsWith("?vinext-meta")) return null;
-          // Resolve the real image path from the importer
-          const realPath = source.replace("?vinext-meta", "");
-          return `\0vinext-image-meta:${realPath}`;
+          if (source.endsWith("?vinext-image-url")) {
+            return `\0vinext-image-url:${source.slice(0, -"?vinext-image-url".length)}`;
+          }
+          if (source.endsWith("?vinext-meta")) {
+            return `\0vinext-image-meta:${source.slice(0, -"?vinext-meta".length)}`;
+          }
+          return null;
         },
       },
 
       async load(id) {
+        if (id.startsWith("\0vinext-image-url:")) {
+          const imagePath = id.replace("\0vinext-image-url:", "");
+          if (this.environment.config.command === "serve") {
+            return `import url from ${JSON.stringify(imagePath + "?url")}; export default url;`;
+          }
+
+          let asset = staticImageAssets.get(imagePath);
+          if (!asset) {
+            const source = fs.readFileSync(imagePath);
+            const extension = path.extname(imagePath);
+            const name = path.basename(imagePath, extension);
+            const hash = createHash("sha256").update(source).digest("hex").slice(0, 8);
+            asset = {
+              fileName: `media/${name}.${hash}${extension}`,
+              source,
+            };
+            staticImageAssets.set(imagePath, asset);
+          }
+
+          const builtFileName = `${resolveAssetsDir(nextConfig.assetPrefix)}/${asset.fileName}`;
+          return `export default ${JSON.stringify(
+            renderVinextBuiltUrl(builtFileName, nextConfig.assetPrefix, nextConfig.deploymentId),
+          )};`;
+        }
         if (!id.startsWith("\0vinext-image-meta:")) return null;
         const imagePath = id.replace("\0vinext-image-meta:", "");
 
@@ -4293,13 +4321,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             if (!fs.existsSync(absImagePath)) continue;
 
             // Replace the single import with two:
-            // 1. Original import (Vite gives us the URL string)
+            // 1. URL module. In dev it delegates to Vite's asset server; in a
+            //    production build it returns a stable Next-shaped URL and the
+            //    client build writes the registered source under static/media.
             // 2. Meta import (we provide { width, height })
             // Combined into a StaticImageData object
             const urlVar = `__vinext_img_url_${varName}`;
             const metaVar = `__vinext_img_meta_${varName}`;
             const replacement =
-              `import ${urlVar} from ${JSON.stringify(importPath)};\n` +
+              `import ${urlVar} from ${JSON.stringify(absImagePath + "?vinext-image-url")};\n` +
               `import ${metaVar} from ${JSON.stringify(absImagePath + "?vinext-meta")};\n` +
               `const ${varName} = { src: ${urlVar}, width: ${metaVar}.width, height: ${metaVar}.height };`;
 
@@ -4313,6 +4343,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             code: s.toString(),
             map: s.generateMap({ hires: "boundary" }),
           };
+        },
+      },
+
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        handler(outputOptions) {
+          if (this.environment?.name !== "client") return;
+          const clientOutDir = outputOptions.dir
+            ? path.resolve(root, outputOptions.dir)
+            : path.resolve(root, options.clientOutDir ?? "dist/client");
+          const assetsDir = resolveAssetsDir(nextConfig.assetPrefix);
+          for (const asset of staticImageAssets.values()) {
+            const outputPath = path.join(clientOutDir, assetsDir, asset.fileName);
+            fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+            fs.writeFileSync(outputPath, asset.source);
+          }
         },
       },
     } as Plugin & { _dimCache: Map<string, { width: number; height: number }> },
