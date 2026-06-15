@@ -160,6 +160,17 @@ describe("StaticFileCache", () => {
     expect(entry!.etag).toMatch(/^W\/"\d+-\d+"$/);
   });
 
+  it("does not trust exact dot-hash suffixes outside managed media", async () => {
+    await writeFile(clientDir, "_next/static/config.deadbeef.json", '{"version":1}');
+
+    const cache = await StaticFileCache.create(clientDir);
+    const entry = cache.lookup("/_next/static/config.deadbeef.json");
+
+    expect(entry!.etag).toMatch(/^W\/"\d+-\d+"$/);
+    expect(entry!.etag).not.toBe('W/"deadbeef"');
+    expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
+  });
+
   // ── Precompressed variants ─────────────────────────────────────
 
   it("detects brotli precompressed variant", async () => {

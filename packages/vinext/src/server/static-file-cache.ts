@@ -274,13 +274,20 @@ export function etagFromFilenameHash(relativePath: string, ext: string): string 
   }
 
   // vinext-managed static image imports use Next-shaped dot-delimited names:
-  // `media/name.<sha256-8>.<ext>`. Restrict this alternate form to exactly
-  // eight lowercase hex characters so semantic versions and ordinary dotted
-  // filenames can never be mistaken for stable content hashes.
-  const lastDot = basename.lastIndexOf(".");
-  if (lastDot !== -1) {
-    const suffix = basename.slice(lastDot + 1);
-    if (/^[0-9a-f]{8}$/.test(suffix)) return `W/"${suffix}"`;
+  // `_next/static/media/name.<sha256-8>.<ext>`. Restrict this alternate form
+  // to that managed directory so arbitrary static files such as
+  // `_next/static/config.deadbeef.json` cannot receive a stale hash ETag.
+  const normalizedPath = normalizePathSeparators(relativePath);
+  const managedMediaSegment = `${ASSET_PREFIX_URL_DIR}/media/`;
+  const isManagedMedia =
+    normalizedPath.startsWith(managedMediaSegment) ||
+    normalizedPath.includes(`/${managedMediaSegment}`);
+  if (isManagedMedia) {
+    const lastDot = basename.lastIndexOf(".");
+    if (lastDot !== -1) {
+      const suffix = basename.slice(lastDot + 1);
+      if (/^[0-9a-f]{8}$/.test(suffix)) return `W/"${suffix}"`;
+    }
   }
   return null;
 }
