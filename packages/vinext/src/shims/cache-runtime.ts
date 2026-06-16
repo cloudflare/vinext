@@ -30,13 +30,15 @@
 
 import {
   getDataCacheHandler,
+  type CachedFetchValue,
+  type CacheControlMetadata,
+} from "./cache-handler.js";
+import {
   cacheLifeProfiles,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
-  type CachedFetchValue,
-  type CacheControlMetadata,
   type CacheLifeConfig,
-} from "./cache.js";
+} from "./cache-request-state.js";
 import { VINEXT_RSC_MARKER_HEADER } from "../server/headers.js";
 import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import { getOrCreateAls } from "./internal/als-registry.js";

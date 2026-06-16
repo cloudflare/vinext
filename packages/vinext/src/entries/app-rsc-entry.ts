@@ -265,7 +265,7 @@ const prerenderToReadableStream = createRscPrerenderer(async (model, options) =>
 );
 import { createElement } from "react";
 import { getNavigationContext as _getNavigationContext } from "next/navigation";
-import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "next/cache";
+import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";
 import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(normalizePathSeparators(middlewarePath))};` : ""}

@@ -1,4 +1,4 @@
-import type { CachedAppPageValue, CacheControlMetadata } from "vinext/shims/cache";
+import type { CachedAppPageValue, CacheControlMetadata } from "vinext/shims/cache-handler";
 import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
