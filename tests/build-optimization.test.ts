@@ -2827,14 +2827,26 @@ describe("createRscFrameworkChunkOutputConfig", () => {
     expect(config).not.toHaveProperty("manualChunks");
     expect(config).toEqual({
       codeSplitting: {
-        groups: [{ name: "framework", test: RSC_FRAMEWORK_CHUNK_TEST }],
+        groups: [
+          {
+            name: "framework",
+            test: RSC_FRAMEWORK_CHUNK_TEST,
+            entriesAware: true,
+          },
+        ],
       },
     });
 
     // Vite 9+ uses the same Rolldown shape.
     expect(createRscFrameworkChunkOutputConfig(9)).toEqual({
       codeSplitting: {
-        groups: [{ name: "framework", test: RSC_FRAMEWORK_CHUNK_TEST }],
+        groups: [
+          {
+            name: "framework",
+            test: RSC_FRAMEWORK_CHUNK_TEST,
+            entriesAware: true,
+          },
+        ],
       },
     });
   });

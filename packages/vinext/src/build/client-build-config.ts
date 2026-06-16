@@ -219,7 +219,13 @@ export function createRscFrameworkChunkOutputConfig(viteMajorVersion: number) {
   if (viteMajorVersion >= 8) {
     return {
       codeSplitting: {
-        groups: [{ name: "framework", test: RSC_FRAMEWORK_CHUNK_TEST }],
+        groups: [
+          {
+            name: "framework",
+            test: RSC_FRAMEWORK_CHUNK_TEST,
+            entriesAware: true,
+          },
+        ],
       },
     };
   }

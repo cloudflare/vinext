@@ -29,10 +29,15 @@
  * Assertions mirror upstream: the 404 document must link ONLY
  * global-not-found's stylesheets, in import order (gnf-a before gnf-b), and
  * must NOT carry the root layout's stylesheet.
+ *
+ * The fixture also includes a lazy `react-dom/server.edge` import for issue
+ * #2073. Importing the production RSC entry must not eagerly evaluate React's
+ * throwing server-component stub.
  */
 
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { createBuilder, preview } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import vinext from "../packages/vinext/src/index.js";
@@ -108,6 +113,13 @@ describe("App Router: global-not-found CSS order (production, #1549)", () => {
     // The home page must NOT carry global-not-found's stylesheets.
     expect(css).not.toContain("blue");
     expect(css).not.toContain("red");
+  });
+
+  it("does not eagerly evaluate dynamically imported React server stubs", async () => {
+    const entryUrl = pathToFileURL(path.join(distDir, "server", "index.js"));
+    entryUrl.searchParams.set("test", String(Date.now()));
+
+    await expect(import(entryUrl.href)).resolves.toBeDefined();
   });
 
   it("route-miss 404 serves global-not-found's CSS with red winning, and no layout CSS leak", async () => {
