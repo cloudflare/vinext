@@ -2,6 +2,7 @@ import type { AppPageFontPreload } from "./app-page-execution.js";
 import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
+import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import type { RootParams } from "vinext/shims/root-params";
@@ -403,12 +404,14 @@ export function createAppPageRscErrorTracker(
       return capturedSpecialError;
     },
     onRenderError(error, requestInfo, errorContext) {
-      if (error && typeof error === "object" && "digest" in error) {
-        // Errors with a digest are signal throws (NEXT_REDIRECT,
-        // NEXT_NOT_FOUND, NEXT_HTTP_ERROR_FALLBACK). They're not real
-        // failures — keep the first one so the lifecycle can swap a
-        // 307/404 in place of a streamed "Switched to client rendering"
-        // body for routes with a route-level Suspense boundary.
+      if (isNavigationSignalError(error)) {
+        // Navigation signal throws (NEXT_REDIRECT, NEXT_NOT_FOUND,
+        // NEXT_HTTP_ERROR_FALLBACK) are not real failures — keep the first one
+        // so the lifecycle can swap a 307/404 in place of a streamed "Switched
+        // to client rendering" body for routes with a route-level Suspense
+        // boundary. A bare `digest` field is NOT enough: a genuine error that
+        // happens to carry a (e.g. hashed) digest is a real failure and must
+        // reach the error boundary, not masquerade as a special response.
         if (capturedSpecialError === null) {
           capturedSpecialError = error;
         }

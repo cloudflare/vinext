@@ -414,6 +414,27 @@ describe("app page stream helpers", () => {
     expect(baseOnError).toHaveBeenCalledTimes(2);
   });
 
+  it("routes a non-signal digest error to the captured error, not the special slot", () => {
+    const baseOnError = vi.fn(() => "base-result");
+    const tracker = createAppPageRscErrorTracker(baseOnError);
+
+    // A genuine error that merely carries a (e.g. hashed) digest is not a
+    // navigation signal: it must reach the error boundary, not pre-empt the
+    // 307/404 swap slot reserved for real redirect/notFound signals.
+    const realError = Object.assign(new Error("kaboom"), { digest: "1234567890" });
+    tracker.onRenderError(realError, { path: "/test" }, { chunk: 1 });
+
+    expect(tracker.getCapturedError()).toBe(realError);
+    expect(tracker.getCapturedSpecialError()).toBeNull();
+
+    // A subsequent real navigation signal still wins the special slot.
+    const redirect = { digest: "NEXT_REDIRECT;push;%2Flogin;307" };
+    tracker.onRenderError(redirect, { path: "/test" }, { chunk: 2 });
+
+    expect(tracker.getCapturedSpecialError()).toBe(redirect);
+    expect(tracker.getCapturedError()).toBe(realError);
+  });
+
   it("emits the `x-edge-runtime: 1` marker on HTML stream responses for edge-runtime routes", async () => {
     const response = await renderAppPageHtmlResponse({
       clearRequestContext: vi.fn(),
