@@ -8,16 +8,15 @@ import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import type { RenderToReadableStreamOptions } from "react-dom/server";
 import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
 import clientReferences from "virtual:vite-rsc/client-references";
-import type { NavigationContext } from "vinext/shims/navigation";
+import type { NavigationContext } from "vinext/shims/navigation-server";
 import {
   ServerInsertedHTMLContext,
-  appRouterInstance,
   clearServerInsertedHTML,
   getBfcacheIdMapContext,
+  registerServerInsertedHTMLCallback,
   renderServerInsertedHTML,
   setNavigationContext,
-  useServerInsertedHTML,
-} from "vinext/shims/navigation";
+} from "vinext/shims/navigation-server";
 import { runWithNavigationContext } from "vinext/shims/navigation-state";
 import { runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
 import { isOpenRedirectShaped } from "./request-pipeline.js";
@@ -55,6 +54,7 @@ import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
 import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 
 /**
  * `@types/react-dom` does not yet type `maxHeadersLength` (it pairs with the
@@ -459,14 +459,14 @@ export async function handleSsr(
         const root = AppRouterContext
           ? createReactElement(
               AppRouterContext.Provider,
-              { value: appRouterInstance },
+              { value: ssrAppRouterInstance },
               flightRootElement,
             )
           : flightRootElement;
         const ssrTree = ServerInsertedHTMLContext
           ? createReactElement(
               ServerInsertedHTMLContext.Provider,
-              { value: useServerInsertedHTML },
+              { value: registerServerInsertedHTMLCallback },
               root,
             )
           : root;
