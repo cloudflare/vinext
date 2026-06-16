@@ -14,6 +14,7 @@ import path from "node:path";
 import { describe, it, expect } from "vite-plus/test";
 import { buildTprKVPairs, resolveVinextProdServerPath } from "../packages/cloudflare/src/tpr.js";
 import { isrCacheKey } from "../packages/vinext/src/server/isr-cache.js";
+import { VINEXT_IMPLICIT_TAGS_HEADER } from "../packages/vinext/src/server/headers.js";
 
 function entry(
   path: string,
@@ -163,6 +164,74 @@ describe("TPR KV key format", () => {
       "_N_T_/test/page",
     ]);
     expect(parsed.lastModified).toBeTypeOf("number");
+  });
+
+  // ── Server-provided implicit tags (#1984) ─────────────────────────────────
+
+  it("uses the server-provided implicit tags header verbatim for a dynamic route", () => {
+    // The prod server emits the live tag set (percent-encoded, comma-joined) on
+    // internal TPR requests. Mirror that encoding here.
+    const liveTags = [
+      "/posts/hello",
+      "_N_T_/posts/hello",
+      "_N_T_/layout",
+      "_N_T_/posts/layout",
+      "_N_T_/posts/[slug]/layout",
+      "_N_T_/posts/[slug]/page",
+    ];
+    const headerValue = liveTags.map(encodeURIComponent).join(",");
+
+    const pairs = buildTprKVPairs(
+      entry("/posts/hello", { [VINEXT_IMPLICIT_TAGS_HEADER]: headerValue }),
+      buildId,
+      60,
+    );
+    const parsed = JSON.parse(pairs[0].value);
+
+    // The KV entry carries the SAME bracketed pattern tags live ISR stores, so
+    // revalidatePath('/posts/[slug]','layout') reaches it. The concrete leaf tag
+    // never appears.
+    expect(parsed.tags).toEqual(liveTags);
+    expect(parsed.tags).toContain("_N_T_/posts/[slug]/page");
+    expect(parsed.tags).not.toContain("_N_T_/posts/hello/page");
+  });
+
+  it("round-trips route-group implicit tags through the header", () => {
+    const liveTags = [
+      "/blog/hello",
+      "_N_T_/blog/hello",
+      "_N_T_/layout",
+      "_N_T_/(main)/layout",
+      "_N_T_/(main)/blog/layout",
+      "_N_T_/(main)/blog/[slug]/layout",
+      "_N_T_/(main)/blog/[slug]/page",
+    ];
+    const headerValue = liveTags.map(encodeURIComponent).join(",");
+
+    const pairs = buildTprKVPairs(
+      entry("/blog/hello", { [VINEXT_IMPLICIT_TAGS_HEADER]: headerValue }),
+      buildId,
+      60,
+    );
+    const parsed = JSON.parse(pairs[0].value);
+
+    expect(parsed.tags).toEqual(liveTags);
+    expect(parsed.tags).toContain("_N_T_/(main)/blog/[slug]/page");
+  });
+
+  it("falls back to concrete-path tags when the implicit tags header is absent", () => {
+    // Older server bundle / non-app response: no header → pre-#1984 concrete tags.
+    const pairs = buildTprKVPairs(entry("/legacy/hello"), buildId, 60);
+    const parsed = JSON.parse(pairs[0].value);
+
+    expect(parsed.tags).toEqual([
+      "/legacy/hello",
+      "_N_T_/legacy/hello",
+      "_N_T_/layout",
+      "_N_T_/legacy/layout",
+      "_N_T_/legacy/hello/layout",
+      "_N_T_/legacy/hello/page",
+    ]);
   });
 });
 

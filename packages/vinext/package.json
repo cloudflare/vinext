@@ -152,6 +152,10 @@
     "./internal/utils/prerender-output-paths": {
       "types": "./dist/utils/prerender-output-paths.d.ts",
       "import": "./dist/utils/prerender-output-paths.js"
+    },
+    "./internal/utils/encode-cache-tag": {
+      "types": "./dist/utils/encode-cache-tag.d.ts",
+      "import": "./dist/utils/encode-cache-tag.js"
     }
   },
   "scripts": {

@@ -25,9 +25,14 @@ import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { VINEXT_REVALIDATE_HEADER } from "vinext/internal/server/headers";
+import {
+  VINEXT_REVALIDATE_HEADER,
+  VINEXT_IMPLICIT_TAGS_HEADER,
+  VINEXT_TPR_USER_AGENT,
+} from "vinext/internal/server/headers";
 import { isrCacheKey } from "vinext/internal/server/isr-cache";
 import { buildAppPageCacheTags } from "vinext/internal/server/app-page-cache";
+import { encodeCacheTag } from "vinext/internal/utils/encode-cache-tag";
 import { ENTRY_PREFIX } from "@vinext/cloudflare/cache/kv-data-adapter.runtime";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -782,7 +787,7 @@ async function prerenderRoutes(
         try {
           const response = await fetch(`http://127.0.0.1:${port}${routePath}`, {
             headers: {
-              "User-Agent": "vinext-tpr/1.0",
+              "User-Agent": VINEXT_TPR_USER_AGENT,
               ...(hostDomain ? { Host: hostDomain } : {}),
             },
             redirect: "manual", // Don't follow redirects — cache the redirect itself
@@ -797,6 +802,7 @@ async function prerenderRoutes(
                 key === "content-type" ||
                 key === "cache-control" ||
                 key === VINEXT_REVALIDATE_HEADER ||
+                key === VINEXT_IMPLICIT_TAGS_HEADER ||
                 key === "location"
               ) {
                 headers[key] = value;
@@ -928,10 +934,23 @@ export function buildTprKVPairs(
     // 30-day TTL matches runtime KVCacheHandler.set().
     const kvTtl = MAX_KV_TTL_SECONDS;
 
-    // Path-derived implicit tags so revalidatePath()/revalidateTag() can
-    // invalidate TPR-seeded entries. Without this the seeded entry has no
-    // tags and tag-based invalidation can never reach it (#1486).
-    const tags = buildAppPageCacheTags(routePath, []);
+    // Implicit tags so revalidatePath()/revalidateTag() can invalidate
+    // TPR-seeded entries. Without any tags the entry is unreachable by
+    // tag-based invalidation (#1486).
+    //
+    // #1984: prefer the live-computed implicit tag set the prod server attached
+    // during the pre-render fetch (gated to the TPR User-Agent). It is the EXACT
+    // set live ISR stores — including the bracketed `_N_T_/posts/[slug]/page`
+    // pattern tags a typed revalidatePath('/posts/[slug]','layout') targets — so
+    // TPR-seeded KV entries are reachable identically to live entries. The header
+    // value is percent-encoded and comma-joined; re-canonicalise each decoded tag
+    // with encodeCacheTag so the stored form matches revalidateTag's wire form.
+    // Fall back to the concrete-path builder when the header is absent (older
+    // server bundle, or a non-app response) — byte-identical for static routes.
+    const implicitTagsHeader = result.headers[VINEXT_IMPLICIT_TAGS_HEADER];
+    const tags = implicitTagsHeader
+      ? implicitTagsHeader.split(",").filter(Boolean).map(decodeURIComponent).map(encodeCacheTag)
+      : buildAppPageCacheTags(routePath, []);
 
     const entry = {
       value: {

@@ -469,6 +469,216 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(await getCacheHandler().get(rscKey)).toBeNull();
   });
 
+  // ── Dynamic-route bracketed implicit tags (#1984) ─────────────────────────
+
+  it("seeds a dynamic route with bracketed route-pattern implicit tags", async () => {
+    const writes: {
+      key: string;
+      metadata: { tags?: string[] };
+    }[] = [];
+
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "issue-1984-dynamic",
+        routes: [
+          {
+            route: "/posts/[slug]",
+            path: "/posts/hello",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            routeSegments: ["posts", "[slug]"],
+          },
+        ],
+      },
+      {
+        "posts/hello.html": "<html>Post: hello</html>",
+        "posts/hello.rsc": "RSC posts hello",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir, {
+      async writeAppPageEntry(key, _data, metadata): Promise<void> {
+        writes.push({ key, metadata });
+      },
+    });
+
+    // The seeded entry carries the SAME tag set the live render produces:
+    // the leaf layout/page tags use the bracketed pattern, while the exact-path
+    // "_N_T_/posts/hello" tag is preserved for concrete-path revalidation.
+    const expectedTags = [
+      "/posts/hello",
+      "_N_T_/posts/hello",
+      "_N_T_/layout",
+      "_N_T_/posts/layout",
+      "_N_T_/posts/[slug]/layout",
+      "_N_T_/posts/[slug]/page",
+    ];
+    expect(writes.map((w) => w.metadata.tags)).toEqual([expectedTags, expectedTags]);
+
+    const tags = writes[0]?.metadata.tags ?? [];
+    expect(tags).toContain("_N_T_/posts/[slug]/layout");
+    expect(tags).toContain("_N_T_/posts/[slug]/page");
+    expect(tags).not.toContain("_N_T_/posts/hello/page");
+  });
+
+  it("typed revalidatePath('/posts/[slug]','layout') invalidates a seeded dynamic entry", async () => {
+    const buildId = "issue-1984-revalidate-typed";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/posts/[slug]",
+            path: "/posts/hello",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            routeSegments: ["posts", "[slug]"],
+          },
+        ],
+      },
+      {
+        "posts/hello.html": "<html>Post: hello</html>",
+        "posts/hello.rsc": "RSC posts hello",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const baseKey = isrCacheKey("app", "/posts/hello", buildId);
+    const htmlKey = baseKey + ":html";
+    const rscKey = baseKey + ":rsc";
+    expect(await getCacheHandler().get(htmlKey)).not.toBeNull();
+    expect(await getCacheHandler().get(rscKey)).not.toBeNull();
+
+    // Emits "_N_T_/posts/[slug]/layout" — only reachable because the seeded
+    // entry now carries the bracketed pattern tag (the #1984 fix).
+    await revalidatePath("/posts/[slug]", "layout");
+
+    expect(await getCacheHandler().get(htmlKey)).toBeNull();
+    expect(await getCacheHandler().get(rscKey)).toBeNull();
+  });
+
+  it("concrete revalidatePath('/posts/hello') still invalidates a seeded dynamic entry", async () => {
+    const buildId = "issue-1984-revalidate-concrete";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/posts/[slug]",
+            path: "/posts/hello",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            routeSegments: ["posts", "[slug]"],
+          },
+        ],
+      },
+      {
+        "posts/hello.html": "<html>Post: hello</html>",
+        "posts/hello.rsc": "RSC posts hello",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    const baseKey = isrCacheKey("app", "/posts/hello", buildId);
+    const htmlKey = baseKey + ":html";
+    const rscKey = baseKey + ":rsc";
+    expect(await getCacheHandler().get(htmlKey)).not.toBeNull();
+
+    // Emits "_N_T_/posts/hello" (exact-path tag), which both the old and new
+    // tag sets carry — the concrete escape hatch keeps working after the fix.
+    await revalidatePath("/posts/hello");
+
+    expect(await getCacheHandler().get(htmlKey)).toBeNull();
+    expect(await getCacheHandler().get(rscKey)).toBeNull();
+  });
+
+  it("keeps route groups in bracketed tags for a grouped dynamic route", async () => {
+    const writes: { metadata: { tags?: string[] } }[] = [];
+
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "issue-1984-route-group",
+        routes: [
+          {
+            route: "/blog/[slug]",
+            path: "/blog/hello",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            routeSegments: ["(main)", "blog", "[slug]"],
+          },
+        ],
+      },
+      {
+        "blog/hello.html": "<html>Blog: hello</html>",
+        "blog/hello.rsc": "RSC blog hello",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir, {
+      async writeAppPageEntry(_key, _data, metadata): Promise<void> {
+        writes.push({ metadata });
+      },
+    });
+
+    const tags = writes[0]?.metadata.tags ?? [];
+    expect(tags).toContain("_N_T_/(main)/blog/[slug]/layout");
+    expect(tags).toContain("_N_T_/(main)/blog/[slug]/page");
+    // The concrete value never leaks into the leaf tags.
+    expect(tags).not.toContain("_N_T_/blog/hello/page");
+  });
+
+  it("falls back to concrete-path tags when routeSegments is absent (legacy manifest)", async () => {
+    const writes: { metadata: { tags?: string[] } }[] = [];
+
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "issue-1984-legacy-fallback",
+        routes: [
+          {
+            route: "/posts/[slug]",
+            path: "/posts/hello",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            // No routeSegments — simulates a manifest produced before #1984.
+          },
+        ],
+      },
+      {
+        "posts/hello.html": "<html>Post: hello</html>",
+        "posts/hello.rsc": "RSC posts hello",
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir, {
+      async writeAppPageEntry(_key, _data, metadata): Promise<void> {
+        writes.push({ metadata });
+      },
+    });
+
+    // Without routeSegments the seeded entry degrades to the pre-#1984
+    // concrete-path tag set rather than crashing or emitting a wrong "_N_T_/page".
+    expect(writes[0]?.metadata.tags).toEqual([
+      "/posts/hello",
+      "_N_T_/posts/hello",
+      "_N_T_/layout",
+      "_N_T_/posts/layout",
+      "_N_T_/posts/hello/layout",
+      "_N_T_/posts/hello/page",
+    ]);
+  });
+
   // ── Static routes (revalidate: false) ─────────────────────────────────────
 
   it("seeds static routes (revalidate: false) with no expiry", async () => {

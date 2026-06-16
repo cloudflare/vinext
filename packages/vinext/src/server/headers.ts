@@ -49,6 +49,24 @@ export const VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH = "/__vinext/prerender/pag
 /** TPR (Tailored Per-Request) revalidation interval in seconds. */
 export const VINEXT_REVALIDATE_HEADER = "x-vinext-revalidate";
 
+/**
+ * Internal-only: percent-encoded, comma-joined list of an App Router page's
+ * implicit cache tags (the exact set the live render emits, including the
+ * bracketed `_N_T_/posts/[slug]/page` pattern tags). Emitted ONLY for trusted
+ * internal TPR pre-render requests (gated by {@link VINEXT_TPR_USER_AGENT}) so
+ * the TPR uploader seeds KV with the SAME tag set live ISR would store, making
+ * TPR-seeded entries reachable by typed `revalidatePath` (#1984). Never emitted
+ * to public clients; also stripped from inbound requests.
+ */
+export const VINEXT_IMPLICIT_TAGS_HEADER = "x-vinext-implicit-tags";
+
+/**
+ * User-Agent the TPR pre-render client sends when driving the local prod server.
+ * Used to gate internal-only response signals such as
+ * {@link VINEXT_IMPLICIT_TAGS_HEADER}.
+ */
+export const VINEXT_TPR_USER_AGENT = "vinext-tpr/1.0";
+
 /** Marker on cached ISR entries indicating RSC payload (value "1"). */
 export const VINEXT_RSC_MARKER_HEADER = "x-vinext-rsc";
 
@@ -219,4 +237,6 @@ export const VINEXT_INTERNAL_HEADERS = [
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  // Response-only signal; listed here so a forged inbound value is stripped.
+  VINEXT_IMPLICIT_TAGS_HEADER,
 ];

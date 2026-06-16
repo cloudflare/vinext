@@ -34,6 +34,7 @@ import path from "pathslash";
 import type { CachedAppPageValue } from "vinext/shims/cache-handler";
 import { isrCacheKey, isrSetPrerenderedAppPage } from "./isr-cache.js";
 import { buildAppPageCacheTags } from "./app-page-cache.js";
+import { buildAppPageTags } from "./implicit-tags.js";
 import { getOutputPath, getRscOutputPath } from "../utils/prerender-output-paths.js";
 import {
   addPregeneratedConcretePath,
@@ -118,10 +119,27 @@ export async function seedMemoryCacheFromPrerender(
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
     const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
 
-    // Path-derived implicit tags so revalidatePath()/revalidateTag() can
-    // invalidate seeded entries. Without this the seeded entry has no tags
-    // and tag-based invalidation can never reach it (#1486).
-    const tags = buildAppPageCacheTags(cachePathname, []);
+    // Implicit tags so revalidatePath()/revalidateTag() can invalidate seeded
+    // entries. Without any tags the entry is unreachable by tag-based
+    // invalidation (#1486).
+    //
+    // #1984: seeded entries must carry the IDENTICAL tag set the live render
+    // produces. The live render uses buildAppPageTags(pathname, fetchTags,
+    // route.routeSegments), deriving the layout/page hierarchy from the RAW
+    // route segments (the bracketed pattern, e.g. `_N_T_/posts/[slug]/page`),
+    // while the concrete pathname still yields the exact-path `_N_T_/posts/hello`
+    // tag. Using the concrete-path builder instead leaves a dynamic route's
+    // seeded entry tagged `_N_T_/posts/hello/page` so a typed
+    // revalidatePath('/posts/[slug]','layout') can never reach it.
+    //
+    // Fallback: legacy/partial manifests may omit `routeSegments` (and the root
+    // route legitimately has none). `buildAppPageTags(cachePathname, [], [])`
+    // would emit a wrong `_N_T_/page`, so we fall back to the pre-#1984
+    // concrete-path builder — byte-identical for static routes and a safe
+    // (non-crashing) degrade for dynamic ones.
+    const tags = route.routeSegments
+      ? buildAppPageTags(cachePathname, [], route.routeSegments)
+      : buildAppPageCacheTags(cachePathname, []);
 
     if (
       await seedHtml(

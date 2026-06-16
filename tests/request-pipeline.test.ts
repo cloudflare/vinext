@@ -22,6 +22,7 @@ import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_IMPLICIT_TAGS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/utils/middleware-request-headers.js";
 
@@ -801,6 +802,9 @@ describe("filterInternalHeaders", () => {
       [VINEXT_PRERENDER_CACHE_LIFE_HEADER]: "forged",
       [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: "forged",
       [VINEXT_PRERENDER_SPECULATIVE_HEADER]: "forged",
+      // #1984: x-vinext-implicit-tags is a response-only signal; a forged inbound
+      // value must be stripped too.
+      [VINEXT_IMPLICIT_TAGS_HEADER]: "forged",
       "user-agent": "test",
     });
 
@@ -809,10 +813,12 @@ describe("filterInternalHeaders", () => {
     expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER);
     expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_SPECULATIVE_HEADER);
     expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
+    expect(INTERNAL_HEADERS).not.toContain(VINEXT_IMPLICIT_TAGS_HEADER);
     expect(VINEXT_INTERNAL_HEADERS).toEqual([
       VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
       VINEXT_PRERENDER_SPECULATIVE_HEADER,
       VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+      VINEXT_IMPLICIT_TAGS_HEADER,
     ]);
     for (const name of VINEXT_INTERNAL_HEADERS) {
       expect(name).toBe(name.toLowerCase());
@@ -820,6 +826,7 @@ describe("filterInternalHeaders", () => {
     expect(result.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_SPECULATIVE_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe(false);
+    expect(result.has(VINEXT_IMPLICIT_TAGS_HEADER)).toBe(false);
     expect(result.get("user-agent")).toBe("test");
   });
 

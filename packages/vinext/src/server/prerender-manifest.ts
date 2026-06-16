@@ -9,6 +9,17 @@ export type PrerenderManifestRoute = {
   router?: string;
   fallback?: boolean;
   headers?: Record<string, string>;
+  /**
+   * Raw filesystem route segments from app/ root to the route's directory,
+   * including route groups (`(main)`) and dynamic brackets (`[slug]`). Mirrors
+   * `AppRoute.routeSegments`. App Router only. Used by cache seeding to derive
+   * the SAME implicit tag set the live render emits (#1984) — without it a
+   * dynamic route's seeded entry carries concrete-path tags (`_N_T_/posts/hello/page`)
+   * and misses the pattern tags (`_N_T_/posts/[slug]/page`) that typed
+   * `revalidatePath('/posts/[slug]','layout')` targets. Absent on legacy
+   * manifests; seed-cache falls back to concrete-path tags when missing.
+   */
+  routeSegments?: string[];
 };
 
 export type PrerenderManifest = {
