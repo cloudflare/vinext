@@ -18,7 +18,7 @@
 
 - **Build:** preserve lazy RSC framework chunks (#2074)
 - **Middleware:** fail closed for unsafe matchers (#2078)
-- **Build:** align Pages data export transforms (#2055)
+- **Build:** strip server-side Pages data export transforms from client (#2055)
 - **Fonts:** detect trailing comma past comments when injecting font options (#2051)
 - **Csp:** match script-src-elem/attr when extracting script nonce (#2049)
 - **Script:** register src beforeInteractive scripts and mark hoisted output (#2019)
