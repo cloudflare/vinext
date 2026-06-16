@@ -2033,6 +2033,15 @@ describe("App Router integration", () => {
     }
   });
 
+  it("includes the static RSC renderer in startup dependency optimization", async () => {
+    const rscEnvironment = server.environments.rsc;
+    await rscEnvironment.waitForRequestsIdle();
+
+    const optimizedDependencies =
+      rscEnvironment.depsOptimizer?.metadata.depInfoList.map((dep) => dep.id) ?? [];
+    expect(optimizedDependencies).toContain("react-server-dom-webpack/static.edge");
+  });
+
   // ── CSRF protection for server actions ───────────────────────────────
   it("rejects server action POST with mismatched Origin header (CSRF protection)", async () => {
     const res = await fetch(`${baseUrl}/actions.rsc`, {

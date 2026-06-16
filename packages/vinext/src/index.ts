@@ -2253,6 +2253,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               optimizeDeps: {
                 exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
                 entries: optimizeEntries,
+                // plugin-rsc pre-includes server.edge, but not its vendored
+                // static.edge import, which it rewrites to this package specifier.
+                // Prebundle both so they share the large development renderer
+                // instead of transforming its raw CJS source on the first request.
+                include: [...new Set([...incomingInclude, "react-server-dom-webpack/static.edge"])],
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
