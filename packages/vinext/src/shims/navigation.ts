@@ -243,6 +243,14 @@ type _StateAccessors = {
 export const GLOBAL_ACCESSORS_KEY = Symbol.for("vinext.navigation.globalAccessors");
 const _GLOBAL_ACCESSORS_KEY = GLOBAL_ACCESSORS_KEY;
 type _GlobalWithAccessors = typeof globalThis & { [_GLOBAL_ACCESSORS_KEY]?: _StateAccessors };
+const _FALLBACK_STATE_KEY = Symbol.for("vinext.navigation.fallback");
+type _FallbackState = {
+  serverContext: NavigationContext | null;
+  serverInsertedHTMLCallbacks: Array<() => unknown>;
+};
+type _GlobalWithFallbackState = typeof globalThis & {
+  [_FALLBACK_STATE_KEY]?: _FallbackState;
+};
 
 // Browser hydration has the same module-split shape as SSR in Vite dev:
 // the browser entry seeds the snapshot before hydrateRoot(), but client
@@ -255,6 +263,14 @@ type _GlobalWithHydrationContext = typeof globalThis & {
 
 function _getGlobalAccessors(): _StateAccessors | undefined {
   return (globalThis as _GlobalWithAccessors)[_GLOBAL_ACCESSORS_KEY];
+}
+
+function _getFallbackState(): _FallbackState {
+  const globalState = globalThis as _GlobalWithFallbackState;
+  return (globalState[_FALLBACK_STATE_KEY] ??= {
+    serverContext: null,
+    serverInsertedHTMLCallbacks: [],
+  });
 }
 
 function _getClientHydrationContext(): NavigationContext | null | undefined {
@@ -275,22 +291,19 @@ function clearClientHydrationContext(): void {
   }
 }
 
-let _serverContext: NavigationContext | null = null;
-let _serverInsertedHTMLCallbacks: Array<() => unknown> = [];
-
 // These are overridden by navigation-state.ts on the server to use ALS.
 // The defaults check globalThis for cross-module-instance access (issue #688).
 let _getServerContext = (): NavigationContext | null => {
   if (typeof window !== "undefined") {
     const hydrationContext = _getClientHydrationContext();
-    return hydrationContext !== undefined ? hydrationContext : _serverContext;
+    return hydrationContext !== undefined ? hydrationContext : _getFallbackState().serverContext;
   }
   const g = _getGlobalAccessors();
-  return g ? g.getServerContext() : _serverContext;
+  return g ? g.getServerContext() : _getFallbackState().serverContext;
 };
 let _setServerContext = (ctx: NavigationContext | null): void => {
   if (typeof window !== "undefined") {
-    _serverContext = ctx;
+    _getFallbackState().serverContext = ctx;
     _setClientHydrationContext(ctx);
     return;
   }
@@ -298,19 +311,19 @@ let _setServerContext = (ctx: NavigationContext | null): void => {
   if (g) {
     g.setServerContext(ctx);
   } else {
-    _serverContext = ctx;
+    _getFallbackState().serverContext = ctx;
   }
 };
 let _getInsertedHTMLCallbacks = (): Array<() => unknown> => {
   const g = _getGlobalAccessors();
-  return g ? g.getInsertedHTMLCallbacks() : _serverInsertedHTMLCallbacks;
+  return g ? g.getInsertedHTMLCallbacks() : _getFallbackState().serverInsertedHTMLCallbacks;
 };
 let _clearInsertedHTMLCallbacks = (): void => {
   const g = _getGlobalAccessors();
   if (g) {
     g.clearInsertedHTMLCallbacks();
   } else {
-    _serverInsertedHTMLCallbacks = [];
+    _getFallbackState().serverInsertedHTMLCallbacks = [];
   }
 };
 
