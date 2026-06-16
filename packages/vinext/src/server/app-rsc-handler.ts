@@ -34,7 +34,7 @@ import { createRequestContext, runWithRequestContext } from "vinext/shims/unifie
 import { flattenErrorCauses } from "../utils/error-cause.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { mergeRewriteQuery } from "../utils/query.js";
-import { applyAppMiddleware, type AppMiddlewareContext } from "./app-middleware.js";
+import type { AppMiddlewareContext } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
 import { handleAppPrerenderEndpoint } from "./app-prerender-endpoints.js";
 import {
@@ -570,6 +570,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   let didMiddlewareRewrite = false;
 
   if (options.middlewareModule) {
+    const { applyAppMiddleware } = await import("./app-middleware.js");
     const middlewareResult = await applyAppMiddleware({
       basePath: options.basePath,
       cleanPathname,
