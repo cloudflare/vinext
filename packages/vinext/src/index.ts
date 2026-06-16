@@ -181,7 +181,12 @@ import {
   relativeWithinRoot,
   type BundleBackfillChunk,
 } from "./build/ssr-manifest.js";
-import { stripServerExports } from "./plugins/strip-server-exports.js";
+import {
+  hasExportAllCandidate,
+  hasServerExportCandidate,
+  stripServerExports,
+  validatePageExports,
+} from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
@@ -801,6 +806,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const viteMajorVersion = getViteMajorVersion();
   let root: string;
   let pagesDir: string;
+  let canonicalPagesDir: string;
   let appDir: string;
   let hasAppDir = false;
   let hasPagesDir = false;
@@ -842,6 +848,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // module graph for. The shim files exist in the vinext package before plugin
   // init, so realpath is safe to evaluate eagerly.
   const canonicalize = (p: string): string => tryRealpathSync(p) ?? p;
+  const pageTransformCanonicalPaths = new Map<string, string>();
+  const canonicalizePageTransformPath = (modulePath: string): string => {
+    const cached = pageTransformCanonicalPaths.get(modulePath);
+    if (cached) return cached;
+    const canonicalPath = canonicalize(modulePath);
+    pageTransformCanonicalPaths.set(modulePath, canonicalPath);
+    return canonicalPath;
+  };
+  const isWithinPagesDirectory = (modulePath: string): boolean =>
+    modulePath === pagesDir ||
+    modulePath.startsWith(`${pagesDir}/`) ||
+    modulePath === canonicalPagesDir ||
+    modulePath.startsWith(`${canonicalPagesDir}/`);
+  const isApiPage = (canonicalId: string): boolean => {
+    const relativePath = fileMatcher.stripExtension(canonicalId.slice(canonicalPagesDir.length));
+    return relativePath === "/api" || relativePath.startsWith("/api/");
+  };
   const dynamicShimPaths: ReadonlySet<string> = new Set(
     [
       resolveShimModulePath(shimsDir, "headers"),
@@ -1222,6 +1245,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
 
         pagesDir = path.posix.join(baseDir, "pages");
+        canonicalPagesDir = canonicalize(pagesDir);
         appDir = path.posix.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
@@ -4149,11 +4173,63 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         };
       },
     },
-    // Match Next.js's server-only boundary for browser/client graphs. The
-    // marker is valid in App Router Server Components and middleware/server
-    // targets, but importing it from client-reachable code (including Pages
-    // Router browser bundles) must fail instead of silently resolving to the
-    // empty shim.
+    // Next.js rejects `export * from "..."` when compiling Pages Router files
+    // for the client. API routes have no client compilation, so they are
+    // excluded here along with virtual and non-page modules.
+    {
+      name: "vinext:validate-page-exports",
+      transform: {
+        handler(code, id) {
+          if (this.environment?.name !== "client") return null;
+          if (!hasPagesDir || id.startsWith("\0") || !hasExportAllCandidate(code)) {
+            return null;
+          }
+          const modulePath = stripViteModuleQuery(id);
+          if (!isWithinPagesDirectory(modulePath)) return null;
+          const canonicalId = canonicalizePageTransformPath(modulePath);
+          if (!isWithinPagesDirectory(canonicalId)) return null;
+          if (!fileMatcher.isPageFile(canonicalId)) return null;
+          if (isApiPage(canonicalId)) return null;
+          validatePageExports(code);
+          return null;
+        },
+      },
+    },
+    // Strip server-only data-fetching exports (getServerSideProps, getStaticProps,
+    // getStaticPaths) from page modules in the client bundle. These functions
+    // often import server-only modules (database drivers, fs, etc.) that would
+    // break or bloat the client bundle. Next.js does this via an SWC transform
+    // (next-ssg-transform); we use Vite's parseAst + MagicString.
+    //
+    // Only applies to client builds (not SSR) and only to files under the
+    // pages/ directory.
+    {
+      name: "vinext:strip-server-exports",
+      transform: {
+        handler(code, id) {
+          if (this.environment?.name !== "client") return null;
+          if (!hasPagesDir || id.startsWith("\0") || !hasServerExportCandidate(code)) return null;
+          // Only transform files under the pages/ directory
+          const modulePath = stripViteModuleQuery(id);
+          if (!isWithinPagesDirectory(modulePath)) return null;
+          const canonicalId = canonicalizePageTransformPath(modulePath);
+          if (!isWithinPagesDirectory(canonicalId)) return null;
+          if (!fileMatcher.isPageFile(canonicalId)) return null;
+          // Skip API routes, _app, _document, _error
+          const relativePath = canonicalId.slice(canonicalPagesDir.length);
+          if (isApiPage(canonicalId)) return null;
+          if (/^\/(?:_app|_document|_error)(?:\.[^/]*)?$/.test(relativePath)) return null;
+
+          const result = stripServerExports(code);
+          if (!result) return null;
+          return { code: result, map: null };
+        },
+      },
+    },
+    // Match Next.js's server-only boundary for browser/client graphs. This
+    // must run after the Pages data-export transform so a valid
+    // `export { getServerSideProps } from "./server"` boundary is removed
+    // before the browser graph resolves and validates the server module.
     //
     // Ported behavior from Next.js:
     // test/development/acceptance/server-component-compiler-errors-in-pages.test.ts
@@ -4171,36 +4247,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           throw new Error(
             `You're importing a module that depends on "server-only". This API is only available in Server Components in the App Router, but this module is reachable from a client bundle.`,
           );
-        },
-      },
-    },
-    // Strip server-only data-fetching exports (getServerSideProps, getStaticProps,
-    // getStaticPaths) from page modules in the client bundle. These functions
-    // often import server-only modules (database drivers, fs, etc.) that would
-    // break or bloat the client bundle. Next.js does this via an SWC transform
-    // (next-ssg-transform); we use Vite's parseAst + MagicString.
-    //
-    // Only applies to client builds (not SSR) and only to files under the
-    // pages/ directory.
-    {
-      name: "vinext:strip-server-exports",
-      transform: {
-        // Only match page source files, not node_modules
-        filter: { id: /\.(tsx?|jsx?|mjs)$/ },
-        handler(code, id) {
-          const ssr = this.environment?.name !== "client";
-          if (ssr) return null;
-          if (!hasPagesDir) return null;
-          // Only transform files under the pages/ directory
-          if (!id.startsWith(pagesDir)) return null;
-          // Skip API routes, _app, _document, _error
-          const relativePath = id.slice(pagesDir.length);
-          if (relativePath.startsWith("/api/") || relativePath === "/api") return null;
-          if (/\/_(?:app|document|error)\b/.test(relativePath)) return null;
-
-          const result = stripServerExports(code);
-          if (!result) return null;
-          return { code: result, map: null };
         },
       },
     },
