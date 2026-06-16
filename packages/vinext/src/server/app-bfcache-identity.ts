@@ -11,6 +11,9 @@ import { isBfcacheSegmentId, type BfcacheIdMap } from "./app-history-state.js";
 
 export type BfcacheStateKeyMap = Readonly<Record<string, string>>;
 
+// Monotonic within a single browser document. Full reloads reset the counter,
+// while the document-scoped version gate prevents old history ids from
+// colliding with freshly minted ids.
 let nextBfcacheId = 0;
 
 function rememberBfcacheId(value: string): void {
@@ -29,7 +32,8 @@ function mintBfcacheId(): string {
 function getVisibleTreePathSegments(treePath: string): string[] {
   // Tree paths contain raw filesystem segments (route groups, parallel @slots,
   // and "." default segments). Only URL-visible segments consume a pathname
-  // segment when deriving the identity prefix.
+  // segment when deriving the identity prefix. Missing @slot or "." here
+  // over-counts consumed segments and remints ids for persistent layouts.
   return splitPathSegments(treePath).filter((segment) => !isInvisibleSegment(segment));
 }
 
@@ -46,6 +50,10 @@ function getTreePathIdentityPrefix(pathname: string, treePath: string): string {
 
 type AppElementsMetadata = ReturnType<typeof AppElementsWire.readMetadata>;
 
+/**
+ * Metadata parsed once per element map, with an index that keeps per-slot
+ * identity lookup O(1) rather than scanning every binding for every slot.
+ */
 type ParsedAppElementsMetadata = {
   metadata: AppElementsMetadata;
   slotBindingsBySlotId: ReadonlyMap<string, AppElementsSlotBinding>;
@@ -80,6 +88,11 @@ function createActiveSlotIdentity(
   return `${id}@${interception.targetRouteId}`;
 }
 
+/**
+ * Derive BFCache identity from AppElements wire keys. Keep wire-key parsing
+ * contained here until vinext has a route-manifest authority equivalent to
+ * Next.js CacheNode or segment-cache state.
+ */
 function createBfcacheSegmentIdentity(
   id: string,
   options: { metadata: ParsedAppElementsMetadata | null; pathname: string },
@@ -109,6 +122,7 @@ function collectBfcacheSegmentIds(
   parsed?: ParsedAppElementsMetadata | null,
 ): string[] {
   const ids = new Set(Object.keys(elements));
+  // Reuse parsed metadata when available; initial-map callers can omit it.
   const metadata = parsed === undefined ? readAppElementsMetadata(elements) : parsed;
   for (const layoutId of metadata?.metadata.layoutIds ?? []) {
     ids.add(layoutId);
@@ -125,6 +139,7 @@ export function createInitialBfcacheIdMap(elements: AppElements): BfcacheIdMap {
 }
 
 function normalizeBfcachePathname(pathname: string): string {
+  // Preserve encoded delimiters such as %2F as segment data.
   const normalized = normalizePath(normalizePathnameForRouteMatch(pathname));
   return normalized.length > 1 ? normalized.replace(/\/$/, "") : normalized;
 }
@@ -174,6 +189,8 @@ export function createNextBfcacheIdMap(options: {
       pathname: nextPathname,
     });
     const currentValue = currentIdentity === nextIdentity ? current[id] : undefined;
+    // History restoration wins, then identity-compatible reuse, then a fresh
+    // id. Redirected traversals must clear stale restored ids before this call.
     const value = options.restored?.[id] ?? currentValue ?? mintBfcacheId();
     ids[id] = value;
     rememberBfcacheId(value);
@@ -191,6 +208,7 @@ export function preserveBfcacheIdsForMergedElements(options: {
     const value = options.next[id] ?? options.previous[id];
     if (value === undefined) continue;
     ids[id] = value;
+    // Keep future mints ahead of ids restored by reducer-level preservation.
     rememberBfcacheId(value);
   }
   return ids;

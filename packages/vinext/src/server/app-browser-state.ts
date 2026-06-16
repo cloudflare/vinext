@@ -48,7 +48,6 @@ export {
   createInitialBfcacheIdMap,
   createNextBfcacheIdMap,
   preserveBfcacheIdsForMergedElements,
-  type BfcacheStateKeyMap,
 } from "./app-bfcache-identity.js";
 
 export {
