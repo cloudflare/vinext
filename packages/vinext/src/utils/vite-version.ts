@@ -11,6 +11,8 @@ import { createRequire } from "node:module";
 
 export function serializeViteDefine(value: unknown): string {
   if (typeof value === "string") return value;
+  // Vite treats define values as raw expressions, so explicit `undefined`
+  // must become the bare expression rather than the string `"undefined"`.
   return JSON.stringify(value) ?? "undefined";
 }
 

@@ -2180,6 +2180,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           viteMajorVersion,
           nodeEnvDefine,
         );
+        // Apply the define to the default optimizer and explicitly to server
+        // environments, where Vite's keepProcessEnv default prevents replacement.
         viteConfig.optimizeDeps = {
           // @tailwindcss/oxide contains native .node bindings that Rolldown cannot process
           exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE, [
