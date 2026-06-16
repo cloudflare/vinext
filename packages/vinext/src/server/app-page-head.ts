@@ -9,7 +9,6 @@ import {
   type Viewport,
 } from "vinext/shims/metadata";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
-import { applyFileBasedMetadata } from "./file-based-metadata.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import { tagAppPageMetadataError } from "./app-page-execution.js";
 import { resolveAppPageSegmentParams } from "./app-page-params.js";
@@ -440,26 +439,29 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
   metadataSources.push(...parallelMetadataSources);
   let metadata = resolvedMetadataBase;
 
-  try {
-    metadata = await applyFileBasedMetadata(
-      resolvedMetadataBase,
-      options.routePath,
-      options.params,
-      options.metadataRoutes,
-      {
-        routeSegments,
-        metadataSources,
-        basePath: options.basePath ?? "",
-      },
-    );
-  } catch (error) {
-    if (!options.fallbackOnFileMetadataError) {
-      throw error;
+  if (options.metadataRoutes.length > 0) {
+    try {
+      const { applyFileBasedMetadata } = await import("./file-based-metadata.js");
+      metadata = await applyFileBasedMetadata(
+        resolvedMetadataBase,
+        options.routePath,
+        options.params,
+        options.metadataRoutes,
+        {
+          routeSegments,
+          metadataSources,
+          basePath: options.basePath ?? "",
+        },
+      );
+    } catch (error) {
+      if (!options.fallbackOnFileMetadataError) {
+        throw error;
+      }
+      console.error(
+        `[vinext] File-based metadata resolution failed while rendering error boundary for ${options.routePath}:`,
+        error,
+      );
     }
-    console.error(
-      `[vinext] File-based metadata resolution failed while rendering error boundary for ${options.routePath}:`,
-      error,
-    );
   }
 
   if (metadata) {

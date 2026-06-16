@@ -65,7 +65,10 @@ import {
   resolveDevImageRedirect,
   type ImageConfig,
 } from "./image-optimization.js";
-import { handleMetadataRouteRequest } from "./metadata-route-response.js";
+import type {
+  MetadataRouteMakeThenableParams,
+  MetadataRuntimeRoute,
+} from "./metadata-route-response.js";
 import type { MiddlewareModule } from "./middleware-runtime.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
@@ -88,9 +91,9 @@ import {
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
-type MetadataRoutes = Parameters<typeof handleMetadataRouteRequest>[0]["metadataRoutes"];
+type MetadataRoutes = readonly MetadataRuntimeRoute[];
 const STATIC_METADATA_CONFIG_HEADER_OVERRIDES = new Set(["cache-control"]);
-type MakeThenableParams = Parameters<typeof handleMetadataRouteRequest>[0]["makeThenableParams"];
+type MakeThenableParams = MetadataRouteMakeThenableParams;
 type StaticParamsMap = AppPrerenderStaticParamsMap;
 type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
@@ -655,20 +658,23 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return Response.redirect(new URL(imageRedirect, url.origin).href, 302);
   }
 
-  const metadataRouteResponse = await handleMetadataRouteRequest({
-    metadataRoutes: options.metadataRoutes,
-    cleanPathname,
-    makeThenableParams: options.makeThenableParams,
-  });
-  if (metadataRouteResponse) {
-    applyConfigHeadersToResponse(metadataRouteResponse.headers, {
-      basePathState,
-      configHeaders: options.configHeaders,
-      overwriteExisting: STATIC_METADATA_CONFIG_HEADER_OVERRIDES,
-      pathname: matchPathname(cleanPathname),
-      requestContext: preMiddlewareRequestContext,
+  if (options.metadataRoutes.length > 0) {
+    const { handleMetadataRouteRequest } = await import("./metadata-route-response.js");
+    const metadataRouteResponse = await handleMetadataRouteRequest({
+      metadataRoutes: options.metadataRoutes,
+      cleanPathname,
+      makeThenableParams: options.makeThenableParams,
     });
-    return applyMiddlewareContextToResponse(metadataRouteResponse, middlewareContext);
+    if (metadataRouteResponse) {
+      applyConfigHeadersToResponse(metadataRouteResponse.headers, {
+        basePathState,
+        configHeaders: options.configHeaders,
+        overwriteExisting: STATIC_METADATA_CONFIG_HEADER_OVERRIDES,
+        pathname: matchPathname(cleanPathname),
+        requestContext: preMiddlewareRequestContext,
+      });
+      return applyMiddlewareContextToResponse(metadataRouteResponse, middlewareContext);
+    }
   }
 
   const publicFileResponse = resolvePublicFileRoute({
