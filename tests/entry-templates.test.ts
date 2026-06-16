@@ -853,6 +853,26 @@ describe("App Router entry templates", () => {
     );
     expect(code).not.toContain("const _hlFixRe =");
   });
+
+  it("uses the server-only RSC runtime only for development entries", () => {
+    const devCode = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      serverOnlyRscRuntime: true,
+    });
+    const buildCode = generateRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      null,
+      [],
+      null,
+      "",
+      false,
+    );
+
+    expect(devCode).toContain("/server/app-rsc-runtime.js");
+    expect(devCode).not.toContain('from "@vitejs/plugin-rsc/rsc"');
+    expect(buildCode).toContain('from "@vitejs/plugin-rsc/rsc"');
+    expect(buildCode).not.toContain("/server/app-rsc-runtime.js");
+  });
 });
 
 // ── Pages Router entry template runtime bootstrap ─────────────────────

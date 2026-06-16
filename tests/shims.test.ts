@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { PAGES_FIXTURE_DIR } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
 import { extractVinextNextDataJson } from "../packages/vinext/src/client/vinext-next-data.js";
@@ -21322,6 +21323,67 @@ describe("shim alias map .js variants", () => {
     expect(hook.handler.call({ environment: { name: "rsc" } }, "next/error.js")).toBe(
       reactServerShim,
     );
+  });
+
+  it("uses the server-only plugin-rsc runtime only for the dev RSC environment", () => {
+    const plugins = vinext() as Plugin[];
+    const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+    if (!configPlugin?.resolveId || typeof configPlugin.resolveId === "function") {
+      throw new Error("vinext:config resolveId hook not found");
+    }
+
+    const hook = configPlugin.resolveId as {
+      filter: { id: RegExp };
+      handler: (
+        this: {
+          environment?: {
+            name?: string;
+            config: {
+              command: "serve" | "build";
+            };
+          };
+        },
+        id: string,
+        importer?: string,
+      ) => string | undefined;
+    };
+    const runtimeId = path.resolve(
+      import.meta.dirname,
+      "../node_modules/@vitejs/plugin-rsc/dist/react/rsc.js",
+    );
+    const expectedRuntime = path.resolve(
+      import.meta.dirname,
+      "../packages/vinext/src/server/app-rsc-runtime.ts",
+    );
+    const cacheRuntime = path.resolve(
+      import.meta.dirname,
+      "../packages/vinext/src/shims/cache-runtime.ts",
+    );
+
+    expect(hook.filter.id.test(runtimeId)).toBe(true);
+    expect(
+      hook.handler.call({ environment: { name: "rsc", config: { command: "serve" } } }, runtimeId),
+    ).toBe(expectedRuntime);
+    expect(
+      hook.handler.call(
+        { environment: { name: "rsc", config: { command: "serve" } } },
+        runtimeId,
+        cacheRuntime,
+      ),
+    ).toBeUndefined();
+    expect(
+      hook.handler.call(
+        { environment: { name: "rsc", config: { command: "serve" } } },
+        runtimeId,
+        pathToFileURL(cacheRuntime).href,
+      ),
+    ).toBeUndefined();
+    expect(
+      hook.handler.call({ environment: { name: "ssr", config: { command: "serve" } } }, runtimeId),
+    ).toBeUndefined();
+    expect(
+      hook.handler.call({ environment: { name: "rsc", config: { command: "build" } } }, runtimeId),
+    ).toBeUndefined();
   });
 });
 

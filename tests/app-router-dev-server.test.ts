@@ -147,6 +147,13 @@ describe("App Router integration", () => {
     expect(html).toContain("hello-world");
   });
 
+  it("deduplicates argument-bearing private cache calls within a request", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/use-cache-private-args");
+
+    expect(res.status).toBe(200);
+    expect(textContentByTestId(html, "first")).toBe(textContentByTestId(html, "second"));
+  });
+
   // Ported from Next.js: test/e2e/app-dir/cache-components/cache-components.params.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components/cache-components.params.test.ts
   it("renders pages with params named then, catch, finally, and status", async () => {

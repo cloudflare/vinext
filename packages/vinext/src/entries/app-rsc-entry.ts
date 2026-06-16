@@ -67,6 +67,7 @@ const appRscRouteMatchingPath = resolveEntryPath(
   import.meta.url,
 );
 const rscStreamHintsPath = resolveEntryPath("../server/rsc-stream-hints.js", import.meta.url);
+const appRscRuntimePath = resolveEntryPath("../server/app-rsc-runtime.js", import.meta.url);
 const isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 const thenableParamsShimPath = resolveEntryPath("../shims/thenable-params.js", import.meta.url);
 const appPageElementBuilderPath = resolveEntryPath(
@@ -177,6 +178,8 @@ type AppRouterConfig = {
   publicFiles?: string[];
   /** Server-only token used to validate the draft-mode bypass cookie. */
   draftModeSecret?: string;
+  /** Use the focused server-only React bridge during development. */
+  serverOnlyRscRuntime?: boolean;
 };
 
 /**
@@ -217,6 +220,9 @@ export function generateRscEntry(
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
   const draftModeSecret = config?.draftModeSecret ?? randomUUID();
+  const rscRuntimeSpecifier = config?.serverOnlyRscRuntime
+    ? JSON.stringify(appRscRuntimePath)
+    : '"@vitejs/plugin-rsc/rsc"';
   const manifestCode = buildAppRscManifestCode({
     routes,
     metadataRoutes,
@@ -254,7 +260,7 @@ import {
   decodeReply,
   loadServerAction,
   createTemporaryReferenceSet,
-} from "@vitejs/plugin-rsc/rsc";
+} from ${rscRuntimeSpecifier};
 import { createClientManifest as _createClientManifest } from "@vitejs/plugin-rsc/core/rsc";
 import { prerender as _prerender } from "@vitejs/plugin-rsc/vendor/react-server-dom/static.edge";
 import { createRscPrerenderer, createRscRenderer } from ${JSON.stringify(rscStreamHintsPath)};
