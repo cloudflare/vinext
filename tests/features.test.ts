@@ -4134,6 +4134,97 @@ describe("production server compression", () => {
     // PNG should not be compressed
     expect(writtenHeaders["Content-Encoding"]).toBeUndefined();
   });
+
+  it("sendCompressed omits the body for HEAD on a compressible response", async () => {
+    const { sendCompressed } = await import("../packages/vinext/src/server/prod-server.js");
+    const body = "<html>" + "x".repeat(2000) + "</html>";
+    const req = { method: "HEAD", headers: { "accept-encoding": "gzip" } };
+
+    const chunks: Buffer[] = [];
+    let writtenStatus = 0;
+    let writtenHeaders: Record<string, string> = {};
+    let ended = false;
+    const res = {
+      writeHead: (status: number, headers: Record<string, string>) => {
+        writtenStatus = status;
+        writtenHeaders = headers;
+      },
+      write: (chunk: Buffer) => {
+        chunks.push(chunk);
+        return true;
+      },
+      end: (chunk?: Buffer) => {
+        if (chunk) chunks.push(chunk);
+        ended = true;
+      },
+      on: () => {},
+      once: () => {},
+      emit: () => false,
+      removeListener: () => {},
+    };
+
+    sendCompressed(req as any, res as any, body, "text/html", 200, {}, true);
+
+    expect(writtenStatus).toBe(200);
+    // Headers match what a GET would send (negotiated compression announced)…
+    expect(writtenHeaders["Content-Encoding"]).toBe("gzip");
+    expect(writtenHeaders["Vary"]).toBe("Accept-Encoding");
+    // …but no body is written and the compressor is never spun up.
+    expect(ended).toBe(true);
+    expect(chunks).toEqual([]);
+  });
+
+  it("sendCompressed omits the body for HEAD but keeps Content-Length (uncompressed)", async () => {
+    const { sendCompressed } = await import("../packages/vinext/src/server/prod-server.js");
+    const body = "<html>" + "x".repeat(2000) + "</html>";
+    const req = { method: "HEAD", headers: {} };
+
+    const chunks: Buffer[] = [];
+    let writtenHeaders: Record<string, string> = {};
+    const res = {
+      writeHead: (_status: number, headers: Record<string, string>) => {
+        writtenHeaders = headers;
+      },
+      write: (chunk: Buffer) => {
+        chunks.push(chunk);
+        return true;
+      },
+      end: (chunk?: Buffer) => {
+        if (chunk) chunks.push(chunk);
+      },
+    };
+
+    // compress=false → uncompressed branch; HEAD → no body.
+    sendCompressed(req as any, res as any, body, "text/html", 200, {}, false);
+
+    // Content-Length still reflects the full GET body size (RFC 9110)…
+    expect(writtenHeaders["Content-Length"]).toBe(String(Buffer.byteLength(body)));
+    // …but the body itself is not sent.
+    expect(chunks).toEqual([]);
+  });
+
+  it("sendCompressed writes the full body for non-HEAD requests", async () => {
+    const { sendCompressed } = await import("../packages/vinext/src/server/prod-server.js");
+    const body = '{"ok":true}';
+    const req = { method: "GET", headers: {} };
+
+    const chunks: Buffer[] = [];
+    const res = {
+      writeHead: () => {},
+      write: (chunk: Buffer) => {
+        chunks.push(chunk);
+        return true;
+      },
+      end: (chunk?: Buffer) => {
+        if (chunk) chunks.push(chunk);
+      },
+    };
+
+    // The HEAD guard must not over-trigger: a GET still gets the full body.
+    sendCompressed(req as any, res as any, body, "application/octet-stream", 200, {}, false);
+
+    expect(Buffer.concat(chunks).toString()).toBe(body);
+  });
 });
 
 describe("Set-Cookie header preservation in prod-server", () => {

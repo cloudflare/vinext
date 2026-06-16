@@ -469,7 +469,6 @@ function sendCompressed(
   };
 
   if (encoding && COMPRESSIBLE_TYPES.has(baseType) && buf.length >= COMPRESS_THRESHOLD) {
-    const compressor = createCompressor(encoding);
     // Merge Accept-Encoding into existing Vary header from extraHeaders instead
     // of overwriting. Preserves Vary values set by the App Router for content
     // negotiation (e.g. "RSC, Accept").
@@ -490,6 +489,14 @@ function sendCompressed(
       "Content-Encoding": encoding,
       Vary: varyValue,
     });
+    // HEAD (RFC 9110): emit headers only, no body. Mirrors sendWebResponse.
+    // Returning here also avoids spinning up a compressor for a payload Node
+    // would discard anyway (HEAD bodies are dropped at the socket level).
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+    const compressor = createCompressor(encoding);
     compressor.end(buf);
     pipeline(compressor, res, () => {
       /* ignore pipeline errors on closed connections */
@@ -500,6 +507,11 @@ function sendCompressed(
       "Content-Type": contentType,
       "Content-Length": String(buf.length),
     });
+    // HEAD (RFC 9110): emit headers only, no body. Mirrors sendWebResponse.
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
     res.end(buf);
   }
 }
