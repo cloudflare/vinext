@@ -64,9 +64,10 @@ export function createClientAssetFileNames(assetsDir: string) {
  * (node_modules/.pnpm/pkg@ver/node_modules/pkg).
  */
 function getPackageName(id: string): string | null {
-  const nmIdx = id.lastIndexOf("node_modules/");
+  const normalizedId = id.replaceAll("\\", "/");
+  const nmIdx = normalizedId.lastIndexOf("node_modules/");
   if (nmIdx === -1) return null;
-  const rest = id.slice(nmIdx + "node_modules/".length);
+  const rest = normalizedId.slice(nmIdx + "node_modules/".length);
   if (rest.startsWith("@")) {
     // Scoped package: @org/pkg
     const parts = rest.split("/");

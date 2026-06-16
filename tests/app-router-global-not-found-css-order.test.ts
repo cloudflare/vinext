@@ -74,6 +74,7 @@ describe("App Router: global-not-found CSS order (production, #1549)", () => {
   const clientDir = path.join(distDir, "client");
   let previewServer: Awaited<ReturnType<typeof preview>>;
   let baseUrl: string;
+  let startupImportValidated = false;
 
   beforeAll(async () => {
     const builder = await createBuilder({
@@ -86,6 +87,9 @@ describe("App Router: global-not-found CSS order (production, #1549)", () => {
   }, 120_000);
 
   async function startPreviewServer(): Promise<void> {
+    if (!startupImportValidated) {
+      throw new Error("The direct RSC entry import assertion must run before preview startup");
+    }
     if (previewServer) return;
     previewServer = await preview({
       root: FIXTURE_DIR,
@@ -109,6 +113,7 @@ describe("App Router: global-not-found CSS order (production, #1549)", () => {
     entryUrl.searchParams.set("test", String(Date.now()));
 
     await expect(import(entryUrl.href)).resolves.toBeDefined();
+    startupImportValidated = true;
   });
 
   it("matched routes serve the root layout's CSS (green wins)", async () => {
