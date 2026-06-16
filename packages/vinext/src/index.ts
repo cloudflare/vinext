@@ -843,11 +843,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const shimsDir = path.resolve(__dirname, "shims");
 
   // Shared with the Layer 2 renderChunk hook below. Rolldown stores module
-  // IDs as canonicalized filesystem paths (fs.realpathSync.native), so we must
-  // canonicalize anything we hand to the classifier and anything we ask the
-  // module graph for. The shim files exist in the vinext package before plugin
-  // init, so realpath is safe to evaluate eagerly.
-  const canonicalize = (p: string): string => tryRealpathSync(p) ?? p;
+  // IDs as canonicalized filesystem paths (fs.realpathSync.native) with forward
+  // slashes, so we must canonicalize anything we hand to the classifier and
+  // anything we ask the module graph for — including the separator
+  // normalization, since realpathSync.native keeps backslashes on Windows. The
+  // shim files exist in the vinext package before plugin init, so realpath is
+  // safe to evaluate eagerly.
+  const canonicalize = (p: string): string => normalizePathSeparators(tryRealpathSync(p) ?? p);
   const pageTransformCanonicalPaths = new Map<string, string>();
   const canonicalizePageTransformPath = (modulePath: string): string => {
     const cached = pageTransformCanonicalPaths.get(modulePath);
