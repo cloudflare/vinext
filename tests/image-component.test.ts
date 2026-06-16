@@ -179,7 +179,12 @@ describe("Image SSR rendering", () => {
       }),
     );
     expect(html).toContain('sizes="(max-width: 768px) 100vw, 50vw"');
+    // With `sizes`, emit a w-descriptor srcSet of allowed widths filtered by the
+    // minimum vw percentage (Next.js-style), and use the largest candidate as src.
     expect(html).toContain(`${optUrlHtml("/img.png", 640)} 640w`);
+    expect(html).toContain(`${optUrlHtml("/img.png", 750)} 750w`);
+    expect(html).toContain(`${optUrlHtml("/img.png", 3840)} 3840w`);
+    expect(html).toContain(`src="${optUrlHtml("/img.png", 3840)}"`);
     expect(html).not.toContain(`${optUrlHtml("/img.png", 640)} 1x`);
   });
 
@@ -366,6 +371,30 @@ describe("Image srcSet generation", () => {
     // Fill mode: no srcSet (srcSet is only for local non-fill images with width)
     expect(html).not.toContain("srcSet");
   });
+
+  // Regression for issue #1966 — port of Next.js
+  // test/unit/next-image-get-img-props.test.ts (width:100, height:200, no sizes).
+  // A fixed-size image with no `sizes` must emit a 1x/2x x-descriptor srcSet and
+  // leave `sizes` undefined. A w-descriptor srcSet with no `sizes` defaults to
+  // sizes=100vw per the HTML spec, which over-fetches a viewport-sized image.
+  it("emits a 1x/2x x-descriptor srcSet and no sizes for fixed images (#1966)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "fixed",
+        src: "/fixed.png",
+        width: 100,
+        height: 200,
+      }),
+    );
+    // [100, 200] quantized up against allSizes → [128, 256], emitted as 1x / 2x.
+    expect(html).toContain(
+      `srcSet="${optUrlHtml("/fixed.png", 128)} 1x, ${optUrlHtml("/fixed.png", 256)} 2x"`,
+    );
+    // Fallback src uses the largest candidate (256) — always an allowed width.
+    expect(html).toContain(`src="${optUrlHtml("/fixed.png", 256)}"`);
+    // No `sizes` attribute (it must NOT default to 100vw for fixed images).
+    expect(html).not.toContain("sizes=");
+  });
 });
 
 // ─── getImageProps ──────────────────────────────────────────────────────
@@ -507,10 +536,26 @@ describe("getImageProps", () => {
       height: 600,
     });
 
-    expect(props.srcSet).toBeDefined();
-    expect(props.srcSet).toContain("/_next/image");
-    expect(props.srcSet).toContain("photo.png");
-    expect(props.srcSet).toContain("w");
+    // No `sizes` + numeric width → x-descriptor srcSet ([800, 1600] → [828, 1920]).
+    expect(props.srcSet).toBe(`${optUrl("/photo.png", 828)} 1x, ${optUrl("/photo.png", 1920)} 2x`);
+  });
+
+  it("generates w-descriptor srcSet when sizes is provided", () => {
+    const { props } = getImageProps({
+      alt: "sized",
+      src: "/photo.png",
+      width: 500,
+      height: 300,
+      sizes: "(max-width: 768px) 100vw, 50vw",
+    });
+
+    // With `sizes` → w-descriptor srcSet of allowed widths (minimum vw threshold).
+    // Fallback `src` is the largest candidate (widths[last]).
+    expect(props.srcSet).toContain(`${optUrl("/photo.png", 640)} 640w`);
+    expect(props.srcSet).toContain(`${optUrl("/photo.png", 750)} 750w`);
+    expect(props.srcSet).toContain(`${optUrl("/photo.png", 3840)} 3840w`);
+    expect(props.src).toBe(optUrl("/photo.png", 3840));
+    expect(props.sizes).toBe("(max-width: 768px) 100vw, 50vw");
   });
 
   it("handles loading=eager prop", () => {
