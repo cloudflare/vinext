@@ -558,6 +558,11 @@ describe("optimizeDeps.exclude for vinext", () => {
 
       const ssrExclude = result.environments?.ssr?.optimizeDeps?.exclude ?? [];
       expect(ssrExclude).toContain("ipaddr.js");
+      expect(
+        result.environments?.ssr?.optimizeDeps?.rolldownOptions?.transform?.define?.[
+          "process.env.NODE_ENV"
+        ],
+      ).toBe(JSON.stringify("development"));
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -673,6 +678,14 @@ describe("process.env.NODE_ENV define", () => {
 
       // Should NOT override the user's explicit define
       expect(result.define?.["process.env.NODE_ENV"]).toBeUndefined();
+      expect(
+        result.optimizeDeps?.rolldownOptions?.transform?.define?.["process.env.NODE_ENV"],
+      ).toBe(JSON.stringify("staging"));
+      expect(
+        result.environments?.ssr?.optimizeDeps?.rolldownOptions?.transform?.define?.[
+          "process.env.NODE_ENV"
+        ],
+      ).toBe(JSON.stringify("staging"));
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

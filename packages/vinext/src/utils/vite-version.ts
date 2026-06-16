@@ -9,9 +9,14 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 
+export function serializeViteDefine(value: unknown): string {
+  if (typeof value === "string") return value;
+  return JSON.stringify(value) ?? "undefined";
+}
+
 export function getDepOptimizeNodeEnvOptions(
   viteMajorVersion: number,
-  nodeEnv: string,
+  nodeEnvDefine: string,
 ): {
   rolldownOptions?: {
     transform: {
@@ -26,7 +31,7 @@ export function getDepOptimizeNodeEnvOptions(
   // which also disables its built-in optimizer NODE_ENV replacement. Pin the
   // value explicitly so RSC and SSR dependencies can drop the unused branch.
   const define = {
-    "process.env.NODE_ENV": JSON.stringify(nodeEnv),
+    "process.env.NODE_ENV": nodeEnvDefine,
   };
 
   return viteMajorVersion >= 8
