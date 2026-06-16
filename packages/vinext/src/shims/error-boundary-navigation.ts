@@ -2,6 +2,7 @@ import * as React from "react";
 import { stripBasePath } from "../utils/base-path.js";
 import { getNavigationContext } from "./navigation-server.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
+import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
 
 const CLIENT_NAVIGATION_STATE_KEY = Symbol.for("vinext.clientNavigationState");
 const CLIENT_NAVIGATION_RENDER_CONTEXT_KEY = Symbol.for("vinext.clientNavigationRenderContext");
@@ -51,6 +52,10 @@ function getClientNavigationRenderContext(): React.Context<ClientNavigationRende
 }
 
 export function useErrorBoundaryPathname(): string {
+  if (typeof window === "undefined") {
+    markPprFallbackShellDynamicBoundary();
+  }
+
   const renderSnapshot = React.useContext(getClientNavigationRenderContext());
   const committedPathname = React.useSyncExternalStore(
     subscribeToCommittedPathname,

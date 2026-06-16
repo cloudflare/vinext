@@ -8,6 +8,10 @@ import {
   createClientNavigationRenderSnapshot,
   getClientNavigationRenderContext,
 } from "../packages/vinext/src/shims/navigation.js";
+import {
+  createPprFallbackShellState,
+  runWithPprFallbackShellState,
+} from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 
 const CLIENT_NAVIGATION_STATE_KEY = Symbol.for("vinext.clientNavigationState");
 
@@ -30,6 +34,28 @@ describe("lightweight App Router SSR runtime", () => {
     }
 
     expect(renderToString(createElement(PathnameProbe))).toContain("/dashboard");
+  });
+
+  it("marks pathname reads as dynamic in fallback shells with unresolved params", () => {
+    setNavigationContext({
+      pathname: "/blog/[slug]",
+      searchParams: new URLSearchParams(),
+      params: { slug: "[slug]" },
+    });
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/blog/:slug",
+    });
+
+    function PathnameProbe() {
+      return createElement("span", null, useErrorBoundaryPathname());
+    }
+
+    runWithPprFallbackShellState(state, () => {
+      renderToString(createElement(PathnameProbe));
+    });
+
+    expect(state.hasDynamicBoundary).toBe(true);
   });
 
   it("reads the pending pathname while a navigation render snapshot is active", () => {
