@@ -65,6 +65,7 @@ import type { MiddlewareModule } from "./middleware-runtime.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import {
   cloneRequestWithHeaders,
@@ -79,7 +80,6 @@ import {
   readTrustedPrerenderRouteParams,
   serializePrerenderRouteParamsHeader,
 } from "./prerender-route-params.js";
-import { createAppPprFallbackShells } from "./app-ppr-fallback-shell.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -896,21 +896,24 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const isPrerenderFallbackShell = prerenderRouteParamsMatch?.kind === "fallback-shell";
   const renderParams = prerenderRouteParams ?? params;
   const resolvedSearchParams = getResolvedSearchParams();
-  const runtimeFallbackShells =
+  let runtimeFallbackShells: AppPagePprFallbackCacheShell[] = [];
+  if (
     options.cacheComponents === true &&
     request.method === "GET" &&
     !isRscRequest &&
     !isPrerenderFallbackShell &&
     route.params
-      ? createAppPprFallbackShells(
-          {
-            params: route.params,
-            pattern: route.pattern,
-            rootParamNames: route.rootParamNames,
-          },
-          params,
-        )
-      : [];
+  ) {
+    const { createAppPprFallbackShells } = await import("./app-ppr-fallback-shell.js");
+    runtimeFallbackShells = createAppPprFallbackShells(
+      {
+        params: route.params,
+        pattern: route.pattern,
+        rootParamNames: route.rootParamNames,
+      },
+      params,
+    );
+  }
   options.setNavigationContext({
     pathname: canonicalPathname,
     searchParams: resolvedSearchParams,

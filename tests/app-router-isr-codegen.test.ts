@@ -181,9 +181,12 @@ describe("generateRscEntry ISR code generation", () => {
   it("generated code exposes prerender cache seeding from the RSC module graph", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
 
-    expect(code).toContain("seedMemoryCacheFromPrerender as __seedMemoryCacheFromPrerender");
+    expect(code).toMatch(/await import\("[^"]*seed-cache\.js"\)/);
+    expect(code).not.toMatch(
+      /import \{\s*seedMemoryCacheFromPrerender as __seedMemoryCacheFromPrerender/,
+    );
     expect(code).toContain("isrSetPrerenderedAppPage as __isrSetPrerenderedAppPage");
-    expect(code).toContain("export function seedMemoryCacheFromPrerender(serverDir)");
+    expect(code).toContain("export async function seedMemoryCacheFromPrerender(serverDir)");
     expect(code).toContain("buildAppPageHtmlKey(pathname)");
     expect(code).toContain("return __isrHtmlKey(pathname)");
     expect(code).toContain("buildAppPageRscKey(pathname)");

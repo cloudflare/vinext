@@ -9,7 +9,7 @@ import { hasDigest } from "./app-rsc-errors.js";
 import {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
-} from "./app-page-cache.js";
+} from "./app-page-cache-finalizer.js";
 import {
   buildAppPageFontLinkHeader,
   readAppPageBinaryStream,

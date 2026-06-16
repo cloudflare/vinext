@@ -361,7 +361,6 @@ import { clearAppRequestContext as __clearRequestContext, setAppNavigationContex
 __configureMemoryCacheHandler({ cacheMaxMemorySize: ${JSON.stringify(cacheMaxMemorySize)} });
 import { createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver } from ${JSON.stringify(appPrerenderStaticParamsPath)};
 import { ensureAppRouteModulesLoaded as __ensureRouteLoaded } from ${JSON.stringify(appRouteModuleLoaderPath)};
-import { seedMemoryCacheFromPrerender as __seedMemoryCacheFromPrerender } from ${JSON.stringify(seedCachePath)};
 import {
   getRenderedConcreteUrlPathsForRoute as __getRenderedConcreteUrlPathsForRoute,
   initPregeneratedPathsFromGlobals as __initPregeneratedPathsFromGlobals,
@@ -577,7 +576,9 @@ export const __hasPagesDir = ${JSON.stringify(hasPagesDir)};
 export const getRenderedConcreteUrlPathsForRoute = __getRenderedConcreteUrlPathsForRoute;
 const __cacheComponents = ${JSON.stringify(cacheComponents)};
 
-export function seedMemoryCacheFromPrerender(serverDir) {
+export async function seedMemoryCacheFromPrerender(serverDir) {
+  const { seedMemoryCacheFromPrerender: __seedMemoryCacheFromPrerender } =
+    await import(${JSON.stringify(seedCachePath)});
   return __seedMemoryCacheFromPrerender(serverDir, {
     buildAppPageHtmlKey(pathname) {
       return __isrHtmlKey(pathname);
