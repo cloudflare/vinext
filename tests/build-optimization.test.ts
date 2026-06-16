@@ -2824,8 +2824,12 @@ describe("createRscFrameworkChunkOutputConfig", () => {
     ).manualChunks;
     const moduleInfo = new Map([
       ["/app/src/entry.js", { importers: [], isEntry: true }],
+      ["/app/src/middleman.js", { importers: ["/app/src/entry.js"], isEntry: false }],
       ["/app/src/lazy.js", { importers: [], isEntry: false }],
-      ["/app/node_modules/react/index.js", { importers: ["/app/src/entry.js"], isEntry: false }],
+      [
+        "/app/node_modules/react/index.js",
+        { importers: ["/app/src/middleman.js"], isEntry: false },
+      ],
       [
         "/app/node_modules/react-server-dom-webpack/client.js",
         { importers: ["/app/src/entry.js"], isEntry: false },
