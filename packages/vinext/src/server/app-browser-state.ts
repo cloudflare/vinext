@@ -33,6 +33,7 @@ import {
   type OperationToken,
   type RouteSnapshot,
 } from "./navigation-planner.js";
+import { verifyOperationTokenForCommit, type VerifiedOperationToken } from "./operation-token.js";
 import {
   createSnapshotPathAndSearch,
   type ClientNavigationRenderSnapshot,
@@ -511,18 +512,29 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
   targetHref?: string;
 }): PendingNavigationCommitDispositionDecision {
   const traceFields = createPendingNavigationTraceFields(options);
+  const targetSnapshot = createPendingRouteSnapshot(options.pending);
+  const token = createPendingNavigationOperationToken({
+    pending: options.pending,
+    routeManifest: options.routeManifest ?? null,
+    startedNavigationId: options.startedNavigationId,
+    targetSnapshot,
+  });
 
-  if (
-    options.startedNavigationId !== options.activeNavigationId ||
-    options.pending.action.operation.startedVisibleCommitVersion !==
-      options.currentState.visibleCommitVersion
-  ) {
-    // staleOperation — the navigation that created `pending` started from a
-    // different visibleCommitVersion than the current state. This happens when
-    // a synchronous history snapshot restore (restoreHistoryStateSnapshot, see
+  // OperationToken is the single eligibility authority for commit approval: a
+  // result may enter commit approval only if its token proves it belongs to the
+  // active navigation and the visible commit version it started from is still
+  // current. The token verifies; ApprovedVisibleCommit (downstream) mutates.
+  const verdict = verifyOperationTokenForCommit(token, {
+    activeNavigationId: options.activeNavigationId,
+    visibleCommitVersion: options.currentState.visibleCommitVersion,
+  });
+  if (!verdict.authorized) {
+    // staleOperation — the navigation that created `pending` was superseded, or
+    // visible state advanced after it started. The latter happens when a
+    // synchronous history snapshot restore (restoreHistoryStateSnapshot, see
     // app-browser-entry.ts popstate handler) bumps visibleCommitVersion before
-    // an in-flight async RSC traverse resolves. The snapshot restore is the
-    // authoritative commit; the stale async payload is intentionally discarded.
+    // an in-flight async RSC traverse resolves. The authoritative commit wins;
+    // the stale async payload is intentionally discarded.
     return {
       disposition: "skip",
       preserveElementIds: [],
@@ -536,6 +548,8 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
       pending: options.pending,
       routeManifest: options.routeManifest ?? null,
       targetHref: options.targetHref,
+      targetSnapshot,
+      token: verdict.token,
       traceFields,
     }),
   );
@@ -631,6 +645,7 @@ function createPendingRouteSnapshot(pending: PendingNavigationCommit): RouteSnap
 function createPendingNavigationOperationToken(options: {
   pending: PendingNavigationCommit;
   routeManifest: RouteManifest | null;
+  startedNavigationId: number;
   targetSnapshot: RouteSnapshot;
 }): OperationToken {
   return {
@@ -638,6 +653,10 @@ function createPendingNavigationOperationToken(options: {
     deploymentVersion: null,
     graphVersion: options.routeManifest?.graphVersion ?? null,
     lane: options.pending.action.operation.lane,
+    // The lifecycle navigation id the operation started under. operationId
+    // (renderId) cannot answer "belongs to the active navigation?" because it is
+    // a per-render counter; navigationId carries that lifecycle authority.
+    navigationId: options.startedNavigationId,
     operationId: options.pending.action.operation.id,
     targetSnapshotFingerprint: createRootBoundarySnapshotFingerprint(options.targetSnapshot),
   };
@@ -652,14 +671,14 @@ function planPendingRootBoundaryFlightResponse(options: {
   pending: PendingNavigationCommit;
   routeManifest: RouteManifest | null;
   targetHref?: string;
+  // The token has already passed commit eligibility (verifyOperationTokenForCommit)
+  // in the disposition gate above. Requiring the verified brand here makes that
+  // ordering a compile-time guarantee: the planner cannot be reached with an
+  // unverified token.
+  token: VerifiedOperationToken;
+  targetSnapshot: RouteSnapshot;
   traceFields: NavigationTraceFields;
 }): NavigationDecision {
-  const targetSnapshot = createPendingRouteSnapshot(options.pending);
-  const token = createPendingNavigationOperationToken({
-    pending: options.pending,
-    routeManifest: options.routeManifest,
-    targetSnapshot,
-  });
   const cacheEntryReuseProof = options.pending.cacheEntryReuseProof;
 
   // #726-CORE-07/08 keeps the browser state layer as the lifecycle gate and
@@ -669,7 +688,7 @@ function planPendingRootBoundaryFlightResponse(options: {
   return navigationPlanner.plan({
     routeManifest: options.routeManifest,
     state: {
-      nextOperationToken: token,
+      nextOperationToken: options.token,
       traceFields: options.traceFields,
       visibleCommitVersion: options.currentState.visibleCommitVersion,
       visibleSnapshot: createVisibleRouteSnapshot(options.currentState),
@@ -682,10 +701,10 @@ function planPendingRootBoundaryFlightResponse(options: {
         // planner trace and future hard-nav executor agree with the browser
         // URL. The fallback remains for lower-level tests and direct disposition
         // callers that exercise only snapshot-derived planner semantics.
-        href: options.targetHref ?? targetSnapshot.displayUrl,
-        targetSnapshot,
+        href: options.targetHref ?? options.targetSnapshot.displayUrl,
+        targetSnapshot: options.targetSnapshot,
       },
-      token,
+      token: options.token,
     },
   });
 }

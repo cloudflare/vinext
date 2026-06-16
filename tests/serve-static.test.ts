@@ -778,6 +778,54 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
   });
 
+  it("slow path returns 304 for managed image with matching dot-hash ETag", async () => {
+    await writeFile(clientDir, "_next/static/media/photo.0123abcd.png", "image content");
+
+    const req = mockReq(undefined, { "if-none-match": 'W/"0123abcd"' });
+    const { res, captured } = mockRes();
+
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/_next/static/media/photo.0123abcd.png",
+      false,
+    );
+
+    await captured.ended;
+    expect(served).toBe(true);
+    expect(captured.status).toBe(304);
+    expect(captured.body.length).toBe(0);
+    expect(captured.headers["ETag"]).toBe('W/"0123abcd"');
+    expect(captured.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
+  });
+
+  it("slow path does not reuse dot-hash ETags for arbitrary static files", async () => {
+    const relativePath = "_next/static/config.deadbeef.json";
+    await writeFile(clientDir, relativePath, '{"version":1}');
+
+    const firstReq = mockReq();
+    const { res: firstRes, captured: firstCaptured } = mockRes();
+    await tryServeStatic(firstReq, firstRes, clientDir, `/${relativePath}`, false);
+    await firstCaptured.ended;
+
+    const firstEtag = firstCaptured.headers["ETag"] as string;
+    expect(firstCaptured.status).toBe(200);
+    expect(firstCaptured.body.toString()).toBe('{"version":1}');
+    expect(firstEtag).not.toBe('W/"deadbeef"');
+
+    await writeFile(clientDir, relativePath, '{"version":200}');
+
+    const secondReq = mockReq(undefined, { "if-none-match": firstEtag });
+    const { res: secondRes, captured: secondCaptured } = mockRes();
+    await tryServeStatic(secondReq, secondRes, clientDir, `/${relativePath}`, false);
+    await secondCaptured.ended;
+
+    expect(secondCaptured.status).toBe(200);
+    expect(secondCaptured.body.toString()).toBe('{"version":200}');
+    expect(secondCaptured.headers["ETag"]).not.toBe(firstEtag);
+  });
+
   it("slow path returns 200 when ETag does not match", async () => {
     await writeFile(clientDir, "_next/static/etag-slow-miss-xyz999.js", "fresh content");
 

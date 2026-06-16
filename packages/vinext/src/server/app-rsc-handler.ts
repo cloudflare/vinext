@@ -32,7 +32,7 @@ import {
 import { pickRootParams, setRootParams, type RootParams } from "vinext/shims/root-params";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
 import { flattenErrorCauses } from "../utils/error-cause.js";
-import { hasBasePath } from "../utils/base-path.js";
+import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { mergeRewriteQuery } from "../utils/query.js";
 import { applyAppMiddleware, type AppMiddlewareContext } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
@@ -47,6 +47,7 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { finalizeAppRscResponse } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
+import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
@@ -233,10 +234,12 @@ type RenderNotFoundOptions<TRoute> = {
 type RenderPagesFallbackOptions = {
   allowRscDocumentFallback?: boolean;
   appRouteMatch?: { route: { isDynamic: boolean; pattern: string } } | null;
+  isDataRequest?: boolean;
   isRscRequest: boolean;
   matchKind?: "dynamic" | "static";
   middlewareContext: AppRscMiddlewareContext;
   pathname?: string;
+  pagesDataRequest?: Request | null;
   request: Request;
   url: URL;
 };
@@ -249,6 +252,7 @@ type NavigationContextValue = {
 
 type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   basePath: string;
+  buildId: string | null;
   cacheComponents?: boolean;
   clearRequestContext: () => void;
   configHeaders: NextHeader[];
@@ -445,6 +449,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   request: Request,
   preMiddlewareRequestContext: RequestContext,
   isDataRequest: boolean,
+  pagesDataRequest: Request | null,
 ): Promise<Response> {
   const handlerStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
 
@@ -466,6 +471,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   } = normalized;
   let { pathname, cleanPathname } = normalized;
   let resolvedUrl = cleanPathname + url.search;
+  const originalResolvedUrl = resolvedUrl;
   const getResolvedSearchParams = () => new URL(resolvedUrl, url).searchParams;
   // Canonical (external) pathname the user requested. Middleware rewrites and
   // next.config.js rewrites mutate `cleanPathname` so internal route matching
@@ -533,6 +539,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       isRscRequest && request.headers.get(RSC_HEADER) === "1"
         ? await createRscRedirectLocation(destination, request)
         : preserveRedirectDestinationQuery(destination, url.search);
+    if (isDataRequest) {
+      return new Response(null, {
+        status: 200,
+        headers: { "x-nextjs-redirect": location },
+      });
+    }
     return new Response(null, {
       status: redirect.permanent ? 308 : 307,
       headers: { Location: location },
@@ -728,19 +740,32 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   let match = preActionMatch;
   const renderPagesForMatchKind = async (
     matchKind: "dynamic" | "static",
-  ): Promise<Response | null> =>
-    match === null || match.route.isDynamic
-      ? ((await options.renderPagesFallback?.({
-          appRouteMatch: match ?? null,
-          allowRscDocumentFallback: didMiddlewareRewrite,
-          isRscRequest,
-          matchKind,
-          middlewareContext,
-          pathname: resolvedUrl,
-          request,
-          url,
-        })) ?? null)
-      : null;
+  ): Promise<Response | null> => {
+    const response =
+      match === null || match.route.isDynamic
+        ? ((await options.renderPagesFallback?.({
+            appRouteMatch: match ?? null,
+            allowRscDocumentFallback: didMiddlewareRewrite,
+            isDataRequest,
+            isRscRequest,
+            matchKind,
+            middlewareContext,
+            pathname: resolvedUrl,
+            pagesDataRequest,
+            request,
+            url,
+          })) ?? null)
+        : null;
+    if (!response || !pagesDataRequest || resolvedUrl === originalResolvedUrl) return response;
+
+    const headers = new Headers(response.headers);
+    headers.set("x-nextjs-rewrite", resolvedUrl);
+    return new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  };
   const staticPagesFallbackResponse = await renderPagesForMatchKind("static");
   if (staticPagesFallbackResponse) {
     options.clearRequestContext();
@@ -822,6 +847,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       }
       if (match) break;
     }
+  }
+
+  if (pagesDataRequest) {
+    options.clearRequestContext();
+    return buildNextDataNotFoundResponse();
   }
 
   if (!match) {
@@ -1043,7 +1073,24 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     // Capture `x-nextjs-data` before filtering — the middleware redirect
     // protocol needs to know whether the inbound request was a `_next/data`
     // fetch to emit `x-nextjs-redirect` instead of an HTTP redirect.
-    const isDataRequest = rawRequest.headers.get("x-nextjs-data") === "1";
+    const hasDataRequestHeader = rawRequest.headers.get("x-nextjs-data") === "1";
+    const pagesDataUrl = new URL(rawRequest.url);
+    const pagesDataInScope =
+      !options.basePath || hasBasePath(pagesDataUrl.pathname, options.basePath);
+    if (pagesDataInScope) {
+      pagesDataUrl.pathname = stripBasePath(pagesDataUrl.pathname, options.basePath);
+    }
+    const pagesDataCandidate = pagesDataInScope
+      ? cloneRequestWithUrl(rawRequest, pagesDataUrl.toString())
+      : null;
+    const pagesDataNormalization =
+      options.renderPagesFallback && pagesDataCandidate
+        ? normalizePagesDataRequest(pagesDataCandidate, options.buildId)
+        : null;
+    if (pagesDataNormalization?.notFoundResponse) {
+      return pagesDataNormalization.notFoundResponse;
+    }
+    const isDataRequest = hasDataRequestHeader || pagesDataNormalization?.isDataReq === true;
     // Read the trusted prerender route params before filtering strips the
     // route-params header (it IS in VINEXT_INTERNAL_HEADERS), then re-attach the
     // validated value below so the second read in handleAppRscRequest still sees
@@ -1063,7 +1110,16 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     if (prerenderRouteParamsHeader !== null) {
       filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
     }
-    const request = cloneRequestWithHeaders(rawRequest, filteredHeaders);
+    let appRequest = rawRequest;
+    if (pagesDataNormalization?.isDataReq) {
+      const appRequestUrl = new URL(pagesDataNormalization.request.url);
+      appRequestUrl.pathname = addBasePathToPathname(appRequestUrl.pathname, options.basePath);
+      appRequest = cloneRequestWithUrl(pagesDataCandidate!, appRequestUrl.toString());
+    }
+    const request = cloneRequestWithHeaders(appRequest, filteredHeaders);
+    const pagesDataRequest = pagesDataNormalization?.isDataReq
+      ? cloneRequestWithHeaders(pagesDataCandidate!, filteredHeaders)
+      : null;
 
     const executionContext = isExecutionContextLike(ctx)
       ? ctx
@@ -1090,6 +1146,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
               request,
               preMiddlewareRequestContext,
               isDataRequest,
+              pagesDataRequest,
             );
           } catch (error) {
             if (process.env.NODE_ENV !== "production") {

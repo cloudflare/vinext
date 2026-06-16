@@ -1974,6 +1974,10 @@ const _appRouter: AppRouterInstance = {
   push(href: string, options?: { scroll?: boolean }): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
+    // An imperative navigation supersedes any <Link>-owned pending state.
+    // Clear it before entering the navigation transition so React does not
+    // defer the idle update behind the suspended destination render.
+    getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
     const releaseNavigation = trackScheduledAppRouterNavigation();
     try {
       React.startTransition(() => {
@@ -1988,6 +1992,7 @@ const _appRouter: AppRouterInstance = {
   replace(href: string, options?: { scroll?: boolean }): void {
     assertSafeNavigationUrl(href);
     if (isServer) return;
+    getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
     const releaseNavigation = trackScheduledAppRouterNavigation();
     try {
       React.startTransition(() => {

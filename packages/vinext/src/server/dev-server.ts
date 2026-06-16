@@ -58,6 +58,7 @@ import {
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
+import { createPagesDevModuleUrl } from "./pages-dev-module-url.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import {
   loadUserDocumentInitialProps,
@@ -207,6 +208,8 @@ async function streamPageToResponse(
      * into `getSSRHeadHTML()`'s output. Called before `getHeadHTML()`.
      */
     setDocumentInitialHead?: (head: React.ReactNode[]) => void;
+    /** Buffer the body before writing headers so error-page fallback remains safe. */
+    bufferBodyBeforeHeaders?: boolean;
   },
 ): Promise<void> {
   const {
@@ -222,6 +225,7 @@ async function streamPageToResponse(
     scriptNonce,
     documentContext,
     setDocumentInitialHead,
+    bufferBodyBeforeHeaders = false,
   } = options;
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
@@ -259,7 +263,7 @@ async function streamPageToResponse(
   // Fold any head tags returned by `_document.getInitialProps()` into the same
   // dedupe pipeline as user `next/head` tags. Matches Next.js's `_document`
   // contract. `runDocumentRenderPage` already invokes `getInitialProps` for the
-  // renderPage contract (rendered/consumed), so reuse the head it surfaced
+  // renderPage contract, so reuse the head it surfaced
   // rather than calling it a second time. Only the `skipped` path (no override,
   // or no `enhancePageElement` wired) falls back to the standalone helper, which
   // itself skips the unmodified default from vinext's `next/document` shim —
@@ -283,8 +287,8 @@ async function streamPageToResponse(
   let shellTemplate: string;
 
   if (DocumentComponent) {
-    // When the renderPage path already invoked getInitialProps (rendered or
-    // consumed), reuse its resolved props instead of calling it a second time.
+    // When the renderPage path already invoked getInitialProps, reuse its
+    // resolved props instead of calling it a second time.
     // `skipped` means it was never invoked → fall through to the fast path.
     const docProps =
       documentRenderPage.status === "skipped"
@@ -328,6 +332,7 @@ async function streamPageToResponse(
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
   const prefix = transformedShell.slice(0, markerIdx);
   const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
+  const bufferedBody = bufferBodyBeforeHeaders ? await new Response(bodyStream).text() : null;
 
   // Send headers and start streaming.
   // Set array-valued headers (e.g. Set-Cookie from gSSP) via setHeader()
@@ -350,6 +355,11 @@ async function streamPageToResponse(
 
   // Write the document prefix (head, opening body)
   res.write(prefix);
+
+  if (bufferedBody !== null) {
+    res.end(bufferedBody + suffix);
+    return;
+  }
 
   // Pipe the React body stream through (Suspense content streams progressively)
   const reader = bodyStream.getReader();
@@ -1200,14 +1210,15 @@ export function createSSRHandler(
                       // Rebuild __NEXT_DATA__ with fresh props. The hydration
                       // script (module URLs) is stable across regenerations —
                       // extract it from the cached HTML to avoid duplication.
-                      const viteRoot = server.config?.root;
-                      const regenPageUrl = viteRoot
-                        ? "/" + path.relative(viteRoot, route.filePath)
-                        : route.filePath;
+                      const viteRoot = server.config.root;
+                      const viteBase = server.config.base;
+                      const regenPageUrl = createPagesDevModuleUrl(
+                        viteRoot,
+                        route.filePath,
+                        viteBase,
+                      );
                       const regenAppUrl = RegenApp
-                        ? viteRoot
-                          ? "/" + path.relative(viteRoot, path.join(pagesDir, "_app"))
-                          : path.join(pagesDir, "_app")
+                        ? createPagesDevModuleUrl(viteRoot, path.join(pagesDir, "_app"), viteBase)
                         : null;
                       const freshPagesNextData = {
                         ...pagesNextData,
@@ -1219,18 +1230,20 @@ export function createSSRHandler(
                         },
                       };
 
-                      const freshNextData = `<script>window.__NEXT_DATA__ = ${safeJsonStringify({
-                        props: freshRenderProps,
-                        page: patternToNextFormat(route.pattern),
-                        query: params,
-                        buildId: process.env.__VINEXT_BUILD_ID,
-                        isFallback: false,
-                        locale: locale ?? currentDefaultLocale,
-                        locales: i18nConfig?.locales,
-                        defaultLocale: currentDefaultLocale,
-                        domainLocales,
-                        ...freshPagesNextData,
-                      })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}</script>`;
+                      const freshNextData = `<script id="__NEXT_DATA__" type="application/json">${safeJsonStringify(
+                        {
+                          props: freshRenderProps,
+                          page: patternToNextFormat(route.pattern),
+                          query: params,
+                          buildId: process.env.__VINEXT_BUILD_ID,
+                          isFallback: false,
+                          locale: locale ?? currentDefaultLocale,
+                          locales: i18nConfig?.locales,
+                          defaultLocale: currentDefaultLocale,
+                          domainLocales,
+                          ...freshPagesNextData,
+                        },
+                      )}</script>`;
 
                       const hydrationMatch = cachedHtml.match(
                         /<script type="module">[\s\S]*?<\/script>/,
@@ -1542,11 +1555,18 @@ export function createSSRHandler(
           fontHeadHTML += `<style data-vinext-fonts${nonceAttr}>${allFontStyles.join("\n")}</style>\n  `;
         }
 
-        // Convert absolute file paths to Vite-servable URLs (relative to root)
+        // Convert absolute file paths to Vite-servable URLs under the dev
+        // server's configured base. Vite rejects root-relative module requests
+        // when basePath config sets server.config.base to a non-root pathname.
         const viteRoot = server.config.root;
-        const pageModuleUrl = "/" + path.relative(viteRoot, route.filePath);
+        const viteBase = server.config.base;
+        const pageModuleUrl = createPagesDevModuleUrl(viteRoot, route.filePath, viteBase);
+        const pageModuleSource = createPagesDevModuleUrl(viteRoot, route.filePath, "/");
         const appModuleUrl = AppComponent
-          ? "/" + path.relative(viteRoot, path.join(pagesDir, "_app"))
+          ? createPagesDevModuleUrl(viteRoot, path.join(pagesDir, "_app"), viteBase)
+          : null;
+        const appModuleSource = AppComponent
+          ? createPagesDevModuleUrl(viteRoot, path.join(pagesDir, "_app"), "/")
           : null;
         const serializedPagesNextData = {
           ...pagesNextData,
@@ -1565,14 +1585,22 @@ export function createSSRHandler(
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
-import Router, { wrapWithRouterContext } from "next/router";
+import Router, { wrapWithRouterContext, _initializePagesRouterReadyFromNextData } from "next/router";
 
+const nextDataElement = document.getElementById("__NEXT_DATA__");
+if (nextDataElement?.textContent) {
+  window.__NEXT_DATA__ = JSON.parse(nextDataElement.textContent);
+  window.__VINEXT_LOCALE__ = window.__NEXT_DATA__.locale;
+  window.__VINEXT_LOCALES__ = window.__NEXT_DATA__.locales;
+  window.__VINEXT_DEFAULT_LOCALE__ = window.__NEXT_DATA__.defaultLocale;
+}
 const nextData = window.__NEXT_DATA__;
+_initializePagesRouterReadyFromNextData(nextData);
 const props = nextData.props && typeof nextData.props === "object" ? nextData.props : {};
 const rawPageProps = props.pageProps;
 const pageProps = rawPageProps && typeof rawPageProps === "object" ? rawPageProps : {};
-window.__VINEXT_PAGE_LOADERS__ = { [nextData.page]: () => import("${pageModuleUrl}") };
-window.__VINEXT_APP_LOADER__ = ${appModuleUrl ? `() => import("${appModuleUrl}")` : "undefined"};
+window.__VINEXT_PAGE_LOADERS__ = { [nextData.page]: () => import("${pageModuleSource}") };
+window.__VINEXT_APP_LOADER__ = ${appModuleSource ? `() => import("${appModuleSource}")` : "undefined"};
 
 async function hydrate() {
   let hydrateRootOptions;
@@ -1587,13 +1615,13 @@ async function hydrate() {
     };
   }
 
-  const pageModule = await import("${pageModuleUrl}");
+  const pageModule = await import("${pageModuleSource}");
   const PageComponent = pageModule.default;
   let element;
   ${
-    appModuleUrl
+    appModuleSource
       ? `
-  const appModule = await import("${appModuleUrl}");
+  const appModule = await import("${appModuleSource}");
   const AppComponent = appModule.default;
   window.__VINEXT_APP__ = AppComponent;
   element = React.createElement(AppComponent, {
@@ -1625,8 +1653,8 @@ async function hydrate() {
 hydrate();
 </script>`;
 
-        const nextDataScript = createInlineScriptTag(
-          `window.__NEXT_DATA__ = ${safeJsonStringify({
+        const nextDataScript = `<script id="__NEXT_DATA__" type="application/json"${nonceAttr}>${safeJsonStringify(
+          {
             props: renderProps,
             page: patternToNextFormat(route.pattern),
             query: params,
@@ -1637,9 +1665,8 @@ hydrate();
             defaultLocale: currentDefaultLocale,
             domainLocales,
             ...serializedPagesNextData,
-          })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? currentDefaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(currentDefaultLocale)}` : ""}`,
-          scriptNonce,
-        );
+          },
+        )}</script>`;
 
         // Try to load custom _document.tsx
         const docPath = path.join(pagesDir, "_document");
@@ -1759,6 +1786,7 @@ hydrate();
             typeof headShim.setDocumentInitialHead === "function"
               ? headShim.setDocumentInitialHead
               : undefined,
+          bufferBodyBeforeHeaders: true,
         });
         _renderEnd = now();
 
@@ -1914,24 +1942,7 @@ async function renderErrorPage(
         }
       }
 
-      let element: React.ReactElement;
-      if (AppComponent) {
-        element = createElement(AppComponent, {
-          Component: ErrorComponent,
-          pageProps: errorProps,
-        });
-      } else {
-        element = createElement(ErrorComponent, errorProps);
-      }
-
-      if (wrapFn) {
-        element = wrapFn(element);
-      }
-
-      const bodyHtml = await renderToStringAsync(element);
-
       // Try custom _document
-      let html: string;
       // oxlint-disable-next-line typescript/no-explicit-any
       let DocumentComponent: any = null;
       const docPathErr = path.join(pagesDir, "_document");
@@ -1944,17 +1955,64 @@ async function renderErrorPage(
         }
       }
 
+      const createErrorElement = (
+        // oxlint-disable-next-line typescript/no-explicit-any
+        FinalApp: any,
+        // oxlint-disable-next-line typescript/no-explicit-any
+        FinalComponent: any,
+      ): React.ReactElement => {
+        let errorElement: React.ReactElement = FinalApp
+          ? createElement(FinalApp, {
+              Component: FinalComponent,
+              pageProps: errorProps,
+            })
+          : createElement(FinalComponent, errorProps);
+        if (wrapFn) errorElement = wrapFn(errorElement);
+        return errorElement;
+      };
+
+      const element = createErrorElement(AppComponent, ErrorComponent);
+      const headShim = await importModule(runner, "next/head");
+      if (typeof headShim.resetSSRHead === "function") headShim.resetSSRHead();
+
       if (DocumentComponent) {
-        const docProps = await loadUserDocumentInitialProps(DocumentComponent);
-        const docElement = docProps
-          ? createElement(DocumentComponent, docProps)
-          : createElement(DocumentComponent);
-        let docHtml = await renderToStringAsync(docElement);
-        docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
-        docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", "");
-        html = docHtml;
+        const errorPathname = candidate === "_error" ? "/_error" : `/${candidate}`;
+        await streamPageToResponse(res, element, {
+          url,
+          server,
+          fontHeadHTML: "",
+          scripts: "",
+          DocumentComponent,
+          statusCode,
+          documentContext: {
+            err,
+            pathname: errorPathname,
+            query: parseQuery(url),
+            asPath: url,
+            req,
+            res,
+          },
+          enhancePageElement: (renderPageOpts) => {
+            let FinalApp = AppComponent;
+            let FinalComponent = ErrorComponent;
+            if (renderPageOpts.enhanceApp && FinalApp) {
+              FinalApp = renderPageOpts.enhanceApp(FinalApp);
+            }
+            if (renderPageOpts.enhanceComponent) {
+              FinalComponent = renderPageOpts.enhanceComponent(FinalComponent);
+            }
+            return createErrorElement(FinalApp, FinalComponent);
+          },
+          getHeadHTML: () =>
+            typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "",
+          setDocumentInitialHead:
+            typeof headShim.setDocumentInitialHead === "function"
+              ? headShim.setDocumentInitialHead
+              : undefined,
+        });
       } else {
-        html = `<!DOCTYPE html>
+        const bodyHtml = await renderToStringAsync(element);
+        const html = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8" />
@@ -1964,13 +2022,13 @@ async function renderErrorPage(
   <div id="__next">${bodyHtml}</div>
 </body>
 </html>`;
+        const transformedHtml = await server.transformIndexHtml(url, html);
+        res.writeHead(statusCode, { "Content-Type": "text/html" });
+        res.end(transformedHtml);
       }
-
-      const transformedHtml = await server.transformIndexHtml(url, html);
-      res.writeHead(statusCode, { "Content-Type": "text/html" });
-      res.end(transformedHtml);
       return;
     } catch {
+      if (res.headersSent || res.writableEnded) return;
       // This candidate doesn't exist, try next
       continue;
     }

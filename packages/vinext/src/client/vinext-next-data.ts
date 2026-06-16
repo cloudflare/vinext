@@ -55,6 +55,12 @@ type VinextLocaleGlobalTarget = {
 };
 
 export function extractVinextNextDataJson(html: string): string | null {
+  const canonical =
+    /<script\b(?=[^>]*\bid=["']__NEXT_DATA__["'])(?=[^>]*\btype=["']application\/json["'])[^>]*>([\s\S]*?)<\/script>/.exec(
+      html,
+    );
+  if (canonical) return canonical[1];
+
   const assignment = /<script(?:\s[^>]*)?>\s*window\.__NEXT_DATA__\s*=\s*/.exec(html);
   if (!assignment || assignment.index === undefined) return null;
 

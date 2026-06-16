@@ -19,6 +19,7 @@
  */
 
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
+import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 
 const NEXT_DATA_PREFIX = "/_next/data/";
 const NEXT_DATA_SUFFIX = ".json";
@@ -197,9 +198,12 @@ type NormalizePagesDataRequestResult =
 export function normalizePagesDataRequest(
   request: Request,
   buildId: string | null,
+  basePath = "",
 ): NormalizePagesDataRequestResult {
   const reqUrl = new URL(request.url);
-  if (!isNextDataPathname(reqUrl.pathname)) {
+  const hadBasePath = !!basePath && hasBasePath(reqUrl.pathname, basePath);
+  const dataPathname = basePath ? stripBasePath(reqUrl.pathname, basePath) : reqUrl.pathname;
+  if (!isNextDataPathname(dataPathname)) {
     return {
       isDataReq: false,
       request,
@@ -208,7 +212,7 @@ export function normalizePagesDataRequest(
       notFoundResponse: null,
     };
   }
-  const dataMatch = buildId ? parseNextDataPathname(reqUrl.pathname, buildId) : null;
+  const dataMatch = buildId ? parseNextDataPathname(dataPathname, buildId) : null;
   if (!dataMatch) {
     return {
       isDataReq: false,
@@ -219,7 +223,9 @@ export function normalizePagesDataRequest(
     };
   }
   const normalizedUrl = new URL(reqUrl);
-  normalizedUrl.pathname = dataMatch.pagePathname;
+  normalizedUrl.pathname = hadBasePath
+    ? addBasePathToPathname(dataMatch.pagePathname, basePath)
+    : dataMatch.pagePathname;
   return {
     isDataReq: true,
     request: new Request(normalizedUrl, request),

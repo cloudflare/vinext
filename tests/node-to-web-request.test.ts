@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vite-plus/test";
+import { describe, it, expect, beforeAll, vi } from "vite-plus/test";
 import type { IncomingMessage } from "node:http";
 import { Readable } from "node:stream";
 
@@ -22,10 +22,12 @@ function mockReq(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
 
 describe("nodeToWebRequest", () => {
   let nodeToWebRequest: (typeof import("../packages/vinext/src/server/prod-server.js"))["nodeToWebRequest"];
+  let readNodeStream: (typeof import("../packages/vinext/src/server/prod-server.js"))["readNodeStream"];
 
   beforeAll(async () => {
     const mod = await import("../packages/vinext/src/server/prod-server.js");
     nodeToWebRequest = mod.nodeToWebRequest;
+    readNodeStream = mod.readNodeStream;
   });
 
   it("uses req.url when no urlOverride is provided", () => {
@@ -93,7 +95,7 @@ describe("nodeToWebRequest", () => {
   it("urlOverride works for POST requests without affecting the body stream", async () => {
     const bodyContent = JSON.stringify({ hello: "world" });
     // Build a real Readable and graft the IncomingMessage properties onto it
-    // so that Readable.toWeb() (used internally for POST bodies) works correctly.
+    // so the Node request adapter receives a real streaming request body.
     const readable = Readable.from([Buffer.from(bodyContent)]) as unknown as IncomingMessage;
     readable.headers = { host: "localhost:3000", "content-type": "application/json" };
     readable.url = "/raw/unnormalized//api/submit";
@@ -110,5 +112,63 @@ describe("nodeToWebRequest", () => {
     expect(webReq.body).not.toBeNull();
     const text = await webReq.text();
     expect(text).toBe(bodyContent);
+  });
+
+  it("reads from paused Node streams only as Web stream demand advances", async () => {
+    let produced = 0;
+    const request = new Readable({
+      highWaterMark: 1,
+      read() {
+        if (produced === 100) {
+          this.push(null);
+          return;
+        }
+        produced += 1;
+        this.push(Buffer.alloc(64 * 1024, produced));
+      },
+    });
+    const reader = readNodeStream(request as IncomingMessage).getReader();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(produced).toBeLessThan(100);
+    expect(request.readableFlowing).not.toBe(true);
+
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+    expect(first.value?.byteLength).toBe(64 * 1024);
+    await reader.cancel();
+  });
+
+  it("owns queued bytes when Node reuses a pooled chunk buffer", async () => {
+    const request = new Readable({ read() {} });
+    const body = readNodeStream(request as IncomingMessage);
+    const reader = body.getReader();
+    const pooledChunk = Buffer.allocUnsafe(8);
+    pooledChunk.write("original");
+
+    request.emit("data", pooledChunk);
+    pooledChunk.write("mutated!");
+    request.emit("end");
+
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+    expect(Buffer.from(first.value ?? []).toString()).toBe("original");
+    expect(await reader.read()).toEqual({ done: true, value: undefined });
+  });
+
+  it("cancels without destroying the Node request and drains the remainder", async () => {
+    const request = new Readable({
+      read() {},
+    });
+    const resume = vi.spyOn(request, "resume");
+    const destroy = vi.spyOn(request, "destroy");
+    const body = readNodeStream(request as IncomingMessage);
+    const reader = body.getReader();
+
+    await reader.cancel();
+
+    expect(resume).toHaveBeenCalled();
+    expect(destroy).not.toHaveBeenCalled();
+    expect(request.readableFlowing).toBe(true);
   });
 });

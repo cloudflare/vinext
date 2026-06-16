@@ -1,5 +1,6 @@
 import type { AppMiddlewareContext } from "./app-middleware.js";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
+import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 
 export type PagesEntry = {
   handleApiRoute?: (request: Request, url: string) => Promise<Response> | Response;
@@ -11,6 +12,7 @@ export type PagesEntry = {
     query: Record<string, unknown>,
     parsedUrl: unknown,
     middlewareRequestHeaders?: Headers | null,
+    options?: { isDataReq?: boolean },
   ) => Promise<Response> | Response;
 };
 
@@ -60,10 +62,12 @@ type RenderPagesFallbackDependencies = {
 type RenderPagesFallbackOptions = {
   allowRscDocumentFallback?: boolean;
   appRouteMatch?: AppRouteMatch | null;
+  isDataRequest?: boolean;
   isRscRequest: boolean;
   matchKind?: "dynamic" | "static";
   middlewareContext: AppMiddlewareContext;
   pathname?: string;
+  pagesDataRequest?: Request | null;
   request: Request;
   url: URL;
 };
@@ -78,10 +82,12 @@ export async function renderPagesFallback(
   const {
     allowRscDocumentFallback = false,
     appRouteMatch = null,
+    isDataRequest = false,
     isRscRequest,
     matchKind,
     middlewareContext,
     pathname = options.url.pathname,
+    pagesDataRequest = null,
     request,
     url,
   } = options;
@@ -103,15 +109,7 @@ export async function renderPagesFallback(
 
   let pagesRequest = request;
   if (pagesRequestHeaders) {
-    const pagesRequestInit: RequestInit & { duplex?: string } = {
-      method: request.method,
-      headers: pagesRequestHeaders,
-    };
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      pagesRequestInit.body = request.body;
-      pagesRequestInit.duplex = "half";
-    }
-    pagesRequest = new Request(request.url, pagesRequestInit);
+    pagesRequest = cloneRequestWithHeaders(request, pagesRequestHeaders);
   }
 
   const queryIndex = pathname.indexOf("?");
@@ -157,13 +155,25 @@ export async function renderPagesFallback(
   ) {
     return null;
   }
-  const pagesRes = await pagesEntry.renderPage(
-    pagesRequest,
-    pagesUrl,
-    {},
-    undefined,
-    middlewareContext.requestHeaders,
-  );
+  const renderRequest = pagesDataRequest
+    ? cloneRequestWithUrl(pagesRequest, pagesDataRequest.url)
+    : pagesRequest;
+  const pagesRes = isDataRequest
+    ? await pagesEntry.renderPage(
+        renderRequest,
+        pagesUrl,
+        {},
+        undefined,
+        middlewareContext.requestHeaders,
+        { isDataReq: true },
+      )
+    : await pagesEntry.renderPage(
+        renderRequest,
+        pagesUrl,
+        {},
+        undefined,
+        middlewareContext.requestHeaders,
+      );
   if (pagesRes.status === 404 && pageMatch === null) return null;
   return applyDraftModeCookie(pagesRes, getDraftModeCookieHeader());
 }

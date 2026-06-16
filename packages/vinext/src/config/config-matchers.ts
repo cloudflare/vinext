@@ -1104,6 +1104,26 @@ export function matchRewrite(
 }
 
 /**
+ * Check whether a rewrite source can match a pathname without evaluating its
+ * request-dependent `has` / `missing` conditions.
+ *
+ * Dev uses this only as a conservative preflight before middleware runs. The
+ * conditions may become true after middleware overrides request headers, so
+ * evaluating them against the original request would incorrectly skip the
+ * Pages request pipeline for file-looking paths.
+ */
+export function matchesRewriteSource(
+  pathname: string,
+  rewrite: NextRewrite,
+  basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
+): boolean {
+  return (
+    shouldEvaluateRule(rewrite.basePath, basePathState) &&
+    matchConfigPattern(pathname, rewrite.source) !== null
+  );
+}
+
+/**
  * Substitute all matched route params into a redirect/rewrite destination.
  *
  * Handles repeated params (e.g. `/api/:id/:id`) and catch-all suffix forms

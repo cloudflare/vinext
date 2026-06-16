@@ -895,16 +895,17 @@ describe("Pages Router Link onClick semantics", () => {
     // and avoids the dynamic-import-into-unknown-module timing pitfall.
     const pagesRouterCalls: { href: string; replace: boolean }[] = [];
     vi.doMock("../packages/vinext/src/client/pages-router-link-navigation.js", () => ({
-      navigatePagesRouterLink: async (
-        _router: unknown,
-        opts: { href: string; replace: boolean },
-      ) => {
-        pagesRouterCalls.push({ href: opts.href, replace: opts.replace });
+      navigatePagesRouterLinkWithFallback: async ({
+        navigation,
+      }: {
+        navigation: { href: string; replace: boolean };
+      }) => {
+        pagesRouterCalls.push({ href: navigation.href, replace: navigation.replace });
       },
     }));
     // The handler still tries `await import("next/router")` before calling
     // navigatePagesRouterLink. Stub it so the import resolves cleanly (the
-    // returned Router is never used because we mocked navigatePagesRouterLink).
+    // returned Router is never used because we mocked the navigation boundary).
     vi.doMock("next/router", () => ({ default: { push() {}, replace() {} } }));
 
     const pushState = vi.fn();

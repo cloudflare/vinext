@@ -900,6 +900,12 @@ describe("app browser entry navigation scheduling", () => {
     }
   });
 
+  it("preserves ordinary server action errors for 500 responses", () => {
+    const error = new Error("sanitized action failure");
+
+    expect(normalizeServerActionThrownValue(error, 500)).toBe(error);
+  });
+
   it("uses text/plain action response bodies as boundary errors", async () => {
     // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts

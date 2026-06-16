@@ -66,11 +66,17 @@ declare module "next/document" {
     styles?: ReactElement[] | Iterable<ReactNode> | ReactElement;
   };
   export type DocumentContext = {
-    renderPage?: (options?: {
-      enhanceApp?: (App: ComponentType<{ children?: ReactNode }>) => unknown;
-      enhanceComponent?: (Comp: ComponentType<unknown>) => unknown;
-    }) => { html: string; head?: ReadonlyArray<ReactElement> };
-    defaultGetInitialProps?: (
+    renderPage: (
+      options?:
+        | {
+            enhanceApp?: (
+              App: ComponentType<{ children?: ReactNode }>,
+            ) => ComponentType<{ children?: ReactNode }>;
+            enhanceComponent?: (Comp: ComponentType<unknown>) => ComponentType<unknown>;
+          }
+        | ((Comp: ComponentType<unknown>) => ComponentType<unknown>),
+    ) => DocumentInitialProps | Promise<DocumentInitialProps>;
+    defaultGetInitialProps: (
       ctx: DocumentContext,
       options?: { nonce?: string },
     ) => Promise<DocumentInitialProps>;

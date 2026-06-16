@@ -32,24 +32,17 @@ import {
   type NavigationTraceFields,
   type NavigationTraceReasonCode,
 } from "./navigation-trace.js";
+import {
+  verifyOperationTokenForCacheReuse,
+  type OperationLane,
+  type OperationToken,
+  type OperationTokenRejectionReason,
+} from "./operation-token.js";
 
-export type OperationLane =
-  | "hmr"
-  | "navigation"
-  | "prefetch"
-  | "refresh"
-  | "server-action"
-  | "traverse";
-
-export type OperationToken = {
-  operationId: number;
-  lane: OperationLane;
-  baseVisibleCommitVersion: number;
-  graphVersion: string | null;
-  deploymentVersion: string | null;
-  targetSnapshotFingerprint: string;
-  cacheVariantFingerprint?: string;
-};
+// OperationToken and OperationLane are owned by ./operation-token.ts, the token
+// authority module. Re-exported here so the planner stays the single import
+// surface for navigation types.
+export type { OperationLane, OperationToken } from "./operation-token.js";
 
 export type RouteSnapshot = {
   interception: InterceptionSnapshot | null;
@@ -125,6 +118,7 @@ type CommitProposal = {
 type NoCommitReason = "prefetchOnly";
 type HardNavigationReason =
   | "cacheProofRejected"
+  | "cacheReuseTokenRejected"
   | "interceptionProofRejected"
   | "rootBoundaryChanged";
 export type RootBoundaryTransition =
@@ -1245,6 +1239,27 @@ function createCacheProofRejectedDecision(options: {
   };
 }
 
+// A proven cache entry rejected by the OperationToken authority (its graph
+// version or variant no longer matches the installed one). Distinct from
+// cacheProofRejected — the cache proof itself authorized reuse; the token did
+// not — so it carries its own reason code and the verdict reason for telemetry.
+function createCacheReuseTokenRejectedDecision(options: {
+  event: Extract<NavigationEvent, { kind: "flightResponseArrived" }>;
+  reason: OperationTokenRejectionReason;
+  traceFields: NavigationTraceFields;
+}): NavigationDecision {
+  return {
+    kind: "hardNavigate",
+    reason: "cacheReuseTokenRejected",
+    token: options.event.token,
+    trace: createNavigationTrace(NavigationTraceReasonCodes.cacheReuseTokenRejected, {
+      ...options.traceFields,
+      cacheReuseTokenReason: options.reason,
+    }),
+    url: options.event.result.href,
+  };
+}
+
 function createAcceptedCacheProofTraceFields(
   traceFields: NavigationTraceFields,
   decision: AcceptedCacheEntryReuseDecision | null,
@@ -1404,6 +1419,29 @@ function planFlightResponseArrived(options: {
     });
   }
   const acceptedCacheEntryDecision = cacheEntryProofEvaluation.decision;
+
+  // Commits and cache reuse share the OperationToken authority. A proven cache
+  // entry may only be reused if its token still matches the installed route graph
+  // and cache variant. Behavior-preserving today — the token's graphVersion is
+  // minted from the same route manifest the planner verifies against — and a real
+  // guard once cross-document or segment reuse (PR 6/7) can carry a token whose
+  // graph version or variant has diverged from the installed one. The installed
+  // cache variant is not yet known to the planner (segment cache, PR 7), so that
+  // dimension stays dormant rather than comparing the token to itself.
+  if (acceptedCacheEntryDecision !== null) {
+    const reuseVerdict = verifyOperationTokenForCacheReuse(options.event.token, {
+      graphVersion: options.routeManifest?.graphVersion ?? null,
+      installedCacheVariantFingerprint: null,
+    });
+    if (!reuseVerdict.authorized) {
+      return createCacheReuseTokenRejectedDecision({
+        event: options.event,
+        reason: reuseVerdict.reason,
+        traceFields,
+      });
+    }
+  }
+
   const commitTraceFields = createAcceptedCacheProofTraceFields(
     traceFields,
     acceptedCacheEntryDecision,

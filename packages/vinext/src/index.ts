@@ -112,7 +112,7 @@ import {
   pagesRouteHasPriorityOverAppRoute,
   validateHybridRouteConflicts,
 } from "./server/hybrid-route-priority.js";
-import { proxyExternalRequest } from "./config/config-matchers.js";
+import { matchesRewriteSource, proxyExternalRequest } from "./config/config-matchers.js";
 import { detectPackageManager } from "./utils/project.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
 import { ASSET_PREFIX_URL_DIR, resolveAssetsDir } from "./utils/asset-prefix.js";
@@ -202,7 +202,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 import { normalizePathSeparators, stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
 import { getViteMajorVersion } from "./utils/vite-version.js";
@@ -342,6 +342,22 @@ function resolveTsconfigPathCandidate(candidate: string): string | null {
   return null;
 }
 
+/**
+ * Normalize a tsconfig `extends` field into a list of specifier strings.
+ *
+ * TypeScript 5.0+ allows `extends` to be either a string or an array of
+ * strings. Matches Next.js's handling in
+ * packages/next/src/build/next-config-ts/transpile-config.ts, where parents
+ * are iterated in order and later entries override earlier ones.
+ */
+function normalizeTsconfigExtends(extendsField: unknown): string[] {
+  if (typeof extendsField === "string") return [extendsField];
+  if (Array.isArray(extendsField)) {
+    return extendsField.filter((value): value is string => typeof value === "string");
+  }
+  return [];
+}
+
 function resolveTsconfigExtends(configPath: string, specifier: string): string | null {
   const fromDir = path.dirname(configPath);
   if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("\\")) {
@@ -436,10 +452,12 @@ function loadTsconfigPathAliases(
   if (!parsed) return {};
 
   let aliases: Record<string, string> = {};
-  if (typeof parsed.extends === "string") {
-    const extendedPath = resolveTsconfigExtends(normalizedPath, parsed.extends);
+  // `extends` may be a string or (TypeScript 5.0+) an array; iterate parents in
+  // order so later entries override earlier ones (matching Next.js).
+  for (const extendsSpecifier of normalizeTsconfigExtends(parsed.extends)) {
+    const extendedPath = resolveTsconfigExtends(normalizedPath, extendsSpecifier);
     if (extendedPath) {
-      aliases = loadTsconfigPathAliases(extendedPath, projectRoot, seen);
+      aliases = { ...aliases, ...loadTsconfigPathAliases(extendedPath, projectRoot, seen) };
     }
   }
 
@@ -528,6 +546,14 @@ const RESOLVED_INSTRUMENTATION_CLIENT = `\0${VIRTUAL_INSTRUMENTATION_CLIENT}.mjs
 /** Image file extensions handled by the vinext:image-imports plugin.
  *  Shared between the Rolldown hook filter and the transform handler regex. */
 const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
+
+function createStaticImageAsset(imagePath: string): { fileName: string; source: Buffer } {
+  const source = fs.readFileSync(imagePath);
+  const extension = path.extname(imagePath);
+  const name = path.basename(imagePath, extension);
+  const hash = createHash("sha256").update(source).digest("hex").slice(0, 8);
+  return { fileName: `media/${name}.${hash}${extension}`, source };
+}
 
 /**
  * Absolute path to vinext's shims directory, with a trailing slash. Normalized
@@ -984,6 +1010,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   }
 
   const imageImportDimCache = new Map<string, { width: number; height: number }>();
+  const staticImageAssets = new Map<string, { fileName: string; source: Buffer }>();
+  const staticImageImportsByModule = new Map<string, Set<string>>();
+  const writtenStaticImageFiles = new Set<string>();
 
   // Shared state for the MDX proxy plugin. We auto-inject @mdx-js/rollup when
   // MDX is detected in app/pages during config(), and lazily on first plain
@@ -3335,6 +3364,75 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
         // Return a function to register middleware AFTER Vite's built-in middleware
         return () => {
+          const viteFilesystemMiddlewares = server.middlewares.stack
+            .filter(({ handle }) => {
+              const name = typeof handle === "function" ? handle.name : "";
+              return name === "viteServePublicMiddleware" || name === "viteServeStaticMiddleware";
+            })
+            .map(({ handle }) => handle)
+            .filter(
+              (handle): handle is import("vite").Connect.NextHandleFunction =>
+                typeof handle === "function",
+            );
+
+          const serveRewrittenViteFilesystemRoute = async (
+            req: import("node:http").IncomingMessage,
+            res: import("node:http").ServerResponse,
+            requestPathname: string,
+            stagedHeaders: Record<string, string | string[]>,
+          ): Promise<boolean> => {
+            const originalUrl = req.url;
+            const originalStatusCode = res.statusCode;
+            const originalStatusMessage = res.statusMessage;
+            const originalHeaders = res.getHeaders();
+
+            req.url = requestPathname;
+            for (const [key, value] of Object.entries(stagedHeaders)) {
+              res.setHeader(key, value);
+            }
+
+            const restore = () => {
+              req.url = originalUrl;
+              res.statusCode = originalStatusCode;
+              res.statusMessage = originalStatusMessage;
+              for (const key of Object.keys(res.getHeaders())) res.removeHeader(key);
+              for (const [key, value] of Object.entries(originalHeaders)) {
+                if (value !== undefined) res.setHeader(key, value);
+              }
+            };
+
+            try {
+              for (const middleware of viteFilesystemMiddlewares) {
+                const outcome = await new Promise<"next" | "served">((resolve, reject) => {
+                  let settled = false;
+                  const settle = (value: "next" | "served", error?: unknown) => {
+                    if (settled) return;
+                    settled = true;
+                    res.off("finish", onServed);
+                    res.off("close", onServed);
+                    if (error) reject(error);
+                    else resolve(value);
+                  };
+                  const onServed = () => settle("served");
+                  res.once("finish", onServed);
+                  res.once("close", onServed);
+                  middleware(req, res, (error?: unknown) => settle("next", error));
+                  if (res.writableEnded) settle("served");
+                });
+                if (outcome === "served") {
+                  req.url = originalUrl;
+                  return true;
+                }
+              }
+            } catch (error) {
+              restore();
+              throw error;
+            }
+
+            restore();
+            return false;
+          };
+
           // Run instrumentation.ts register() if present (once at server startup).
           // Must be inside the returned function so that all environments are
           // fully registered before getPagesRunner() inspects them.
@@ -3642,6 +3740,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }
               }
 
+              // When @cloudflare/vite-plugin is present, delegate the entire
+              // Pages Router request pipeline to the Worker/miniflare side
+              // before mutating _next/data URLs. The generated Worker entry
+              // owns build-ID-aware data normalization and trusted protocol
+              // classification.
+              if (hasCloudflarePlugin) return next();
+
               // ── `_next/data` normalization (Pages Router) ──────────────
               // Client-side navigations in the Pages Router fetch
               // `/_next/data/<buildId>/<page>.json`. Normalize the URL to the
@@ -3689,16 +3794,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // Skip requests for files with extensions (static assets) after
               // trailing-slash canonicalization so file-looking dynamic routes
               // like /catch-all/hello.world/ still get the Next.js redirect.
-              if (pathname.includes(".") && !pathname.endsWith(".html")) {
+              const filePathMatchesRewrite = [
+                ...(nextConfig?.rewrites.beforeFiles ?? []),
+                ...(nextConfig?.rewrites.afterFiles ?? []),
+                ...(nextConfig?.rewrites.fallback ?? []),
+              ].some((rewrite) =>
+                matchesRewriteSource(pathname, rewrite, {
+                  basePath: bp,
+                  hadBasePath: true,
+                }),
+              );
+              if (
+                pathname.includes(".") &&
+                !pathname.endsWith(".html") &&
+                !filePathMatchesRewrite
+              ) {
                 return next();
               }
-
-              // When @cloudflare/vite-plugin is present, delegate the entire
-              // Pages Router request pipeline to the Worker/miniflare side.
-              // That keeps middleware, headers, redirects, rewrites, API
-              // routes, and rendering in one place instead of mutating the
-              // host request and forwarding post-middleware state downstream.
-              if (hasCloudflarePlugin) return next();
 
               // Snapshot of req.headers before middleware runs. Used for both
               // preMiddlewareReqCtx and the middleware Request itself. Intentionally
@@ -3715,11 +3827,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]),
                 ),
               );
-              // Capture `x-nextjs-data` before filterInternalHeaders strips it
-              // — the middleware redirect protocol needs to know whether the
-              // inbound request was a `_next/data` fetch to emit
-              // `x-nextjs-redirect` instead of a 3xx.
-              const isDataRequest = rawHeaders.get("x-nextjs-data") === "1";
+              // Only a successfully parsed `/_next/data/...json` URL is a data
+              // request. The inbound x-nextjs-data header is internal and must
+              // not let callers opt normal URLs into the data redirect protocol.
+              const isDataRequest = isDataReq;
               // Strip internal headers from inbound requests so they cannot be
               // forged to influence routing or impersonate internal state.
               // Both the middleware Request (built below) and the SSR handler
@@ -3862,6 +3973,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   const reqWithBody = new Request(new URL(url, requestOrigin), externalInit);
                   return proxyExternalRequest(reqWithBody, externalUrl);
                 },
+                serveFilesystemRoute: async (requestPathname, stagedHeaders, phase) => {
+                  if (
+                    phase === "direct" ||
+                    (req.method !== "GET" && req.method !== "HEAD") ||
+                    requestPathname === "/" ||
+                    requestPathname === "/api" ||
+                    requestPathname.startsWith("/api/")
+                  ) {
+                    return false;
+                  }
+                  return serveRewrittenViteFilesystemRoute(
+                    req,
+                    res,
+                    requestPathname,
+                    stagedHeaders,
+                  );
+                },
                 // handleApi and renderPage are omitted — pipeline emits intents
               };
 
@@ -3876,9 +4004,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 return next();
               }
 
-              // The dev adapter never supplies `serveStaticFile` (Vite serves public
-              // files), so the pipeline never returns `handled` here. Narrow it out so
-              // the render/api branches below see only the intent variants.
+              // `handled` means an adapter wrote the response directly, including
+              // Vite's filesystem middleware for rewritten public/static files.
               if (pipelineResult.type === "handled") {
                 return;
               }
@@ -4223,19 +4350,49 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // Cache of image dimensions to avoid re-reading files
       _dimCache: imageImportDimCache,
 
+      buildStart() {
+        imageImportDimCache.clear();
+        staticImageAssets.clear();
+      },
+
+      watchChange(id) {
+        imageImportDimCache.delete(id);
+        staticImageAssets.delete(id);
+        staticImageImportsByModule.delete(id);
+      },
+
       resolveId: {
-        filter: { id: /\?vinext-meta$/ },
+        filter: { id: /\?vinext-(?:image-url|meta)$/ },
         handler(source, _importer) {
-          if (!source.endsWith("?vinext-meta")) return null;
-          // Resolve the real image path from the importer
-          const realPath = source.replace("?vinext-meta", "");
-          return `\0vinext-image-meta:${realPath}`;
+          if (source.endsWith("?vinext-image-url")) {
+            return `\0vinext-image-url:${source.slice(0, -"?vinext-image-url".length)}`;
+          }
+          if (source.endsWith("?vinext-meta")) {
+            return `\0vinext-image-meta:${source.slice(0, -"?vinext-meta".length)}`;
+          }
+          return null;
         },
       },
 
       async load(id) {
+        if (id.startsWith("\0vinext-image-url:")) {
+          const imagePath = id.replace("\0vinext-image-url:", "");
+          this.addWatchFile(imagePath);
+          if (this.environment.config.command === "serve") {
+            return `import url from ${JSON.stringify(imagePath + "?url")}; export default url;`;
+          }
+
+          const asset = createStaticImageAsset(imagePath);
+          staticImageAssets.set(imagePath, asset);
+
+          const builtFileName = `${resolveAssetsDir(nextConfig.assetPrefix)}/${asset.fileName}`;
+          return `export default ${JSON.stringify(
+            renderVinextBuiltUrl(builtFileName, nextConfig.assetPrefix, nextConfig.deploymentId),
+          )};`;
+        }
         if (!id.startsWith("\0vinext-image-meta:")) return null;
         const imagePath = id.replace("\0vinext-image-meta:", "");
+        this.addWatchFile(imagePath);
 
         // Read from cache first
         const cache = imageImportDimCache;
@@ -4306,6 +4463,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           const s = new MagicString(code);
           let hasChanges = false;
+          const imageImports = new Set<string>();
 
           for (const node of ast.body) {
             if (node.type !== "ImportDeclaration") continue;
@@ -4339,15 +4497,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const absImagePath = normalizePathSeparators(path.resolve(dir, importPath));
 
             if (!fs.existsSync(absImagePath)) continue;
+            imageImports.add(absImagePath);
 
             // Replace the single import with two:
-            // 1. Original import (Vite gives us the URL string)
+            // 1. URL module. In dev it delegates to Vite's asset server; in a
+            //    production build it returns a stable Next-shaped URL and the
+            //    client build writes the registered source under static/media.
             // 2. Meta import (we provide { width, height })
             // Combined into a StaticImageData object
             const urlVar = `__vinext_img_url_${varName}`;
             const metaVar = `__vinext_img_meta_${varName}`;
             const replacement =
-              `import ${urlVar} from ${JSON.stringify(importPath)};\n` +
+              `import ${urlVar} from ${JSON.stringify(absImagePath + "?vinext-image-url")};\n` +
               `import ${metaVar} from ${JSON.stringify(absImagePath + "?vinext-meta")};\n` +
               `const ${varName} = { src: ${urlVar}, width: ${metaVar}.width, height: ${metaVar}.height };`;
 
@@ -4355,12 +4516,45 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             hasChanges = true;
           }
 
-          if (!hasChanges) return null;
+          if (!hasChanges) {
+            staticImageImportsByModule.delete(id);
+            return null;
+          }
+          staticImageImportsByModule.set(id, imageImports);
 
           return {
             code: s.toString(),
             map: s.generateMap({ hires: "boundary" }),
           };
+        },
+      },
+
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        handler(outputOptions) {
+          if (this.environment?.name !== "client") return;
+          const clientOutDir = outputOptions.dir
+            ? path.resolve(root, outputOptions.dir)
+            : path.resolve(root, options.clientOutDir ?? "dist/client");
+          const assetsDir = resolveAssetsDir(nextConfig.assetPrefix);
+          const activeImagePaths = new Set(
+            Array.from(staticImageImportsByModule.values()).flatMap((imports) => [...imports]),
+          );
+          const nextWrittenFiles = new Set<string>();
+          for (const imagePath of activeImagePaths) {
+            if (!fs.existsSync(imagePath)) continue;
+            const asset = staticImageAssets.get(imagePath) ?? createStaticImageAsset(imagePath);
+            const outputPath = path.join(clientOutDir, assetsDir, asset.fileName);
+            fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+            fs.writeFileSync(outputPath, asset.source);
+            nextWrittenFiles.add(outputPath);
+          }
+          for (const outputPath of writtenStaticImageFiles) {
+            if (!nextWrittenFiles.has(outputPath)) fs.rmSync(outputPath, { force: true });
+          }
+          writtenStaticImageFiles.clear();
+          for (const outputPath of nextWrittenFiles) writtenStaticImageFiles.add(outputPath);
         },
       },
     } as Plugin & { _dimCache: Map<string, { width: number; height: number }> },

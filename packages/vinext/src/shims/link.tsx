@@ -62,7 +62,10 @@ import { appendSearchParamsToUrl, type UrlQuery, urlQueryToSearchParams } from "
 import { addLocalePrefix, getDomainLocaleUrl, type DomainLocale } from "../utils/domain-locale.js";
 import { getI18nContext } from "./i18n-context.js";
 import type { VinextLinkPrefetchRoute, VinextNextData } from "../client/vinext-next-data.js";
-import { navigatePagesRouterLink } from "../client/pages-router-link-navigation.js";
+import {
+  navigatePagesRouterLinkWithFallback,
+  resolvePagesRouterQueryOnlyHref,
+} from "../client/pages-router-link-navigation.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../routing/route-matching.js";
 import { stripBasePath } from "../utils/base-path.js";
 import {
@@ -191,6 +194,32 @@ function resolveHref(href: LinkProps["href"]): string {
     url = appendSearchParamsToUrl(url, params);
   }
   return url;
+}
+
+function resolvePagesQueryOnlyHref(href: string): string {
+  if (!href.startsWith("?") || typeof window === "undefined") return href;
+
+  const pagesRouter = window.next?.appDir === true ? undefined : window.next?.router;
+  const visibleHref =
+    pagesRouter &&
+    "reload" in pagesRouter &&
+    "asPath" in pagesRouter &&
+    typeof pagesRouter.asPath === "string"
+      ? pagesRouter.asPath
+      : undefined;
+  return resolvePagesRouterQueryOnlyHref(href, {
+    asPath: visibleHref,
+    basePath: __basePath,
+    fallbackHref: window.location.href,
+    locales: window.__VINEXT_LOCALES__,
+  });
+}
+
+function resolvePagesLinkNavigationHref(href: string, locale: string | false | undefined): string {
+  return normalizePathTrailingSlash(
+    applyLocaleToHref(resolvePagesQueryOnlyHref(href), locale),
+    __trailingSlash,
+  );
 }
 
 /**
@@ -957,9 +986,15 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
 
     e.preventDefault();
 
+    const hasAppNavigationRuntime = Boolean(getNavigationRuntime()?.functions.navigate);
+    const pagesNavigateHref = resolvedHref.startsWith("?")
+      ? resolvePagesLinkNavigationHref(resolvedHref, locale)
+      : navigateHref;
     // Resolve relative hrefs (#hash, ?query) for onNavigate and the hard-navigation fallback.
+    // Pages query-only links must use the rewrite-aware target resolved above,
+    // so callbacks and router-error fallback agree with the actual navigation.
     const absoluteFullHref = toBrowserNavigationHref(
-      navigateHref,
+      hasAppNavigationRuntime ? navigateHref : pagesNavigateHref,
       window.location.href,
       __basePath,
     );
@@ -1002,7 +1037,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // (`setPending`, `setLinkForCurrentNavigation`) would be a no-op at best
     // and a stale `useLinkStatus` indicator at worst.
     if (
-      getNavigationRuntime()?.functions.navigate &&
+      hasAppNavigationRuntime &&
       ["pages", "document"].includes(resolveHybridClientRouteOwner(navigateHref, __basePath) ?? "")
     ) {
       if (replace) {
@@ -1015,7 +1050,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
 
     // App Router: delegate to navigateClientSide which handles scroll save,
     // hash-only changes, RSC fetch, and two-phase URL commit.
-    if (getNavigationRuntime()?.functions.navigate) {
+    if (hasAppNavigationRuntime) {
       const setter = setPendingRef.current;
       // Register this link as the one driving the current navigation. This
       // resets any previously-pending link (e.g. a different link clicked
@@ -1036,25 +1071,28 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       // Pages Router still executes instrumentation-client side effects
       // during startup, but it does not invoke the named export on navigation.
       // Pages Router: use the Router singleton
-      try {
-        const routerModule = await import("next/router");
-        const Router = routerModule.default;
-        await navigatePagesRouterLink(Router, {
-          href: navigateHref,
+      const Router = window.next?.appDir === true ? undefined : window.next?.router;
+      const pagesRouter = Router && "reload" in Router ? Router : undefined;
+      await navigatePagesRouterLinkWithFallback({
+        router: pagesRouter,
+        loadRouter: async () => (await import("next/router")).default,
+        navigation: {
+          href: pagesNavigateHref,
           replace,
           scroll,
           shallow,
           locale,
-        });
-      } catch {
-        // Fallback to hard navigation if router fails
-        if (replace) {
-          window.history.replaceState({}, "", absoluteFullHref);
-        } else {
-          window.history.pushState({}, "", absoluteFullHref);
-        }
-        window.dispatchEvent(new PopStateEvent("popstate"));
-      }
+          interpolateDynamicRoute: resolvedHref.startsWith("?"),
+        },
+        fallback: () => {
+          if (replace) {
+            window.history.replaceState({}, "", absoluteFullHref);
+          } else {
+            window.history.pushState({}, "", absoluteFullHref);
+          }
+          window.dispatchEvent(new PopStateEvent("popstate"));
+        },
+      });
     }
   };
 

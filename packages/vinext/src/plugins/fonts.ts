@@ -29,6 +29,7 @@ import { parseAst } from "vite";
 import path from "node:path";
 import fs from "node:fs";
 import { escapeRegExp } from "../utils/regex.js";
+import { lastSignificantChar } from "../utils/has-trailing-comma.js";
 import MagicString from "magic-string";
 import {
   buildFallbackFontFace,
@@ -949,12 +950,17 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
             `_vinext: { font: { ${internalFontProperties.join(", ")} } }`,
           ];
           const closingBrace = optionsStr.lastIndexOf("}");
-          const beforeBrace = optionsStr.slice(0, closingBrace).trim();
-          // Determine the separator to insert before the new property:
-          //   - Empty string if the object is empty ({ is the last non-whitespace char)
+          // Decide the separator from the last significant character before the
+          // closing brace. `lastSignificantChar` skips whitespace AND comments
+          // without being fooled by `//`/`/*` inside string literals (e.g. a URL
+          // or a path with a double slash), so a trailing comma hidden behind a
+          // comment is honoured and a `//` inside a value can never eat the real
+          // comma. Determine the separator to insert before the new property:
+          //   - Empty string if the object is empty ({ is the last significant char)
           //   - Empty string if there's already a trailing comma (avoid double comma)
           //   - ", " otherwise (before the new property)
-          const separator = beforeBrace.endsWith("{") || beforeBrace.endsWith(",") ? "" : ", ";
+          const lastChar = lastSignificantChar(optionsStr.slice(0, closingBrace));
+          const separator = lastChar === "{" || lastChar === "," ? "" : ", ";
           const optionsWithCSS =
             optionsStr.slice(0, closingBrace) +
             separator +
@@ -1207,9 +1213,13 @@ export function createLocalFontsPlugin(shimsDir: string): Plugin {
           const optionsStr = code.slice(objRange[0], objRange[1]);
           if (/(?:^|[,{])\s*_vinext\s*:/.test(optionsStr)) continue;
 
-          const beforeClosingBrace = optionsStr.slice(0, -1).trim();
-          const separator =
-            beforeClosingBrace.endsWith("{") || beforeClosingBrace.endsWith(",") ? "" : ", ";
+          // Decide the separator from the last significant character before the
+          // closing brace (see injectSelfHostedCss): comment- and
+          // string-literal-aware, so a trailing comma hidden behind a comment is
+          // honoured and a `//` inside a value (e.g. a path) is not mistaken for
+          // a comment that would swallow the real comma → double comma.
+          const lastChar = lastSignificantChar(optionsStr.slice(0, -1));
+          const separator = lastChar === "{" || lastChar === "," ? "" : ", ";
           s.appendLeft(
             insertAt,
             `${separator}_vinext: { font: { family: ${JSON.stringify(bindingName)} } }`,

@@ -46,6 +46,7 @@ import {
   computeClientRuntimeMetadata,
   buildRuntimeGlobalsScript,
 } from "../packages/vinext/src/utils/client-runtime-metadata.js";
+import { fetchWorkerFilesystemRoute } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import {
   mergeHeaders,
   resolveStaticAssetSignal,
@@ -853,6 +854,21 @@ describe("scanPublicFileRoutes", () => {
 });
 
 describe("generatePagesRouterWorkerEntry", () => {
+  it("keeps Cloudflare dev _next/data URLs intact for Worker normalization", () => {
+    const indexSource = fs.readFileSync(
+      path.join(import.meta.dirname, "../packages/vinext/src/index.ts"),
+      "utf8",
+    );
+    const delegation = indexSource.indexOf("if (hasCloudflarePlugin) return next();");
+    const dataNormalization = indexSource.indexOf(
+      "// ── `_next/data` normalization (Pages Router) ──────────────",
+    );
+
+    expect(delegation).toBeGreaterThanOrEqual(0);
+    expect(dataNormalization).toBeGreaterThanOrEqual(0);
+    expect(delegation).toBeLessThan(dataNormalization);
+  });
+
   it("generates valid TypeScript", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("export default");
@@ -869,6 +885,8 @@ describe("generatePagesRouterWorkerEntry", () => {
     // runPagesRequest.
     expect(content).toContain('typeof runMiddleware === "function"');
     expect(content).toContain("wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)");
+    expect(content).toContain("const dataNorm = normalizeDataRequest(request)");
+    expect(content).toContain("isDataRequest: isDataReq");
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
@@ -1018,6 +1036,13 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("transformImage:");
     expect(content).toContain("env.ASSETS.fetch");
     expect(content).toContain("env.IMAGES");
+  });
+
+  it("re-enters the ASSETS binding after beforeFiles rewrites", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("serveFilesystemRoute: async");
+    expect(content).toContain("fetchWorkerFilesystemRoute(");
+    expect(content).toContain("env.ASSETS.fetch(assetRequest)");
   });
 
   it("exports every vinext subpath imported by generated worker entries", () => {
@@ -1250,9 +1275,10 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("does not defer error page rendering for data requests", () => {
     const content = generatePagesRouterWorkerEntry();
     // shouldDeferErrorPageOnMiss logic is now inside runPagesRequest.
-    // The worker passes isDataReq: false (no buildId normalization) and
-    // matchPageRoute dep so the pipeline computes the right behavior.
-    expect(content).toContain("isDataReq: false,");
+    // The worker normalizes the build-ID-aware URL before the pipeline and
+    // passes the trusted classification alongside matchPageRoute.
+    expect(content).toContain("isDataReq,");
+    expect(content).toContain("isDataRequest: isDataReq");
     expect(content).toContain(
       'matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null',
     );
@@ -1317,6 +1343,70 @@ describe("generatePagesRouterWorkerEntry", () => {
     const pipelinePos = content.indexOf("runPagesRequest(request, deps)");
     expect(staticPos).toBeGreaterThan(-1);
     expect(pipelinePos).toBeGreaterThan(staticPos);
+  });
+});
+
+describe("fetchWorkerFilesystemRoute", () => {
+  it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
+    "fetches rewritten assets during %s",
+    async (phase) => {
+      const fetchAsset = vi.fn(
+        async (request: Request) =>
+          new Response(`asset:${new URL(request.url).pathname}`, {
+            headers: { "content-type": "text/plain" },
+          }),
+      );
+      const result = await fetchWorkerFilesystemRoute(
+        new Request("https://example.com/sv/source?ignored=1"),
+        "/file.txt",
+        phase,
+        fetchAsset,
+      );
+
+      expect(result).toBeInstanceOf(Response);
+      if (!(result instanceof Response)) return;
+      await expect(result.text()).resolves.toBe("asset:/file.txt");
+      expect(fetchAsset).toHaveBeenCalledOnce();
+      expect(new URL(fetchAsset.mock.calls[0][0].url).search).toBe("");
+    },
+  );
+
+  it("falls through on asset misses and preserves HEAD", async () => {
+    const fetchAsset = vi.fn(async (request: Request) => {
+      expect(request.method).toBe("HEAD");
+      return new Response(null, { status: 404 });
+    });
+    const result = await fetchWorkerFilesystemRoute(
+      new Request("https://example.com/source", { method: "HEAD" }),
+      "/missing.txt",
+      "afterFiles",
+      fetchAsset,
+    );
+
+    expect(result).toBe(false);
+    expect(fetchAsset).toHaveBeenCalledOnce();
+  });
+
+  it("skips direct and API filesystem probes", async () => {
+    const fetchAsset = vi.fn(async () => new Response("unexpected"));
+
+    expect(
+      await fetchWorkerFilesystemRoute(
+        new Request("https://example.com/file.txt"),
+        "/file.txt",
+        "direct",
+        fetchAsset,
+      ),
+    ).toBe(false);
+    expect(
+      await fetchWorkerFilesystemRoute(
+        new Request("https://example.com/source"),
+        "/api/hello",
+        "fallback",
+        fetchAsset,
+      ),
+    ).toBe(false);
+    expect(fetchAsset).not.toHaveBeenCalled();
   });
 });
 

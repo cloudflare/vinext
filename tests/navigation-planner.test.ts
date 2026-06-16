@@ -288,6 +288,7 @@ function createOperationToken(overrides: Partial<OperationToken> = {}): Operatio
     deploymentVersion: null,
     graphVersion: null,
     lane: "navigation",
+    navigationId: 1,
     operationId: 7,
     targetSnapshotFingerprint: "route:/dashboard|root:/",
     ...overrides,
@@ -429,10 +430,12 @@ function planFlightResponseFromSnapshots(options: {
   lane?: OperationToken["lane"];
   routeManifest?: RouteManifest | null;
   targetSnapshot: RouteSnapshot;
+  tokenGraphVersion?: string | null;
   traceFields?: NavigationPlannerState["traceFields"];
 }): NavigationDecision {
   const token = createOperationToken({
     lane: options.lane ?? "navigation",
+    ...(options.tokenGraphVersion !== undefined ? { graphVersion: options.tokenGraphVersion } : {}),
     targetSnapshotFingerprint: `${options.targetSnapshot.routeId}|root:${
       options.targetSnapshot.rootBoundaryId ?? "unknown"
     }`,
@@ -612,6 +615,76 @@ describe("navigationPlanner root-boundary decisions", () => {
         startedVisibleCommitVersion: 2,
       },
     });
+  });
+
+  it("hard navigates a proven cache entry whose token graph version no longer matches the route graph", () => {
+    // Commits and cache reuse share the OperationToken authority: a proven cache
+    // entry may only be reused under the graph version it was produced for. A
+    // token minted under a stale graph version must not reuse a cache entry
+    // against a newer route graph — it hard navigates and refetches.
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/"),
+      displayUrl: "https://example.com/dashboard/profile",
+      matchedUrl: "/dashboard/profile",
+      routeId: "route:/dashboard/profile",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/"),
+      displayUrl: "https://example.com/dashboard/settings",
+      matchedUrl: "/dashboard/settings",
+      routeId: "route:/dashboard/settings",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      cacheEntryReuseProof: createAcceptedStaticLayoutCacheEntryReuseProof(),
+      currentSnapshot,
+      targetSnapshot,
+      // The test manifest declares graphVersion "graph:test".
+      tokenGraphVersion: "graph:stale",
+    });
+
+    expect(decision.kind).toBe("hardNavigate");
+    if (decision.kind !== "hardNavigate") {
+      throw new Error("Expected a stale-graph cache reuse to hard navigate");
+    }
+    expect(decision.reason).toBe("cacheReuseTokenRejected");
+    expect(decision.url).toBe("https://example.com/dashboard/settings");
+    expect(decision.trace.entries[0]).toEqual({
+      code: NavigationTraceReasonCodes.cacheReuseTokenRejected,
+      fields: {
+        cacheReuseTokenReason: "graphVersionMismatch",
+        currentRootLayoutTreePath: "/",
+        currentVisibleCommitVersion: 2,
+        nextRootLayoutTreePath: "/",
+        startedVisibleCommitVersion: 2,
+      },
+    });
+  });
+
+  it("commits a proven cache entry when its token graph version still matches the route graph", () => {
+    // The cache-reuse token gate must not disturb the normal proven-reuse path:
+    // a token minted under the installed graph version commits as before.
+    const currentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/"),
+      displayUrl: "https://example.com/dashboard/profile",
+      matchedUrl: "/dashboard/profile",
+      routeId: "route:/dashboard/profile",
+    };
+    const targetSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot("/"),
+      displayUrl: "https://example.com/dashboard/settings",
+      matchedUrl: "/dashboard/settings",
+      routeId: "route:/dashboard/settings",
+    };
+
+    const decision = planFlightResponseFromSnapshots({
+      cacheEntryReuseProof: createAcceptedStaticLayoutCacheEntryReuseProof(),
+      currentSnapshot,
+      targetSnapshot,
+      tokenGraphVersion: "graph:test",
+    });
+
+    expect(decision.kind).toBe("proposeCommit");
   });
 
   it("hard-navigates cross-root flight responses", () => {

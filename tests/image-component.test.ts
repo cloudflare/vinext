@@ -221,6 +221,20 @@ describe("Image SSR rendering", () => {
     expect(html).toContain("data:image/png;base64,xyz");
   });
 
+  it("bypasses optimization for deployment-tagged SVG static imports", () => {
+    const src = "/_next/static/media/icon.0123abcd.svg?dpl=deployment-1";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "static svg",
+        src: { src, width: 32, height: 32 },
+      }),
+    );
+
+    expect(html).toContain(`src="${src.replaceAll("&", "&amp;")}"`);
+    expect(html).toContain(`srcSet="${src.replaceAll("&", "&amp;")}`);
+    expect(html).not.toContain("/_next/image?");
+  });
+
   it("applies className and custom style", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
@@ -442,6 +456,17 @@ describe("getImageProps", () => {
     expect(props.src).toBe(optUrl("/static/photo.png", 1920));
     expect(props.width).toBe(1920);
     expect(props.height).toBe(1080);
+  });
+
+  it("getImageProps bypasses optimization for deployment-tagged SVG imports", () => {
+    const src = "/_next/static/media/icon.0123abcd.svg?dpl=deployment-1";
+    const { props } = getImageProps({
+      alt: "static svg",
+      src: { src, width: 32, height: 32 },
+    });
+
+    expect(props.src).toBe(src);
+    expect(props.srcSet).toBeUndefined();
   });
 
   it("generates srcSet for local images", () => {

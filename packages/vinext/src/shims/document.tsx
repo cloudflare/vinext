@@ -50,25 +50,29 @@ export function NextScript() {
 }
 
 /**
- * Loose stand-ins for Next.js's `DocumentContext` / `DocumentInitialProps`.
- * The shim doesn't currently invoke `getInitialProps` on user `_document.tsx`
- * files (separate gap), but the signatures here match Next.js's so subclasses
- * that delegate via `await Document.getInitialProps(ctx)` typecheck against
- * the same shape they'd see under real Next.js.
+ * Stand-ins for Next.js's `DocumentContext` / `DocumentInitialProps`.
+ * The signatures match Next.js so custom `_document.tsx` subclasses can use
+ * `ctx.renderPage()` enhancers and delegate through
+ * `await Document.getInitialProps(ctx)` with the expected public types.
  *
  * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/utils.ts
  */
 export type DocumentContext = {
   // The full `DocumentContext` includes `renderPage`, `defaultGetInitialProps`,
   // and the inherited `NextPageContext` (`pathname`, `query`, `req`, `res`,
-  // `err`, `asPath`, ...). They're declared as optional here because vinext
-  // does not yet plumb them through; widening to optional avoids forcing user
-  // code to assert their presence.
-  renderPage?: (options?: {
-    enhanceApp?: (App: React.ComponentType<{ children?: React.ReactNode }>) => unknown;
-    enhanceComponent?: (Comp: React.ComponentType<unknown>) => unknown;
-  }) => { html: string; head?: ReadonlyArray<React.ReactElement> };
-  defaultGetInitialProps?: (
+  // `err`, `asPath`, ...). They're declared as optional because the dev error
+  // renderer and compatibility paths may provide only a partial context.
+  renderPage: (
+    options?:
+      | {
+          enhanceApp?: (
+            App: React.ComponentType<{ children?: React.ReactNode }>,
+          ) => React.ComponentType<{ children?: React.ReactNode }>;
+          enhanceComponent?: (Comp: React.ComponentType<unknown>) => React.ComponentType<unknown>;
+        }
+      | ((Comp: React.ComponentType<unknown>) => React.ComponentType<unknown>),
+  ) => DocumentInitialProps | Promise<DocumentInitialProps>;
+  defaultGetInitialProps: (
     ctx: DocumentContext,
     options?: { nonce?: string },
   ) => Promise<DocumentInitialProps>;
@@ -102,15 +106,12 @@ export type DocumentInitialProps = {
 // oxlint-disable-next-line @typescript-eslint/no-empty-object-type
 export default class Document<P = {}> extends React.Component<P & { children?: React.ReactNode }> {
   /**
-   * `getInitialProps` is invoked by the SSR pipeline. The default implementation
-   * is a stub: vinext does not yet plumb the Pages Router `renderPage` /
-   * `defaultGetInitialProps` chain into the SSR entry, so subclasses that
-   * delegate via `await Document.getInitialProps(ctx)` receive an empty shell
-   * (`html: ""`). This matches the runtime contract user code expects without
-   * pretending the chain is wired up.
+   * `getInitialProps` is invoked by the SSR pipeline. The runtime-provided
+   * `ctx.defaultGetInitialProps()` owns the page render and style collection,
+   * matching Next.js's canonical CSS-in-JS integration path.
    */
-  static async getInitialProps(_ctx: DocumentContext): Promise<DocumentInitialProps> {
-    return { html: "" };
+  static getInitialProps(ctx: DocumentContext): Promise<DocumentInitialProps> {
+    return ctx.defaultGetInitialProps(ctx);
   }
 
   render(): React.ReactNode {

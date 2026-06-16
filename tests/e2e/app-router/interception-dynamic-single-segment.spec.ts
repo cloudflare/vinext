@@ -69,4 +69,33 @@ test.describe("interception-dynamic-single-segment", () => {
     await page.click("#new-link");
     await expect(page.locator("#modal")).toContainText("Modal: New item for group 456");
   });
+
+  test("preserves a deeply nested dynamic source page", async ({ page }) => {
+    await page.goto(`${BASE}/interception-dyn-single/org/acme/team/engineering`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#settings-link");
+    await expect(page.locator("#modal")).toContainText(
+      "Modal: Settings for Team engineering in Org acme",
+    );
+    await expect(page.locator("#children")).toContainText("Team engineering in Org acme");
+  });
+
+  test("preserves a consecutive dynamic source page", async ({ page }) => {
+    await page.goto(`${BASE}/interception-dyn-single/x/y/z`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#item-link");
+    await expect(page.locator("#modal")).toContainText("Modal: Item for path x/y/z");
+    await expect(page.locator("#children")).toContainText("Path: x/y/z");
+  });
+
+  test("preserves a static multi-segment source page", async ({ page }) => {
+    await page.goto(`${BASE}/interception-dyn-single/admin/dashboard/users`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#new-user-link");
+    await expect(page.locator("#modal")).toContainText("Modal: New User Form");
+    await expect(page.locator("#children")).toContainText("Admin Dashboard - Users");
+  });
 });

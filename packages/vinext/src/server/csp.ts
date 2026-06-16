@@ -3,10 +3,6 @@ import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 const ESCAPE_REGEX = /[&><\u2028\u2029]/;
 type NodeHeaders = IncomingHttpHeaders | OutgoingHttpHeaders;
 
-function matchesDirectiveName(directive: string, name: string): boolean {
-  return directive === name || directive.startsWith(`${name} `);
-}
-
 function getNodeHeaderValue(
   headers: NodeHeaders | null | undefined,
   key: "content-security-policy" | "content-security-policy-report-only",
@@ -24,9 +20,13 @@ function getNodeHeaderValue(
 export function getScriptNonceFromHeader(cspHeaderValue: string): string | undefined {
   const directives = cspHeaderValue.split(";").map((directive) => directive.trim());
 
+  // First try to find the directive for 'script-src', otherwise fall back to
+  // 'default-src'. Matches Next.js (get-script-nonce-from-header.tsx), which
+  // uses startsWith so the script-src-elem/script-src-attr variants are also
+  // matched.
   const directive =
-    directives.find((value) => matchesDirectiveName(value, "script-src")) ??
-    directives.find((value) => matchesDirectiveName(value, "default-src"));
+    directives.find((value) => value.startsWith("script-src")) ??
+    directives.find((value) => value.startsWith("default-src"));
 
   if (!directive) {
     return undefined;

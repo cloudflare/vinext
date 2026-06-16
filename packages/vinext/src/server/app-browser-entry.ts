@@ -1686,6 +1686,8 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
   }
   markInitialAppRouterBootstrapHydrated();
 
+  let activeNavigationAbortController: AbortController | null = null;
+
   const navigateRsc: NavigationRuntimeNavigate = async function navigateRsc(
     href: string,
     redirectDepth = 0,
@@ -1697,6 +1699,9 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     scrollIntent?: AppRouterScrollIntent | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
   ): Promise<void> {
+    activeNavigationAbortController?.abort();
+    const navigationAbortController = new AbortController();
+    activeNavigationAbortController = navigationAbortController;
     let pendingRouterState: PendingBrowserRouterState | null = null;
     // Hoist navId above try so the catch and finally blocks can reference it.
     const navId = browserNavigationController.beginNavigation();
@@ -2062,6 +2067,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           navResponse = await fetch(rscUrl, {
             headers: requestHeaders,
             credentials: "include",
+            signal: navigationAbortController.signal,
           });
         }
 
@@ -2147,6 +2153,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           headers: navResponse.headers,
         });
         const cacheBufferPromise = new Response(cacheBranch).arrayBuffer();
+        void cacheBufferPromise.catch(() => {});
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
@@ -2225,6 +2232,9 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
       });
       performHardNavigationForScrollIntent(errorDecision.url);
     } finally {
+      if (activeNavigationAbortController === navigationAbortController) {
+        activeNavigationAbortController = null;
+      }
       // Single settlement site: covers normal return, early returns on stale-id
       // checks, and error paths. The finally runs even when the catch returns.
       // settlePendingBrowserRouterState is idempotent via the settled flag.

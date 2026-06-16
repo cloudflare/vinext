@@ -497,6 +497,20 @@ describe("App Router integration", () => {
     expect(html).toContain('data-testid="slot-collision-page"');
   });
 
+  // Ported from Next.js: test/e2e/app-dir/parallel-routes-group-depth/parallel-routes-group-depth.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/parallel-routes-group-depth/parallel-routes-group-depth.test.ts
+  it("renders a sibling parallel slot when children are inside a route group", async () => {
+    const res = await fetch(`${baseUrl}/parallel-route-group-depth`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain('data-testid="parallel-route-group-depth-layout"');
+    expect(html).toContain('data-testid="parallel-route-group-depth-slot-layout"');
+    expect(html).toContain('data-testid="parallel-route-group-depth-slot-page"');
+    expect(html).toContain('data-testid="parallel-route-group-depth-children-layout"');
+    expect(html).toContain('data-testid="parallel-route-group-depth-children-page"');
+  });
+
   it("parallel slots do not affect URL routing", async () => {
     // @team and @analytics should NOT be accessible as direct routes
     const teamRes = await fetch(`${baseUrl}/dashboard/team`);

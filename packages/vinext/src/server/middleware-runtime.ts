@@ -61,10 +61,9 @@ type ExecuteMiddlewareOptions = {
   i18nConfig?: NextI18nConfig | null;
   includeErrorDetails?: boolean;
   /**
-   * Whether the incoming request was a Next.js `_next/data` fetch (carried
-   * `x-nextjs-data: 1`). The header itself is stripped by `filterInternalHeaders`
-   * before the middleware request is constructed, so callers must capture this
-   * flag from the raw incoming headers and forward it explicitly.
+   * Whether the incoming request was recognized as a Next.js `_next/data`
+   * fetch. Internal headers are stripped before middleware runs, so adapters
+   * must derive and forward this from trusted URL normalization.
    */
   isDataRequest?: boolean;
   isProxy: boolean;
@@ -314,6 +313,10 @@ export async function executeMiddleware(
       response: internalServerErrorResponse(message),
       waitUntilPromises,
     };
+  } finally {
+    if (process.env.NODE_ENV !== "development" && nextRequest.body) {
+      void nextRequest.body.cancel().catch(() => {});
+    }
   }
 
   const waitUntilPromises = drainFetchEvent(fetchEvent);
@@ -371,9 +374,8 @@ export async function executeMiddleware(
       // For `_next/data` requests, translate the HTTP redirect into the
       // `x-nextjs-redirect` soft-redirect protocol so the client router can
       // perform the navigation without tripping CORS on cross-origin targets.
-      // `x-nextjs-data` lives in INTERNAL_HEADERS and is stripped before the
-      // middleware request is constructed, so the flag is threaded in from the
-      // caller (which sees the raw incoming headers).
+      // Internal data headers are stripped before middleware runs, so this
+      // protocol is gated on trusted classification threaded by the caller.
       if (options.isDataRequest) {
         return {
           continue: false,

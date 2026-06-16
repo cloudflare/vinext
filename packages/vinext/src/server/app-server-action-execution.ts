@@ -524,7 +524,7 @@ export async function readActionFormDataWithLimit(
 
     totalSize += result.value.byteLength;
     if (totalSize > maxBytes) {
-      await reader.cancel();
+      void reader.cancel();
       throw new Error("Request body too large");
     }
     chunks.push(result.value);
@@ -1039,6 +1039,9 @@ export async function handleServerActionRscRequest<
 
   const contentLength = parseInt(options.request.headers.get("content-length") || "0", 10);
   if (contentLength > options.maxActionBodySize) {
+    if (options.request.body) {
+      void options.request.body.cancel().catch(() => {});
+    }
     return renderFetchActionBodyExceededResponse(options);
   }
 

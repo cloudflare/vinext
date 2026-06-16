@@ -47,6 +47,29 @@ export type PagesRenderOptions = {
   originalUrl?: string;
 };
 
+export type FilesystemRoutePhase = "direct" | "beforeFiles" | "afterFiles" | "fallback";
+
+export async function fetchWorkerFilesystemRoute(
+  request: Request,
+  requestPathname: string,
+  phase: FilesystemRoutePhase,
+  fetchAsset: (request: Request) => Promise<Response>,
+): Promise<Response | false> {
+  if (
+    phase === "direct" ||
+    (request.method !== "GET" && request.method !== "HEAD") ||
+    requestPathname === "/api" ||
+    requestPathname.startsWith("/api/")
+  ) {
+    return false;
+  }
+  const assetUrl = new URL(request.url);
+  assetUrl.pathname = requestPathname;
+  assetUrl.search = "";
+  const response = await fetchAsset(new Request(assetUrl, request));
+  return response.status === 404 ? false : response;
+}
+
 export type MiddlewareResult = {
   continue: boolean;
   redirectUrl?: string;
@@ -76,7 +99,7 @@ export type PagesPipelineDeps = {
   // Pre-computed per-request values (adapter sets these)
   hadBasePath: boolean; // adapter computes: !basePath || hasBasePath(originalPathname, basePath)
   isDataReq: boolean; // true if this was a /_next/data/ request (already normalized by adapter)
-  isDataRequest: boolean; // true if x-nextjs-data: 1 header was present (for middleware opts)
+  isDataRequest: boolean; // trusted data classification for middleware protocol handling
   ctx?: unknown; // Cloudflare ExecutionContext or undefined (for Node)
   // Raw, un-re-encoded query string (incl. leading "?") for building redirect Location
   // headers. Node adapters that build the Web Request from a raw req.url string should
@@ -113,16 +136,18 @@ export type PagesPipelineDeps = {
    */
   proxyExternal?: ((currentRequest: Request, externalUrl: string) => Promise<Response>) | null;
   /**
-   * Optional public-directory static file server (Node prod only).
+   * Optional filesystem/static-asset probe supplied by each runtime adapter.
    * Called post-middleware (so middleware can intercept/redirect public files) with the
    * original basePath-stripped pathname and the staged middleware response headers.
-   * The callback writes the file to its own output (Node `res`) and resolves `true` when
-   * it served the request; the pipeline then returns `{ type: "handled" }`. Resolves `false`
-   * to fall through to rewrites/render. Worker/dev adapters omit this — their public files
-   * are served by the asset binding / Vite respectively.
+   * Node may write directly to `res` and return true; dev/Workers return a Response.
+   * Resolves false to continue through rewrites, API routes, and page rendering.
    */
-  serveStaticFile?:
-    | ((requestPathname: string, stagedHeaders: HeaderRecord) => Promise<boolean>)
+  serveFilesystemRoute?:
+    | ((
+        requestPathname: string,
+        stagedHeaders: HeaderRecord,
+        phase: FilesystemRoutePhase,
+      ) => Promise<boolean | Response>)
     | null;
 };
 
@@ -275,6 +300,20 @@ export async function runPagesRequest(
   let resolvedUrl = originalResolvedUrl;
   const middlewareHeaders: HeaderRecord = {};
   let middlewareStatus: number | undefined;
+  const serveFilesystemRoute = async (
+    requestPathname: string,
+    phase: FilesystemRoutePhase,
+  ): Promise<PagesPipelineResult | null> => {
+    if (!deps.serveFilesystemRoute) return null;
+    const served = await deps.serveFilesystemRoute(requestPathname, middlewareHeaders, phase);
+    if (served instanceof Response) {
+      return {
+        type: "response",
+        response: mergeHeaders(served, middlewareHeaders, middlewareStatus),
+      };
+    }
+    return served ? { type: "handled" } : null;
+  };
 
   if (typeof deps.runMiddleware === "function") {
     const result = await deps.runMiddleware(request, deps.ctx ?? null, { isDataRequest });
@@ -399,18 +438,13 @@ export async function runPagesRequest(
     };
   }
 
-  // Step 8b: Public-directory static files (post-middleware, Node prod only).
+  // Step 8b: Public-directory static files (post-middleware).
   // Served after middleware so middleware can intercept/redirect public files, and
   // before rewrites so a real public file wins over a fallback rewrite — matching the
-  // pre-refactor prod-server ordering. Only Node supplies `serveStaticFile`; the
-  // callback owns the path guards (skip "/", "/api/", and the asset-prefix dir) and
-  // writes directly to Node `res`, so a `true` result means the response is already sent.
-  if (deps.serveStaticFile) {
-    const served = await deps.serveStaticFile(pathname, middlewareHeaders);
-    if (served) {
-      return { type: "handled" };
-    }
-  }
+  // pre-refactor prod-server ordering. Adapter callbacks own their path guards;
+  // a true result means Node already wrote the response.
+  const directFilesystemResult = await serveFilesystemRoute(pathname, "direct");
+  if (directFilesystemResult) return directFilesystemResult;
 
   // Step 9: beforeFiles rewrites
   // Next.js server-utils.ts applies every beforeFiles rule in sequence and
@@ -434,6 +468,14 @@ export async function runPagesRequest(
     }
   }
 
+  // beforeFiles destinations re-enter filesystem matching before API/page
+  // routing. afterFiles and fallback rewrites repeat the same checkpoint in
+  // their phase-specific loops below.
+  if (configRewriteFired) {
+    const beforeFilesResult = await serveFilesystemRoute(resolvedPathname, "beforeFiles");
+    if (beforeFilesResult) return beforeFilesResult;
+  }
+
   // Step 10: Out-of-basePath reject
   if (basePath && !hadBasePath && !configRewriteFired) {
     return {
@@ -445,10 +487,10 @@ export async function runPagesRequest(
     };
   }
 
-  // Step 11: API routes
-  const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, i18nConfig);
-  const apiLookupPathname = apiLookupUrl.split("?")[0];
-  if (apiLookupPathname.startsWith("/api/") || apiLookupPathname === "/api") {
+  const handleResolvedApiRoute = async (): Promise<PagesPipelineResult | null> => {
+    const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, i18nConfig);
+    const apiLookupPathname = apiLookupUrl.split("?")[0];
+    if (!apiLookupPathname.startsWith("/api/") && apiLookupPathname !== "/api") return null;
     if (typeof deps.handleApi === "function") {
       let apiRequest = request;
       // Prod re-adds basePath only when the original request carried it.
@@ -467,17 +509,19 @@ export async function runPagesRequest(
         defaultContentType: "application/octet-stream",
         response: mergeHeaders(response, middlewareHeaders, middlewareStatus),
       };
-    } else {
-      // dev: emit intent
-      return {
-        type: "api",
-        apiUrl: apiLookupUrl,
-        stagedHeaders: middlewareHeaders,
-        requestHeaders: request.headers,
-        middlewareStatus,
-      };
     }
-  }
+    return {
+      type: "api",
+      apiUrl: apiLookupUrl,
+      stagedHeaders: middlewareHeaders,
+      requestHeaders: request.headers,
+      middlewareStatus,
+    };
+  };
+
+  // Step 11: API routes
+  const apiResult = await handleResolvedApiRoute();
+  if (apiResult) return apiResult;
 
   // Step 12: afterFiles rewrites
   let pageMatch = deps.matchPageRoute ? deps.matchPageRoute(resolvedPathname, request) : null;
@@ -500,6 +544,13 @@ export async function runPagesRequest(
         resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
         resolvedPathnameChanged = true;
+        const afterFilesFilesystemResult = await serveFilesystemRoute(
+          resolvedPathname,
+          "afterFiles",
+        );
+        if (afterFilesFilesystemResult) return afterFilesFilesystemResult;
+        const afterFilesApiResult = await handleResolvedApiRoute();
+        if (afterFilesApiResult) return afterFilesApiResult;
         pageMatch = deps.matchPageRoute ? deps.matchPageRoute(resolvedPathname, request) : null;
         if (pageMatch) break;
       }
@@ -540,6 +591,10 @@ export async function runPagesRequest(
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+        const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
+        if (fallbackFilesystemResult) return fallbackFilesystemResult;
+        const fallbackApiResult = await handleResolvedApiRoute();
+        if (fallbackApiResult) return fallbackApiResult;
         renderPageMatch = deps.matchPageRoute
           ? deps.matchPageRoute(resolvedPathname, request)
           : null;
@@ -548,11 +603,7 @@ export async function runPagesRequest(
       }
     }
     // A data request must not defer-render the error page or run fallback rewrites.
-    // Node/dev signal this via `isDataReq` (set when a `/_next/data/` path is
-    // normalized); the worker never normalizes those paths (no buildId at request
-    // scope), so it relies on the `x-nextjs-data: 1` header captured as `isDataRequest`.
-    // Gate on both so the worker matches the pre-refactor behavior (it previously gated
-    // on the header). No-op for Node/dev, where a data request already has isDataReq=true.
+    // All adapters normalize real `/_next/data/` URLs before this point.
     const shouldDeferErrorPageOnMiss =
       !isDataReq && !isDataRequest && !!deps.matchPageRoute && !renderPageMatch;
     const initialRenderOptions: PagesRenderOptions | undefined = shouldDeferErrorPageOnMiss
@@ -595,6 +646,10 @@ export async function runPagesRequest(
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+        const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
+        if (fallbackFilesystemResult) return fallbackFilesystemResult;
+        const fallbackApiResult = await handleResolvedApiRoute();
+        if (fallbackApiResult) return fallbackApiResult;
         response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
         matchedFallbackRewrite = true;
         if (response.status !== 404) break;
@@ -643,6 +698,10 @@ export async function runPagesRequest(
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
+      const fallbackFilesystemResult = await serveFilesystemRoute(resolvedPathname, "fallback");
+      if (fallbackFilesystemResult) return fallbackFilesystemResult;
+      const fallbackApiResult = await handleResolvedApiRoute();
+      if (fallbackApiResult) return fallbackApiResult;
       if (deps.matchPageRoute?.(resolvedPathname, request)) break;
     }
   }

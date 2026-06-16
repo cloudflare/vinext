@@ -307,6 +307,14 @@ describe("app server action execution helpers", () => {
     );
   });
 
+  it("rejects cloned streamed action text without waiting for the sibling branch", async () => {
+    const request = createStreamBodyRequest("hello!");
+    const sibling = request.clone();
+
+    await expect(readActionBodyWithLimit(request, 5)).rejects.toThrow("Request body too large");
+    await expect(sibling.text()).resolves.toBe("hello!");
+  });
+
   it("reads multipart action form data and enforces the streamed byte limit", async () => {
     const body = new FormData();
     body.set("field", "value");
@@ -325,6 +333,18 @@ describe("app server action execution helpers", () => {
     await expect(readActionFormDataWithLimit(oversizedRequest, 16)).rejects.toThrow(
       "Request body too large",
     );
+  });
+
+  it("rejects cloned multipart bodies without waiting for the sibling branch", async () => {
+    const request = createStreamBodyRequest("x".repeat(64), {
+      "content-type": "multipart/form-data; boundary=vinext",
+    });
+    const sibling = request.clone();
+
+    await expect(readActionFormDataWithLimit(request, 16)).rejects.toThrow(
+      "Request body too large",
+    );
+    await expect(sibling.text()).resolves.toBe("x".repeat(64));
   });
 
   it("identifies progressive multipart server action submissions", () => {

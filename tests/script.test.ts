@@ -18,6 +18,8 @@ import {
   BeforeInteractiveContext,
   type BeforeInteractiveInlineScript,
 } from "../packages/vinext/src/shims/before-interactive-context.js";
+import { renderBeforeInteractiveInlineScripts } from "../packages/vinext/src/server/before-interactive-head.js";
+import { NAVIGATION_RUNTIME_KEY } from "../packages/vinext/src/client/navigation-runtime.js";
 
 const originalDocument = globalThis.document;
 const originalWindow = globalThis.window;
@@ -658,5 +660,137 @@ describe("Script stylesheets prop", () => {
     expect(appendedScripts).toHaveLength(1);
     // The stylesheets prop must never leak onto the <script> attribute list.
     expect(appendedScripts[0]!.attrs).not.toHaveProperty("stylesheets");
+  });
+});
+
+// ─── #2016: src beforeInteractive registration, marker, attr mapping ──────
+//
+// Regression coverage for https://github.com/cloudflare/vinext/issues/2016.
+//
+// Three coupled defects:
+//   1. SSR-hoisted beforeInteractive scripts carried no marker; Next.js tags
+//      server-rendered beforeInteractive scripts with
+//      `data-nscript="beforeInteractive"`
+//      (.nextjs-ref/packages/next/src/client/script.tsx).
+//   2. beforeInteractive scripts with `src` bypassed the server registry, so
+//      they were never hoisted into <head> ahead of interactive. Next.js
+//      treats inline and src beforeInteractive scripts equally in the registry
+//      path (the App Router `(self.__next_s=...).push([src, …])` branch).
+//   3. REACT_TO_HTML_ATTR lacked `crossOrigin`/`referrerPolicy`, so they
+//      round-tripped as camelCase attributes (broken CORS/referrer). Next.js
+//      lowercases these in set-attributes-from-props.ts.
+
+describe("Script beforeInteractive registry (#2016)", () => {
+  it("registers src beforeInteractive scripts so they are hoisted into <head>", () => {
+    const captured: BeforeInteractiveInlineScript[] = [];
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        BeforeInteractiveContext.Provider,
+        { value: (s: BeforeInteractiveInlineScript) => captured.push(s) },
+        React.createElement(Script, {
+          src: "/analytics.js",
+          id: "analytics",
+          strategy: "beforeInteractive",
+        } as ScriptProps),
+      ),
+    );
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.src).toBe("/analytics.js");
+    expect(captured[0]?.id).toBe("analytics");
+    // The tag is hoisted by the SSR pipeline (returned null from React), so
+    // React itself emits only the preload link, never an inline <script>.
+    expect(html).not.toContain("<script");
+  });
+
+  it("maps crossOrigin/referrerPolicy to HTML attribute names on hoisted src scripts", () => {
+    const captured: BeforeInteractiveInlineScript[] = [];
+    ReactDOMServer.renderToString(
+      React.createElement(
+        BeforeInteractiveContext.Provider,
+        { value: (s: BeforeInteractiveInlineScript) => captured.push(s) },
+        React.createElement(Script, {
+          src: "/cdn.js",
+          strategy: "beforeInteractive",
+          crossOrigin: "anonymous",
+          referrerPolicy: "no-referrer",
+        } as ScriptProps),
+      ),
+    );
+
+    expect(captured).toHaveLength(1);
+    const attrs = captured[0]?.attributes ?? {};
+    expect(attrs).toMatchObject({
+      crossorigin: "anonymous",
+      referrerpolicy: "no-referrer",
+    });
+    expect(attrs).not.toHaveProperty("crossOrigin");
+    expect(attrs).not.toHaveProperty("referrerPolicy");
+  });
+
+  it("does not re-render a hoisted src beforeInteractive script on the client", () => {
+    // With the App Router runtime installed on `window`, the SSR pipeline has
+    // already hoisted the script's tag into <head>. The client component must
+    // return null for both inline AND src beforeInteractive scripts so React
+    // does not duplicate the tag (duplicate execution / hydration mismatch).
+    setGlobalValue("window", {
+      [NAVIGATION_RUNTIME_KEY]: {
+        bootstrap: { routeManifest: null, rsc: undefined },
+        functions: {},
+      },
+    });
+    setGlobalValue("document", { querySelector: () => null });
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Script, {
+        src: "/dedupe.js",
+        strategy: "beforeInteractive",
+      } as ScriptProps),
+    );
+
+    expect(html).toBe("");
+  });
+});
+
+describe("renderBeforeInteractiveInlineScripts (#2016)", () => {
+  it('marks every hoisted script with data-nscript="beforeInteractive"', () => {
+    const html = renderBeforeInteractiveInlineScripts([{ id: "x", innerHTML: "console.log(1)" }]);
+    expect(html).toContain('data-nscript="beforeInteractive"');
+    expect(html).toContain('id="x"');
+    expect(html).toContain("console.log(1)");
+  });
+
+  it("emits a <script src> tag (with no body) for registered src scripts", () => {
+    const html = renderBeforeInteractiveInlineScripts([
+      {
+        id: "a",
+        src: "/a.js",
+        attributes: { crossorigin: "anonymous", defer: true },
+      },
+    ]);
+    expect(html).toMatch(/<script\b[^>]*src="\/a\.js"/);
+    expect(html).toContain('crossorigin="anonymous"');
+    expect(html).toContain(" defer");
+    expect(html).toContain('data-nscript="beforeInteractive"');
+    // src-only scripts have no inline body.
+    expect(html).toMatch(/<script[^>]*><\/script>/);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/script-before-interactive/script-before-interactive.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/script-before-interactive/script-before-interactive.test.ts
+  // (the "/multiple" route asserting multiple beforeInteractive scripts each
+  // render with the correct `class` attribute, never `classname`).
+  it("renders multiple hoisted beforeInteractive scripts with correct class attributes", () => {
+    const html = renderBeforeInteractiveInlineScripts([
+      { id: "first", innerHTML: "1", attributes: { class: "first-script" } },
+      { id: "second", src: "/second.js", attributes: { class: "second-script" } },
+    ]);
+    expect(html).toContain('class="first-script"');
+    expect(html).toContain('class="second-script"');
+    expect(html).not.toContain('classname="first-script"');
+    expect(html).not.toContain('classname="second-script"');
+    // Both are tagged and emitted in registration order.
+    expect((html.match(/data-nscript="beforeInteractive"/g) ?? []).length).toBe(2);
+    expect(html.indexOf("first-script")).toBeLessThan(html.indexOf("second-script"));
   });
 });

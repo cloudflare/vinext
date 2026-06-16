@@ -90,6 +90,30 @@ describe("pages-data-route", () => {
     });
   });
 
+  describe("normalizePagesDataRequest", () => {
+    it("recognizes a data URL under basePath while preserving basePath for middleware", () => {
+      const buildId = "abc123";
+      const req = new Request(`http://localhost/root/_next/data/${buildId}/about.json?x=1`);
+      const result = normalizePagesDataRequest(req, buildId, "/root");
+
+      expect(result.isDataReq).toBe(true);
+      expect(result.normalizedPathname).toBe("/about");
+      expect(result.search).toBe("?x=1");
+      expect(result.request.url).toBe("http://localhost/root/about?x=1");
+      expect(result.notFoundResponse).toBeNull();
+    });
+
+    it("preserves an absolute data URL outside the configured basePath", () => {
+      const buildId = "abc123";
+      const req = new Request(`http://localhost/_next/data/${buildId}/about.json?x=1`);
+      const result = normalizePagesDataRequest(req, buildId, "/root");
+
+      expect(result.isDataReq).toBe(true);
+      expect(result.normalizedPathname).toBe("/about");
+      expect(result.request.url).toBe("http://localhost/about?x=1");
+    });
+  });
+
   describe("buildNextDataNotFoundResponse", () => {
     it("returns a 404 JSON response with empty body", async () => {
       const res = buildNextDataNotFoundResponse();

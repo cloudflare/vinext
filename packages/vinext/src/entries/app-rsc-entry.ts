@@ -621,6 +621,7 @@ ${rootParamNameEntries.join("\n")}
 
 export default __createAppRscHandler({
   basePath: __basePath,
+  buildId: process.env.__VINEXT_BUILD_ID ?? null,
   ensureRouteLoaded: __ensureRouteLoaded,
   clearRequestContext() {
     __clearRequestContext();
@@ -1042,9 +1043,9 @@ export default __createAppRscHandler({
   },
   ${
     hasPagesDir
-      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, isRscRequest, matchKind, middlewareContext, pathname, request, url }) {
+      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url }) {
     return __renderPagesFallback(
-      { allowRscDocumentFallback, appRouteMatch, isRscRequest, matchKind, middlewareContext, pathname, request, url },
+      { allowRscDocumentFallback, appRouteMatch, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url },
       {
         loadPagesEntry() {
           return import.meta.viteRsc.loadModule("ssr", "index");

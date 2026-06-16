@@ -1807,14 +1807,15 @@ function discoverInheritedParallelSlots(
     // Layout-less routes keep their legacy slot metadata here; validation is separate.
     if (lvlLayoutIdx < 0 && routeHasLayout) continue;
 
-    const isOwnDir = dir === routeDir;
     const slotLayoutIdx = Math.max(lvlLayoutIdx, 0);
     const slotsAtLevel = discoverParallelSlots(dir, appDir, matcher);
     const segmentsBelow = segments.slice(segmentIndex);
+    const isActiveUrlLevel = dir === routeDir || segmentsBelow.every(isInvisibleSegment);
 
     for (const slot of slotsAtLevel) {
-      if (isOwnDir) {
-        // At the route's own directory: use page.tsx (normal behavior)
+      if (isActiveUrlLevel) {
+        // Use the slot's root page at its active URL level. Route groups below
+        // the slot owner are transparent, so they do not make the slot inherited.
         slot.layoutIndex = slotLayoutIdx;
         slotMap.set(slot.key, slot);
       } else {

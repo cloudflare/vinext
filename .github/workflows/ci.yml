@@ -270,6 +270,10 @@ jobs:
             label: pages-router
             shardIndex: 1
             shardTotal: 1
+          - project: pages-router-basepath-dev
+            label: pages-router-basepath-dev
+            shardIndex: 1
+            shardTotal: 1
           - project: app-router
             label: app-router 1/3
             shardIndex: 1

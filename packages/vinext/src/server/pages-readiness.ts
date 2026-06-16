@@ -42,7 +42,7 @@ export function buildPagesReadinessNextData(options: {
   const hasAppGip = typeof options.appComponent?.getInitialProps === "function";
   return {
     gssp: hasPageGssp,
-    gsp: hasPageGsp,
+    gsp: hasPageGsp ? true : undefined,
     gip: hasPageGip,
     appGip: hasAppGip,
     autoExport: !hasPageGssp && !hasPageGsp && !hasPageGip && !hasAppGip,

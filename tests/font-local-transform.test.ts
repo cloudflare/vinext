@@ -199,6 +199,66 @@ describe("vinext:local-fonts plugin", () => {
     expect(result.code).toContain(`_vinext: { font: { family: "myFont" } }`);
   });
 
+  it("does not produce double-comma when a trailing comma is hidden behind a block comment", () => {
+    // Regression for #1973: `.trim()` strips whitespace but not comments, so a
+    // trailing comma followed by a block comment escaped the trailing-comma
+    // check and a second comma was inserted before the `_vinext` payload.
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `const myFont = localFont({`,
+      `  src: "./my-font.woff2", /* c */`,
+      `});`,
+    ].join("\n");
+
+    const result = transform.call(plugin, code, "/app/layout.tsx");
+
+    expect(result).not.toBeNull();
+    expect(result.code).toContain(`_vinext: { font: { family: "myFont" } }`);
+    expect(result.code).not.toMatch(/\*\/\s*,/);
+  });
+
+  it("does not produce double-comma when a trailing comma is hidden behind a line comment", () => {
+    // Regression for #1973: a trailing comma followed by a `// line comment`.
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `const myFont = localFont({`,
+      `  src: "./my-font.woff2", // c`,
+      `});`,
+    ].join("\n");
+
+    const result = transform.call(plugin, code, "/app/layout.tsx");
+
+    expect(result).not.toBeNull();
+    expect(result.code).toContain(`_vinext: { font: { family: "myFont" } }`);
+    expect(result.code).not.toMatch(/\/\/ c\n\s*,/);
+  });
+
+  it("does not produce double-comma when a string value contains `//` before a trailing comma", () => {
+    // Hardening for #1973: a whole-slice comment strip also deletes the `//`
+    // inside a string literal (e.g. a path with a double slash) and everything
+    // after it on that line — swallowing the REAL trailing comma and causing a
+    // second comma to be injected. The string-aware, end-only scan is not fooled.
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `const myFont = localFont({`,
+      `  src: "./fonts//my-font.woff2",`,
+      `});`,
+    ].join("\n");
+
+    const result = transform.call(plugin, code, "/app/layout.tsx");
+
+    expect(result).not.toBeNull();
+    expect(result.code).toContain(`_vinext: { font: { family: "myFont" } }`);
+    // The real trailing comma must be detected → no double comma injected.
+    expect(result.code).not.toMatch(/,\s*,/);
+  });
+
   // ── Object src with path property ────────────────────────────
 
   it("transforms a single source object with path property", () => {

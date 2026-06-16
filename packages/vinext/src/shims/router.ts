@@ -66,7 +66,11 @@ import {
   type UrlQuery,
   urlQueryToSearchParams,
 } from "../utils/query.js";
-import { matchRoutePattern, routePatternParts } from "../routing/route-pattern.js";
+import {
+  fillRoutePatternSegments,
+  matchRoutePattern,
+  routePatternParts,
+} from "../routing/route-pattern.js";
 import { scrollToHashTarget } from "./hash-scroll.js";
 import {
   installPagesRouterRuntime,
@@ -364,6 +368,8 @@ export type NextRouter = {
 type UrlObject = {
   pathname?: string;
   query?: UrlQuery;
+  search?: string;
+  hash?: string;
 };
 
 type TransitionOptions = {
@@ -371,6 +377,7 @@ type TransitionOptions = {
   shallow?: boolean;
   scroll?: boolean;
   locale?: string | false;
+  _vinextInterpolateDynamicRoute?: boolean;
 };
 
 type RouterEvents = {
@@ -481,10 +488,30 @@ function getPagesRouterRuntimeComponents(): PagesRouterRuntimeComponents {
 
 function resolveUrl(url: string | UrlObject): string {
   if (typeof url === "string") return url;
-  let result = url.pathname ?? "/";
-  if (url.query) {
-    const params = urlQueryToSearchParams(url.query);
+  const hasQuery = url.query !== undefined && Object.keys(url.query).length > 0;
+  const hasSearch = typeof url.search === "string" && url.search.length > 0;
+  const hasHash = typeof url.hash === "string" && url.hash.length > 0;
+  const inheritsVisiblePath = url.pathname === undefined && (hasQuery || hasSearch || hasHash);
+  let result =
+    url.pathname ??
+    (typeof window !== "undefined"
+      ? inheritsVisiblePath
+        ? stripBasePath(window.location.pathname, __basePath)
+        : (window.__NEXT_DATA__?.page ?? stripBasePath(window.location.pathname, __basePath))
+      : "/");
+  if (hasSearch) {
+    const search = url.search!.startsWith("?") ? url.search! : `?${url.search}`;
+    const hashIndex = search.indexOf("#");
+    result +=
+      hashIndex === -1 ? search : `${search.slice(0, hashIndex)}%23${search.slice(hashIndex + 1)}`;
+  } else if (hasQuery) {
+    const params = urlQueryToSearchParams(url.query!);
     result = appendSearchParamsToUrl(result, params);
+  } else if (hasHash && typeof window !== "undefined") {
+    result += window.location.search;
+  }
+  if (hasHash) {
+    result += url.hash!.startsWith("#") ? url.hash : `#${url.hash}`;
   }
   return result;
 }
@@ -502,8 +529,77 @@ function resolveNavigationTarget(
   url: string | UrlObject,
   as: string | undefined,
   locale: string | undefined,
+  replaceExistingLocale = false,
 ): string {
-  return applyNavigationLocale(as ?? resolveUrl(url), locale);
+  return applyNavigationLocale(as ?? resolveUrl(url), locale, replaceExistingLocale);
+}
+
+class HrefInterpolationError extends Error {}
+
+function interpolateCurrentDynamicRoute(resolved: string): string {
+  if (typeof window === "undefined") return resolved;
+
+  const routePattern = window.__NEXT_DATA__?.page;
+  if (!routePattern || extractRouteParamNames(routePattern).length === 0) return resolved;
+
+  try {
+    const target = new URL(resolved, "http://vinext.local");
+    const currentOrigin = getWindowOrigin();
+    if (
+      currentOrigin &&
+      target.origin !== "http://vinext.local" &&
+      target.origin !== currentOrigin
+    ) {
+      return resolved;
+    }
+    const visiblePath = stripBasePath(window.location.pathname, __basePath);
+    const visibleLocale = getLocalePathPrefix(visiblePath, window.__VINEXT_LOCALES__);
+    const routePath = visibleLocale
+      ? visiblePath.slice(visibleLocale.length + 1) || "/"
+      : visiblePath;
+    if (extractRouteParamsFromPath(routePattern, routePath) === null) return resolved;
+
+    const query = parseQueryString(target.search);
+    const missingParams = routePatternParts(routePattern)
+      .filter((part) => part.startsWith(":") && !part.endsWith("*"))
+      .map((part) => part.slice(1, part.endsWith("+") ? -1 : undefined))
+      .filter((paramName) => {
+        const value = query[paramName];
+        return value === undefined || value === "" || (Array.isArray(value) && value.length === 0);
+      });
+    if (missingParams.length > 0) {
+      const href = `${routePattern}${target.search}${target.hash}`;
+      throw new HrefInterpolationError(
+        `The provided \`href\` (${href}) value is missing query values (${missingParams.join(
+          ", ",
+        )}) to be interpolated properly. Read more: https://nextjs.org/docs/messages/href-interpolation-failed`,
+      );
+    }
+
+    const routeParams = getRouteParamsFromQuery(routePattern, query);
+    if (!routeParams) return resolved;
+
+    const encodedRouteParams = Object.fromEntries(
+      Object.entries(routeParams).map(([key, value]) => [
+        key,
+        Array.isArray(value) ? value.map(encodeURIComponent) : encodeURIComponent(value),
+      ]),
+    );
+    const pathname = fillRoutePatternSegments(routePattern, encodedRouteParams);
+    if (!pathname) return resolved;
+
+    const targetLocale = getLocalePathPrefix(target.pathname, window.__VINEXT_LOCALES__);
+    target.pathname = targetLocale ? `/${targetLocale}${pathname}` : pathname;
+    for (const paramName of extractRouteParamNames(routePattern)) {
+      target.searchParams.delete(paramName);
+    }
+    return target.href.slice(target.origin.length);
+  } catch (error) {
+    if (error instanceof HrefInterpolationError) {
+      throw error;
+    }
+    return resolved;
+  }
 }
 
 function getCurrentUrlLocale(): string | undefined {
@@ -588,21 +684,41 @@ function getDomainLocalePath(url: string, locale: string): string | undefined {
  * Apply locale prefix to a URL for client-side navigation.
  * Same logic as Link's applyLocaleToHref but reads from window globals.
  */
-export function applyNavigationLocale(url: string, locale?: string): string {
+export function applyNavigationLocale(
+  url: string,
+  locale?: string,
+  replaceExistingLocale = false,
+): string {
   if (!locale || typeof window === "undefined") return url;
   // Absolute and protocol-relative URLs must not be prefixed — locale
   // only applies to local paths.
   if (isAbsoluteOrProtocolRelativeUrl(url)) {
     return url;
   }
-  if (getLocalePathPrefix(url, window.__VINEXT_LOCALES__)) {
+  if (!replaceExistingLocale && getLocalePathPrefix(url, window.__VINEXT_LOCALES__)) {
     return url;
   }
+  const normalizedUrl = replaceExistingLocale ? removeNavigationLocalePrefix(url) : url;
 
-  const domainLocalePath = getDomainLocalePath(url, locale);
+  const domainLocalePath = getDomainLocalePath(normalizedUrl, locale);
   if (domainLocalePath) return domainLocalePath;
 
-  return addLocalePrefix(url, locale, window.__VINEXT_DEFAULT_LOCALE__ ?? "");
+  return addLocalePrefix(normalizedUrl, locale, window.__VINEXT_DEFAULT_LOCALE__ ?? "");
+}
+
+function removeNavigationLocalePrefix(url: string): string {
+  const locales = window.__VINEXT_LOCALES__;
+  if (!locales?.length) return url;
+
+  try {
+    const parsed = new URL(url, "http://vinext.local");
+    const locale = getLocalePathPrefix(parsed.pathname, locales);
+    if (!locale) return url;
+    const pathname = parsed.pathname.slice(locale.length + 1) || "/";
+    return `${pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return url;
+  }
 }
 
 function isDefaultLocaleRootNavigation(url: string, locale: string | undefined): boolean {
@@ -1148,8 +1264,30 @@ function getPathnameAndQuery(): {
   }
   const query = { ...searchQuery, ...routeQuery };
   // asPath uses the resolved browser path, not the route pattern
-  const asPath = resolvedPath + window.location.search + window.location.hash;
+  const asPath =
+    getCurrentHistoryAsPath() ?? resolvedPath + window.location.search + window.location.hash;
   return { pathname, query, asPath };
+}
+
+function getCurrentHistoryAsPath(): string | null {
+  const state = window.history?.state;
+  if (!isNextRouterState(state) || typeof state.as !== "string") return null;
+
+  try {
+    const browserUrl = new URL(window.location.href);
+    const stateUrl = new URL(
+      toBrowserNavigationHref(state.as, window.location.href, __basePath),
+      window.location.href,
+    );
+    if (stateUrl.pathname !== browserUrl.pathname || stateUrl.search !== browserUrl.search) {
+      return null;
+    }
+    const stateAs = stripHash(state.as);
+    const visibleAs = `${stripBasePath(window.location.pathname, __basePath)}${window.location.search}`;
+    return `${stateAs || visibleAs}${window.location.hash}`;
+  } catch {
+    return null;
+  }
 }
 
 export function getPagesNavigationIsReadyFromSerializedState(
@@ -1212,6 +1350,15 @@ function markPagesRouterReady(): boolean {
   if (typeof window === "undefined" || routerRuntimeState.pagesRouterReady) return false;
   routerRuntimeState.pagesRouterReady = true;
   return true;
+}
+
+function initializePagesRouterReadyFromNextData(nextData: VinextNextData): void {
+  if (typeof window === "undefined") return;
+  routerRuntimeState.pagesRouterReady = getPagesNavigationIsReadyFromSerializedState(
+    nextData.page,
+    window.location.search,
+    nextData,
+  );
 }
 
 function markPagesRouterHydrated(): void {
@@ -1416,10 +1563,9 @@ async function resolveMiddlewareDataEffect(
   const dataUrl = getMiddlewarePagesDataFetchUrl(browserUrl);
   if (!dataUrl) return null;
 
-  // We deliberately do NOT thread `signal` into the shared fetch — see the
-  // dedup helper for why. Stale callers bail out via `assertStillCurrent()`
-  // after the await; we still surface a pre-await abort via this check so
-  // callers see the documented AbortError on supersession.
+  // The dedup helper uses `signal` to release this caller's waiter. It keeps
+  // the shared request alive for any identical waiter, and aborts only when
+  // this was the final waiter.
   if (signal.aborted) {
     throw new DOMException("Aborted", "AbortError");
   }
@@ -1430,6 +1576,7 @@ async function resolveMiddlewareDataEffect(
         Accept: "application/json",
         "x-nextjs-data": "1",
       },
+      signal,
     });
     return {
       redirectLocation: res.headers.get("x-nextjs-redirect"),
@@ -1506,11 +1653,10 @@ async function navigateClientData(
   //
   // We dedupe by URL: concurrent `Router.push` calls (or back-to-back link
   // clicks) for the same destination share a single underlying request.
-  // The shared fetch deliberately ignores `controller.signal` — each caller
-  // still bails out of their navigation via `assertStillCurrent()` after the
-  // await, but the shared network request itself runs to completion so other
-  // racing callers still benefit. This matches Next.js's `inflightCache`
-  // semantics in `fetchNextData()`.
+  // The shared fetch uses `controller.signal` to release this caller's waiter.
+  // The network request stays alive while another identical navigation is
+  // waiting, and aborts once the final waiter cancels. This matches Next.js's
+  // combination of in-flight reuse and per-navigation cancellation.
   //
   // Pre-await abort still throws so callers see the documented cancellation
   // surface when supersession happened before the fetch was even attempted.
@@ -1526,7 +1672,10 @@ async function navigateClientData(
       };
       const deploymentId = getDeploymentId();
       if (deploymentId) headers[NEXT_DEPLOYMENT_ID_HEADER] = deploymentId;
-      res = await dedupedPagesDataFetch(initialTarget.dataHref, { headers });
+      res = await dedupedPagesDataFetch(initialTarget.dataHref, {
+        headers,
+        signal: controller.signal,
+      });
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === "AbortError") {
         throw new NavigationCancelledError(url);
@@ -1897,8 +2046,12 @@ async function navigateClient(
 ): Promise<void> {
   if (typeof window === "undefined") return;
 
-  // Cancel any in-flight navigation (abort its fetch, settle its render-commit wait)
-  routerRuntimeState.activeAbortController?.abort();
+  // Supersede the prior navigation immediately via navigationId below, but
+  // defer its AbortSignal by one microtask. A synchronous identical push can
+  // then join the shared _next/data fetch before the prior waiter releases;
+  // different destinations still abort the abandoned request in this turn.
+  const previousAbortController = routerRuntimeState.activeAbortController;
+  if (previousAbortController) queueMicrotask(() => previousAbortController.abort());
   cancelPreviousRenderCommit();
   const controller = new AbortController();
   routerRuntimeState.activeAbortController = controller;
@@ -2215,7 +2368,25 @@ async function performNavigation(
   }
 
   const navigationLocale = resolveTransitionLocale(options?.locale);
-  let resolved = resolveNavigationTarget(url, as, navigationLocale);
+  const replaceInheritedLocale =
+    as === undefined &&
+    options?.locale !== undefined &&
+    typeof url !== "string" &&
+    url.pathname === undefined &&
+    ((url.query !== undefined && Object.keys(url.query).length > 0) ||
+      (typeof url.search === "string" && url.search.length > 0) ||
+      (typeof url.hash === "string" && url.hash.length > 0));
+  let resolved = resolveNavigationTarget(url, as, navigationLocale, replaceInheritedLocale);
+  const inheritsCurrentPath =
+    as === undefined &&
+    ((typeof url === "string" && options?._vinextInterpolateDynamicRoute === true) ||
+      (typeof url !== "string" &&
+        url.pathname === undefined &&
+        ((url.query !== undefined && Object.keys(url.query).length > 0) ||
+          (typeof url.search === "string" && url.search.length > 0))));
+  if (inheritsCurrentPath) {
+    resolved = interpolateCurrentDynamicRoute(resolved);
+  }
 
   // External URLs — delegate to browser (unless same-origin)
   if (isExternalUrl(resolved)) {
@@ -3064,5 +3235,6 @@ const _PAGES_NAVIGATION_ACCESSOR_KEY = Symbol.for(
 // Internal export for unit tests that need to drive the readiness transition
 // without relying on React effect timing in a Node test environment.
 export { markPagesRouterReady as _markPagesRouterReady };
+export { initializePagesRouterReadyFromNextData as _initializePagesRouterReadyFromNextData };
 
 export default Router;

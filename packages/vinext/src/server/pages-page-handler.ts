@@ -539,7 +539,7 @@ export function createPagesPageHandler(
 
         const pageDataResult = await resolvePagesPageData({
           isDataReq,
-          err,
+          err: err instanceof Error ? err : undefined,
           applyRequestContexts: applySSRContext,
           buildId,
           deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
@@ -727,6 +727,7 @@ export function createPagesPageHandler(
             return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
           },
           DocumentComponent,
+          err: err instanceof Error ? err : undefined,
           flushPreloads: typeof flushPreloads === "function" ? flushPreloads : undefined,
           fontLinkHeader,
           fontPreloads: allFontPreloads,
@@ -744,6 +745,7 @@ export function createPagesPageHandler(
           pageProps,
           props: renderProps,
           params,
+          query,
           renderDocumentToString(element) {
             return renderToStringAsync(element);
           },

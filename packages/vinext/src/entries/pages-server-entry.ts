@@ -171,43 +171,20 @@ if (typeof _instrumentation.onRequestError === "function") {
   const middlewareExportCode = middlewarePath
     ? `
 export async function runMiddleware(request, ctx, options) {
-  // Auto-detect /_next/data/<buildId>/<page>.json requests so user-written
-  // worker entries don't need to know about the data endpoint protocol.
-  // Mismatched buildId → JSON 404 short-circuit. Matched → middleware sees
-  // the normalized page path via the request URL, and the worker sees the
-  // normalized URL via result.rewriteUrl (if middleware didn't already
-  // rewrite to something else).
-  const __dataNorm = __normalizePagesDataRequest(request, buildId);
-  if (__dataNorm.notFoundResponse) {
-    return { continue: false, response: __dataNorm.notFoundResponse };
-  }
-  const __result = await __runGeneratedMiddleware({
+  return __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
     ctx,
     i18nConfig,
-    isDataRequest: options?.isDataRequest === true || __dataNorm.isDataReq,
+    isDataRequest: options?.isDataRequest === true,
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
-    request: __dataNorm.request,
+    request,
     trailingSlash: vinextConfig.trailingSlash,
   });
-  if (__dataNorm.isDataReq && __result.continue && !__result.rewriteUrl && !__result.redirectUrl) {
-    return { ...__result, rewriteUrl: __dataNorm.normalizedPathname + __dataNorm.search };
-  }
-  return __result;
 }
 `
     : `
 export async function runMiddleware(request) {
-  // Even without user middleware, the data-endpoint URL must be normalized so
-  // the worker pipeline sees the page path. Mismatched buildId → JSON 404.
-  const __dataNorm = __normalizePagesDataRequest(request, buildId);
-  if (__dataNorm.notFoundResponse) {
-    return { continue: false, response: __dataNorm.notFoundResponse };
-  }
-  if (__dataNorm.isDataReq) {
-    return { continue: true, rewriteUrl: __dataNorm.normalizedPathname + __dataNorm.search };
-  }
   return { continue: true };
 }
 `;
@@ -256,6 +233,9 @@ const i18nConfig = ${i18nConfigJson};
 // match _next/data requests against the embedded buildId without needing
 // to load next.config.js at runtime.
 export const buildId = ${buildIdJson};
+export function normalizeDataRequest(request) {
+  return __normalizePagesDataRequest(request, buildId);
+}
 const __hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 
 // Full resolved config for production server (embedded at build time)

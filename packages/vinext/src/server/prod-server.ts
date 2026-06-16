@@ -149,14 +149,46 @@ export async function importServerEntryModule(entryPath: string): Promise<any> {
 }
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
-function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
-  return new ReadableStream({
+export function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
+  let cancelled = false;
+  let cleanup = () => {};
+
+  const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      req.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
-      req.on("end", () => controller.close());
-      req.on("error", (err) => controller.error(err));
+      cleanup = () => {
+        req.off("data", onData);
+        req.off("end", onEnd);
+        req.off("error", onError);
+      };
+      const onData = (chunk: Buffer) => {
+        if (cancelled) return;
+        controller.enqueue(new Uint8Array(chunk));
+        if ((controller.desiredSize ?? 0) <= 0) req.pause();
+      };
+      const onEnd = () => {
+        cleanup();
+        if (!cancelled) controller.close();
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        if (!cancelled) controller.error(error);
+      };
+
+      req.on("data", onData);
+      req.on("end", onEnd);
+      req.on("error", onError);
+      req.pause();
+    },
+    pull() {
+      if (!cancelled) req.resume();
+    },
+    cancel() {
+      cancelled = true;
+      cleanup();
+      req.resume();
     },
   });
+  return stream;
 }
 
 export type ProdServerOptions = {
@@ -776,13 +808,12 @@ function nodeToWebRequest(
   };
 
   if (hasBody) {
-    // Convert Node.js readable stream to Web ReadableStream for request body.
-    // Readable.toWeb() is available since Node.js 17.
-    init.body = Readable.toWeb(req) as ReadableStream;
+    init.body = readNodeStream(req);
     init.duplex = "half"; // Required for streaming request bodies
   }
 
-  return new Request(url, init);
+  const request = new Request(url, init);
+  return request;
 }
 
 /**
@@ -1707,10 +1738,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       const protocol = resolveRequestProtocol(req);
       const hostHeader = resolveHost(req, `${host}:${port}`);
       const rawReqHeaders = nodeHeadersToWebHeaders(req.headers);
-      // Capture `x-nextjs-data` before filterInternalHeaders strips it — the
-      // middleware redirect protocol needs to know whether the inbound request
-      // was a `_next/data` fetch to emit `x-nextjs-redirect` instead of a 3xx.
-      const isDataRequest = rawReqHeaders.get("x-nextjs-data") === "1";
+      // Only a successfully parsed `/_next/data/...json` URL is a data
+      // request. The inbound x-nextjs-data header is internal and must not let
+      // callers opt normal URLs into the data redirect protocol.
+      const isDataRequest = isDataReq;
       // Strip internal headers from inbound requests before any handler or
       // middleware sees them.
       const reqHeaders = filterInternalHeaders(rawReqHeaders);
@@ -1771,11 +1802,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         // (/_next/static/*) were already served above. Middleware response headers
         // (including next.config headers staged by the pipeline) are passed through so
         // Set-Cookie / security headers from middleware are included in the response.
-        serveStaticFile: async (requestPathname, stagedHeaders) => {
+        serveFilesystemRoute: async (requestPathname, stagedHeaders, phase) => {
           if (
+            (req.method !== "GET" && req.method !== "HEAD") ||
             requestPathname === "/" ||
+            requestPathname === "/api" ||
             requestPathname.startsWith("/api/") ||
-            requestPathname.startsWith(`/${ASSET_PREFIX_URL_DIR}/`)
+            (phase === "direct" && requestPathname.startsWith(`/${ASSET_PREFIX_URL_DIR}/`))
           ) {
             return false;
           }
@@ -1794,7 +1827,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       const result = await runPagesRequest(webRequest, deps);
 
       if (result.type === "handled") {
-        // serveStaticFile already wrote the response to `res`.
+        // serveFilesystemRoute already wrote the response to `res`.
         return;
       }
 

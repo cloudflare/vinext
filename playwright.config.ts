@@ -263,6 +263,18 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "pages-router-basepath-dev": {
+    testDir: "./tests/e2e/pages-router-basepath-dev",
+    use: { baseURL: "http://localhost:4189" },
+    server: {
+      command:
+        "(test -e node_modules || test -L node_modules || ln -s ../pages-basic/node_modules node_modules) && npx vp dev --port 4189",
+      cwd: "./tests/fixtures/pages-basepath-dev",
+      port: 4189,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+  },
 };
 
 type ProjectName = keyof typeof projectServers;
