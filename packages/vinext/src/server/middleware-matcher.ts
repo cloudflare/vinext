@@ -1,5 +1,6 @@
 import {
   checkHasConditions,
+  isSafeRegex,
   requestContextFromRequest,
   safeRegExp,
   type RequestContext,
@@ -23,7 +24,10 @@ const EMPTY_MIDDLEWARE_REQUEST_CONTEXT: RequestContext = {
   host: "",
 };
 
-const _mwPatternCache = new Map<string, RegExp | null>();
+const UNSAFE_MATCHER_PATTERN = Symbol("unsafe matcher pattern");
+type CompiledMatcherPattern = RegExp | null | typeof UNSAFE_MATCHER_PATTERN;
+
+const _mwPatternCache = new Map<string, CompiledMatcherPattern>();
 
 export function matchesMiddleware(
   pathname: string,
@@ -130,6 +134,7 @@ export function matchPattern(pathname: string, pattern: string): boolean {
     cached = compileMatcherPattern(pattern);
     _mwPatternCache.set(pattern, cached);
   }
+  if (cached === UNSAFE_MATCHER_PATTERN) return true;
   if (cached === null) return pathname === pattern;
   return cached.test(pathname);
 }
@@ -149,11 +154,11 @@ function extractConstraint(str: string, re: RegExp): string | null {
   return str.slice(start, i - 1);
 }
 
-function compileMatcherPattern(pattern: string): RegExp | null {
+function compileMatcherPattern(pattern: string): CompiledMatcherPattern {
   const hasConstraints = /:[\w-]+[*+]?\(/.test(pattern);
 
   if (!hasConstraints && (pattern.includes("(") || pattern.includes("\\"))) {
-    return safeRegExp("^" + pattern + "$");
+    return compileMatcherRegExp("^" + pattern + "$", pattern);
   }
 
   let regexStr = "";
@@ -187,5 +192,17 @@ function compileMatcherPattern(pattern: string): RegExp | null {
     }
   }
 
-  return safeRegExp("^" + regexStr + "$");
+  return compileMatcherRegExp("^" + regexStr + "$", pattern);
+}
+
+function compileMatcherRegExp(regexPattern: string, sourcePattern: string): CompiledMatcherPattern {
+  if (!isSafeRegex(regexPattern)) {
+    console.warn(
+      `[vinext] Rejecting potentially unsafe middleware matcher (ReDoS risk): ${sourcePattern}\n` +
+        `  Middleware will run for all paths to avoid bypassing request guards.\n` +
+        `  Simplify the matcher to avoid nested repetition.`,
+    );
+    return UNSAFE_MATCHER_PATTERN;
+  }
+  return safeRegExp(regexPattern);
 }
