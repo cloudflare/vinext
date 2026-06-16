@@ -21,7 +21,9 @@ import {
   RSC_ACTION_HEADER,
   RSC_HEADER,
   VINEXT_MW_CTX_HEADER,
+  VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_STATIC_PARAMS_PATH,
 } from "./headers.js";
 import { ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
@@ -36,7 +38,10 @@ import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base
 import { mergeRewriteQuery } from "../utils/query.js";
 import type { AppMiddlewareContext } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
-import { handleAppPrerenderEndpoint } from "./app-prerender-endpoints.js";
+import type {
+  AppPrerenderRootParamNamesMap,
+  AppPrerenderStaticParamsMap,
+} from "./app-prerender-endpoints.js";
 import {
   createRscRedirectLocation,
   hasRscCacheBustingSearchParam,
@@ -86,10 +91,8 @@ type RequestContext = ReturnType<typeof requestContextFromRequest>;
 type MetadataRoutes = Parameters<typeof handleMetadataRouteRequest>[0]["metadataRoutes"];
 const STATIC_METADATA_CONFIG_HEADER_OVERRIDES = new Set(["cache-control"]);
 type MakeThenableParams = Parameters<typeof handleMetadataRouteRequest>[0]["makeThenableParams"];
-type StaticParamsMap = Parameters<typeof handleAppPrerenderEndpoint>[1]["staticParamsMap"];
-type RootParamNamesMap = Parameters<
-  typeof handleAppPrerenderEndpoint
->[1]["rootParamNamesByPattern"];
+type StaticParamsMap = AppPrerenderStaticParamsMap;
+type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
 type AppRscMiddlewareContext = AppMiddlewareContext;
 
@@ -489,16 +492,22 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // issue #1333.
   const basePathState = { basePath: options.basePath, hadBasePath: true };
 
-  const prerenderEndpointResponse = await handleAppPrerenderEndpoint(request, {
-    isPrerenderEnabled() {
-      return process.env.VINEXT_PRERENDER === "1";
-    },
-    loadPagesRoutes: options.loadPrerenderPagesRoutes,
-    pathname,
-    rootParamNamesByPattern: options.rootParamNamesByPattern,
-    staticParamsMap: options.staticParamsMap,
-  });
-  if (prerenderEndpointResponse) return prerenderEndpointResponse;
+  if (
+    pathname === VINEXT_PRERENDER_STATIC_PARAMS_PATH ||
+    pathname === VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH
+  ) {
+    const { handleAppPrerenderEndpoint } = await import("./app-prerender-endpoints.js");
+    const prerenderEndpointResponse = await handleAppPrerenderEndpoint(request, {
+      isPrerenderEnabled() {
+        return process.env.VINEXT_PRERENDER === "1";
+      },
+      loadPagesRoutes: options.loadPrerenderPagesRoutes,
+      pathname,
+      rootParamNamesByPattern: options.rootParamNamesByPattern,
+      staticParamsMap: options.staticParamsMap,
+    });
+    if (prerenderEndpointResponse) return prerenderEndpointResponse;
+  }
 
   const trailingSlashRedirect = normalizeTrailingSlash(
     pathname,
