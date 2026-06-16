@@ -12403,7 +12403,7 @@ describe("next/dynamic shim", () => {
     expect(result).toEqual([]);
   });
 
-  it("loading component receives Next.js noSSR loading props", async () => {
+  it("loading component receives App Router loading props (pastDelay:true)", async () => {
     const { default: dynamic } = await import("../packages/vinext/src/shims/dynamic.js");
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
@@ -12423,7 +12423,9 @@ describe("next/dynamic shim", () => {
     renderToStaticMarkup(React.createElement(DynComp));
     expect(receivedProps).not.toBeNull();
     expect(receivedProps.isLoading).toBe(true);
-    expect(receivedProps.pastDelay).toBe(false);
+    // pastDelay is true on the server to match the client first render and the
+    // Next.js App Router contract (issue 1967).
+    expect(receivedProps.pastDelay).toBe(true);
     expect(receivedProps.error).toBeNull();
   });
 

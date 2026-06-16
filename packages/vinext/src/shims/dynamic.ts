@@ -213,7 +213,13 @@ function dynamic<P extends object = object>(
       // On the server (SSR or RSC), just render the loading state or nothing
       const SSRFalse = (_props: P) =>
         LoadingComponent
-          ? React.createElement(LoadingComponent, createDynamicLoadingProps({ pastDelay: false }))
+          ? // pastDelay must be true here to match (a) the client's first/pre-mount
+            // render (ClientSSRFalse uses createDynamicLoadingProps, which defaults
+            // pastDelay to true) and (b) Next.js App Router, which always renders the
+            // loading fallback with pastDelay=true on both server and client. Hardcoding
+            // false produced a hydration mismatch for loading components that branch on
+            // pastDelay, e.g. `if (!pastDelay) return null` (issue 1967).
+            React.createElement(LoadingComponent, createDynamicLoadingProps())
           : null;
       SSRFalse.displayName = "DynamicSSRFalse";
       return SSRFalse;
