@@ -122,7 +122,11 @@ async function withInjectClientServer(
     await run({ tmpDir, container: client.pluginContainer });
   } finally {
     await testServer.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    // The Vite dev server's esbuild/rollup workers and file watchers can still
+    // be flushing files into tmpDir as the recursive delete walks it, which
+    // races to ENOTEMPTY even with force:true. maxRetries makes fs.rmSync retry
+    // on ENOTEMPTY/EBUSY so teardown doesn't flake on CI.
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 
