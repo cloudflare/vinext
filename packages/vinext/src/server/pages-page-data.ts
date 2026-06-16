@@ -136,6 +136,7 @@ type RenderPagesIsrHtmlOptions = {
   pageProps: Record<string, unknown>;
   props?: Record<string, unknown>;
   params: Record<string, unknown>;
+  query: Record<string, unknown>;
   renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
   routePattern: string;
   safeJsonStringify: (value: unknown) => string;
@@ -653,6 +654,7 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
     pageProps: options.pageProps,
     props: renderProps,
     params: options.params,
+    query: options.query,
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
     // Serialize the same readiness flags (gssp/gsp/autoExport/…) the initial
@@ -947,6 +949,7 @@ export async function resolvePagesPageData(
                 pageProps: freshPageProps,
                 props: freshRenderProps,
                 params: options.params,
+                query: options.query,
                 renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
                 routePattern: options.routePattern,
                 safeJsonStringify: options.safeJsonStringify,

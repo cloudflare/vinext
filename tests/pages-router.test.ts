@@ -8481,6 +8481,59 @@ describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
     expect(nextData.props.pageProps.gsspCallId).toBeGreaterThan(0);
   });
 
+  // Regression tests for GitHub issue #1970 — SSR-serialized __NEXT_DATA__.query
+  // must match Next.js (and vinext's own client router after a soft nav), which
+  // serialize the full merged query (querystring + route params) for gSSP/gIP
+  // pages, route params only for getStaticProps, and {} for autoExport/fallback.
+  it("gSSP page includes querystring + route params in __NEXT_DATA__.query (#1970)", async () => {
+    const res = await fetch(`${routerBaseUrl}/posts/hello-world?q=foo&utm=bar`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const nextData = readNextData(html);
+    expect(nextData.query).toEqual({ id: "hello-world", q: "foo", utm: "bar" });
+  });
+
+  it("gSSP route params win over same-name querystring in __NEXT_DATA__.query", async () => {
+    const res = await fetch(`${routerBaseUrl}/posts/42?id=evil`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const nextData = readNextData(html);
+    expect(nextData.query).toEqual({ id: "42" });
+  });
+
+  it("gSSP non-dynamic page includes array querystring values in __NEXT_DATA__.query", async () => {
+    const res = await fetch(`${routerBaseUrl}/shallow-test?a=1&a=2`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const nextData = readNextData(html);
+    expect(nextData.query).toEqual({ a: ["1", "2"] });
+  });
+
+  it("getStaticProps page drops the querystring from __NEXT_DATA__.query", async () => {
+    const res = await fetch(`${routerBaseUrl}/blog/hello-world?x=1`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const nextData = readNextData(html);
+    expect(nextData.query).toEqual({ slug: "hello-world" });
+  });
+
+  it("autoExport dynamic page resets __NEXT_DATA__.query to {}", async () => {
+    const res = await fetch(`${routerBaseUrl}/nav-compat/foobar?a=pages`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const nextData = readNextData(html);
+    expect(nextData.page).toBe("/nav-compat/[slug]");
+    expect(nextData.query).toEqual({});
+  });
+
+  it("getInitialProps page includes the full merged query in __NEXT_DATA__.query", async () => {
+    const res = await fetch(`${routerBaseUrl}/nav-compat-gip/foobar?q=pages`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const nextData = readNextData(html);
+    expect(nextData.query).toEqual({ slug: "foobar", q: "pages" });
+  });
+
   // Ported from Next.js: test/e2e/middleware-dynamic-basepath-matcher-rewrites
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-dynamic-basepath-matcher-rewrites
   // Regression test for GitHub issue #1196 — catch-all + basePath + rewrites + middleware.

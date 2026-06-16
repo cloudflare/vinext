@@ -97,6 +97,7 @@ describe("pages page data", () => {
       },
       pageProps: { title: "fresh" },
       params: { slug: "post" },
+      query: { slug: "post" },
       renderIsrPassToStringAsync: vi.fn(async () => "<div>fresh-body</div>"),
       routePattern: "/posts/[slug]",
       safeJsonStringify(value: unknown) {

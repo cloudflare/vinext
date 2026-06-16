@@ -23,6 +23,7 @@ import {
   type RenderPageEnhancers,
   runDocumentRenderPage,
 } from "./pages-document-initial-props.js";
+import { computePagesNextDataQuery } from "./pages-readiness.js";
 import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
@@ -274,6 +275,7 @@ export function buildPagesNextDataScript(
     | "pageProps"
     | "props"
     | "params"
+    | "query"
     | "routePattern"
     | "safeJsonStringify"
     | "scriptNonce"
@@ -285,7 +287,13 @@ export function buildPagesNextDataScript(
   const nextDataPayload: Record<string, unknown> = {
     props: options.props ?? { pageProps: options.pageProps },
     page: options.routePattern,
-    query: options.params,
+    query: computePagesNextDataQuery({
+      query: options.query ?? options.params,
+      params: options.params,
+      isFallback: options.isFallback === true,
+      autoExport: options.nextData?.autoExport,
+      gsp: options.nextData?.gsp,
+    }),
     buildId: options.buildId,
     isFallback: options.isFallback === true,
   };
@@ -503,6 +511,7 @@ export async function renderPagesPageResponse(
     pageProps: options.pageProps,
     props: renderProps,
     params: options.params,
+    query: options.query,
     routePattern: options.routePattern,
     safeJsonStringify: options.safeJsonStringify,
     scriptNonce: options.scriptNonce,

@@ -53,3 +53,34 @@ export function buildPagesReadinessNextData(options: {
     __vinext: { hasRewrites: options.hasRewrites },
   };
 }
+
+/**
+ * Compute the `__NEXT_DATA__.query` value for a Pages Router SSR render,
+ * matching Next.js's serialization carve-out so the inlined value is identical
+ * to what the client router writes after a soft navigation (see
+ * `shims/router.ts`'s `mergeRouteParamsIntoQuery` call). Shared by the prod
+ * (`buildPagesNextDataScript`) and dev SSR render paths so they cannot drift.
+ *
+ * Next.js parity (render.tsx + next-server.ts `findPageComponents`):
+ *   - getServerSideProps / page or _app `getInitialProps` → full merged query
+ *     (URL querystring + route params).
+ *   - getStaticProps (non-fallback render) → route params only; the querystring
+ *     is dropped (a static page's output can't depend on the request query).
+ *   - autoExport (no data-fetching exports) or a getStaticPaths fallback shell →
+ *     `{}` (reset). Dynamic-route params are recovered client-side from the URL
+ *     path on hydration, so resetting here is safe.
+ *
+ * `query` is the already-merged query (querystring + route params); `params` is
+ * the route-match params only.
+ */
+export function computePagesNextDataQuery(opts: {
+  query: Record<string, unknown>;
+  params: Record<string, unknown>;
+  isFallback: boolean;
+  autoExport: boolean | undefined;
+  gsp: boolean | undefined;
+}): Record<string, unknown> {
+  if (opts.isFallback || opts.autoExport) return {};
+  if (opts.gsp) return opts.params;
+  return opts.query;
+}
