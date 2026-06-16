@@ -83,7 +83,10 @@ describe("App Router: global-not-found CSS order (production, #1549)", () => {
       logLevel: "silent",
     });
     await builder.buildApp();
+  }, 120_000);
 
+  async function startPreviewServer(): Promise<void> {
+    if (previewServer) return;
     previewServer = await preview({
       root: FIXTURE_DIR,
       configFile: false,
@@ -94,14 +97,22 @@ describe("App Router: global-not-found CSS order (production, #1549)", () => {
     const addr = previewServer.httpServer.address();
     baseUrl = addr && typeof addr === "object" ? `http://localhost:${addr.port}` : "";
     expect(baseUrl).not.toBe("");
-  }, 120_000);
+  }
 
   afterAll(() => {
     previewServer?.httpServer.close();
     fs.rmSync(distDir, { recursive: true, force: true });
   });
 
+  it("does not eagerly evaluate dynamically imported React server stubs", async () => {
+    const entryUrl = pathToFileURL(path.join(distDir, "server", "index.js"));
+    entryUrl.searchParams.set("test", String(Date.now()));
+
+    await expect(import(entryUrl.href)).resolves.toBeDefined();
+  });
+
   it("matched routes serve the root layout's CSS (green wins)", async () => {
+    await startPreviewServer();
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
     const html = await res.text();
@@ -115,14 +126,8 @@ describe("App Router: global-not-found CSS order (production, #1549)", () => {
     expect(css).not.toContain("red");
   });
 
-  it("does not eagerly evaluate dynamically imported React server stubs", async () => {
-    const entryUrl = pathToFileURL(path.join(distDir, "server", "index.js"));
-    entryUrl.searchParams.set("test", String(Date.now()));
-
-    await expect(import(entryUrl.href)).resolves.toBeDefined();
-  });
-
   it("route-miss 404 serves global-not-found's CSS with red winning, and no layout CSS leak", async () => {
+    await startPreviewServer();
     const res = await fetch(`${baseUrl}/does-not-exist`);
     expect(res.status).toBe(404);
     const html = await res.text();
