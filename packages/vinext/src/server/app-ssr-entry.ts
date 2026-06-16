@@ -44,7 +44,10 @@ import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
-import { createBfcacheSegmentStateKeyMap, createInitialBfcacheIdMap } from "./app-browser-state.js";
+import {
+  createBfcacheSegmentStateKeyMap,
+  createInitialBfcacheIdMap,
+} from "./app-bfcache-identity.js";
 import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
