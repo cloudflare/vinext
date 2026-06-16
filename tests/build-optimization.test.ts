@@ -2772,6 +2772,70 @@ export const getStaticPaths = () => [
     expect(result).toContain("export const getStaticPaths = undefined;");
     expect(result).not.toContain("a;b");
   });
+
+  // Regression test for #1972: a server export sharing a single `export const`
+  // declaration with a sibling binding must strip ONLY the server-export
+  // declarator, preserving the sibling. Ported from Next.js
+  // test/unit/babel-plugin-next-ssg-transform.test.ts ('should not remove extra
+  // named export variable declarations').
+  it("preserves sibling bindings in a combined export const declaration", () => {
+    const code = `
+export default function Page({ foo }) {
+  return foo;
+}
+
+export const foo = 2, getStaticProps = async () => ({ props: { secret: 1 } });
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    // The sibling binding must survive — it was previously deleted.
+    expect(result).toContain("foo = 2");
+    // The server export is stubbed.
+    expect(result).toContain("getStaticProps = undefined");
+    // The server body is gone.
+    expect(result).not.toContain("secret: 1");
+    // The transformed code must be valid JS.
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  // Regression test for #1972: two server exports in a single declaration must
+  // each be stubbed. The old code overwrote the identical node range twice, and
+  // MagicString silently kept only the last write, collapsing them to one stub.
+  it("stubs both server exports declared in a single statement", () => {
+    const code = `
+export default function Page() {
+  return null;
+}
+
+export const getStaticProps = async () => ({ props: {} }), getStaticPaths = async () => ({ paths: ['SECRET_PATH'] });
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("getStaticProps = undefined");
+    expect(result).toContain("getStaticPaths = undefined");
+    expect(result).not.toContain("SECRET_PATH");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  // Regression test for #1972: a destructuring sibling in the same declaration
+  // must be preserved (its id is an ObjectPattern, not an Identifier).
+  it("preserves a destructuring sibling alongside a server export", () => {
+    const code = `
+const params = { slug: 'a' };
+
+export default function Page({ slug }) {
+  return slug;
+}
+
+export const { slug } = params, getStaticProps = async () => ({ props: { hidden: true } });
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("{ slug } = params");
+    expect(result).toContain("getStaticProps = undefined");
+    expect(result).not.toContain("hidden: true");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
 });
 
 // ─── getClientTreeshakeConfigForVite ──────────────────────────────────────────

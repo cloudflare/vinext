@@ -42,9 +42,18 @@ export function stripServerExports(code: string): string | null {
         );
         changed = true;
       } else if (decl.type === "VariableDeclaration") {
+        // Rewrite only the matching declarator's own range (id = init), not the
+        // whole `export const … ;` statement. Overwriting the full node range per
+        // match would drop sibling declarators (`export const a = 1, gSP = …`
+        // loses `a`) and, with two server exports in one declaration, overwrite
+        // the same range twice — MagicString silently keeps only the last write,
+        // collapsing both to a single stub. Declarator ranges are disjoint and
+        // exclude the `const`/`let`/`var` keyword and the separating commas, so
+        // each match is rewritten independently and siblings (including
+        // destructuring patterns) are preserved. See #1972.
         for (const declarator of decl.declarations) {
           if (declarator.id?.type === "Identifier" && SERVER_EXPORTS.has(declarator.id.name)) {
-            s.overwrite(node.start, node.end, `export const ${declarator.id.name} = undefined;`);
+            s.overwrite(declarator.start, declarator.end, `${declarator.id.name} = undefined`);
             changed = true;
           }
         }
