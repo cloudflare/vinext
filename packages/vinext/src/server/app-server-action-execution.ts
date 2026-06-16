@@ -856,7 +856,13 @@ export async function handleProgressiveServerActionRequest(
       // flushes `requestStore.mutableCookies` onto the response before SSR
       // streaming begins. Without this, no-JS server-action form POSTs lose
       // cookies/headers — see issue #1483.
-      const actionPendingCookies = options.getAndClearPendingCookies();
+      //
+      // Dedupe by name (last value wins) before returning, matching the
+      // redirect branch below and the RSC paths. Next.js' mutable cookies are
+      // a name-keyed `ResponseCookies` map, so two `cookies().set("x", ...)`
+      // calls collapse to a single Set-Cookie; without this, the no-JS
+      // non-redirect path would emit one Set-Cookie per call — see issue #1976.
+      const actionPendingCookies = dedupePendingCookies(options.getAndClearPendingCookies());
       const actionDraftCookie = options.getDraftModeCookieHeader();
       const revalidationKind = resolveActionRevalidationKind(
         actionPendingCookies.length > 0 || Boolean(actionDraftCookie),

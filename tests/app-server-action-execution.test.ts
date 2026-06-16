@@ -702,6 +702,41 @@ describe("app server action execution helpers", () => {
     ]);
   });
 
+  // Regression for issue #1976 — the no-JS (progressive) NON-redirect form-state
+  // path must dedupe same-name Set-Cookie entries (last value wins), matching the
+  // redirect path above and the RSC paths. Before the fix it returned the raw
+  // pending-cookie array, so two `cookies().set("foo", ...)` calls emitted two
+  // Set-Cookie headers for "foo" — diverging from Next.js' name-keyed
+  // ResponseCookies (last-wins) behaviour.
+  it("deduplicates pending Set-Cookie headers by name on non-redirect form-state actions (#1976)", async () => {
+    const formData = new FormData();
+    formData.set("$ACTION_ID_test", "");
+
+    const result = await handleProgressiveServerActionRequest(
+      createOptions({
+        async decodeAction() {
+          return () => undefined;
+        },
+        getAndClearPendingCookies() {
+          // Two sets for "foo" (last wins) plus a distinct "bar".
+          return ["foo=1; Path=/", "foo=2; Path=/; HttpOnly", "bar=3; Path=/"];
+        },
+        readFormDataWithLimit() {
+          return Promise.resolve(formData);
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: "form-state",
+      formState: null,
+      pendingCookies: ["foo=2; Path=/; HttpOnly", "bar=3; Path=/"],
+      draftCookie: null,
+      // Non-zero revalidation kind because cookies were mutated.
+      revalidationKind: 1,
+    });
+  });
+
   // Regression for issue #1483 — no-JS form POST actions that set cookies but
   // do not redirect must still surface those Set-Cookie headers (and the
   // revalidation marker) on the rerender response. Before the fix, the
