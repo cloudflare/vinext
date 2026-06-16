@@ -803,6 +803,19 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });
 
+  it("generateRscEntry defers route-handler and server-action runtimes", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain('const __loadAppRouteHandlerDispatch = () => import("');
+    expect(code).toContain('const __loadAppServerActionExecution = () => import("');
+    expect(code).toContain("await __loadAppRouteHandlerDispatch()");
+    expect(code).toContain("await __loadAppServerActionExecution()");
+    expect(code).not.toMatch(/import \{\s*dispatchAppRouteHandler as __dispatchAppRouteHandler,/);
+    expect(code).not.toMatch(
+      /import \{\s*handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,/,
+    );
+  });
+
   it("generateRscEntry passes page-slot dynamic stale time config into App page dispatch", () => {
     // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
