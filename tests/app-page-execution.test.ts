@@ -608,6 +608,65 @@ describe("app page execution helpers", () => {
     );
   });
 
+  // Regression: #1977 — a generateMetadata() redirect() to a target with
+  // percent-encoded characters or a ';' in the query must reach the browser
+  // intact in the streaming-metadata meta-refresh tag. Previously the verbatim
+  // NEXT_REDIRECT digest was re-parsed by parseNextRedirectDigest (parts[2] +
+  // decodeURIComponent), truncating at the first ';' and double-decoding '%25'.
+  // The HTML path now renders straight from the already-resolved URL.
+  async function renderMetadataRedirectHtml(
+    location: string,
+    statusCode = 307,
+    options: { basePath?: string } = {},
+  ): Promise<string> {
+    const response = await buildAppPageSpecialErrorResponse({
+      buildRscRedirectFlightStream: vi.fn(),
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      request: new Request("https://example.com/start"),
+      ...(options.basePath ? { basePath: options.basePath } : {}),
+      specialError: {
+        kind: "redirect",
+        location,
+        statusCode,
+        fromMetadata: true,
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    return response.text();
+  }
+
+  it("preserves percent-encoded query characters in the metadata redirect meta-refresh URL (#1977)", async () => {
+    expect(await renderMetadataRedirectHtml("/search?q=50%25off")).toContain(
+      '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/search?q=50%25off"/>',
+    );
+  });
+
+  it("preserves a semicolon in the metadata redirect meta-refresh URL without truncating (#1977)", async () => {
+    expect(await renderMetadataRedirectHtml("/a?b=1;c=2")).toContain(
+      '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/a?b=1;c=2"/>',
+    );
+  });
+
+  it("uses a 0s refresh delay for permanent (308) metadata redirects", async () => {
+    expect(await renderMetadataRedirectHtml("/perm", 308)).toContain(
+      '<meta id="__next-page-redirect" http-equiv="refresh" content="0;url=/perm"/>',
+    );
+  });
+
+  it("applies the configured basePath exactly once to metadata redirect meta-refresh URLs", async () => {
+    expect(await renderMetadataRedirectHtml("/about?x=1", 307, { basePath: "/docs" })).toContain(
+      '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/docs/about?x=1"/>',
+    );
+  });
+
+  it("keeps cross-origin metadata redirect targets absolute in the meta-refresh URL", async () => {
+    expect(await renderMetadataRedirectHtml("https://other.example.org/foo?x=1")).toContain(
+      '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=https://other.example.org/foo?x=1"/>',
+    );
+  });
+
   it("uses an HTTP redirect for metadata-originated redirects when metadata streaming is disabled", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts

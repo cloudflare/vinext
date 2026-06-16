@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   createSsrErrorMetaRenderer,
+  renderRedirectRefreshMetaTag,
   renderSsrErrorMetaTags,
 } from "../packages/vinext/src/server/app-ssr-error-meta.js";
 
@@ -91,5 +92,34 @@ describe("App SSR error meta tags", () => {
       '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/target"/>',
     );
     expect(renderer.flush()).toBe("");
+  });
+
+  describe("renderRedirectRefreshMetaTag (resolved-URL path, #1977)", () => {
+    // Unlike the digest path, this entry point takes an already-resolved URL and
+    // must NOT decode or split it — the metadata document-redirect path holds the
+    // final URL and only needs HTML-attribute escaping.
+    it("emits a percent-encoded URL verbatim without double-decoding", () => {
+      expect(renderRedirectRefreshMetaTag("/search?q=50%25off", 307)).toBe(
+        '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/search?q=50%25off"/>',
+      );
+    });
+
+    it("preserves a semicolon in the URL without truncating", () => {
+      expect(renderRedirectRefreshMetaTag("/a?b=1;c=2", 307)).toBe(
+        '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/a?b=1;c=2"/>',
+      );
+    });
+
+    it("uses a 0s delay for permanent (308) redirects", () => {
+      expect(renderRedirectRefreshMetaTag("/perm", 308)).toBe(
+        '<meta id="__next-page-redirect" http-equiv="refresh" content="0;url=/perm"/>',
+      );
+    });
+
+    it("HTML-escapes the URL for attribute context", () => {
+      expect(renderRedirectRefreshMetaTag('/x?a=1&b=2&q="<x>', 307)).toBe(
+        '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/x?a=1&amp;b=2&amp;q=&quot;&lt;x&gt;"/>',
+      );
+    });
   });
 });
