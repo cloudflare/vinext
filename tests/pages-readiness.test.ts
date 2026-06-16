@@ -140,7 +140,9 @@ describe("computePagesNextDataQuery", () => {
     ).toEqual({ id: "42" });
   });
 
-  it("resets to {} for autoExport pages", () => {
+  it("keeps route params for autoExport pages (drops the querystring)", () => {
+    // Route params are kept (not reset to {}) so vinext's client can recover a
+    // rewritten dynamic route's params from __NEXT_DATA__.query on hydration.
     expect(
       computePagesNextDataQuery({
         query,
@@ -149,10 +151,10 @@ describe("computePagesNextDataQuery", () => {
         autoExport: true,
         gsp: undefined,
       }),
-    ).toEqual({});
+    ).toEqual({ id: "42" });
   });
 
-  it("resets to {} for getStaticPaths fallback shell renders", () => {
+  it("keeps route params for getStaticPaths fallback shell renders", () => {
     expect(
       computePagesNextDataQuery({
         query,
@@ -161,18 +163,6 @@ describe("computePagesNextDataQuery", () => {
         autoExport: false,
         gsp: undefined,
       }),
-    ).toEqual({});
-  });
-
-  it("isFallback overrides gsp (a fallback shell of a gsp page resets to {})", () => {
-    expect(
-      computePagesNextDataQuery({
-        query,
-        params,
-        isFallback: true,
-        autoExport: false,
-        gsp: true,
-      }),
-    ).toEqual({});
+    ).toEqual({ id: "42" });
   });
 });

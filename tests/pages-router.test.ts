@@ -8517,13 +8517,15 @@ describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
     expect(nextData.query).toEqual({ slug: "hello-world" });
   });
 
-  it("autoExport dynamic page resets __NEXT_DATA__.query to {}", async () => {
+  it("autoExport dynamic page keeps route params (drops querystring) in __NEXT_DATA__.query", async () => {
     const res = await fetch(`${routerBaseUrl}/nav-compat/foobar?a=pages`);
     expect(res.status).toBe(200);
     const html = await res.text();
     const nextData = readNextData(html);
     expect(nextData.page).toBe("/nav-compat/[slug]");
-    expect(nextData.query).toEqual({});
+    // Route params are retained (not reset to {}) so the client can recover them
+    // on hydration; the non-route querystring is dropped for a static render.
+    expect(nextData.query).toEqual({ slug: "foobar" });
   });
 
   it("getInitialProps page includes the full merged query in __NEXT_DATA__.query", async () => {
@@ -8532,6 +8534,19 @@ describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
     const html = await res.text();
     const nextData = readNextData(html);
     expect(nextData.query).toEqual({ slug: "foobar", q: "pages" });
+  });
+
+  it("rewritten autoExport route keeps its route params in __NEXT_DATA__.query", async () => {
+    // Regression guard for the rewrite case the navigation e2e exercises:
+    // /rewrite-navigation/0 rewrites to /rewrite-navigation/[id]/destination, so
+    // the visible URL path doesn't contain the `id` param. The client recovers
+    // it from __NEXT_DATA__.query, so the serialized query must keep `id`.
+    const res = await fetch(`${routerBaseUrl}/rewrite-navigation/0`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const nextData = readNextData(html);
+    expect(nextData.page).toBe("/rewrite-navigation/[id]/destination");
+    expect(nextData.query).toEqual({ id: "0" });
   });
 
   // Ported from Next.js: test/e2e/middleware-dynamic-basepath-matcher-rewrites

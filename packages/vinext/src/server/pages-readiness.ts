@@ -55,20 +55,28 @@ export function buildPagesReadinessNextData(options: {
 }
 
 /**
- * Compute the `__NEXT_DATA__.query` value for a Pages Router SSR render,
- * matching Next.js's serialization carve-out so the inlined value is identical
- * to what the client router writes after a soft navigation (see
- * `shims/router.ts`'s `mergeRouteParamsIntoQuery` call). Shared by the prod
- * (`buildPagesNextDataScript`) and dev SSR render paths so they cannot drift.
+ * Compute the `__NEXT_DATA__.query` value for a Pages Router SSR render so the
+ * inlined value is identical to what the client router writes after a soft
+ * navigation (see `shims/router.ts`'s `mergeRouteParamsIntoQuery` call). Shared
+ * by the prod (`buildPagesNextDataScript`) and dev SSR render paths so they
+ * cannot drift.
  *
- * Next.js parity (render.tsx + next-server.ts `findPageComponents`):
  *   - getServerSideProps / page or _app `getInitialProps` → full merged query
- *     (URL querystring + route params).
- *   - getStaticProps (non-fallback render) → route params only; the querystring
- *     is dropped (a static page's output can't depend on the request query).
- *   - autoExport (no data-fetching exports) or a getStaticPaths fallback shell →
- *     `{}` (reset). Dynamic-route params are recovered client-side from the URL
- *     path on hydration, so resetting here is safe.
+ *     (URL querystring + route params). This is the #1970 fix: a per-request
+ *     server render's `__NEXT_DATA__.query` must carry the querystring, matching
+ *     Next.js and the client router after a soft nav.
+ *   - getStaticProps → route params only; the querystring is dropped (a static
+ *     page's output can't depend on the request query — Next.js parity).
+ *   - autoExport / getStaticPaths fallback shell → route params only.
+ *
+ * Every non-gSSP/gIP case keeps the route params (rather than resetting to `{}`
+ * for autoExport/fallback as Next.js does) because vinext's client recovers a
+ * dynamic route's params from `__NEXT_DATA__.query` whenever the visible URL
+ * path doesn't match the route pattern — e.g. a rewrite from
+ * `/rewrite-navigation/0` to `/rewrite-navigation/[id]/destination`, where the
+ * params live nowhere else on the page (`getRouteQueryFromNextData` in
+ * `shims/router.ts`). Emptying the query there would drop `useRouter().query`'s
+ * route params on hydration.
  *
  * `query` is the already-merged query (querystring + route params); `params` is
  * the route-match params only.
@@ -80,7 +88,6 @@ export function computePagesNextDataQuery(opts: {
   autoExport: boolean | undefined;
   gsp: boolean | undefined;
 }): Record<string, unknown> {
-  if (opts.isFallback || opts.autoExport) return {};
-  if (opts.gsp) return opts.params;
+  if (opts.isFallback || opts.autoExport || opts.gsp) return opts.params;
   return opts.query;
 }
