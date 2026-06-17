@@ -74,7 +74,10 @@ function findInstrumentationHookFile(
 ): string | null {
   for (const dir of INSTRUMENTATION_LOCATIONS) {
     for (const ext of fileMatcher.dottedExtensions) {
-      const fullPath = path.join(root, dir, `${basename}${ext}`);
+      // `root` is normalized to forward slashes by the config hook before it
+      // reaches here, so keep the result forward-slash with path.posix.join
+      // instead of letting win32 path.join reintroduce backslashes.
+      const fullPath = path.posix.join(root, dir, `${basename}${ext}`);
       if (fs.existsSync(fullPath)) {
         return fullPath;
       }

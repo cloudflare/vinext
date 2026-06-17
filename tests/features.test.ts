@@ -25,6 +25,7 @@ import {
 } from "./helpers.js";
 import { withEnvVar } from "./env-test-helpers.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
+import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
@@ -3849,15 +3850,17 @@ describe("instrumentation.ts support", () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
 
-    // Create a temp directory with an instrumentation.ts file
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-"));
+    // Create a temp directory with an instrumentation.ts file. Production
+    // always passes a forward-slash root (the config hook normalizes it), so
+    // mirror that — findInstrumentationFile returns forward-slash paths.
+    const tmpDir = normalizePathSeparators(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
     fs.writeFileSync(
       path.join(tmpDir, "instrumentation.ts"),
       'export function register() { console.log("registered"); }',
     );
 
     const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
-    expect(result).toBe(path.join(tmpDir, "instrumentation.ts"));
+    expect(result).toBe(path.posix.join(tmpDir, "instrumentation.ts"));
 
     // Cleanup
     fs.rmSync(tmpDir, { recursive: true });
@@ -3870,7 +3873,7 @@ describe("instrumentation.ts support", () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
 
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-"));
+    const tmpDir = normalizePathSeparators(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-")));
     fs.mkdirSync(path.join(tmpDir, "src"));
     fs.writeFileSync(
       path.join(tmpDir, "src", "instrumentation.ts"),
@@ -3878,7 +3881,7 @@ describe("instrumentation.ts support", () => {
     );
 
     const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
-    expect(result).toBe(path.join(tmpDir, "src", "instrumentation.ts"));
+    expect(result).toBe(path.posix.join(tmpDir, "src", "instrumentation.ts"));
 
     fs.rmSync(tmpDir, { recursive: true });
   });
