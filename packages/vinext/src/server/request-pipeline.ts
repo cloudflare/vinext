@@ -59,28 +59,6 @@ export function guardProtocolRelativeUrl(rawPathname: string): Response | null {
 }
 
 /**
- * Returns true if a request pathname looks like a protocol-relative open
- * redirect, in either literal or percent-encoded form.
- *
- * Exported for call sites that need to replicate the guard inline (Pages
- * Router worker codegen, Node production server) and for defense-in-depth
- * checks inside redirect emitters.
- *
- * A pathname is considered "open redirect shaped" when its first segment,
- * after decoding backslashes and encoded delimiters, would cause a browser
- * to resolve a `Location` containing the pathname as protocol-relative:
- *
- *   - literal   `//evil.com`
- *   - literal   `/\evil.com`             (browsers normalize `\` to `/`)
- *   - encoded   `/%5Cevil.com`           (`%5C` decodes to `\` in Location)
- *   - encoded   `/%2F/evil.com`          (`%2F` decodes to `/` → `//`)
- *   - mixed     `/%5C%2F`, `/%5C%5C`     (and other combinations)
- *
- * We explicitly do not require a valid percent sequence elsewhere in the
- * pathname — we only examine the leading bytes (up to the second real or
- * encoded delimiter) so malformed suffixes can still reach the normal
- * "400 Bad Request" decode path instead of being masked as "404".
-/**
  * Strip the basePath prefix from a pathname.
  *
  * All internal routing uses basePath-free paths. If the pathname starts

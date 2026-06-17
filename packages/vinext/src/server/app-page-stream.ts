@@ -262,12 +262,6 @@ export async function renderAppPageHtmlStream(
   return normalizeAppSsrRenderResult(rawResult, options.capturedRscDataRef?.value ?? null);
 }
 
-/**
- * Wraps a stream so that `onFlush` is called when the last byte has been read
- * by the downstream consumer (i.e. when the HTTP layer finishes draining the
- * response body). This is the correct place to clear per-request context,
- * because the RSC/SSR pipeline is lazy — components execute while the stream
- * is being consumed, not when the stream handle is first obtained.
 export async function renderAppPageHtmlResponse(
   options: RenderAppPageHtmlResponseOptions,
 ): Promise<Response> {
