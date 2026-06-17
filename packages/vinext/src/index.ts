@@ -4378,7 +4378,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           id: typeofWindowIdFilter,
           code: /typeof\s+window/,
         },
-        handler(code) {
+        handler(code, id) {
+          const normalizedCacheDir = normalizePathSeparators(this.environment.config.cacheDir);
+          const cacheDirPrefix = normalizedCacheDir.endsWith("/")
+            ? normalizedCacheDir
+            : `${normalizedCacheDir}/`;
+          if (normalizePathSeparators(id).startsWith(cacheDirPrefix)) {
+            return null;
+          }
           return replaceTypeofWindow(code, getTypeofWindowReplacement(this.environment));
         },
       },
