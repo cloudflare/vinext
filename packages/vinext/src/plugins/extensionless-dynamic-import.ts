@@ -32,36 +32,45 @@ export function createExtensionlessDynamicImportPlugin(): Plugin {
     configResolved(config) {
       moduleExtensions = getModuleExtensions(config);
     },
-    transform(code, id) {
-      if (!/\bimport\s*\(/.test(code)) return null;
-      if (isDependencyId(id)) return null;
-      const lang = langForId(id);
-      if (!lang) return null;
+    transform: {
+      filter: {
+        id: {
+          include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/i,
+          exclude: /[\\/]node_modules[\\/]/,
+        },
+        code: /\bimport\s*\(/,
+      },
+      handler(code, id) {
+        if (!/\bimport\s*\(/.test(code)) return null;
+        if (isDependencyId(id)) return null;
+        const lang = langForId(id);
+        if (!lang) return null;
 
-      let ast: unknown;
-      try {
-        ast = parseAst(code, { lang });
-      } catch {
-        return null;
-      }
+        let ast: unknown;
+        try {
+          ast = parseAst(code, { lang });
+        } catch {
+          return null;
+        }
 
-      const imports = collectExtensionlessImports(ast, code, moduleExtensions);
-      if (imports.length === 0) return null;
+        const imports = collectExtensionlessImports(ast, code, moduleExtensions);
+        if (imports.length === 0) return null;
 
-      const output = new MagicString(code);
-      for (const dynamicImport of imports) {
-        const source = code.slice(dynamicImport.sourceStart, dynamicImport.sourceEnd);
-        output.overwrite(
-          dynamicImport.start,
-          dynamicImport.end,
-          buildReplacement(source, dynamicImport.globPattern, dynamicImport.moduleExtensions),
-        );
-      }
+        const output = new MagicString(code);
+        for (const dynamicImport of imports) {
+          const source = code.slice(dynamicImport.sourceStart, dynamicImport.sourceEnd);
+          output.overwrite(
+            dynamicImport.start,
+            dynamicImport.end,
+            buildReplacement(source, dynamicImport.globPattern, dynamicImport.moduleExtensions),
+          );
+        }
 
-      return {
-        code: output.toString(),
-        map: output.generateMap({ hires: "boundary" }),
-      };
+        return {
+          code: output.toString(),
+          map: output.generateMap({ hires: "boundary" }),
+        };
+      },
     },
   };
 }

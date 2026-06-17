@@ -115,6 +115,7 @@ import {
 import { matchesRewriteSource, proxyExternalRequest } from "./config/config-matchers.js";
 import { detectPackageManager } from "./utils/project.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
+import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "./utils/virtual-module.js";
 import { ASSET_PREFIX_URL_DIR, resolveAssetsDir } from "./utils/asset-prefix.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
@@ -317,7 +318,9 @@ function isVercelOgImport(id: string): boolean {
 
 function isVinextOgShimImporter(importer: string | undefined): boolean {
   if (!importer) return false;
-  const cleanImporter = (importer.startsWith("\0") ? importer.slice(1) : importer).split("?")[0];
+  const cleanImporter = (importer.startsWith(VIRTUAL_PREFIX) ? importer.slice(1) : importer).split(
+    "?",
+  )[0];
   const normalizedImporter = cleanImporter.replace(/\\/g, "/");
   return (
     normalizedImporter.endsWith("/shims/og.tsx") ||
@@ -529,24 +532,24 @@ function resolveTsconfigAliases(projectRoot: string): Record<string, string> {
 
 // Virtual module IDs for Pages Router production build
 const VIRTUAL_SERVER_ENTRY = "virtual:vinext-server-entry";
-const RESOLVED_SERVER_ENTRY = "\0" + VIRTUAL_SERVER_ENTRY;
+const RESOLVED_SERVER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_SERVER_ENTRY;
 const VIRTUAL_CLIENT_ENTRY = "virtual:vinext-client-entry";
-const RESOLVED_CLIENT_ENTRY = "\0" + VIRTUAL_CLIENT_ENTRY;
+const RESOLVED_CLIENT_ENTRY = VIRTUAL_PREFIX + VIRTUAL_CLIENT_ENTRY;
 
 // Virtual module IDs for App Router entries
 const VIRTUAL_RSC_ENTRY = "virtual:vinext-rsc-entry";
-const RESOLVED_RSC_ENTRY = "\0" + VIRTUAL_RSC_ENTRY;
+const RESOLVED_RSC_ENTRY = VIRTUAL_PREFIX + VIRTUAL_RSC_ENTRY;
 const VIRTUAL_APP_SSR_ENTRY = "virtual:vinext-app-ssr-entry";
-const RESOLVED_APP_SSR_ENTRY = "\0" + VIRTUAL_APP_SSR_ENTRY;
+const RESOLVED_APP_SSR_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_SSR_ENTRY;
 const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
-const RESOLVED_APP_BROWSER_ENTRY = "\0" + VIRTUAL_APP_BROWSER_ENTRY;
+const RESOLVED_APP_BROWSER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_BROWSER_ENTRY;
 const VIRTUAL_ROOT_PARAMS = "virtual:vinext-root-params";
-const RESOLVED_ROOT_PARAMS = "\0" + VIRTUAL_ROOT_PARAMS;
+const RESOLVED_ROOT_PARAMS = VIRTUAL_PREFIX + VIRTUAL_ROOT_PARAMS;
 /** Virtual module that registers config-driven cache adapters (see VinextOptions.cache). */
-const RESOLVED_CACHE_ADAPTERS = "\0" + VIRTUAL_CACHE_ADAPTERS;
+const RESOLVED_CACHE_ADAPTERS = VIRTUAL_PREFIX + VIRTUAL_CACHE_ADAPTERS;
 /** Virtual module for composed instrumentation-client bootstrap. */
 const VIRTUAL_INSTRUMENTATION_CLIENT = "private-next-instrumentation-client";
-const RESOLVED_INSTRUMENTATION_CLIENT = `\0${VIRTUAL_INSTRUMENTATION_CLIENT}.mjs`;
+const RESOLVED_INSTRUMENTATION_CLIENT = `${VIRTUAL_PREFIX}${VIRTUAL_INSTRUMENTATION_CLIENT}.mjs`;
 /** Image file extensions handled by the vinext:image-imports plugin.
  *  Shared between the Rolldown hook filter and the transform handler regex. */
 const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
@@ -575,7 +578,7 @@ function isValidExportIdentifier(name: string): boolean {
 
 function isVirtualEntryFacade(id: string | null | undefined, virtualId: string): boolean {
   if (!id) return false;
-  const cleanId = id.startsWith("\0") ? id.slice(1) : id;
+  const cleanId = id.startsWith(VIRTUAL_PREFIX) ? id.slice(1) : id;
   return (
     cleanId === virtualId || cleanId.endsWith("/" + virtualId) || cleanId.endsWith("\\" + virtualId)
   );
@@ -1129,35 +1132,38 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           {
             name: "vinext:jsx-in-js",
             enforce: "pre" as const,
-            async transform(code: string, id: string) {
-              // Only handle .js/.mjs files.
-              // TypeScript (.ts/.tsx/.jsx) files are handled by vite:oxc.
-              const cleanId = id.split("?")[0];
-              if (!/\.(m?js)$/.test(cleanId)) return;
+            transform: {
+              filter: { id: /\.m?js(?:\?.*)?$/ },
+              async handler(code: string, id: string) {
+                // Only handle .js/.mjs files.
+                // TypeScript (.ts/.tsx/.jsx) files are handled by vite:oxc.
+                const cleanId = id.split("?")[0];
+                if (!/\.(m?js)$/.test(cleanId)) return;
 
-              // Inside node_modules, restrict the JSX transform to files that
-              // carry a React directive. `@vitejs/plugin-rsc` only parses
-              // such modules (and only those failures have been observed in
-              // the wild). The cheap `includes` check avoids any work for the
-              // vast majority of `.js` files in `node_modules`.
-              if (cleanId.includes("/node_modules/")) {
-                if (!code.includes("use client") && !code.includes("use server")) {
-                  return;
+                // Inside node_modules, restrict the JSX transform to files that
+                // carry a React directive. `@vitejs/plugin-rsc` only parses
+                // such modules (and only those failures have been observed in
+                // the wild). The cheap `includes` check avoids any work for the
+                // vast majority of `.js` files in `node_modules`.
+                if (cleanId.includes("/node_modules/")) {
+                  if (!code.includes("use client") && !code.includes("use server")) {
+                    return;
+                  }
+                  if (!hasReactDirective(code)) {
+                    return;
+                  }
                 }
-                if (!hasReactDirective(code)) {
-                  return;
-                }
-              }
 
-              const result = await transformWithOxc(code, id, {
-                lang: "jsx",
-                jsx: { runtime: "automatic" as const },
-                sourcemap: true,
-              });
-              return {
-                code: result.code,
-                map: result.map,
-              };
+                const result = await transformWithOxc(code, id, {
+                  lang: "jsx",
+                  jsx: { runtime: "automatic" as const },
+                  sourcemap: true,
+                });
+                return {
+                  code: result.code,
+                  map: result.map,
+                };
+              },
             },
           } satisfies Plugin,
         ]
@@ -2622,7 +2628,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // browser entry imports our virtual module using the already-resolved
           // ID (with \0 prefix). We need to re-resolve it so the client
           // environment's import-analysis can find it.
-          const cleanId = id.startsWith("\0") ? id.slice(1) : id;
+          const cleanId = id.startsWith(VIRTUAL_PREFIX) ? id.slice(1) : id;
 
           if (isVercelOgImport(cleanId) && !isVinextOgShimImporter(importer)) {
             return resolveShimModulePath(_shimsDir, "og");
@@ -2926,14 +2932,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       enforce: "pre",
       apply: "build",
 
-      transform(code, id) {
-        if (this.environment?.name !== "client") return null;
-        const marked = markCssUrlAssetReferences(code, id);
-        if (marked === null) return null;
-        // No source map: the marker is transient — it's stripped before final
-        // output (generateBundle), so emitted CSS positions are unchanged, and
-        // a map over the intermediate marked text carries no useful information.
-        return { code: marked, map: null };
+      transform: {
+        filter: {
+          id: /\.(?:css|scss|sass|less|styl|stylus)(?:\?|$)/i,
+          code: "url(",
+        },
+        handler(code, id) {
+          if (this.environment?.name !== "client") return null;
+          const marked = markCssUrlAssetReferences(code, id);
+          if (marked === null) return null;
+          // No source map: the marker is transient — it's stripped before final
+          // output (generateBundle), so emitted CSS positions are unchanged, and
+          // a map over the intermediate marked text carries no useful information.
+          return { code: marked, map: null };
+        },
       },
     },
     {
@@ -3099,33 +3111,45 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
       },
 
-      transform(code, id) {
-        // Only transform user source files, not node_modules or virtual modules
-        if (id.includes("node_modules")) return null;
-        if (id.startsWith("\0")) return null;
-        if (!/\.(tsx?|jsx?|mjs)$/.test(id)) return null;
+      transform: {
+        filter: {
+          id: {
+            include: /\.(tsx?|jsx?|mjs)$/,
+            exclude: [/node_modules/, VIRTUAL_MODULE_ID_RE],
+          },
+          code: /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/,
+        },
+        handler(code, id) {
+          // Only transform user source files, not node_modules or virtual modules
+          if (id.includes("node_modules")) return null;
+          if (id.startsWith(VIRTUAL_PREFIX)) return null;
+          if (!/\.(tsx?|jsx?|mjs)$/.test(id)) return null;
 
-        // Quick check: does this file reference canary APIs and import from "react"?
-        if (
-          !(code.includes("ViewTransition") || code.includes("addTransitionType")) ||
-          !/from\s+['"]react['"]/.test(code)
-        ) {
+          // Quick check: does this file reference canary APIs and import from "react"?
+          if (
+            !(code.includes("ViewTransition") || code.includes("addTransitionType")) ||
+            !/from\s+['"]react['"]/.test(code)
+          ) {
+            return null;
+          }
+
+          // Only rewrite if the import actually destructures a canary API
+          const canaryImportRegex =
+            /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/;
+          if (!canaryImportRegex.test(code)) return null;
+
+          // Rewrite all `from "react"` / `from 'react'` to use the canary shim.
+          // This is safe because the virtual module re-exports everything from
+          // react, so non-canary imports continue to work.
+          const result = code.replace(
+            /from\s*['"]react['"]/g,
+            'from "virtual:vinext-react-canary"',
+          );
+          if (result !== code) {
+            return { code: result, map: null };
+          }
           return null;
-        }
-
-        // Only rewrite if the import actually destructures a canary API
-        const canaryImportRegex =
-          /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/;
-        if (!canaryImportRegex.test(code)) return null;
-
-        // Rewrite all `from "react"` / `from 'react'` to use the canary shim.
-        // This is safe because the virtual module re-exports everything from
-        // react, so non-canary imports continue to work.
-        const result = code.replace(/from\s*['"]react['"]/g, 'from "virtual:vinext-react-canary"');
-        if (result !== code) {
-          return { code: result, map: null };
-        }
-        return null;
+        },
       },
     },
     {
@@ -4186,9 +4210,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     {
       name: "vinext:validate-page-exports",
       transform: {
+        filter: {
+          id: { exclude: VIRTUAL_MODULE_ID_RE },
+          code: /\bexport\b[\s\S]*\*/,
+        },
         handler(code, id) {
           if (this.environment?.name !== "client") return null;
-          if (!hasPagesDir || id.startsWith("\0") || !hasExportAllCandidate(code)) {
+          if (!hasPagesDir || id.startsWith(VIRTUAL_PREFIX) || !hasExportAllCandidate(code)) {
             return null;
           }
           const modulePath = stripViteModuleQuery(id);
@@ -4213,9 +4241,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     {
       name: "vinext:strip-server-exports",
       transform: {
+        filter: {
+          id: { exclude: VIRTUAL_MODULE_ID_RE },
+          code: /getServerSideProps|getStaticProps|getStaticPaths|unstable_getServerProps|unstable_getServerSideProps|unstable_getStaticProps|unstable_getStaticPaths/,
+        },
         handler(code, id) {
           if (this.environment?.name !== "client") return null;
-          if (!hasPagesDir || id.startsWith("\0") || !hasServerExportCandidate(code)) return null;
+          if (!hasPagesDir || id.startsWith(VIRTUAL_PREFIX) || !hasServerExportCandidate(code)) {
+            return null;
+          }
           // Only transform files under the pages/ directory
           const modulePath = stripViteModuleQuery(id);
           if (!isWithinPagesDirectory(modulePath)) return null;
@@ -4247,7 +4281,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         filter: { id: /\.(tsx?|jsx?|mjs)$/, code: "server-only" },
         handler(code, id) {
           if (this.environment?.name !== "client") return null;
-          if (id.startsWith("\0")) return null;
+          if (id.startsWith(VIRTUAL_PREFIX)) return null;
           if (getLeadingReactDirective(code) === "use server") return null;
           if (!hasServerOnlyMarkerImport(code)) return null;
 
@@ -4270,7 +4304,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       apply: "build",
       transform: {
         // Only match source files, not node_modules or virtual modules
-        filter: { id: /\.(tsx?|jsx?|mjs)$/ },
+        filter: {
+          id: {
+            include: /\.(tsx?|jsx?|mjs)$/,
+            exclude: /\/node_modules\//,
+          },
+          code: /\bconsole\b/,
+        },
         handler(code, id) {
           const ssr = this.environment?.name !== "client";
           if (ssr) return null;
@@ -4448,7 +4488,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         async handler(code, id) {
           // Defensive guard — duplicates filter logic
           if (id.includes("node_modules")) return null;
-          if (id.startsWith("\0")) return null;
+          if (id.startsWith(VIRTUAL_PREFIX)) return null;
           if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
 
           // The `code` filter above (a regex) only decides whether to invoke
@@ -4620,7 +4660,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         async handler(code, id) {
           // Defensive guard — duplicates filter logic
           if (id.includes("node_modules")) return null;
-          if (id.startsWith("\0")) return null;
+          if (id.startsWith(VIRTUAL_PREFIX)) return null;
           if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
           if (!code.includes("use cache")) return null;
 
@@ -5342,99 +5382,103 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // produces a single build output that runs on both runtimes.
       name: "vinext:og-font-patch",
       enforce: "pre" as const,
-      transform(code: string, id: string) {
-        if (!id.includes("@vercel/og") || !id.includes("index.edge.js")) return null;
-        let result = code;
+      transform: {
+        filter: { id: /@vercel\/og.*index\.edge\.js/ },
+        handler(code: string, id: string) {
+          if (!id.includes("@vercel/og") || !id.includes("index.edge.js")) return null;
+          let result = code;
 
-        // ── Yoga WASM: dynamic import + disk-read fallback ──────────────────────────
-        // yoga-layout's emscripten bundle sets H to a data URL containing the yoga WASM,
-        // then later calls WebAssembly.instantiate(bytes, imports), which workerd rejects.
-        // Emscripten supports a custom h2.instantiateWasm(imports, callback) escape hatch.
-        //
-        // Strategy: try dynamic import("./yoga.wasm?module") for workerd (pre-compiled
-        // module), fall back to reading the .wasm file from disk + WebAssembly.instantiate
-        // for Node.js. We read from disk rather than inlining base64 so the bundle ships
-        // exactly one physical copy of the WASM (the emitted ?module asset); the disk
-        // fallback is wired to that same file by vinext:og-assets. This mirrors the resvg
-        // handling below and keeps the dedup platform-agnostic.
-        const YOGA_DATA_URL_RE = /H = "data:application\/octet-stream;base64,([A-Za-z0-9+/]+=*)";/;
-        const yogaMatch = YOGA_DATA_URL_RE.exec(result);
-        if (yogaMatch) {
-          const yogaBase64 = yogaMatch[1];
-          const distDir = path.dirname(id);
-          const yogaWasmPath = path.join(distDir, "yoga.wasm");
-          // Write yoga.wasm to disk idempotently at transform time (Node.js side)
-          // so the ?module dynamic import can resolve it on workerd builds.
-          if (!fs.existsSync(yogaWasmPath)) {
-            fs.writeFileSync(yogaWasmPath, Buffer.from(yogaBase64, "base64"));
-          }
-          // Disable the data-URL branch so emscripten doesn't try to instantiate from bytes
-          result = result.replace(yogaMatch[0], `H = "";`);
-          // Patch the loadYoga call site to inject instantiateWasm with universal handler.
-          // WebAssembly.instantiate(Module, imports) → Instance (workerd path)
-          // WebAssembly.instantiate(bytes, imports)  → { module, instance } (Node.js path)
+          // ── Yoga WASM: dynamic import + disk-read fallback ──────────────────────────
+          // yoga-layout's emscripten bundle sets H to a data URL containing the yoga WASM,
+          // then later calls WebAssembly.instantiate(bytes, imports), which workerd rejects.
+          // Emscripten supports a custom h2.instantiateWasm(imports, callback) escape hatch.
           //
-          // Note: new URL("./yoga.wasm", import.meta.url) MUST live inside the Node.js
-          // branch (the else), never at the top level. In workerd, import.meta.url is
-          // "worker" (not a valid URL base), so new URL(..., "worker") throws TypeError.
-          // The else branch only runs on Node.js where the ?module import failed and
-          // import.meta.url is a file:// URL.
-          const YOGA_CALL = `yoga_wasm_base64_esm_default()`;
-          const YOGA_CALL_PATCHED = [
-            `yoga_wasm_base64_esm_default({ instantiateWasm: function(imports, callback) {`,
-            `  __vi_yoga_mod.then(function(mod) {`,
-            `    if (mod) {`,
-            `      WebAssembly.instantiate(mod, imports).then(function(inst) { callback(inst); });`,
-            `    } else {`,
-            `      Promise.all([import("node:fs"), import("node:url")]).then(function(mods) {`,
-            `        var p = mods[1].fileURLToPath(new URL("./yoga.wasm", import.meta.url));`,
-            `        return mods[0].promises.readFile(p).then(function(bytes) {`,
-            `          return WebAssembly.instantiate(bytes, imports).then(function(r) { callback(r.instance); });`,
-            `        });`,
-            `      });`,
-            `    }`,
-            `  });`,
-            `  return {};`,
-            `} })`,
-          ].join("\n");
-          result = result.replace(YOGA_CALL, YOGA_CALL_PATCHED);
-          // Prepend dynamic import (no static import — Node.js safe). On Node.js the
-          // ?module import fails and resolves to null, triggering the disk-read fallback.
-          const yogaPreamble = [
-            `var __vi_yoga_mod = import("./yoga.wasm?module").then(function(m) { return m.default; }).catch(function() { return null; });`,
-          ].join("\n");
-          result = yogaPreamble + "\n" + result;
-        }
+          // Strategy: try dynamic import("./yoga.wasm?module") for workerd (pre-compiled
+          // module), fall back to reading the .wasm file from disk + WebAssembly.instantiate
+          // for Node.js. We read from disk rather than inlining base64 so the bundle ships
+          // exactly one physical copy of the WASM (the emitted ?module asset); the disk
+          // fallback is wired to that same file by vinext:og-assets. This mirrors the resvg
+          // handling below and keeps the dedup platform-agnostic.
+          const YOGA_DATA_URL_RE =
+            /H = "data:application\/octet-stream;base64,([A-Za-z0-9+/]+=*)";/;
+          const yogaMatch = YOGA_DATA_URL_RE.exec(result);
+          if (yogaMatch) {
+            const yogaBase64 = yogaMatch[1];
+            const distDir = path.dirname(id);
+            const yogaWasmPath = path.join(distDir, "yoga.wasm");
+            // Write yoga.wasm to disk idempotently at transform time (Node.js side)
+            // so the ?module dynamic import can resolve it on workerd builds.
+            if (!fs.existsSync(yogaWasmPath)) {
+              fs.writeFileSync(yogaWasmPath, Buffer.from(yogaBase64, "base64"));
+            }
+            // Disable the data-URL branch so emscripten doesn't try to instantiate from bytes
+            result = result.replace(yogaMatch[0], `H = "";`);
+            // Patch the loadYoga call site to inject instantiateWasm with universal handler.
+            // WebAssembly.instantiate(Module, imports) → Instance (workerd path)
+            // WebAssembly.instantiate(bytes, imports)  → { module, instance } (Node.js path)
+            //
+            // Note: new URL("./yoga.wasm", import.meta.url) MUST live inside the Node.js
+            // branch (the else), never at the top level. In workerd, import.meta.url is
+            // "worker" (not a valid URL base), so new URL(..., "worker") throws TypeError.
+            // The else branch only runs on Node.js where the ?module import failed and
+            // import.meta.url is a file:// URL.
+            const YOGA_CALL = `yoga_wasm_base64_esm_default()`;
+            const YOGA_CALL_PATCHED = [
+              `yoga_wasm_base64_esm_default({ instantiateWasm: function(imports, callback) {`,
+              `  __vi_yoga_mod.then(function(mod) {`,
+              `    if (mod) {`,
+              `      WebAssembly.instantiate(mod, imports).then(function(inst) { callback(inst); });`,
+              `    } else {`,
+              `      Promise.all([import("node:fs"), import("node:url")]).then(function(mods) {`,
+              `        var p = mods[1].fileURLToPath(new URL("./yoga.wasm", import.meta.url));`,
+              `        return mods[0].promises.readFile(p).then(function(bytes) {`,
+              `          return WebAssembly.instantiate(bytes, imports).then(function(r) { callback(r.instance); });`,
+              `        });`,
+              `      });`,
+              `    }`,
+              `  });`,
+              `  return {};`,
+              `} })`,
+            ].join("\n");
+            result = result.replace(YOGA_CALL, YOGA_CALL_PATCHED);
+            // Prepend dynamic import (no static import — Node.js safe). On Node.js the
+            // ?module import fails and resolves to null, triggering the disk-read fallback.
+            const yogaPreamble = [
+              `var __vi_yoga_mod = import("./yoga.wasm?module").then(function(m) { return m.default; }).catch(function() { return null; });`,
+            ].join("\n");
+            result = yogaPreamble + "\n" + result;
+          }
 
-        // ── Resvg WASM: dynamic import + disk fallback ──────────────────────────────
-        // The edge entry has `import resvg_wasm from "./resvg.wasm?module"` which is a
-        // static ESM import that only works on workerd. Node.js fails because the WASM
-        // binary's emscripten imports (module "a") can't be resolved as npm packages.
-        //
-        // Strategy: replace the static import with a dynamic import for workerd, falling
-        // back to reading the .wasm file from disk + WebAssembly.compile for Node.js.
-        // Resvg WASM is ~1.3MB so we read from disk instead of inlining base64.
-        const RESVG_STATIC_IMPORT_RE =
-          /import\s+resvg_wasm\s+from\s+["']\.\/resvg\.wasm\?module["']\s*;?/;
-        const resvgMatch = RESVG_STATIC_IMPORT_RE.exec(result);
-        if (resvgMatch) {
-          // Note: new URL("./resvg.wasm", import.meta.url) MUST be inside the catch handler,
-          // not at the top level. In workerd, import.meta.url is "worker" (not a valid URL
-          // base), so new URL(..., "worker") throws TypeError at module load time.
-          // The catch block only runs on Node.js where import.meta.url is a file:// URL.
-          const resvgLoader = [
-            `var resvg_wasm = import("./resvg.wasm?module").then(function(m) { return m.default; }).catch(function() {`,
-            `  return Promise.all([import("node:fs"), import("node:url")]).then(function(mods) {`,
-            `    var p = mods[1].fileURLToPath(new URL("./resvg.wasm", import.meta.url));`,
-            `    return mods[0].promises.readFile(p).then(function(buf) { return WebAssembly.compile(buf); });`,
-            `  });`,
-            `});`,
-          ].join("\n");
-          result = result.replace(resvgMatch[0], resvgLoader);
-        }
+          // ── Resvg WASM: dynamic import + disk fallback ──────────────────────────────
+          // The edge entry has `import resvg_wasm from "./resvg.wasm?module"` which is a
+          // static ESM import that only works on workerd. Node.js fails because the WASM
+          // binary's emscripten imports (module "a") can't be resolved as npm packages.
+          //
+          // Strategy: replace the static import with a dynamic import for workerd, falling
+          // back to reading the .wasm file from disk + WebAssembly.compile for Node.js.
+          // Resvg WASM is ~1.3MB so we read from disk instead of inlining base64.
+          const RESVG_STATIC_IMPORT_RE =
+            /import\s+resvg_wasm\s+from\s+["']\.\/resvg\.wasm\?module["']\s*;?/;
+          const resvgMatch = RESVG_STATIC_IMPORT_RE.exec(result);
+          if (resvgMatch) {
+            // Note: new URL("./resvg.wasm", import.meta.url) MUST be inside the catch handler,
+            // not at the top level. In workerd, import.meta.url is "worker" (not a valid URL
+            // base), so new URL(..., "worker") throws TypeError at module load time.
+            // The catch block only runs on Node.js where import.meta.url is a file:// URL.
+            const resvgLoader = [
+              `var resvg_wasm = import("./resvg.wasm?module").then(function(m) { return m.default; }).catch(function() {`,
+              `  return Promise.all([import("node:fs"), import("node:url")]).then(function(mods) {`,
+              `    var p = mods[1].fileURLToPath(new URL("./resvg.wasm", import.meta.url));`,
+              `    return mods[0].promises.readFile(p).then(function(buf) { return WebAssembly.compile(buf); });`,
+              `  });`,
+              `});`,
+            ].join("\n");
+            result = result.replace(resvgMatch[0], resvgLoader);
+          }
 
-        if (result === code) return null;
-        return { code: result, map: null };
+          if (result === code) return null;
+          return { code: result, map: null };
+        },
       },
     },
   ];

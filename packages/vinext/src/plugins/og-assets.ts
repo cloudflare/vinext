@@ -82,104 +82,107 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
       }
     },
 
-    async transform(code, id) {
-      // Quick bail-out: only process modules that use new URL(..., import.meta.url)
-      if (!code.includes("import.meta.url")) {
-        return null;
-      }
-
-      const useCache = isBuild;
-      const moduleDir = path.dirname(id);
-      let newCode = code;
-      let didReplace = false;
-
-      // Read a file from disk and return its base64 encoding, using the build
-      // cache when enabled. Returns null on any read error so callers can skip
-      // the match (e.g. file not present on disk for the active environment).
-      const readAsBase64 = async (absPath: string): Promise<string | null> => {
-        const cached = useCache ? cache.get(absPath) : undefined;
-        if (cached !== undefined) return cached;
-        try {
-          const buf = await fs.promises.readFile(absPath);
-          const b64 = buf.toString("base64");
-          if (useCache) cache.set(absPath, b64);
-          return b64;
-        } catch {
+    transform: {
+      filter: { code: "import.meta.url" },
+      async handler(code, id) {
+        // Quick bail-out: only process modules that use new URL(..., import.meta.url)
+        if (!code.includes("import.meta.url")) {
           return null;
         }
-      };
 
-      // Pattern 1 — edge build: fetch(new URL("./file", import.meta.url)).then((res) => res.arrayBuffer())
-      // Supports both ./-relative and ../-relative paths (e.g. "../../../assets/font.ttf").
-      // The regex is deliberately tolerant of how formatters (Prettier
-      // `trailingComma: "all"`, oxfmt) rewrite the `.then(...)` callback when the call
-      // is wrapped across multiple lines, since formatted source that fails to match is
-      // left as a runtime fetch (which throws "Invalid URL" on Workers, where
-      // import.meta.url is "worker"):
-      //   - `,?` before each close paren tolerates a trailing comma, e.g.
-      //       .then((res) =>
-      //         res.arrayBuffer(),
-      //       )
-      //   - `;?` before the block-body `}` tolerates a terminating semicolon, e.g.
-      //       .then((res) => {
-      //         return res.arrayBuffer();
-      //       })
-      // Replace with an inline IIFE that decodes the asset as base64 and returns Promise<ArrayBuffer>.
-      if (code.includes("fetch(")) {
-        const fetchPattern =
-          /fetch\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*;?\s*\}?\s*,?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*,?\s*\))/g;
+        const useCache = isBuild;
+        const moduleDir = path.dirname(id);
+        let newCode = code;
+        let didReplace = false;
 
-        for (const match of code.matchAll(fetchPattern)) {
-          const fullMatch = match[0];
-          const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
-          const absPath = path.resolve(moduleDir, relPath);
+        // Read a file from disk and return its base64 encoding, using the build
+        // cache when enabled. Returns null on any read error so callers can skip
+        // the match (e.g. file not present on disk for the active environment).
+        const readAsBase64 = async (absPath: string): Promise<string | null> => {
+          const cached = useCache ? cache.get(absPath) : undefined;
+          if (cached !== undefined) return cached;
+          try {
+            const buf = await fs.promises.readFile(absPath);
+            const b64 = buf.toString("base64");
+            if (useCache) cache.set(absPath, b64);
+            return b64;
+          } catch {
+            return null;
+          }
+        };
 
-          const fileBase64 = await readAsBase64(absPath);
-          if (fileBase64 === null) continue; // may be a runtime-only asset
+        // Pattern 1 — edge build: fetch(new URL("./file", import.meta.url)).then((res) => res.arrayBuffer())
+        // Supports both ./-relative and ../-relative paths (e.g. "../../../assets/font.ttf").
+        // The regex is deliberately tolerant of how formatters (Prettier
+        // `trailingComma: "all"`, oxfmt) rewrite the `.then(...)` callback when the call
+        // is wrapped across multiple lines, since formatted source that fails to match is
+        // left as a runtime fetch (which throws "Invalid URL" on Workers, where
+        // import.meta.url is "worker"):
+        //   - `,?` before each close paren tolerates a trailing comma, e.g.
+        //       .then((res) =>
+        //         res.arrayBuffer(),
+        //       )
+        //   - `;?` before the block-body `}` tolerates a terminating semicolon, e.g.
+        //       .then((res) => {
+        //         return res.arrayBuffer();
+        //       })
+        // Replace with an inline IIFE that decodes the asset as base64 and returns Promise<ArrayBuffer>.
+        if (code.includes("fetch(")) {
+          const fetchPattern =
+            /fetch\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*;?\s*\}?\s*,?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*,?\s*\))/g;
 
-          // Replace fetch(...).then(...) with an inline IIFE that returns Promise<ArrayBuffer>.
-          const inlined = [
-            `(function(){`,
-            `var b=${JSON.stringify(fileBase64)};`,
-            `var r=atob(b);`,
-            `var a=new Uint8Array(r.length);`,
-            `for(var i=0;i<r.length;i++)a[i]=r.charCodeAt(i);`,
-            `return Promise.resolve(a.buffer);`,
-            `})()`,
-          ].join("");
+          for (const match of code.matchAll(fetchPattern)) {
+            const fullMatch = match[0];
+            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
+            const absPath = path.resolve(moduleDir, relPath);
 
-          newCode = newCode.replaceAll(fullMatch, inlined);
-          didReplace = true;
+            const fileBase64 = await readAsBase64(absPath);
+            if (fileBase64 === null) continue; // may be a runtime-only asset
+
+            // Replace fetch(...).then(...) with an inline IIFE that returns Promise<ArrayBuffer>.
+            const inlined = [
+              `(function(){`,
+              `var b=${JSON.stringify(fileBase64)};`,
+              `var r=atob(b);`,
+              `var a=new Uint8Array(r.length);`,
+              `for(var i=0;i<r.length;i++)a[i]=r.charCodeAt(i);`,
+              `return Promise.resolve(a.buffer);`,
+              `})()`,
+            ].join("");
+
+            newCode = newCode.replaceAll(fullMatch, inlined);
+            didReplace = true;
+          }
         }
-      }
 
-      // Pattern 2 — node build: readFileSync(fileURLToPath(new URL("./file", import.meta.url)))
-      // Supports both ./-relative and ../-relative paths (e.g. "../../../assets/font.ttf").
-      // Replace with Buffer.from("<base64>", "base64"), which returns a Buffer (compatible with
-      // both font data passed to satori and WASM bytes passed to initWasm).
-      if (code.includes("readFileSync(")) {
-        const readFilePattern =
-          /[a-zA-Z_$][a-zA-Z0-9_$]*\.readFileSync\(\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\.)?fileURLToPath\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*\)/g;
+        // Pattern 2 — node build: readFileSync(fileURLToPath(new URL("./file", import.meta.url)))
+        // Supports both ./-relative and ../-relative paths (e.g. "../../../assets/font.ttf").
+        // Replace with Buffer.from("<base64>", "base64"), which returns a Buffer (compatible with
+        // both font data passed to satori and WASM bytes passed to initWasm).
+        if (code.includes("readFileSync(")) {
+          const readFilePattern =
+            /[a-zA-Z_$][a-zA-Z0-9_$]*\.readFileSync\(\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\.)?fileURLToPath\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*\)/g;
 
-        for (const match of newCode.matchAll(readFilePattern)) {
-          const fullMatch = match[0];
-          const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
-          const absPath = path.resolve(moduleDir, relPath);
+          for (const match of newCode.matchAll(readFilePattern)) {
+            const fullMatch = match[0];
+            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
+            const absPath = path.resolve(moduleDir, relPath);
 
-          const fileBase64 = await readAsBase64(absPath);
-          if (fileBase64 === null) continue;
+            const fileBase64 = await readAsBase64(absPath);
+            if (fileBase64 === null) continue;
 
-          // Replace readFileSync(...) with Buffer.from("<base64>", "base64").
-          // Buffer is always available in Node.js and in the vinext SSR/RSC environments.
-          const inlined = `Buffer.from(${JSON.stringify(fileBase64)},"base64")`;
+            // Replace readFileSync(...) with Buffer.from("<base64>", "base64").
+            // Buffer is always available in Node.js and in the vinext SSR/RSC environments.
+            const inlined = `Buffer.from(${JSON.stringify(fileBase64)},"base64")`;
 
-          newCode = newCode.replaceAll(fullMatch, inlined);
-          didReplace = true;
+            newCode = newCode.replaceAll(fullMatch, inlined);
+            didReplace = true;
+          }
         }
-      }
 
-      if (!didReplace) return null;
-      return { code: newCode, map: null };
+        if (!didReplace) return null;
+        return { code: newCode, map: null };
+      },
     },
   } satisfies Plugin;
 }
