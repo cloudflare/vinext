@@ -465,31 +465,31 @@ export async function readAppPageCacheResponse(
     }
 
     if (cached?.isStale && cachedValue) {
-      const regenerationKey = options.isRscRequest
-        ? options.isrRscKey(
-            options.cleanPathname,
-            options.mountedSlotsHeader,
-            options.renderMode,
-            options.interceptionContext,
-          )
-        : options.isrHtmlKey(options.cleanPathname);
-
       // Preserve the legacy behavior from the inline generator: stale entries
       // still trigger background regeneration even if this request cannot use
       // the stale payload and will fall through to a fresh render.
-      options.scheduleBackgroundRegeneration(regenerationKey, async () => {
+      //
+      // The regeneration key is derived from exactly the same inputs as `isrKey`
+      // above (the RSC variant when `isRscRequest`, the HTML key otherwise), so
+      // reuse it instead of recomputing the hash.
+      options.scheduleBackgroundRegeneration(isrKey, async () => {
         const revalidatedPage = await options.renderFreshPageForCache();
         const revalidateSeconds =
           revalidatedPage.cacheControl?.revalidate ?? options.revalidateSeconds;
         const expireSeconds = revalidatedPage.cacheControl?.expire ?? options.expireSeconds;
         const writes = [
           options.isrSet(
-            options.isrRscKey(
-              options.cleanPathname,
-              options.mountedSlotsHeader,
-              options.renderMode,
-              options.interceptionContext,
-            ),
+            // For an RSC request `isrKey` is already the RSC variant key, so
+            // reuse it; an HTML-triggered regen still needs the RSC key here,
+            // computed lazily so a deduped (skipped) regen pays nothing.
+            options.isRscRequest
+              ? isrKey
+              : options.isrRscKey(
+                  options.cleanPathname,
+                  options.mountedSlotsHeader,
+                  options.renderMode,
+                  options.interceptionContext,
+                ),
             buildAppPageCacheValue(
               "",
               revalidatedPage.rscData,
