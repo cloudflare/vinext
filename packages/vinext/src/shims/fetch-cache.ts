@@ -19,7 +19,7 @@
  *   await runWithFetchCache(async () => { ... render ... });
  */
 
-import { getDataCacheHandler, type CachedFetchValue } from "./cache.js";
+import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import { markDynamicUsage } from "./headers.js";

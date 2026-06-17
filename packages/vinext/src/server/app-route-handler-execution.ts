@@ -1,7 +1,7 @@
 import type { NextI18nConfig } from "../config/next-config.js";
 import { setHeadersContext, type HeadersAccessPhase } from "vinext/shims/headers";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
-import type { CachedRouteValue } from "vinext/shims/cache";
+import type { CachedRouteValue } from "vinext/shims/cache-handler";
 import type { NextRequest } from "vinext/shims/server";
 import {
   createStaticGenerationHeadersContext,

@@ -5,8 +5,8 @@ import type { ClassificationReason } from "../build/layout-classification-types.
 import {
   _consumeRequestScopedCacheLife,
   _peekRequestScopedCacheLife,
-  type CachedAppPageValue,
-} from "vinext/shims/cache";
+} from "vinext/shims/cache-request-state";
+import type { CachedAppPageValue } from "vinext/shims/cache-handler";
 import type { RootParams } from "vinext/shims/root-params";
 import {
   consumeDynamicUsage,

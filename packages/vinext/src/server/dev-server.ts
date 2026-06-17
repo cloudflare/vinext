@@ -25,8 +25,8 @@ import {
   PRERENDER_REVALIDATE_HEADER,
   isOnDemandRevalidateRequest,
 } from "./isr-cache.js";
-import type { CachedPagesValue } from "vinext/shims/cache";
-import { _runWithCacheState } from "vinext/shims/cache";
+import type { CachedPagesValue } from "vinext/shims/cache-handler";
+import { _runWithCacheState } from "vinext/shims/cache-request-state";
 import { runWithPrivateCache } from "vinext/shims/cache-runtime";
 import { ensureFetchPatch, runWithFetchCache } from "vinext/shims/fetch-cache";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";

@@ -34,7 +34,7 @@ import { createRequestContext, runWithRequestContext } from "vinext/shims/unifie
 import { flattenErrorCauses } from "../utils/error-cause.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { mergeRewriteQuery } from "../utils/query.js";
-import { applyAppMiddleware, type AppMiddlewareContext } from "./app-middleware.js";
+import type { AppMiddlewareContext } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
 import { handleAppPrerenderEndpoint } from "./app-prerender-endpoints.js";
 import {
@@ -570,6 +570,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   let didMiddlewareRewrite = false;
 
   if (options.middlewareModule) {
+    const { applyAppMiddleware } = await import("./app-middleware.js");
     const middlewareResult = await applyAppMiddleware({
       basePath: options.basePath,
       cleanPathname,
@@ -707,34 +708,43 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     request.headers.get(RSC_ACTION_HEADER) ?? request.headers.get(NEXT_ACTION_HEADER);
   const contentType = request.headers.get("content-type") || "";
 
-  const progressiveActionResult = await options.handleProgressiveActionRequest({
-    actionId,
-    cleanPathname,
-    contentType,
-    middlewareContext,
-    request,
-  });
+  const isPostRequest = request.method.toUpperCase() === "POST";
+  let progressiveActionResult: Response | ProgressiveActionFormStateResult | null = null;
+  if (isPostRequest && contentType.startsWith("multipart/form-data") && !actionId) {
+    progressiveActionResult = await options.handleProgressiveActionRequest({
+      actionId,
+      cleanPathname,
+      contentType,
+      middlewareContext,
+      request,
+    });
+  }
   if (progressiveActionResult instanceof Response) return progressiveActionResult;
-  const isProgressiveActionRender = progressiveActionResult?.kind === "form-state";
-  const formState = isProgressiveActionRender ? progressiveActionResult.formState : null;
+  const progressiveActionFormState =
+    progressiveActionResult?.kind === "form-state" ? progressiveActionResult : null;
+  const isProgressiveActionRender = progressiveActionFormState !== null;
+  const formState = progressiveActionFormState?.formState ?? null;
   const failedProgressiveActionResult =
-    isProgressiveActionRender && "actionFailed" in progressiveActionResult
-      ? progressiveActionResult
+    progressiveActionFormState && "actionError" in progressiveActionFormState
+      ? progressiveActionFormState
       : null;
   const actionFailed = failedProgressiveActionResult !== null;
   const actionError = failedProgressiveActionResult?.actionError;
 
-  const serverActionResponse = await options.handleServerActionRequest({
-    actionId,
-    cleanPathname,
-    contentType,
-    interceptionContext: interceptionContextHeader,
-    isRscRequest,
-    middlewareContext,
-    mountedSlotsHeader,
-    request,
-    searchParams: getResolvedSearchParams(),
-  });
+  const serverActionResponse =
+    isPostRequest && actionId
+      ? await options.handleServerActionRequest({
+          actionId,
+          cleanPathname,
+          contentType,
+          interceptionContext: interceptionContextHeader,
+          isRscRequest,
+          middlewareContext,
+          mountedSlotsHeader,
+          request,
+          searchParams: getResolvedSearchParams(),
+        })
+      : null;
   if (serverActionResponse) return serverActionResponse;
 
   let match = preActionMatch;
@@ -996,7 +1006,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // res.setHeader('set-cookie', ...) flush in action-handler.ts / app-render.tsx.
   // Issue: https://github.com/cloudflare/vinext/issues/1483
   if (isProgressiveActionRender) {
-    return applyProgressiveActionSideEffects(pageResponse, progressiveActionResult);
+    return applyProgressiveActionSideEffects(pageResponse, progressiveActionFormState);
   }
   return pageResponse;
 }

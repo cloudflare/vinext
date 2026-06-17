@@ -163,24 +163,47 @@ async function buildFixture(root: string, router: "app" | "pages"): Promise<void
 
 type BuildWatcher = {
   on(event: "event", callback: (event: { code: string; error?: Error }) => void): void;
+  off(event: "event", callback: (event: { code: string; error?: Error }) => void): void;
   close(): Promise<void>;
 };
 
-function waitForWatchBuild(watcher: BuildWatcher): Promise<void> {
+function waitForWatchBuild(
+  watcher: BuildWatcher,
+  isExpectedOutput: () => boolean | Promise<boolean> = () => true,
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(
-      () => reject(new Error("Timed out waiting for watch rebuild")),
-      20_000,
-    );
-    watcher.on("event", (event) => {
+    let checkingOutput = false;
+    const cleanup = () => {
+      clearTimeout(timeout);
+      watcher.off("event", onEvent);
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out waiting for watch rebuild"));
+    }, 20_000);
+    const handleEvent = async (event: { code: string; error?: Error }) => {
       if (event.code === "ERROR") {
-        clearTimeout(timeout);
+        cleanup();
         reject(event.error ?? new Error("Watch build failed"));
-      } else if (event.code === "END") {
-        clearTimeout(timeout);
-        resolve();
+      } else if (event.code === "END" && !checkingOutput) {
+        checkingOutput = true;
+        try {
+          if (await isExpectedOutput()) {
+            cleanup();
+            resolve();
+          }
+        } catch (error) {
+          cleanup();
+          reject(error);
+        } finally {
+          checkingOutput = false;
+        }
       }
-    });
+    };
+    const onEvent = (event: { code: string; error?: Error }) => {
+      void handleEvent(event);
+    };
+    watcher.on("event", onEvent);
   });
 }
 
@@ -338,7 +361,10 @@ describe("static image import production emission", () => {
       const firstImage = await findEmittedImage(root);
       expect(await readFile(path.join(outDir, "_next/static/media", firstImage))).toEqual(PNG_1X1);
 
-      const changedBuild = waitForWatchBuild(watcher);
+      const changedBuild = waitForWatchBuild(watcher, async () => {
+        const emittedImage = await findEmittedImage(root);
+        return emittedImage !== firstImage;
+      });
       await fs.promises.writeFile(imagePath, PNG_4X3);
       await changedBuild;
       const secondImage = await findEmittedImage(root);
@@ -350,7 +376,13 @@ describe("static image import production emission", () => {
       expect(changedJavaScript).toMatch(/width:4[,}]|"width":4/);
       expect(changedJavaScript).toMatch(/height:3[,}]|"height":3/);
 
-      const removedBuild = waitForWatchBuild(watcher);
+      const removedBuild = waitForWatchBuild(watcher, async () => {
+        const builtJavaScript = await readBuiltJavaScript(outDir);
+        return (
+          !fs.existsSync(path.join(outDir, "_next/static/media", secondImage)) &&
+          !builtJavaScript.includes(secondImage)
+        );
+      });
       await fs.promises.writeFile(entryPath, `console.log("no image");\n`);
       await removedBuild;
       expect(fs.existsSync(path.join(outDir, "_next/static/media", secondImage))).toBe(false);

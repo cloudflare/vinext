@@ -100,14 +100,14 @@ describe("vinext:extensionless-dynamic-import", () => {
     expect(result).toBeNull();
   });
 
-  it("leaves dependency imports unchanged", () => {
-    const transform = createTransform();
-    const result = transform(
-      "await import(`./${locale}`)",
-      "/app/node_modules/example-package/index.js",
-    );
+  it("filters out dependency imports before invoking the handler", () => {
+    const plugin = createExtensionlessDynamicImportPlugin();
+    if (!plugin.transform || typeof plugin.transform === "function") {
+      throw new Error("filtered transform hook not found");
+    }
+    const idFilter = plugin.transform.filter?.id as { exclude?: RegExp } | undefined;
 
-    expect(result).toBeNull();
+    expect(idFilter?.exclude?.test("/app/node_modules/example-package/index.js")).toBe(true);
   });
 
   it("leaves imports with attributes unchanged", () => {

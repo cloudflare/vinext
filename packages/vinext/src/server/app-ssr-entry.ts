@@ -8,19 +8,18 @@ import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import type { RenderToReadableStreamOptions } from "react-dom/server";
 import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
 import clientReferences from "virtual:vite-rsc/client-references";
-import type { NavigationContext } from "vinext/shims/navigation";
+import type { NavigationContext } from "vinext/shims/navigation-server";
 import {
   ServerInsertedHTMLContext,
-  appRouterInstance,
   clearServerInsertedHTML,
   getBfcacheIdMapContext,
+  registerServerInsertedHTMLCallback,
   renderServerInsertedHTML,
   setNavigationContext,
-  useServerInsertedHTML,
-} from "vinext/shims/navigation";
+} from "vinext/shims/navigation-server";
 import { runWithNavigationContext } from "vinext/shims/navigation-state";
 import { runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
-import { isOpenRedirectShaped } from "./request-pipeline.js";
+import { isOpenRedirectShaped } from "./open-redirect.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import {
@@ -39,12 +38,16 @@ import {
   createRscEmbedTransform,
   createTickBufferedTransform,
 } from "./app-ssr-stream.js";
-import { deferUntilStreamConsumed, type AppSsrRenderResult } from "./app-page-stream.js";
+import type { AppSsrRenderResult } from "./app-page-stream.js";
+import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
-import { createBfcacheSegmentStateKeyMap, createInitialBfcacheIdMap } from "./app-browser-state.js";
+import {
+  createBfcacheSegmentStateKeyMap,
+  createInitialBfcacheIdMap,
+} from "./app-bfcache-identity.js";
 import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
@@ -52,6 +55,7 @@ import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
 import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
+import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 
 /**
  * `@types/react-dom` does not yet type `maxHeadersLength` (it pairs with the
@@ -456,14 +460,14 @@ export async function handleSsr(
         const root = AppRouterContext
           ? createReactElement(
               AppRouterContext.Provider,
-              { value: appRouterInstance },
+              { value: ssrAppRouterInstance },
               flightRootElement,
             )
           : flightRootElement;
         const ssrTree = ServerInsertedHTMLContext
           ? createReactElement(
               ServerInsertedHTMLContext.Provider,
-              { value: useServerInsertedHTML },
+              { value: registerServerInsertedHTMLCallback },
               root,
             )
           : root;
