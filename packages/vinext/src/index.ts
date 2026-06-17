@@ -223,6 +223,11 @@ installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
 
+function getCacheDirPrefix(cacheDir: string): string {
+  const normalizedCacheDir = normalizePathSeparators(cacheDir);
+  return normalizedCacheDir.endsWith("/") ? normalizedCacheDir : `${normalizedCacheDir}/`;
+}
+
 function isInsideDirectory(dir: string, filePath: string): boolean {
   const relativePath = path.relative(dir, filePath);
   return relativePath !== "" && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
@@ -2506,10 +2511,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       async configResolved(config) {
-        const normalizedCacheDir = normalizePathSeparators(config.cacheDir);
-        const cacheDirPrefix = normalizedCacheDir.endsWith("/")
-          ? normalizedCacheDir
-          : `${normalizedCacheDir}/`;
+        const cacheDirPrefix = getCacheDirPrefix(config.cacheDir);
         typeofWindowIdFilter.exclude = new RegExp(`^${escapeRegExp(cacheDirPrefix)}`);
 
         // Provide the resolved config to the Sass-aware CSS Modules Loader so
@@ -4379,10 +4381,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           code: /typeof\s+window/,
         },
         handler(code, id) {
-          const normalizedCacheDir = normalizePathSeparators(this.environment.config.cacheDir);
-          const cacheDirPrefix = normalizedCacheDir.endsWith("/")
-            ? normalizedCacheDir
-            : `${normalizedCacheDir}/`;
+          const cacheDirPrefix = getCacheDirPrefix(this.environment.config.cacheDir);
           if (normalizePathSeparators(id).startsWith(cacheDirPrefix)) {
             return null;
           }
