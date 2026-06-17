@@ -38,7 +38,8 @@ import {
   createRscEmbedTransform,
   createTickBufferedTransform,
 } from "./app-ssr-stream.js";
-import { deferUntilStreamConsumed, type AppSsrRenderResult } from "./app-page-stream.js";
+import type { AppSsrRenderResult } from "./app-page-stream.js";
+import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
