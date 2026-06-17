@@ -21,11 +21,11 @@ No workflow, database, API, normalizer, or dashboard changes are required.
   description: "Clean production build.",
   unit: "ms",
   lowerIsBetter: true,
-  profile: false,
   implementations: [
     {
       id: "vinext",
       label: "vinext",
+      profile: true,
       command: ["node", "benchmarks/perf/build-time.mjs", "vinext"],
     },
   ],
@@ -33,6 +33,9 @@ No workflow, database, API, normalizer, or dashboard changes are required.
 ```
 
 The full benchmark ID is generated as `<implementation id>-<scenario id>`.
+Profiling is configured per implementation. Set `profile: true` only for the
+implementation whose subprocess tree should be sampled; the current scenarios
+capture vinext traces and never profile Next.js.
 
 ## Running locally
 

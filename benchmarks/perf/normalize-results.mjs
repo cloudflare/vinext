@@ -80,7 +80,10 @@ function profileToFlameGraph(profile) {
       const rawWeight = Math.abs(Number(column(thread.samples, "weight", row) ?? 1)) || 1;
       const weight = (usesSampleWeights ? rawWeight : 1) * sampleIntervalMs;
       const frames = stackFrames(tables, stackIndex);
-      if (frames.length > 0) addStack(root, frames, weight);
+      if (frames.length > 0) {
+        const processName = thread.processName || thread.name || "unknown process";
+        addStack(root, [`[process] ${processName}`, ...frames], weight);
+      }
     }
   }
   return root.value > 0 ? serializeTree(root) : null;

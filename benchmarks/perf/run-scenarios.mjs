@@ -30,6 +30,7 @@ if (setupOnly) {
 for (const scenario of performanceScenarios) {
   for (const implementation of scenario.implementations) {
     const id = benchmarkId(scenario, implementation);
+    const profile = implementation.profile === true;
     const env = {
       ...process.env,
       VINEXT_PERF_BENCHMARK_ID: id,
@@ -41,7 +42,7 @@ for (const scenario of performanceScenarios) {
       VINEXT_PERF_LOWER_IS_BETTER: String(scenario.lowerIsBetter),
       VINEXT_PERF_IMPLEMENTATION_ID: implementation.id,
       VINEXT_PERF_IMPLEMENTATION_LABEL: implementation.label,
-      VINEXT_PERF_PROFILE: String(scenario.profile),
+      VINEXT_PERF_PROFILE: String(profile),
     };
 
     console.log(`\nRunning ${scenario.suite} / ${implementation.label} / ${scenario.label}`);
@@ -53,7 +54,7 @@ for (const scenario of performanceScenarios) {
       continue;
     }
 
-    const profileArguments = scenario.profile
+    const profileArguments = profile
       ? [
           "--walltime-profiler",
           "samply",

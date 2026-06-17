@@ -145,15 +145,10 @@ function FlameGraphDialog({ measurement }: { measurement: Comparison["measuremen
   return (
     <Dialog.Root>
       <Dialog.Trigger
-        className="group inline-flex items-center gap-1.5 font-medium text-blue-700 hover:text-blue-900"
+        className="font-medium text-blue-700 underline decoration-blue-300 underline-offset-4 hover:text-blue-900 hover:decoration-blue-500"
         aria-label={`Open ${measurement.implementationLabel} ${measurement.label} flame graph`}
         title="Open flame graph"
       >
-        <Flame
-          size={15}
-          weight="fill"
-          className="text-orange-500 transition-transform group-hover:scale-110"
-        />
         {measurement.implementationLabel}
       </Dialog.Trigger>
       <Dialog
@@ -189,12 +184,16 @@ function FlameGraphDialog({ measurement }: { measurement: Comparison["measuremen
 }
 
 function FlameGraph({ measurement }: { measurement: Comparison["measurements"][number] }) {
-  const [root, setRoot] = useState(measurement.flameGraph);
+  const [focusPath, setFocusPath] = useState<FlameGraphNode[]>(
+    measurement.flameGraph ? [measurement.flameGraph] : [],
+  );
   const [hovered, setHovered] = useState<{ frame: PositionedFrame; x: number; y: number } | null>(
     null,
   );
+  const root = focusPath.at(-1);
   if (!measurement.flameGraph || !root) return null;
   const frames = layoutFrames(root);
+  const hotFrames = hottestFrames(root).slice(0, 8);
   const maxDepth = Math.max(...frames.map((frame) => frame.depth));
   const rowHeight = 42;
   const height = (maxDepth + 1) * rowHeight;
@@ -217,16 +216,39 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
             </span>
           </div>
         </div>
-        {root !== measurement.flameGraph && (
+        {focusPath.length > 1 && (
           <button
             type="button"
-            onClick={() => setRoot(measurement.flameGraph)}
+            onClick={() => setFocusPath([measurement.flameGraph!])}
             className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-medium text-slate-200 transition hover:bg-slate-700 hover:text-white"
           >
             Reset zoom
           </button>
         )}
       </div>
+      <div className="mb-4 rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-xs leading-5 text-slate-300">
+        Width is inclusive sampled thread time across the profiled subprocess tree and benchmark
+        rounds, not elapsed wall time. Frames above a block are callees. Click a frame to zoom; use
+        self time to find where samples actually terminate.
+      </div>
+      {focusPath.length > 1 && (
+        <div className="mb-3 flex flex-wrap items-center gap-1 text-xs text-slate-400">
+          {focusPath.map((node, index) => (
+            <button
+              key={focusPath
+                .slice(0, index + 1)
+                .map((frame) => `${frame.name}:${frame.value}`)
+                .join(">")}
+              type="button"
+              onClick={() => setFocusPath((path) => path.slice(0, index + 1))}
+              className="max-w-64 truncate rounded px-1.5 py-1 hover:bg-slate-800 hover:text-white"
+            >
+              {index > 0 && <span className="mr-1 text-slate-600">/</span>}
+              {displayFrameName(node.name)}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="overflow-x-auto rounded-xl border border-slate-800 bg-[#050816] p-3 shadow-inner shadow-black/40">
         <svg
           viewBox={`0 0 1000 ${height}`}
@@ -235,7 +257,7 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
           aria-label={`${measurement.implementationLabel} ${measurement.label} interactive flame graph`}
         >
           {frames.map((frame) => {
-            const y = frame.depth * rowHeight;
+            const y = (maxDepth - frame.depth) * rowHeight;
             const percent = (frame.node.value / root.value) * 100;
             return (
               <g
@@ -247,11 +269,11 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
                     ? `Focus ${frame.node.name}, ${percent.toFixed(1)}% of selected samples`
                     : undefined
                 }
-                onClick={() => frame.node.children && setRoot(frame.node)}
+                onClick={() => frame.node.children && setFocusPath((path) => [...path, frame.node])}
                 onKeyDown={(event) => {
                   if (frame.node.children && (event.key === "Enter" || event.key === " ")) {
                     event.preventDefault();
-                    setRoot(frame.node);
+                    setFocusPath((path) => [...path, frame.node]);
                   }
                 }}
                 onMouseMove={(event) => {
@@ -291,9 +313,7 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
                     fill={frame.depth >= 4 ? "white" : "#0f172a"}
                     pointerEvents="none"
                   >
-                    {frame.node.name.length > frame.width / 7
-                      ? `${frame.node.name.slice(0, Math.max(Math.floor(frame.width / 7) - 1, 3))}…`
-                      : frame.node.name}
+                    {truncateFrameName(frame.node.name, frame.width)}
                   </text>
                 )}
               </g>
@@ -308,13 +328,70 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
         >
           <div className="font-semibold">{hovered.frame.node.name}</div>
           <div className="mt-1 text-slate-300">
-            {formatMs(hovered.frame.node.value)} sampled ·{" "}
+            Inclusive: {formatMs(hovered.frame.node.value)} ·{" "}
             {((hovered.frame.node.value / measurement.flameGraph.value) * 100).toFixed(1)}%
+          </div>
+          <div className="text-slate-300">
+            Self: {formatMs(selfValue(hovered.frame.node))} ·{" "}
+            {((selfValue(hovered.frame.node) / measurement.flameGraph.value) * 100).toFixed(1)}%
           </div>
         </div>
       )}
+      <div className="mt-5">
+        <h3 className="text-sm font-semibold text-white">Hottest frames by self samples</h3>
+        <p className="mt-1 text-xs text-slate-400">
+          Frames where the profiler most often observed execution, excluding time in children.
+        </p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {hotFrames.map(({ node, path, self }) => (
+            <button
+              key={path.map((item) => item.name).join(" > ")}
+              type="button"
+              onClick={() => setFocusPath(path)}
+              className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-left transition hover:border-slate-700 hover:bg-slate-800"
+            >
+              <span className="min-w-0 truncate text-xs font-medium text-slate-200">
+                {displayFrameName(node.name)}
+              </span>
+              <span className="shrink-0 font-mono text-xs text-orange-300">
+                {formatMs(self)} self
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
+}
+
+function selfValue(node: FlameGraphNode) {
+  return Math.max(
+    0,
+    node.value - (node.children ?? []).reduce((total, child) => total + child.value, 0),
+  );
+}
+
+function hottestFrames(root: FlameGraphNode) {
+  const frames: Array<{ node: FlameGraphNode; path: FlameGraphNode[]; self: number }> = [];
+  const visit = (node: FlameGraphNode, path: FlameGraphNode[]) => {
+    const nextPath = [...path, node];
+    const self = selfValue(node);
+    if (self > 0 && node !== root) frames.push({ node, path: nextPath, self });
+    for (const child of node.children ?? []) visit(child, nextPath);
+  };
+  visit(root, []);
+  return frames.toSorted((left, right) => right.self - left.self);
+}
+
+function displayFrameName(name: string) {
+  return name.replace(/^\[process\] /, "");
+}
+
+function truncateFrameName(name: string, width: number) {
+  const displayName = displayFrameName(name);
+  return displayName.length > width / 7
+    ? `${displayName.slice(0, Math.max(Math.floor(width / 7) - 1, 3))}…`
+    : displayName;
 }
 
 function RunCard({ label, sha, date }: { label: string; sha: string; date: string }) {

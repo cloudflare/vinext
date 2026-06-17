@@ -13,16 +13,17 @@ export const performanceScenarios = [
       "Time from launching a fresh dev-server process until the root route responds, with framework caches cleared before every round.",
     unit: "ms",
     lowerIsBetter: true,
-    profile: true,
     implementations: [
       {
         id: "vinext",
         label: "vinext",
+        profile: true,
         command: ["node", "benchmarks/perf/cold-start.mjs", "vinext", "/"],
       },
       {
         id: "nextjs",
         label: "Next.js",
+        profile: false,
         command: ["node", "benchmarks/perf/cold-start.mjs", "nextjs", "/"],
       },
     ],
@@ -34,16 +35,17 @@ export const performanceScenarios = [
     description: "Time to complete a clean production build with previous output removed.",
     unit: "ms",
     lowerIsBetter: true,
-    profile: false,
     implementations: [
       {
         id: "vinext",
         label: "vinext",
+        profile: true,
         command: ["node", "benchmarks/perf/build-time.mjs", "vinext"],
       },
       {
         id: "nextjs",
         label: "Next.js",
+        profile: false,
         command: ["node", "benchmarks/perf/build-time.mjs", "nextjs"],
       },
     ],
@@ -56,16 +58,17 @@ export const performanceScenarios = [
       "Total gzip size of production client JavaScript and CSS emitted by the clean build.",
     unit: "bytes",
     lowerIsBetter: true,
-    profile: false,
     implementations: [
       {
         id: "vinext",
         label: "vinext",
+        profile: false,
         command: ["node", "benchmarks/perf/bundle-size.mjs", "vinext"],
       },
       {
         id: "nextjs",
         label: "Next.js",
+        profile: false,
         command: ["node", "benchmarks/perf/bundle-size.mjs", "nextjs"],
       },
     ],
