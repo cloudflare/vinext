@@ -369,7 +369,7 @@ function restoreHistoryStateSnapshot(historyState: unknown): boolean {
   });
   if (!restored) return false;
 
-  commitClientNavigationState();
+  commitClientNavigationState(navId);
   return true;
 }
 
@@ -2290,39 +2290,38 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
       restorePopstateScrollPosition(event.state);
       return;
     }
-    handlePopstate(event);
-    // Synchronous snapshot restore supersedes the in-flight async RSC traverse.
-    //
-    // handlePopstate calls navigate() which starts an async RSC traversal:
-    // renderNavigationPayload captures startedState (visibleCommitVersion N)
-    // and awaits nextElements, yielding at least one microtask.
-    //
-    // restoreHistoryStateSnapshot runs synchronously (flushSync, no await) in
-    // the same task, commits the cached history snapshot, and bumps
-    // visibleCommitVersion to N+1.
-    //
-    // When the async traverse resolves,
-    // resolvePendingNavigationCommitDispositionDecision sees
-    // startedVisibleCommitVersion (N) !== currentState.visibleCommitVersion
-    // (N+1) and returns staleOperation → no-commit, discarding the fresh
-    // RSC payload in favor of the cached client snapshot.
-    //
-    // This matches Next's in-memory bfcache behaviour (no refetch on back).
-    // The ordering is deterministic only because restoreHistoryStateSnapshot
-    // is synchronous while the async traverse always yields.
-    if (restoreHistoryStateSnapshot(event.state)) {
-      restoreSynchronousPopstateScrollPosition(
-        {
-          getActiveNavigationId: () => browserNavigationController.getActiveNavigationId(),
-          isCurrentNavigation: (navId) => browserNavigationController.isCurrentNavigation(navId),
-          markScrollRestoreConsumed: (navId) => {
-            synchronousPopstateScrollRestoreNavigationId = navId;
+    // A restorable history entry already has the exact App Router tree the user
+    // saw at that history index. Consume it synchronously before starting any
+    // RSC traversal. Starting the async traversal first lets it resume after the
+    // snapshot restore, capture the restored tree as its fresh base, and then
+    // overwrite the restored dynamic content with a new server render.
+    const synchronousRestoreNavId = browserNavigationController.beginNavigation();
+    discardedServerActionRefreshScheduler.markNavigationStart();
+    let restoredHistorySnapshot = false;
+    try {
+      restoredHistorySnapshot = restoreHistoryStateSnapshot(event.state);
+      if (restoredHistorySnapshot) {
+        notifyAppRouterTransitionStart(href, "traverse");
+        window.__VINEXT_RSC_PENDING__ = null;
+        restoreSynchronousPopstateScrollPosition(
+          {
+            getActiveNavigationId: () => browserNavigationController.getActiveNavigationId(),
+            isCurrentNavigation: (navId) => browserNavigationController.isCurrentNavigation(navId),
+            markScrollRestoreConsumed: (navId) => {
+              synchronousPopstateScrollRestoreNavigationId = navId;
+            },
+            restorePopstateScrollPosition,
           },
-          restorePopstateScrollPosition,
-        },
-        event.state,
-      );
+          event.state,
+        );
+        browserNavigationController.finalizeNavigation(synchronousRestoreNavId, null);
+        return;
+      }
+    } finally {
+      discardedServerActionRefreshScheduler.markNavigationSettled();
     }
+
+    handlePopstate(event);
   });
 
   if (import.meta.hot) {

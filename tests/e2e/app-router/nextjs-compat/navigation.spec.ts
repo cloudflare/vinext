@@ -208,6 +208,50 @@ test.describe("Next.js compat: navigation (browser)", () => {
     await expect(page.locator("#link-test-page")).toHaveText("Link Test Page", { timeout: 10_000 });
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app/index.test.ts
+  test("Link back navigation is soft and restores the server-rendered tree", async ({ page }) => {
+    await page.goto(`${BASE}/with-id`);
+    await waitForAppRouterHydration(page);
+
+    const firstID = await page.locator("#render-id").textContent();
+
+    await page.locator("#link").click();
+    await expect(page.locator("#from-navigation")).toHaveText("hello from /navigation", {
+      timeout: 10_000,
+    });
+
+    await page.goBack();
+    await expect(page).toHaveURL(`${BASE}/with-id`);
+
+    const secondID = await page.locator("#render-id").textContent();
+    expect(firstID).toBe(secondID);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app/index.test.ts
+  test("Link forward navigation is soft and restores the server-rendered tree", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/with-id`);
+    await waitForAppRouterHydration(page);
+
+    await page.locator("#link").click();
+    await expect(page.locator("#from-navigation")).toHaveText("hello from /navigation", {
+      timeout: 10_000,
+    });
+
+    const firstID = await page.locator("#render-id").textContent();
+
+    await page.goBack();
+    await expect(page).toHaveURL(`${BASE}/with-id`);
+    await page.goForward();
+    await expect(page).toHaveURL(`${BASE}/navigation`);
+
+    const secondID = await page.locator("#render-id").textContent();
+    expect(firstID).toBe(secondID);
+  });
+
   test("Link onNavigate reports the resolved URL for relative query hrefs", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
     await waitForAppRouterHydration(page);
