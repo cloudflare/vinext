@@ -57,6 +57,10 @@
       "types": "./dist/server/app-router-entry.d.ts",
       "import": "./dist/server/app-router-entry.js"
     },
+    "./server/app-rsc-handler": {
+      "types": "./dist/server/app-rsc-handler.d.ts",
+      "import": "./dist/server/app-rsc-handler.js"
+    },
     "./config/config-matchers": {
       "types": "./dist/config/config-matchers.d.ts",
       "import": "./dist/config/config-matchers.js"

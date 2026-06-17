@@ -21323,6 +21323,45 @@ describe("shim alias map .js variants", () => {
       reactServerShim,
     );
   });
+
+  it("keeps the App Router request handler source-resolved in source checkouts", () => {
+    const plugins = vinext() as Plugin[];
+    const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+    if (!configPlugin?.resolveId || typeof configPlugin.resolveId === "function") {
+      throw new Error("vinext:config resolveId hook not found");
+    }
+
+    const hook = configPlugin.resolveId as {
+      filter: { id: RegExp };
+      handler: (
+        this: {
+          environment?: {
+            name?: string;
+            config: {
+              command: "serve" | "build";
+            };
+          };
+        },
+        id: string,
+      ) => string | { id: string; external: true } | undefined;
+    };
+    const id = "vinext/server/app-rsc-handler";
+    const expected = path.resolve(
+      import.meta.dirname,
+      "../packages/vinext/src/server/app-rsc-handler.ts",
+    );
+
+    expect(hook.filter.id.test(id)).toBe(true);
+    expect(
+      hook.handler.call({ environment: { name: "rsc", config: { command: "serve" } } }, id),
+    ).toBe(expected);
+    expect(
+      hook.handler.call({ environment: { name: "rsc", config: { command: "build" } } }, id),
+    ).toBe(expected);
+    expect(
+      hook.handler.call({ environment: { name: "ssr", config: { command: "serve" } } }, id),
+    ).toBe(expected);
+  });
 });
 
 describe("@vercel/og compatibility resolution", () => {

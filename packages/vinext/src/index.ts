@@ -568,6 +568,14 @@ function createStaticImageAsset(imagePath: string): { fileName: string; source: 
  */
 const _shimsDir = normalizePathSeparators(path.resolve(__dirname, "shims")) + "/";
 const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
+const _appRscHandlerPath = resolveShimModulePath(
+  path.resolve(__dirname, "server"),
+  "app-rsc-handler",
+);
+// Source checkouts resolve to TypeScript and must stay in Vite's graph so tests
+// do not execute a stale dist build. Published packages resolve to emitted JS,
+// which Node can load natively outside the RSC transform graph.
+const _canExternalizeAppRscHandler = _appRscHandlerPath.endsWith(".js");
 
 function isValidExportIdentifier(name: string): boolean {
   return /^[$A-Z_a-z][$\w]*$/.test(name);
@@ -2240,7 +2248,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       external:
                         userSsrExternal === true
                           ? true
-                          : ["satori", "@resvg/resvg-js", "yoga-wasm-web", ...userSsrExternal],
+                          : [
+                              "satori",
+                              "@resvg/resvg-js",
+                              "yoga-wasm-web",
+                              ...(env?.command === "serve" && _canExternalizeAppRscHandler
+                                ? ["vinext/server/app-rsc-handler"]
+                                : []),
+                              ...userSsrExternal,
+                            ],
                       // Force all node_modules through Vite's transform pipeline
                       // so non-JS imports (CSS, images) don't hit Node's native
                       // ESM loader. Matches Next.js behavior of bundling everything.
@@ -2615,7 +2631,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // direct @vercel/og imports in metadata routes, and \0-prefixed
         // re-imports from @vitejs/plugin-rsc.
         filter: {
-          id: /(?:next\/|vinext\/shims\/|virtual:vinext-|@vercel\/og(?:\.js)?$)/,
+          id: /(?:next\/|vinext\/(?:shims\/|server\/app-rsc-handler)|virtual:vinext-|@vercel\/og(?:\.js)?$)/,
         },
         handler(id, importer) {
           // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
@@ -2623,6 +2639,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // ID (with \0 prefix). We need to re-resolve it so the client
           // environment's import-analysis can find it.
           const cleanId = id.startsWith("\0") ? id.slice(1) : id;
+
+          if (cleanId === "vinext/server/app-rsc-handler") {
+            if (
+              _canExternalizeAppRscHandler &&
+              this.environment?.name === "rsc" &&
+              this.environment.config?.command === "serve"
+            ) {
+              return { id: _appRscHandlerPath, external: true };
+            }
+            return _appRscHandlerPath;
+          }
 
           if (isVercelOgImport(cleanId) && !isVinextOgShimImporter(importer)) {
             return resolveShimModulePath(_shimsDir, "og");

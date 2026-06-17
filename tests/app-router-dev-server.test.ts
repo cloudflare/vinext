@@ -87,6 +87,17 @@ describe("App Router integration", () => {
     expect(html).toContain("Server Component");
   });
 
+  it("loads the current source App Router request handler in source-checkout tests", async () => {
+    const response = await fetch(`${baseUrl}/`);
+    expect(response.status).toBe(200);
+    await response.arrayBuffer();
+
+    const rscModuleIds = server.environments.rsc.moduleGraph.idToModuleMap.keys();
+    const handlerIds = [...rscModuleIds].filter((id) => id.includes("app-rsc-handler"));
+    expect(handlerIds.some((id) => id.includes("/src/server/app-rsc-handler.ts"))).toBe(true);
+    expect(handlerIds.some((id) => id.includes("/dist/server/app-rsc-handler.js"))).toBe(false);
+  });
+
   it("renders the about page", async () => {
     const res = await fetch(`${baseUrl}/about`);
     expect(res.status).toBe(200);
