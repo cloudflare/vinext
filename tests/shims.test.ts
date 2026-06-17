@@ -7133,10 +7133,12 @@ describe("middleware matcher patterns", () => {
   });
 
   it("matchesMiddleware: trailing slashes in matcher sources are optional", async () => {
-    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const { matchPattern, matchesMiddleware } =
+      await import("../packages/vinext/src/server/middleware.js");
 
     // Next.js compiles middleware sources with an optional terminal delimiter.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/analysis/get-page-static-info.ts
+    expect(matchPattern("/api/admin/", "/api/admin/")).toBe(true);
     expect(matchesMiddleware("/api/admin", "/api/admin/")).toBe(true);
     expect(matchesMiddleware("/api/admin", ["/api/admin/"])).toBe(true);
     expect(matchesMiddleware("/api/admin", [{ source: "/api/admin/" }])).toBe(true);

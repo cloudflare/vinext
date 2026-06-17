@@ -129,6 +129,7 @@ function stripLocalePrefix(pathname: string, i18nConfig: NextI18nConfig): string
 }
 
 export function matchPattern(pathname: string, pattern: string): boolean {
+  const normalizedPathname = removeTrailingSlash(pathname);
   const normalizedPattern = removeTrailingSlash(pattern);
   let cached = _mwPatternCache.get(normalizedPattern);
   if (cached === undefined) {
@@ -136,8 +137,8 @@ export function matchPattern(pathname: string, pattern: string): boolean {
     _mwPatternCache.set(normalizedPattern, cached);
   }
   if (cached === UNSAFE_MATCHER_PATTERN) return true;
-  if (cached === null) return pathname === normalizedPattern;
-  return cached.test(pathname);
+  if (cached === null) return normalizedPathname === normalizedPattern;
+  return cached.test(normalizedPathname);
 }
 
 function extractConstraint(str: string, re: RegExp): string | null {
