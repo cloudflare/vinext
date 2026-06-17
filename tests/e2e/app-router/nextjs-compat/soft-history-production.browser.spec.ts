@@ -40,6 +40,7 @@ async function writeSoftHistoryFixture(fixtureRoot: string): Promise<void> {
   await linkFixtureNodeModules(fixtureRoot);
   await fs.mkdir(path.join(appDir, "with-id"), { recursive: true });
   await fs.mkdir(path.join(appDir, "navigation"), { recursive: true });
+  await fs.mkdir(path.join(appDir, "slow"), { recursive: true });
   await fs.mkdir(path.join(fixtureRoot, "node_modules", "nanoid"), { recursive: true });
 
   await fs.writeFile(
@@ -103,15 +104,36 @@ export default function Page() {
   );
   await fs.writeFile(
     path.join(appDir, "navigation", "page.tsx"),
-    `import { nanoid } from "nanoid";
+    `import Link from "next/link";
+import { nanoid } from "nanoid";
 
 export default function Page() {
   return (
     <>
       <h1 id="render-id">{nanoid()}</h1>
       <h2 id="from-navigation">hello from /navigation</h2>
+      <Link href="/slow" id="link-to-slow" prefetch={false}>
+        To Slow
+      </Link>
     </>
   );
+}
+`,
+  );
+  await fs.writeFile(
+    path.join(appDir, "slow", "page.tsx"),
+    `export const revalidate = 0;
+
+async function getData() {
+  // Intentionally stall so the RSC request is still in flight when the test
+  // traverses back to the previous history entry.
+  await new Promise((resolve) => setTimeout(resolve, 30_000));
+  return { id: "slow-page" };
+}
+
+export default async function Page() {
+  const { id } = await getData();
+  return <h1 id="render-id">{id}</h1>;
 }
 `,
   );
@@ -228,6 +250,57 @@ test.describe("Next.js compat: production Link history navigation", () => {
 
     const secondID = await page.locator("#render-id").textContent();
     expect(firstID).toBe(secondID);
+    expect(consoleErrors).toEqual([]);
+  });
+
+  test("aborts superseded in-flight RSC request on soft back navigation", async ({
+    page,
+    productionApp,
+    consoleErrors,
+  }) => {
+    // Observe the RSC request for /slow so we can detect when it is captured
+    // and when it is later cancelled.
+    let slowRequestCaptured = false;
+    let slowRequestAborted = false;
+    page.on("request", (request) => {
+      if (request.url().includes("/slow")) {
+        slowRequestCaptured = true;
+      }
+    });
+    page.on("requestfailed", (request) => {
+      if (request.url().includes("/slow")) {
+        slowRequestAborted = true;
+      }
+    });
+
+    await page.goto(`${productionApp.baseUrl}/with-id`);
+    await waitForAppRouterHydration(page);
+
+    const firstID = await page.locator("#render-id").textContent();
+
+    // Establish a second history entry so we can traverse back while another
+    // RSC request is still in flight.
+    await page.locator("#link").click();
+    await expect(page.locator("#from-navigation")).toHaveText("hello from /navigation", {
+      timeout: 10_000,
+    });
+
+    // Start navigating to /slow; its RSC response intentionally hangs. The URL
+    // stays on /navigation until the response arrives, so going back returns to
+    // the /with-id history entry.
+    await page.locator("#link-to-slow").click();
+    await expect.poll(() => slowRequestCaptured).toBe(true);
+
+    // Traverse back before the slow response can arrive.
+    await page.goBack();
+    await expect(page).toHaveURL(`${productionApp.baseUrl}/with-id`);
+
+    // The superseded RSC request must be cancelled, not merely prevented from committing.
+    await expect.poll(() => slowRequestAborted).toBe(true);
+
+    // The restored snapshot must still be the original dynamic output.
+    const secondID = await page.locator("#render-id").textContent();
+    expect(secondID).toBe(firstID);
     expect(consoleErrors).toEqual([]);
   });
 });

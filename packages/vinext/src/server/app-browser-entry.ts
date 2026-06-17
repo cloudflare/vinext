@@ -1688,6 +1688,11 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
 
   let activeNavigationAbortController: AbortController | null = null;
 
+  function abortSupersededNavigation(): void {
+    activeNavigationAbortController?.abort();
+    activeNavigationAbortController = null;
+  }
+
   const navigateRsc: NavigationRuntimeNavigate = async function navigateRsc(
     href: string,
     redirectDepth = 0,
@@ -1699,7 +1704,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     scrollIntent?: AppRouterScrollIntent | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
   ): Promise<void> {
-    activeNavigationAbortController?.abort();
+    abortSupersededNavigation();
     const navigationAbortController = new AbortController();
     activeNavigationAbortController = navigationAbortController;
     let pendingRouterState: PendingBrowserRouterState | null = null;
@@ -2301,6 +2306,10 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     try {
       restoredHistorySnapshot = restoreHistoryStateSnapshot(event.state);
       if (restoredHistorySnapshot) {
+        // The in-flight RSC request (if any) is logically superseded by the
+        // synchronous history restore. Cancel it so the browser does not keep
+        // streaming work that can no longer commit.
+        abortSupersededNavigation();
         notifyAppRouterTransitionStart(href, "traverse");
         window.__VINEXT_RSC_PENDING__ = null;
         restoreSynchronousPopstateScrollPosition(
