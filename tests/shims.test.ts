@@ -7139,9 +7139,24 @@ describe("middleware matcher patterns", () => {
     // Next.js compiles middleware sources with an optional terminal delimiter.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/analysis/get-page-static-info.ts
     expect(matchPattern("/api/admin/", "/api/admin/")).toBe(true);
+    expect(matchPattern("/api/admin/", "/api/admin\\/")).toBe(true);
+    expect(matchPattern("/api/admin", "/api/admin\\/")).toBe(false);
+    expect(matchPattern("/blog/post/", "/(.*)/")).toBe(true);
+    expect(matchPattern("/blog/post", "/(.*)/")).toBe(false);
+    expect(matchPattern("/api/123/", "/api/:id")).toBe(true);
+    expect(matchPattern("/api/123/", "/api/:id/")).toBe(true);
+    expect(matchPattern("/api/123", "/api/:id/")).toBe(false);
+    expect(matchPattern("/foo/", "/:path(.*\\/)")).toBe(true);
+    expect(matchPattern("/foo", "/:path(.*\\/)")).toBe(false);
     expect(matchesMiddleware("/api/admin", "/api/admin/")).toBe(true);
     expect(matchesMiddleware("/api/admin", ["/api/admin/"])).toBe(true);
     expect(matchesMiddleware("/api/admin", [{ source: "/api/admin/" }])).toBe(true);
+    expect(
+      matchesMiddleware("/fr/api/admin/", "/api/admin\\/", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
     expect(matchesMiddleware("/", "/")).toBe(true);
   });
 

@@ -222,4 +222,46 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
     expect(result.continue).toBe(false);
     expect(result.response?.status).toBe(401);
   });
+
+  it("preserves an escaped terminal slash matcher", async () => {
+    const module = {
+      config: { matcher: ["/api/admin\\/"] },
+      middleware: () => new Response("unauthorized", { status: 401 }),
+    };
+    const matchingResult = await executeMiddleware({
+      isProxy: false,
+      module,
+      request: new Request("http://localhost/api/admin/"),
+    });
+    const nonMatchingResult = await executeMiddleware({
+      isProxy: false,
+      module,
+      request: new Request("http://localhost/api/admin"),
+    });
+
+    expect(matchingResult.continue).toBe(false);
+    expect(matchingResult.response?.status).toBe(401);
+    expect(nonMatchingResult).toEqual({ continue: true });
+  });
+
+  it("preserves a custom constraint that requires a terminal slash", async () => {
+    const module = {
+      config: { matcher: ["/:path(.*\\/)"] },
+      middleware: () => new Response("unauthorized", { status: 401 }),
+    };
+    const matchingResult = await executeMiddleware({
+      isProxy: false,
+      module,
+      request: new Request("http://localhost/foo/"),
+    });
+    const nonMatchingResult = await executeMiddleware({
+      isProxy: false,
+      module,
+      request: new Request("http://localhost/foo"),
+    });
+
+    expect(matchingResult.continue).toBe(false);
+    expect(matchingResult.response?.status).toBe(401);
+    expect(nonMatchingResult).toEqual({ continue: true });
+  });
 });

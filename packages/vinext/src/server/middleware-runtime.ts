@@ -282,7 +282,7 @@ export async function executeMiddleware(
   const basePathStrippedPathname = options.basePath
     ? stripBasePath(normalizedPathname, options.basePath)
     : normalizedPathname;
-  const matchPathname = removeTrailingSlash(basePathStrippedPathname);
+  const matchPathname = basePathStrippedPathname;
 
   if (
     !matchesMiddleware(
@@ -303,7 +303,7 @@ export async function executeMiddleware(
     options.trailingSlash,
     hadBasePath,
   );
-  const fetchEvent = new NextFetchEvent({ page: matchPathname });
+  const fetchEvent = new NextFetchEvent({ page: removeTrailingSlash(matchPathname) });
 
   let response: Response | undefined | void;
   try {
