@@ -1156,6 +1156,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               async handler(code: string, id: string) {
                 const cleanId = id.split("?")[0];
 
+                // vinext's published runtime is already compiled by tsdown.
+                // Workspace symlinks resolve these files outside node_modules,
+                // so skip them explicitly instead of parsing the whole runtime
+                // again as possible JSX on every cold request.
+                if (isInsideDirectory(__dirname, cleanId)) return;
+
                 // Inside node_modules, restrict the JSX transform to files that
                 // carry a React directive. `@vitejs/plugin-rsc` only parses
                 // such modules (and only those failures have been observed in
