@@ -1,5 +1,55 @@
 # vinext
 
+## 0.1.4
+
+### Bug Fixes
+
+#### Pages
+
+- emit canonical **NEXT_DATA** JSON (#2043)
+- re-enter filesystem routes after rewrites (#2041)
+- apply Document renderPage enhancers (#2034)
+- interpolate same-segment rewrite params (#2030)
+- honor basePath in dev module loaders (#2033)
+- route hybrid form data requests (#2029)
+- preserve rewritten URLs during navigation (#2028)
+
+#### Misc
+
+- **Build:** preserve lazy RSC framework chunks (#2074)
+- **Middleware:** fail closed for unsafe matchers (#2078)
+- **Build:** strip server-side Pages data export transforms from client (#2055)
+- **Fonts:** detect trailing comma past comments when injecting font options (#2051)
+- **Csp:** match script-src-elem/attr when extracting script nonce (#2049)
+- **Script:** register src beforeInteractive scripts and mark hoisted output (#2019)
+- **i18n:** match NEXT_LOCALE cookie case-insensitively (#2050)
+- **Metadata:** gate twitter app and player tags on card type (#2053)
+- **Config:** support tsconfig extends array form (#2054)
+- **Navigation:** promote OperationToken to the eligibility authority (#2009)
+- **App Router:** preserve dynamic interception source routes (#2042)
+- **Image:** emit static imports as managed assets (#2040)
+- **Middleware:** classify Pages data requests by URL (#2039)
+- **Pages Router:** cancel deduped GSSP data waits (#2038)
+- **Router:** re-enter filesystem routes after rewrites (#2032)
+- **Actions:** return body-limit errors without closing responses (#2026)
+- **Router:** render slots beside grouped children (#2022)
+- **App Router:** settle superseded link navigations (#2025)
+- **Prerender:** deduplicate generateStaticParams entries (#2031)
+
+### Performance
+
+- **RSC:** prebundle static renderer entry (#2077)
+- **Dev:** prune NODE_ENV during dependency optimization (#2075)
+
+### Contributors
+
+- @Divkix
+- @james-elicx
+- @MaxtuneLee
+- @NathanDrake2406
+- @TheAlexLichter
+- @Xplod13
+
 ## 0.1.3
 
 ### Bug Fixes

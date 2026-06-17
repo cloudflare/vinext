@@ -35,7 +35,17 @@ describe("generateRscEntry ISR code generation", () => {
   it("generated handler delegates request and ctx handling to createAppRscHandler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("createAppRscHandler");
-    expect(code).toContain("export default __createAppRscHandler({");
+    expect(code).toContain("export default createAppRscHandler({");
+  });
+
+  it("configures the cache through the lightweight handler runtime", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain(
+      'configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler"',
+    );
+    expect(code).not.toContain(
+      'configureMemoryCacheHandler as __configureMemoryCacheHandler } from "next/cache"',
+    );
   });
 
   it("generated code stores root layout params separately from leaf params", () => {

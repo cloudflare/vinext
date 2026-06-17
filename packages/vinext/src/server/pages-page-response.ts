@@ -1,6 +1,6 @@
 import React, { type ComponentType, type ReactNode } from "react";
 import type { VinextNextData } from "../client/vinext-next-data.js";
-import type { CachedPagesValue } from "vinext/shims/cache";
+import type { CachedPagesValue } from "vinext/shims/cache-handler";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { applyCdnResponseHeaders } from "./cache-control.js";

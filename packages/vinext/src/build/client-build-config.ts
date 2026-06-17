@@ -7,6 +7,15 @@ type ClientAssetFileNameInfo = {
   readonly originalFileNames?: readonly string[];
 };
 
+type RscFrameworkModuleInfo = {
+  importers: string[];
+  isEntry: boolean;
+};
+
+type RscFrameworkManualChunksMeta = {
+  getModuleInfo(id: string): RscFrameworkModuleInfo | null;
+};
+
 // Next.js emits CSS under `static/css/` and CSS url() dependencies (images,
 // fonts, …) under `static/media/`, both with an 8-char content hash. Mirror
 // that layout so migrated apps keep stable, Next-shaped asset URLs.
@@ -55,9 +64,10 @@ export function createClientAssetFileNames(assetsDir: string) {
  * (node_modules/.pnpm/pkg@ver/node_modules/pkg).
  */
 function getPackageName(id: string): string | null {
-  const nmIdx = id.lastIndexOf("node_modules/");
+  const normalizedId = id.replaceAll("\\", "/");
+  const nmIdx = normalizedId.lastIndexOf("node_modules/");
   if (nmIdx === -1) return null;
-  const rest = id.slice(nmIdx + "node_modules/".length);
+  const rest = normalizedId.slice(nmIdx + "node_modules/".length);
   if (rest.startsWith("@")) {
     // Scoped package: @org/pkg
     const parts = rest.split("/");
@@ -208,24 +218,51 @@ export function isRscFrameworkModule(id: string): boolean {
   return pkg !== null && (FRAMEWORK_PACKAGES as readonly string[]).includes(pkg);
 }
 
+function isStaticallyReachableFromEntry(
+  id: string,
+  meta: RscFrameworkManualChunksMeta,
+  visited = new Set<string>(),
+): boolean {
+  if (visited.has(id)) return false;
+  visited.add(id);
+
+  const moduleInfo = meta.getModuleInfo(id);
+  if (!moduleInfo) return false;
+  if (moduleInfo.isEntry) return true;
+  return moduleInfo.importers.some((importer) =>
+    isStaticallyReachableFromEntry(importer, meta, visited),
+  );
+}
+
 /**
  * Output config that isolates React (and the RSC flight runtime) into a
  * dedicated "framework" chunk in the RSC server build. Returns the bundler-
  * appropriate shape: rolldown's `codeSplitting` for Vite 8+, Rollup's
  * `manualChunks` for Vite 7. See {@link RSC_FRAMEWORK_CHUNK_TEST} for the
- * motivation (issue #1549).
+ * motivation (issue #1549). Framework modules that are only reachable through
+ * dynamic imports must stay out of the eager framework chunk (issue #2073).
  */
 export function createRscFrameworkChunkOutputConfig(viteMajorVersion: number) {
   if (viteMajorVersion >= 8) {
     return {
       codeSplitting: {
-        groups: [{ name: "framework", test: RSC_FRAMEWORK_CHUNK_TEST }],
+        groups: [
+          {
+            name: "framework",
+            test: RSC_FRAMEWORK_CHUNK_TEST,
+            // Split by the entries that use each module so lazy framework
+            // imports cannot become eager Worker-startup dependencies (#2073).
+            entriesAware: true,
+          },
+        ],
       },
     };
   }
   return {
-    manualChunks(id: string): string | undefined {
-      return isRscFrameworkModule(id) ? "framework" : undefined;
+    manualChunks(id: string, meta: RscFrameworkManualChunksMeta): string | undefined {
+      return isRscFrameworkModule(id) && isStaticallyReachableFromEntry(id, meta)
+        ? "framework"
+        : undefined;
     },
   };
 }
