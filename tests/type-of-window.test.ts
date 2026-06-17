@@ -12,6 +12,7 @@ import {
   getTypeofWindowReplacement,
   replaceTypeofWindow,
 } from "../packages/vinext/src/plugins/typeof-window.js";
+import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -63,9 +64,13 @@ describe("typeof window compilation", () => {
   });
 
   it("configures the hook filter to skip the resolved Vite cache directory", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-filter-"));
+    // Normalize the root to forward slashes up front so everything below stays
+    // in the same POSIX space the plugin's exclude regex (and Vite's ids) use.
+    const root = normalizePathSeparators(
+      await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-filter-")),
+    );
     temporaryDirectories.push(root);
-    const cacheDir = path.join(root, ".vite-cache[custom]");
+    const cacheDir = path.posix.join(root, ".vite-cache[custom]");
     const server = await createServer({
       root,
       cacheDir,
@@ -83,8 +88,8 @@ describe("typeof window compilation", () => {
       }
       const idFilter = plugin.transform.filter?.id as { exclude?: RegExp } | undefined;
       expect(idFilter?.exclude).toBeInstanceOf(RegExp);
-      expect(idFilter?.exclude?.test(path.join(cacheDir, "deps_ssr/react.js"))).toBe(true);
-      expect(idFilter?.exclude?.test(path.join(root, "app/page.js"))).toBe(false);
+      expect(idFilter?.exclude?.test(path.posix.join(cacheDir, "deps_ssr/react.js"))).toBe(true);
+      expect(idFilter?.exclude?.test(path.posix.join(root, "app/page.js"))).toBe(false);
       expect(idFilter?.exclude?.test(`${cacheDir}-other/deps/react.js`)).toBe(false);
     } finally {
       await server.close();
