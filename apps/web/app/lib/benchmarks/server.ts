@@ -163,14 +163,15 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
   } else if (body.run.kind === "main") {
     const { results: matchingPullRequests } = await db
       .prepare(`
-        SELECT DISTINCT pull_request
+        SELECT DISTINCT pull_request, commit_sha
         FROM performance_runs
         WHERE kind = 'pull_request' AND base_sha = ? AND pull_request IS NOT NULL
       `)
       .bind(body.run.commitSha)
-      .all<{ pull_request: number }>();
+      .all<{ pull_request: number; commit_sha: string }>();
     for (const run of matchingPullRequests) {
       revalidatePath(`/benchmarks/pull/${run.pull_request}`);
+      revalidatePath(`/benchmarks/commit/${run.commit_sha}`);
     }
   }
   return Response.json({ ok: true, runId, measurements: body.benchmarks.length }, { status: 201 });
