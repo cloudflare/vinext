@@ -360,6 +360,7 @@ export const config = {
     "/headers/override-from-middleware",
     "/header-override-delete",
     "/api/header-override-delete",
+    "/api/hello",
     "/api/pages-og",
     "/header-override-after-prior-access",
     "/pages-header-override-delete",

@@ -43,6 +43,15 @@ describe("App Router middleware with NextRequest", () => {
     expect(res.headers.get("x-mw-has-session")).toBe("true");
   });
 
+  it("runs an exact API middleware matcher for a trailing-slash request", async () => {
+    const res = await fetch(`${baseUrl}/api/hello/`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-mw-ran")).toBe("true");
+    expect(res.headers.get("x-mw-pathname")).toBe("/api/hello/");
+    await expect(res.json()).resolves.toEqual({ message: "Hello from App Router API" });
+  });
+
   it("object-form matcher requires has and missing conditions", async () => {
     const noHeaderRes = await fetch(`${baseUrl}/mw-object-gated`);
     expect(noHeaderRes.status).toBe(200);

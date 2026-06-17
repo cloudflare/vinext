@@ -174,3 +174,38 @@ describe("executeMiddleware propagates trailingSlash to NextURL", () => {
     expect(new URL(result.redirectUrl!, "http://localhost").pathname).toBe("/file.css/");
   });
 });
+
+describe("executeMiddleware normalizes trailing slashes for matcher evaluation", () => {
+  const protectedApiMiddleware = (observedPathnames: string[] = []) => ({
+    config: { matcher: ["/api/admin"] },
+    middleware: (request: { nextUrl: { pathname: string } }) => {
+      observedPathnames.push(request.nextUrl.pathname);
+      return new Response("unauthorized", { status: 401 });
+    },
+  });
+
+  it("matches an exact API pathname when the request URL has a trailing slash", async () => {
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: protectedApiMiddleware(),
+      request: new Request("http://localhost/api/admin/"),
+    });
+
+    expect(result.continue).toBe(false);
+    expect(result.response?.status).toBe(401);
+  });
+
+  it("matches an exact API pathname when an adapter provides a trailing-slash pathname", async () => {
+    const observedPathnames: string[] = [];
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: protectedApiMiddleware(observedPathnames),
+      normalizedPathname: "/api/admin/",
+      request: new Request("http://localhost/api/admin/"),
+    });
+
+    expect(result.continue).toBe(false);
+    expect(result.response?.status).toBe(401);
+    expect(observedPathnames).toEqual(["/api/admin/"]);
+  });
+});
