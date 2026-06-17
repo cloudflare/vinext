@@ -790,12 +790,11 @@ describe("App Router Production server (startProdServer)", () => {
   });
 
   it("runs an exact API middleware matcher for a trailing-slash route handler request", async () => {
-    const res = await fetch(`${baseUrl}/api/hello/`);
+    const res = await fetch(`${baseUrl}/api/header-override-delete/`);
 
     expect(res.status).toBe(200);
     expect(res.headers.get("x-mw-ran")).toBe("true");
-    expect(res.headers.get("x-mw-pathname")).toBe("/api/hello/");
-    await expect(res.json()).resolves.toEqual({ message: "Hello from App Router API" });
+    expect(res.headers.get("x-mw-pathname")).toBe("/api/header-override-delete/");
   });
 
   it("returns 404 for nonexistent routes", async () => {

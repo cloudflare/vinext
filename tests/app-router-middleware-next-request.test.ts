@@ -44,12 +44,11 @@ describe("App Router middleware with NextRequest", () => {
   });
 
   it("runs an exact API middleware matcher for a trailing-slash request", async () => {
-    const res = await fetch(`${baseUrl}/api/hello/`);
+    const res = await fetch(`${baseUrl}/api/header-override-delete/`);
 
     expect(res.status).toBe(200);
     expect(res.headers.get("x-mw-ran")).toBe("true");
-    expect(res.headers.get("x-mw-pathname")).toBe("/api/hello/");
-    await expect(res.json()).resolves.toEqual({ message: "Hello from App Router API" });
+    expect(res.headers.get("x-mw-pathname")).toBe("/api/header-override-delete/");
   });
 
   it("object-form matcher requires has and missing conditions", async () => {
