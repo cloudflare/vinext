@@ -115,6 +115,20 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("vinext");
   });
 
+  it("exports config headers and i18n for production static asset matching (#1551)", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      headers: [
+        {
+          source: "/_next/static/:path*",
+          headers: [{ key: "cache-control", value: "max-age=1234" }],
+        },
+      ],
+    });
+
+    expect(code).toContain("export const __vinextConfigHeaders = __configHeaders");
+    expect(code).toContain("export const __vinextI18nConfig = __i18nConfig");
+  });
+
   it("embeds image validation config in the pure App Router RSC handler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       imageConfig: {

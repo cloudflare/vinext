@@ -568,6 +568,12 @@ const __reactMaxHeadersLength = ${JSON.stringify(reactMaxHeadersLength)};
 // \`vinextConfig\` export). Empty string when unset.
 export const __assetPrefix = ${JSON.stringify(assetPrefix)};
 export const __inlineCss = ${JSON.stringify(inlineCss)};
+// Re-exported so the App Router prod-server can match \`headers()\` rules
+// against \`/_next/static/*\` requests that short-circuit before the RSC
+// handler runs (#1551). Same data already wired into __createAppRscHandler
+// — just exposed at the module surface so the host can consume it too.
+export const __vinextConfigHeaders = __configHeaders;
+export const __vinextI18nConfig = __i18nConfig;
 export const __hasPagesDir = ${JSON.stringify(hasPagesDir)};
 export const getRenderedConcreteUrlPathsForRoute = __getRenderedConcreteUrlPathsForRoute;
 const __cacheComponents = ${JSON.stringify(cacheComponents)};

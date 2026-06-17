@@ -8,7 +8,12 @@ import path from "node:path";
 import os from "node:os";
 import zlib from "node:zlib";
 import { StaticFileCache } from "../packages/vinext/src/server/static-file-cache.js";
-import { tryServeStatic } from "../packages/vinext/src/server/prod-server.js";
+import {
+  tryServeStatic,
+  buildStaticAssetConfigHeaders,
+  mergeStaticHeadersCaseInsensitive,
+} from "../packages/vinext/src/server/prod-server.js";
+import type { NextHeader } from "../packages/vinext/src/config/next-config.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 async function writeFile(
@@ -261,6 +266,90 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     await captured.ended;
     expect(captured.headers["X-Custom"]).toBe("value");
     expect(captured.headers["Content-Security-Policy"]).toBe("default-src 'self'");
+  });
+
+  // ── Regression: issue #1551 — extraHeaders override defaults case-insensitively ──
+  //
+  // `next.config.js` `headers()` rules and middleware-set headers reach the
+  // static asset serving path via `extraHeaders`. They must replace vinext's
+  // default headers (Cache-Control, Content-Type, ETag) for the same key
+  // even when the keys differ in case (e.g. extraHeaders has "cache-control"
+  // while the variant has "Cache-Control"). Without case-insensitive merging,
+  // Node.js would emit BOTH headers, and the default would still apply.
+  it("extra headers override default Cache-Control even with different case (#1551)", async () => {
+    await writeFile(clientDir, "favicon.ico", Buffer.alloc(50));
+
+    const cache = await StaticFileCache.create(clientDir);
+    const req = mockReq();
+    const { res, captured } = mockRes();
+
+    // Simulate `mergeResponseHeaders` which yields lowercase keys (from
+    // Headers.forEach), as the prod-server callsite does.
+    const extraHeaders = { "cache-control": "max-age=1234" };
+    await tryServeStatic(req, res, clientDir, "/favicon.ico", false, cache, extraHeaders);
+
+    await captured.ended;
+    // Collect every header key whose lowercase form is "cache-control".
+    const cacheControlKeys = Object.keys(captured.headers).filter(
+      (k) => k.toLowerCase() === "cache-control",
+    );
+    expect(cacheControlKeys.length).toBe(1);
+    expect(captured.headers[cacheControlKeys[0]]).toBe("max-age=1234");
+  });
+
+  it("extra headers override default Cache-Control on a hashed asset (#1551)", async () => {
+    const jsContent = "const x = 1;\n";
+    await writeFile(clientDir, "_next/static/header-override-abc123.js", jsContent);
+
+    const cache = await StaticFileCache.create(clientDir);
+    const req = mockReq();
+    const { res, captured } = mockRes();
+
+    const extraHeaders = { "cache-control": "max-age=1234" };
+    await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/_next/static/header-override-abc123.js",
+      true,
+      cache,
+      extraHeaders,
+    );
+
+    await captured.ended;
+    const cacheControlKeys = Object.keys(captured.headers).filter(
+      (k) => k.toLowerCase() === "cache-control",
+    );
+    expect(cacheControlKeys.length).toBe(1);
+    expect(captured.headers[cacheControlKeys[0]]).toBe("max-age=1234");
+  });
+
+  it("extra headers override default Cache-Control in 304 responses (#1551)", async () => {
+    const jsContent = "const cached = true;\n";
+    await writeFile(clientDir, "_next/static/cond-override-aaa222.js", jsContent);
+
+    const cache = await StaticFileCache.create(clientDir);
+    const req = mockReq(undefined, { "if-none-match": 'W/"aaa222"' });
+    const { res, captured } = mockRes();
+
+    const extraHeaders = { "cache-control": "max-age=1234" };
+    await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/_next/static/cond-override-aaa222.js",
+      true,
+      cache,
+      extraHeaders,
+    );
+
+    await captured.ended;
+    expect(captured.status).toBe(304);
+    const cacheControlKeys = Object.keys(captured.headers).filter(
+      (k) => k.toLowerCase() === "cache-control",
+    );
+    expect(cacheControlKeys.length).toBe(1);
+    expect(captured.headers[cacheControlKeys[0]]).toBe("max-age=1234");
   });
 
   // ── Vary header ────────────────────────────────────────────────
@@ -874,5 +963,139 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     await captured.ended;
     expect(captured.status).toBe(304);
     expect(captured.headers["Vary"]).toBeUndefined();
+  });
+});
+
+// ── Regression suite for #1551 — config headers for static assets ──
+describe("buildStaticAssetConfigHeaders (#1551)", () => {
+  const reqCtx = {
+    headers: new Headers(),
+    cookies: {},
+    query: new URLSearchParams(),
+    host: "localhost",
+  };
+
+  it("matches a rule against /_next/static/<file> and yields the user header", () => {
+    const headers: NextHeader[] = [
+      {
+        source: "/_next/static/:path*",
+        headers: [{ key: "cache-control", value: "max-age=1234" }],
+      },
+    ];
+    const out = buildStaticAssetConfigHeaders(
+      headers,
+      "/_next/static/chunks/app-abc123.js",
+      reqCtx,
+      { basePath: "", hadBasePath: false },
+    );
+    expect(out).toEqual({ "cache-control": "max-age=1234" });
+  });
+
+  it("matches an exact public-file rule (/favicon.ico)", () => {
+    const headers: NextHeader[] = [
+      {
+        source: "/favicon.ico",
+        headers: [{ key: "cache-control", value: "max-age=1234" }],
+      },
+    ];
+    const out = buildStaticAssetConfigHeaders(headers, "/favicon.ico", reqCtx, {
+      basePath: "",
+      hadBasePath: false,
+    });
+    expect(out).toEqual({ "cache-control": "max-age=1234" });
+  });
+
+  it("returns undefined when no rules match", () => {
+    const headers: NextHeader[] = [
+      {
+        source: "/api/:path*",
+        headers: [{ key: "x-api", value: "true" }],
+      },
+    ];
+    const out = buildStaticAssetConfigHeaders(
+      headers,
+      "/_next/static/chunks/app-abc123.js",
+      reqCtx,
+      { basePath: "", hadBasePath: false },
+    );
+    expect(out).toBeUndefined();
+  });
+
+  it("returns undefined for an empty headers array", () => {
+    const out = buildStaticAssetConfigHeaders([], "/favicon.ico", reqCtx, {
+      basePath: "",
+      hadBasePath: false,
+    });
+    expect(out).toBeUndefined();
+  });
+
+  it("accumulates multiple set-cookie values", () => {
+    const headers: NextHeader[] = [
+      {
+        source: "/favicon.ico",
+        headers: [
+          { key: "Set-Cookie", value: "a=1" },
+          { key: "Set-Cookie", value: "b=2" },
+        ],
+      },
+    ];
+    const out = buildStaticAssetConfigHeaders(headers, "/favicon.ico", reqCtx, {
+      basePath: "",
+      hadBasePath: false,
+    });
+    expect(out).toBeDefined();
+    const setCookieKey = Object.keys(out!).find((k) => k.toLowerCase() === "set-cookie");
+    expect(setCookieKey).toBeDefined();
+    expect(out![setCookieKey!]).toEqual(["a=1", "b=2"]);
+  });
+});
+
+describe("mergeStaticHeadersCaseInsensitive (#1551)", () => {
+  it("override key replaces base key under override casing", () => {
+    const merged = mergeStaticHeadersCaseInsensitive(
+      { "Cache-Control": "public, max-age=0", "Content-Type": "text/plain" },
+      { "cache-control": "max-age=1234" },
+    );
+    const keys = Object.keys(merged);
+    // Cache-Control collapsed to one entry, content-type retained
+    expect(keys.filter((k) => k.toLowerCase() === "cache-control")).toEqual(["cache-control"]);
+    expect(merged["cache-control"]).toBe("max-age=1234");
+    expect(merged["Content-Type"]).toBe("text/plain");
+  });
+
+  it("preserves base keys for non-overridden entries", () => {
+    const merged = mergeStaticHeadersCaseInsensitive(
+      { ETag: 'W/"abc"', "Cache-Control": "public" },
+      { "x-custom": "value" },
+    );
+    expect(merged["ETag"]).toBe('W/"abc"');
+    expect(merged["Cache-Control"]).toBe("public");
+    expect(merged["x-custom"]).toBe("value");
+  });
+
+  it("appends additional set-cookie values instead of replacing", () => {
+    const merged = mergeStaticHeadersCaseInsensitive(
+      { "Set-Cookie": "a=1" },
+      { "set-cookie": ["b=2", "c=3"] },
+    );
+    const setCookieKey = Object.keys(merged).find((k) => k.toLowerCase() === "set-cookie");
+    expect(setCookieKey).toBe("set-cookie");
+    expect(merged[setCookieKey!]).toEqual(["a=1", "b=2", "c=3"]);
+  });
+
+  it("merges Vary by concatenation, avoiding duplicates", () => {
+    const merged = mergeStaticHeadersCaseInsensitive(
+      { Vary: "Accept-Encoding" },
+      { vary: "Accept-Language" },
+    );
+    expect(merged["vary"]).toBe("Accept-Encoding, Accept-Language");
+  });
+
+  it("dedupes when override Vary already contains the base value", () => {
+    const merged = mergeStaticHeadersCaseInsensitive(
+      { Vary: "Accept-Encoding" },
+      { vary: "Accept-Encoding, Accept-Language" },
+    );
+    expect(merged["vary"]).toBe("Accept-Encoding, Accept-Language");
   });
 });
