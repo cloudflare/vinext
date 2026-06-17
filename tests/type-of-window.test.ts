@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { createBuilder } from "vite";
+import { createBuilder, createServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import {
   getTypeofWindowReplacement,
@@ -24,26 +24,33 @@ afterEach(async () => {
 });
 
 describe("typeof window compilation", () => {
-  it("skips folding Vite dependency prebundles", async () => {
-    const rawPlugins = vinext() as any[];
-    const plugins = (
-      await Promise.all(
-        rawPlugins.map(async (plugin) => {
-          if (plugin && typeof plugin.then === "function") return await plugin;
-          return plugin;
-        }),
-      )
-    ).flat();
-    const plugin = plugins.find((candidate) => candidate?.name === "vinext:typeof-window");
-    const transform =
-      typeof plugin.transform === "function" ? plugin.transform : plugin.transform.handler;
-    const context = { environment: { config: { consumer: "server" } } };
-    const source = `export const browser = typeof window !== "undefined"`;
+  it("configures the hook filter to skip the resolved Vite cache directory", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-filter-"));
+    temporaryDirectories.push(root);
+    const cacheDir = path.join(root, ".vite-cache[custom]");
+    const server = await createServer({
+      root,
+      cacheDir,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [vinext({ react: false, rsc: false })],
+    });
 
-    expect(
-      await transform.call(context, source, "/project/node_modules/.vite/deps_ssr/react.js"),
-    ).toBeNull();
-    expect(await transform.call(context, source, "/project/app/page.js")).not.toBeNull();
+    try {
+      const plugin = server.config.plugins.find(
+        (candidate) => candidate?.name === "vinext:typeof-window",
+      );
+      if (!plugin?.transform || typeof plugin.transform === "function") {
+        throw new Error("vinext:typeof-window transform hook not found");
+      }
+      const idFilter = plugin.transform.filter?.id as { exclude?: RegExp } | undefined;
+      expect(idFilter?.exclude).toBeInstanceOf(RegExp);
+      expect(idFilter?.exclude?.test(path.join(cacheDir, "deps_ssr/react.js"))).toBe(true);
+      expect(idFilter?.exclude?.test(path.join(root, "app/page.js"))).toBe(false);
+      expect(idFilter?.exclude?.test(`${cacheDir}-other/deps/react.js`)).toBe(false);
+    } finally {
+      await server.close();
+    }
   });
 
   it("only folds references to the global window binding", () => {
