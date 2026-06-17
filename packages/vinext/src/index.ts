@@ -558,6 +558,9 @@ const RESOLVED_INSTRUMENTATION_CLIENT = `${VIRTUAL_PREFIX}${VIRTUAL_INSTRUMENTAT
 /** Image file extensions handled by the vinext:image-imports plugin.
  *  Shared between the Rolldown hook filter and the transform handler regex. */
 const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
+/** Matches a trailing image extension on an import path. Built once: `IMAGE_EXTS`
+ *  is constant, so there is no need to recompile this per transform invocation. */
+const IMAGE_EXT_RE = new RegExp(`\\.(${IMAGE_EXTS})$`);
 
 function createStaticImageAsset(imagePath: string): { fileName: string; source: Buffer } {
   const source = fs.readFileSync(imagePath);
@@ -4521,7 +4524,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // merely looks like one. Regex-based scanning generated phantom
           // variables for commented-out imports, crashing SSR with
           // `__vinext_img_url_X is not defined`.
-          const imageExtRe = new RegExp(`\\.(${IMAGE_EXTS})$`);
 
           // This plugin uses `enforce: "pre"`, so the handler runs on RAW
           // source — before the JSX/TS transform. `parseAst` defaults to plain
@@ -4563,7 +4565,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
             const importPath = importNode.source?.value;
             if (typeof importPath !== "string") continue;
-            if (!imageExtRe.test(importPath)) continue;
+            if (!IMAGE_EXT_RE.test(importPath)) continue;
 
             // Only handle a single default import (`import X from '...'`),
             // matching the original behavior. Skip named/namespace imports and
