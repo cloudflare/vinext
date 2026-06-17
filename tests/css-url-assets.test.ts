@@ -303,6 +303,7 @@ describe("App Router CSS url() asset emission", () => {
       configFile: false,
       plugins: [vinext({ appDir: tmpDir })],
       logLevel: "silent",
+      build: { assetsInlineLimit: 0 },
     });
     await builder.buildApp();
     clientDir = path.join(tmpDir, "dist", "client");
@@ -343,11 +344,15 @@ describe("App Router CSS url() asset emission", () => {
 
   it("uses the same CSS Module class name in server, client JS, and client CSS", async () => {
     const serverFiles = (await listFiles(serverDir)).filter((file) => file.endsWith(".js"));
+    const serverCssFiles = (await listFiles(serverDir)).filter((file) => file.endsWith(".css"));
     const clientFiles = (await listFiles(clientDir)).filter((file) => file.endsWith(".js"));
     const cssFiles = (await listFiles(clientDir)).filter((file) => file.endsWith(".css"));
 
     const serverCode = (
       await Promise.all(serverFiles.map((file) => fs.readFile(file, "utf-8")))
+    ).join("\n");
+    const serverCss = (
+      await Promise.all(serverCssFiles.map((file) => fs.readFile(file, "utf-8")))
     ).join("\n");
     const clientCode = (
       await Promise.all(clientFiles.map((file) => fs.readFile(file, "utf-8")))
@@ -364,7 +369,13 @@ describe("App Router CSS url() asset emission", () => {
     expect(clientClassNames).toEqual(serverClassNames);
     expect(cssClassNames).toEqual(serverClassNames);
     expect(serverCode).not.toContain("vinext_css_url_asset");
+    expect(serverCss).not.toContain("vinext_css_url_asset");
     expect(clientCode).not.toContain("vinext_css_url_asset");
     expect(clientCss).not.toContain("vinext_css_url_asset");
+
+    const serverAssetUrls = svgUrls(serverCss);
+    expect(serverAssetUrls).toHaveLength(2);
+    expect(serverAssetUrls[0]).toMatch(/\/dark[.-][A-Za-z0-9_-]+\.svg$/);
+    expect(serverAssetUrls[1]).toMatch(/\/dark2[.-][A-Za-z0-9_-]+\.svg$/);
   });
 });

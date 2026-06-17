@@ -17,10 +17,10 @@ import type { Rolldown } from "vite";
  *      `url()` with a private `?vinext_css_url_asset=<source-basename>` query.
  *      Using identical transformed CSS in server and client environments is
  *      required because the default CSS Modules scoped name hashes the full CSS
- *      text. In the client build, the marker is also the only durable carrier
- *      of per-reference provenance: once Rolldown dedupes, the emitted bundle
- *      cannot tell which `url()` came from which source, and bundle metadata
- *      records the source set but not the mapping per reference.
+ *      text. The marker is also the only durable carrier of per-reference
+ *      provenance: once Rolldown dedupes, the emitted bundle cannot tell which
+ *      `url()` came from which source, and bundle metadata records the source
+ *      set but not the mapping per reference.
  *
  *   2. restore — at `generateBundle`, read each marked reference's source
  *      basename back out. When it differs from the deduped output's basename,
