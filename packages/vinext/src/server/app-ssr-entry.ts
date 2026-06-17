@@ -19,7 +19,7 @@ import {
 } from "vinext/shims/navigation-server";
 import { runWithNavigationContext } from "vinext/shims/navigation-state";
 import { runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
-import { isOpenRedirectShaped } from "./request-pipeline.js";
+import { isOpenRedirectShaped } from "./open-redirect.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import {

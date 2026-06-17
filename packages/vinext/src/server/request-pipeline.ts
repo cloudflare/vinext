@@ -9,6 +9,9 @@ import {
   VINEXT_STATIC_FILE_HEADER,
 } from "./headers.js";
 import { forbiddenResponse, notFoundResponse } from "./http-error-responses.js";
+import { isOpenRedirectShaped } from "./open-redirect.js";
+
+export { isOpenRedirectShaped } from "./open-redirect.js";
 
 /**
  * Shared request pipeline utilities.
@@ -78,25 +81,6 @@ export function guardProtocolRelativeUrl(rawPathname: string): Response | null {
  * encoded delimiter) so malformed suffixes can still reach the normal
  * "400 Bad Request" decode path instead of being masked as "404".
  */
-export function isOpenRedirectShaped(rawPathname: string): boolean {
-  if (!rawPathname.startsWith("/")) return false;
-
-  // Fast path: literal `//...` or `/\...`. Browsers treat `\` as `/` in
-  // URL paths, so `/\evil.com` is equivalent to `//evil.com`.
-  const afterSlash = rawPathname.slice(1);
-  if (afterSlash.startsWith("/") || afterSlash.startsWith("\\")) return true;
-
-  // Slow path: percent-encoded leading delimiter. We only need to consider
-  // `%5C` (backslash) and `%2F` (forward slash) at position 1. Case-insensitive
-  // per RFC 3986 §2.1.
-  if (afterSlash.length >= 3 && afterSlash[0] === "%") {
-    const encoded = afterSlash.slice(0, 3).toLowerCase();
-    if (encoded === "%5c" || encoded === "%2f") return true;
-  }
-
-  return false;
-}
-
 /**
  * Strip the basePath prefix from a pathname.
  *
