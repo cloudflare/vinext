@@ -4450,9 +4450,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       watchChange(id) {
-        imageImportDimCache.delete(id);
-        staticImageAssets.delete(id);
-        staticImageImportsByModule.delete(id);
+        // Rolldown reports the changed file with native separators (backslashes
+        // on Windows), but these caches are keyed by the forward-slash module id
+        // from `load`. Normalize so the invalidation hits on Windows too.
+        const key = normalizePathSeparators(id);
+        imageImportDimCache.delete(key);
+        staticImageAssets.delete(key);
+        staticImageImportsByModule.delete(key);
       },
 
       resolveId: {
