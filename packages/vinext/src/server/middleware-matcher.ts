@@ -124,19 +124,21 @@ function stripLocalePrefix(pathname: string, i18nConfig: NextI18nConfig): string
     return null;
   }
 
-  const stripped = "/" + segments.slice(2).join("/");
-  return removeTrailingSlash(stripped);
+  return "/" + segments.slice(2).join("/");
 }
 
 export function matchPattern(pathname: string, pattern: string): boolean {
-  let cached = _mwPatternCache.get(pattern);
+  const hasPatternSyntax = /[\\():*+?]/.test(pattern);
+  const normalizedPattern = hasPatternSyntax ? pattern : removeTrailingSlash(pattern);
+  let cached = _mwPatternCache.get(normalizedPattern);
   if (cached === undefined) {
-    cached = compileMatcherPattern(pattern);
-    _mwPatternCache.set(pattern, cached);
+    cached = compileMatcherPattern(normalizedPattern);
+    _mwPatternCache.set(normalizedPattern, cached);
   }
   if (cached === UNSAFE_MATCHER_PATTERN) return true;
-  if (cached === null) return pathname === pattern;
-  return cached.test(pathname);
+  if (cached === null) return removeTrailingSlash(pathname) === normalizedPattern;
+  if (cached.test(pathname)) return true;
+  return pathname.endsWith("/") && cached.test(removeTrailingSlash(pathname));
 }
 
 function extractConstraint(str: string, re: RegExp): string | null {
