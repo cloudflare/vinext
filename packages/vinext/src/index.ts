@@ -4296,7 +4296,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       enforce: "post",
       transform: {
         filter: { code: /typeof\s+window/ },
-        handler(code) {
+        handler(code, id) {
+          if (id.includes("/node_modules/.vite/")) return null;
           return replaceTypeofWindow(code, getTypeofWindowReplacement(this.environment));
         },
       },

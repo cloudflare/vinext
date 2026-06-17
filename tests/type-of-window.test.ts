@@ -24,6 +24,28 @@ afterEach(async () => {
 });
 
 describe("typeof window compilation", () => {
+  it("skips folding Vite dependency prebundles", async () => {
+    const rawPlugins = vinext() as any[];
+    const plugins = (
+      await Promise.all(
+        rawPlugins.map(async (plugin) => {
+          if (plugin && typeof plugin.then === "function") return await plugin;
+          return plugin;
+        }),
+      )
+    ).flat();
+    const plugin = plugins.find((candidate) => candidate?.name === "vinext:typeof-window");
+    const transform =
+      typeof plugin.transform === "function" ? plugin.transform : plugin.transform.handler;
+    const context = { environment: { config: { consumer: "server" } } };
+    const source = `export const browser = typeof window !== "undefined"`;
+
+    expect(
+      await transform.call(context, source, "/project/node_modules/.vite/deps_ssr/react.js"),
+    ).toBeNull();
+    expect(await transform.call(context, source, "/project/app/page.js")).not.toBeNull();
+  });
+
   it("only folds references to the global window binding", () => {
     const source = `
 if (typeof window !== "undefined") globalBrowserOnly()
