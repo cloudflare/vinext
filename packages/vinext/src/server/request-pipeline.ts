@@ -80,7 +80,6 @@ export function guardProtocolRelativeUrl(rawPathname: string): Response | null {
  * pathname — we only examine the leading bytes (up to the second real or
  * encoded delimiter) so malformed suffixes can still reach the normal
  * "400 Bad Request" decode path instead of being masked as "404".
- */
 /**
  * Strip the basePath prefix from a pathname.
  *
