@@ -85,11 +85,6 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
     transform: {
       filter: { code: "import.meta.url" },
       async handler(code, id) {
-        // Quick bail-out: only process modules that use new URL(..., import.meta.url)
-        if (!code.includes("import.meta.url")) {
-          return null;
-        }
-
         const useCache = isBuild;
         const moduleDir = path.dirname(id);
         let newCode = code;

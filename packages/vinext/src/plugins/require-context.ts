@@ -61,9 +61,7 @@ export function createRequireContextPlugin(): Plugin {
         code: /\brequire\b[\s\S]*\.context/,
       },
       handler(code, id) {
-        if (!mayContainRequireContext(code)) return null;
-        const lang = langForId(id);
-        if (!lang) return null;
+        const lang = langForId(id)!;
 
         let ast: unknown;
         try {
@@ -87,12 +85,6 @@ export function createRequireContextPlugin(): Plugin {
       },
     },
   };
-}
-
-function mayContainRequireContext(code: string): boolean {
-  // Cheap substring gate: both the `require` token and a `.context` member
-  // access must be present for any genuine call.
-  return code.includes("require") && code.includes(".context");
 }
 
 function langForId(id: string): "js" | "jsx" | "ts" | "tsx" | null {

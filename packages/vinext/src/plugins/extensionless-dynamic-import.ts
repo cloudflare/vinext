@@ -41,10 +41,7 @@ export function createExtensionlessDynamicImportPlugin(): Plugin {
         code: /\bimport\s*\(/,
       },
       handler(code, id) {
-        if (!/\bimport\s*\(/.test(code)) return null;
-        if (isDependencyId(id)) return null;
-        const lang = langForId(id);
-        if (!lang) return null;
+        const lang = langForId(id)!;
 
         let ast: unknown;
         try {
@@ -84,11 +81,6 @@ function langForId(id: string): "js" | "jsx" | "ts" | "tsx" | null {
   if (ext === ".ts" || ext === ".mts" || ext === ".cts") return "ts";
   if (ext === ".tsx") return "tsx";
   return "jsx";
-}
-
-function isDependencyId(id: string): boolean {
-  const clean = id.split("?", 1)[0].replaceAll("\\", "/");
-  return clean.includes("/node_modules/");
 }
 
 function collectExtensionlessImports(

@@ -82,7 +82,6 @@ export function createImportMetaUrlPlugin(options: { getRoot: () => string | und
         code: /import\.meta(?:\.|\?\.)url|__filename|__dirname/,
       },
       handler(code, id) {
-        if (!mayContainSourceIdentityToken(code)) return null;
         const paths = getRootPaths();
         if (!paths) return null;
         const cleanId = cleanModuleId(id);
@@ -226,10 +225,6 @@ function mayContainImportMetaUrl(code: string): boolean {
 
 function mayContainServerCjsGlobal(code: string): boolean {
   return code.includes("__filename") || code.includes("__dirname");
-}
-
-function mayContainSourceIdentityToken(code: string): boolean {
-  return mayContainImportMetaUrl(code) || mayContainServerCjsGlobal(code);
 }
 
 function excludedRelativePrefixes(

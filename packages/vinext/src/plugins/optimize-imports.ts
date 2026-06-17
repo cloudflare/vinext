@@ -21,7 +21,7 @@ import type { ResolvedNextConfig } from "../config/next-config.js";
 import { getAstName } from "./ast-utils.js";
 import { normalizePathSeparators } from "../utils/path.js";
 import { escapeRegExp } from "../utils/regex.js";
-import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "../utils/virtual-module.js";
+import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
 
 /**
  * Read a file's contents, returning null on any error.
@@ -728,7 +728,7 @@ export function createOptimizeImportsPlugin(
         },
         code: /\bimport\b[\s\S]*\bfrom\b/,
       },
-      async handler(code, id) {
+      async handler(code) {
         // Only apply on server environments (RSC/SSR). The client uses Vite's
         // dep optimizer which handles barrel imports correctly.
         const env = (this as PluginCtx).environment;
@@ -736,8 +736,6 @@ export function createOptimizeImportsPlugin(
         // "react-server" export condition should only be preferred in the RSC environment.
         // SSR renders with the full React runtime and must NOT resolve react-server entries.
         const preferReactServer = env?.name === "rsc";
-        // Skip virtual modules
-        if (id.startsWith(VIRTUAL_PREFIX)) return null;
 
         // Quick pre-parse check: only transformable static `import ... from "pkg"`
         // declarations can be rewritten, so skip files that merely mention an

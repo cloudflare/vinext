@@ -126,12 +126,6 @@ export function dataUrlCssPlugin(): Plugin {
         code: DATA_URL_HINT,
       },
       handler(code, id) {
-        // Cheap pre-check so we don't run the regex on every module in the
-        // graph. Skip the CSS pipeline itself: synthetic ids round-trip through
-        // `transform`, but their decoded payload never contains a quoted import.
-        if (!code.includes(DATA_URL_HINT)) return null;
-        if (id.startsWith(VIRTUAL_PREFIX)) return null;
-
         let mutated = false;
         const rewritten = code.replace(
           DATA_URL_IMPORT_RE,
