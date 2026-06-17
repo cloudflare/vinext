@@ -296,9 +296,10 @@ export async function getPullComparison(
     .bind(pullRun.base_sha)
     .first<Record<string, unknown>>();
 
-  if (!baselineRun) return null;
-
-  const measurements = await comparableMeasurements(String(pullRun.id), String(baselineRun.id));
+  const measurements = await comparableMeasurements(
+    String(pullRun.id),
+    baselineRun ? String(baselineRun.id) : null,
+  );
   if (measurements.length === 0) {
     return null;
   }
@@ -306,11 +307,12 @@ export async function getPullComparison(
   return {
     badge: `PR #${pullNumber}`,
     title: `Pull request #${pullNumber}`,
-    description:
-      "Exact-head measurements compared with the PR base commit. Directionality is defined per scenario.",
+    description: baselineRun
+      ? "Exact-head measurements compared with the PR base commit. Directionality is defined per scenario."
+      : "Exact-head measurements. No benchmark run is available for the PR base commit.",
     currentLabel: "PR head",
     head: runReference(pullRun),
-    baseline: runReference(baselineRun),
+    baseline: baselineRun ? runReference(baselineRun) : null,
     measurements,
   };
 }
@@ -327,30 +329,42 @@ export async function getCommitComparison(sha: string): Promise<PerformanceCompa
       ? await db
           .prepare(`
             SELECT * FROM performance_runs
-            WHERE kind = 'main' AND commit_sha = ?
-            ORDER BY measured_at DESC LIMIT 1
+            WHERE commit_sha = ?
+            ORDER BY CASE WHEN kind = 'main' THEN 0 ELSE 1 END, measured_at DESC
+            LIMIT 1
           `)
           .bind(normalizedSha)
           .first<Record<string, unknown>>()
       : await db
           .prepare(`
             SELECT * FROM performance_runs
-            WHERE kind = 'main' AND commit_sha >= ? AND commit_sha < ?
-            ORDER BY measured_at DESC LIMIT 1
+            WHERE commit_sha >= ? AND commit_sha < ?
+            ORDER BY CASE WHEN kind = 'main' THEN 0 ELSE 1 END, measured_at DESC
+            LIMIT 1
           `)
           .bind(normalizedSha, `${normalizedSha}g`)
           .first<Record<string, unknown>>();
 
   if (!currentRun) return null;
 
-  const baselineRun = await db
-    .prepare(`
-      SELECT * FROM performance_runs
-      WHERE kind = 'main' AND commit_sha != ? AND measured_at < ?
-      ORDER BY measured_at DESC LIMIT 1
-    `)
-    .bind(currentRun.commit_sha, currentRun.measured_at)
-    .first<Record<string, unknown>>();
+  const isPullRequestRun = currentRun.kind === "pull_request";
+  const baselineRun = isPullRequestRun
+    ? await db
+        .prepare(`
+          SELECT * FROM performance_runs
+          WHERE kind = 'main' AND commit_sha = ?
+          ORDER BY measured_at DESC LIMIT 1
+        `)
+        .bind(currentRun.base_sha)
+        .first<Record<string, unknown>>()
+    : await db
+        .prepare(`
+          SELECT * FROM performance_runs
+          WHERE kind = 'main' AND commit_sha != ? AND measured_at < ?
+          ORDER BY measured_at DESC LIMIT 1
+        `)
+        .bind(currentRun.commit_sha, currentRun.measured_at)
+        .first<Record<string, unknown>>();
 
   const measurements = await comparableMeasurements(
     String(currentRun.id),
@@ -364,10 +378,14 @@ export async function getCommitComparison(sha: string): Promise<PerformanceCompa
   return {
     badge: commitSha.slice(0, 7),
     title: `Commit ${commitSha.slice(0, 7)}`,
-    description: baselineRun
-      ? "Main-branch measurements compared with the immediately preceding main run. Directionality is defined per scenario."
-      : "Main-branch measurements. No earlier main run is available for a baseline comparison.",
-    currentLabel: "Current commit",
+    description: isPullRequestRun
+      ? baselineRun
+        ? "Pull-request measurements compared with the PR base commit. Directionality is defined per scenario."
+        : "Pull-request measurements. No benchmark run is available for the PR base commit."
+      : baselineRun
+        ? "Main-branch measurements compared with the immediately preceding main run. Directionality is defined per scenario."
+        : "Main-branch measurements. No earlier main run is available for a baseline comparison.",
+    currentLabel: isPullRequestRun ? "PR commit" : "Current commit",
     head: runReference(currentRun),
     baseline: baselineRun ? runReference(baselineRun) : null,
     measurements,
