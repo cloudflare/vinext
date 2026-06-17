@@ -351,7 +351,16 @@ function waitForRscHmrSettle(delayMs = RSC_HMR_SETTLE_DELAY_MS): Promise<void> {
   });
 }
 
-function restoreHistoryStateSnapshot(historyState: unknown): boolean {
+// `onApprovedBeforeCommit` fires inside the restore's `beforeCommit` seam: only
+// once the visible restore is approved, and before the synchronous visible
+// commit. Callers use it to emit the App Router transition-start notification so
+// instrumentation sees "start" before the tree moves — matching the async
+// traverse path (notify before navigate) — without double-firing when a restore
+// is rejected as stale.
+function restoreHistoryStateSnapshot(
+  historyState: unknown,
+  onApprovedBeforeCommit?: () => void,
+): boolean {
   const navId = browserNavigationController.getActiveNavigationId();
   let restored = false;
   flushSync(() => {
@@ -360,7 +369,10 @@ function restoreHistoryStateSnapshot(historyState: unknown): boolean {
       stageClientParams,
       approveVisibleRestore: ({ state, beforeCommit }) =>
         browserNavigationController.restoreHistorySnapshotVisibleState({
-          beforeCommit,
+          beforeCommit: () => {
+            onApprovedBeforeCommit?.();
+            beforeCommit();
+          },
           navId,
           state,
           targetHref: window.location.href,
@@ -2304,13 +2316,18 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
     discardedServerActionRefreshScheduler.markNavigationStart();
     let restoredHistorySnapshot = false;
     try {
-      restoredHistorySnapshot = restoreHistoryStateSnapshot(event.state);
+      // Fire transition-start from the restore's approved-before-commit seam so
+      // instrumentation observes "start" before the visible tree moves, mirroring
+      // the async traverse path. Firing it here (after the synchronous restore had
+      // already committed) reported the start late.
+      restoredHistorySnapshot = restoreHistoryStateSnapshot(event.state, () => {
+        notifyAppRouterTransitionStart(href, "traverse");
+      });
       if (restoredHistorySnapshot) {
         // The in-flight RSC request (if any) is logically superseded by the
         // synchronous history restore. Cancel it so the browser does not keep
         // streaming work that can no longer commit.
         abortSupersededNavigation();
-        notifyAppRouterTransitionStart(href, "traverse");
         window.__VINEXT_RSC_PENDING__ = null;
         restoreSynchronousPopstateScrollPosition(
           {
