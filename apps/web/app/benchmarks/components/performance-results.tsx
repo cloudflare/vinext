@@ -261,7 +261,7 @@ function PerformanceTrendChart({
   );
 }
 
-export function formatPerformanceValue(value: number, unit: string) {
+function formatPerformanceValue(value: number, unit: string) {
   if (unit === "ms") return formatMs(value);
   if (unit === "bytes") return formatBytes(value);
   return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value)} ${unit}`;

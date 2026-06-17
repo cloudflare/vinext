@@ -164,7 +164,7 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
   return Response.json({ ok: true, runId, measurements: body.benchmarks.length }, { status: 201 });
 }
 
-export type PerformanceMeasurementData = {
+type PerformanceMeasurementData = {
   benchmarkId: string;
   scenarioId: string;
   suite: string;
@@ -190,7 +190,7 @@ export type PerformanceRunData = {
   measurements: PerformanceMeasurementData[];
 };
 
-export type PerformanceStatsData = {
+type PerformanceStatsData = {
   median: number;
   mean: number;
   standardDeviation: number;
@@ -205,7 +205,7 @@ export type FlameGraphData = {
   children?: FlameGraphData[];
 };
 
-export type PerformanceComparisonMeasurementData = Omit<
+type PerformanceComparisonMeasurementData = Omit<
   PerformanceMeasurementData,
   keyof PerformanceStatsData
 > & {
