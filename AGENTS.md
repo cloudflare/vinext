@@ -217,7 +217,7 @@ The `examples/` directory contains real-world Next.js apps ported to run on vine
 | `app-router-playground`   | Next.js playground (MDX, Tailwind) | `app-router-playground.vinext.workers.dev`   |
 | `realworld-api-rest`      | RealWorld spec (Pages Router)      | `realworld-api-rest.vinext.workers.dev`      |
 | `nextra-docs-template`    | Nextra docs site (MDX, App Router) | `nextra-docs-template.vinext.workers.dev`    |
-| `benchmarks`              | Performance benchmarks             | `benchmarks.vinext.workers.dev`              |
+| `apps/web/benchmarks`     | Performance benchmarks             | `vinext-web.vinext.workers.dev/benchmarks`   |
 | `hackernews`              | HN clone (App Router, RSC)         | `hackernews.vinext.workers.dev`              |
 
 #### Adding a New Example

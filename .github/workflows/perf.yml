@@ -1,0 +1,108 @@
+name: Performance Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      run_kind:
+        description: Run kind
+        type: choice
+        options: [main, pull_request]
+        default: main
+      commit_sha:
+        description: Commit SHA to measure (defaults to the selected ref)
+        type: string
+        required: false
+      base_sha:
+        description: Baseline commit SHA for pull request runs
+        type: string
+        required: false
+      pull_request:
+        description: Pull request number for pull request runs
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmarks:
+    name: Performance scenarios
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VINEXT_PERF_SAMPLES: ${{ github.workspace }}/benchmarks/results/perf-samples.jsonl
+      VINEXT_PERF_RUN_KIND: ${{ github.event_name == 'pull_request' && 'pull_request' || inputs.run_kind || 'main' }}
+      VINEXT_PERF_COMMIT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.commit_sha || github.sha }}
+      VINEXT_PERF_PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || inputs.pull_request }}
+      VINEXT_PERF_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.base_sha }}
+      VINEXT_PERF_EXECUTION_ID: ${{ github.run_id }}:${{ github.run_attempt }}
+      COMPAT_INGEST_SECRET: ${{ secrets.COMPAT_INGEST_SECRET }}
+      CODSPEED_SKIP_UPLOAD: "true"
+      CODSPEED_WALLTIME_PROFILER: samply
+    steps:
+      - name: Validate run metadata
+        run: |
+          if [ "$VINEXT_PERF_RUN_KIND" = "pull_request" ]; then
+            if ! [[ "$VINEXT_PERF_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+              echo "pull_request runs require a positive pull request number" >&2
+              exit 1
+            fi
+            if ! [[ "$VINEXT_PERF_BASE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "pull_request runs require a full 40-character base SHA" >&2
+              exit 1
+            fi
+          fi
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ env.VINEXT_PERF_COMMIT_SHA }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup
+
+      - name: Prepare performance scenarios
+        run: node benchmarks/perf/run-scenarios.mjs --setup-only
+
+      - name: Install pinned performance runner
+        run: |
+          curl -fsSL https://github.com/CodSpeedHQ/codspeed/releases/download/v4.17.5/codspeed-runner-x86_64-unknown-linux-musl.tar.gz -o /tmp/perf-runner.tar.gz
+          echo "88be40970bbe409192dec6f6242489ee916a4b2d8c4138b42b796853111c9b15  /tmp/perf-runner.tar.gz" | sha256sum -c
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf /tmp/perf-runner.tar.gz -C /tmp
+          install -m 0755 /tmp/codspeed-runner-x86_64-unknown-linux-musl/codspeed "$HOME/.local/bin/codspeed"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Measure performance scenarios
+        run: node benchmarks/perf/run-scenarios.mjs
+
+      - name: Normalize samples and profiles
+        run: node benchmarks/perf/normalize-results.mjs
+
+      - name: Upload performance artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: performance-${{ github.sha }}
+          path: |
+            benchmarks/results/perf-samples.jsonl
+            benchmarks/results/perf-results.json
+            benchmarks/results/perf-profiles/
+          retention-days: 90
+
+      - name: Upload to vinext dashboard
+        if: env.COMPAT_INGEST_SECRET != ''
+        run: |
+          curl -f -X POST \
+            -H "X-Compat-Secret: $COMPAT_INGEST_SECRET" \
+            -H "Content-Type: application/json" \
+            --data-binary @benchmarks/results/perf-results.json \
+            https://vinext-web.vinext.workers.dev/api/benchmarks/upload

@@ -1,0 +1,452 @@
+import { env } from "cloudflare:workers";
+import { revalidatePath } from "next/cache";
+
+type CloudflareEnv = {
+  DB: D1Database;
+};
+
+type NormalizedPerfPayload = {
+  schemaVersion: 1;
+  provider: "samply";
+  instrument: "walltime";
+  run: {
+    kind: "main" | "pull_request";
+    commitSha: string;
+    baseSha: string | null;
+    pullRequest: number | null;
+    executionId: string;
+    measuredAt: string;
+    repository: string;
+  };
+  system: Record<string, unknown>;
+  benchmarks: Array<{
+    benchmarkId: string;
+    scenarioId: string;
+    suite: string;
+    label: string;
+    description: string;
+    implementationId: string;
+    implementationLabel: string;
+    unit: string;
+    lowerIsBetter: boolean;
+    samples: {
+      rounds: number;
+      mean: number;
+      median: number;
+      standardDeviation: number;
+      min: number;
+      max: number;
+      q1: number;
+      q3: number;
+      outliers: number;
+    };
+    flameGraph: FlameGraphNode | null;
+  }>;
+};
+
+type FlameGraphNode = {
+  name: string;
+  value: number;
+  children?: FlameGraphNode[];
+};
+
+function getD1() {
+  return (env as CloudflareEnv).DB;
+}
+
+export async function uploadPerformanceRun(request: Request): Promise<Response> {
+  let body: NormalizedPerfPayload;
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  if (
+    body.schemaVersion !== 1 ||
+    body.provider !== "samply" ||
+    body.instrument !== "walltime" ||
+    !body.run?.commitSha ||
+    !body.run.executionId ||
+    !Array.isArray(body.benchmarks) ||
+    body.benchmarks.some(
+      (benchmark) =>
+        !benchmark.benchmarkId ||
+        !benchmark.scenarioId ||
+        !benchmark.suite ||
+        !benchmark.label ||
+        !benchmark.implementationId ||
+        !benchmark.implementationLabel ||
+        !benchmark.unit,
+    )
+  ) {
+    return Response.json({ error: "Invalid normalized performance payload" }, { status: 400 });
+  }
+
+  if (
+    body.run.kind === "pull_request" &&
+    (!body.run.baseSha ||
+      body.run.pullRequest === null ||
+      !Number.isInteger(body.run.pullRequest) ||
+      body.run.pullRequest <= 0)
+  ) {
+    return Response.json(
+      { error: "Pull request runs require baseSha and pullRequest" },
+      { status: 400 },
+    );
+  }
+
+  const db = getD1();
+  const runId = `${body.run.kind}:${body.run.commitSha}:${body.run.executionId}`;
+  const statements = [
+    db.prepare("DELETE FROM performance_measurements WHERE run_id = ?").bind(runId),
+    db
+      .prepare(`
+        INSERT OR REPLACE INTO performance_runs (
+          id, kind, commit_sha, base_sha, pull_request, measured_at,
+          provider, instrument, repository, system_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .bind(
+        runId,
+        body.run.kind,
+        body.run.commitSha,
+        body.run.baseSha,
+        body.run.pullRequest,
+        body.run.measuredAt,
+        body.provider,
+        body.instrument,
+        body.run.repository,
+        JSON.stringify(body.system),
+      ),
+    ...body.benchmarks.map((benchmark) =>
+      db
+        .prepare(`
+          INSERT INTO performance_measurements (
+            run_id, benchmark_id, scenario_id, suite, label, description,
+            implementation_id, implementation_label, unit,
+            lower_is_better, rounds, mean_value, median_value,
+            standard_deviation_value, min_value, max_value, q1_value,
+            q3_value, outliers, flame_graph_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .bind(
+          runId,
+          benchmark.benchmarkId,
+          benchmark.scenarioId,
+          benchmark.suite,
+          benchmark.label,
+          benchmark.description,
+          benchmark.implementationId,
+          benchmark.implementationLabel,
+          benchmark.unit,
+          benchmark.lowerIsBetter ? 1 : 0,
+          benchmark.samples.rounds,
+          benchmark.samples.mean,
+          benchmark.samples.median,
+          benchmark.samples.standardDeviation,
+          benchmark.samples.min,
+          benchmark.samples.max,
+          benchmark.samples.q1,
+          benchmark.samples.q3,
+          benchmark.samples.outliers,
+          benchmark.flameGraph ? JSON.stringify(benchmark.flameGraph) : null,
+        ),
+    ),
+  ];
+
+  await db.batch(statements);
+  revalidatePath("/benchmarks");
+  revalidatePath(`/benchmarks/commit/${body.run.commitSha}`);
+  if (body.run.kind === "pull_request" && body.run.pullRequest !== null) {
+    revalidatePath(`/benchmarks/pull/${body.run.pullRequest}`);
+  }
+  return Response.json({ ok: true, runId, measurements: body.benchmarks.length }, { status: 201 });
+}
+
+export type PerformanceMeasurementData = {
+  benchmarkId: string;
+  scenarioId: string;
+  suite: string;
+  label: string;
+  description: string;
+  implementationId: string;
+  implementationLabel: string;
+  unit: string;
+  lowerIsBetter: boolean;
+  median: number;
+  mean: number;
+  standardDeviation: number;
+  rounds: number;
+  min: number;
+  max: number;
+};
+
+export type PerformanceRunData = {
+  id: string;
+  commitSha: string;
+  shortSha: string;
+  measuredAt: string;
+  measurements: PerformanceMeasurementData[];
+};
+
+export type PerformanceStatsData = {
+  median: number;
+  mean: number;
+  standardDeviation: number;
+  rounds: number;
+  min: number;
+  max: number;
+};
+
+export type FlameGraphData = {
+  name: string;
+  value: number;
+  children?: FlameGraphData[];
+};
+
+export type PerformanceComparisonMeasurementData = Omit<
+  PerformanceMeasurementData,
+  keyof PerformanceStatsData
+> & {
+  baseline: PerformanceStatsData | null;
+  current: PerformanceStatsData;
+  flameGraph: FlameGraphData | null;
+};
+
+export async function getPerformanceRuns(limit = 20): Promise<PerformanceRunData[]> {
+  const boundedLimit = Math.max(1, Math.min(limit, 100));
+  const db = getD1();
+  const { results } = await db
+    .prepare(`
+      SELECT id, commit_sha, measured_at
+      FROM performance_runs
+      WHERE kind = 'main'
+      ORDER BY measured_at DESC
+      LIMIT ?
+    `)
+    .bind(boundedLimit)
+    .all<Record<string, string>>();
+
+  if (results.length === 0) return [];
+
+  const placeholders = results.map(() => "?").join(", ");
+  const measurements = await db
+    .prepare(`
+      SELECT * FROM performance_measurements
+      WHERE run_id IN (${placeholders})
+      ORDER BY run_id, suite, label, implementation_label
+    `)
+    .bind(...results.map((row) => row.id))
+    .all<Record<string, unknown>>();
+  const measurementsByRun = new Map<string, PerformanceMeasurementData[]>();
+
+  for (const measurement of measurements.results) {
+    const runId = String(measurement.run_id);
+    const runMeasurements = measurementsByRun.get(runId) ?? [];
+    runMeasurements.push(serializeMeasurement(measurement));
+    measurementsByRun.set(runId, runMeasurements);
+  }
+
+  return results.map((row) => ({
+    id: row.id,
+    commitSha: row.commit_sha,
+    shortSha: row.commit_sha.slice(0, 7),
+    measuredAt: row.measured_at,
+    measurements: measurementsByRun.get(row.id) ?? [],
+  }));
+}
+
+export type PerformanceComparisonData = {
+  badge: string;
+  title: string;
+  description: string;
+  currentLabel: string;
+  head: ReturnType<typeof runReference>;
+  baseline: ReturnType<typeof runReference> | null;
+  measurements: PerformanceComparisonMeasurementData[];
+};
+
+export async function getPullComparison(
+  pullRequest: string,
+): Promise<PerformanceComparisonData | null> {
+  const pullNumber = Number(pullRequest);
+  if (!Number.isInteger(pullNumber) || pullNumber <= 0) {
+    return null;
+  }
+
+  const db = getD1();
+  const pullRun = await db
+    .prepare(`
+      SELECT * FROM performance_runs
+      WHERE kind = 'pull_request' AND pull_request = ?
+      ORDER BY measured_at DESC LIMIT 1
+    `)
+    .bind(pullNumber)
+    .first<Record<string, unknown>>();
+
+  if (!pullRun) return null;
+
+  const baselineRun = await db
+    .prepare(`
+      SELECT * FROM performance_runs
+      WHERE kind = 'main' AND commit_sha = ?
+      ORDER BY measured_at DESC LIMIT 1
+    `)
+    .bind(pullRun.base_sha)
+    .first<Record<string, unknown>>();
+
+  if (!baselineRun) return null;
+
+  const measurements = await comparableMeasurements(String(pullRun.id), String(baselineRun.id));
+  if (measurements.length === 0) {
+    return null;
+  }
+
+  return {
+    badge: `PR #${pullNumber}`,
+    title: `Pull request #${pullNumber}`,
+    description:
+      "Exact-head measurements compared with the PR base commit. Directionality is defined per scenario.",
+    currentLabel: "PR head",
+    head: runReference(pullRun),
+    baseline: runReference(baselineRun),
+    measurements,
+  };
+}
+
+export async function getCommitComparison(sha: string): Promise<PerformanceComparisonData | null> {
+  if (!/^[0-9a-f]{7,40}$/i.test(sha)) {
+    return null;
+  }
+
+  const db = getD1();
+  const normalizedSha = sha.toLowerCase();
+  const currentRun =
+    normalizedSha.length === 40
+      ? await db
+          .prepare(`
+            SELECT * FROM performance_runs
+            WHERE kind = 'main' AND commit_sha = ?
+            ORDER BY measured_at DESC LIMIT 1
+          `)
+          .bind(normalizedSha)
+          .first<Record<string, unknown>>()
+      : await db
+          .prepare(`
+            SELECT * FROM performance_runs
+            WHERE kind = 'main' AND commit_sha >= ? AND commit_sha < ?
+            ORDER BY measured_at DESC LIMIT 1
+          `)
+          .bind(normalizedSha, `${normalizedSha}g`)
+          .first<Record<string, unknown>>();
+
+  if (!currentRun) return null;
+
+  const baselineRun = await db
+    .prepare(`
+      SELECT * FROM performance_runs
+      WHERE kind = 'main' AND commit_sha != ? AND measured_at < ?
+      ORDER BY measured_at DESC LIMIT 1
+    `)
+    .bind(currentRun.commit_sha, currentRun.measured_at)
+    .first<Record<string, unknown>>();
+
+  const measurements = await comparableMeasurements(
+    String(currentRun.id),
+    baselineRun ? String(baselineRun.id) : null,
+  );
+  if (measurements.length === 0) {
+    return null;
+  }
+
+  const commitSha = String(currentRun.commit_sha);
+  return {
+    badge: commitSha.slice(0, 7),
+    title: `Commit ${commitSha.slice(0, 7)}`,
+    description: baselineRun
+      ? "Main-branch measurements compared with the immediately preceding main run. Directionality is defined per scenario."
+      : "Main-branch measurements. No earlier main run is available for a baseline comparison.",
+    currentLabel: "Current commit",
+    head: runReference(currentRun),
+    baseline: baselineRun ? runReference(baselineRun) : null,
+    measurements,
+  };
+}
+
+async function comparableMeasurements(
+  currentRunId: string,
+  baselineRunId: string | null,
+): Promise<PerformanceComparisonMeasurementData[]> {
+  const db = getD1();
+  const [current, baseline] = await Promise.all([
+    db
+      .prepare("SELECT * FROM performance_measurements WHERE run_id = ? ORDER BY benchmark_id")
+      .bind(currentRunId)
+      .all<Record<string, unknown>>(),
+    baselineRunId
+      ? db
+          .prepare("SELECT * FROM performance_measurements WHERE run_id = ? ORDER BY benchmark_id")
+          .bind(baselineRunId)
+          .all<Record<string, unknown>>()
+      : Promise.resolve({ results: [] as Record<string, unknown>[] }),
+  ]);
+  const baselineById = new Map(baseline.results.map((row) => [String(row.benchmark_id), row]));
+
+  return current.results.map((row) => {
+    const baselineRow = baselineById.get(String(row.benchmark_id));
+    return {
+      benchmarkId: String(row.benchmark_id),
+      scenarioId: String(row.scenario_id),
+      suite: String(row.suite),
+      label: String(row.label),
+      description: String(row.description),
+      implementationId: String(row.implementation_id),
+      implementationLabel: String(row.implementation_label),
+      unit: String(row.unit),
+      lowerIsBetter: Boolean(row.lower_is_better),
+      baseline: baselineRow ? measurementStats(baselineRow) : null,
+      current: measurementStats(row),
+      flameGraph:
+        typeof row.flame_graph_json === "string"
+          ? (JSON.parse(row.flame_graph_json) as FlameGraphData)
+          : null,
+    };
+  });
+}
+
+function runReference(row: Record<string, unknown>) {
+  const sha = String(row.commit_sha);
+  return { sha, shortSha: sha.slice(0, 7), measuredAt: String(row.measured_at) };
+}
+
+function serializeMeasurement(row: Record<string, unknown>): PerformanceMeasurementData {
+  return {
+    benchmarkId: String(row.benchmark_id),
+    scenarioId: String(row.scenario_id),
+    suite: String(row.suite),
+    label: String(row.label),
+    description: String(row.description),
+    implementationId: String(row.implementation_id),
+    implementationLabel: String(row.implementation_label),
+    unit: String(row.unit),
+    lowerIsBetter: Boolean(row.lower_is_better),
+    median: Number(row.median_value),
+    mean: Number(row.mean_value),
+    standardDeviation: Number(row.standard_deviation_value),
+    rounds: Number(row.rounds),
+    min: Number(row.min_value),
+    max: Number(row.max_value),
+  };
+}
+
+function measurementStats(row: Record<string, unknown>): PerformanceStatsData {
+  return {
+    median: Number(row.median_value),
+    mean: Number(row.mean_value),
+    standardDeviation: Number(row.standard_deviation_value),
+    rounds: Number(row.rounds),
+    min: Number(row.min_value),
+    max: Number(row.max_value),
+  };
+}
