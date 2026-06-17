@@ -14,7 +14,7 @@ import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from ".
 import {
   hasExportAllCandidate as _hasExportAllCandidate,
   hasServerExportCandidate as _hasServerExportCandidate,
-  stripServerExports as _stripServerExports,
+  stripServerExports as _stripServerExportsImpl,
   validatePageExports as _validatePageExports,
 } from "../packages/vinext/src/plugins/strip-server-exports.js";
 import {
@@ -34,6 +34,11 @@ import { collectAssetTags } from "../packages/vinext/src/server/pages-asset-tags
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
+
+// `stripServerExports` returns `{ code, map }`; these tests assert on the
+// transformed source, so unwrap to the code string (null is preserved).
+const _stripServerExports = (code: string): string | null =>
+  _stripServerExportsImpl(code)?.code ?? null;
 
 // Create a clientManualChunks instance with a test shims directory.
 // The exact path doesn't matter for the node_modules-focused tests;

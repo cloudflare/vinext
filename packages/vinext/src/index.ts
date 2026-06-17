@@ -4286,9 +4286,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (isApiPage(canonicalId)) return null;
           if (/^\/(?:_app|_document|_error)(?:\.[^/]*)?$/.test(relativePath)) return null;
 
-          const result = stripServerExports(code);
-          if (!result) return null;
-          return { code: result, map: null };
+          // stripServerExports returns { code, map }; thread the map through so
+          // line shifts from removed exports stay debuggable in client builds.
+          return stripServerExports(code);
         },
       },
     },
@@ -4346,9 +4346,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (ssr) return null;
           if (!nextConfig.removeConsole) return null;
 
-          const result = removeConsoleCalls(code, nextConfig.removeConsole);
-          if (!result) return null;
-          return { code: result, map: null };
+          // removeConsoleCalls returns { code, map }; thread the map through so
+          // stripped console calls don't desync client-build sourcemaps.
+          return removeConsoleCalls(code, nextConfig.removeConsole);
         },
       },
     },
