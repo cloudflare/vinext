@@ -129,13 +129,14 @@ function stripLocalePrefix(pathname: string, i18nConfig: NextI18nConfig): string
 }
 
 export function matchPattern(pathname: string, pattern: string): boolean {
-  let cached = _mwPatternCache.get(pattern);
+  const normalizedPattern = removeTrailingSlash(pattern);
+  let cached = _mwPatternCache.get(normalizedPattern);
   if (cached === undefined) {
-    cached = compileMatcherPattern(pattern);
-    _mwPatternCache.set(pattern, cached);
+    cached = compileMatcherPattern(normalizedPattern);
+    _mwPatternCache.set(normalizedPattern, cached);
   }
   if (cached === UNSAFE_MATCHER_PATTERN) return true;
-  if (cached === null) return pathname === pattern;
+  if (cached === null) return pathname === normalizedPattern;
   return cached.test(pathname);
 }
 
