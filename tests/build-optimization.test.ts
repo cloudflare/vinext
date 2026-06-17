@@ -361,42 +361,46 @@ describe("optimizeDeps.exclude for vinext", () => {
     "react-server-dom-webpack/client.edge",
   ];
 
-  it("excludes React from ssr optimizeDeps when ssr.external: true (App Router)", async () => {
+  async function setupAppRouterConfigTest(prefix: string) {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
-    const plugins = vinext();
-    const mainPlugin = plugins.find(
-      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    const mainPlugin = vinext().find(
+      (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
     );
     expect(mainPlugin).toBeDefined();
 
-    const os = await import("node:os");
-    const fsp = await import("node:fs/promises");
-    const path = await import("node:path");
-
-    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-optdeps-react-true-"));
-    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
-    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
-    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), prefix));
+    await fsp.symlink(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(root, "node_modules"),
+      "junction",
+    );
+    await fsp.mkdir(path.join(root, "app"), { recursive: true });
     await fsp.writeFile(
-      path.join(tmpDir, "app", "layout.tsx"),
+      path.join(root, "app", "layout.tsx"),
       `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
     );
     await fsp.writeFile(
-      path.join(tmpDir, "app", "page.tsx"),
+      path.join(root, "app", "page.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+    await fsp.writeFile(path.join(root, "next.config.mjs"), `export default {};`);
+
+    return {
+      config(userConfig: Record<string, unknown> = {}, command: "serve" | "build" = "serve") {
+        return (mainPlugin as any).config(
+          { root, build: {}, plugins: [], ...userConfig },
+          { command },
+        );
+      },
+      cleanup: () => fsp.rm(root, { recursive: true, force: true }),
+    };
+  }
+
+  it("excludes React from ssr optimizeDeps when ssr.external: true (App Router)", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-optdeps-react-true-");
 
     try {
-      const mockConfig = {
-        root: tmpDir,
-        build: {},
-        plugins: [],
-        ssr: { external: true },
-      };
-      const result = await (mainPlugin as any).config(mockConfig, {
-        command: "serve",
-      });
+      const result = await fixture.config({ ssr: { external: true } });
 
       const ssrExclude = result.environments.ssr.optimizeDeps?.exclude ?? [];
       for (const entry of ssrExternalReactEntries) {
@@ -414,101 +418,70 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.ssr?.noExternal).toBeUndefined();
       expect(result.ssr?.external).toBe(true);
     } finally {
-      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      await fixture.cleanup();
     }
   }, 15000);
 
-  it("does NOT exclude React from ssr optimizeDeps when ssr.external is unset", async () => {
-    // Default mode (vinext sets noExternal: true on ssr) still pre-bundles
-    // React into deps_ssr — that's the path that already works because
-    // everything is bundled with one React copy.
-    const vinext = (await import("../packages/vinext/src/index.js")).default;
-    const plugins = vinext();
-    const mainPlugin = plugins.find(
-      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
-    );
-    expect(mainPlugin).toBeDefined();
-
-    const os = await import("node:os");
-    const fsp = await import("node:fs/promises");
-    const path = await import("node:path");
-
-    const tmpDir = await fsp.mkdtemp(
-      path.join(os.tmpdir(), "vinext-ts-test-optdeps-react-default-"),
-    );
-    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
-    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
-    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
-    await fsp.writeFile(
-      path.join(tmpDir, "app", "layout.tsx"),
-      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
-    );
-    await fsp.writeFile(
-      path.join(tmpDir, "app", "page.tsx"),
-      `export default function Home() { return <h1>Home</h1>; }`,
-    );
-    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+  it("externalizes React from the SSR transform graph only in default Node dev", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-optdeps-react-default-");
 
     try {
-      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
-      const result = await (mainPlugin as any).config(mockConfig, {
-        command: "serve",
+      const devResult = await fixture.config();
+
+      const devExternal = devResult.environments.ssr.resolve.external ?? [];
+      const devExclude = devResult.environments.ssr.optimizeDeps?.exclude ?? [];
+      for (const entry of ssrExternalReactEntries) {
+        expect(devExternal, `dev SSR external should contain ${entry}`).toContain(entry);
+        expect(devExclude, `dev SSR exclude should contain ${entry}`).toContain(entry);
+      }
+
+      const buildResult = await fixture.config({}, "build");
+      const buildExternal = buildResult.environments.ssr.resolve.external ?? [];
+      const buildExclude = buildResult.environments.ssr.optimizeDeps?.exclude ?? [];
+      for (const entry of ssrExternalReactEntries) {
+        expect(buildExternal, `build SSR external should NOT contain ${entry}`).not.toContain(
+          entry,
+        );
+        expect(buildExclude, `build SSR exclude should NOT contain ${entry}`).not.toContain(entry);
+      }
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
+  it("does not externalize React from adapter-managed SSR environments", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-ssr-react-adapter-");
+
+    try {
+      const result = await fixture.config({
+        plugins: [{ name: "vite-plugin-cloudflare" }],
       });
 
       const ssrExclude = result.environments.ssr.optimizeDeps?.exclude ?? [];
       for (const entry of ssrExternalReactEntries) {
-        expect(ssrExclude, `ssr exclude should NOT contain ${entry}`).not.toContain(entry);
+        expect(ssrExclude, `adapter SSR exclude should NOT contain ${entry}`).not.toContain(entry);
       }
+      expect(result.environments.ssr.resolve).toBeUndefined();
     } finally {
-      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      await fixture.cleanup();
     }
   }, 15000);
 
-  it("does NOT exclude React from ssr optimizeDeps when ssr.external is a string array", async () => {
-    // Array form of ssr.external (e.g. ['pg']) should not trigger the
-    // React strip — only the blanket `true` form does.
-    const vinext = (await import("../packages/vinext/src/index.js")).default;
-    const plugins = vinext();
-    const mainPlugin = plugins.find(
-      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
-    );
-    expect(mainPlugin).toBeDefined();
-
-    const os = await import("node:os");
-    const fsp = await import("node:fs/promises");
-    const path = await import("node:path");
-
-    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-optdeps-react-array-"));
-    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
-    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
-    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
-    await fsp.writeFile(
-      path.join(tmpDir, "app", "layout.tsx"),
-      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
-    );
-    await fsp.writeFile(
-      path.join(tmpDir, "app", "page.tsx"),
-      `export default function Home() { return <h1>Home</h1>; }`,
-    );
-    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+  it("preserves user SSR externals while externalizing React in Node dev", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-optdeps-react-array-");
 
     try {
-      const mockConfig = {
-        root: tmpDir,
-        build: {},
-        plugins: [],
-        ssr: { external: ["pg"] },
-      };
-      const result = await (mainPlugin as any).config(mockConfig, {
-        command: "serve",
-      });
+      const result = await fixture.config({ ssr: { external: ["pg"] } });
 
+      const ssrExternal = result.environments.ssr.resolve.external ?? [];
       const ssrExclude = result.environments.ssr.optimizeDeps?.exclude ?? [];
+      expect(ssrExternal).toContain("pg");
       for (const entry of ssrExternalReactEntries) {
-        expect(ssrExclude, `ssr exclude should NOT contain ${entry}`).not.toContain(entry);
+        expect(ssrExternal, `ssr external should contain ${entry}`).toContain(entry);
+        expect(ssrExclude, `ssr exclude should contain ${entry}`).toContain(entry);
       }
     } finally {
-      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      await fixture.cleanup();
     }
   }, 15000);
 

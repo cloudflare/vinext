@@ -2193,6 +2193,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           : config.ssr?.external === true
             ? true
             : nextServerExternal;
+        const externalizeSsrReactInDev =
+          env.command === "serve" && !hasCloudflarePlugin && !hasNitroPlugin;
 
         // Capture top-level optimizeDeps populated by earlier plugins
         // (e.g. @lingui/vite-plugin) so we merge rather than overwrite.
@@ -2331,7 +2333,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ? {}
                 : {
                     resolve: {
-                      external: userSsrExternal === true ? true : [...userSsrExternal, "ipaddr.js"],
+                      external:
+                        userSsrExternal === true
+                          ? true
+                          : [
+                              ...userSsrExternal,
+                              "ipaddr.js",
+                              // Node can load the SSR React runtime natively.
+                              // Keeping it out of Vite's transform graph avoids
+                              // reparsing the large Flight client decoder.
+                              ...(externalizeSsrReactInDev ? SSR_EXTERNAL_REACT_ENTRIES : []),
+                            ],
                       // Force all node_modules through Vite's transform pipeline
                       // so non-JS imports (CSS, images) don't hit Node's native
                       // ESM loader. Matches Next.js behavior of bundling everything.
@@ -2357,11 +2369,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // bundles it anyway, so excluding it from the dev optimizer
                 // is still correct — it just defers handling to the runtime
                 // resolver instead of the SSR pre-bundle step.
+                //
+                // React is also excluded when Node dev externalizes it above.
+                // This keeps the optimizer from creating a second React copy
+                // while the renderer and client modules use the native one.
                 exclude: mergeOptimizeDepsExclude(
                   incomingExclude,
                   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
                   ["ipaddr.js"],
-                  userSsrExternal === true ? SSR_EXTERNAL_REACT_ENTRIES : [],
+                  userSsrExternal === true || externalizeSsrReactInDev
+                    ? SSR_EXTERNAL_REACT_ENTRIES
+                    : [],
                 ),
                 entries: optimizeEntries,
                 ...depOptimizeNodeEnvOptions,
