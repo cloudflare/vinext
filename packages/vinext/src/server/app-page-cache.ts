@@ -509,7 +509,7 @@ export async function readAppPageCacheResponse(
           // be regenerated independently by the next full-page HTML request.
           writes.push(
             options.isrSet(
-              options.isrHtmlKey(options.cleanPathname),
+              isrKey,
               buildAppPageCacheValue(
                 revalidatedPage.html,
                 undefined,
