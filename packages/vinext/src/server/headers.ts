@@ -34,6 +34,12 @@ export const VINEXT_PRERENDER_SECRET_HEADER = "x-vinext-prerender-secret";
 /** URL-encoded JSON route params for build-time prerender renders. */
 export const VINEXT_PRERENDER_ROUTE_PARAMS_HEADER = "x-vinext-prerender-route-params";
 
+/** Internal endpoint used to evaluate App Router generateStaticParams exports. */
+export const VINEXT_PRERENDER_STATIC_PARAMS_PATH = "/__vinext/prerender/static-params";
+
+/** Internal endpoint used to evaluate Pages Router getStaticPaths exports. */
+export const VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH = "/__vinext/prerender/pages-static-paths";
+
 /** TPR (Tailored Per-Request) revalidation interval in seconds. */
 export const VINEXT_REVALIDATE_HEADER = "x-vinext-revalidate";
 

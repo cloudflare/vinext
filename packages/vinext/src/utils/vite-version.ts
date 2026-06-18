@@ -9,6 +9,44 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 
+export function serializeViteDefine(value: unknown): string {
+  if (typeof value === "string") return value;
+  // Vite treats define values as raw expressions, so explicit `undefined`
+  // must become the bare expression rather than the string `"undefined"`.
+  return JSON.stringify(value) ?? "undefined";
+}
+
+export function getDepOptimizeNodeEnvOptions(
+  viteMajorVersion: number,
+  nodeEnvDefine: string,
+): {
+  rolldownOptions?: {
+    transform: {
+      define: Record<string, string>;
+    };
+  };
+  esbuildOptions?: {
+    define: Record<string, string>;
+  };
+} {
+  // Vite defaults keepProcessEnv to true for server-consumer environments,
+  // which also disables its built-in optimizer NODE_ENV replacement. Pin the
+  // value explicitly so RSC and SSR dependencies can drop the unused branch.
+  const define = {
+    "process.env.NODE_ENV": nodeEnvDefine,
+  };
+
+  return viteMajorVersion >= 8
+    ? {
+        rolldownOptions: {
+          transform: { define },
+        },
+      }
+    : {
+        esbuildOptions: { define },
+      };
+}
+
 /**
  * Detect Vite major version at runtime by resolving from cwd.
  * The plugin may be installed in a workspace root with Vite 7 but used

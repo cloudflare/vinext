@@ -9,7 +9,14 @@
  * - Only strips the global `console` object
  */
 import { describe, it, expect } from "vite-plus/test";
-import { removeConsoleCalls } from "../packages/vinext/src/plugins/remove-console.js";
+import { removeConsoleCalls as _removeConsoleCallsImpl } from "../packages/vinext/src/plugins/remove-console.js";
+
+// `removeConsoleCalls` returns `{ code, map }`; these tests assert on the
+// transformed source, so unwrap to the code string (null is preserved).
+const removeConsoleCalls = (
+  code: string,
+  config: Parameters<typeof _removeConsoleCallsImpl>[1],
+): string | null => _removeConsoleCallsImpl(code, config)?.code ?? null;
 
 describe("removeConsoleCalls", () => {
   it("returns null when code has no console calls", () => {

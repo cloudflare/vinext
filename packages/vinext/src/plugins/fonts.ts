@@ -38,6 +38,7 @@ import {
 import { validateGoogleFontOptions } from "../build/google-fonts/validate.js";
 import { getFontAxes } from "../build/google-fonts/get-axes.js";
 import { buildGoogleFontsUrl } from "../build/google-fonts/build-url.js";
+import { findFontFilesInCss } from "../build/google-fonts/find-font-files-in-css.js";
 import { CONTENT_TYPES } from "../server/static-file-cache.js";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
 
@@ -919,6 +920,12 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
             cacheDir,
             transformAssetsDir,
           );
+          const preloadUrls = findFontFilesInCss(
+            servedCSS,
+            validated.preload ? validated.subsets : undefined,
+          )
+            .filter((file) => file.preloadFontFile)
+            .map((file) => file.googleFontFileUrl);
           const fallbackMetrics =
             validated.adjustFontFallback === false
               ? undefined
@@ -934,7 +941,10 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
             validated.styles.length === 1 ? validated.styles[0] : undefined;
 
           // Inject the internal transform-to-runtime payload into the options object.
-          const internalFontProperties = [`selfHostedCSS: ${JSON.stringify(servedCSS)}`];
+          const internalFontProperties = [
+            `selfHostedCSS: ${JSON.stringify(servedCSS)}`,
+            `preloadUrls: ${JSON.stringify(preloadUrls)}`,
+          ];
           if (adjustedFallbackCSS) {
             internalFontProperties.push(
               `adjustedFallbackCSS: ${JSON.stringify(adjustedFallbackCSS)}`,

@@ -13,7 +13,11 @@ import {
 } from "../server/app-elements.js";
 import type { ArtifactCompatibilityEnvelope } from "../server/artifact-compatibility.js";
 import type { CacheEntryReuseProof } from "../server/cache-proof.js";
-import { getBfcacheIdMapContext, getBfcacheSegmentIdContext, notFound } from "./navigation.js";
+import {
+  getBfcacheIdMapContext,
+  getBfcacheSegmentIdContext,
+  notFound,
+} from "./navigation-server.js";
 
 const EMPTY_ELEMENTS: AppElements = Object.freeze({});
 const warnedMissingEntryIds = new Set<string>();
