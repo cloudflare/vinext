@@ -19,6 +19,8 @@ if (!secret) {
 
 const payload = JSON.parse(await readFile(inputPath, "utf8"));
 const profileUploadUrl = uploadUrl.replace(/\/upload$/, "/profile-upload");
+const uploadedProfileKeys = [];
+let metadataCommitted = false;
 
 function resolveProfilePath(profileFile) {
   if (!artifactRoot) {
@@ -35,47 +37,73 @@ function resolveProfilePath(profileFile) {
   return profilePath;
 }
 
-for (const benchmark of payload.benchmarks) {
-  if (!benchmark.profileFile) continue;
-  const profilePath = resolveProfilePath(benchmark.profileFile);
-  const contents = await readFile(profilePath);
-  const response = await fetch(profileUploadUrl, {
-    method: "PUT",
+async function rollbackProfiles() {
+  const failures = [];
+  for (const key of uploadedProfileKeys.reverse()) {
+    try {
+      const response = await fetch(profileUploadUrl, {
+        method: "DELETE",
+        headers: {
+          "X-Compat-Secret": secret,
+          "X-Performance-Profile-Key": key,
+        },
+      });
+      if (!response.ok) failures.push(`${key}: ${response.status} ${await response.text()}`);
+    } catch (error) {
+      failures.push(`${key}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (failures.length > 0) console.error(`Failed to roll back profiles:\n${failures.join("\n")}`);
+}
+
+try {
+  for (const benchmark of payload.benchmarks) {
+    if (!benchmark.profileFile) continue;
+    const profilePath = resolveProfilePath(benchmark.profileFile);
+    const contents = await readFile(profilePath);
+    const response = await fetch(profileUploadUrl, {
+      method: "PUT",
+      headers: {
+        "X-Compat-Secret": secret,
+        "Content-Type": "application/gzip",
+        "X-Performance-Run-Kind": payload.run.kind,
+        "X-Performance-Commit-Sha": payload.run.commitSha,
+        "X-Performance-Execution-Id": payload.run.executionId,
+        "X-Performance-Benchmark-Id": benchmark.benchmarkId,
+      },
+      body: contents,
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Performance profile upload failed (${response.status}): ${await response.text()}`,
+      );
+    }
+    const uploaded = await response.json();
+    uploadedProfileKeys.push(uploaded.key);
+    benchmark.profileObjectKey = uploaded.key;
+    delete benchmark.profileFile;
+  }
+
+  const response = await fetch(uploadUrl, {
+    method: "POST",
     headers: {
       "X-Compat-Secret": secret,
-      "Content-Type": "application/gzip",
-      "X-Performance-Run-Kind": payload.run.kind,
-      "X-Performance-Commit-Sha": payload.run.commitSha,
-      "X-Performance-Execution-Id": payload.run.executionId,
-      "X-Performance-Benchmark-Id": benchmark.benchmarkId,
+      "Content-Type": "application/json",
     },
-    body: contents,
+    body: JSON.stringify(payload),
   });
+
   if (!response.ok) {
-    throw new Error(
-      `Performance profile upload failed (${response.status}): ${await response.text()}`,
-    );
+    throw new Error(`Performance upload failed (${response.status}): ${await response.text()}`);
   }
-  const uploaded = await response.json();
-  benchmark.profileObjectKey = uploaded.key;
-  delete benchmark.profileFile;
-}
+  metadataCommitted = true;
 
-const response = await fetch(uploadUrl, {
-  method: "POST",
-  headers: {
-    "X-Compat-Secret": secret,
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify(payload),
-});
-
-if (!response.ok) {
-  throw new Error(`Performance upload failed (${response.status}): ${await response.text()}`);
+  const responseBody = await response.text();
+  if (process.env.VINEXT_PERF_UPLOAD_RESPONSE_PATH) {
+    await writeFile(resolve(process.env.VINEXT_PERF_UPLOAD_RESPONSE_PATH), `${responseBody}\n`);
+  }
+  console.log(responseBody);
+} catch (error) {
+  if (!metadataCommitted) await rollbackProfiles();
+  throw error;
 }
-
-const responseBody = await response.text();
-if (process.env.VINEXT_PERF_UPLOAD_RESPONSE_PATH) {
-  await writeFile(resolve(process.env.VINEXT_PERF_UPLOAD_RESPONSE_PATH), `${responseBody}\n`);
-}
-console.log(responseBody);

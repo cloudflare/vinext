@@ -347,6 +347,155 @@ describe("performance traces", () => {
     expect(comment).toContain("vinext\\|edge");
     expect(comment).toContain("https://vinext.dev/benchmarks/pull/42");
   });
+
+  test("rolls back staged profiles when metadata upload fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "vinext-performance-rollback-"));
+    temporaryDirectories.push(directory);
+    const profilePath = join(directory, "samply-profile.json.gz");
+    const resultsPath = join(directory, "perf-results.json");
+    await writeFile(profilePath, await gzipAsync(JSON.stringify({ threads: [] })));
+    await writeFile(
+      resultsPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        run: {
+          kind: "pull_request",
+          commitSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          executionId: "run:2",
+        },
+        benchmarks: [
+          { benchmarkId: "vinext-dev-cold-start-root", profileFile: "samply-profile.json.gz" },
+        ],
+      }),
+    );
+
+    const deletedKeys: Array<string | string[] | undefined> = [];
+    const server = createServer((request, response) => {
+      void (async () => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        if (request.method === "PUT" && request.url === "/profile-upload") {
+          response.writeHead(201, { "Content-Type": "application/json" });
+          response.end(
+            '{"key":"profiles/pull_request/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/run%3A2/object/profile.json.gz"}',
+          );
+          return;
+        }
+        if (request.method === "POST" && request.url === "/upload") {
+          response.writeHead(500);
+          response.end("metadata failed");
+          return;
+        }
+        if (request.method === "DELETE" && request.url === "/profile-upload") {
+          deletedKeys.push(request.headers["x-performance-profile-key"]);
+          response.writeHead(204);
+          response.end();
+          return;
+        }
+        response.writeHead(404);
+        response.end();
+      })();
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing server address");
+      await expect(
+        execFileAsync(
+          process.execPath,
+          [resolve("benchmarks/perf/upload-results.mjs"), resultsPath],
+          {
+            env: {
+              ...process.env,
+              COMPAT_INGEST_SECRET: "test-secret",
+              VINEXT_PERF_ARTIFACT_ROOT: directory,
+              VINEXT_PERF_UPLOAD_URL: `http://127.0.0.1:${address.port}/upload`,
+            },
+          },
+        ),
+      ).rejects.toThrow("Performance upload failed (500): metadata failed");
+      expect(deletedKeys).toEqual([
+        "profiles/pull_request/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/run%3A2/object/profile.json.gz",
+      ]);
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) =>
+        server.close((error) => (error ? rejectClose(error) : resolveClose())),
+      );
+    }
+  });
+
+  test("keeps profiles after metadata commits even if local response handling fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "vinext-performance-committed-"));
+    temporaryDirectories.push(directory);
+    const profilePath = join(directory, "samply-profile.json.gz");
+    const resultsPath = join(directory, "perf-results.json");
+    await writeFile(profilePath, await gzipAsync(JSON.stringify({ threads: [] })));
+    await writeFile(
+      resultsPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        run: {
+          kind: "pull_request",
+          commitSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          executionId: "run:3",
+        },
+        benchmarks: [
+          { benchmarkId: "vinext-dev-cold-start-root", profileFile: "samply-profile.json.gz" },
+        ],
+      }),
+    );
+
+    let deleteRequests = 0;
+    const server = createServer((request, response) => {
+      void (async () => {
+        for await (const _chunk of request) {
+          // Consume the request body before responding.
+        }
+        if (request.method === "PUT" && request.url === "/profile-upload") {
+          response.writeHead(201, { "Content-Type": "application/json" });
+          response.end(
+            '{"key":"profiles/pull_request/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/run%3A3/object/profile.json.gz"}',
+          );
+          return;
+        }
+        if (request.method === "POST" && request.url === "/upload") {
+          response.writeHead(201, { "Content-Type": "application/json" });
+          response.end('{"ok":true}');
+          return;
+        }
+        if (request.method === "DELETE") deleteRequests += 1;
+        response.writeHead(204);
+        response.end();
+      })();
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing server address");
+      await expect(
+        execFileAsync(
+          process.execPath,
+          [resolve("benchmarks/perf/upload-results.mjs"), resultsPath],
+          {
+            env: {
+              ...process.env,
+              COMPAT_INGEST_SECRET: "test-secret",
+              VINEXT_PERF_ARTIFACT_ROOT: directory,
+              VINEXT_PERF_UPLOAD_URL: `http://127.0.0.1:${address.port}/upload`,
+              VINEXT_PERF_UPLOAD_RESPONSE_PATH: directory,
+            },
+          },
+        ),
+      ).rejects.toThrow();
+      expect(deleteRequests).toBe(0);
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) =>
+        server.close((error) => (error ? rejectClose(error) : resolveClose())),
+      );
+    }
+  });
 });
 
 function flatten(root: TraceNode): TraceNode[] {

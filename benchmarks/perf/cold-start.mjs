@@ -3,12 +3,12 @@
 import { spawn } from "node:child_process";
 import { rm } from "node:fs/promises";
 import { createServer } from "node:net";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { reportPerformanceSample } from "./report-sample.mjs";
 
-const benchmarkDir = dirname(dirname(fileURLToPath(import.meta.url)));
-const repositoryRoot = dirname(benchmarkDir);
+const repositoryRoot = process.env.VINEXT_PERF_TARGET_ROOT ?? process.cwd();
+const benchmarkDir = join(repositoryRoot, "benchmarks");
+const targetUser = process.env.VINEXT_PERF_TARGET_USER;
 const framework = process.argv[2];
 const route = process.argv[3] ?? "/";
 const expectedText = process.env.VINEXT_PERF_EXPECTED_TEXT ?? "Benchmark App";
@@ -45,17 +45,21 @@ async function cleanFrameworkCache() {
 }
 
 function commandFor(port) {
+  let command;
   if (framework === "vinext") {
-    return {
+    command = {
       command: join(repositoryRoot, "node_modules/.bin/vp"),
       args: ["dev", "--host", "127.0.0.1", "--port", String(port)],
     };
+  } else {
+    command = {
+      command: process.env.VINEXT_PERF_NEXT_BIN ?? join(projectDir, "node_modules/.bin/next"),
+      args: ["dev", "--turbopack", "-H", "127.0.0.1", "-p", String(port)],
+    };
   }
-
-  return {
-    command: process.env.VINEXT_PERF_NEXT_BIN ?? join(projectDir, "node_modules/.bin/next"),
-    args: ["dev", "--turbopack", "-H", "127.0.0.1", "-p", String(port)],
-  };
+  return targetUser
+    ? { command: "sudo", args: ["-u", targetUser, "--", command.command, ...command.args] }
+    : command;
 }
 
 async function waitForRoute(url, child, output, getSpawnError) {

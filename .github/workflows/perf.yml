@@ -38,7 +38,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      VINEXT_PERF_SAMPLES: ${{ github.workspace }}/benchmarks/results/perf-samples.jsonl
+      VINEXT_PERF_RESULTS_ROOT: ${{ runner.temp }}/vinext-perf-results
+      VINEXT_PERF_SAMPLES: ${{ runner.temp }}/vinext-perf-results/perf-samples.jsonl
       VINEXT_PERF_RUN_KIND: ${{ github.event_name == 'pull_request' && 'pull_request' || inputs.run_kind || 'main' }}
       VINEXT_PERF_COMMIT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.commit_sha || github.sha }}
       VINEXT_PERF_PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || inputs.pull_request }}
@@ -46,6 +47,7 @@ jobs:
       VINEXT_PERF_EXECUTION_ID: ${{ github.run_id }}:${{ github.run_attempt }}
       CODSPEED_SKIP_UPLOAD: "true"
       CODSPEED_WALLTIME_PROFILER: samply
+      VINEXT_PERF_TARGET_ROOT: ${{ github.workspace }}
     steps:
       - name: Validate run metadata
         run: |
@@ -60,7 +62,8 @@ jobs:
             fi
           fi
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Checkout code under test
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
           ref: ${{ env.VINEXT_PERF_COMMIT_SHA }}
@@ -76,26 +79,72 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout performance harness
-        if: github.event_name == 'workflow_dispatch'
+      - name: Checkout trusted benchmark manifests
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ github.sha }}
+          repository: ${{ github.repository }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          path: .perf-manifests
+          persist-credentials: false
+          sparse-checkout: |
+            benchmarks/vinext
+            benchmarks/nextjs
+
+      - name: Prepare trusted benchmark manifests
+        run: |
+          for project in vinext nextjs; do
+            find "benchmarks/$project" -mindepth 1 -maxdepth 1 \
+              ! -name app ! -name node_modules ! -name dist ! -name .next -exec rm -rf {} +
+            cp -R ".perf-manifests/benchmarks/$project/." "benchmarks/$project/"
+          done
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@2dec1e33f4ab2c6d5bce1b0c4607961bb1a3f7a1 # v1
+        with:
+          node-version: "24"
+          cache: true
+          run-install: false
+
+      - name: Install dependencies without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile
+
+      - name: Create isolated benchmark user
+        run: |
+          sudo useradd --create-home --shell /bin/bash vinext-perf
+          sudo setfacl -R -m u:vinext-perf:rwX "$GITHUB_WORKSPACE"
+          sudo setfacl -R -d -m u:vinext-perf:rwX "$GITHUB_WORKSPACE"
+          echo "VINEXT_PERF_TARGET_USER=vinext-perf" >> "$GITHUB_ENV"
+
+      - name: Checkout trusted performance harness
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
           path: .perf-harness
           persist-credentials: false
-          sparse-checkout: benchmarks/perf
+          sparse-checkout: benchmarks
 
-      - name: Install performance harness
-        if: github.event_name == 'workflow_dispatch'
+      - name: Install trusted performance harness
         run: |
-          rm -rf benchmarks/perf
-          cp -R .perf-harness/benchmarks/perf benchmarks/perf
-          rm -rf .perf-harness
-
-      - uses: ./.github/actions/setup
+          trusted_harness="$RUNNER_TEMP/vinext-perf-harness"
+          rm -rf "$trusted_harness"
+          mkdir -p "$trusted_harness/benchmarks"
+          cp -R .perf-harness/benchmarks/perf "$trusted_harness/benchmarks/perf"
+          cp .perf-harness/benchmarks/generate-app.mjs "$trusted_harness/benchmarks/generate-app.mjs"
+          chmod -R a-w "$trusted_harness"
+          rm -rf "$VINEXT_PERF_RESULTS_ROOT"
+          mkdir -p "$VINEXT_PERF_RESULTS_ROOT"
+          chmod 700 "$VINEXT_PERF_RESULTS_ROOT"
+          for project in vinext nextjs; do
+            find "benchmarks/$project" -mindepth 1 -maxdepth 1 \
+              ! -name app ! -name node_modules ! -name dist ! -name .next -exec rm -rf {} +
+            cp -R ".perf-harness/benchmarks/$project/." "benchmarks/$project/"
+          done
+          rm -rf .perf-harness .perf-manifests
+          echo "VINEXT_PERF_HARNESS_ROOT=$trusted_harness" >> "$GITHUB_ENV"
 
       - name: Prepare performance scenarios
-        run: node benchmarks/perf/run-scenarios.mjs --setup-only
+        run: node "$VINEXT_PERF_HARNESS_ROOT/benchmarks/perf/run-scenarios.mjs" --setup-only
 
       - name: Install pinned performance runner
         run: |
@@ -107,17 +156,21 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Measure performance scenarios
-        run: node benchmarks/perf/run-scenarios.mjs
+        run: node "$VINEXT_PERF_HARNESS_ROOT/benchmarks/perf/run-scenarios.mjs"
 
       - name: Normalize samples and profiles
-        run: node benchmarks/perf/normalize-results.mjs
+        run: |
+          node "$VINEXT_PERF_HARNESS_ROOT/benchmarks/perf/normalize-results.mjs" \
+            "$VINEXT_PERF_RESULTS_ROOT/perf-samples.jsonl" \
+            "$VINEXT_PERF_RESULTS_ROOT/perf-results.json" \
+            "$VINEXT_PERF_RESULTS_ROOT/perf-profiles"
 
       - name: Upload performance artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: performance-results
           path: |
-            benchmarks/results/perf-samples.jsonl
-            benchmarks/results/perf-results.json
-            benchmarks/results/perf-profiles/
+            ${{ runner.temp }}/vinext-perf-results/perf-samples.jsonl
+            ${{ runner.temp }}/vinext-perf-results/perf-results.json
+            ${{ runner.temp }}/vinext-perf-results/perf-profiles/
           retention-days: 90

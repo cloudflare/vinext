@@ -78,6 +78,23 @@ async function uploadPerformanceProfile(request: Request, env: Env): Promise<Res
   return Response.json({ key }, { status: 201 });
 }
 
+async function deletePerformanceProfile(request: Request, env: Env): Promise<Response> {
+  const secret = request.headers.get("x-compat-secret") ?? "";
+  if (
+    !env.COMPAT_INGEST_SECRET ||
+    !secret ||
+    !(await safeEqual(secret, env.COMPAT_INGEST_SECRET))
+  ) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  const key = request.headers.get("x-performance-profile-key");
+  if (!key?.match(/^profiles\/(?:main|pull_request)\/[0-9a-f]{40}\//i)) {
+    return new Response("Invalid performance profile key", { status: 400 });
+  }
+  await env.PERFORMANCE_PROFILES.delete(key);
+  return new Response(null, { status: 204 });
+}
+
 // Image security config. SVG sources with .svg extension auto-skip the
 // optimization endpoint on the client side (served directly, no proxy).
 // To route SVGs through the optimizer (with security headers), set
@@ -90,6 +107,9 @@ export default {
 
     if (request.method === "PUT" && url.pathname === "/api/benchmarks/profile-upload") {
       return uploadPerformanceProfile(request, env);
+    }
+    if (request.method === "DELETE" && url.pathname === "/api/benchmarks/profile-upload") {
+      return deletePerformanceProfile(request, env);
     }
 
     // Image optimization via Cloudflare Images binding.

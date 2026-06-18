@@ -1,14 +1,30 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { performanceScenarios, performanceSetup, benchmarkId } from "./scenarios.mjs";
 
+const harnessRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+const targetRoot = process.env.VINEXT_PERF_TARGET_ROOT ?? process.cwd();
+const targetUser = process.env.VINEXT_PERF_TARGET_USER;
+const resultsRoot = process.env.VINEXT_PERF_RESULTS_ROOT ?? join(targetRoot, "benchmarks/results");
 const direct = process.argv.includes("--direct");
 const setupOnly = process.argv.includes("--setup-only");
 const roundsArgument = process.argv.find((argument) => argument.startsWith("--rounds="));
 const rounds = Number(roundsArgument?.slice("--rounds=".length) ?? 0);
 
-function run(command, args, env, cwd) {
+function trustedCommand(command) {
+  if (command[0] !== "node" || !command[1]?.startsWith("benchmarks/")) return command;
+  return [command[0], join(harnessRoot, command[1]), ...command.slice(2)];
+}
+
+function targetCommand(command) {
+  if (!targetUser) return command;
+  return ["sudo", "-E", "-H", "-u", targetUser, "--", ...command];
+}
+
+function run(command, args, env, cwd = targetRoot) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, env, stdio: "inherit" });
     child.once("error", reject);
@@ -22,7 +38,14 @@ function run(command, args, env, cwd) {
 
 if (setupOnly) {
   for (const setup of performanceSetup) {
-    await run(setup.command[0], setup.command.slice(1), process.env, setup.cwd);
+    const command = trustedCommand(setup.command);
+    const executable = setup.trusted ? command : targetCommand(command);
+    await run(
+      executable[0],
+      executable.slice(1),
+      { ...process.env, VINEXT_PERF_TARGET_ROOT: targetRoot },
+      setup.cwd ? join(targetRoot, setup.cwd) : targetRoot,
+    );
   }
   process.exit(0);
 }
@@ -49,7 +72,8 @@ for (const scenario of performanceScenarios) {
     if (direct) {
       const directRounds = rounds > 0 ? rounds : 1;
       for (let round = 0; round < directRounds; round++) {
-        await run(implementation.command[0], implementation.command.slice(1), env);
+        const command = trustedCommand(implementation.command);
+        await run(command[0], command.slice(1), env);
       }
       continue;
     }
@@ -59,9 +83,10 @@ for (const scenario of performanceScenarios) {
           "--walltime-profiler",
           "samply",
           "--profile-folder",
-          `benchmarks/results/perf-profiles/${id}`,
+          join(resultsRoot, `perf-profiles/${id}`),
         ]
       : [];
+    const command = trustedCommand(implementation.command);
     await run(
       "codspeed",
       [
@@ -80,9 +105,10 @@ for (const scenario of performanceScenarios) {
         "--max-time",
         "3m",
         "--",
-        ...implementation.command,
+        ...command,
       ],
       env,
+      targetRoot,
     );
   }
 }

@@ -73,12 +73,16 @@ jobs:
             const marker = '<!-- vinext-performance-benchmarks -->';
             const body = fs.readFileSync('performance-comment.md', 'utf8');
 
-            const { data: comments } = await github.rest.issues.listComments({
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
+              per_page: 100,
             });
-            const existingComment = comments.find(comment => comment.body?.includes(marker));
+            const existingComment = comments.find(
+              comment =>
+                comment.user?.login === 'github-actions[bot]' && comment.body?.includes(marker),
+            );
 
             if (existingComment) {
               await github.rest.issues.updateComment({

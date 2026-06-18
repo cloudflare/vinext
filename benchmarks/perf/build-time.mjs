@@ -2,12 +2,12 @@
 
 import { spawn } from "node:child_process";
 import { rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { reportPerformanceSample } from "./report-sample.mjs";
 
-const benchmarkDir = dirname(dirname(fileURLToPath(import.meta.url)));
-const repositoryRoot = dirname(benchmarkDir);
+const repositoryRoot = process.env.VINEXT_PERF_TARGET_ROOT ?? process.cwd();
+const benchmarkDir = join(repositoryRoot, "benchmarks");
+const targetUser = process.env.VINEXT_PERF_TARGET_USER;
 const framework = process.argv[2];
 const timeoutMs = Number(process.env.VINEXT_PERF_TIMEOUT_MS ?? 180_000);
 
@@ -26,25 +26,52 @@ async function cleanBuildOutput() {
 }
 
 function buildCommand() {
+  let command;
   if (framework === "vinext") {
-    return {
+    command = {
       command: join(repositoryRoot, "node_modules/.bin/vp"),
       args: ["build"],
     };
+  } else {
+    command = {
+      command: process.env.VINEXT_PERF_NEXT_BIN ?? join(projectDir, "node_modules/.bin/next"),
+      args: ["build", "--turbopack"],
+    };
   }
-
-  return {
-    command: process.env.VINEXT_PERF_NEXT_BIN ?? join(projectDir, "node_modules/.bin/next"),
-    args: ["build", "--turbopack"],
-  };
+  return targetUser
+    ? { command: "sudo", args: ["-u", targetUser, "--", command.command, ...command.args] }
+    : command;
 }
 
 async function stopProcessGroup(child) {
-  if (child.exitCode !== null || !child.pid) return;
+  const processGroupId = child.pid;
   try {
-    globalThis.process.kill(-child.pid, "SIGTERM");
+    if (processGroupId) globalThis.process.kill(-processGroupId, "SIGTERM");
   } catch {
-    child.kill("SIGTERM");
+    try {
+      if (child.exitCode === null) child.kill("SIGTERM");
+    } catch {
+      // The launcher and its process group have already exited.
+    }
+  }
+
+  await Promise.race([
+    child.exitCode === null
+      ? new Promise((resolve) => child.once("exit", resolve))
+      : Promise.resolve(),
+    new Promise((resolve) => setTimeout(resolve, 2_000)),
+  ]);
+
+  if (child.exitCode === null) {
+    try {
+      if (processGroupId) globalThis.process.kill(-processGroupId, "SIGKILL");
+    } catch {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // The process exited between the checks.
+      }
+    }
   }
 }
 
@@ -66,12 +93,20 @@ async function main() {
   child.stdout.on("data", (chunk) => output.push(chunk.toString()));
   child.stderr.on("data", (chunk) => output.push(chunk.toString()));
 
-  const timeout = setTimeout(() => void stopProcessGroup(child), timeoutMs);
+  let timeoutId;
   try {
-    const { code, signal } = await new Promise((resolve, reject) => {
+    const result = new Promise((resolve, reject) => {
       child.once("error", reject);
       child.once("exit", (exitCode, exitSignal) => resolve({ code: exitCode, signal: exitSignal }));
     });
+    const timeout = new Promise(
+      (_, reject) =>
+        (timeoutId = setTimeout(
+          () => reject(new Error(`${framework} build timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        )),
+    );
+    const { code, signal } = await Promise.race([result, timeout]);
     if (code !== 0) {
       throw new Error(
         `${framework} build exited with ${signal ? `signal ${signal}` : `code ${code}`}\n${output.join("")}`,
@@ -79,7 +114,7 @@ async function main() {
     }
     await reportPerformanceSample(performance.now() - startedAt);
   } finally {
-    clearTimeout(timeout);
+    clearTimeout(timeoutId);
     await stopProcessGroup(child);
     child.stdout.destroy();
     child.stderr.destroy();

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
 import { readdir, readFile, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { reportPerformanceSample } from "./report-sample.mjs";
 
-const benchmarkDir = dirname(dirname(fileURLToPath(import.meta.url)));
+const repositoryRoot = process.env.VINEXT_PERF_TARGET_ROOT ?? process.cwd();
+const benchmarkDir = join(repositoryRoot, "benchmarks");
 const framework = process.argv[2];
 
 if (framework !== "vinext" && framework !== "nextjs") {

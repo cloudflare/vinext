@@ -3,6 +3,9 @@
 import { execFileSync } from "node:child_process";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { promisify } from "node:util";
+import { gunzip } from "node:zlib";
+import { benchmarkId, performanceScenarios } from "./scenarios.mjs";
 
 const inputPath = resolve(process.argv[2] ?? "performance-artifact/perf-results.json");
 const artifactRoot = dirname(inputPath);
@@ -12,6 +15,12 @@ const sourceRunId = requiredEnvironment("VINEXT_PERF_SOURCE_RUN_ID");
 const sourceRunAttempt = requiredEnvironment("VINEXT_PERF_SOURCE_RUN_ATTEMPT");
 const sourceRun = githubApi(`repos/${repository}/actions/runs/${sourceRunId}`);
 let totalProfileBytes = 0;
+const gunzipAsync = promisify(gunzip);
+const MAX_PROFILE_ROWS = 2_000_000;
+const MAX_PROFILE_STRINGS = 500_000;
+const MAX_PROFILE_STRING_LENGTH = 16_384;
+const MAX_PROFILE_STACK_DEPTH = 2_000;
+const MAX_PROFILE_EXPANDED_FRAMES = 10_000_000;
 
 function requiredEnvironment(name) {
   const value = process.env[name];
@@ -37,6 +46,168 @@ function githubApi(path) {
   );
 }
 
+function tableRowCount(table, label) {
+  if (table === undefined) return 0;
+  assert(table && typeof table === "object", `Invalid ${label}`);
+  if (table.schema !== undefined) {
+    assert(table.schema && typeof table.schema === "object", `Invalid ${label} schema`);
+    for (const index of Object.values(table.schema)) {
+      assert(Number.isInteger(index) && index >= 0 && index <= 1_000, `Invalid ${label} column`);
+    }
+  }
+  if (table.data !== undefined) {
+    assert(Array.isArray(table.data), `Invalid ${label} rows`);
+    assert(
+      table.data.every((row) => Array.isArray(row)),
+      `Invalid ${label} row`,
+    );
+  }
+  const directColumns = Object.entries(table).filter(
+    ([key, value]) =>
+      key !== "schema" && key !== "data" && key !== "length" && Array.isArray(value),
+  );
+  const lengths = [
+    ...(Array.isArray(table.data) ? [table.data.length] : []),
+    ...directColumns.map(([, value]) => value.length),
+  ];
+  const rowCount = lengths.length > 0 ? Math.max(...lengths) : 0;
+  assert(
+    lengths.every((length) => length === rowCount),
+    `Mismatched ${label} column lengths`,
+  );
+  if (table.length !== undefined) {
+    assert(Number.isInteger(table.length) && table.length === rowCount, `Invalid ${label} length`);
+  }
+  return rowCount;
+}
+
+function tableColumn(table, columnName, row) {
+  const direct = table?.[columnName];
+  if (Array.isArray(direct)) return direct[row];
+  const columnIndex = table?.schema?.[columnName];
+  return columnIndex === undefined ? undefined : table?.data?.[row]?.[columnIndex];
+}
+
+function validOptionalIndex(value, rowCount) {
+  return (
+    value === null ||
+    value === undefined ||
+    (Number.isInteger(value) && value >= 0 && value < rowCount)
+  );
+}
+
+function validateProfileTables(profile, profileFile) {
+  let totalRows = 0;
+  let totalStrings = 0;
+  let totalExpandedFrames = 0;
+  const shared = profile.shared ?? {};
+  for (const tableName of ["stackTable", "frameTable", "funcTable"]) {
+    totalRows += tableRowCount(shared[tableName], `${profileFile} shared ${tableName}`);
+  }
+  if (shared.stringArray !== undefined) {
+    assert(Array.isArray(shared.stringArray), `Invalid shared string table: ${profileFile}`);
+    assert(
+      shared.stringArray.every((value) => typeof value === "string"),
+      `Invalid profile string`,
+    );
+    assert(
+      shared.stringArray.every((value) => value.length <= MAX_PROFILE_STRING_LENGTH),
+      `Profile string is too long: ${profileFile}`,
+    );
+    totalStrings += shared.stringArray.length;
+  }
+  for (const [threadIndex, thread] of profile.threads.entries()) {
+    assert(thread && typeof thread === "object", `Invalid thread ${threadIndex}: ${profileFile}`);
+    totalRows += tableRowCount(thread.samples, `${profileFile} samples`);
+    for (const tableName of ["stackTable", "frameTable", "funcTable"]) {
+      if (shared[tableName] === undefined) {
+        totalRows += tableRowCount(thread[tableName], `${profileFile} ${tableName}`);
+      }
+    }
+    const strings = shared.stringArray === undefined ? thread.stringArray : undefined;
+    if (strings !== undefined) {
+      assert(Array.isArray(strings), `Invalid string table: ${profileFile}`);
+      assert(
+        strings.every((value) => typeof value === "string"),
+        `Invalid profile string`,
+      );
+      assert(
+        strings.every((value) => value.length <= MAX_PROFILE_STRING_LENGTH),
+        `Profile string is too long: ${profileFile}`,
+      );
+      totalStrings += strings.length;
+    }
+
+    const stackTable = shared.stackTable ?? thread.stackTable;
+    const frameTable = shared.frameTable ?? thread.frameTable;
+    const funcTable = shared.funcTable ?? thread.funcTable;
+    const stringArray = shared.stringArray ?? thread.stringArray ?? [];
+    const stackRows = tableRowCount(stackTable, `${profileFile} stackTable references`);
+    const frameRows = tableRowCount(frameTable, `${profileFile} frameTable references`);
+    const funcRows = tableRowCount(funcTable, `${profileFile} funcTable references`);
+    const sampleRows = tableRowCount(thread.samples, `${profileFile} sample references`);
+    const stackDepths = new Map();
+
+    function stackDepth(initialStackIndex) {
+      if (stackDepths.has(initialStackIndex)) return stackDepths.get(initialStackIndex);
+      let stackIndex = initialStackIndex;
+      const path = [];
+      const seen = new Set();
+      while (stackIndex !== null && stackIndex !== undefined) {
+        assert(
+          Number.isInteger(stackIndex) && stackIndex >= 0 && stackIndex < stackRows,
+          `Invalid stack reference: ${profileFile}`,
+        );
+        if (stackDepths.has(stackIndex)) break;
+        assert(!seen.has(stackIndex), `Cyclic stack reference: ${profileFile}`);
+        seen.add(stackIndex);
+        path.push(stackIndex);
+        assert(path.length <= MAX_PROFILE_STACK_DEPTH, `Profile stack is too deep: ${profileFile}`);
+        const frameIndex = tableColumn(stackTable, "frame", stackIndex);
+        assert(
+          Number.isInteger(frameIndex) && frameIndex >= 0 && frameIndex < frameRows,
+          `Invalid stack frame reference: ${profileFile}`,
+        );
+        stackIndex = tableColumn(stackTable, "prefix", stackIndex);
+      }
+      let depth = stackIndex === null || stackIndex === undefined ? 0 : stackDepths.get(stackIndex);
+      while (path.length > 0) {
+        depth += 1;
+        stackDepths.set(path.pop(), depth);
+      }
+      return stackDepths.get(initialStackIndex);
+    }
+
+    for (let row = 0; row < frameRows; row++) {
+      assert(
+        validOptionalIndex(tableColumn(frameTable, "func", row), funcRows),
+        `Invalid frame function reference: ${profileFile}`,
+      );
+      assert(
+        validOptionalIndex(tableColumn(frameTable, "location", row), stringArray.length),
+        `Invalid frame location reference: ${profileFile}`,
+      );
+    }
+    for (let row = 0; row < funcRows; row++) {
+      assert(
+        validOptionalIndex(tableColumn(funcTable, "name", row), stringArray.length),
+        `Invalid function name reference: ${profileFile}`,
+      );
+    }
+    for (let row = 0; row < sampleRows; row++) {
+      const stackIndex = tableColumn(thread.samples, "stack", row);
+      if (stackIndex === null || stackIndex === undefined) continue;
+      totalExpandedFrames += stackDepth(stackIndex);
+      assert(
+        totalExpandedFrames <= MAX_PROFILE_EXPANDED_FRAMES,
+        `Profile expands to too many sample frames: ${profileFile}`,
+      );
+    }
+  }
+  assert(totalRows <= MAX_PROFILE_ROWS, `Profile has too many table rows: ${profileFile}`);
+  assert(totalStrings <= MAX_PROFILE_STRINGS, `Profile has too many strings: ${profileFile}`);
+}
+
 async function validateProfilePath(profileFile) {
   assert(typeof profileFile === "string" && profileFile.length > 0, "Invalid profile path");
   assert(!isAbsolute(profileFile), "Artifact profile paths must be relative");
@@ -55,9 +226,9 @@ async function validateProfilePath(profileFile) {
     stats.isFile() && !stats.isSymbolicLink(),
     `Profile is not a regular file: ${profileFile}`,
   );
-  assert(stats.size <= 100 * 1024 * 1024, `Profile is too large: ${profileFile}`);
+  assert(stats.size <= 25 * 1024 * 1024, `Compressed profile is too large: ${profileFile}`);
   totalProfileBytes += stats.size;
-  assert(totalProfileBytes <= 300 * 1024 * 1024, "Combined profiles are too large");
+  assert(totalProfileBytes <= 75 * 1024 * 1024, "Combined compressed profiles are too large");
   const realProfilePath = await realpath(profilePath);
   const realArtifactRoot = await realpath(artifactRoot);
   const realRelativePath = relative(realArtifactRoot, realProfilePath);
@@ -65,6 +236,22 @@ async function validateProfilePath(profileFile) {
     !realRelativePath.startsWith("..") && !isAbsolute(realRelativePath),
     "Profile resolves outside the artifact directory",
   );
+  const profileContents = await gunzipAsync(await readFile(profilePath), {
+    maxOutputLength: 64 * 1024 * 1024,
+  });
+  const profile = JSON.parse(profileContents.toString("utf8"));
+  assert(profile && typeof profile === "object", `Invalid Samply profile: ${profileFile}`);
+  assert(Array.isArray(profile.threads), `Samply profile has no threads: ${profileFile}`);
+  assert(profile.threads.length <= 10_000, `Samply profile has too many threads: ${profileFile}`);
+  assert(
+    profile.meta === undefined || (profile.meta && typeof profile.meta === "object"),
+    `Invalid Samply profile metadata: ${profileFile}`,
+  );
+  assert(
+    profile.shared === undefined || (profile.shared && typeof profile.shared === "object"),
+    `Invalid Samply shared tables: ${profileFile}`,
+  );
+  validateProfileTables(profile, profileFile);
 }
 
 const resultsStats = await lstat(inputPath);
@@ -94,6 +281,28 @@ assert(
 );
 
 const benchmarkIds = new Set();
+const expectedBenchmarks = new Map(
+  performanceScenarios.flatMap((scenario) =>
+    scenario.implementations.map((implementation) => [
+      benchmarkId(scenario, implementation),
+      {
+        scenarioId: scenario.id,
+        suite: scenario.suite,
+        label: scenario.label,
+        description: scenario.description,
+        implementationId: implementation.id,
+        implementationLabel: implementation.label,
+        unit: scenario.unit,
+        lowerIsBetter: scenario.lowerIsBetter,
+        profile: implementation.profile === true,
+      },
+    ]),
+  ),
+);
+assert(
+  payload.benchmarks.length === expectedBenchmarks.size,
+  "Performance artifact does not contain the trusted benchmark set",
+);
 for (const benchmark of payload.benchmarks) {
   assert(
     typeof benchmark.benchmarkId === "string" && /^[a-zA-Z0-9._:-]+$/.test(benchmark.benchmarkId),
@@ -101,6 +310,8 @@ for (const benchmark of payload.benchmarks) {
   );
   assert(!benchmarkIds.has(benchmark.benchmarkId), `Duplicate benchmark: ${benchmark.benchmarkId}`);
   benchmarkIds.add(benchmark.benchmarkId);
+  const expected = expectedBenchmarks.get(benchmark.benchmarkId);
+  assert(expected, `Unexpected benchmark: ${benchmark.benchmarkId}`);
   for (const field of [
     "scenarioId",
     "suite",
@@ -120,6 +331,18 @@ for (const benchmark of payload.benchmarks) {
     typeof benchmark.description === "string" && benchmark.description.length <= 2_000,
     "Invalid benchmark description",
   );
+  for (const field of [
+    "scenarioId",
+    "suite",
+    "label",
+    "description",
+    "implementationId",
+    "implementationLabel",
+    "unit",
+    "lowerIsBetter",
+  ]) {
+    assert(benchmark[field] === expected[field], `Untrusted ${field} for ${benchmark.benchmarkId}`);
+  }
   assert(typeof benchmark.lowerIsBetter === "boolean", "Invalid benchmark direction");
   assert(benchmark.profileObjectKey === undefined, "Artifacts may not provide profile object keys");
   assert(
@@ -140,13 +363,18 @@ for (const benchmark of payload.benchmarks) {
     `Inconsistent samples for ${benchmark.benchmarkId}`,
   );
   if (benchmark.profileFile !== null && benchmark.profileFile !== undefined) {
+    assert(expected.profile, `Unexpected profile for ${benchmark.benchmarkId}`);
     await validateProfilePath(benchmark.profileFile);
+  } else {
+    assert(!expected.profile, `Missing profile for ${benchmark.benchmarkId}`);
   }
 }
 
+let commitRepository = repository;
 if (sourceEvent === "pull_request") {
   const pullRequest = sourceRun.pull_requests?.[0];
   assert(pullRequest, "Source workflow run is not associated with a pull request");
+  commitRepository = new URL(pullRequest.head.repo.url).pathname.replace(/^\/repos\//, "");
   assert(payload.run.kind === "pull_request", "Pull request workflow produced a non-PR run");
   assert(
     payload.run.pullRequest === pullRequest.number,
@@ -177,6 +405,7 @@ if (sourceEvent === "pull_request") {
       "Invalid PR number",
     );
     const pullRequest = githubApi(`repos/${repository}/pulls/${payload.run.pullRequest}`);
+    commitRepository = pullRequest.head.repo.full_name;
     assert(
       payload.run.commitSha === pullRequest.head.sha,
       "Dispatched PR head SHA is stale or invalid",
@@ -197,5 +426,12 @@ if (sourceEvent === "pull_request") {
 } else {
   throw new Error(`Unsupported source event: ${sourceEvent}`);
 }
+
+const commit = githubApi(`repos/${commitRepository}/commits/${payload.run.commitSha}`);
+assert(
+  new Date(payload.run.measuredAt).toISOString() ===
+    new Date(commit.commit.committer.date).toISOString(),
+  "Performance measuredAt does not match the commit timestamp",
+);
 
 console.log(`Validated ${payload.benchmarks.length} benchmarks for ${payload.run.commitSha}`);

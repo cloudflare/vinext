@@ -1,6 +1,6 @@
 export const performanceSetup = [
   { command: ["vp", "run", "build"] },
-  { command: ["node", "benchmarks/generate-app.mjs"] },
+  { command: ["node", "benchmarks/generate-app.mjs"], trusted: true },
   { command: ["npm", "install"], cwd: "benchmarks/nextjs" },
 ];
 
