@@ -33,6 +33,51 @@ type ExecutionContext = {
   passThroughOnException(): void;
 };
 
+async function safeEqual(a: string, b: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const [left, right] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(a)),
+    crypto.subtle.digest("SHA-256", encoder.encode(b)),
+  ]);
+  const leftBytes = new Uint8Array(left);
+  const rightBytes = new Uint8Array(right);
+  let difference = 0;
+  for (let index = 0; index < leftBytes.length; index++) {
+    difference |= leftBytes[index] ^ rightBytes[index];
+  }
+  return difference === 0;
+}
+
+async function uploadPerformanceProfile(request: Request, env: Env): Promise<Response> {
+  const secret = request.headers.get("x-compat-secret") ?? "";
+  if (
+    !env.COMPAT_INGEST_SECRET ||
+    !secret ||
+    !(await safeEqual(secret, env.COMPAT_INGEST_SECRET))
+  ) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  const runKind = request.headers.get("x-performance-run-kind");
+  const commitSha = request.headers.get("x-performance-commit-sha");
+  const executionId = request.headers.get("x-performance-execution-id");
+  const benchmarkId = request.headers.get("x-performance-benchmark-id");
+  if (
+    (runKind !== "main" && runKind !== "pull_request") ||
+    !commitSha?.match(/^[0-9a-f]{40}$/i) ||
+    !executionId ||
+    !benchmarkId ||
+    !request.body
+  ) {
+    return new Response("Invalid performance profile metadata", { status: 400 });
+  }
+  const key = `profiles/${runKind}/${commitSha.toLowerCase()}/${encodeURIComponent(executionId)}/${crypto.randomUUID()}/${encodeURIComponent(benchmarkId)}.json.gz`;
+  await env.PERFORMANCE_PROFILES.put(key, request.body, {
+    httpMetadata: { contentType: "application/json", contentEncoding: "gzip" },
+    customMetadata: { benchmarkId, commitSha: commitSha.toLowerCase(), runKind },
+  });
+  return Response.json({ key }, { status: 201 });
+}
+
 // Image security config. SVG sources with .svg extension auto-skip the
 // optimization endpoint on the client side (served directly, no proxy).
 // To route SVGs through the optimizer (with security headers), set
@@ -42,6 +87,10 @@ type ExecutionContext = {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    if (request.method === "PUT" && url.pathname === "/api/benchmarks/profile-upload") {
+      return uploadPerformanceProfile(request, env);
+    }
 
     // Image optimization via Cloudflare Images binding.
     // The parseImageParams validation inside handleImageOptimization

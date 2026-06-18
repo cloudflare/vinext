@@ -41,7 +41,7 @@ type NormalizedPerfPayload = {
       q3: number;
       outliers: number;
     };
-    profileFile: string | null;
+    profileObjectKey?: string;
   }>;
 };
 
@@ -55,14 +55,10 @@ function getProfilesBucket() {
 
 export async function uploadPerformanceRun(request: Request): Promise<Response> {
   let body: NormalizedPerfPayload;
-  let form: FormData;
   try {
-    form = await request.formData();
-    const results = form.get("results");
-    if (typeof results !== "string") throw new Error("Missing results");
-    body = JSON.parse(results) as NormalizedPerfPayload;
+    body = await request.json();
   } catch {
-    return Response.json({ error: "Invalid multipart performance payload" }, { status: 400 });
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
   if (
@@ -112,45 +108,16 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
     `)
     .bind(body.run.kind, body.run.commitSha)
     .all<{ profile_object_key: string }>();
-  const profileKeys = new Map<string, string>();
-  const profileUploads: Array<{ benchmarkId: string; file: File }> = [];
-
-  for (const benchmark of body.benchmarks) {
-    if (!benchmark.profileFile) continue;
-    const profile = form.get(`profile:${benchmark.benchmarkId}`);
-    if (!(profile instanceof File)) {
-      return Response.json(
-        { error: `Missing profile for ${benchmark.benchmarkId}` },
-        { status: 400 },
-      );
-    }
-    if (profile.size > 20 * 1024 * 1024) {
-      return Response.json(
-        { error: `Profile for ${benchmark.benchmarkId} exceeds 20 MiB` },
-        { status: 413 },
-      );
-    }
-    profileUploads.push({ benchmarkId: benchmark.benchmarkId, file: profile });
-  }
-
-  try {
-    for (const { benchmarkId, file } of profileUploads) {
-      const executionId = encodeURIComponent(body.run.executionId);
-      const objectVersion = crypto.randomUUID();
-      const key = `profiles/${body.run.kind}/${body.run.commitSha}/${executionId}/${objectVersion}/${encodeURIComponent(benchmarkId)}.json.gz`;
-      await profiles.put(key, file, {
-        httpMetadata: { contentType: "application/json", contentEncoding: "gzip" },
-        customMetadata: {
-          benchmarkId,
-          commitSha: body.run.commitSha,
-          runKind: body.run.kind,
-        },
-      });
-      profileKeys.set(benchmarkId, key);
-    }
-  } catch (error) {
-    if (profileKeys.size > 0) await profiles.delete([...profileKeys.values()]);
-    throw error;
+  const profileKeys = new Map(
+    body.benchmarks.flatMap((benchmark) =>
+      benchmark.profileObjectKey
+        ? [[benchmark.benchmarkId, benchmark.profileObjectKey] as const]
+        : [],
+    ),
+  );
+  const expectedPrefix = `profiles/${body.run.kind}/${body.run.commitSha}/${encodeURIComponent(body.run.executionId)}/`;
+  if ([...profileKeys.values()].some((key) => !key.startsWith(expectedPrefix))) {
+    return Response.json({ error: "Invalid performance profile object key" }, { status: 400 });
   }
   const statements = [
     db
@@ -220,12 +187,7 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
     ),
   ];
 
-  try {
-    await db.batch(statements);
-  } catch (error) {
-    if (profileKeys.size > 0) await profiles.delete([...profileKeys.values()]);
-    throw error;
-  }
+  await db.batch(statements);
   const retainedKeys = new Set(profileKeys.values());
   const obsoleteKeys = oldProfiles.results
     .map((row) => row.profile_object_key)

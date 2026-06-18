@@ -160,7 +160,7 @@ describe("performance traces", () => {
     });
   });
 
-  test("upload sends compact metadata and raw profiles as multipart files", async () => {
+  test("upload streams raw profiles before posting compact metadata", async () => {
     const directory = await mkdtemp(join(tmpdir(), "vinext-performance-upload-"));
     temporaryDirectories.push(directory);
     const profilePath = join(directory, "samply-profile.json.gz");
@@ -171,6 +171,11 @@ describe("performance traces", () => {
       resultsPath,
       JSON.stringify({
         schemaVersion: 1,
+        run: {
+          kind: "pull_request",
+          commitSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          executionId: "run:1",
+        },
         benchmarks: [
           { benchmarkId: "vinext-dev-cold-start-root", profileFile: profilePath },
           { benchmarkId: "nextjs-dev-cold-start-root", profileFile: null },
@@ -181,7 +186,8 @@ describe("performance traces", () => {
     type ReceivedUpload = {
       secret: string | null;
       results: Record<string, unknown>;
-      profile: File;
+      profile: Buffer;
+      profileHeaders: Record<string, string | string[] | undefined>;
     };
     let resolveReceived: (upload: ReceivedUpload) => void;
     let rejectReceived: (error: unknown) => void;
@@ -189,26 +195,36 @@ describe("performance traces", () => {
       resolveReceived = resolveUpload;
       rejectReceived = rejectUpload;
     });
+    let profile: Buffer | null = null;
+    let profileHeaders: Record<string, string | string[] | undefined> | null = null;
     const server = createServer((request, response) => {
       void (async () => {
         try {
-          const webRequest = new Request(`http://127.0.0.1${request.url}`, {
-            method: request.method,
-            headers: request.headers as HeadersInit,
-            body: request as unknown as BodyInit,
-            duplex: "half",
-          } as unknown as RequestInit);
-          const form = await webRequest.formData();
-          const results = form.get("results");
-          const profile = form.get("profile:vinext-dev-cold-start-root");
-          if (typeof results !== "string" || !(profile instanceof File)) {
-            throw new Error("Missing multipart fields");
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          if (request.method === "PUT" && request.url === "/profile-upload") {
+            profile = Buffer.concat(chunks);
+            profileHeaders = request.headers;
+            response.writeHead(201, { "Content-Type": "application/json" });
+            response.end(
+              '{"key":"profiles/pull_request/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/run%3A1/object/profile.json.gz"}',
+            );
+            return;
+          }
+          if (
+            request.method !== "POST" ||
+            request.url !== "/upload" ||
+            !profile ||
+            !profileHeaders
+          ) {
+            throw new Error("Unexpected upload sequence");
           }
           const secretHeader = request.headers["x-compat-secret"];
           resolveReceived({
             secret: Array.isArray(secretHeader) ? secretHeader[0] : (secretHeader ?? null),
-            results: JSON.parse(results),
+            results: JSON.parse(Buffer.concat(chunks).toString("utf8")),
             profile,
+            profileHeaders,
           });
           response.writeHead(201, { "Content-Type": "application/json" });
           response.end('{"ok":true}');
@@ -241,13 +257,16 @@ describe("performance traces", () => {
         benchmarks: [
           {
             benchmarkId: "vinext-dev-cold-start-root",
-            profileFile: "samply-profile.json.gz",
+            profileObjectKey:
+              "profiles/pull_request/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/run%3A1/object/profile.json.gz",
           },
           { benchmarkId: "nextjs-dev-cold-start-root", profileFile: null },
         ],
       });
-      expect(upload.profile.name).toBe("vinext-dev-cold-start-root.json.gz");
-      expect(Buffer.from(await upload.profile.arrayBuffer())).toEqual(profileContents);
+      expect(upload.profileHeaders["x-performance-benchmark-id"]).toBe(
+        "vinext-dev-cold-start-root",
+      );
+      expect(upload.profile).toEqual(profileContents);
     } finally {
       await new Promise<void>((resolveClose, rejectClose) =>
         server.close((error) => (error ? rejectClose(error) : resolveClose())),
