@@ -140,6 +140,8 @@ jobs:
           rm -rf "$VINEXT_PERF_RESULTS_ROOT"
           mkdir -p "$VINEXT_PERF_RESULTS_ROOT"
           chmod 700 "$VINEXT_PERF_RESULTS_ROOT"
+          sudo setfacl -m u:vinext-perf:rwx "$VINEXT_PERF_RESULTS_ROOT"
+          sudo setfacl -d -m u:vinext-perf:rwX,u:"$USER":rwX "$VINEXT_PERF_RESULTS_ROOT"
           for project in vinext nextjs; do
             find "benchmarks/$project" -mindepth 1 -maxdepth 1 \
               ! -name app ! -name node_modules ! -name dist ! -name .next -exec rm -rf {} +

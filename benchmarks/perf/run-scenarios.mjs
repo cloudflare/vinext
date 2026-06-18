@@ -32,11 +32,19 @@ function targetCommand(command) {
 }
 
 function profilerCommand() {
-  if (!targetUser) return [profilerBin];
-  const preservedEnvironment = ["HOME", "PATH", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"].flatMap(
-    (name) => (process.env[name] ? [`${name}=${process.env[name]}`] : []),
-  );
-  return ["sudo", "-E", "--", "env", ...preservedEnvironment, profilerBin];
+  return targetUser
+    ? [
+        "sudo",
+        "-E",
+        "-H",
+        "-u",
+        targetUser,
+        "--",
+        "env",
+        `PATH=/home/${targetUser}/.local/bin:${process.env.PATH}`,
+        profilerBin,
+      ]
+    : [profilerBin];
 }
 
 function run(command, args, env, cwd = targetRoot) {
@@ -104,6 +112,8 @@ for (const scenario of performanceScenarios) {
     if (profile) await mkdir(join(resultsRoot, `perf-profiles/${id}`), { recursive: true });
     const command = trustedCommand(implementation.command);
     const profiler = profilerCommand();
+    const profilerEnv = { ...env };
+    if (targetUser) delete profilerEnv.VINEXT_PERF_TARGET_USER;
     await run(
       profiler[0],
       [
@@ -125,7 +135,7 @@ for (const scenario of performanceScenarios) {
         "--",
         ...command,
       ],
-      env,
+      profilerEnv,
       targetRoot,
     );
   }
