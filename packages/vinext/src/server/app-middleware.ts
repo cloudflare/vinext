@@ -26,6 +26,7 @@ export type ApplyAppMiddlewareOptions = {
    * INTERNAL_HEADERS and is stripped before this function runs.
    */
   isDataRequest?: boolean;
+  filePath?: string;
   isProxy: boolean;
   module: MiddlewareModule;
   request: Request;
@@ -242,6 +243,7 @@ export async function applyAppMiddleware(
       // request URL here is basePath-stripped, so hadBasePath cannot be
       // derived from it and must be asserted explicitly.
       hadBasePath: true,
+      filePath: options.filePath,
       i18nConfig: options.i18nConfig,
       isDataRequest: options.isDataRequest,
       isProxy: options.isProxy,

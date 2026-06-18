@@ -53,6 +53,7 @@ export type TestServerResult = {
 export async function startFixtureServer(
   fixtureDir: string,
   opts?: {
+    appDir?: string | null;
     appRouter?: boolean;
     listen?: boolean;
     server?: {
@@ -67,7 +68,19 @@ export async function startFixtureServer(
   // Pass appDir explicitly since tests run with configFile: false and
   // cwd may not be the fixture directory.
   // Note: opts.appRouter is accepted but unused — vinext auto-detects.
-  const plugins = [vinext({ appDir: fixtureDir })];
+  let plugin: ReturnType<typeof vinext>;
+  if (opts?.appDir === null) {
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(fixtureDir);
+      plugin = vinext();
+    } finally {
+      process.chdir(previousCwd);
+    }
+  } else {
+    plugin = vinext({ appDir: opts?.appDir ?? fixtureDir });
+  }
+  const plugins = [plugin];
 
   const server = await createServer({
     root: fixtureDir,

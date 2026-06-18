@@ -174,6 +174,7 @@ export async function runMiddleware(request, ctx, options) {
   return __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
     ctx,
+    filePath: ${JSON.stringify(normalizePathSeparators(middlewarePath))},
     i18nConfig,
     isDataRequest: options?.isDataRequest === true,
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},

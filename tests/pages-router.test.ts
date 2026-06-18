@@ -3251,6 +3251,42 @@ export const config = { matcher: ["/protected"] };
     }
   });
 
+  it("fails the Pages production build when proxy.ts has an invalid export", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-proxy-invalid-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.tsx"),
+        "export default function Page() { return <div>ok</div>; }\n",
+      );
+      await fsp.writeFile(path.join(tmpRoot, "proxy.ts"), "export function middleware() {}\n");
+
+      await expect(
+        build({
+          root: tmpRoot,
+          configFile: false,
+          plugins: [vinext()],
+          logLevel: "silent",
+          build: {
+            outDir: path.join(fixtureOutDir, "server"),
+            ssr: "virtual:vinext-server-entry",
+            rollupOptions: {
+              output: { entryFileNames: "entry.js" },
+            },
+          },
+        }),
+      ).rejects.toThrow(
+        'The file "./proxy.ts" must export a function, either as a default export or as a named "proxy" export.',
+      );
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it("produces client bundle with page chunks and SSR manifest", async () => {
     // Build the client bundle
     await build({

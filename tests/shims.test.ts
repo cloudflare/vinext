@@ -6659,7 +6659,7 @@ describe("middleware runner", () => {
     expect(await result.response?.text()).toBe("Forbidden");
   });
 
-  it("findMiddlewareFile prefers proxy.ts over middleware.ts (Next.js 16)", async () => {
+  it("findMiddlewareFile rejects projects with both proxy.ts and middleware.ts", async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
     const os = await import("node:os");
@@ -6672,9 +6672,9 @@ describe("middleware runner", () => {
     try {
       fs.writeFileSync(path.join(tmpDir, "proxy.ts"), "export default function proxy() {}");
       fs.writeFileSync(path.join(tmpDir, "middleware.ts"), "export function middleware() {}");
-      const result = findMiddlewareFile(tmpDir, createValidFileMatcher());
-      expect(result).not.toBeNull();
-      expect(result).toContain("proxy.ts");
+      expect(() => findMiddlewareFile(tmpDir, createValidFileMatcher())).toThrow(
+        'Both middleware file "./middleware.ts" and proxy file "./proxy.ts" are detected. Please use "./proxy.ts" only.',
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -6839,6 +6839,7 @@ describe("middleware/proxy export validation", () => {
     expect(isProxyFile("/app/proxy.ts")).toBe(true);
     expect(isProxyFile("/app/proxy.js")).toBe(true);
     expect(isProxyFile("/app/proxy.mjs")).toBe(true);
+    expect(isProxyFile("/app/proxy.platform.tsx")).toBe(true);
     expect(isProxyFile("/app/src/proxy.ts")).toBe(true);
   });
 
@@ -6890,7 +6891,7 @@ describe("middleware/proxy export validation", () => {
     const { resolveMiddlewareHandler } =
       await import("../packages/vinext/src/server/middleware.js");
     expect(() => resolveMiddlewareHandler({ middleware: () => {} }, "/app/proxy.ts")).toThrow(
-      "must export a function named `proxy` or a `default` function",
+      'The file "./proxy.ts" must export a function, either as a default export or as a named "proxy" export.',
     );
   });
 
@@ -6898,7 +6899,7 @@ describe("middleware/proxy export validation", () => {
     const { resolveMiddlewareHandler } =
       await import("../packages/vinext/src/server/middleware.js");
     expect(() => resolveMiddlewareHandler({ handler: () => {} }, "/app/proxy.ts")).toThrow(
-      "must export a function named `proxy` or a `default` function",
+      'The file "./proxy.ts" must export a function, either as a default export or as a named "proxy" export.',
     );
   });
 
@@ -6906,7 +6907,7 @@ describe("middleware/proxy export validation", () => {
     const { resolveMiddlewareHandler } =
       await import("../packages/vinext/src/server/middleware.js");
     expect(() => resolveMiddlewareHandler({}, "/app/proxy.ts")).toThrow(
-      "must export a function named `proxy` or a `default` function",
+      'The file "./proxy.ts" must export a function, either as a default export or as a named "proxy" export.',
     );
   });
 
@@ -6914,7 +6915,15 @@ describe("middleware/proxy export validation", () => {
     const { resolveMiddlewareHandler } =
       await import("../packages/vinext/src/server/middleware.js");
     expect(() => resolveMiddlewareHandler({ proxy: "not a function" }, "/app/proxy.ts")).toThrow(
-      "must export a function named `proxy` or a `default` function",
+      'The file "./proxy.ts" must export a function, either as a default export or as a named "proxy" export.',
+    );
+  });
+
+  it("resolveMiddlewareHandler: proxy.ts throws when default export is not a function", async () => {
+    const { resolveMiddlewareHandler } =
+      await import("../packages/vinext/src/server/middleware.js");
+    expect(() => resolveMiddlewareHandler({ default: {} }, "/app/proxy.ts")).toThrow(
+      'The file "./proxy.ts" must export a function, either as a default export or as a named "proxy" export.',
     );
   });
 
@@ -6938,7 +6947,7 @@ describe("middleware/proxy export validation", () => {
     const { resolveMiddlewareHandler } =
       await import("../packages/vinext/src/server/middleware.js");
     expect(() => resolveMiddlewareHandler({ proxy: () => {} }, "/app/middleware.ts")).toThrow(
-      "must export a function named `middleware` or a `default` function",
+      'The file "./middleware.ts" must export a function, either as a default export or as a named "middleware" export.',
     );
   });
 
@@ -6946,7 +6955,7 @@ describe("middleware/proxy export validation", () => {
     const { resolveMiddlewareHandler } =
       await import("../packages/vinext/src/server/middleware.js");
     expect(() => resolveMiddlewareHandler({}, "/app/middleware.ts")).toThrow(
-      "must export a function named `middleware` or a `default` function",
+      'The file "./middleware.ts" must export a function, either as a default export or as a named "middleware" export.',
     );
   });
 });

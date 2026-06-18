@@ -1043,6 +1043,7 @@ export default createAppRscHandler({
   makeThenableParams,
   matchRoute,
   metadataRoutes,
+  middlewareFilePath: ${middlewarePath ? JSON.stringify(normalizePathSeparators(middlewarePath)) : "null"},
   middlewareModule: ${middlewarePath ? "middlewareModule" : "null"},
   publicFiles: __publicFiles,
   renderNotFound({ isRscRequest, matchedParams, middlewareContext, request, route, scriptNonce }) {

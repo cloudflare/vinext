@@ -70,7 +70,7 @@ import {
   type ResolvedNextConfig,
 } from "./config/next-config.js";
 
-import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
+import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
 import { isNextDataPathname, parseNextDataPathname } from "./server/pages-data-route.js";
 import {
   MIDDLEWARE_NEXT_HEADER,
@@ -128,6 +128,7 @@ import {
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
+import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
@@ -1354,7 +1355,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);
         instrumentationPath = findInstrumentationFile(root, fileMatcher);
         instrumentationClientPath = findInstrumentationClientFile(root, fileMatcher);
-        middlewarePath = findMiddlewareFile(root, fileMatcher);
+        const middlewareConventionDir =
+          canonicalize(baseDir) === canonicalize(path.posix.join(root, "src"))
+            ? path.posix.join(root, "src")
+            : root;
+        middlewarePath = findMiddlewareFile(root, fileMatcher, middlewareConventionDir);
         const instrumentationClientInjects = nextConfig.instrumentationClientInject.map((spec) =>
           spec.startsWith("./") || spec.startsWith("../") ? path.resolve(root, spec) : spec,
         );
@@ -4229,6 +4234,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             void handlePagesMiddleware(req, res, next);
           });
         };
+      },
+    },
+    {
+      name: "vinext:validate-middleware-exports",
+      enforce: "pre",
+      transform(code, id) {
+        if (!middlewarePath) return null;
+        const modulePath = stripViteModuleQuery(id);
+        if (canonicalize(modulePath) !== canonicalize(middlewarePath)) return null;
+        validateMiddlewareModuleExports(
+          code,
+          modulePath,
+          middlewarePath,
+          isProxyFile(middlewarePath),
+        );
+        return null;
       },
     },
     // Next.js rejects `export * from "..."` when compiling Pages Router files

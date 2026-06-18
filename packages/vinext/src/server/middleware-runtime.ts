@@ -1,6 +1,7 @@
 import "./server-globals.js";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
+import path from "node:path";
 import {
   getRequestExecutionContext,
   runWithExecutionContext,
@@ -97,12 +98,34 @@ function isMiddlewareConfigExport(value: unknown): value is MiddlewareConfigExpo
   return !!value && typeof value === "object";
 }
 
-function middlewareFileLabel(isProxy: boolean): string {
-  return isProxy ? "Proxy" : "Middleware";
-}
-
 function middlewareExpectedExport(isProxy: boolean): string {
   return isProxy ? "proxy" : "middleware";
+}
+
+function middlewareDisplayPath(filePath: string): string {
+  const fileName = path.basename(filePath);
+  return path.basename(path.dirname(filePath)) === "src" ? `./src/${fileName}` : `./${fileName}`;
+}
+
+export function createMiddlewareMissingExportError(filePath: string | undefined, isProxy: boolean) {
+  const expectedExport = middlewareExpectedExport(isProxy);
+  const displayPath = filePath ? middlewareDisplayPath(filePath) : undefined;
+  const resolvedPath = displayPath ? ` "${displayPath}"` : "";
+  const migrationReason = isProxy
+    ? "- You are migrating from `middleware` to `proxy`, but haven't updated the exported function.\n"
+    : "";
+  return new Error(
+    `The file${resolvedPath} must export a function, either as a default export or as a named "${expectedExport}" export.\n` +
+      `This function is what Next.js runs for every request handled by this ${isProxy ? "proxy (previously called middleware)" : "middleware"}.\n\n` +
+      `Why this happens:\n` +
+      migrationReason +
+      `- The file exists but doesn't export a function.\n` +
+      `- The export is not a function (e.g., an object or constant).\n` +
+      `- There's a syntax error preventing the export from being recognized.\n\n` +
+      `To fix it:\n` +
+      `- Ensure this file has either a default or "${expectedExport}" function export.\n\n` +
+      `Learn more: https://nextjs.org/docs/messages/middleware-to-proxy`,
+  );
 }
 
 export function resolveMiddlewareModuleHandler(
@@ -112,12 +135,7 @@ export function resolveMiddlewareModuleHandler(
   const handler = options.isProxy ? (mod.proxy ?? mod.default) : (mod.middleware ?? mod.default);
   if (isMiddlewareHandler(handler)) return handler;
 
-  const fileLabel = middlewareFileLabel(options.isProxy);
-  const expectedExport = middlewareExpectedExport(options.isProxy);
-  const fileSuffix = options.filePath ? ` "${options.filePath}"` : "";
-  throw new Error(
-    `The ${fileLabel} file${fileSuffix} must export a function named \`${expectedExport}\` or a \`default\` function.`,
-  );
+  throw createMiddlewareMissingExportError(options.filePath, options.isProxy);
 }
 
 function middlewareMatcher(mod: MiddlewareModule): MatcherConfig | undefined {

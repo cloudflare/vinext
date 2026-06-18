@@ -42,8 +42,8 @@ export { matchPattern, matchesMiddleware } from "./middleware-matcher.js";
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/middleware.ts
  */
 export function isProxyFile(filePath: string): boolean {
-  const base = path.basename(filePath).replace(/\.\w+$/, "");
-  return base === "proxy";
+  const base = path.basename(filePath);
+  return base === "proxy" || base.startsWith("proxy.");
 }
 
 /**
@@ -64,10 +64,8 @@ export function resolveMiddlewareHandler(mod: MiddlewareModule, filePath: string
   });
 }
 
-const MIDDLEWARE_LOCATIONS = ["", "src/"];
-
 /**
- * Find the proxy or middleware file in the project root.
+ * Find the proxy or middleware file at the selected app/pages convention level.
  * Checks for proxy.ts (Next.js 16) first, then falls back to middleware.ts.
  * If middleware.ts is found, logs a deprecation warning.
  *
@@ -83,16 +81,38 @@ const MIDDLEWARE_LOCATIONS = ["", "src/"];
  * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts
  *   (search for "MIDDLEWARE_FILENAME" + "file convention is deprecated")
  */
-export function findMiddlewareFile(root: string, fileMatcher: ValidFileMatcher): string | null {
-  // Check proxy.ts first (Next.js 16 replacement for middleware.ts)
-  for (const dir of MIDDLEWARE_LOCATIONS) {
-    for (const ext of fileMatcher.dottedExtensions) {
-      const fullPath = path.join(root, dir, `proxy${ext}`);
-      if (fs.existsSync(fullPath)) {
-        return fullPath;
-      }
+export function findMiddlewareFile(
+  root: string,
+  fileMatcher: ValidFileMatcher,
+  conventionDir = root,
+): string | null {
+  let proxyPath: string | null = null;
+  for (const ext of fileMatcher.dottedExtensions) {
+    const fullPath = path.join(conventionDir, `proxy${ext}`);
+    if (fs.existsSync(fullPath)) {
+      proxyPath = fullPath;
+      break;
     }
   }
+
+  let middlewarePath: string | null = null;
+  for (const ext of fileMatcher.dottedExtensions) {
+    const fullPath = path.join(conventionDir, `middleware${ext}`);
+    if (fs.existsSync(fullPath)) {
+      middlewarePath = fullPath;
+      break;
+    }
+  }
+
+  if (proxyPath && middlewarePath) {
+    const relativeProxyPath = `./${path.relative(root, proxyPath)}`;
+    const relativeMiddlewarePath = `./${path.relative(root, middlewarePath)}`;
+    throw new Error(
+      `Both middleware file "${relativeMiddlewarePath}" and proxy file "${relativeProxyPath}" are detected. Please use "${relativeProxyPath}" only. Learn more: https://nextjs.org/docs/messages/middleware-to-proxy`,
+    );
+  }
+
+  if (proxyPath) return proxyPath;
 
   // Fall back to middleware.ts (deprecated in Next.js 16).
   // This is a warning, not an error: middleware.ts is still fully supported
@@ -102,19 +122,14 @@ export function findMiddlewareFile(root: string, fileMatcher: ValidFileMatcher):
   // packages/next/src/build/index.ts (search for "file convention is
   // deprecated") so Next.js's own deprecation-warnings and app-middleware
   // e2e suites pass when run against vinext.
-  for (const dir of MIDDLEWARE_LOCATIONS) {
-    for (const ext of fileMatcher.dottedExtensions) {
-      const fullPath = path.join(root, dir, `middleware${ext}`);
-      if (fs.existsSync(fullPath)) {
-        console.warn(
-          `The "middleware" file convention is deprecated. Please use "proxy" instead.\n\n` +
-            `  To migrate automatically, run:\n` +
-            `  npx @next/codemod@canary middleware-to-proxy .\n\n` +
-            `  Learn more: https://nextjs.org/docs/messages/middleware-to-proxy`,
-        );
-        return fullPath;
-      }
-    }
+  if (middlewarePath) {
+    console.warn(
+      `The "middleware" file convention is deprecated. Please use "proxy" instead.\n\n` +
+        `  To migrate automatically, run:\n` +
+        `  npx @next/codemod@canary middleware-to-proxy .\n\n` +
+        `  Learn more: https://nextjs.org/docs/messages/middleware-to-proxy`,
+    );
+    return middlewarePath;
   }
   return null;
 }
