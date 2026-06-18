@@ -216,7 +216,7 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
     return !query || `${frame.name} ${frame.source ?? ""}`.toLowerCase().includes(query);
   });
   const maxDepth = Math.max(...frames.map((frame) => frame.depth));
-  const rowHeight = 42;
+  const rowHeight = 32;
   const height = (maxDepth + 1) * rowHeight;
 
   const toggleCategory = (category: TraceCategory) => {
@@ -351,8 +351,8 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
                 {frame.width > 70 && (
                   <text
                     x={frame.x + 8}
-                    y={y + 26}
-                    fontSize="13"
+                    y={y + 21}
+                    fontSize="12"
                     fontWeight="500"
                     fill={frame.depth >= 4 ? "white" : "#0f172a"}
                     pointerEvents="none"
