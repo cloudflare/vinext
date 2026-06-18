@@ -1,6 +1,6 @@
 import { Fragment, isValidElement, type ReactElement, type ReactNode } from "react";
-import { markAppPagePropsForUseCache } from "vinext/shims/cache-runtime";
-import { isNextRouterError } from "vinext/shims/navigation";
+import { markAppPagePropsForUseCache } from "vinext/shims/internal/app-page-props-cache-key";
+import { isNextRouterError } from "vinext/shims/navigation-server";
 import { collectAppPageSearchParams } from "./app-page-head.js";
 import {
   probeAppPageComponent,

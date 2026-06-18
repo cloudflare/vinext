@@ -1,4 +1,7 @@
-import { getAndClearActionRevalidationKind, type ActionRevalidationKind } from "vinext/shims/cache";
+import {
+  getAndClearActionRevalidationKind,
+  type ActionRevalidationKind,
+} from "vinext/shims/cache-request-state";
 import {
   headersContextFromRequest,
   setHeadersContext,

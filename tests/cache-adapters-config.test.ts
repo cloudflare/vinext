@@ -48,7 +48,7 @@ describe("generateCacheAdaptersModule", () => {
   it("wires only the data adapter when only data is configured", () => {
     const code = generateCacheAdaptersModule({ data: { adapter: "my-data-adapter" } });
     expect(code).toContain(`import __vinextDataAdapterFactory from "my-data-adapter";`);
-    expect(code).toContain(`import { setDataCacheHandler } from "vinext/shims/cache";`);
+    expect(code).toContain(`import { setDataCacheHandler } from "vinext/shims/cache-handler";`);
     expect(code).toContain(
       "setDataCacheHandler(__vinextDataAdapterFactory({ env, options: undefined }));",
     );

@@ -17,7 +17,7 @@
  * to avoid creating separate contexts in different modules.
  */
 import { createElement, type ReactNode } from "react";
-import { getLayoutSegmentContext, type SegmentMap } from "./navigation.js";
+import { getLayoutSegmentContext, type SegmentMap } from "./navigation-server.js";
 
 /**
  * Wraps children with the layout segment context.

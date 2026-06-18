@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { PassThrough } from "node:stream";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ViteDevServer } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 import {
@@ -182,17 +183,19 @@ describe("installDevStackSourcemapMiddleware", () => {
     middleware!(req, res, () => {});
     await res.done;
 
+    // pathToFileURL anchors a drive-less path to the current drive on Windows.
+    const mappedFileUrl = pathToFileURL("/repo/app/app/_components/site-footer.tsx").href;
     expect(res._statusCode).toBe(200);
     expect(JSON.parse(res._body)).toEqual({
       stack: [
         "Error: boom",
-        "    at SiteFooter (file:///repo/app/app/_components/site-footer.tsx:6:9)",
+        `    at SiteFooter (${mappedFileUrl}:6:9)`,
         "    at render (/repo/app/node_modules/.vite/deps_ssr/react.js:1:2)",
       ].join("\n"),
       ignoredFrames: [false, true],
       projectRoot: "/repo/app",
       codeFrame: {
-        file: "file:///repo/app/app/_components/site-footer.tsx",
+        file: mappedFileUrl,
         line: 6,
         column: 9,
         methodName: "SiteFooter",
@@ -237,11 +240,12 @@ describe("installDevStackSourcemapMiddleware", () => {
     middleware!(req, res, () => {});
     await res.done;
 
+    const mappedFileUrl = pathToFileURL("/repo/app/app/_components/site-footer.tsx").href;
     expect(res._statusCode).toBe(200);
     expect(JSON.parse(res._body)).toMatchObject({
       stack: [
         "Error: boom",
-        "    at SiteFooter (file:///repo/app/app/_components/site-footer.tsx:6:9)",
+        `    at SiteFooter (${mappedFileUrl}:6:9)`,
         "Caused by: Error: nested",
         "    at render (/repo/app/node_modules/.vite/deps_ssr/react.js:1:2)",
       ].join("\n"),
@@ -432,6 +436,7 @@ describe("mapStackLine", () => {
     });
     const line = "    at SiteFooter (/repo/app/app/_components/site-footer.tsx:9:8)";
 
+    const mappedFileUrl = pathToFileURL("/repo/app/app/_components/site-footer.tsx").href;
     await expect(
       mapStackLineWithMetadata(
         server,
@@ -440,7 +445,7 @@ describe("mapStackLine", () => {
         new Map<string, Promise<SourceMapPayload | null>>(),
       ),
     ).resolves.toEqual({
-      line: "    at SiteFooter (file:///repo/app/app/_components/site-footer.tsx:6:9)",
+      line: `    at SiteFooter (${mappedFileUrl}:6:9)`,
       isFrame: true,
       ignored: false,
     });
@@ -455,6 +460,7 @@ describe("mapStackLine", () => {
     });
     const line = "    at SiteFooter (/repo/app/app/_components/site-footer.tsx:9:8)";
 
+    const mappedFileUrl = pathToFileURL("/repo/app/app/_components/site-footer.tsx").href;
     await expect(
       mapStackLineWithMetadata(
         server,
@@ -463,11 +469,11 @@ describe("mapStackLine", () => {
         new Map<string, Promise<SourceMapPayload | null>>(),
       ),
     ).resolves.toEqual({
-      line: "    at SiteFooter (file:///repo/app/app/_components/site-footer.tsx:6:9)",
+      line: `    at SiteFooter (${mappedFileUrl}:6:9)`,
       isFrame: true,
       ignored: false,
       codeFrame: {
-        file: "file:///repo/app/app/_components/site-footer.tsx",
+        file: mappedFileUrl,
         line: 6,
         column: 9,
         methodName: "SiteFooter",
@@ -495,9 +501,10 @@ describe("mapStackLine", () => {
     });
     const line = "    at SiteFooter (/repo/app/app/_components/site-footer.tsx:9:8)";
 
+    const mappedFileUrl = pathToFileURL("/repo/app/app/_components/site-footer.tsx").href;
     await expect(
       mapStackLine(server, line, undefined, new Map<string, Promise<SourceMapPayload | null>>()),
-    ).resolves.toBe("    at SiteFooter (file:///repo/app/app/_components/site-footer.tsx:6:9)");
+    ).resolves.toBe(`    at SiteFooter (${mappedFileUrl}:6:9)`);
     expect(transformRequests).toEqual(["rsc:/repo/app/app/_components/site-footer.tsx"]);
   });
 
@@ -522,31 +529,36 @@ describe("mapStackLine", () => {
   });
 
   it("maps React Server component frame URLs through the RSC environment source map", async () => {
-    const { server, transformRequests } = createServer({
-      sources: ["site-footer.tsx"],
-      mappings: ";;;;;;;;AAKQ",
-    });
-    const line =
-      "    at SiteFooter (about://React/Server/file:///repo/app/app/_components/site-footer.tsx?9:9:8)";
+    // A drive-less file URL (file:///repo/...) is invalid on Windows, so build
+    // the fixture URL and matching root via pathToFileURL: they carry the
+    // current drive there (file:///E:/repo/...) and stay POSIX elsewhere.
+    const footerUrl = pathToFileURL("/repo/app/app/_components/site-footer.tsx").href;
+    const root = fileURLToPath(pathToFileURL("/repo/app").href);
+    const { server, transformRequests } = createServer(
+      { sources: ["site-footer.tsx"], mappings: ";;;;;;;;AAKQ" },
+      { root },
+    );
+    const line = `    at SiteFooter (about://React/Server/${footerUrl}?9:9:8)`;
 
     await expect(
       mapStackLine(server, line, undefined, new Map<string, Promise<SourceMapPayload | null>>()),
-    ).resolves.toBe("    at SiteFooter (file:///repo/app/app/_components/site-footer.tsx:6:9)");
-    expect(transformRequests).toEqual(["rsc:/repo/app/app/_components/site-footer.tsx"]);
+    ).resolves.toBe(`    at SiteFooter (${footerUrl}:6:9)`);
+    expect(transformRequests).toEqual([`rsc:${fileURLToPath(footerUrl)}`]);
   });
 
   it("decodes file URLs before asking Vite for a server source map", async () => {
-    const { server, transformRequests } = createServer({
-      sources: ["site footer.tsx"],
-      mappings: ";;;;;;;;AAKQ",
-    });
-    const line =
-      "    at SiteFooter (about://React/Server/file:///repo/app/app/_components/site%20footer.tsx?9:9:8)";
+    const footerUrl = pathToFileURL("/repo/app/app/_components/site footer.tsx").href;
+    const root = fileURLToPath(pathToFileURL("/repo/app").href);
+    const { server, transformRequests } = createServer(
+      { sources: ["site footer.tsx"], mappings: ";;;;;;;;AAKQ" },
+      { root },
+    );
+    const line = `    at SiteFooter (about://React/Server/${footerUrl}?9:9:8)`;
 
     await expect(
       mapStackLine(server, line, undefined, new Map<string, Promise<SourceMapPayload | null>>()),
-    ).resolves.toBe("    at SiteFooter (file:///repo/app/app/_components/site%20footer.tsx:6:9)");
-    expect(transformRequests).toEqual(["rsc:/repo/app/app/_components/site footer.tsx"]);
+    ).resolves.toBe(`    at SiteFooter (${footerUrl}:6:9)`);
+    expect(transformRequests).toEqual([`rsc:${fileURLToPath(footerUrl)}`]);
   });
 });
 

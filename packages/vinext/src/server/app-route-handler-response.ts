@@ -1,4 +1,4 @@
-import type { CachedRouteValue, CacheControlMetadata } from "vinext/shims/cache";
+import type { CachedRouteValue, CacheControlMetadata } from "vinext/shims/cache-handler";
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { decideIsr, buildAppRouteMissIsrCacheControl } from "./isr-decision.js";
 import {

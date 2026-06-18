@@ -345,6 +345,11 @@ export function validatePageExports(code: string): void {
   }
 }
 
+type StripServerExportsResult = {
+  code: string;
+  map: ReturnType<MagicString["generateMap"]>;
+};
+
 /**
  * Strip server-only Pages Router data-fetching exports and their unique
  * dependency graph from browser bundles.
@@ -353,7 +358,7 @@ export function validatePageExports(code: string): void {
  * - test/unit/babel-plugin-next-ssg-transform.test.ts
  * - crates/next-custom-transforms/src/transforms/strip_page_exports.rs
  */
-export function stripServerExports(code: string): string | null {
+export function stripServerExports(code: string): StripServerExportsResult | null {
   if (!hasServerExportCandidate(code) && !hasExportAllCandidate(code)) {
     return null;
   }
@@ -752,5 +757,8 @@ export function stripServerExports(code: string): string | null {
     string.overwrite(edit.start, edit.end, edit.replacement);
     lastStart = edit.start;
   }
-  return string.toString();
+  // The MagicString already tracks every overwrite, so emit its sourcemap
+  // instead of dropping it — removing whole statements shifts line numbers for
+  // the rest of the module, which would otherwise break client-build debugging.
+  return { code: string.toString(), map: string.generateMap({ hires: "boundary" }) };
 }

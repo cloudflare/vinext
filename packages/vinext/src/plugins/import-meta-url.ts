@@ -16,6 +16,7 @@ import MagicString from "magic-string";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { tryRealpathSync } from "../build/ssr-manifest.js";
+import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "../utils/virtual-module.js";
 import {
   collectBindingNames,
   forEachAstChild,
@@ -51,7 +52,6 @@ const TRANSFORMABLE_SCRIPT_EXTENSIONS = new Set([
   ".ts",
   ".tsx",
 ]);
-
 export function createImportMetaUrlPlugin(options: { getRoot: () => string | undefined }): Plugin {
   let rootPaths: RootPaths | undefined;
   let outputDirs: string[] = [];
@@ -73,22 +73,30 @@ export function createImportMetaUrlPlugin(options: { getRoot: () => string | und
       outputDirs = [config.build.outDir];
       rootPaths = createRootPaths(root, { outputDirs });
     },
-    transform(code, id) {
-      if (!mayContainSourceIdentityToken(code)) return null;
-      const paths = getRootPaths();
-      if (!paths) return null;
-      const cleanId = cleanModuleId(id);
-      const canonicalId = transformableModuleCanonicalId(cleanId, paths);
-      if (!canonicalId) return null;
+    transform: {
+      filter: {
+        id: {
+          include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
+          exclude: [/[\\/]node_modules[\\/]/, VIRTUAL_MODULE_ID_RE],
+        },
+        code: /import\.meta(?:\.|\?\.)url|__filename|__dirname/,
+      },
+      handler(code, id) {
+        const paths = getRootPaths();
+        if (!paths) return null;
+        const cleanId = cleanModuleId(id);
+        const canonicalId = transformableModuleCanonicalId(cleanId, paths);
+        if (!canonicalId) return null;
 
-      const environment: ImportMetaUrlEnvironment =
-        this.environment?.name === "client" ? "client" : "server";
-      const rewritten = rewriteCanonicalSourceIdentity(code, canonicalId, paths, environment);
-      if (!rewritten) return null;
-      return {
-        code: rewritten.code,
-        map: rewritten.map,
-      };
+        const environment: ImportMetaUrlEnvironment =
+          this.environment?.name === "client" ? "client" : "server";
+        const rewritten = rewriteCanonicalSourceIdentity(code, canonicalId, paths, environment);
+        if (!rewritten) return null;
+        return {
+          code: rewritten.code,
+          map: rewritten.map,
+        };
+      },
     },
   };
 }
@@ -192,7 +200,7 @@ function createRootPaths(root: string, options: { outputDirs?: string[] } = {}):
 // or null otherwise. Threading the canonical id back to the caller avoids a
 // second realpathSync when computing the replacement value.
 function transformableModuleCanonicalId(id: string, rootPaths: RootPaths): string | null {
-  if (!id || id.startsWith("\0")) return null;
+  if (!id || id.startsWith(VIRTUAL_PREFIX)) return null;
   if (!path.isAbsolute(id)) return null;
   const normalizedInputId = normalizePath(id);
   // Early-exit optimization: skip the realpathSync below for node_modules
@@ -217,10 +225,6 @@ function mayContainImportMetaUrl(code: string): boolean {
 
 function mayContainServerCjsGlobal(code: string): boolean {
   return code.includes("__filename") || code.includes("__dirname");
-}
-
-function mayContainSourceIdentityToken(code: string): boolean {
-  return mayContainImportMetaUrl(code) || mayContainServerCjsGlobal(code);
 }
 
 function excludedRelativePrefixes(

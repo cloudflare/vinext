@@ -2794,6 +2794,7 @@ describe("Plugin config", () => {
     await expect(
       configPlugin.configResolved({
         command: "serve",
+        cacheDir: path.join(FIXTURE_DIR, "node_modules/.vite"),
         configFile: false,
         plugins: [
           { name: "vite:react-babel" },

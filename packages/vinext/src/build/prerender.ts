@@ -31,12 +31,8 @@ import {
   RSC_EMBEDDED_BINARY_CHUNK,
   type RscEmbeddedChunk,
 } from "../server/app-rsc-embedded-chunks.js";
-import {
-  NoOpCacheHandler,
-  setCacheHandler,
-  getCacheHandler,
-  _consumeRequestScopedCacheLife,
-} from "vinext/shims/cache";
+import { NoOpCacheHandler, setCacheHandler, getCacheHandler } from "vinext/shims/cache-handler";
+import { _consumeRequestScopedCacheLife } from "vinext/shims/cache-request-state";
 import { runWithHeadersContext, headersContextFromRequest } from "vinext/shims/headers";
 import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-matcher.js";
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";

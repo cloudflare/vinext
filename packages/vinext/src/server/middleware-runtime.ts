@@ -17,7 +17,12 @@ import { MatcherConfig, matchesMiddleware } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
-import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+import {
+  addBasePathToPathname,
+  hasBasePath,
+  removeTrailingSlash,
+  stripBasePath,
+} from "../utils/base-path.js";
 
 export type MiddlewareModule = Record<string, unknown>;
 
@@ -274,9 +279,10 @@ export async function executeMiddleware(
   // stripBasePath is a no-op. When it is auto-derived from the request URL and the
   // URL carries the basePath (because the adapter passed the original URL), we must
   // strip before matching so patterns like "/about" fire correctly.
-  const matchPathname = options.basePath
+  const basePathStrippedPathname = options.basePath
     ? stripBasePath(normalizedPathname, options.basePath)
     : normalizedPathname;
+  const matchPathname = basePathStrippedPathname;
 
   if (
     !matchesMiddleware(
@@ -297,7 +303,7 @@ export async function executeMiddleware(
     options.trailingSlash,
     hadBasePath,
   );
-  const fetchEvent = new NextFetchEvent({ page: matchPathname });
+  const fetchEvent = new NextFetchEvent({ page: removeTrailingSlash(matchPathname) });
 
   let response: Response | undefined | void;
   try {
