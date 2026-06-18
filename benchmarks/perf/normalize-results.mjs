@@ -3,6 +3,7 @@
 import { createReadStream } from "node:fs";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
 import { createGunzip } from "node:zlib";
 
 const inputPath = resolve(process.argv[2] ?? "benchmarks/results/perf-samples.jsonl");
@@ -182,6 +183,18 @@ function summarize(values) {
   };
 }
 
+function commitTimestamp(commitSha) {
+  if (!commitSha || commitSha === "local") return new Date().toISOString();
+  const timestamp = execFileSync("git", ["show", "-s", "--format=%cI", commitSha], {
+    encoding: "utf8",
+  }).trim();
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.valueOf())) {
+    throw new Error(`Could not determine commit timestamp for ${commitSha}`);
+  }
+  return date.toISOString();
+}
+
 async function main() {
   const contents = await readFile(inputPath, "utf8");
   const samples = contents
@@ -190,6 +203,7 @@ async function main() {
     .map((line) => JSON.parse(line));
 
   const grouped = Map.groupBy(samples, (sample) => sample.benchmarkId);
+  const commitSha = process.env.VINEXT_PERF_COMMIT_SHA ?? process.env.GITHUB_SHA ?? "local";
   const benchmarks = await Promise.all(
     Array.from(grouped, async ([benchmarkId, group]) => ({
       benchmarkId,
@@ -212,11 +226,11 @@ async function main() {
     instrument: "walltime",
     run: {
       kind: process.env.VINEXT_PERF_RUN_KIND === "pull_request" ? "pull_request" : "main",
-      commitSha: process.env.VINEXT_PERF_COMMIT_SHA ?? process.env.GITHUB_SHA ?? "local",
+      commitSha,
       baseSha: process.env.VINEXT_PERF_BASE_SHA || null,
       pullRequest: Number(process.env.VINEXT_PERF_PR_NUMBER) || null,
       executionId: process.env.VINEXT_PERF_EXECUTION_ID || `local:${Date.now()}`,
-      measuredAt: new Date().toISOString(),
+      measuredAt: commitTimestamp(commitSha),
       repository: process.env.GITHUB_REPOSITORY ?? "cloudflare/vinext",
     },
     system: {

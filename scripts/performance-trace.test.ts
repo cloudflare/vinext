@@ -25,6 +25,25 @@ describe("performance traces", () => {
     const benchmarkId = "dev-start:vinext";
     const profileDirectory = join(profilesDirectory, benchmarkId);
     await mkdir(profileDirectory, { recursive: true });
+    await execFileAsync("git", ["init", "--quiet"], { cwd: directory });
+    await execFileAsync("git", ["config", "user.name", "Performance Test"], { cwd: directory });
+    await execFileAsync("git", ["config", "user.email", "performance@example.com"], {
+      cwd: directory,
+    });
+    await writeFile(join(directory, "commit.txt"), "measured commit\n");
+    await execFileAsync("git", ["add", "commit.txt"], { cwd: directory });
+    await execFileAsync("git", ["commit", "--quiet", "-m", "measured commit"], {
+      cwd: directory,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_DATE: "2025-04-03T12:34:56+02:00",
+        GIT_COMMITTER_DATE: "2025-04-03T12:34:56+02:00",
+      },
+    });
+    const { stdout: commitShaOutput } = await execFileAsync("git", ["rev-parse", "HEAD"], {
+      cwd: directory,
+    });
+    const commitSha = commitShaOutput.trim();
 
     const names = Array.from(
       { length: 91 },
@@ -74,18 +93,22 @@ describe("performance traces", () => {
       })}\n`,
     );
 
-    await execFileAsync(process.execPath, [
-      resolve("benchmarks/perf/normalize-results.mjs"),
-      inputPath,
-      outputPath,
-      profilesDirectory,
-    ]);
+    await execFileAsync(
+      process.execPath,
+      [resolve("benchmarks/perf/normalize-results.mjs"), inputPath, outputPath, profilesDirectory],
+      {
+        cwd: directory,
+        env: { ...process.env, VINEXT_PERF_COMMIT_SHA: commitSha },
+      },
+    );
 
     const result = JSON.parse(await readFile(outputPath, "utf8"));
     const graph = result.benchmarks[0].flameGraph as TraceNode;
     expect(flatten(graph).filter((node) => node.name.startsWith("frame-"))).toHaveLength(91);
     expect(maxDepth(graph)).toBe(42);
     expect(graph).not.toHaveProperty("vinextFocus");
+    expect(result.run.commitSha).toBe(commitSha);
+    expect(result.run.measuredAt).toBe("2025-04-03T10:34:56.000Z");
   });
 
   test("filters retain selected frames and recompute their sampled time", () => {
