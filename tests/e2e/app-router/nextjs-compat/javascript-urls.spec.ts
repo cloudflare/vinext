@@ -96,6 +96,25 @@ test.describe("javascript-urls", () => {
     await expect(page).toHaveURL(`${BASE}/nextjs-compat/javascript-urls/safe`);
   });
 
+  // Next.js blocks javascript: URLs consumed from redirect errors during
+  // client-side App Router navigation.
+  // Reference implementation: https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/segment-cache/navigation.ts
+  test("should prevent javascript URLs in RSC redirects", async ({ page }) => {
+    const { beforePageLoad, getNavigationRequests } = createNavigationInterceptor();
+    beforePageLoad(page);
+
+    await page.goto(`${BASE}/nextjs-compat/javascript-urls/rsc-redirect-trigger`);
+    await waitForAppRouterHydration(page);
+    const initialUrl = page.url();
+
+    await page.locator("#rsc-redirect-link").click();
+
+    await expectJavascriptUrlBlocked(page, initialUrl, getNavigationRequests);
+
+    await page.locator('a[href="/nextjs-compat/javascript-urls/safe"]').click();
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/javascript-urls/safe`);
+  });
+
   // Next.js keeps user-provided Link onClick handlers on anchors whose href is
   // later blocked by React/Next.js javascript: URL protections.
   // Reference implementation: https://github.com/vercel/next.js/blob/canary/packages/next/src/client/link.tsx
