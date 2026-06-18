@@ -212,8 +212,10 @@ jobs:
               local path="$root/$relative_path"
               sudo mkdir -p "$path"
               sudo chown -R "$user":"$user" "$path"
+              sudo chmod -R u+rwX "$path"
               sudo setfacl -R -m u:"$user":rwX "$path"
               sudo setfacl -R -d -m u:"$user":rwX,u:"$USER":rwX "$path"
+              sudo -u "$user" test -w "$path"
             done
           }
           grant_write_paths "$GITHUB_WORKSPACE" vinext-perf-head

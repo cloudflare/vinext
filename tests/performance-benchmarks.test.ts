@@ -64,6 +64,9 @@ describe("paired performance benchmarks", () => {
     expect(workflow).toContain("benchmarks/nextjs/node_modules");
     expect(workflow).toContain('sudo chmod +t "$path"');
     expect(workflow).toContain('sudo setfacl -m u:"$user":wx "$path"');
+    expect(workflow).toContain('sudo chown -R "$user":"$user" "$path"');
+    expect(workflow).toContain('sudo chmod -R u+rwX "$path"');
+    expect(workflow).toContain('sudo -u "$user" test -w "$path"');
     expect(workflow).not.toContain('setfacl -R -m u:vinext-perf-head:rwX "$GITHUB_WORKSPACE"');
     expect(workflow).toContain("- name: Lock benchmark inputs after setup");
     expect(workflow).toContain('"$root/packages/vinext/dist"');
