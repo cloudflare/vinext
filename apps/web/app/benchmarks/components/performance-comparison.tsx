@@ -7,7 +7,7 @@ import { Clock, Flame, MagnifyingGlassPlus, X } from "@phosphor-icons/react";
 import type { FlameGraphData, PerformanceComparisonData } from "@/app/lib/benchmarks/server";
 import { formatMs } from "./format";
 import { PerformanceResultsTable, type PerformanceMeasurement } from "./performance-results";
-import { profileToFlameGraph } from "./profile";
+import { profileToFlameGraph, readGzipProfile } from "./profile";
 import { filteredTraceGraph, selfValue, type TraceCategory } from "./trace";
 
 type FlameGraphNode = FlameGraphData;
@@ -169,7 +169,7 @@ function FlameGraphDialog({ measurement }: { measurement: Comparison["measuremen
     try {
       const response = await fetch(measurement.profileUrl);
       if (!response.ok) throw new Error(`Profile request failed (${response.status})`);
-      const graph = profileToFlameGraph(await response.json());
+      const graph = profileToFlameGraph(await readGzipProfile(response));
       if (!graph) throw new Error("Profile contains no samples");
       setFlameGraph(graph);
       setProfileState("loaded");

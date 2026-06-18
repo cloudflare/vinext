@@ -6,7 +6,10 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { gzip } from "node:zlib";
 import { afterEach, describe, expect, test } from "vitest";
-import { profileToFlameGraph } from "../apps/web/app/benchmarks/components/profile";
+import {
+  profileToFlameGraph,
+  readGzipProfile,
+} from "../apps/web/app/benchmarks/components/profile";
 import { filteredTraceGraph, type TraceNode } from "../apps/web/app/benchmarks/components/trace";
 
 const execFileAsync = promisify(execFile);
@@ -115,6 +118,12 @@ describe("performance traces", () => {
     const graph = profileToFlameGraph(profile) as TraceNode;
     expect(flatten(graph).filter((node) => node.name.startsWith("frame-"))).toHaveLength(91);
     expect(maxDepth(graph)).toBe(42);
+    const decodedProfile = await readGzipProfile(
+      new Response(await gzipAsync(JSON.stringify(profile)), {
+        headers: { "Content-Type": "application/gzip" },
+      }),
+    );
+    expect(decodedProfile).toEqual(profile);
   });
 
   test("filters retain selected frames and recompute their sampled time", () => {

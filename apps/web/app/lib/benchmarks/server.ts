@@ -505,8 +505,7 @@ export async function getPerformanceProfile(runId: string, benchmarkId: string):
   if (!object) return new Response("Profile object not found", { status: 404 });
   return new Response(object.body, {
     headers: {
-      "Content-Type": "application/json",
-      "Content-Encoding": "gzip",
+      "Content-Type": "application/gzip",
       "Cache-Control": "private, max-age=300",
       ETag: object.httpEtag,
     },

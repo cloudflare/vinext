@@ -22,6 +22,12 @@ type SamplyProfile = {
   threads?: ProfileThread[];
 };
 
+export async function readGzipProfile(response: Response): Promise<SamplyProfile> {
+  if (!response.body) throw new Error("Profile response has no body");
+  const decompressed = response.body.pipeThrough(new DecompressionStream("gzip"));
+  return new Response(decompressed).json() as Promise<SamplyProfile>;
+}
+
 type MutableTraceNode = Omit<TraceNode, "children"> & {
   children: Map<string, MutableTraceNode>;
 };

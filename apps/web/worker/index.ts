@@ -72,7 +72,7 @@ async function uploadPerformanceProfile(request: Request, env: Env): Promise<Res
   }
   const key = `profiles/${runKind}/${commitSha.toLowerCase()}/${encodeURIComponent(executionId)}/${crypto.randomUUID()}/${encodeURIComponent(benchmarkId)}.json.gz`;
   await env.PERFORMANCE_PROFILES.put(key, request.body, {
-    httpMetadata: { contentType: "application/json", contentEncoding: "gzip" },
+    httpMetadata: { contentType: "application/gzip" },
     customMetadata: { benchmarkId, commitSha: commitSha.toLowerCase(), runKind },
   });
   return Response.json({ key }, { status: 201 });
