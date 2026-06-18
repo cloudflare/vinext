@@ -99,6 +99,7 @@ export function PerformanceResultsTable({
                 : null;
               const improved =
                 change !== null && (measurement.lowerIsBetter ? change <= 0 : change >= 0);
+              const neutral = change !== null && Math.abs(change) < 1.5;
               return (
                 <Table.Row key={measurement.benchmarkId}>
                   {index === 0 && (
@@ -157,8 +158,10 @@ export function PerformanceResultsTable({
                         <Badge variant="secondary">New</Badge>
                       ) : (
                         <Badge
-                          variant={improved ? "green" : "destructive"}
-                          className="font-semibold"
+                          variant={neutral ? "primary" : improved ? "green" : "destructive"}
+                          className={
+                            neutral ? "!bg-black !text-white font-semibold" : "font-semibold"
+                          }
                         >
                           {change > 0 ? "+" : ""}
                           {change.toFixed(1)}%
