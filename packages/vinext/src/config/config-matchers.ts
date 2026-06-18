@@ -383,7 +383,7 @@ export function isSafeRegex(pattern: string): boolean {
 export function safeRegExp(pattern: string, flags?: string): RegExp | null {
   if (!isSafeRegex(pattern)) {
     console.warn(
-      `[vinext] Ignoring potentially unsafe regex pattern (ReDoS risk): ${pattern}\n` +
+      `[vinext] Rejecting potentially unsafe regex pattern (ReDoS risk): ${pattern}\n` +
         `  Patterns with nested quantifiers (e.g. (a+)+) can cause catastrophic backtracking.\n` +
         `  Simplify the pattern to avoid nested repetition.`,
     );

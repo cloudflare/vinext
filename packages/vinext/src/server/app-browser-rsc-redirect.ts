@@ -3,8 +3,22 @@ import {
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
 } from "./app-rsc-cache-busting.js";
+import { isDangerousScheme, reportBlockedDangerousNavigation } from "vinext/shims/url-safety";
 
 const MAX_RSC_REDIRECT_DEPTH = 10;
+
+export function blockDangerousStreamedRscRedirect(
+  response: Response,
+  streamedRedirectTarget: string | null,
+): boolean {
+  if (streamedRedirectTarget === null || !isDangerousScheme(streamedRedirectTarget)) {
+    return false;
+  }
+
+  void response.body?.cancel().catch(() => {});
+  reportBlockedDangerousNavigation();
+  return true;
+}
 
 type RscRedirectHistoryUpdateMode = "push" | "replace" | undefined;
 

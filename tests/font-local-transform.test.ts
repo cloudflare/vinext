@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vite-plus/test";
 import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
+import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
 import localFont, { getSSRFontStyles } from "../packages/vinext/src/shims/font-local.js";
 import type { Plugin } from "vite-plus";
 
@@ -9,9 +10,10 @@ import type { Plugin } from "vite-plus";
 // Absolute path to vinext's own font-local shim — the plugin guards against
 // rewriting any file under its shims directory via a prefix check, so tests
 // that exercise the guard must use the real resolved path.
-const FONT_LOCAL_SHIM_PATH = path.resolve(
-  import.meta.dirname,
-  "../packages/vinext/src/shims/font-local.ts",
+// Vite hands the transform hook POSIX-normalized ids, and the plugin's guard
+// prefix-checks against the (forward-slash) shims dir — so normalize here too.
+const FONT_LOCAL_SHIM_PATH = normalizePathSeparators(
+  path.resolve(import.meta.dirname, "../packages/vinext/src/shims/font-local.ts"),
 );
 
 /** Unwrap a Vite plugin hook that may use the object-with-filter format */

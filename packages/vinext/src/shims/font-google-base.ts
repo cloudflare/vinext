@@ -51,6 +51,7 @@ export type FontResult = {
 
 type InternalGoogleFontRuntimeOptions = {
   selfHostedCSS?: string;
+  preloadUrls?: string[];
   adjustedFallbackCSS?: string;
   fontWeight?: number;
   fontStyle?: "normal" | "italic";
@@ -333,33 +334,14 @@ export function getSSRFontPreloads(): Array<{ href: string; type: string }> {
 }
 
 /**
- * Extract font file URLs from @font-face CSS rules.
- * Parses url('...') references from the CSS text.
- */
-function extractFontUrlsFromCSS(css: string): string[] {
-  const urls: string[] = [];
-  const urlRegex = /url\(['"]?([^'")]+)['"]?\)/g;
-  let match: RegExpExecArray | null;
-  while ((match = urlRegex.exec(css)) !== null) {
-    const url = match[1];
-    // Only collect absolute paths (starting with /) — these are self-hosted font files
-    if (url && url.startsWith("/")) {
-      urls.push(url);
-    }
-  }
-  return urls;
-}
-
-/**
- * Collect font file URLs from self-hosted CSS for preload link generation.
+ * Collect build-selected font file URLs for preload link generation.
  * Only collects on the server (SSR). Deduplicates by href using a Set for O(1) lookups.
  */
-function collectFontPreloadsFromCSS(css: string): void {
+function collectFontPreloads(urls: string[]): void {
   if (typeof document !== "undefined") return; // client-side, skip
 
-  const urls = extractFontUrlsFromCSS(css);
   for (const href of urls) {
-    if (!ssrFontPreloadHrefs.has(href)) {
+    if (href.startsWith("/") && !ssrFontPreloadHrefs.has(href)) {
       ssrFontPreloadHrefs.add(href);
       ssrFontPreloads.push({ href, type: getFontMimeType(href) });
     }
@@ -373,12 +355,10 @@ const injectedSelfHosted = new Set<string>();
  * Inject self-hosted @font-face CSS (from the build plugin).
  * This replaces the CDN <link> tag with inline CSS.
  */
-function injectSelfHostedCSS(css: string): void {
+function injectSelfHostedCSS(css: string, preloadUrls: string[] = []): void {
+  collectFontPreloads(preloadUrls);
   if (injectedSelfHosted.has(css)) return;
   injectedSelfHosted.add(css);
-
-  // Extract font file URLs for preload hints (SSR only)
-  collectFontPreloadsFromCSS(css);
 
   if (typeof document === "undefined") {
     // SSR: add to collected styles
@@ -435,7 +415,7 @@ export function createFontLoader(family: string): FontLoader {
 
     if (internal?.selfHostedCSS) {
       // Self-hosted mode: inject local @font-face CSS instead of CDN link
-      injectSelfHostedCSS(internal.selfHostedCSS);
+      injectSelfHostedCSS(internal.selfHostedCSS, internal.preloadUrls);
     } else {
       // CDN mode: inject <link> to Google Fonts
       const url = buildGoogleFontsUrl(family, options);

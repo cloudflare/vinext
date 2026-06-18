@@ -30,13 +30,15 @@
 
 import {
   getDataCacheHandler,
+  type CachedFetchValue,
+  type CacheControlMetadata,
+} from "./cache-handler.js";
+import {
   cacheLifeProfiles,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
-  type CachedFetchValue,
-  type CacheControlMetadata,
   type CacheLifeConfig,
-} from "./cache.js";
+} from "./cache-request-state.js";
 import { VINEXT_RSC_MARKER_HEADER } from "../server/headers.js";
 import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
@@ -47,12 +49,13 @@ import {
 } from "./unified-request-context.js";
 import { markDynamicUsage } from "./headers.js";
 import { trackPprFallbackShellCacheTask } from "./ppr-fallback-shell.js";
+import { isMarkedAppPagePropsObject } from "./internal/app-page-props-cache-key.js";
+
+export { markAppPagePropsForUseCache } from "./internal/app-page-props-cache-key.js";
 
 // ---------------------------------------------------------------------------
 // Constants for nested-dynamic cache life detection
 // ---------------------------------------------------------------------------
-
-const APP_PAGE_PROPS_CACHE_KEY_MARKER = Symbol.for("vinext.appPagePropsCacheKeyMarker");
 
 /** Threshold below which expire is considered "dynamic" (5 minutes in seconds). */
 const DYNAMIC_EXPIRE = 300;
@@ -402,16 +405,6 @@ export function clearPrivateCache(): void {
   } else {
     _privateFallbackState._privateCache = new Map();
   }
-}
-
-export function markAppPagePropsForUseCache<T extends object>(props: T): T {
-  Object.defineProperty(props, APP_PAGE_PROPS_CACHE_KEY_MARKER, {
-    configurable: false,
-    enumerable: false,
-    value: true,
-    writable: false,
-  });
-  return props;
 }
 
 // ---------------------------------------------------------------------------
@@ -1010,10 +1003,6 @@ function unwrapThenableObjects(
     result[key] = unwrapThenableObjects((value as any)[key]);
   }
   return result;
-}
-
-function isMarkedAppPagePropsObject(value: object): boolean {
-  return Reflect.get(value, APP_PAGE_PROPS_CACHE_KEY_MARKER) === true;
 }
 
 function unwrapThenableObjectArray(

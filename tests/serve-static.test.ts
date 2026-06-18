@@ -263,6 +263,18 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.headers["Content-Security-Policy"]).toBe("default-src 'self'");
   });
 
+  it("does not vary cached files without precompressed variants", async () => {
+    await writeFile(clientDir, "photo.png", Buffer.alloc(100));
+    const cache = await StaticFileCache.create(clientDir);
+    const req = mockReq("gzip");
+    const { res, captured } = mockRes();
+
+    await tryServeStatic(req, res, clientDir, "/photo.png", true, cache);
+
+    await captured.ended;
+    expect(captured.headers.Vary).toBeUndefined();
+  });
+
   // ── Vary header ────────────────────────────────────────────────
 
   it("sets Vary: Accept-Encoding when serving precompressed content", async () => {
@@ -566,6 +578,138 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.headers["Content-Encoding"]).toBe("br");
   });
 
+  it("prefers the available variant with the highest client q-value", async () => {
+    const jsContent = "const weighted = true;\n".repeat(200);
+    await writeFile(clientDir, "_next/static/weighted-jjj000.js", jsContent);
+    await writeFile(
+      clientDir,
+      "_next/static/weighted-jjj000.js.br",
+      zlib.brotliCompressSync(Buffer.from(jsContent)),
+    );
+    await writeFile(
+      clientDir,
+      "_next/static/weighted-jjj000.js.gz",
+      zlib.gzipSync(Buffer.from(jsContent)),
+    );
+
+    const cache = await StaticFileCache.create(clientDir);
+    const req = mockReq("br;q=0.1, gzip;q=1");
+    const { res, captured } = mockRes();
+
+    await tryServeStatic(req, res, clientDir, "/_next/static/weighted-jjj000.js", true, cache);
+
+    await captured.ended;
+    expect(captured.headers["Content-Encoding"]).toBe("gzip");
+  });
+
+  it("honors an RFC-valid trailing-dot refusal over a wildcard", async () => {
+    const jsContent = "const trailingDot = true;\n".repeat(200);
+    await writeFile(clientDir, "_next/static/trailing-dot-kkk111.js", jsContent);
+    await writeFile(
+      clientDir,
+      "_next/static/trailing-dot-kkk111.js.br",
+      zlib.brotliCompressSync(Buffer.from(jsContent)),
+    );
+    await writeFile(
+      clientDir,
+      "_next/static/trailing-dot-kkk111.js.gz",
+      zlib.gzipSync(Buffer.from(jsContent)),
+    );
+
+    const cache = await StaticFileCache.create(clientDir);
+    const req = mockReq("*;q=0.8, br;q=0., identity;q=0.2");
+    const { res, captured } = mockRes();
+
+    await tryServeStatic(req, res, clientDir, "/_next/static/trailing-dot-kkk111.js", true, cache);
+
+    await captured.ended;
+    expect(captured.headers["Content-Encoding"]).toBe("gzip");
+  });
+
+  it("falls back to cached identity when every content coding is refused", async () => {
+    const jsContent = "const unacceptable = true;\n".repeat(200);
+    await writeFile(clientDir, "_next/static/unacceptable-lll222.js", jsContent);
+    await writeFile(
+      clientDir,
+      "_next/static/unacceptable-lll222.js.br",
+      zlib.brotliCompressSync(Buffer.from(jsContent)),
+    );
+
+    const cache = await StaticFileCache.create(clientDir);
+    const req = mockReq("*;q=0");
+    const { res, captured } = mockRes();
+
+    const served = await tryServeStatic(
+      req,
+      res,
+      clientDir,
+      "/_next/static/unacceptable-lll222.js",
+      true,
+      cache,
+    );
+
+    await captured.ended;
+    expect(served).toBe(true);
+    expect(captured.status).toBe(200);
+    expect(captured.headers.Vary).toBe("Accept-Encoding");
+    expect(captured.body.toString()).toBe(jsContent);
+  });
+
+  it("merges Accept-Encoding into Vary on a cached identity fallback", async () => {
+    const jsContent = "const vary406 = true;\n".repeat(200);
+    await writeFile(clientDir, "_next/static/vary-406-mmm333.js", jsContent);
+    const cache = await StaticFileCache.create(clientDir);
+    const req = mockReq("*;q=0");
+    const { res, captured } = mockRes();
+
+    await tryServeStatic(req, res, clientDir, "/_next/static/vary-406-mmm333.js", true, cache, {
+      Vary: "RSC",
+    });
+
+    await captured.ended;
+    expect(captured.status).toBe(200);
+    expect(captured.headers.Vary).toBe("RSC");
+  });
+
+  it("serves an accepted cached variant when identity is only implicit", async () => {
+    const jsContent = "const identityPreferred = true;\n".repeat(200);
+    await writeFile(clientDir, "_next/static/identity-nnn444.js", jsContent);
+    await writeFile(
+      clientDir,
+      "_next/static/identity-nnn444.js.br",
+      zlib.brotliCompressSync(Buffer.from(jsContent)),
+    );
+    const cache = await StaticFileCache.create(clientDir);
+    const req = mockReq("br;q=0.5");
+    const { res, captured } = mockRes();
+
+    await tryServeStatic(req, res, clientDir, "/_next/static/identity-nnn444.js", true, cache);
+
+    await captured.ended;
+    expect(captured.status).toBe(200);
+    expect(captured.headers["Content-Encoding"]).toBe("br");
+    expect(captured.headers.Vary).toBe("Accept-Encoding");
+    expect(zlib.brotliDecompressSync(captured.body).toString()).toBe(jsContent);
+  });
+
+  it("returns cached 304 via identity fallback when codings are refused", async () => {
+    const relativePath = "_next/static/conditional-ooo555.js";
+    await writeFile(clientDir, relativePath, "conditional cached");
+    const cache = await StaticFileCache.create(clientDir);
+    const firstReq = mockReq();
+    const { res: firstRes, captured: firstCaptured } = mockRes();
+    await tryServeStatic(firstReq, firstRes, clientDir, `/${relativePath}`, true, cache);
+    await firstCaptured.ended;
+
+    const req = mockReq("*;q=0", { "if-none-match": firstCaptured.headers.ETag as string });
+    const { res, captured } = mockRes();
+    await tryServeStatic(req, res, clientDir, `/${relativePath}`, true, cache);
+
+    await captured.ended;
+    expect(captured.status).toBe(304);
+    expect(captured.headers.Vary).toBeUndefined();
+  });
+
   // ── Slow path (no cache) ───────────────────────────────────────
 
   it("slow path serves static file without cache", async () => {
@@ -587,6 +731,17 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.status).toBe(200);
     expect(captured.headers["Content-Type"]).toBe("application/javascript");
     expect(captured.body.toString()).toBe("slow path content");
+  });
+
+  it("slow path does not vary non-compressible files", async () => {
+    await writeFile(clientDir, "uncached-photo.png", Buffer.alloc(100));
+    const req = mockReq("gzip");
+    const { res, captured } = mockRes();
+
+    await tryServeStatic(req, res, clientDir, "/uncached-photo.png", true);
+
+    await captured.ended;
+    expect(captured.headers.Vary).toBeUndefined();
   });
 
   it("slow path returns false for non-existent files", async () => {
@@ -859,6 +1014,18 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.headers["Vary"]).toBe("Accept-Encoding");
   });
 
+  it("returns slow-path 304 via identity fallback when codings are refused", async () => {
+    await writeFile(clientDir, "_next/static/conditional-slow-pqr678.js", "conditional slow");
+    const req = mockReq("*;q=0", { "if-none-match": 'W/"pqr678"' });
+    const { res, captured } = mockRes();
+
+    await tryServeStatic(req, res, clientDir, "/_next/static/conditional-slow-pqr678.js", true);
+
+    await captured.ended;
+    expect(captured.status).toBe(304);
+    expect(captured.headers.Vary).toBe("Accept-Encoding");
+  });
+
   it("slow path 304 omits Vary for non-compressible content (compress=false)", async () => {
     await writeFile(clientDir, "photo.jpg", Buffer.alloc(100, 0xff));
 
@@ -874,5 +1041,19 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     await captured.ended;
     expect(captured.status).toBe(304);
     expect(captured.headers["Vary"]).toBeUndefined();
+  });
+
+  it("slow path 304 omits Vary for non-compressible content when compression is enabled", async () => {
+    await writeFile(clientDir, "photo-compress-enabled.jpg", Buffer.alloc(100, 0xff));
+    const stat = await fsp.stat(path.join(clientDir, "photo-compress-enabled.jpg"));
+    const etag = `W/"${stat.size}-${Math.floor(stat.mtimeMs / 1000)}"`;
+    const req = mockReq("gzip", { "if-none-match": etag });
+    const { res, captured } = mockRes();
+
+    await tryServeStatic(req, res, clientDir, "/photo-compress-enabled.jpg", true);
+
+    await captured.ended;
+    expect(captured.status).toBe(304);
+    expect(captured.headers.Vary).toBeUndefined();
   });
 });

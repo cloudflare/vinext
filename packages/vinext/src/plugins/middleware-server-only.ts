@@ -1,4 +1,5 @@
 import type { Plugin } from "vite";
+import { normalizePathSeparators } from "../utils/path.js";
 
 /**
  * Allow `import 'server-only'` from middleware (and any module reachable
@@ -59,22 +60,25 @@ export function createMiddlewareServerOnlyPlugin(options: {
   // Rolldown handed us).
   const tainted = new Set<string>();
 
-  function isTainted(id: string | undefined): boolean {
-    if (!id) return false;
-    if (tainted.has(id)) return true;
+  // Canonicalize an id into the space the taint set lives in: forward slashes
+  // (Rolldown ids are POSIX-normalized) with the query suffix stripped. The
+  // seed paths come from `path.join`, which is backslash on Windows, so they
+  // must be normalized to match the importer ids Rolldown passes in.
+  function canonicalizeId(id: string): string {
+    const queryIndex = id.indexOf("?");
     // Strip query string suffix (e.g. ?v=hash, ?rsc, ?used). Rolldown stores
     // module IDs with the query in `importer` strings for HMR / dep optimizer
     // round-trips; the canonical id we tracked doesn't carry one.
-    const queryIndex = id.indexOf("?");
-    if (queryIndex !== -1) {
-      return tainted.has(id.slice(0, queryIndex));
-    }
-    return false;
+    return normalizePathSeparators(queryIndex === -1 ? id : id.slice(0, queryIndex));
+  }
+
+  function isTainted(id: string | undefined): boolean {
+    if (!id) return false;
+    return tainted.has(canonicalizeId(id));
   }
 
   function addTainted(id: string): void {
-    const queryIndex = id.indexOf("?");
-    tainted.add(queryIndex === -1 ? id : id.slice(0, queryIndex));
+    tainted.add(canonicalizeId(id));
   }
 
   return {

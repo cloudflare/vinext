@@ -18,7 +18,7 @@ import {
   type IncrementalCacheValue,
   type CachedPagesValue,
   type CachedAppPageValue,
-} from "vinext/shims/cache";
+} from "vinext/shims/cache-handler";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { fnv1a64 } from "../utils/hash.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";

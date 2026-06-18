@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import type { NavigationContext } from "vinext/shims/navigation";
 import type { RootParams } from "vinext/shims/root-params";
-import { _consumeRequestScopedCacheLife, type CacheControlMetadata } from "vinext/shims/cache";
+import { _consumeRequestScopedCacheLife } from "vinext/shims/cache-request-state";
+import type { CacheControlMetadata } from "vinext/shims/cache-handler";
 import { consumeDynamicUsage, consumeInvalidDynamicUsageError } from "vinext/shims/headers";
 import { getCollectedFetchTags } from "vinext/shims/fetch-cache";
 import {

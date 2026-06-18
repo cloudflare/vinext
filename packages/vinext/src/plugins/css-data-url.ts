@@ -120,49 +120,49 @@ export function dataUrlCssPlugin(): Plugin {
     // unsupported `data:` import.
     enforce: "pre",
 
-    transform(code, id) {
-      // Cheap pre-check so we don't run the regex on every module in the
-      // graph. Skip the CSS pipeline itself: synthetic ids round-trip through
-      // `transform`, but their decoded payload never contains a quoted import.
-      if (!code.includes(DATA_URL_HINT)) return null;
-      if (id.startsWith(VIRTUAL_PREFIX)) return null;
+    transform: {
+      filter: {
+        id: { exclude: new RegExp(`^${VIRTUAL_PREFIX}`) },
+        code: DATA_URL_HINT,
+      },
+      handler(code, id) {
+        let mutated = false;
+        const rewritten = code.replace(
+          DATA_URL_IMPORT_RE,
+          (_match, quote: string, moduleFlag, base64Flag, payload) => {
+            const isModule = moduleFlag === "+module";
+            const isBase64 = base64Flag === ";base64";
 
-      let mutated = false;
-      const rewritten = code.replace(
-        DATA_URL_IMPORT_RE,
-        (_match, quote: string, moduleFlag, base64Flag, payload) => {
-          const isModule = moduleFlag === "+module";
-          const isBase64 = base64Flag === ";base64";
+            let css: string;
+            try {
+              css = decode(payload, isBase64);
+            } catch (err) {
+              // Surface as a transform error so the developer sees which file
+              // contained the malformed data URL.
+              throw new Error(
+                `[vinext] Failed to decode CSS data URL import in ${id}: ${(err as Error).message}`,
+              );
+            }
 
-          let css: string;
-          try {
-            css = decode(payload, isBase64);
-          } catch (err) {
-            // Surface as a transform error so the developer sees which file
-            // contained the malformed data URL.
-            throw new Error(
-              `[vinext] Failed to decode CSS data URL import in ${id}: ${(err as Error).message}`,
-            );
-          }
+            const ext = isModule ? ".module.css" : ".css";
+            const syntheticId = `${VIRTUAL_PREFIX}${hash(css + ext)}${ext}`;
+            entries.set(syntheticId, { css, isModule });
+            mutated = true;
+            // The same quote character is reused for both ends so the rewritten
+            // span is a syntactically valid string literal that matches the
+            // span being replaced (single↔single or double↔double).
+            return `${quote}${syntheticId}${quote}`;
+          },
+        );
 
-          const ext = isModule ? ".module.css" : ".css";
-          const syntheticId = `${VIRTUAL_PREFIX}${hash(css + ext)}${ext}`;
-          entries.set(syntheticId, { css, isModule });
-          mutated = true;
-          // The same quote character is reused for both ends so the rewritten
-          // span is a syntactically valid string literal that matches the
-          // span being replaced (single↔single or double↔double).
-          return `${quote}${syntheticId}${quote}`;
-        },
-      );
-
-      if (!mutated) return null;
-      // No source map: we only swap the import specifier text and never
-      // shift line counts (the synthetic id is a single-line string), so the
-      // rewritten code keeps the original line/column positions. Returning a
-      // map would force every downstream plugin to honour it without
-      // information gain.
-      return { code: rewritten, map: null };
+        if (!mutated) return null;
+        // No source map: we only swap the import specifier text and never
+        // shift line counts (the synthetic id is a single-line string), so the
+        // rewritten code keeps the original line/column positions. Returning a
+        // map would force every downstream plugin to honour it without
+        // information gain.
+        return { code: rewritten, map: null };
+      },
     },
 
     resolveId(id) {

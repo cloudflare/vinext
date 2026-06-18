@@ -6,12 +6,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { createBuilder } from "vite";
+import { createBuilder, createServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import {
   getTypeofWindowReplacement,
   replaceTypeofWindow,
 } from "../packages/vinext/src/plugins/typeof-window.js";
+import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -24,6 +25,77 @@ afterEach(async () => {
 });
 
 describe("typeof window compilation", () => {
+  it("does not fold prebundles when plugin instances are reused across servers", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-reuse-"));
+    temporaryDirectories.push(root);
+    const plugins = [vinext({ react: false, rsc: false })];
+    const transform = async (server: Awaited<ReturnType<typeof createServer>>, id: string) => {
+      const source = `export const browser = typeof window !== "undefined"`;
+      try {
+        return (await server.pluginContainer.transform(source, id))?.code;
+      } catch (error) {
+        const viteError = error as { code?: string; pluginCode?: string };
+        if (viteError.code !== "ERR_OUTDATED_OPTIMIZED_DEP") throw error;
+        return viteError.pluginCode;
+      }
+    };
+
+    for (const name of ["first-cache", "second-cache"]) {
+      const cacheDir = path.join(root, name);
+      const server = await createServer({
+        root,
+        cacheDir,
+        configFile: false,
+        logLevel: "silent",
+        plugins,
+      });
+
+      try {
+        const prebundleId = path.join(cacheDir, "deps_ssr/react.js");
+        const prebundleCode = await transform(server, prebundleId);
+        expect(prebundleCode).toContain("typeof window");
+
+        const sourceCode = await transform(server, path.join(root, `${name}.js`));
+        expect(sourceCode).not.toContain("typeof window");
+      } finally {
+        await server.close();
+      }
+    }
+  });
+
+  it("configures the hook filter to skip the resolved Vite cache directory", async () => {
+    // Normalize the root to forward slashes up front so everything below stays
+    // in the same POSIX space the plugin's exclude regex (and Vite's ids) use.
+    const root = normalizePathSeparators(
+      await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-filter-")),
+    );
+    temporaryDirectories.push(root);
+    const cacheDir = path.posix.join(root, ".vite-cache[custom]");
+    const server = await createServer({
+      root,
+      cacheDir,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [vinext({ react: false, rsc: false })],
+    });
+
+    try {
+      const plugin = server.config.plugins.find(
+        (candidate) => candidate?.name === "vinext:typeof-window",
+      );
+      if (!plugin?.transform || typeof plugin.transform === "function") {
+        throw new Error("vinext:typeof-window transform hook not found");
+      }
+      const idFilter = plugin.transform.filter?.id as { exclude?: RegExp } | undefined;
+      expect(idFilter?.exclude).toBeInstanceOf(RegExp);
+      expect(idFilter?.exclude?.test(path.posix.join(cacheDir, "deps_ssr/react.js"))).toBe(true);
+      expect(idFilter?.exclude?.test(path.posix.join(root, "app/page.js"))).toBe(false);
+      expect(idFilter?.exclude?.test(`${cacheDir}-other/deps/react.js`)).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("only folds references to the global window binding", () => {
     const source = `
 if (typeof window !== "undefined") globalBrowserOnly()
