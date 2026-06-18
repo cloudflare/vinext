@@ -32,7 +32,11 @@ function targetCommand(command) {
 }
 
 function profilerCommand() {
-  return targetUser ? ["sudo", "-E", "--", profilerBin] : [profilerBin];
+  if (!targetUser) return [profilerBin];
+  const preservedEnvironment = ["HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"].flatMap((name) =>
+    process.env[name] ? [`${name}=${process.env[name]}`] : [],
+  );
+  return ["sudo", "-E", "--", "env", ...preservedEnvironment, profilerBin];
 }
 
 function run(command, args, env, cwd = targetRoot) {
