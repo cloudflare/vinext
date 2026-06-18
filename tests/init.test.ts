@@ -797,32 +797,42 @@ describe("init — non-destructive", () => {
 // ─── Unit Tests: updateGitignore ─────────────────────────────────────────────
 
 describe("updateGitignore", () => {
-  it("creates .gitignore with /dist/ when file does not exist", () => {
+  it("creates .gitignore with vinext output directories when file does not exist", () => {
     const result = updateGitignore(tmpDir);
 
     expect(result).toBe(true);
     const content = readFile(tmpDir, ".gitignore");
-    expect(content).toBe("/dist/\n");
+    expect(content).toBe("/dist/\n.vinext/\n");
   });
 
-  it("appends /dist/ to existing .gitignore", () => {
+  it("appends vinext output directories to existing .gitignore", () => {
     writeFile(tmpDir, ".gitignore", "node_modules/\n.env\n");
 
     const result = updateGitignore(tmpDir);
 
     expect(result).toBe(true);
     const content = readFile(tmpDir, ".gitignore");
-    expect(content).toBe("node_modules/\n.env\n/dist/\n");
+    expect(content).toBe("node_modules/\n.env\n/dist/\n.vinext/\n");
   });
 
-  it("does not duplicate /dist/ when already present", () => {
+  it("appends only .vinext/ when /dist/ is already present", () => {
     writeFile(tmpDir, ".gitignore", "node_modules/\n/dist/\n");
+
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(true);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toBe("node_modules/\n/dist/\n.vinext/\n");
+  });
+
+  it("does not duplicate entries when already present", () => {
+    writeFile(tmpDir, ".gitignore", "node_modules/\n/dist/\n.vinext/\n");
 
     const result = updateGitignore(tmpDir);
 
     expect(result).toBe(false);
     const content = readFile(tmpDir, ".gitignore");
-    expect(content).toBe("node_modules/\n/dist/\n");
+    expect(content).toBe("node_modules/\n/dist/\n.vinext/\n");
   });
 
   it("handles .gitignore without trailing newline", () => {
@@ -832,11 +842,11 @@ describe("updateGitignore", () => {
 
     expect(result).toBe(true);
     const content = readFile(tmpDir, ".gitignore");
-    expect(content).toBe("node_modules/\n/dist/\n");
+    expect(content).toBe("node_modules/\n/dist/\n.vinext/\n");
   });
 
-  it("handles /dist/ with surrounding whitespace in existing file", () => {
-    writeFile(tmpDir, ".gitignore", "node_modules/\n  /dist/  \n");
+  it("handles existing entries with surrounding whitespace", () => {
+    writeFile(tmpDir, ".gitignore", "node_modules/\n  /dist/  \n  .vinext/  \n");
 
     const result = updateGitignore(tmpDir);
 
@@ -844,30 +854,40 @@ describe("updateGitignore", () => {
   });
 
   it("does not add /dist/ when dist/ (without leading slash) is already present", () => {
-    writeFile(tmpDir, ".gitignore", "node_modules/\ndist/\n");
+    writeFile(tmpDir, ".gitignore", "node_modules/\ndist/\n.vinext/\n");
 
     const result = updateGitignore(tmpDir);
 
     expect(result).toBe(false);
     const content = readFile(tmpDir, ".gitignore");
-    expect(content).toBe("node_modules/\ndist/\n");
+    expect(content).toBe("node_modules/\ndist/\n.vinext/\n");
   });
 
   it("does not add /dist/ when bare dist is already present", () => {
-    writeFile(tmpDir, ".gitignore", "node_modules/\ndist\n");
+    writeFile(tmpDir, ".gitignore", "node_modules/\ndist\n.vinext/\n");
 
     const result = updateGitignore(tmpDir);
 
     expect(result).toBe(false);
     const content = readFile(tmpDir, ".gitignore");
-    expect(content).toBe("node_modules/\ndist\n");
+    expect(content).toBe("node_modules/\ndist\n.vinext/\n");
+  });
+
+  it("does not add .vinext/ when anchored variant is already present", () => {
+    writeFile(tmpDir, ".gitignore", "node_modules/\n/dist/\n/.vinext/\n");
+
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(false);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toBe("node_modules/\n/dist/\n/.vinext/\n");
   });
 });
 
 // ─── Integration: init updates .gitignore ────────────────────────────────────
 
 describe("init — .gitignore", () => {
-  it("adds /dist/ to .gitignore during init", async () => {
+  it("adds vinext output directories to .gitignore during init", async () => {
     setupProject(tmpDir, { router: "app" });
 
     const { result } = await runInit(tmpDir);
@@ -875,11 +895,12 @@ describe("init — .gitignore", () => {
     expect(result.updatedGitignore).toBe(true);
     const content = readFile(tmpDir, ".gitignore");
     expect(content).toContain("/dist/");
+    expect(content).toContain(".vinext/");
   });
 
-  it("does not duplicate /dist/ if already in .gitignore", async () => {
+  it("does not duplicate entries if already in .gitignore", async () => {
     setupProject(tmpDir, { router: "app" });
-    writeFile(tmpDir, ".gitignore", "node_modules/\n/dist/\n");
+    writeFile(tmpDir, ".gitignore", "node_modules/\n/dist/\n.vinext/\n");
 
     const { result } = await runInit(tmpDir);
 
@@ -888,9 +909,11 @@ describe("init — .gitignore", () => {
     const content = readFile(tmpDir, ".gitignore");
     const matches = content.split("\n").filter((l: string) => l.trim() === "/dist/");
     expect(matches.length).toBe(1);
+    const vinextMatches = content.split("\n").filter((l: string) => l.trim() === ".vinext/");
+    expect(vinextMatches.length).toBe(1);
   });
 
-  it("preserves existing .gitignore entries when adding /dist/", async () => {
+  it("preserves existing .gitignore entries when adding vinext output directories", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(tmpDir, ".gitignore", "node_modules/\n.env\n.next/\n");
 
@@ -902,5 +925,6 @@ describe("init — .gitignore", () => {
     expect(content).toContain(".env");
     expect(content).toContain(".next/");
     expect(content).toContain("/dist/");
+    expect(content).toContain(".vinext/");
   });
 });

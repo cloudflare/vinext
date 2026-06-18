@@ -462,6 +462,16 @@ This repo currently resolves `vite` to `@voidzero-dev/vite-plus-core`, which bun
 - When touching existing `build.rollupOptions` or `manualChunks`, treat them as migration targets to Rolldown equivalents, not patterns to copy forward
 - If something breaks only on Vite 8, check the newer `build.target` baseline and stricter CommonJS default import behavior first
 
+### Performance Best Practices
+
+- **Keep the common request path lightweight.** Do not statically import feature-specific runtimes from shared App Router handlers. Gate first on cheap request or route metadata, then dynamically import metadata-file, prerender-endpoint, cache-only, action, or route-handler code only when that feature is actually used. Use `import type` when only types are needed.
+- **Split state from heavy implementations.** Request-scoped state, handler registration, and small public facades should live in lightweight modules so importing a setter or context helper does not pull the full cache, navigation, or rendering runtime into every environment.
+- **Filter Vite hooks before JavaScript runs.** Add native hook `filter` patterns to `resolveId`, `load`, and `transform` hooks, and skip defensive early returns inside the handler in favor of the filter. Avoid broad compatibility transforms over `node_modules`, generated runtimes, prebundles, and modules that cannot contain the syntax being rewritten.
+- **Prefer lazily loaded chunks.** Keep code that is only needed for specific request types behind dynamic imports so it stays off startup and common request paths. Do not eagerly merge lazy RSC chunks into shared chunks merely to reduce chunk count.
+- **Avoid repeated hot-path work.** Reuse already-computed cache keys and request derivations, hoist immutable regular expressions and lookup tables to module scope, and move deterministic parsing or asset selection to build time when possible. Do not add caching until ownership and invalidation are explicit.
+
+Performance changes must preserve dev/production parity and all supported runtimes. A smaller dev module graph is not a win if it causes stale source-checkout code, changes RSC conditions, or breaks Cloudflare/Nitro bundling.
+
 ### Virtual Module Resolution Quirks
 
 - **Build-time root prefix:** Vite prefixes virtual module IDs with the project root path when resolving SSR build entries. The `resolveId` hook must handle both `virtual:vinext-server-entry` and `<root>/virtual:vinext-server-entry`.

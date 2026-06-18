@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi, beforeEach } from "vite-plus/test"
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   detectNextIntlConfig,
   lightningCssFeatureNamesToMask,
@@ -2423,10 +2424,15 @@ describe("resolveNextConfig rootParams deprecation warning", () => {
 
 describe("resolveNextConfig cacheHandler", () => {
   it("resolves file:// URLs to filesystem paths", async () => {
+    // Build the URL with pathToFileURL so it is valid on Windows too, where a
+    // file:// URL must carry a drive letter (a drive-less file:///… throws in
+    // fileURLToPath). In production the URL comes from import.meta.resolve, so
+    // it is always platform-valid.
+    const handlerPath = path.resolve("/absolute/path/to/handler.js");
     const resolved = await resolveNextConfig({
-      cacheHandler: "file:///absolute/path/to/handler.js",
+      cacheHandler: pathToFileURL(handlerPath).href,
     });
-    expect(resolved.cacheHandler).toBe("/absolute/path/to/handler.js");
+    expect(resolved.cacheHandler).toBe(handlerPath);
   });
 
   it("passes through absolute paths unchanged", async () => {

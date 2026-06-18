@@ -25,6 +25,8 @@ import {
   renameCJSConfigs as _renameCJSConfigs,
   detectPackageManager as _detectPackageManager,
   findInNodeModules as _findInNodeModules,
+  findDir,
+  hasAppDir,
 } from "./utils/project.js";
 import { getReactUpgradeDeps } from "./init.js";
 import { runTPR } from "./cloudflare/tpr.js";
@@ -182,10 +184,8 @@ export function formatMissingCloudflarePluginError(options: {
 }
 
 export function detectProject(root: string): ProjectInfo {
-  const hasApp =
-    fs.existsSync(path.join(root, "app")) || fs.existsSync(path.join(root, "src", "app"));
-  const hasPages =
-    fs.existsSync(path.join(root, "pages")) || fs.existsSync(path.join(root, "src", "pages"));
+  const hasApp = hasAppDir(root);
+  const hasPages = findDir(root, "pages", path.join("src", "pages")) !== null;
 
   // Prefer App Router if both exist
   const isAppRouter = hasApp;
