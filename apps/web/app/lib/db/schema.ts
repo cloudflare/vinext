@@ -144,6 +144,7 @@ export const performanceRuns = sqliteTable(
       .default(sql`(datetime('now'))`),
   },
   (table) => ({
+    kindCommit: uniqueIndex("performance_runs_kind_commit").on(table.kind, table.commitSha),
     pullRequestLatest: index("idx_performance_runs_pr_latest")
       .on(table.pullRequest, table.measuredAt)
       .where(sql`${table.kind} = 'pull_request'`),

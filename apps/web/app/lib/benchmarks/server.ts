@@ -100,10 +100,19 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
   }
 
   const db = getD1();
-  const runId = `${body.run.kind}:${body.run.commitSha}:${body.run.executionId}`;
+  const runId = `${body.run.kind}:${body.run.commitSha}`;
   const statements = [
-    db.prepare("DELETE FROM performance_measurements WHERE run_id = ?").bind(runId),
-    db.prepare("DELETE FROM performance_runs WHERE id = ?").bind(runId),
+    db
+      .prepare(`
+        DELETE FROM performance_measurements
+        WHERE run_id IN (
+          SELECT id FROM performance_runs WHERE kind = ? AND commit_sha = ?
+        )
+      `)
+      .bind(body.run.kind, body.run.commitSha),
+    db
+      .prepare("DELETE FROM performance_runs WHERE kind = ? AND commit_sha = ?")
+      .bind(body.run.kind, body.run.commitSha),
     db
       .prepare(`
         INSERT INTO performance_runs (
