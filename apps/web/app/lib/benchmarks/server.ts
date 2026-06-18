@@ -100,9 +100,10 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
   const runId = `${body.run.kind}:${body.run.commitSha}:${body.run.executionId}`;
   const statements = [
     db.prepare("DELETE FROM performance_measurements WHERE run_id = ?").bind(runId),
+    db.prepare("DELETE FROM performance_runs WHERE id = ?").bind(runId),
     db
       .prepare(`
-        INSERT OR REPLACE INTO performance_runs (
+        INSERT INTO performance_runs (
           id, kind, commit_sha, base_sha, pull_request, measured_at,
           provider, instrument, repository, system_json
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

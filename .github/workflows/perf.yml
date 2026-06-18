@@ -29,7 +29,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: performance-${{ github.ref }}
+  group: performance-${{ github.event_name == 'workflow_dispatch' && inputs.commit_sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
