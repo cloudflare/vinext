@@ -155,6 +155,8 @@ jobs:
 
       - name: Install pinned performance runner
         run: |
+          sudo sysctl -w kernel.kptr_restrict=0
+          sudo sysctl -w kernel.perf_event_paranoid=-1
           curl -fsSL https://github.com/CodSpeedHQ/codspeed/releases/download/v4.17.5/codspeed-runner-x86_64-unknown-linux-musl.tar.gz -o /tmp/perf-runner.tar.gz
           echo "88be40970bbe409192dec6f6242489ee916a4b2d8c4138b42b796853111c9b15  /tmp/perf-runner.tar.gz" | sha256sum -c
           mkdir -p "$HOME/.local/bin"
