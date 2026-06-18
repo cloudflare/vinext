@@ -838,6 +838,35 @@ describe("App Router entry templates", () => {
     expect(withMiddleware).toContain("return __applyAppMiddleware({");
   });
 
+  it("generateRscEntry only includes the PPR runtime when Cache Components is enabled", () => {
+    const withoutCacheComponents = generateRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      null,
+      [],
+      null,
+      "",
+      false,
+    );
+    const withCacheComponents = generateRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      null,
+      [],
+      null,
+      "",
+      false,
+      { cacheComponents: true },
+    );
+
+    expect(withoutCacheComponents).not.toContain("app-page-ppr-runtime.js");
+    expect(withoutCacheComponents).not.toContain("createPprFallbackShells(route, params)");
+    expect(withoutCacheComponents).toContain("pprRuntime: undefined");
+    expect(withCacheComponents).toContain("app-page-ppr-runtime.js");
+    expect(withCacheComponents).toContain("createPprFallbackShells(route, params)");
+    expect(withCacheComponents).toContain("pprRuntime: __appPagePprRuntime");
+  });
+
   it("generateRscEntry only includes metadata route response handling when routes exist", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-entry-metadata-runtime-"));
     const filePath = path.join(tmpDir, "sitemap.ts");

@@ -64,6 +64,10 @@ const appPageRouteWiringPath = resolveEntryPath(
 );
 const appPageProbePath = resolveEntryPath("../server/app-page-probe.js", import.meta.url);
 const appPageDispatchPath = resolveEntryPath("../server/app-page-dispatch.js", import.meta.url);
+const appPagePprRuntimePath = resolveEntryPath(
+  "../server/app-page-ppr-runtime.js",
+  import.meta.url,
+);
 const appPageRequestPath = resolveEntryPath("../server/app-page-request.js", import.meta.url);
 const appSegmentConfigPath = resolveEntryPath("../server/app-segment-config.js", import.meta.url);
 const appRscRouteMatchingPath = resolveEntryPath(
@@ -338,6 +342,14 @@ import { buildAppPageProbes as __buildAppPageProbes } from ${JSON.stringify(appP
 import {
   dispatchAppPage as __dispatchAppPage,
 } from ${JSON.stringify(appPageDispatchPath)};
+${
+  cacheComponents
+    ? `import {
+  appPagePprRuntime as __appPagePprRuntime,
+  createAppPprFallbackShells as __createAppPprFallbackShells,
+} from ${JSON.stringify(appPagePprRuntimePath)};`
+    : ""
+}
 import {
   resolveAppPageGenerateStaticParamsSources as __resolveAppPageGenerateStaticParamsSources,
 } from ${JSON.stringify(appPageRequestPath)};
@@ -597,7 +609,6 @@ export const __assetPrefix = ${JSON.stringify(assetPrefix)};
 export const __inlineCss = ${JSON.stringify(inlineCss)};
 export const __hasPagesDir = ${JSON.stringify(hasPagesDir)};
 export const getRenderedConcreteUrlPathsForRoute = __getRenderedConcreteUrlPathsForRoute;
-const __cacheComponents = ${JSON.stringify(cacheComponents)};
 
 export async function seedMemoryCacheFromPrerender(serverDir) {
   const { seedMemoryCacheFromPrerender: __seedMemoryCacheFromPrerender } =
@@ -652,7 +663,13 @@ export default createAppRscHandler({
   },
   registerCacheAdapters: __registerConfiguredCacheAdapters,
   configHeaders: __configHeaders,
-  cacheComponents: __cacheComponents,
+  ${
+    cacheComponents
+      ? `createPprFallbackShells(route, params) {
+    return __createAppPprFallbackShells(route, params);
+  },`
+      : ""
+  }
   configRedirects: __configRedirects,
   configRewrites: __configRewrites,
   imageConfig: __imageConfig,
@@ -766,6 +783,7 @@ export default createAppRscHandler({
       params,
       pprFallbackCacheShells,
       pprFallbackShell,
+      pprRuntime: ${cacheComponents ? "__appPagePprRuntime" : "undefined"},
       renderedConcreteUrlPaths,
       skipStaticParamsValidation,
       staticParamsValidationParams,

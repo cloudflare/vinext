@@ -44,6 +44,7 @@ export default {
         "src/server/app-middleware.ts",
         "src/server/app-page-dispatch.ts",
         "src/server/app-page-head.ts",
+        "src/server/app-page-ppr-runtime.ts",
         "src/server/app-prerender-static-params.ts",
         "src/server/app-route-module-loader.ts",
         // Client-side instrumentation bundle: loaded as a side-effect module

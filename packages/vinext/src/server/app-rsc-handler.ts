@@ -265,7 +265,6 @@ type NavigationContextValue = {
 type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   basePath: string;
   buildId: string | null;
-  cacheComponents?: boolean;
   clearRequestContext: () => void;
   configHeaders: NextHeader[];
   configRedirects: NextRedirect[];
@@ -297,6 +296,10 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     options: HandleProgressiveActionRequestOptions,
   ) => Promise<Response | ProgressiveActionFormStateResult | null>;
   handleMetadataRouteRequest?: (cleanPathname: string) => Promise<Response | null>;
+  createPprFallbackShells?: (
+    route: Pick<AppRscHandlerRoute, "params" | "pattern" | "rootParamNames">,
+    params: AppPageParams,
+  ) => AppPagePprFallbackCacheShell[];
   handleServerActionRequest?: (
     options: HandleServerActionRequestOptions,
   ) => Promise<Response | null>;
@@ -932,14 +935,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const resolvedSearchParams = getResolvedSearchParams();
   let runtimeFallbackShells: AppPagePprFallbackCacheShell[] = [];
   if (
-    options.cacheComponents === true &&
+    options.createPprFallbackShells &&
     request.method === "GET" &&
     !isRscRequest &&
     !isPrerenderFallbackShell &&
     route.params
   ) {
-    const { createAppPprFallbackShells } = await import("./app-ppr-fallback-shell.js");
-    runtimeFallbackShells = createAppPprFallbackShells(
+    runtimeFallbackShells = options.createPprFallbackShells(
       {
         params: route.params,
         pattern: route.pattern,
