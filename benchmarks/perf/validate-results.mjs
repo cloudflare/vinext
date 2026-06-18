@@ -380,10 +380,7 @@ if (sourceEvent === "pull_request") {
 
 let trustedManifestRef;
 if (sourceEvent === "pull_request") {
-  trustedManifestRef =
-    sourcePullRequest.head.repo.full_name === repository
-      ? sourcePullRequest.head.sha
-      : sourcePullRequest.base.sha;
+  trustedManifestRef = sourcePullRequest.base.sha;
 } else if (sourceEvent === "push") {
   trustedManifestRef = sourceRun.head_sha;
 } else if (sourceEvent === "workflow_dispatch") {
@@ -404,9 +401,14 @@ if (payload.run.kind === "pull_request") {
       sourcePullRequest.base.repo.full_name,
       sourcePullRequest.base.sha,
     );
+    const benchmarkRef =
+      sourceEvent === "pull_request"
+        ? sourcePullRequest.merge_commit_sha
+        : sourcePullRequest.head.sha;
+    assert(isSha(benchmarkRef), "Pull request merge commit SHA is unavailable");
     const headFingerprint = remoteNextjsInputFingerprint(
-      sourcePullRequest.head.repo.full_name,
-      sourcePullRequest.head.sha,
+      sourceEvent === "pull_request" ? repository : sourcePullRequest.head.repo.full_name,
+      benchmarkRef,
     );
     assert(
       baseFingerprint === headFingerprint,

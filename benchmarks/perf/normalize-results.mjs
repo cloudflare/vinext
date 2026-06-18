@@ -3,6 +3,11 @@
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
+import { promisify } from "node:util";
+import { gzip, gunzip } from "node:zlib";
+
+const gzipAsync = promisify(gzip);
+const gunzipAsync = promisify(gunzip);
 
 const inputPath = resolve(process.argv[2] ?? "benchmarks/results/perf-samples.jsonl");
 const outputPath = resolve(process.argv[3] ?? "benchmarks/results/perf-results.json");
@@ -12,6 +17,10 @@ async function profileFile(benchmarkId) {
   try {
     const profilePath = join(profilesDirectory, benchmarkId, "samply-profile.json.gz");
     await access(profilePath);
+    const profile = JSON.parse((await gunzipAsync(await readFile(profilePath))).toString("utf8"));
+    profile.meta ??= {};
+    profile.meta.vinextBenchmarkRounds = 1;
+    await writeFile(profilePath, await gzipAsync(JSON.stringify(profile)));
     return relative(dirname(outputPath), profilePath);
   } catch {
     return null;
@@ -79,7 +88,7 @@ async function main() {
       const current = group.filter((sample) => sample.revision !== "base");
       const baseline = group.filter((sample) => sample.revision === "base");
       if (current.length === 0) throw new Error(`Missing head samples for ${benchmarkId}`);
-      const normalizedProfileFile = group[0].profile ? await profileFile(benchmarkId) : null;
+      const normalizedProfileFile = await profileFile(benchmarkId);
       return {
         benchmarkId,
         scenarioId: group[0].scenarioId,
@@ -94,7 +103,7 @@ async function main() {
         baselineSamples:
           baseline.length > 0 ? summarize(baseline.map((sample) => sample.value)) : null,
         profileFile: normalizedProfileFile,
-        profileRounds: normalizedProfileFile ? (baseline.length > 0 ? 1 : current.length) : null,
+        profileRounds: normalizedProfileFile ? 1 : null,
       };
     }),
   );

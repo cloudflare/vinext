@@ -21,7 +21,9 @@ import {
   RSC_ACTION_HEADER,
   RSC_HEADER,
   VINEXT_MW_CTX_HEADER,
+  VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_STATIC_PARAMS_PATH,
 } from "./headers.js";
 import { ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
@@ -36,7 +38,10 @@ import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base
 import { mergeRewriteQuery } from "../utils/query.js";
 import type { AppMiddlewareContext } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
-import { handleAppPrerenderEndpoint } from "./app-prerender-endpoints.js";
+import type {
+  AppPrerenderRootParamNamesMap,
+  AppPrerenderStaticParamsMap,
+} from "./app-prerender-endpoints.js";
 import {
   createRscRedirectLocation,
   hasRscCacheBustingSearchParam,
@@ -60,7 +65,10 @@ import {
   resolveDevImageRedirect,
   type ImageConfig,
 } from "./image-optimization.js";
-import { handleMetadataRouteRequest } from "./metadata-route-response.js";
+import type {
+  MetadataRouteMakeThenableParams,
+  MetadataRuntimeRoute,
+} from "./metadata-route-response.js";
 import type { MiddlewareModule } from "./middleware-runtime.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
@@ -83,13 +91,11 @@ import {
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
-type MetadataRoutes = Parameters<typeof handleMetadataRouteRequest>[0]["metadataRoutes"];
+type MetadataRoutes = readonly MetadataRuntimeRoute[];
 const STATIC_METADATA_CONFIG_HEADER_OVERRIDES = new Set(["cache-control"]);
-type MakeThenableParams = Parameters<typeof handleMetadataRouteRequest>[0]["makeThenableParams"];
-type StaticParamsMap = Parameters<typeof handleAppPrerenderEndpoint>[1]["staticParamsMap"];
-type RootParamNamesMap = Parameters<
-  typeof handleAppPrerenderEndpoint
->[1]["rootParamNamesByPattern"];
+type MakeThenableParams = MetadataRouteMakeThenableParams;
+type StaticParamsMap = AppPrerenderStaticParamsMap;
+type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
 type AppRscMiddlewareContext = AppMiddlewareContext;
 
@@ -489,16 +495,22 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // issue #1333.
   const basePathState = { basePath: options.basePath, hadBasePath: true };
 
-  const prerenderEndpointResponse = await handleAppPrerenderEndpoint(request, {
-    isPrerenderEnabled() {
-      return process.env.VINEXT_PRERENDER === "1";
-    },
-    loadPagesRoutes: options.loadPrerenderPagesRoutes,
-    pathname,
-    rootParamNamesByPattern: options.rootParamNamesByPattern,
-    staticParamsMap: options.staticParamsMap,
-  });
-  if (prerenderEndpointResponse) return prerenderEndpointResponse;
+  if (
+    pathname === VINEXT_PRERENDER_STATIC_PARAMS_PATH ||
+    pathname === VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH
+  ) {
+    const { handleAppPrerenderEndpoint } = await import("./app-prerender-endpoints.js");
+    const prerenderEndpointResponse = await handleAppPrerenderEndpoint(request, {
+      isPrerenderEnabled() {
+        return process.env.VINEXT_PRERENDER === "1";
+      },
+      loadPagesRoutes: options.loadPrerenderPagesRoutes,
+      pathname,
+      rootParamNamesByPattern: options.rootParamNamesByPattern,
+      staticParamsMap: options.staticParamsMap,
+    });
+    if (prerenderEndpointResponse) return prerenderEndpointResponse;
+  }
 
   const trailingSlashRedirect = normalizeTrailingSlash(
     pathname,
@@ -646,20 +658,23 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return Response.redirect(new URL(imageRedirect, url.origin).href, 302);
   }
 
-  const metadataRouteResponse = await handleMetadataRouteRequest({
-    metadataRoutes: options.metadataRoutes,
-    cleanPathname,
-    makeThenableParams: options.makeThenableParams,
-  });
-  if (metadataRouteResponse) {
-    applyConfigHeadersToResponse(metadataRouteResponse.headers, {
-      basePathState,
-      configHeaders: options.configHeaders,
-      overwriteExisting: STATIC_METADATA_CONFIG_HEADER_OVERRIDES,
-      pathname: matchPathname(cleanPathname),
-      requestContext: preMiddlewareRequestContext,
+  if (options.metadataRoutes.length > 0) {
+    const { handleMetadataRouteRequest } = await import("./metadata-route-response.js");
+    const metadataRouteResponse = await handleMetadataRouteRequest({
+      metadataRoutes: options.metadataRoutes,
+      cleanPathname,
+      makeThenableParams: options.makeThenableParams,
     });
-    return applyMiddlewareContextToResponse(metadataRouteResponse, middlewareContext);
+    if (metadataRouteResponse) {
+      applyConfigHeadersToResponse(metadataRouteResponse.headers, {
+        basePathState,
+        configHeaders: options.configHeaders,
+        overwriteExisting: STATIC_METADATA_CONFIG_HEADER_OVERRIDES,
+        pathname: matchPathname(cleanPathname),
+        requestContext: preMiddlewareRequestContext,
+      });
+      return applyMiddlewareContextToResponse(metadataRouteResponse, middlewareContext);
+    }
   }
 
   const publicFileResponse = resolvePublicFileRoute({

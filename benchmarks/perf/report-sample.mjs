@@ -21,13 +21,10 @@ export async function reportPerformanceSample(value) {
     measuredAt: new Date().toISOString(),
   };
 
-  if (process.env.VINEXT_PERF_SKIP_SAMPLE === "true") {
-    console.log(JSON.stringify(sample));
-    return sample;
+  if (process.env.VINEXT_PERF_RECORD_SAMPLE !== "false") {
+    const samplesFile = requiredEnvironment("VINEXT_PERF_SAMPLES");
+    await appendFile(samplesFile, `${JSON.stringify(sample)}\n`);
   }
-
-  const samplesFile = requiredEnvironment("VINEXT_PERF_SAMPLES");
-  await appendFile(samplesFile, `${JSON.stringify(sample)}\n`);
   console.log(JSON.stringify(sample));
   return sample;
 }

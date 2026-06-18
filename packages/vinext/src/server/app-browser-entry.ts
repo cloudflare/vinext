@@ -172,6 +172,7 @@ import {
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
 import { APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI } from "./app-rsc-render-mode.js";
+import { blockDangerousStreamedRscRedirect } from "./app-browser-rsc-redirect.js";
 import {
   createOptimisticRouteTemplate,
   getOptimisticPrefetchSourceKey,
@@ -2074,6 +2075,10 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
         const navContentType = navResponse.headers.get("content-type") ?? "";
+        const streamedRedirectTarget = navResponse.headers.get(VINEXT_RSC_REDIRECT_HEADER);
+        if (blockDangerousStreamedRscRedirect(navResponse, streamedRedirectTarget)) {
+          return;
+        }
         const liveFetchDecision = navigationPlanner.classifyRscFetchResult({
           clientCompatibilityId: CLIENT_RSC_COMPATIBILITY_ID,
           compatibilityIdHeader: navResponse.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
@@ -2087,7 +2092,7 @@ function bootstrapHydration(rscStream: ReadableStream<Uint8Array>): void {
           responseOk: navResponse.ok,
           responseUrl: navResponseUrl ?? navResponse.url,
           source: "live",
-          streamedRedirectTarget: navResponse.headers.get(VINEXT_RSC_REDIRECT_HEADER),
+          streamedRedirectTarget,
         });
         if (liveFetchDecision.kind === "hardNavigate") {
           if (liveFetchDecision.discardBody) {

@@ -13,16 +13,16 @@ import { notFoundResponse } from "./http-error-responses.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type MetadataRouteFunction = (props: Record<string, unknown>) => unknown;
-type MakeThenableParams = (params: AppPageParams) => unknown;
+export type MetadataRouteMakeThenableParams = (params: AppPageParams) => unknown;
 
-type MetadataRuntimeRoute = MetadataFileRoute & {
+export type MetadataRuntimeRoute = MetadataFileRoute & {
   fileDataBase64?: string;
 };
 
 type MetadataRouteRequestOptions = {
   metadataRoutes: readonly MetadataRuntimeRoute[];
   cleanPathname: string;
-  makeThenableParams: MakeThenableParams;
+  makeThenableParams: MetadataRouteMakeThenableParams;
 };
 
 type MatchedMetadataRoute = {
@@ -263,7 +263,7 @@ function findGeneratedImageId(
 async function callDynamicMetadataRoute(
   route: MetadataRuntimeRoute,
   match: MatchedMetadataRoute,
-  makeThenableParams: MakeThenableParams,
+  makeThenableParams: MetadataRouteMakeThenableParams,
   functions: MetadataRouteFunctions,
 ): Promise<Response> {
   if (!functions.defaultExport) {

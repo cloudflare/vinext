@@ -99,7 +99,10 @@ describe("paired performance benchmarks", () => {
     const profilesPath = join(directory, "profiles");
     const profileDirectory = join(profilesPath, "vinext-production-build");
     mkdirSync(profileDirectory, { recursive: true });
-    writeFileSync(join(profileDirectory, "samply-profile.json.gz"), "");
+    writeFileSync(
+      join(profileDirectory, "samply-profile.json.gz"),
+      gzipSync(JSON.stringify({ threads: [] })),
+    );
     const sample = {
       schemaVersion: 1,
       benchmarkId: "vinext-production-build",
@@ -275,7 +278,7 @@ describe("paired performance benchmarks", () => {
     validatePerformancePayload(payload, "pull_request", {
       "repos/cloudflare/vinext/actions/runs/123": sourceRun("pull_request", headSha),
       "repos/cloudflare/vinext/pulls/42": pullRequest(headSha, baseSha),
-      [`repos/cloudflare/vinext/contents/benchmarks/perf/scenarios.json?ref=${headSha}`]:
+      [`repos/cloudflare/vinext/contents/benchmarks/perf/scenarios.json?ref=${baseSha}`]:
         githubFile(
           JSON.stringify({
             scenarios: [performanceScenario([{ id: "vinext", label: "vinext" }])],
@@ -319,6 +322,48 @@ describe("paired performance benchmarks", () => {
         ),
       [`repos/cloudflare/vinext/git/trees/${baseSha}?recursive=1`]: githubTree(nextjsInputs),
       [`repos/cloudflare/vinext/git/trees/${headSha}?recursive=1`]: githubTree(nextjsInputs),
+      [`repos/cloudflare/vinext/commits/${headSha}`]: commit(measuredAt),
+    });
+  });
+
+  it("validates skipped Next.js against the synthetic merge commit", () => {
+    const headSha = "a".repeat(40);
+    const baseSha = "b".repeat(40);
+    const mergeSha = "c".repeat(40);
+    const measuredAt = "2026-06-18T12:00:00.000Z";
+    const baseInputs = [
+      gitTreeEntry("benchmarks/nextjs/package.json", "1"),
+      gitTreeEntry("benchmarks/generate-app.mjs", "2"),
+      gitTreeEntry("benchmarks/perf/scenarios.json", "3"),
+    ];
+    const staleHeadInputs = baseInputs.map((entry) =>
+      entry.path === "benchmarks/perf/scenarios.json" ? { ...entry, sha: "stale" } : entry,
+    );
+    const payload = performancePayload({
+      headSha,
+      baseSha,
+      measuredAt,
+      skippedImplementations: ["nextjs"],
+      benchmarks: [performanceBenchmark("vinext", true)],
+    });
+
+    validatePerformancePayload(payload, "pull_request", {
+      "repos/cloudflare/vinext/actions/runs/123": sourceRun("pull_request", headSha),
+      "repos/cloudflare/vinext/pulls/42": pullRequest(headSha, baseSha, mergeSha),
+      [`repos/cloudflare/vinext/contents/benchmarks/perf/scenarios.json?ref=${baseSha}`]:
+        githubFile(
+          JSON.stringify({
+            scenarios: [
+              performanceScenario([
+                { id: "nextjs", label: "Next.js", compareBase: true },
+                { id: "vinext", label: "vinext", compareBase: true },
+              ]),
+            ],
+          }),
+        ),
+      [`repos/cloudflare/vinext/git/trees/${baseSha}?recursive=1`]: githubTree(baseInputs),
+      [`repos/cloudflare/vinext/git/trees/${mergeSha}?recursive=1`]: githubTree(baseInputs),
+      [`repos/cloudflare/vinext/git/trees/${headSha}?recursive=1`]: githubTree(staleHeadInputs),
       [`repos/cloudflare/vinext/commits/${headSha}`]: commit(measuredAt),
     });
   });
@@ -383,7 +428,7 @@ describe("paired performance benchmarks", () => {
     const responses = {
       "repos/cloudflare/vinext/actions/runs/123": sourceRun("pull_request", headSha),
       "repos/cloudflare/vinext/pulls/42": pullRequest(headSha, baseSha),
-      [`repos/cloudflare/vinext/contents/benchmarks/perf/scenarios.json?ref=${headSha}`]:
+      [`repos/cloudflare/vinext/contents/benchmarks/perf/scenarios.json?ref=${baseSha}`]:
         githubFile(
           JSON.stringify({
             scenarios: [
@@ -567,10 +612,11 @@ function sourceRun(event: string, headSha: string) {
   };
 }
 
-function pullRequest(headSha: string, baseSha: string) {
+function pullRequest(headSha: string, baseSha: string, mergeSha = "c".repeat(40)) {
   return {
     number: 42,
     state: "open",
+    merge_commit_sha: mergeSha,
     head: {
       sha: headSha,
       ref: "benchmark-branch",

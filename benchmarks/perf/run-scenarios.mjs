@@ -16,7 +16,7 @@ const resultsRoot = process.env.VINEXT_PERF_RESULTS_ROOT ?? join(targetRoot, "be
 const direct = process.argv.includes("--direct");
 const setupOnly = process.argv.includes("--setup-only");
 const roundsArgument = process.argv.find((argument) => argument.startsWith("--rounds="));
-const rounds = Number(roundsArgument?.slice("--rounds=".length) ?? 0);
+const requestedRounds = roundsArgument ? Number(roundsArgument.slice("--rounds=".length)) : null;
 const implementationArgument = process.argv.find((argument) =>
   argument.startsWith("--implementation="),
 );
@@ -25,6 +25,10 @@ const pairedRun = process.env.VINEXT_PERF_RUN_KIND === "pull_request" && Boolean
 const skippedImplementations = new Set(
   (process.env.VINEXT_PERF_SKIP_IMPLEMENTATIONS ?? "").split(",").filter(Boolean),
 );
+
+if (requestedRounds !== null && (!Number.isInteger(requestedRounds) || requestedRounds < 1)) {
+  throw new Error(`--rounds must be a positive integer, received ${roundsArgument}`);
+}
 
 function trustedCommand(command, root = targetRoot) {
   if (command[0] === "vp") return [join(root, "node_modules/.bin/vp"), ...command.slice(1)];
@@ -112,19 +116,17 @@ function benchmarkEnvironment(scenario, implementation, revision, root) {
     VINEXT_PERF_LOWER_IS_BETTER: String(scenario.lowerIsBetter),
     VINEXT_PERF_IMPLEMENTATION_ID: implementation.id,
     VINEXT_PERF_IMPLEMENTATION_LABEL: implementation.label,
-    VINEXT_PERF_PROFILE: String(implementation.profile === true),
+    VINEXT_PERF_PROFILE: "false",
     VINEXT_PERF_REVISION: revision,
   };
 }
 
-async function runDirectSample(scenario, implementation, revision, root) {
+async function runTimingSample(scenario, implementation, revision, root) {
   const command = trustedCommand(implementation.command, root);
-  await run(
-    command[0],
-    command.slice(1),
-    benchmarkEnvironment(scenario, implementation, revision, root),
-    root,
-  );
+  const timingCommand = targetCommand(command);
+  const timingEnv = benchmarkEnvironment(scenario, implementation, revision, root);
+  if (targetUser) delete timingEnv.VINEXT_PERF_TARGET_USER;
+  await run(timingCommand[0], timingCommand.slice(1), timingEnv, root);
 }
 
 async function runProfile(scenario, implementation) {
@@ -135,9 +137,11 @@ async function runProfile(scenario, implementation) {
   const profiler = profilerCommand();
   const profilerEnv = {
     ...benchmarkEnvironment(scenario, implementation, "head", targetRoot),
-    VINEXT_PERF_SKIP_SAMPLE: "true",
+    VINEXT_PERF_PROFILE: "true",
+    VINEXT_PERF_RECORD_SAMPLE: "false",
   };
   if (targetUser) delete profilerEnv.VINEXT_PERF_TARGET_USER;
+  console.log(`Profiling one diagnostic round for ${id}`);
   await run(
     profiler[0],
     [
@@ -170,21 +174,19 @@ async function runProfile(scenario, implementation) {
 for (const scenario of performanceScenarios) {
   for (const implementation of scenario.implementations) {
     if (skippedImplementations.has(implementation.id)) continue;
-    const id = benchmarkId(scenario, implementation);
     const profile = implementation.profile === true;
-    const env = benchmarkEnvironment(scenario, implementation, "head", targetRoot);
 
     console.log(`\nRunning ${scenario.suite} / ${implementation.label} / ${scenario.label}`);
     if (direct) {
-      const directRounds = rounds > 0 ? rounds : 1;
+      const directRounds = requestedRounds ?? 5;
       for (let round = 0; round < directRounds; round++) {
-        await runDirectSample(scenario, implementation, "head", targetRoot);
+        await runTimingSample(scenario, implementation, "head", targetRoot);
       }
       continue;
     }
 
     if (pairedRun && implementation.compareBase === true) {
-      const pairedRounds = rounds > 0 ? rounds : DEFAULT_PAIRED_ROUNDS;
+      const pairedRounds = requestedRounds ?? DEFAULT_PAIRED_ROUNDS;
       for (let round = 0; round < pairedRounds; round++) {
         const roots = { base: baseRoot, head: targetRoot };
         const order = pairedRevisionOrder(round).map((revision) => [revision, roots[revision]]);
@@ -192,49 +194,17 @@ for (const scenario of performanceScenarios) {
           `  Paired round ${round + 1}/${pairedRounds}: ${order.map(([revision]) => revision).join(" → ")}`,
         );
         for (const [revision, root] of order) {
-          await runDirectSample(scenario, implementation, revision, root);
+          await runTimingSample(scenario, implementation, revision, root);
         }
       }
       if (profile) await runProfile(scenario, implementation);
       continue;
     }
 
-    const profileArguments = profile
-      ? [
-          "--walltime-profiler",
-          "samply",
-          "--profile-folder",
-          join(resultsRoot, `perf-profiles/${id}`),
-        ]
-      : [];
-    if (profile) await mkdir(join(resultsRoot, `perf-profiles/${id}`), { recursive: true });
-    const command = trustedCommand(implementation.command, targetRoot);
-    const profiler = profilerCommand();
-    const profilerEnv = { ...env };
-    if (targetUser) delete profilerEnv.VINEXT_PERF_TARGET_USER;
-    await run(
-      profiler[0],
-      [
-        ...profiler.slice(1),
-        "exec",
-        "--mode",
-        "walltime",
-        ...profileArguments,
-        "--name",
-        id,
-        "--warmup-time",
-        "0s",
-        "--min-rounds",
-        String(rounds > 0 ? rounds : 5),
-        "--max-rounds",
-        String(rounds > 0 ? rounds : 10),
-        "--max-time",
-        "3m",
-        "--",
-        ...command,
-      ],
-      profilerEnv,
-      targetRoot,
-    );
+    const timingRounds = requestedRounds ?? 5;
+    for (let round = 0; round < timingRounds; round++) {
+      await runTimingSample(scenario, implementation, "head", targetRoot);
+    }
+    if (profile) await runProfile(scenario, implementation);
   }
 }
