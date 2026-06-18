@@ -811,6 +811,33 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });
 
+  it("generateRscEntry only includes the App middleware runtime when middleware exists", () => {
+    const withoutMiddleware = generateRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      null,
+      [],
+      null,
+      "",
+      false,
+    );
+    const withMiddleware = generateRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      "/tmp/test/middleware.ts",
+      [],
+      null,
+      "",
+      false,
+    );
+
+    expect(withoutMiddleware).not.toContain("app-middleware.js");
+    expect(withoutMiddleware).not.toContain("runMiddleware(");
+    expect(withMiddleware).toContain("app-middleware.js");
+    expect(withMiddleware).toContain("runMiddleware({ cleanPathname");
+    expect(withMiddleware).toContain("return __applyAppMiddleware({");
+  });
+
   it("generateRscEntry defers route-handler and server-action runtimes", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 

@@ -15,6 +15,8 @@ import {
   createClientReusePayloadHash,
 } from "../packages/vinext/src/server/client-reuse-manifest.js";
 import { VINEXT_CLIENT_REUSE_MANIFEST_HEADER } from "../packages/vinext/src/server/headers.js";
+import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
+import type { MiddlewareModule } from "../packages/vinext/src/server/middleware-runtime.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 
 type TestRoute = {
@@ -27,6 +29,11 @@ type TestRoute = {
 };
 
 type HandlerOptions = Parameters<typeof createAppRscHandler<TestRoute>>[0];
+type TestHandlerOptions = HandlerOptions & {
+  middlewareFilePath?: string | null;
+  isMiddlewareProxy?: boolean;
+  middlewareModule?: MiddlewareModule | null;
+};
 type DispatchMatchedRouteHandler = HandlerOptions["dispatchMatchedRouteHandler"];
 
 function createPageRoute(overrides: Partial<TestRoute> = {}): TestRoute {
@@ -39,7 +46,7 @@ function createPageRoute(overrides: Partial<TestRoute> = {}): TestRoute {
   };
 }
 
-function createHandler(overrides: Partial<HandlerOptions> = {}) {
+function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
   const route = createPageRoute();
 
   return createAppRscHandler<TestRoute>({
@@ -70,7 +77,6 @@ function createHandler(overrides: Partial<HandlerOptions> = {}) {
     i18nConfig: overrides.i18nConfig ?? null,
     imageConfig: overrides.imageConfig,
     isDev: overrides.isDev ?? true,
-    isMiddlewareProxy: overrides.isMiddlewareProxy ?? false,
     makeThenableParams,
     matchRoute:
       overrides.matchRoute ??
@@ -82,8 +88,20 @@ function createHandler(overrides: Partial<HandlerOptions> = {}) {
             }
           : null),
     metadataRoutes: overrides.metadataRoutes ?? [],
-    middlewareFilePath: overrides.middlewareFilePath ?? null,
-    middlewareModule: overrides.middlewareModule ?? null,
+    runMiddleware:
+      overrides.runMiddleware ??
+      (overrides.middlewareModule
+        ? (options) =>
+            applyAppMiddleware({
+              basePath: "/docs",
+              ...options,
+              filePath: overrides.middlewareFilePath ?? undefined,
+              i18nConfig: overrides.i18nConfig ?? null,
+              isProxy: overrides.isMiddlewareProxy ?? false,
+              module: overrides.middlewareModule!,
+              trailingSlash: overrides.trailingSlash ?? false,
+            })
+        : undefined),
     publicFiles: overrides.publicFiles ?? new Set<string>(),
     registerCacheAdapters: () => {},
     renderNotFound: overrides.renderNotFound ?? (async () => null),

@@ -42,6 +42,7 @@ const appRouteHandlerResponsePath = resolveEntryPath(
   "../server/app-route-handler-response.js",
   import.meta.url,
 );
+const appMiddlewarePath = resolveEntryPath("../server/app-middleware.js", import.meta.url);
 const appServerActionExecutionPath = resolveEntryPath(
   "../server/app-server-action-execution.js",
   import.meta.url,
@@ -267,7 +268,12 @@ import { getNavigationContext as _getNavigationContext } from "next/navigation";
 import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";
 import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
-${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(normalizePathSeparators(middlewarePath))};` : ""}
+${
+  middlewarePath
+    ? `import * as middlewareModule from ${JSON.stringify(normalizePathSeparators(middlewarePath))};
+import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};`
+    : ""
+}
 ${
   instrumentationPath
     ? `import * as _instrumentation from ${JSON.stringify(normalizePathSeparators(instrumentationPath))};
@@ -1038,13 +1044,28 @@ export default createAppRscHandler({
     });
   },
   i18nConfig: __i18nConfig,
-  isMiddlewareProxy: ${JSON.stringify(middlewarePath ? isProxyFile(middlewarePath) : false)},
   ${hasPagesDir ? `loadPrerenderPagesRoutes: __loadPrerenderPagesRoutes,` : ""}
   makeThenableParams,
   matchRoute,
   metadataRoutes,
-  middlewareFilePath: ${middlewarePath ? JSON.stringify(normalizePathSeparators(middlewarePath)) : "null"},
-  middlewareModule: ${middlewarePath ? "middlewareModule" : "null"},
+  ${
+    middlewarePath
+      ? `runMiddleware({ cleanPathname, context, isDataRequest, request }) {
+    return __applyAppMiddleware({
+      basePath: __basePath,
+      cleanPathname,
+      context,
+      filePath: ${JSON.stringify(middlewarePath ? normalizePathSeparators(middlewarePath) : "")},
+      i18nConfig: __i18nConfig,
+      isDataRequest,
+      isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
+      module: middlewareModule,
+      request,
+      trailingSlash: __trailingSlash,
+    });
+  },`
+      : ""
+  }
   publicFiles: __publicFiles,
   renderNotFound({ isRscRequest, matchedParams, middlewareContext, request, route, scriptNonce }) {
     const __isEdge = route ? __isEdgeRuntime(__resolveAppPageSegmentConfig({ layouts: route.layouts, page: route.page }).runtime) : false;
