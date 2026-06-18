@@ -862,8 +862,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // `__VINEXT_CLASS` stub with a real dispatch table.
   let rscClassificationManifest: RouteClassificationManifest | null = null;
 
-  // Resolve shim paths - works both from source (.ts) and built (.js)
-  const shimsDir = path.resolve(__dirname, "shims");
+  // Resolve shim paths - works both from source (.ts) and built (.js).
+  // Normalize to forward slashes so every downstream `path.posix.join` keeps
+  // the shim ids POSIX on Windows (matching `_shimsDir` and the canonicalized
+  // module-graph ids); raw `path.resolve` yields backslashes there.
+  const shimsDir = normalizePathSeparators(path.resolve(__dirname, "shims"));
 
   // Shared with the Layer 2 renderChunk hook below. Rolldown stores module
   // IDs as canonicalized filesystem paths (fs.realpathSync.native) with forward
@@ -1573,96 +1576,100 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // vinext's shim instead of real Next.
         nextShimMap = Object.fromEntries(
           Object.entries({
-            "next/link": path.join(shimsDir, "link"),
-            "next/head": path.join(shimsDir, "head"),
-            "next/router": path.join(shimsDir, "router"),
-            "next/compat/router": path.join(shimsDir, "compat-router"),
-            "next/image": path.join(shimsDir, "image"),
-            "next/legacy/image": path.join(shimsDir, "legacy-image"),
-            "next/dynamic": path.join(shimsDir, "dynamic"),
-            "next/app": path.join(shimsDir, "app"),
-            "next/document": path.join(shimsDir, "document"),
-            "next/config": path.join(shimsDir, "config"),
-            "next/script": path.join(shimsDir, "script"),
-            "next/server": path.join(shimsDir, "server"),
+            "next/link": path.posix.join(shimsDir, "link"),
+            "next/head": path.posix.join(shimsDir, "head"),
+            "next/router": path.posix.join(shimsDir, "router"),
+            "next/compat/router": path.posix.join(shimsDir, "compat-router"),
+            "next/image": path.posix.join(shimsDir, "image"),
+            "next/legacy/image": path.posix.join(shimsDir, "legacy-image"),
+            "next/dynamic": path.posix.join(shimsDir, "dynamic"),
+            "next/app": path.posix.join(shimsDir, "app"),
+            "next/document": path.posix.join(shimsDir, "document"),
+            "next/config": path.posix.join(shimsDir, "config"),
+            "next/script": path.posix.join(shimsDir, "script"),
+            "next/server": path.posix.join(shimsDir, "server"),
             // "next/navigation" is NOT here — it's in _reactServerShims and
             // handled by the resolveId hook for per-environment control (#834).
-            "next/headers": path.join(shimsDir, "headers"),
-            "next/font/google": path.join(shimsDir, "font-google"),
-            "next/font/local": path.join(shimsDir, "font-local"),
-            "next/cache": path.join(shimsDir, "cache"),
-            "next/form": path.join(shimsDir, "form"),
-            "next/og": path.join(shimsDir, "og"),
-            "next/web-vitals": path.join(shimsDir, "web-vitals"),
-            "next/amp": path.join(shimsDir, "amp"),
-            "next/offline": path.join(shimsDir, "offline"),
+            "next/headers": path.posix.join(shimsDir, "headers"),
+            "next/font/google": path.posix.join(shimsDir, "font-google"),
+            "next/font/local": path.posix.join(shimsDir, "font-local"),
+            "next/cache": path.posix.join(shimsDir, "cache"),
+            "next/form": path.posix.join(shimsDir, "form"),
+            "next/og": path.posix.join(shimsDir, "og"),
+            "next/web-vitals": path.posix.join(shimsDir, "web-vitals"),
+            "next/amp": path.posix.join(shimsDir, "amp"),
+            "next/offline": path.posix.join(shimsDir, "offline"),
             // "next/error" is NOT here — it's in _reactServerShims so Server
             // Components receive Next.js's client-only throwing stub.
-            "next/constants": path.join(shimsDir, "constants"),
+            "next/constants": path.posix.join(shimsDir, "constants"),
             // Internal next/dist/* paths used by popular libraries
             // (next-intl, @clerk/nextjs, @sentry/nextjs, next-nprogress-bar, etc.)
-            "next/dist/shared/lib/app-router-context.shared-runtime": path.join(
+            "next/dist/shared/lib/app-router-context.shared-runtime": path.posix.join(
               shimsDir,
               "internal",
               "app-router-context",
             ),
-            "next/dist/shared/lib/app-router-context": path.join(
+            "next/dist/shared/lib/app-router-context": path.posix.join(
               shimsDir,
               "internal",
               "app-router-context",
             ),
-            "next/dist/shared/lib/router-context.shared-runtime": path.join(
+            "next/dist/shared/lib/router-context.shared-runtime": path.posix.join(
               shimsDir,
               "internal",
               "router-context",
             ),
-            "next/dist/shared/lib/utils": path.join(shimsDir, "internal", "utils"),
-            "next/dist/server/api-utils": path.join(shimsDir, "internal", "api-utils"),
-            "next/dist/server/web/spec-extension/cookies": path.join(
+            "next/dist/shared/lib/utils": path.posix.join(shimsDir, "internal", "utils"),
+            "next/dist/server/api-utils": path.posix.join(shimsDir, "internal", "api-utils"),
+            "next/dist/server/web/spec-extension/cookies": path.posix.join(
               shimsDir,
               "internal",
               "cookies",
             ),
-            "next/dist/compiled/@edge-runtime/cookies": path.join(shimsDir, "internal", "cookies"),
-            "next/dist/server/app-render/work-unit-async-storage.external": path.join(
+            "next/dist/compiled/@edge-runtime/cookies": path.posix.join(
+              shimsDir,
+              "internal",
+              "cookies",
+            ),
+            "next/dist/server/app-render/work-unit-async-storage.external": path.posix.join(
               shimsDir,
               "internal",
               "work-unit-async-storage",
             ),
-            "next/dist/client/components/work-unit-async-storage.external": path.join(
+            "next/dist/client/components/work-unit-async-storage.external": path.posix.join(
               shimsDir,
               "internal",
               "work-unit-async-storage",
             ),
-            "next/dist/client/components/request-async-storage.external": path.join(
+            "next/dist/client/components/request-async-storage.external": path.posix.join(
               shimsDir,
               "internal",
               "work-unit-async-storage",
             ),
-            "next/dist/client/components/request-async-storage": path.join(
+            "next/dist/client/components/request-async-storage": path.posix.join(
               shimsDir,
               "internal",
               "work-unit-async-storage",
             ),
-            "next/dist/server/request/root-params": path.join(shimsDir, "root-params"),
+            "next/dist/server/request/root-params": path.posix.join(shimsDir, "root-params"),
             // Re-export public modules for internal path imports
             // "next/dist/client/components/navigation" in _reactServerShims (#834).
-            "next/dist/server/config-shared": path.join(shimsDir, "internal", "utils"),
+            "next/dist/server/config-shared": path.posix.join(shimsDir, "internal", "utils"),
             // server-only / client-only marker packages
-            "server-only": path.join(shimsDir, "server-only"),
-            "client-only": path.join(shimsDir, "client-only"),
-            "vinext/error-boundary": path.join(shimsDir, "error-boundary"),
-            "vinext/layout-segment-context": path.join(shimsDir, "layout-segment-context"),
-            "vinext/metadata": path.join(shimsDir, "metadata"),
-            "vinext/fetch-cache": path.join(shimsDir, "fetch-cache"),
-            "vinext/cache-runtime": path.join(shimsDir, "cache-runtime"),
-            "vinext/navigation-state": path.join(shimsDir, "navigation-state"),
-            "vinext/unified-request-context": path.join(shimsDir, "unified-request-context"),
-            "vinext/pages-router-runtime": path.join(shimsDir, "pages-router-runtime"),
-            "vinext/router-state": path.join(shimsDir, "router-state"),
-            "vinext/head-state": path.join(shimsDir, "head-state"),
-            "vinext/i18n-state": path.join(shimsDir, "i18n-state"),
-            "vinext/i18n-context": path.join(shimsDir, "i18n-context"),
+            "server-only": path.posix.join(shimsDir, "server-only"),
+            "client-only": path.posix.join(shimsDir, "client-only"),
+            "vinext/error-boundary": path.posix.join(shimsDir, "error-boundary"),
+            "vinext/layout-segment-context": path.posix.join(shimsDir, "layout-segment-context"),
+            "vinext/metadata": path.posix.join(shimsDir, "metadata"),
+            "vinext/fetch-cache": path.posix.join(shimsDir, "fetch-cache"),
+            "vinext/cache-runtime": path.posix.join(shimsDir, "cache-runtime"),
+            "vinext/navigation-state": path.posix.join(shimsDir, "navigation-state"),
+            "vinext/unified-request-context": path.posix.join(shimsDir, "unified-request-context"),
+            "vinext/pages-router-runtime": path.posix.join(shimsDir, "pages-router-runtime"),
+            "vinext/router-state": path.posix.join(shimsDir, "router-state"),
+            "vinext/head-state": path.posix.join(shimsDir, "head-state"),
+            "vinext/i18n-state": path.posix.join(shimsDir, "i18n-state"),
+            "vinext/i18n-context": path.posix.join(shimsDir, "i18n-context"),
             "vinext/cache": path.resolve(__dirname, "cache"),
             "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
             "vinext/instrumentation-client": path.resolve(
