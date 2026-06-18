@@ -188,19 +188,35 @@ function FlameGraphDialog({ measurement }: { measurement: Comparison["measuremen
 }
 
 function FlameGraph({ measurement }: { measurement: Comparison["measurements"][number] }) {
-  const [focusPath, setFocusPath] = useState<FlameGraphNode[]>(
-    measurement.flameGraph ? [measurement.flameGraph] : [],
-  );
+  const fullGraph = measurement.flameGraph;
+  const vinextGraph = fullGraph?.vinextFocus;
+  const [view, setView] = useState<"vinext" | "full">(vinextGraph ? "vinext" : "full");
+  const activeGraph = view === "vinext" && vinextGraph ? vinextGraph : fullGraph;
+  const [focusPath, setFocusPath] = useState<FlameGraphNode[]>(activeGraph ? [activeGraph] : []);
+  const [frameQuery, setFrameQuery] = useState("");
   const [hovered, setHovered] = useState<{ frame: PositionedFrame; x: number; y: number } | null>(
     null,
   );
   const root = focusPath.at(-1);
-  if (!measurement.flameGraph || !root) return null;
+  if (!fullGraph || !activeGraph || !root) return null;
   const frames = layoutFrames(root);
-  const hotFrames = hottestFrames(root).slice(0, 8);
+  const hotFrames = hottestFrames(root).slice(0, 12);
+  const allVinextFrames = vinextFrameSummary(vinextGraph ?? fullGraph);
+  const filteredVinextFrames = allVinextFrames.filter((frame) => {
+    const query = frameQuery.trim().toLowerCase();
+    return !query || `${frame.name} ${frame.source ?? ""}`.toLowerCase().includes(query);
+  });
   const maxDepth = Math.max(...frames.map((frame) => frame.depth));
   const rowHeight = 42;
   const height = (maxDepth + 1) * rowHeight;
+
+  const switchView = (nextView: "vinext" | "full") => {
+    const nextRoot = nextView === "vinext" ? vinextGraph : fullGraph;
+    if (!nextRoot) return;
+    setView(nextView);
+    setFocusPath([nextRoot]);
+    setHovered(null);
+  };
 
   return (
     <div className="relative" data-flame-root>
@@ -216,32 +232,54 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
             <span className="text-slate-500">Focus</span>
             <strong className="max-w-64 truncate font-semibold text-white">{root.name}</strong>
             <span className="text-slate-500">
-              {((root.value / measurement.flameGraph.value) * 100).toFixed(1)}%
+              {((root.value / activeGraph.value) * 100).toFixed(1)}%
             </span>
           </div>
         </div>
-        {focusPath.length > 1 && (
-          <button
-            type="button"
-            onClick={() => setFocusPath([measurement.flameGraph!])}
-            className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-medium text-slate-200 transition hover:bg-slate-700 hover:text-white"
-          >
-            Reset zoom
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {vinextGraph && (
+            <div className="flex rounded-lg border border-slate-700 bg-slate-900 p-1 text-xs font-medium">
+              <button
+                type="button"
+                onClick={() => switchView("vinext")}
+                className={`rounded-md px-3 py-1.5 transition ${view === "vinext" ? "bg-orange-500 text-white" : "text-slate-400 hover:text-white"}`}
+              >
+                Vinext only
+              </button>
+              <button
+                type="button"
+                onClick={() => switchView("full")}
+                className={`rounded-md px-3 py-1.5 transition ${view === "full" ? "bg-orange-500 text-white" : "text-slate-400 hover:text-white"}`}
+              >
+                Full stack
+              </button>
+            </div>
+          )}
+          {focusPath.length > 1 && (
+            <button
+              type="button"
+              onClick={() => setFocusPath([activeGraph])}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-medium text-slate-200 transition hover:bg-slate-700 hover:text-white"
+            >
+              Reset zoom
+            </button>
+          )}
+        </div>
       </div>
       <div className="mb-4 rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-xs leading-5 text-slate-300">
-        Width is inclusive sampled thread time across the profiled subprocess tree and benchmark
-        rounds, not elapsed wall time. Frames above a block are callees. Click a frame to zoom; use
-        self time to find where samples actually terminate.
+        {view === "vinext"
+          ? "Vinext-only view retains every sampled vinext frame and collapses runtime and dependency frames between vinext calls. Switch to Full stack for Node, Vite, Rolldown, and subprocess context."
+          : "Width is inclusive sampled thread time across the profiled subprocess tree and benchmark rounds, not elapsed wall time. Frames above a block are callees. Click a frame to zoom; use self time to find where samples terminate."}
       </div>
-      <div className="mb-4 flex flex-wrap gap-3 text-xs text-slate-300">
-        <TraceLegend color="#f97316" label="vinext" />
-        <TraceLegend color="#8b5cf6" label="Vite" />
-        <TraceLegend color="#ec4899" label="Rolldown" />
-        <TraceLegend color="#22c55e" label="Node.js" />
-        <TraceLegend color="#60a5fa" label="Other" />
-      </div>
+      {view === "full" && (
+        <div className="mb-4 flex flex-wrap gap-3 text-xs text-slate-300">
+          <TraceLegend color="#f97316" label="vinext" />
+          <TraceLegend color="#8b5cf6" label="Vite" />
+          <TraceLegend color="#ec4899" label="Rolldown" />
+          <TraceLegend color="#22c55e" label="Node.js" />
+          <TraceLegend color="#60a5fa" label="Other" />
+        </div>
+      )}
       {focusPath.length > 1 && (
         <div className="mb-3 flex flex-wrap items-center gap-1 text-xs text-slate-400">
           {focusPath.map((node, index) => (
@@ -255,7 +293,7 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
               className="max-w-64 truncate rounded px-1.5 py-1 hover:bg-slate-800 hover:text-white"
             >
               {index > 0 && <span className="mr-1 text-slate-600">/</span>}
-              {displayFrameName(node.name)}
+              {node.name}
             </button>
           ))}
         </div>
@@ -343,18 +381,13 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
               {hovered.frame.node.source}
             </div>
           )}
-          {hovered.frame.node.category && hovered.frame.node.category !== "process" && (
-            <div className="mt-1 uppercase tracking-wide text-slate-500">
-              {hovered.frame.node.category}
-            </div>
-          )}
           <div className="mt-1 text-slate-300">
             Inclusive: {formatMs(hovered.frame.node.value)} ·{" "}
-            {((hovered.frame.node.value / measurement.flameGraph.value) * 100).toFixed(1)}%
+            {((hovered.frame.node.value / activeGraph.value) * 100).toFixed(1)}%
           </div>
           <div className="text-slate-300">
             Self: {formatMs(selfValue(hovered.frame.node))} ·{" "}
-            {((selfValue(hovered.frame.node) / measurement.flameGraph.value) * 100).toFixed(1)}%
+            {((selfValue(hovered.frame.node) / activeGraph.value) * 100).toFixed(1)}%
           </div>
         </div>
       )}
@@ -366,13 +399,13 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           {hotFrames.map(({ node, path, self }) => (
             <button
-              key={path.map((item) => item.name).join(" > ")}
+              key={path.map((item) => `${item.name}:${item.source ?? ""}`).join(" > ")}
               type="button"
               onClick={() => setFocusPath(path)}
               className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-left transition hover:border-slate-700 hover:bg-slate-800"
             >
               <span className="min-w-0 truncate text-xs font-medium text-slate-200">
-                {displayFrameName(node.name)}
+                {node.name}
                 {node.source && (
                   <span className="ml-1 text-slate-500">· {shortSource(node.source)}</span>
                 )}
@@ -384,6 +417,55 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
           ))}
         </div>
       </div>
+      {vinextGraph && (
+        <div className="mt-5">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-white">
+                All sampled vinext functions ({filteredVinextFrames.length})
+              </h3>
+              <p className="mt-1 text-xs text-slate-400">
+                Lossless inventory from the vinext-only call tree, sorted by inclusive samples.
+              </p>
+            </div>
+            <input
+              type="search"
+              value={frameQuery}
+              onChange={(event) => setFrameQuery(event.target.value)}
+              placeholder="Filter function or source"
+              className="w-64 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white outline-none placeholder:text-slate-500 focus:border-orange-400"
+            />
+          </div>
+          <div className="mt-3 max-h-80 overflow-auto rounded-xl border border-slate-800">
+            <table className="w-full text-left text-xs">
+              <thead className="sticky top-0 bg-slate-900 text-slate-400">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Function</th>
+                  <th className="px-3 py-2 font-medium">Source</th>
+                  <th className="px-3 py-2 text-right font-medium">Inclusive</th>
+                  <th className="px-3 py-2 text-right font-medium">Self</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800">
+                {filteredVinextFrames.map((frame) => (
+                  <tr key={`${frame.name}:${frame.source}`} className="bg-slate-950/40">
+                    <td className="px-3 py-2 font-medium text-orange-200">{frame.name}</td>
+                    <td className="px-3 py-2 font-mono text-[11px] text-slate-400">
+                      {frame.source ?? "—"}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-slate-200">
+                      {formatMs(frame.inclusive)}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-slate-200">
+                      {formatMs(frame.self)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -405,6 +487,32 @@ function hottestFrames(root: FlameGraphNode) {
   };
   visit(root, []);
   return frames.toSorted((left, right) => right.self - left.self);
+}
+
+function vinextFrameSummary(root: FlameGraphNode) {
+  const frames = new Map<
+    string,
+    { name: string; source?: string; inclusive: number; self: number }
+  >();
+  const visit = (node: FlameGraphNode) => {
+    if (node.category === "vinext" && node.source) {
+      const key = `${node.name}\0${node.source}`;
+      const frame = frames.get(key) ?? {
+        name: node.name,
+        source: node.source,
+        inclusive: 0,
+        self: 0,
+      };
+      frame.inclusive += node.value;
+      frame.self += selfValue(node);
+      frames.set(key, frame);
+    }
+    for (const child of node.children ?? []) visit(child);
+  };
+  visit(root);
+  return Array.from(frames.values()).toSorted(
+    (left, right) => right.inclusive - left.inclusive || right.self - left.self,
+  );
 }
 
 function displayFrameName(name: string) {
