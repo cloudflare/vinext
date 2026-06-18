@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Dialog } from "@cloudflare/kumo/components/dialog";
 import { Clock, Flame, MagnifyingGlassPlus, X } from "@phosphor-icons/react";
@@ -138,7 +138,7 @@ function layoutFrames(root: FlameGraphNode) {
     let offset = x;
     for (const child of node.children ?? []) {
       const childWidth = width * (child.value / node.value);
-      if (childWidth >= 1) visit(child, offset, childWidth, depth + 1);
+      visit(child, offset, childWidth, depth + 1);
       offset += childWidth;
     }
   };
@@ -248,18 +248,25 @@ function FlameGraph({
   const [hovered, setHovered] = useState<{ frame: PositionedFrame; x: number; y: number } | null>(
     null,
   );
+  const graphViewportRef = useRef<HTMLDivElement>(null);
   const root = focusPath.at(-1);
-  if (!fullGraph || !activeGraph || !root) return null;
-  const frames = layoutFrames(root);
-  const hotFrames = hottestFrames(root).slice(0, 12);
+  const frames = root ? layoutFrames(root) : [];
+  const hotFrames = root ? hottestFrames(root).slice(0, 12) : [];
   const allVinextFrames = vinextFrameSummary(fullGraph);
   const filteredVinextFrames = allVinextFrames.filter((frame) => {
     const query = frameQuery.trim().toLowerCase();
     return !query || `${frame.name} ${frame.source ?? ""}`.toLowerCase().includes(query);
   });
-  const maxDepth = Math.max(...frames.map((frame) => frame.depth));
+  const maxDepth = frames.length > 0 ? Math.max(...frames.map((frame) => frame.depth)) : 0;
   const rowHeight = 24;
   const height = (maxDepth + 1) * rowHeight;
+
+  useEffect(() => {
+    const viewport = graphViewportRef.current;
+    if (viewport) viewport.scrollTop = viewport.scrollHeight;
+  }, [activeGraph, root, height]);
+
+  if (!fullGraph || !activeGraph || !root) return null;
 
   const toggleCategory = (category: TraceCategory) => {
     const nextFilters = nextCategoryFilters(categoryFilters, category);
@@ -334,7 +341,10 @@ function FlameGraph({
           ))}
         </div>
       )}
-      <div className="overflow-x-auto rounded-xl border border-slate-800 bg-[#050816] p-3 shadow-inner shadow-black/40">
+      <div
+        ref={graphViewportRef}
+        className="max-h-[55vh] overflow-auto rounded-xl border border-slate-800 bg-[#050816] p-3 shadow-inner shadow-black/40"
+      >
         <svg
           viewBox={`0 0 1000 ${height}`}
           width="1000"
@@ -346,6 +356,7 @@ function FlameGraph({
           {frames.map((frame) => {
             const y = (maxDepth - frame.depth) * rowHeight;
             const percent = (frame.node.value / root.value) * 100;
+            const horizontalInset = Math.min(1, frame.width * 0.08);
             return (
               <g
                 key={`${frame.node.name}-${frame.depth}-${frame.x}-${frame.width}`}
@@ -382,14 +393,14 @@ function FlameGraph({
                 <title>{`${frame.node.name}: ${percent.toFixed(1)}%`}</title>
                 <rect
                   className="group-focus:stroke-orange-400"
-                  x={frame.x + 1}
+                  x={frame.x + horizontalInset}
                   y={y + 1}
-                  width={Math.max(frame.width - 2, 0)}
+                  width={Math.max(frame.width - horizontalInset * 2, 0.01)}
                   height={rowHeight - 2}
                   rx="4"
                   fill={frameColor(frame)}
                   stroke="#020617"
-                  strokeWidth="1.25"
+                  strokeWidth={Math.min(1.25, frame.width * 0.2)}
                 />
                 {frame.width > 70 && (
                   <text
