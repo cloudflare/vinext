@@ -5,7 +5,7 @@
  * showing what will work, what needs changes, and an overall score.
  */
 
-import { detectPackageManager } from "./utils/project.js";
+import { detectPackageManager, findDir } from "./utils/project.js";
 import { normalizePathSeparators } from "./utils/path.js";
 import { parseAst, type ESTree } from "vite";
 import fs from "node:fs";
@@ -932,16 +932,8 @@ export function checkConventions(root: string): CheckItem[] {
   const items: CheckItem[] = [];
 
   // Check for pages/ and app/ at root level, then fall back to src/
-  const pagesDir = fs.existsSync(path.join(root, "pages"))
-    ? path.join(root, "pages")
-    : fs.existsSync(path.join(root, "src", "pages"))
-      ? path.join(root, "src", "pages")
-      : null;
-  const appDirPath = fs.existsSync(path.join(root, "app"))
-    ? path.join(root, "app")
-    : fs.existsSync(path.join(root, "src", "app"))
-      ? path.join(root, "src", "app")
-      : null;
+  const pagesDir = findDir(root, "pages", path.join("src", "pages"));
+  const appDirPath = findDir(root, "app", path.join("src", "app"));
 
   const hasPages = pagesDir !== null;
   const hasApp = appDirPath !== null;

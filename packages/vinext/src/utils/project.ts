@@ -269,8 +269,25 @@ export function hasViteConfig(root: string): boolean {
 }
 
 /**
+ * Return the first candidate directory (resolved against `root`) that exists,
+ * or null. Used to locate conventional `app`/`pages` directories that may live
+ * at the root or under `src/`.
+ */
+export function findDir(root: string, ...candidates: string[]): string | null {
+  for (const candidate of candidates) {
+    const full = path.join(root, candidate);
+    try {
+      if (fs.statSync(full).isDirectory()) return full;
+    } catch {
+      // not found or not a directory — try next candidate
+    }
+  }
+  return null;
+}
+
+/**
  * Check if the project uses App Router (has an app/ directory).
  */
 export function hasAppDir(root: string): boolean {
-  return fs.existsSync(path.join(root, "app")) || fs.existsSync(path.join(root, "src", "app"));
+  return findDir(root, "app", path.join("src", "app")) !== null;
 }
