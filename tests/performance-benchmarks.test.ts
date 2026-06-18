@@ -62,6 +62,8 @@ describe("paired performance benchmarks", () => {
     expect(workflow).toContain("grant_write_paths()");
     expect(workflow).toContain("packages/vinext/dist");
     expect(workflow).toContain("benchmarks/nextjs/node_modules");
+    expect(workflow).toContain('sudo chmod +t "$path"');
+    expect(workflow).toContain('sudo setfacl -m u:"$user":wx "$path"');
     expect(workflow).not.toContain('setfacl -R -m u:vinext-perf-head:rwX "$GITHUB_WORKSPACE"');
     expect(workflow).toContain("- name: Lock benchmark inputs after setup");
     expect(workflow).toContain('setfacl -R -x u:"$user" "$root/benchmarks/nextjs/node_modules"');

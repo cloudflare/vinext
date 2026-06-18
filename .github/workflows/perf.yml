@@ -188,6 +188,17 @@ jobs:
           grant_write_paths() {
             local root="$1"
             local user="$2"
+            local project_roots=(
+              packages/vinext
+              packages/cloudflare
+              benchmarks/vinext
+              benchmarks/nextjs
+            )
+            for relative_path in "${project_roots[@]}"; do
+              local path="$root/$relative_path"
+              sudo chmod +t "$path"
+              sudo setfacl -m u:"$user":wx "$path"
+            done
             local paths=(
               packages/vinext/dist
               packages/cloudflare/dist
