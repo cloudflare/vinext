@@ -38,6 +38,10 @@ async function createFixture(): Promise<string> {
     undefined,
     APP_FIXTURE_NODE_MODULES,
   );
+  await fs.writeFile(
+    path.join(fixtureDir, "package.json"),
+    JSON.stringify({ name: "proxy-conventions-fixture", private: true, type: "module" }),
+  );
   return fixtureDir;
 }
 
