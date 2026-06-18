@@ -580,7 +580,7 @@ function createStaticImageAsset(imagePath: string): { fileName: string; source: 
 const _shimsDir = normalizePathSeparators(path.resolve(__dirname, "shims")) + "/";
 const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
 const _appRscHandlerPath = resolveShimModulePath(
-  path.resolve(__dirname, "server"),
+  normalizePathSeparators(path.resolve(__dirname, "server")),
   "app-rsc-handler",
 );
 // Source checkouts resolve to TypeScript and must stay in Vite's graph so tests

@@ -21374,9 +21374,9 @@ describe("shim alias map .js variants", () => {
       ) => string | { id: string; external: true } | undefined;
     };
     const id = "vinext/server/app-rsc-handler";
-    const expected = path.resolve(
-      import.meta.dirname,
-      "../packages/vinext/src/server/app-rsc-handler.ts",
+    // resolveId returns a forward-slash id (Vite-canonical) on every platform.
+    const expected = normalizePathSeparators(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/server/app-rsc-handler.ts"),
     );
 
     expect(hook.filter.id.test(id)).toBe(true);
