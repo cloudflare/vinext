@@ -106,7 +106,7 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
 
   if (
     body.schemaVersion === 2 &&
-    !body.benchmarks.some((benchmark) => benchmark.baselineSamples !== null)
+    !body.benchmarks.some((benchmark) => benchmark.baselineSamples != null)
   ) {
     return Response.json(
       { error: "Performance schema 2 requires paired baseline samples" },

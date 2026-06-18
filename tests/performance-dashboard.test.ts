@@ -173,6 +173,59 @@ describe("performance dashboard uploads", () => {
     expect(batchedStatements).toEqual([]);
   });
 
+  it("rejects schema 2 payloads that omit paired baseline statistics", async () => {
+    const response = await uploadPerformanceRun(
+      new Request("https://vinext.dev/api/benchmarks/upload", {
+        method: "POST",
+        body: JSON.stringify({
+          schemaVersion: 2,
+          provider: "samply",
+          instrument: "walltime",
+          run: {
+            kind: "pull_request",
+            commitSha: "a".repeat(40),
+            baseSha: "b".repeat(40),
+            pullRequest: 42,
+            executionId: "1:1",
+            measuredAt: "2026-06-18T12:00:00.000Z",
+            repository: "cloudflare/vinext",
+          },
+          system: {},
+          benchmarks: [
+            {
+              benchmarkId: "vinext-production-build",
+              scenarioId: "production-build",
+              suite: "Build",
+              label: "Production build time",
+              description: "Build the benchmark application",
+              implementationId: "vinext",
+              implementationLabel: "vinext",
+              unit: "ms",
+              lowerIsBetter: true,
+              samples: {
+                rounds: 6,
+                mean: 90,
+                median: 91,
+                standardDeviation: 1,
+                min: 88,
+                max: 93,
+                q1: 90,
+                q3: 92,
+                outliers: 0,
+              },
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "Performance schema 2 requires paired baseline samples",
+    });
+    expect(batchedStatements).toEqual([]);
+  });
+
   it("rejects delayed executions older than the stored run", async () => {
     claimExecution = false;
     const response = await uploadPerformanceRun(

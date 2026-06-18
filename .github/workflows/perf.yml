@@ -76,6 +76,44 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Validate performance workspace paths
+        run: |
+          validate_directory() {
+            local relative_path="$1"
+            local path="$GITHUB_WORKSPACE/$relative_path"
+            if [ ! -d "$path" ] || [ -L "$path" ]; then
+              echo "Performance workspace path must be a real directory: $relative_path" >&2
+              exit 1
+            fi
+            if [ "$(realpath "$path")" != "$path" ]; then
+              echo "Performance workspace path escapes the checkout: $relative_path" >&2
+              exit 1
+            fi
+          }
+          for path in \
+            packages/vinext \
+            packages/cloudflare \
+            benchmarks/vinext \
+            benchmarks/nextjs; do
+            validate_directory "$path"
+          done
+          for path in \
+            packages/vinext/dist \
+            packages/cloudflare/dist \
+            benchmarks/vinext/app \
+            benchmarks/vinext/dist \
+            benchmarks/vinext/.vite \
+            benchmarks/vinext/node_modules \
+            benchmarks/nextjs/app \
+            benchmarks/nextjs/.next \
+            benchmarks/nextjs/node_modules; do
+            if [ -L "$path" ]; then
+              echo "Performance mutable path may not be a symlink: $path" >&2
+              exit 1
+            fi
+          done
+          rm -rf .perf-base-staging .perf-manifests .perf-harness
+
       - name: Validate main commit
         if: env.VINEXT_PERF_RUN_KIND == 'main'
         run: |
@@ -210,7 +248,18 @@ jobs:
             )
             for relative_path in "${paths[@]}"; do
               local path="$root/$relative_path"
+              if [ -L "$path" ]; then
+                echo "Performance output path may not be a symlink: $path" >&2
+                exit 1
+              fi
               sudo mkdir -p "$path"
+              case "$(realpath "$path")" in
+                "$root"/*) ;;
+                *)
+                  echo "Performance output path escapes its checkout: $path" >&2
+                  exit 1
+                  ;;
+              esac
               sudo chown -R "$user":"$user" "$path"
               sudo chmod -R u+rwX "$path"
               sudo setfacl -R -m u:"$user":rwX "$path"
