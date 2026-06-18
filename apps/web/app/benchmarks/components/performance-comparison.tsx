@@ -9,6 +9,15 @@ import { formatMs } from "./format";
 import { PerformanceResultsTable, type PerformanceMeasurement } from "./performance-results";
 
 type FlameGraphNode = FlameGraphData;
+type TraceCategory = "vinext" | "vite" | "rolldown" | "node" | "other";
+
+const TRACE_CATEGORIES: Array<{ category: TraceCategory; color: string; label: string }> = [
+  { category: "vinext", color: "#f97316", label: "vinext" },
+  { category: "vite", color: "#8b5cf6", label: "Vite" },
+  { category: "rolldown", color: "#ec4899", label: "Rolldown" },
+  { category: "node", color: "#22c55e", label: "Node.js" },
+  { category: "other", color: "#60a5fa", label: "Other" },
+];
 
 export type Comparison = PerformanceComparisonData;
 
@@ -190,8 +199,8 @@ function FlameGraphDialog({ measurement }: { measurement: Comparison["measuremen
 function FlameGraph({ measurement }: { measurement: Comparison["measurements"][number] }) {
   const fullGraph = measurement.flameGraph;
   const vinextGraph = fullGraph?.vinextFocus;
-  const [view, setView] = useState<"vinext" | "full">(vinextGraph ? "vinext" : "full");
-  const activeGraph = view === "vinext" && vinextGraph ? vinextGraph : fullGraph;
+  const [categoryFilters, setCategoryFilters] = useState<Set<TraceCategory> | null>(null);
+  const activeGraph = filteredTraceGraph(fullGraph, vinextGraph, categoryFilters);
   const [focusPath, setFocusPath] = useState<FlameGraphNode[]>(activeGraph ? [activeGraph] : []);
   const [frameQuery, setFrameQuery] = useState("");
   const [hovered, setHovered] = useState<{ frame: PositionedFrame; x: number; y: number } | null>(
@@ -210,10 +219,11 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
   const rowHeight = 42;
   const height = (maxDepth + 1) * rowHeight;
 
-  const switchView = (nextView: "vinext" | "full") => {
-    const nextRoot = nextView === "vinext" ? vinextGraph : fullGraph;
+  const toggleCategory = (category: TraceCategory) => {
+    const nextFilters = nextCategoryFilters(categoryFilters, category);
+    const nextRoot = filteredTraceGraph(fullGraph, vinextGraph, nextFilters);
     if (!nextRoot) return;
-    setView(nextView);
+    setCategoryFilters(nextFilters);
     setFocusPath([nextRoot]);
     setHovered(null);
   };
@@ -237,24 +247,6 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {vinextGraph && (
-            <div className="flex rounded-lg border border-slate-700 bg-slate-900 p-1 text-xs font-medium">
-              <button
-                type="button"
-                onClick={() => switchView("vinext")}
-                className={`rounded-md px-3 py-1.5 transition ${view === "vinext" ? "bg-orange-500 text-white" : "text-slate-400 hover:text-white"}`}
-              >
-                Vinext only
-              </button>
-              <button
-                type="button"
-                onClick={() => switchView("full")}
-                className={`rounded-md px-3 py-1.5 transition ${view === "full" ? "bg-orange-500 text-white" : "text-slate-400 hover:text-white"}`}
-              >
-                Full stack
-              </button>
-            </div>
-          )}
           {focusPath.length > 1 && (
             <button
               type="button"
@@ -267,19 +259,22 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
         </div>
       </div>
       <div className="mb-4 rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-xs leading-5 text-slate-300">
-        {view === "vinext"
-          ? "Vinext-only view retains every sampled vinext frame and collapses runtime and dependency frames between vinext calls. Switch to Full stack for Node, Vite, Rolldown, and subprocess context."
-          : "Width is inclusive sampled thread time across the profiled subprocess tree and benchmark rounds, not elapsed wall time. Frames above a block are callees. Click a frame to zoom; use self time to find where samples terminate."}
+        Width is inclusive sampled thread time across benchmark rounds, not elapsed wall time. Click
+        categories to isolate one type, then add more categories to compare their call
+        relationships. Unselected frames are collapsed and the graph height follows the filtered
+        stack depth.
       </div>
-      {view === "full" && (
-        <div className="mb-4 flex flex-wrap gap-3 text-xs text-slate-300">
-          <TraceLegend color="#f97316" label="vinext" />
-          <TraceLegend color="#8b5cf6" label="Vite" />
-          <TraceLegend color="#ec4899" label="Rolldown" />
-          <TraceLegend color="#22c55e" label="Node.js" />
-          <TraceLegend color="#60a5fa" label="Other" />
-        </div>
-      )}
+      <div className="mb-4 flex flex-wrap gap-2 text-xs text-slate-300">
+        {TRACE_CATEGORIES.map(({ category, color, label }) => (
+          <TraceFilter
+            key={category}
+            color={color}
+            label={label}
+            active={categoryFilters === null || categoryFilters.has(category)}
+            onClick={() => toggleCategory(category)}
+          />
+        ))}
+      </div>
       {focusPath.length > 1 && (
         <div className="mb-3 flex flex-wrap items-center gap-1 text-xs text-slate-400">
           {focusPath.map((node, index) => (
@@ -515,6 +510,63 @@ function vinextFrameSummary(root: FlameGraphNode) {
   );
 }
 
+function nextCategoryFilters(
+  filters: Set<TraceCategory> | null,
+  category: TraceCategory,
+): Set<TraceCategory> | null {
+  if (filters === null) return new Set([category]);
+  const next = new Set(filters);
+  if (next.has(category)) {
+    if (next.size === 1) return null;
+    next.delete(category);
+  } else {
+    next.add(category);
+  }
+  return next.size === TRACE_CATEGORIES.length ? null : next;
+}
+
+function filteredTraceGraph(
+  fullGraph: FlameGraphNode | null | undefined,
+  vinextGraph: FlameGraphNode | undefined,
+  filters: Set<TraceCategory> | null,
+): FlameGraphNode | null {
+  if (!fullGraph) return null;
+  if (filters === null) return fullGraph;
+  if (filters.size === 1 && filters.has("vinext") && vinextGraph) return vinextGraph;
+
+  const children = filteredTraceChildren(fullGraph.children ?? [], filters);
+  const value = children.reduce((total, child) => total + child.value, 0);
+  return {
+    name: "filtered samples",
+    value,
+    category: "process",
+    children,
+  };
+}
+
+function filteredTraceChildren(
+  nodes: FlameGraphNode[],
+  filters: Set<TraceCategory>,
+): FlameGraphNode[] {
+  return nodes.flatMap((node) => {
+    const children = filteredTraceChildren(node.children ?? [], filters);
+    if (!filters.has(traceCategory(node))) return children;
+    return [{ ...node, children: children.length > 0 ? children : undefined }];
+  });
+}
+
+function traceCategory(node: FlameGraphNode): TraceCategory {
+  if (
+    node.category === "vinext" ||
+    node.category === "vite" ||
+    node.category === "rolldown" ||
+    node.category === "node"
+  ) {
+    return node.category;
+  }
+  return "other";
+}
+
 function displayFrameName(name: string) {
   return name;
 }
@@ -531,12 +583,27 @@ function shortSource(source: string) {
   return parts.slice(-3).join("/");
 }
 
-function TraceLegend({ color, label }: { color: string; label: string }) {
+function TraceFilter({
+  color,
+  label,
+  active,
+  onClick,
+}: {
+  color: string;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
   return (
-    <span className="inline-flex items-center gap-1.5">
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 font-medium transition ${active ? "border-slate-600 bg-slate-800 text-white" : "border-slate-800 bg-slate-950 text-slate-500 opacity-60 hover:opacity-100"}`}
+    >
       <span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: color }} />
       {label}
-    </span>
+    </button>
   );
 }
 
