@@ -170,6 +170,7 @@ jobs:
             "$VINEXT_PERF_RESULTS_ROOT/perf-samples.jsonl" \
             "$VINEXT_PERF_RESULTS_ROOT/perf-results.json" \
             "$VINEXT_PERF_RESULTS_ROOT/perf-profiles"
+          sudo chmod -R a+rX "$VINEXT_PERF_RESULTS_ROOT"
 
       - name: Upload performance artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
