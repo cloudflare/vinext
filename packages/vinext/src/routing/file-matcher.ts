@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { glob } from "node:fs/promises";
 import path from "node:path";
+import { normalizePathSeparators } from "../utils/path.js";
 import { escapeRegExp } from "../utils/regex.js";
 
 const DEFAULT_PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"] as const;
@@ -99,7 +100,7 @@ export function findFileWithExts(
 ): string | null {
   for (const ext of matcher.dottedExtensions) {
     const filePath = path.posix.join(dir, name + ext);
-    if (existsSync(filePath)) return filePath;
+    if (existsSync(filePath)) return normalizePathSeparators(filePath);
   }
   return null;
 }
@@ -175,6 +176,6 @@ export async function* scanWithExtensions(
     cwd,
     ...(exclude ? { exclude } : {}),
   })) {
-    yield file;
+    yield normalizePathSeparators(file);
   }
 }

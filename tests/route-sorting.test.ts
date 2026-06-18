@@ -30,6 +30,10 @@ import { sortRoutes } from "../packages/vinext/src/routing/utils.js";
 const PAGES_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic/pages");
 const APP_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
 
+function toSlash(filePath: string): string {
+  return filePath.replace(/\\/g, "/");
+}
+
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
@@ -484,11 +488,11 @@ describe("App Router route sorting (additional)", () => {
 
       expect(membersRoute).toBeDefined();
       expect(membersRoute!.parallelSlots.find((slot) => slot.name === "team")!.pagePath).toContain(
-        path.join("@team", "(a)", "members"),
+        toSlash(path.join("@team", "(a)", "members")),
       );
       expect(
         membersRoute!.parallelSlots.find((slot) => slot.name === "analytics")!.pagePath,
-      ).toContain(path.join("@analytics", "(b)", "members"));
+      ).toContain(toSlash(path.join("@analytics", "(b)", "members")));
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
       invalidateAppRouteCache();
@@ -583,10 +587,10 @@ describe("App Router route sorting (additional)", () => {
 
       expect(teamSlots).toHaveLength(2);
       expect(slotsByOwner.get("dashboard/settings/@team")!.pagePath).toContain(
-        path.join("settings", "@team", "page.tsx"),
+        toSlash(path.join("settings", "@team", "page.tsx")),
       );
       expect(slotsByOwner.get("dashboard/@team")!.pagePath).toContain(
-        path.join("@team", "settings", "page.tsx"),
+        toSlash(path.join("@team", "settings", "page.tsx")),
       );
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
@@ -649,7 +653,7 @@ describe("App Router route sorting (additional)", () => {
 
       expect(teamSlots).toHaveLength(2);
       expect(slotsByOwner.get("dashboard/settings/@team")!.pagePath).toContain(
-        path.join("settings", "@team", "member", "page.tsx"),
+        toSlash(path.join("settings", "@team", "member", "page.tsx")),
       );
       expect(slotsByOwner.get("dashboard/@team")!.pagePath).toBeNull();
     } finally {

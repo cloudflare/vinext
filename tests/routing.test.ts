@@ -31,6 +31,12 @@ async function withTempDir<T>(prefix: string, run: (tmpDir: string) => Promise<T
   }
 }
 
+function toSlash(filePath: string): string {
+  return filePath.replace(/\\/g, "/");
+}
+
+const itUnlessWindows = process.platform === "win32" ? it.skip : it;
+
 function makeTestAppRoute(
   pattern: string,
   patternParts: string[],
@@ -379,7 +385,9 @@ describe("apiRouter - route discovery", () => {
       const matchedDocs = matchRoute("/api-docs/first", pages);
       expect(matchedDocs).not.toBeNull();
       expect(matchedDocs!.route.pattern).toBe("/api-docs/:slug+");
-      expect(matchedDocs!.route.filePath).toBe(path.join(pagesDir, "api-docs", "[...slug].tsx"));
+      expect(matchedDocs!.route.filePath).toBe(
+        toSlash(path.join(pagesDir, "api-docs", "[...slug].tsx")),
+      );
 
       const matchedInfo = matchRoute("/api-info", pages);
       expect(matchedInfo).not.toBeNull();
@@ -1364,7 +1372,7 @@ describe("matchAppRoute - URL matching", () => {
       expect(modalSlot!.interceptingRoutes[0]).toMatchObject({
         convention: ".",
         targetPattern: "/explicit-layout/deeper",
-        layoutPaths: [path.join(appDir, "@modal", "(.)explicit-layout", "layout.tsx")],
+        layoutPaths: [toSlash(path.join(appDir, "@modal", "(.)explicit-layout", "layout.tsx"))],
       });
     });
   });
@@ -1400,8 +1408,8 @@ describe("matchAppRoute - URL matching", () => {
       expect(modalSlot).toBeDefined();
       expect(modalSlot!.interceptingRoutes).toHaveLength(1);
       expect(modalSlot!.interceptingRoutes[0]?.layoutPaths).toEqual([
-        path.join(appDir, "@modal", "(.)foo", "layout.tsx"),
-        path.join(appDir, "@modal", "(.)foo", "bar", "layout.tsx"),
+        toSlash(path.join(appDir, "@modal", "(.)foo", "layout.tsx")),
+        toSlash(path.join(appDir, "@modal", "(.)foo", "bar", "layout.tsx")),
       ]);
     });
   });
@@ -1578,7 +1586,7 @@ describe("matchAppRoute - URL matching", () => {
       expect(route!.pagePath).toBeNull();
       expect(route!.parallelSlots.map((slot) => slot.name).sort()).toEqual(["feed", "modal"]);
       expect(route!.parallelSlots.find((slot) => slot.name === "feed")!.pagePath).toContain(
-        path.join("@feed", "page.tsx"),
+        toSlash(path.join("@feed", "page.tsx")),
       );
     });
   });
@@ -1620,7 +1628,9 @@ describe("matchAppRoute - URL matching", () => {
       const nestedRoute = routes.find((r) => r.pattern === "/parallel-nested/home/nested")!;
       expect(nestedRoute.parallelSlots.map((slot) => slot.name).sort()).toEqual(["parallelB"]);
       const parallelBSlot = nestedRoute.parallelSlots.find((slot) => slot.name === "parallelB")!;
-      expect(parallelBSlot.pagePath).toContain(path.join("@parallelB", "nested", "page.tsx"));
+      expect(parallelBSlot.pagePath).toContain(
+        toSlash(path.join("@parallelB", "nested", "page.tsx")),
+      );
     });
   });
 
@@ -1705,7 +1715,7 @@ describe("matchAppRoute - URL matching", () => {
       const homeRoute = routes.find((route) => route.pattern === "/");
 
       expect(homeRoute).toBeDefined();
-      expect(homeRoute!.layouts).toEqual([path.join(appDir, "(group)", "layout.tsx")]);
+      expect(homeRoute!.layouts).toEqual([toSlash(path.join(appDir, "(group)", "layout.tsx"))]);
       expect(homeRoute!.parallelSlots.find((slot) => slot.name === "modal")).toBeUndefined();
     });
   });
@@ -1728,7 +1738,9 @@ describe("matchAppRoute - URL matching", () => {
       expect(modalSlot).toBeDefined();
       expect(modalSlot!.ownerDir).toBe(path.join(appDir, "(group)", "@modal"));
       expect(modalSlot!.layoutIndex).toBe(0);
-      expect(modalSlot!.defaultPath).toBe(path.join(appDir, "(group)", "@modal", "default.tsx"));
+      expect(modalSlot!.defaultPath).toBe(
+        toSlash(path.join(appDir, "(group)", "@modal", "default.tsx")),
+      );
     });
   });
 
@@ -1814,7 +1826,7 @@ describe("pagesRouter - hyphenated param names", () => {
 });
 
 describe("pagesRouter - dotted/colon param names (Next.js parity)", () => {
-  it("discovers dynamic segments with dots and colons", async () => {
+  itUnlessWindows("discovers dynamic segments with dots and colons", async () => {
     await withTempDir("vinext-pages-dotted-param-", async (tmpDir) => {
       const pagesDir = path.join(tmpDir, "pages");
       await mkdir(path.join(pagesDir, "products"), { recursive: true });
@@ -1858,25 +1870,28 @@ describe("pagesRouter - dotted/colon param names (Next.js parity)", () => {
     });
   });
 
-  it("skips routes whose param names end in + or * (would collide with internal modifiers)", async () => {
-    await withTempDir("vinext-pages-skip-plus-", async (tmpDir) => {
-      const pagesDir = path.join(tmpDir, "pages");
-      await mkdir(pagesDir, { recursive: true });
-      await writeFile(
-        path.join(pagesDir, "[id+].tsx"),
-        "export default function Page() { return null; }",
-      );
-      await writeFile(
-        path.join(pagesDir, "[id*].tsx"),
-        "export default function Page() { return null; }",
-      );
+  itUnlessWindows(
+    "skips routes whose param names end in + or * (would collide with internal modifiers)",
+    async () => {
+      await withTempDir("vinext-pages-skip-plus-", async (tmpDir) => {
+        const pagesDir = path.join(tmpDir, "pages");
+        await mkdir(pagesDir, { recursive: true });
+        await writeFile(
+          path.join(pagesDir, "[id+].tsx"),
+          "export default function Page() { return null; }",
+        );
+        await writeFile(
+          path.join(pagesDir, "[id*].tsx"),
+          "export default function Page() { return null; }",
+        );
 
-      invalidateRouteCache(pagesDir);
-      const routes = await pagesRouter(pagesDir);
+        invalidateRouteCache(pagesDir);
+        const routes = await pagesRouter(pagesDir);
 
-      // Skipped entirely to avoid ambiguity with internal :name+ / :name* modifiers
-      expect(routes).toHaveLength(0);
-      invalidateRouteCache(pagesDir);
-    });
-  });
+        // Skipped entirely to avoid ambiguity with internal :name+ / :name* modifiers
+        expect(routes).toHaveLength(0);
+        invalidateRouteCache(pagesDir);
+      });
+    },
+  );
 });

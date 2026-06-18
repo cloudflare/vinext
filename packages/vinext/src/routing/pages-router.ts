@@ -5,6 +5,7 @@ import {
   scanWithExtensions,
   type ValidFileMatcher,
 } from "./file-matcher.js";
+import { normalizePathSeparators } from "../utils/path.js";
 import { validateRoutePatterns } from "./route-validation.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "./route-matching.js";
 
@@ -97,12 +98,14 @@ async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Prom
  * Convert a file path relative to pages/ into a Route.
  */
 function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher): Route | null {
+  const normalizedFile = normalizePathSeparators(file);
+
   // Remove extension
-  const withoutExt = matcher.stripExtension(file);
-  if (withoutExt === file) return null;
+  const withoutExt = matcher.stripExtension(normalizedFile);
+  if (withoutExt === normalizedFile) return null;
 
   // Convert to URL segments
-  const segments = withoutExt.split(path.sep);
+  const segments = withoutExt.split("/");
 
   // Handle index files: pages/index.tsx -> /
   const lastSegment = segments[segments.length - 1];
@@ -170,7 +173,7 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
   return {
     pattern: pattern === "/" ? "/" : pattern,
     patternParts: urlSegments.filter(Boolean),
-    filePath: path.join(pagesDir, file),
+    filePath: normalizePathSeparators(path.join(pagesDir, normalizedFile)),
     isDynamic,
     params,
   };
@@ -231,7 +234,7 @@ async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promi
 
   for (const file of files) {
     // Reuse fileToRoute but pretend the file is under a virtual "api/" prefix
-    const route = fileToRoute(path.join("api", file), pagesDir, matcher);
+    const route = fileToRoute(path.posix.join("api", file), pagesDir, matcher);
     if (route) {
       routes.push(route);
     }
