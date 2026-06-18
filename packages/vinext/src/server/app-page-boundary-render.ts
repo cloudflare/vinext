@@ -9,7 +9,7 @@ import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import { resolveAppPageSpecialError, type AppPageFontPreload } from "./app-page-execution.js";
 import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
-import { resolveAppPageHead } from "./app-page-head.js";
+import { resolveAppPageHead, type ApplyAppPageFileBasedMetadata } from "./app-page-head.js";
 import {
   renderAppPageBoundaryResponse,
   resolveAppPageErrorBoundary,
@@ -72,6 +72,7 @@ export type AppPageBoundaryRoute<TModule extends AppPageModule = AppPageModule> 
 };
 
 type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageModule> = {
+  applyFileBasedMetadata?: ApplyAppPageFileBasedMetadata;
   buildFontLinkHeader: (preloads: readonly AppPageFontPreload[] | null | undefined) => string;
   clearRequestContext: () => void;
   createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
@@ -351,6 +352,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
   const pathname = new URL(options.requestUrl).pathname;
   const routeSegments = resolveHttpAccessFallbackHeadRouteSegments(options.route, layoutModules);
   const { metadata, viewport } = await resolveAppPageHead({
+    applyFileBasedMetadata: options.applyFileBasedMetadata,
     basePath: options.basePath ?? "",
     layoutModules,
     layoutTreePositions: resolveHttpAccessFallbackHeadLayoutTreePositions(
@@ -435,6 +437,7 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
   if (!errorBoundary.isGlobalError) {
     try {
       const { metadata, viewport } = await resolveAppPageHead({
+        applyFileBasedMetadata: options.applyFileBasedMetadata,
         basePath: options.basePath ?? "",
         fallbackOnFileMetadataError: true,
         layoutModules,

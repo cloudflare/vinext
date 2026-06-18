@@ -873,8 +873,11 @@ describe("App Router entry templates", () => {
       );
 
       expect(withoutMetadataRoutes).not.toContain("metadata-route-response.js");
+      expect(withoutMetadataRoutes).not.toContain("file-based-metadata.js");
       expect(withoutMetadataRoutes).not.toContain("handleMetadataRouteRequest(cleanPathname)");
       expect(withMetadataRoutes).toContain("metadata-route-response.js");
+      expect(withMetadataRoutes).toContain("file-based-metadata.js");
+      expect(withMetadataRoutes).toContain("applyFileBasedMetadata: __applyFileBasedMetadata");
       expect(withMetadataRoutes).toContain("handleMetadataRouteRequest(cleanPathname)");
       expect(withMetadataRoutes).toContain("await __loadMetadataRouteResponse()");
     } finally {

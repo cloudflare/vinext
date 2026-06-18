@@ -64,6 +64,7 @@ const appPageRouteWiringPath = resolveEntryPath(
 );
 const appPageProbePath = resolveEntryPath("../server/app-page-probe.js", import.meta.url);
 const appPageDispatchPath = resolveEntryPath("../server/app-page-dispatch.js", import.meta.url);
+const fileBasedMetadataPath = resolveEntryPath("../server/file-based-metadata.js", import.meta.url);
 const appPageRequestPath = resolveEntryPath("../server/app-page-request.js", import.meta.url);
 const appSegmentConfigPath = resolveEntryPath("../server/app-segment-config.js", import.meta.url);
 const appRscRouteMatchingPath = resolveEntryPath(
@@ -315,6 +316,15 @@ ${
     ? `const __loadMetadataRouteResponse = () => import(${JSON.stringify(metadataRouteResponsePath)});`
     : ""
 }
+${
+  (metadataRoutes?.length ?? 0) > 0
+    ? `const __loadFileBasedMetadata = () => import(${JSON.stringify(fileBasedMetadataPath)});
+async function __applyFileBasedMetadata(...args) {
+  const { applyFileBasedMetadata } = await __loadFileBasedMetadata();
+  return applyFileBasedMetadata(...args);
+}`
+    : ""
+}
 import {
   sanitizeErrorForClient as __sanitizeErrorForClient,
 } from ${JSON.stringify(appRscErrorsPath)};
@@ -513,6 +523,7 @@ const createRscOnErrorHandler = (request, pathname, routePath) =>
   createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
 
 const __fallbackRenderer = __createAppFallbackRenderer({
+  ${(metadataRoutes?.length ?? 0) > 0 ? "applyFileBasedMetadata: __applyFileBasedMetadata," : ""}
   basePath: __basePath,
   trailingSlash: __trailingSlash,
   rootBoundaries: {
@@ -562,6 +573,7 @@ async function buildPageElements(route, params, routePath, pageRequest, layoutPa
   // Hydrate lazy page/route-handler modules before any synchronous read.
   await __ensureRouteLoaded(route);
   return __buildPageElements({
+    ${(metadataRoutes?.length ?? 0) > 0 ? "applyFileBasedMetadata: __applyFileBasedMetadata," : ""}
     route,
     params,
     routePath,

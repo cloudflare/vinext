@@ -40,6 +40,9 @@ export type AppPageSearchParams = Record<string, string | string[]>;
 
 type AppPageHeadModule = Record<string, unknown>;
 
+export type ApplyAppPageFileBasedMetadata =
+  typeof import("./file-based-metadata.js").applyFileBasedMetadata;
+
 type AppPageHeadSource = {
   metadata: Metadata | null;
   routeSegments: readonly string[];
@@ -76,6 +79,7 @@ type ResolveActiveParallelRouteHeadInputsOptions<
 };
 
 type ResolveAppPageHeadOptions<TModule extends AppPageHeadModule = AppPageHeadModule> = {
+  applyFileBasedMetadata?: ApplyAppPageFileBasedMetadata;
   /**
    * Configured next.config `basePath`. Threaded into `applyFileBasedMetadata`
    * so file-based metadata route URLs (icon, opengraph-image, manifest, ...)
@@ -439,10 +443,9 @@ async function resolveAppPageHeadInner<TModule extends AppPageHeadModule>(
   metadataSources.push(...parallelMetadataSources);
   let metadata = resolvedMetadataBase;
 
-  if (options.metadataRoutes.length > 0) {
+  if (options.applyFileBasedMetadata && options.metadataRoutes.length > 0) {
     try {
-      const { applyFileBasedMetadata } = await import("./file-based-metadata.js");
-      metadata = await applyFileBasedMetadata(
+      metadata = await options.applyFileBasedMetadata(
         resolvedMetadataBase,
         options.routePath,
         options.params,
