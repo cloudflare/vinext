@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import type { Server } from "node:http";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { build, createBuilder } from "vite";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
@@ -16,6 +17,17 @@ const SVG_2X3 = `<svg xmlns="http://www.w3.org/2000/svg" width="2" height="3"></
 
 const tempDirs: string[] = [];
 const servers: Server[] = [];
+const cloudflarePluginPath = path.resolve(
+  import.meta.dirname,
+  "fixtures/cf-app-basic/node_modules/@cloudflare/vite-plugin/dist/index.mjs",
+);
+const workerEntryPath = path
+  .resolve(import.meta.dirname, "../packages/vinext/src/server/app-router-entry.ts")
+  .replaceAll("\\", "/");
+
+type CloudflarePluginFactory = (options?: {
+  viteEnvironment?: { name: string; childEnvironments?: string[] };
+}) => import("vite").Plugin;
 
 function writeFixtureFile(root: string, filePath: string, content: string | Buffer): void {
   const absolutePath = path.join(root, filePath);
@@ -46,7 +58,13 @@ async function createFixture(
     "package.json",
     JSON.stringify({ name: `vinext-${router}-static-image`, private: true, type: "module" }),
   );
+  writeFixtureFile(
+    root,
+    "tsconfig.json",
+    JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./*"] } } }),
+  );
   writeFixtureFile(root, "test.png", PNG_1X1);
+  writeFixtureFile(root, "client.png", PNG_4X3);
   writeFixtureFile(root, "test.svg", SVG_2X3);
   writeFixtureFile(root, "tiny.png", PNG_1X1);
   if (options.basePath || options.assetPrefix || options.deploymentId) {
@@ -74,7 +92,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       "app/client-image.tsx",
       `"use client";
 import Image from "next/image";
-import staticImage from "../test.png";
+import staticImage from "@/client.png";
 
 export default function ClientImage() {
   return <Image id="client-static-image" alt="client static import" src={staticImage} quality={85} />;
@@ -161,6 +179,44 @@ async function buildFixture(root: string, router: "app" | "pages"): Promise<void
   });
 }
 
+async function buildCloudflareFixture(root: string): Promise<void> {
+  fs.rmSync(path.join(root, "node_modules"), { recursive: true, force: true });
+  fs.symlinkSync(
+    path.resolve(import.meta.dirname, "../node_modules"),
+    path.join(root, "node_modules"),
+    "junction",
+  );
+  writeFixtureFile(
+    root,
+    "wrangler.jsonc",
+    `{
+  "name": "vinext-static-image-cloudflare",
+  "compatibility_date": "2026-02-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./worker/index.ts",
+  "assets": { "not_found_handling": "none", "binding": "ASSETS" }
+}\n`,
+  );
+  writeFixtureFile(
+    root,
+    "worker/index.ts",
+    `import handler from ${JSON.stringify(workerEntryPath)};\nexport default handler;\n`,
+  );
+  const { cloudflare } = (await import(pathToFileURL(cloudflarePluginPath).href)) as {
+    cloudflare: CloudflarePluginFactory;
+  };
+  const builder = await createBuilder({
+    root,
+    configFile: false,
+    logLevel: "silent",
+    plugins: [
+      vinext({ appDir: root }),
+      cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
+    ],
+  });
+  await builder.buildApp();
+}
+
 type BuildWatcher = {
   on(event: "event", callback: (event: { code: string; error?: Error }) => void): void;
   off(event: "event", callback: (event: { code: string; error?: Error }) => void): void;
@@ -240,8 +296,15 @@ async function findEmittedAsset(
   return asset;
 }
 
-async function findEmittedImage(root: string, assetPrefix = ""): Promise<string> {
-  return findEmittedAsset(root, assetPrefix, "png");
+async function findEmittedImage(root: string, assetPrefix = "", name = "test"): Promise<string> {
+  const prefixPath = assetPrefix.startsWith("http")
+    ? ""
+    : assetPrefix.split("/").filter(Boolean).join("/");
+  const mediaDir = path.join(root, "dist/client", prefixPath, "_next/static/media");
+  const files = await readdir(mediaDir);
+  const image = files.find((file) => new RegExp(`^${name}\\.[\\w-]{8}\\.png$`).test(file));
+  if (!image) throw new Error(`Missing emitted ${name}.png in ${mediaDir}: ${files.join(", ")}`);
+  return image;
 }
 
 async function assertStaticImageProductionParity(
@@ -257,6 +320,9 @@ async function assertStaticImageProductionParity(
   expect(
     await readFile(path.join(root, "dist/client", prefixPath, "_next/static/media", emittedImage)),
   ).toEqual(PNG_1X1);
+  const serverJavaScript = await readBuiltJavaScript(path.join(root, "dist/server"));
+  expect(serverJavaScript).toContain(`/_next/static/media/${emittedImage}`);
+  expect(serverJavaScript).not.toMatch(/\/_next\/static\/test-[\w-]+\.png/);
 
   const started = await startProdServer({
     port: 0,
@@ -270,10 +336,17 @@ async function assertStaticImageProductionParity(
   const html = await response.text();
   expect(response.status, html).toBe(200);
 
-  for (const id of router === "app" ? ["static-image", "client-static-image"] : ["static-image"]) {
+  const imageIds =
+    router === "app"
+      ? [
+          ["static-image", emittedImage],
+          ["client-static-image", await findEmittedImage(root, effectiveAssetPrefix, "client")],
+        ]
+      : [["static-image", emittedImage]];
+  for (const [id, expectedImage] of imageIds) {
     const src = getAttribute(html, id, "src");
     const srcset = getAttribute(html, id, "srcset");
-    const managedUrl = `${effectiveAssetPrefix}/_next/static/media/${emittedImage}`;
+    const managedUrl = `${effectiveAssetPrefix}/_next/static/media/${expectedImage}`;
     const managedSourceUrl = options.deploymentId
       ? `${managedUrl}?dpl=${options.deploymentId}`
       : managedUrl;
@@ -332,6 +405,19 @@ describe("static image import production emission", () => {
       assetPrefix: "/cdn",
       deploymentId: "static-image-test",
     });
+  }, 60_000);
+
+  it("emits matching SSR and client image URLs in Cloudflare builds", async () => {
+    const root = await createFixture("app");
+    await buildCloudflareFixture(root);
+    const mediaDir = path.join(root, "dist/client/_next/static/media");
+    const emittedImage = (await readdir(mediaDir)).find((file) =>
+      /^client\.[\w-]{8}\.png$/.test(file),
+    );
+    expect(emittedImage).toBeDefined();
+    const serverJavaScript = await readBuiltJavaScript(path.join(root, "dist/server"));
+    expect(serverJavaScript).toContain(`/_next/static/media/${emittedImage}`);
+    expect(serverJavaScript).not.toMatch(/\/_next\/static\/client-[\w-]+\.png/);
   }, 60_000);
 
   it("recomputes changed images and removes deleted imports during watch rebuilds", async () => {

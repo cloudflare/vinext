@@ -4586,7 +4586,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // which should use forward slashes. fs accepts them on Windows,
             // so existsSync still works.
             const dir = path.dirname(id);
-            const absImagePath = normalizePathSeparators(path.resolve(dir, importPath));
+            const resolvedImage = importPath.startsWith(".")
+              ? path.resolve(dir, importPath)
+              : (await this.resolve(importPath, id, { skipSelf: true }))?.id;
+            if (!resolvedImage) continue;
+            const absImagePath = normalizePathSeparators(resolvedImage.split("?", 1)[0]);
 
             if (!fs.existsSync(absImagePath)) continue;
             imageImports.add(absImagePath);
