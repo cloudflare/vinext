@@ -110,7 +110,9 @@ describe("performance traces", () => {
     const output = await readFile(outputPath, "utf8");
     const result = JSON.parse(output);
     expect(Buffer.byteLength(output)).toBeLessThan(10_000);
-    expect(result.benchmarks[0].profileFile).toBe(join(profileDirectory, "samply-profile.json.gz"));
+    expect(result.benchmarks[0].profileFile).toBe(
+      join("profiles", benchmarkId, "samply-profile.json.gz"),
+    );
     expect(result.benchmarks[0]).not.toHaveProperty("flameGraph");
     expect(result.run.commitSha).toBe(commitSha);
     expect(result.run.measuredAt).toBe("2025-04-03T10:34:56.000Z");
@@ -187,7 +189,7 @@ describe("performance traces", () => {
           executionId: "run:1",
         },
         benchmarks: [
-          { benchmarkId: "vinext-dev-cold-start-root", profileFile: profilePath },
+          { benchmarkId: "vinext-dev-cold-start-root", profileFile: "samply-profile.json.gz" },
           { benchmarkId: "nextjs-dev-cold-start-root", profileFile: null },
         ],
       }),
@@ -257,6 +259,7 @@ describe("performance traces", () => {
           env: {
             ...process.env,
             COMPAT_INGEST_SECRET: "test-secret",
+            VINEXT_PERF_ARTIFACT_ROOT: directory,
             VINEXT_PERF_UPLOAD_URL: `http://127.0.0.1:${address.port}/upload`,
           },
         },
@@ -282,6 +285,67 @@ describe("performance traces", () => {
         server.close((error) => (error ? rejectClose(error) : resolveClose())),
       );
     }
+  });
+
+  test("formats a safe pull request performance comment", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "vinext-performance-comment-"));
+    temporaryDirectories.push(directory);
+    const resultsPath = join(directory, "perf-results.json");
+    const responsePath = join(directory, "upload-response.json");
+    const commentPath = join(directory, "comment.md");
+    await writeFile(
+      resultsPath,
+      JSON.stringify({
+        run: {
+          kind: "pull_request",
+          pullRequest: 42,
+          baseSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        },
+      }),
+    );
+    await writeFile(
+      responsePath,
+      JSON.stringify({
+        comparison: {
+          head: { shortSha: "aaaaaaa" },
+          baseline: { shortSha: "bbbbbbb" },
+          measurements: [
+            {
+              label: "Dev @everyone <start>",
+              implementationLabel: "vinext|edge",
+              unit: "ms",
+              lowerIsBetter: true,
+              baseline: { median: 1000 },
+              current: { median: 900 },
+            },
+            {
+              label: "Bundle size",
+              implementationLabel: "vinext",
+              unit: "bytes",
+              lowerIsBetter: true,
+              baseline: { median: 1024 },
+              current: { median: 1030 },
+            },
+          ],
+        },
+      }),
+    );
+
+    await execFileAsync(process.execPath, [
+      resolve("benchmarks/perf/format-pr-comment.mjs"),
+      resultsPath,
+      responsePath,
+      commentPath,
+    ]);
+    const comment = await readFile(commentPath, "utf8");
+    expect(comment).toContain("<!-- vinext-performance-benchmarks -->");
+    expect(comment).toContain("1 improved · 0 regressed · 1 within ±1.5%");
+    expect(comment).toContain("🟢 -10.0%");
+    expect(comment).toContain("⚫ +0.6%");
+    expect(comment).toContain("@\u200beveryone");
+    expect(comment).toContain("&lt;start&gt;");
+    expect(comment).toContain("vinext\\|edge");
+    expect(comment).toContain("https://vinext.dev/benchmarks/pull/42");
   });
 });
 

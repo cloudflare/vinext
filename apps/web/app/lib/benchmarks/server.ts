@@ -211,7 +211,22 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
       revalidatePath(`/benchmarks/commit/${run.commit_sha}`);
     }
   }
-  return Response.json({ ok: true, runId, measurements: body.benchmarks.length }, { status: 201 });
+  const comparisonData =
+    body.run.kind === "pull_request" && body.run.pullRequest !== null
+      ? await getPullComparison(String(body.run.pullRequest))
+      : null;
+  const comparison = comparisonData
+    ? {
+        ...comparisonData,
+        measurements: comparisonData.measurements.map(
+          ({ flameGraph: _flameGraph, profileUrl: _profileUrl, ...measurement }) => measurement,
+        ),
+      }
+    : null;
+  return Response.json(
+    { ok: true, runId, measurements: body.benchmarks.length, comparison },
+    { status: 201 },
+  );
 }
 
 type PerformanceMeasurementData = {

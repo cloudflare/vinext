@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 
 const inputPath = resolve(process.argv[2] ?? "benchmarks/results/perf-samples.jsonl");
@@ -12,7 +12,7 @@ async function profileFile(benchmarkId) {
   try {
     const profilePath = join(profilesDirectory, benchmarkId, "samply-profile.json.gz");
     await access(profilePath);
-    return profilePath;
+    return relative(dirname(outputPath), profilePath);
   } catch {
     return null;
   }
