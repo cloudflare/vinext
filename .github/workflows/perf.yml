@@ -159,6 +159,7 @@ jobs:
           tar -xzf /tmp/perf-runner.tar.gz -C /tmp
           install -m 0755 /tmp/codspeed-runner-x86_64-unknown-linux-musl/codspeed "$HOME/.local/bin/codspeed"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "VINEXT_PERF_PROFILER_BIN=$HOME/.local/bin/codspeed" >> "$GITHUB_ENV"
 
       - name: Measure performance scenarios
         run: node "$VINEXT_PERF_HARNESS_ROOT/benchmarks/perf/run-scenarios.mjs"

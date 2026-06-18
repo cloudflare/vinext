@@ -9,6 +9,7 @@ import { performanceScenarios, performanceSetup, benchmarkId } from "./scenarios
 const harnessRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const targetRoot = process.env.VINEXT_PERF_TARGET_ROOT ?? process.cwd();
 const targetUser = process.env.VINEXT_PERF_TARGET_USER;
+const profilerBin = process.env.VINEXT_PERF_PROFILER_BIN ?? "codspeed";
 const resultsRoot = process.env.VINEXT_PERF_RESULTS_ROOT ?? join(targetRoot, "benchmarks/results");
 const direct = process.argv.includes("--direct");
 const setupOnly = process.argv.includes("--setup-only");
@@ -28,6 +29,10 @@ function trustedCommand(command) {
 function targetCommand(command) {
   if (!targetUser) return command;
   return ["sudo", "-E", "-H", "-u", targetUser, "--", ...command];
+}
+
+function profilerCommand() {
+  return targetUser ? ["sudo", "-E", "--", profilerBin] : [profilerBin];
 }
 
 function run(command, args, env, cwd = targetRoot) {
@@ -94,9 +99,11 @@ for (const scenario of performanceScenarios) {
       : [];
     if (profile) await mkdir(join(resultsRoot, `perf-profiles/${id}`), { recursive: true });
     const command = trustedCommand(implementation.command);
+    const profiler = profilerCommand();
     await run(
-      "codspeed",
+      profiler[0],
       [
+        ...profiler.slice(1),
         "exec",
         "--mode",
         "walltime",
