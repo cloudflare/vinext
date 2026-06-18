@@ -333,7 +333,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     onLoadingComplete,
     onError,
     unoptimized: _unoptimized,
-    overrideSrc: _overrideSrc,
+    overrideSrc,
     loading,
     ...rest
   },
@@ -476,6 +476,10 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       : undefined;
 
   if (_unoptimized === true) {
+    // Unoptimized images are fetched directly by the browser, so intentionally
+    // skip remote URL validation: there is no server-side optimizer fetch and
+    // therefore no SSRF surface. This matches Next.js behavior.
+    const renderedSrc = overrideSrc || src;
     const sanitizedBlur = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
     const blurStyle =
       !blurComplete && placeholder === "blur" && sanitizedBlur
@@ -488,13 +492,13 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
         : undefined;
     preloadImageResource({
       shouldPreload,
-      src,
+      src: renderedSrc,
       fetchPriority: priorityFetchPriority,
     });
     return (
       <img
         ref={mergedRef}
-        src={src}
+        src={renderedSrc}
         alt={alt}
         width={fill ? undefined : imgWidth}
         height={fill ? undefined : imgHeight}
@@ -733,7 +737,7 @@ export function getImageProps(props: ImageProps): {
     onLoad: _onLoad,
     onLoadingComplete: _onLoadingComplete,
     unoptimized: _unoptimized,
-    overrideSrc: _overrideSrc,
+    overrideSrc,
     loading,
     ...rest
   } = props;
@@ -747,6 +751,9 @@ export function getImageProps(props: ImageProps): {
   const shouldPreload = _preload === true || priority === true;
 
   if (_unoptimized === true) {
+    // As in the component path, unoptimized images never reach the server-side
+    // optimizer, so remote URL validation is intentionally unnecessary.
+    const renderedSrc = overrideSrc || src;
     const sanitizedBlurURL = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
     const blurStyle =
       placeholder === "blur" && sanitizedBlurURL
@@ -759,7 +766,7 @@ export function getImageProps(props: ImageProps): {
         : undefined;
     return {
       props: {
-        src,
+        src: renderedSrc,
         alt,
         width: fill ? undefined : imgWidth,
         height: fill ? undefined : imgHeight,

@@ -758,6 +758,38 @@ describe("unoptimized remote images", () => {
     expect(props.src).toBe(src);
   });
 
+  // Ported from Next.js: test/unit/next-image-get-img-props.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/unit/next-image-get-img-props.test.ts
+  it("honors overrideSrc", () => {
+    const src = "https://imagedelivery.net/accountHash/imageId/public";
+    const overrideSrc = "https://cdn.example.com/original.jpg";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "cloudflare image",
+        src,
+        overrideSrc,
+        width: 100,
+        height: 100,
+        unoptimized: true,
+        priority: true,
+      }),
+    );
+
+    expect(html).toContain(`src="${overrideSrc}"`);
+    expect(html).not.toContain(`src="${src}"`);
+
+    const { props } = getImageProps({
+      alt: "cloudflare image",
+      src,
+      overrideSrc,
+      width: 100,
+      height: 100,
+      unoptimized: true,
+    });
+    expect(props.src).toBe(overrideSrc);
+    expect(props.srcSet).toBeUndefined();
+  });
+
   it("bypasses remote pattern validation in production", async () => {
     vi.stubEnv("NODE_ENV", "production");
     process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([
