@@ -258,7 +258,7 @@ function FlameGraph({
     return !query || `${frame.name} ${frame.source ?? ""}`.toLowerCase().includes(query);
   });
   const maxDepth = Math.max(...frames.map((frame) => frame.depth));
-  const rowHeight = 32;
+  const rowHeight = 24;
   const height = (maxDepth + 1) * rowHeight;
 
   const toggleCategory = (category: TraceCategory) => {
@@ -337,7 +337,9 @@ function FlameGraph({
       <div className="overflow-x-auto rounded-xl border border-slate-800 bg-[#050816] p-3 shadow-inner shadow-black/40">
         <svg
           viewBox={`0 0 1000 ${height}`}
-          className="min-w-[960px]"
+          width="1000"
+          height={height}
+          className="block min-w-[960px]"
           role="group"
           aria-label={`${measurement.implementationLabel} ${measurement.label} interactive flame graph`}
         >
@@ -381,10 +383,10 @@ function FlameGraph({
                 <rect
                   className="group-focus:stroke-orange-400"
                   x={frame.x + 1}
-                  y={y + 2}
+                  y={y + 1}
                   width={Math.max(frame.width - 2, 0)}
-                  height={rowHeight - 4}
-                  rx="5"
+                  height={rowHeight - 2}
+                  rx="4"
                   fill={frameColor(frame)}
                   stroke="#020617"
                   strokeWidth="1.25"
@@ -392,8 +394,8 @@ function FlameGraph({
                 {frame.width > 70 && (
                   <text
                     x={frame.x + 8}
-                    y={y + 21}
-                    fontSize="12"
+                    y={y + 16}
+                    fontSize="11"
                     fontWeight="500"
                     fill={frame.depth >= 4 ? "white" : "#0f172a"}
                     pointerEvents="none"
