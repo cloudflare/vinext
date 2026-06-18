@@ -49,6 +49,7 @@ Run `vinext init`. This command:
 4. Renames CJS config files (e.g., `postcss.config.js` → `.cjs`) to avoid ESM conflicts
 5. Adds `dev:vinext` and `build:vinext` scripts to package.json
 6. Generates a minimal `vite.config.ts`
+7. Adds `/dist/` and `.vinext/` to `.gitignore`
 
 This is non-destructive — the existing Next.js setup continues to work alongside vinext. Use the `dev:vinext` script to test before fully switching over.
 
@@ -113,6 +114,15 @@ export default defineConfig({ plugins: [vinext()] });
 ```
 
 vinext auto-registers `@vitejs/plugin-rsc` for App Router when the `rsc` option is not explicitly `false`. No manual RSC plugin config needed for local development.
+
+### 3e. Update .gitignore
+
+Ensure vinext-generated output and caches are ignored:
+
+```gitignore
+/dist/
+.vinext/
+```
 
 ## Phase 4: Deployment (Optional)
 
