@@ -107,7 +107,7 @@ jobs:
           run-install: false
 
       - name: Install dependencies without lifecycle scripts
-        run: pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile
+        run: vp install --frozen-lockfile --ignore-scripts --ignore-pnpmfile
 
       - name: Create isolated benchmark user
         run: |
