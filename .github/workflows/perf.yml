@@ -125,9 +125,4 @@ jobs:
 
       - name: Upload to vinext dashboard
         if: env.COMPAT_INGEST_SECRET != ''
-        run: |
-          curl -f -X POST \
-            -H "X-Compat-Secret: $COMPAT_INGEST_SECRET" \
-            -H "Content-Type: application/json" \
-            --data-binary @benchmarks/results/perf-results.json \
-            https://vinext-web.vinext.workers.dev/api/benchmarks/upload
+        run: node benchmarks/perf/upload-results.mjs

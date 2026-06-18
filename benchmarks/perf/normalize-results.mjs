@@ -1,149 +1,19 @@
 #!/usr/bin/env node
 
-import { createReadStream } from "node:fs";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
-import { createGunzip } from "node:zlib";
 
 const inputPath = resolve(process.argv[2] ?? "benchmarks/results/perf-samples.jsonl");
 const outputPath = resolve(process.argv[3] ?? "benchmarks/results/perf-results.json");
 const profilesDirectory = resolve(process.argv[4] ?? "benchmarks/results/perf-profiles");
 
-async function readGzipJson(path) {
-  const chunks = [];
-  for await (const chunk of createReadStream(path).pipe(createGunzip())) chunks.push(chunk);
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-}
-
-function column(table, name, row) {
-  if (Array.isArray(table?.[name])) return table[name][row];
-  const index = table?.schema?.[name];
-  return index === undefined ? undefined : table.data?.[row]?.[index];
-}
-
-function normalizeSource(source) {
-  if (!source) return null;
-  const withoutProtocol = source.replace(/^file:\/\//, "");
-  const repositoryMarker = "/work/vinext/vinext/";
-  const repositoryIndex = withoutProtocol.indexOf(repositoryMarker);
-  if (repositoryIndex >= 0) {
-    return withoutProtocol.slice(repositoryIndex + repositoryMarker.length);
-  }
-  const nodeModulesIndex = withoutProtocol.lastIndexOf("/node_modules/");
-  if (nodeModulesIndex >= 0) return withoutProtocol.slice(nodeModulesIndex + 1);
-  return withoutProtocol;
-}
-
-function frameCategory(source) {
-  if (!source) return "native";
-  if (source.startsWith("packages/vinext/") || source.includes("node_modules/vinext/")) {
-    return "vinext";
-  }
-  if (source.includes("/rolldown/") || source.includes("rolldown-")) return "rolldown";
-  if (source.includes("vite-plus-core/dist/vite/") || source.includes("node_modules/vite/")) {
-    return "vite";
-  }
-  if (source.startsWith("node:")) return "node";
-  if (source.startsWith("node_modules/")) return "dependency";
-  if (source.startsWith("benchmarks/")) return "benchmark";
-  return "application";
-}
-
-function parseFrame(rawName) {
-  const cleanedName = rawName.replace(/^JS:[+*'^~]*/, "");
-  const sourceMatch = cleanedName.match(/\s((?:file:\/\/|node:)[^\s]+)$/);
-  const source = normalizeSource(sourceMatch?.[1] ?? null);
-  const name = sourceMatch ? cleanedName.slice(0, sourceMatch.index).trim() : cleanedName;
-  return {
-    name: name || "(anonymous)",
-    source,
-    category: frameCategory(source),
-  };
-}
-
-function stackFrames(tables, stackIndex) {
-  const frames = [];
-  const seen = new Set();
-  while (stackIndex !== null && stackIndex !== undefined && !seen.has(stackIndex)) {
-    seen.add(stackIndex);
-    const frameIndex = column(tables.stackTable, "frame", stackIndex);
-    const funcIndex = column(tables.frameTable, "func", frameIndex);
-    const nameIndex = column(tables.funcTable, "name", funcIndex);
-    const fallbackNameIndex = column(tables.frameTable, "location", frameIndex);
-    const name = tables.stringArray?.[nameIndex ?? fallbackNameIndex];
-    if (typeof name === "string" && name.length > 0) frames.push(parseFrame(name));
-    stackIndex = column(tables.stackTable, "prefix", stackIndex);
-  }
-  return frames.reverse();
-}
-
-function addStack(root, frames, weight) {
-  root.value += weight;
-  let current = root;
-  for (const frame of frames) {
-    const key = `${frame.category}\0${frame.name}\0${frame.source ?? ""}`;
-    let child = current.children.get(key);
-    if (!child) {
-      child = { ...frame, value: 0, children: new Map() };
-      current.children.set(key, child);
-    }
-    child.value += weight;
-    current = child;
-  }
-}
-
-function serializeTree(node) {
-  const children = Array.from(node.children.values())
-    .sort((left, right) => right.value - left.value)
-    .map(serializeTree);
-  const serialized = {
-    name: node.name,
-    value: node.value,
-    ...(node.source ? { source: node.source } : {}),
-    ...(node.category ? { category: node.category } : {}),
-  };
-  return children.length > 0 ? { ...serialized, children } : serialized;
-}
-
-function profileToFlameGraph(profile) {
-  const root = { name: "all samples", value: 0, children: new Map() };
-  const sampleIntervalMs = Number(profile.meta?.interval ?? 1) || 1;
-  for (const thread of profile.threads ?? []) {
-    const tables = profile.shared ?? thread;
-    if (!tables?.stackTable || !tables.frameTable || !tables.funcTable || !tables.stringArray) {
-      continue;
-    }
-    const sampleLength = thread.samples?.length ?? thread.samples?.data?.length ?? 0;
-    const usesSampleWeights = thread.samples?.weightType === "samples";
-    for (let row = 0; row < sampleLength; row++) {
-      const stackIndex = column(thread.samples, "stack", row);
-      if (stackIndex === null || stackIndex === undefined) continue;
-      const rawWeight = Math.abs(Number(column(thread.samples, "weight", row) ?? 1)) || 1;
-      const weight = (usesSampleWeights ? rawWeight : 1) * sampleIntervalMs;
-      const frames = stackFrames(tables, stackIndex);
-      if (frames.length > 0) {
-        const processName = thread.processName || thread.name || "unknown process";
-        addStack(
-          root,
-          [{ name: processName, source: null, category: "process" }, ...frames],
-          weight,
-        );
-      }
-    }
-  }
-  if (root.value === 0) return null;
-  return serializeTree(root);
-}
-
-async function loadFlameGraph(benchmarkId) {
+async function profileFile(benchmarkId) {
   try {
     const profilePath = join(profilesDirectory, benchmarkId, "samply-profile.json.gz");
     await access(profilePath);
-    const profile = await readGzipJson(profilePath);
-    return profileToFlameGraph(profile);
-  } catch (error) {
-    console.warn(`No flame graph available for ${benchmarkId}: ${error.message}`);
+    return profilePath;
+  } catch {
     return null;
   }
 }
@@ -216,7 +86,7 @@ async function main() {
       unit: group[0].unit,
       lowerIsBetter: group[0].lowerIsBetter,
       samples: summarize(group.map((sample) => sample.value)),
-      flameGraph: group[0].profile ? await loadFlameGraph(benchmarkId) : null,
+      profileFile: group[0].profile ? await profileFile(benchmarkId) : null,
     })),
   );
 
@@ -243,7 +113,7 @@ async function main() {
   };
 
   await mkdir(dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, `${JSON.stringify(payload, null, 2)}\n`);
+  await writeFile(outputPath, `${JSON.stringify(payload)}\n`);
   console.log(`Wrote ${benchmarks.length} normalized benchmarks to ${outputPath}`);
 }
 

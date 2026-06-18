@@ -48,7 +48,7 @@ function filteredTraceChildren<T extends TraceNode>(nodes: T[], filters: Set<Tra
   });
 }
 
-export function traceCategory(node: TraceNode): TraceCategory {
+function traceCategory(node: TraceNode): TraceCategory {
   if (
     node.category === "vinext" ||
     node.category === "vite" ||

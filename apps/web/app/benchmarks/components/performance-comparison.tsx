@@ -7,6 +7,7 @@ import { Clock, Flame, MagnifyingGlassPlus, X } from "@phosphor-icons/react";
 import type { FlameGraphData, PerformanceComparisonData } from "@/app/lib/benchmarks/server";
 import { formatMs } from "./format";
 import { PerformanceResultsTable, type PerformanceMeasurement } from "./performance-results";
+import { profileToFlameGraph } from "./profile";
 import { filteredTraceGraph, selfValue, type TraceCategory } from "./trace";
 
 type FlameGraphNode = FlameGraphData;
@@ -30,7 +31,9 @@ export function PerformanceComparison({ comparison }: { comparison: Comparison }
     );
   }
 
-  const hasProfiles = comparison.measurements.some((measurement) => measurement.flameGraph);
+  const hasProfiles = comparison.measurements.some(
+    (measurement) => measurement.flameGraph || measurement.profileUrl,
+  );
   const currentMeasurements = comparison.measurements.map((measurement) =>
     comparisonMeasurement(measurement, "current"),
   );
@@ -135,7 +138,7 @@ function layoutFrames(root: FlameGraphNode) {
     let offset = x;
     for (const child of node.children ?? []) {
       const childWidth = width * (child.value / node.value);
-      visit(child, offset, childWidth, depth + 1);
+      if (childWidth >= 1) visit(child, offset, childWidth, depth + 1);
       offset += childWidth;
     }
   };
@@ -153,10 +156,31 @@ function frameColor(frame: PositionedFrame) {
 }
 
 function FlameGraphDialog({ measurement }: { measurement: Comparison["measurements"][number] }) {
-  if (!measurement.flameGraph)
+  const [flameGraph, setFlameGraph] = useState(measurement.flameGraph);
+  const [profileState, setProfileState] = useState<"idle" | "loading" | "loaded" | "error">(
+    measurement.flameGraph ? "loaded" : "idle",
+  );
+  if (!measurement.flameGraph && !measurement.profileUrl)
     return <span className="font-medium">{measurement.implementationLabel}</span>;
+
+  const loadProfile = async () => {
+    if (!measurement.profileUrl || profileState !== "idle") return;
+    setProfileState("loading");
+    try {
+      const response = await fetch(measurement.profileUrl);
+      if (!response.ok) throw new Error(`Profile request failed (${response.status})`);
+      const graph = profileToFlameGraph(await response.json());
+      if (!graph) throw new Error("Profile contains no samples");
+      setFlameGraph(graph);
+      setProfileState("loaded");
+    } catch (error) {
+      console.error(error);
+      setProfileState("error");
+    }
+  };
+
   return (
-    <Dialog.Root>
+    <Dialog.Root onOpenChange={(open) => open && void loadProfile()}>
       <Dialog.Trigger
         className="font-medium text-blue-700 underline decoration-blue-300 underline-offset-4 hover:text-blue-900 hover:decoration-blue-500"
         aria-label={`Open ${measurement.implementationLabel} ${measurement.label} flame graph`}
@@ -189,15 +213,31 @@ function FlameGraphDialog({ measurement }: { measurement: Comparison["measuremen
           </Dialog.Close>
         </div>
         <div className="min-h-0 overflow-y-auto px-6 py-5">
-          <FlameGraph measurement={measurement} />
+          {profileState === "loading" && (
+            <div className="flex min-h-64 items-center justify-center text-sm text-slate-400">
+              Loading raw profile…
+            </div>
+          )}
+          {profileState === "error" && (
+            <div className="flex min-h-64 items-center justify-center text-sm text-red-300">
+              The raw profile could not be loaded.
+            </div>
+          )}
+          {flameGraph && <FlameGraph measurement={measurement} flameGraph={flameGraph} />}
         </div>
       </Dialog>
     </Dialog.Root>
   );
 }
 
-function FlameGraph({ measurement }: { measurement: Comparison["measurements"][number] }) {
-  const fullGraph = measurement.flameGraph;
+function FlameGraph({
+  measurement,
+  flameGraph,
+}: {
+  measurement: Comparison["measurements"][number];
+  flameGraph: FlameGraphNode;
+}) {
+  const fullGraph = flameGraph;
   const [categoryFilters, setCategoryFilters] = useState<Set<TraceCategory> | null>(null);
   const activeGraph = filteredTraceGraph(fullGraph, categoryFilters);
   const [focusPath, setFocusPath] = useState<FlameGraphNode[]>(activeGraph ? [activeGraph] : []);

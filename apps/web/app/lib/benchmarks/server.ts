@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache";
 
 type CloudflareEnv = {
   DB: D1Database;
+  PERFORMANCE_PROFILES: R2Bucket;
 };
 
 type NormalizedPerfPayload = {
@@ -40,28 +41,28 @@ type NormalizedPerfPayload = {
       q3: number;
       outliers: number;
     };
-    flameGraph: FlameGraphNode | null;
+    profileFile: string | null;
   }>;
-};
-
-type FlameGraphNode = {
-  name: string;
-  value: number;
-  source?: string;
-  category?: string;
-  children?: FlameGraphNode[];
 };
 
 function getD1() {
   return (env as CloudflareEnv).DB;
 }
 
+function getProfilesBucket() {
+  return (env as CloudflareEnv).PERFORMANCE_PROFILES;
+}
+
 export async function uploadPerformanceRun(request: Request): Promise<Response> {
   let body: NormalizedPerfPayload;
+  let form: FormData;
   try {
-    body = await request.json();
+    form = await request.formData();
+    const results = form.get("results");
+    if (typeof results !== "string") throw new Error("Missing results");
+    body = JSON.parse(results) as NormalizedPerfPayload;
   } catch {
-    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+    return Response.json({ error: "Invalid multipart performance payload" }, { status: 400 });
   }
 
   if (
@@ -99,7 +100,58 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
   }
 
   const db = getD1();
+  const profiles = getProfilesBucket();
   const runId = `${body.run.kind}:${body.run.commitSha}`;
+  const oldProfiles = await db
+    .prepare(`
+      SELECT profile_object_key
+      FROM performance_measurements
+      WHERE run_id IN (
+        SELECT id FROM performance_runs WHERE kind = ? AND commit_sha = ?
+      ) AND profile_object_key IS NOT NULL
+    `)
+    .bind(body.run.kind, body.run.commitSha)
+    .all<{ profile_object_key: string }>();
+  const profileKeys = new Map<string, string>();
+  const profileUploads: Array<{ benchmarkId: string; file: File }> = [];
+
+  for (const benchmark of body.benchmarks) {
+    if (!benchmark.profileFile) continue;
+    const profile = form.get(`profile:${benchmark.benchmarkId}`);
+    if (!(profile instanceof File)) {
+      return Response.json(
+        { error: `Missing profile for ${benchmark.benchmarkId}` },
+        { status: 400 },
+      );
+    }
+    if (profile.size > 20 * 1024 * 1024) {
+      return Response.json(
+        { error: `Profile for ${benchmark.benchmarkId} exceeds 20 MiB` },
+        { status: 413 },
+      );
+    }
+    profileUploads.push({ benchmarkId: benchmark.benchmarkId, file: profile });
+  }
+
+  try {
+    for (const { benchmarkId, file } of profileUploads) {
+      const executionId = encodeURIComponent(body.run.executionId);
+      const objectVersion = crypto.randomUUID();
+      const key = `profiles/${body.run.kind}/${body.run.commitSha}/${executionId}/${objectVersion}/${encodeURIComponent(benchmarkId)}.json.gz`;
+      await profiles.put(key, file, {
+        httpMetadata: { contentType: "application/json", contentEncoding: "gzip" },
+        customMetadata: {
+          benchmarkId,
+          commitSha: body.run.commitSha,
+          runKind: body.run.kind,
+        },
+      });
+      profileKeys.set(benchmarkId, key);
+    }
+  } catch (error) {
+    if (profileKeys.size > 0) await profiles.delete([...profileKeys.values()]);
+    throw error;
+  }
   const statements = [
     db
       .prepare(`
@@ -139,8 +191,8 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
             implementation_id, implementation_label, unit,
             lower_is_better, rounds, mean_value, median_value,
             standard_deviation_value, min_value, max_value, q1_value,
-            q3_value, outliers, flame_graph_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            q3_value, outliers, flame_graph_json, profile_object_key
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .bind(
           runId,
@@ -162,12 +214,23 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
           benchmark.samples.q1,
           benchmark.samples.q3,
           benchmark.samples.outliers,
-          benchmark.flameGraph ? JSON.stringify(benchmark.flameGraph) : null,
+          null,
+          profileKeys.get(benchmark.benchmarkId) ?? null,
         ),
     ),
   ];
 
-  await db.batch(statements);
+  try {
+    await db.batch(statements);
+  } catch (error) {
+    if (profileKeys.size > 0) await profiles.delete([...profileKeys.values()]);
+    throw error;
+  }
+  const retainedKeys = new Set(profileKeys.values());
+  const obsoleteKeys = oldProfiles.results
+    .map((row) => row.profile_object_key)
+    .filter((key) => !retainedKeys.has(key));
+  if (obsoleteKeys.length > 0) await profiles.delete(obsoleteKeys);
   revalidatePath("/benchmarks");
   revalidatePath(`/benchmarks/commit/${body.run.commitSha}`);
   if (body.run.kind === "pull_request" && body.run.pullRequest !== null) {
@@ -239,6 +302,7 @@ type PerformanceComparisonMeasurementData = Omit<
   baseline: PerformanceStatsData | null;
   current: PerformanceStatsData;
   flameGraph: FlameGraphData | null;
+  profileUrl: string | null;
 };
 
 export async function getPerformanceRuns(limit = 20): Promise<PerformanceRunData[]> {
@@ -456,7 +520,34 @@ async function comparableMeasurements(
         typeof row.flame_graph_json === "string"
           ? (JSON.parse(row.flame_graph_json) as FlameGraphData)
           : null,
+      profileUrl:
+        typeof row.profile_object_key === "string"
+          ? `/api/benchmarks/profile?runId=${encodeURIComponent(currentRunId)}&benchmarkId=${encodeURIComponent(String(row.benchmark_id))}`
+          : null,
     };
+  });
+}
+
+export async function getPerformanceProfile(runId: string, benchmarkId: string): Promise<Response> {
+  const row = await getD1()
+    .prepare(`
+      SELECT profile_object_key
+      FROM performance_measurements
+      WHERE run_id = ? AND benchmark_id = ?
+    `)
+    .bind(runId, benchmarkId)
+    .first<{ profile_object_key: string | null }>();
+  if (!row?.profile_object_key) return new Response("Profile not found", { status: 404 });
+
+  const object = await getProfilesBucket().get(row.profile_object_key);
+  if (!object) return new Response("Profile object not found", { status: 404 });
+  return new Response(object.body, {
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Encoding": "gzip",
+      "Cache-Control": "private, max-age=300",
+      ETag: object.httpEtag,
+    },
   });
 }
 

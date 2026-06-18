@@ -182,6 +182,7 @@ export const performanceMeasurements = sqliteTable(
     q3Value: real("q3_value").notNull(),
     outliers: integer("outliers").notNull(),
     flameGraphJson: text("flame_graph_json"),
+    profileObjectKey: text("profile_object_key"),
   },
   (table) => ({
     primaryKey: primaryKey({ columns: [table.runId, table.benchmarkId] }),

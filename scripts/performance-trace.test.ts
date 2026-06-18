@@ -1,10 +1,12 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { gzip } from "node:zlib";
 import { afterEach, describe, expect, test } from "vitest";
+import { profileToFlameGraph } from "../apps/web/app/benchmarks/components/profile";
 import { filteredTraceGraph, type TraceNode } from "../apps/web/app/benchmarks/components/trace";
 
 const execFileAsync = promisify(execFile);
@@ -16,7 +18,7 @@ afterEach(async () => {
 });
 
 describe("performance traces", () => {
-  test("normalization retains every wide and deep profile frame", async () => {
+  test("normalization references the raw profile without embedding it", async () => {
     const directory = await mkdtemp(join(tmpdir(), "vinext-performance-trace-"));
     temporaryDirectories.push(directory);
     const inputPath = join(directory, "samples.jsonl");
@@ -102,13 +104,17 @@ describe("performance traces", () => {
       },
     );
 
-    const result = JSON.parse(await readFile(outputPath, "utf8"));
-    const graph = result.benchmarks[0].flameGraph as TraceNode;
-    expect(flatten(graph).filter((node) => node.name.startsWith("frame-"))).toHaveLength(91);
-    expect(maxDepth(graph)).toBe(42);
-    expect(graph).not.toHaveProperty("vinextFocus");
+    const output = await readFile(outputPath, "utf8");
+    const result = JSON.parse(output);
+    expect(Buffer.byteLength(output)).toBeLessThan(10_000);
+    expect(result.benchmarks[0].profileFile).toBe(join(profileDirectory, "samply-profile.json.gz"));
+    expect(result.benchmarks[0]).not.toHaveProperty("flameGraph");
     expect(result.run.commitSha).toBe(commitSha);
     expect(result.run.measuredAt).toBe("2025-04-03T10:34:56.000Z");
+
+    const graph = profileToFlameGraph(profile) as TraceNode;
+    expect(flatten(graph).filter((node) => node.name.startsWith("frame-"))).toHaveLength(91);
+    expect(maxDepth(graph)).toBe(42);
   });
 
   test("filters retain selected frames and recompute their sampled time", () => {
@@ -152,6 +158,101 @@ describe("performance traces", () => {
       category: "process",
       children: graph.children,
     });
+  });
+
+  test("upload sends compact metadata and raw profiles as multipart files", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "vinext-performance-upload-"));
+    temporaryDirectories.push(directory);
+    const profilePath = join(directory, "samply-profile.json.gz");
+    const resultsPath = join(directory, "perf-results.json");
+    const profileContents = await gzipAsync(JSON.stringify({ threads: [] }));
+    await writeFile(profilePath, profileContents);
+    await writeFile(
+      resultsPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        benchmarks: [
+          { benchmarkId: "vinext-dev-cold-start-root", profileFile: profilePath },
+          { benchmarkId: "nextjs-dev-cold-start-root", profileFile: null },
+        ],
+      }),
+    );
+
+    type ReceivedUpload = {
+      secret: string | null;
+      results: Record<string, unknown>;
+      profile: File;
+    };
+    let resolveReceived: (upload: ReceivedUpload) => void;
+    let rejectReceived: (error: unknown) => void;
+    const received = new Promise<ReceivedUpload>((resolveUpload, rejectUpload) => {
+      resolveReceived = resolveUpload;
+      rejectReceived = rejectUpload;
+    });
+    const server = createServer((request, response) => {
+      void (async () => {
+        try {
+          const webRequest = new Request(`http://127.0.0.1${request.url}`, {
+            method: request.method,
+            headers: request.headers as HeadersInit,
+            body: request as unknown as BodyInit,
+            duplex: "half",
+          } as unknown as RequestInit);
+          const form = await webRequest.formData();
+          const results = form.get("results");
+          const profile = form.get("profile:vinext-dev-cold-start-root");
+          if (typeof results !== "string" || !(profile instanceof File)) {
+            throw new Error("Missing multipart fields");
+          }
+          const secretHeader = request.headers["x-compat-secret"];
+          resolveReceived({
+            secret: Array.isArray(secretHeader) ? secretHeader[0] : (secretHeader ?? null),
+            results: JSON.parse(results),
+            profile,
+          });
+          response.writeHead(201, { "Content-Type": "application/json" });
+          response.end('{"ok":true}');
+        } catch (error) {
+          rejectReceived(error);
+          response.writeHead(500);
+          response.end();
+        }
+      })();
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing server address");
+      await execFileAsync(
+        process.execPath,
+        [resolve("benchmarks/perf/upload-results.mjs"), resultsPath],
+        {
+          env: {
+            ...process.env,
+            COMPAT_INGEST_SECRET: "test-secret",
+            VINEXT_PERF_UPLOAD_URL: `http://127.0.0.1:${address.port}/upload`,
+          },
+        },
+      );
+      const upload = await received;
+      expect(upload.secret).toBe("test-secret");
+      expect(upload.results).toMatchObject({
+        benchmarks: [
+          {
+            benchmarkId: "vinext-dev-cold-start-root",
+            profileFile: "samply-profile.json.gz",
+          },
+          { benchmarkId: "nextjs-dev-cold-start-root", profileFile: null },
+        ],
+      });
+      expect(upload.profile.name).toBe("vinext-dev-cold-start-root.json.gz");
+      expect(Buffer.from(await upload.profile.arrayBuffer())).toEqual(profileContents);
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) =>
+        server.close((error) => (error ? rejectClose(error) : resolveClose())),
+      );
+    }
   });
 });
 
