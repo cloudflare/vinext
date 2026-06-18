@@ -304,7 +304,7 @@ type PerformanceComparisonMeasurementData = Omit<
   profileUrl: string | null;
 };
 
-export async function getPerformanceRuns(limit = 20): Promise<PerformanceRunData[]> {
+export async function getPerformanceRuns(limit = 50): Promise<PerformanceRunData[]> {
   const boundedLimit = Math.max(1, Math.min(limit, 100));
   const db = getD1();
   const { results } = await db

@@ -8,7 +8,7 @@ export const revalidate = 300;
  * The interactive dashboard (tabs, charts, data fetching) is a client component.
  */
 export default async function HomePage() {
-  const runs = await getPerformanceRuns(20);
+  const runs = await getPerformanceRuns();
 
   return (
     <div className="mx-auto w-full max-w-6xl px-6 py-8">
