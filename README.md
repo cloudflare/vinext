@@ -404,7 +404,7 @@ These are deployed to Cloudflare Workers and updated on every push to `main`:
 | App Router (minimal)   | Minimal App Router on Workers                                                                                    | [app-router-cloudflare.vinext.workers.dev](https://app-router-cloudflare.vinext.workers.dev)     |
 | Pages Router (minimal) | Minimal Pages Router on Workers                                                                                  | [pages-router-cloudflare.vinext.workers.dev](https://pages-router-cloudflare.vinext.workers.dev) |
 | RealWorld API          | REST API routes example                                                                                          | [realworld-api-rest.vinext.workers.dev](https://realworld-api-rest.vinext.workers.dev)           |
-| Benchmarks Dashboard   | Build performance tracking over time (D1-backed)                                                                 | [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev)                           |
+| Benchmarks Dashboard   | Build performance tracking over time (D1-backed)                                                                 | [vinext-web.vinext.workers.dev/benchmarks](https://vinext-web.vinext.workers.dev/benchmarks)     |
 | App Router + Nitro     | App Router deployed via Nitro (multi-platform)                                                                   | [examples/app-router-nitro](examples/app-router-nitro)                                           |
 
 ## API coverage
@@ -614,7 +614,7 @@ We measure three things:
 - **Client bundle size** — gzipped output of each build.
 - **Dev server cold start** — 10 runs, randomized execution order. Vite's dependency optimizer cache is cleared before each run.
 
-Benchmarks run on GitHub CI runners (2-core Ubuntu) on every merge to `main`. See the launch numbers in the [announcement blog post](https://blog.cloudflare.com/vinext/) and the latest results at **[benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev)**.
+Benchmarks run on GitHub CI runners (2-core Ubuntu) on every merge to `main`. See the launch numbers in the [announcement blog post](https://blog.cloudflare.com/vinext/) and the latest results at **[vinext-web.vinext.workers.dev/benchmarks](https://vinext-web.vinext.workers.dev/benchmarks)**.
 
 <details>
 <summary>Why the bundle size difference?</summary>

@@ -6633,6 +6633,32 @@ describe("middleware runner", () => {
     }
   });
 
+  it("runs middleware when its matcher is rejected as unsafe", async () => {
+    const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    let middlewareCalled = false;
+    const mockRunner = {
+      import: async () => ({
+        default: () => {
+          middlewareCalled = true;
+          return new Response("Forbidden", { status: 403 });
+        },
+        // lgtm[js/redos] — deliberate pathological regex to exercise fail-closed behavior
+        config: { matcher: "/(?:[a-z]+/)*admin" },
+      }),
+    };
+
+    const result = await runMiddleware(
+      mockRunner as any,
+      "/fake/middleware.ts",
+      new Request("http://localhost/admin"),
+    );
+
+    expect(middlewareCalled).toBe(true);
+    expect(result.continue).toBe(false);
+    expect(result.response?.status).toBe(403);
+    expect(await result.response?.text()).toBe("Forbidden");
+  });
+
   it("findMiddlewareFile prefers proxy.ts over middleware.ts (Next.js 16)", async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
@@ -7006,6 +7032,36 @@ describe("middleware matcher patterns", () => {
     expect(matchPattern("/_next/static/chunk.js", "/((?!api|_next|favicon\\.ico).*)")).toBe(false);
   });
 
+  it("fails closed when a middleware matcher is rejected as unsafe", async () => {
+    const { matchPattern, matchesMiddleware } =
+      await import("../packages/vinext/src/server/middleware.js");
+    // Next.js rejects invalid matcher sources during config analysis rather than
+    // silently treating them as non-matches. Vinext additionally rejects unsafe
+    // regexes at runtime, where failing closed avoids bypassing request guards.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/segment-config/middleware/middleware-config.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/invalid-middleware-matchers/invalid-middleware-matchers.test.ts
+    // lgtm[js/redos] — deliberate pathological regex to exercise the safety fallback
+    const unsafePattern = "/(?:[A-Z]+/)*private";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      expect(matchPattern("/private", unsafePattern)).toBe(true);
+      expect(matchesMiddleware("/private", unsafePattern)).toBe(true);
+      expect(matchesMiddleware("/public", [unsafePattern])).toBe(true);
+      expect(matchesMiddleware("/public", [{ source: unsafePattern }])).toBe(true);
+
+      // Repeated calls use the cached rejection, remain fail-closed, and do not
+      // repeatedly warn for the same matcher.
+      expect(matchPattern("/public", unsafePattern)).toBe(true);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Middleware will run for all paths"),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("matchPattern: dots are escaped in paths", async () => {
     const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
     expect(matchPattern("/files/data.json", "/files/data.json")).toBe(true);
@@ -7074,6 +7130,34 @@ describe("middleware matcher patterns", () => {
     expect(matchesMiddleware("/dashboard", matcher)).toBe(true);
     expect(matchesMiddleware("/dashboard/settings", matcher)).toBe(true);
     expect(matchesMiddleware("/other", matcher)).toBe(false);
+  });
+
+  it("matchesMiddleware: trailing slashes in matcher sources are optional", async () => {
+    const { matchPattern, matchesMiddleware } =
+      await import("../packages/vinext/src/server/middleware.js");
+
+    // Next.js compiles middleware sources with an optional terminal delimiter.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/analysis/get-page-static-info.ts
+    expect(matchPattern("/api/admin/", "/api/admin/")).toBe(true);
+    expect(matchPattern("/api/admin/", "/api/admin\\/")).toBe(true);
+    expect(matchPattern("/api/admin", "/api/admin\\/")).toBe(false);
+    expect(matchPattern("/blog/post/", "/(.*)/")).toBe(true);
+    expect(matchPattern("/blog/post", "/(.*)/")).toBe(false);
+    expect(matchPattern("/api/123/", "/api/:id")).toBe(true);
+    expect(matchPattern("/api/123/", "/api/:id/")).toBe(true);
+    expect(matchPattern("/api/123", "/api/:id/")).toBe(false);
+    expect(matchPattern("/foo/", "/:path(.*\\/)")).toBe(true);
+    expect(matchPattern("/foo", "/:path(.*\\/)")).toBe(false);
+    expect(matchesMiddleware("/api/admin", "/api/admin/")).toBe(true);
+    expect(matchesMiddleware("/api/admin", ["/api/admin/"])).toBe(true);
+    expect(matchesMiddleware("/api/admin", [{ source: "/api/admin/" }])).toBe(true);
+    expect(
+      matchesMiddleware("/fr/api/admin/", "/api/admin\\/", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    expect(matchesMiddleware("/", "/")).toBe(true);
   });
 
   it("matchesMiddleware: array of object matchers with source", async () => {
@@ -7176,12 +7260,20 @@ describe("middleware matcher patterns", () => {
     expect(matchesMiddleware("/other", matcher)).toBe(false);
   });
 
-  it("matchPattern: rejects pathological ReDoS patterns", async () => {
+  it("matchPattern: fails closed for pathological ReDoS patterns", async () => {
     const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
     // Pathological pattern: (a+)+ causes catastrophic backtracking
-    // matchPattern should return false (no match) instead of hanging
+    // matchPattern must avoid evaluating it and run middleware instead of
+    // silently bypassing a potentially security-sensitive request guard.
     // lgtm[js/redos] — deliberate pathological regex to test safeRegExp guard
-    expect(matchPattern("/aaaaaaaaaaaaaaaaaaaac", "(a+)+b")).toBe(false);
+    expect(matchPattern("/aaaaaaaaaaaaaaaaaaaac", "(a+)+b")).toBe(true);
+  });
+
+  it("matchPattern: does not run globally for malformed regex syntax", async () => {
+    const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
+
+    expect(matchPattern("/public", "/admin(")).toBe(false);
+    expect(matchPattern("/admin(", "/admin(")).toBe(true);
   });
 });
 
@@ -21258,6 +21350,45 @@ describe("shim alias map .js variants", () => {
     expect(hook.handler.call({ environment: { name: "rsc" } }, "next/error.js")).toBe(
       reactServerShim,
     );
+  });
+
+  it("keeps the App Router request handler source-resolved in source checkouts", () => {
+    const plugins = vinext() as Plugin[];
+    const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+    if (!configPlugin?.resolveId || typeof configPlugin.resolveId === "function") {
+      throw new Error("vinext:config resolveId hook not found");
+    }
+
+    const hook = configPlugin.resolveId as {
+      filter: { id: RegExp };
+      handler: (
+        this: {
+          environment?: {
+            name?: string;
+            config: {
+              command: "serve" | "build";
+            };
+          };
+        },
+        id: string,
+      ) => string | { id: string; external: true } | undefined;
+    };
+    const id = "vinext/server/app-rsc-handler";
+    // resolveId returns a forward-slash id (Vite-canonical) on every platform.
+    const expected = normalizePathSeparators(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/server/app-rsc-handler.ts"),
+    );
+
+    expect(hook.filter.id.test(id)).toBe(true);
+    expect(
+      hook.handler.call({ environment: { name: "rsc", config: { command: "serve" } } }, id),
+    ).toBe(expected);
+    expect(
+      hook.handler.call({ environment: { name: "rsc", config: { command: "build" } } }, id),
+    ).toBe(expected);
+    expect(
+      hook.handler.call({ environment: { name: "ssr", config: { command: "serve" } } }, id),
+    ).toBe(expected);
   });
 });
 

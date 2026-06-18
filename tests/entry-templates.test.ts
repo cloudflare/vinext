@@ -798,9 +798,22 @@ describe("App Router entry templates", () => {
   it("generateRscEntry delegates App Router request handling to the typed helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
-    expect(code).toContain("app-rsc-handler.js");
-    expect(code).toContain("export default __createAppRscHandler({");
+    expect(code).toContain('import { createAppRscHandler } from "vinext/server/app-rsc-handler";');
+    expect(code).toContain("export default createAppRscHandler({");
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
+  });
+
+  it("generateRscEntry defers route-handler and server-action runtimes", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain('const __loadAppRouteHandlerDispatch = () => import("');
+    expect(code).toContain('const __loadAppServerActionExecution = () => import("');
+    expect(code).toContain("await __loadAppRouteHandlerDispatch()");
+    expect(code).toContain("await __loadAppServerActionExecution()");
+    expect(code).not.toMatch(/import \{\s*dispatchAppRouteHandler as __dispatchAppRouteHandler,/);
+    expect(code).not.toMatch(
+      /import \{\s*handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,/,
+    );
   });
 
   it("generateRscEntry passes page-slot dynamic stale time config into App page dispatch", () => {

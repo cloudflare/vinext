@@ -10,7 +10,7 @@
  * callers that want them; all current callers only read `cacheControl`.
  */
 
-import type { CacheControlMetadata } from "vinext/shims/cache";
+import type { CacheControlMetadata } from "vinext/shims/cache-handler";
 import {
   buildCachedRevalidateCacheControl,
   buildRevalidateCacheControl,

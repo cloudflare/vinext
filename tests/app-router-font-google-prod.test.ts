@@ -84,6 +84,7 @@ describe("App Router Production server self-hosted next/font/google headers", ()
         const family = isMono ? "Geist Mono" : "Geist";
         const gstaticUrl = `https://fonts.gstatic.com/s/${isMono ? "geistmono" : "geist"}/v1/${isMono ? "geistmono" : "geist"}-latin.woff2`;
         const css = [
+          "/* latin */",
           "@font-face {",
           `  font-family: '${family}';`,
           "  font-style: normal;",

@@ -105,6 +105,7 @@ import {
   RestorableClientStateController,
 } from "../packages/vinext/src/server/app-history-state.js";
 import {
+  blockDangerousStreamedRscRedirect,
   resolveRscRedirectLifecycleHop,
   resolveStreamedRscRedirectLifecycleHop,
 } from "../packages/vinext/src/server/app-browser-rsc-redirect.js";
@@ -5984,6 +5985,30 @@ describe("createPopstateRestoreHandler", () => {
 });
 
 describe("app browser RSC redirect lifecycle", () => {
+  it("blocks dangerous streamed redirects before browser navigation", async () => {
+    const cancel = vi.fn();
+    const response = new Response(new ReadableStream({ cancel }));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(
+      blockDangerousStreamedRscRedirect(
+        response,
+        "javascript:window.location.assign('/nextjs-compat/javascript-urls/boom')",
+      ),
+    ).toBe(true);
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+    expect(consoleError).toHaveBeenCalledWith(
+      "Next.js has blocked a javascript: URL as a security precaution.",
+    );
+  });
+
+  it("allows safe streamed redirects to reach the navigation planner", () => {
+    const response = new Response("rsc payload");
+
+    expect(blockDangerousStreamedRscRedirect(response, "/dashboard")).toBe(false);
+    expect(response.bodyUsed).toBe(false);
+  });
+
   it("keeps RSC redirect hops in the initiating lifecycle and preserves push history intent", () => {
     const decision = resolveRscRedirectLifecycleHop({
       currentHref: "https://example.com/start",

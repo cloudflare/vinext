@@ -9,6 +9,7 @@ import {
   findInstrumentationClientFile,
   findInstrumentationFile,
 } from "../packages/vinext/src/server/instrumentation.js";
+import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
 import { generateInstrumentationClientInjectModule } from "../packages/vinext/src/client/instrumentation-client-inject.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 
@@ -94,7 +95,10 @@ describe("findInstrumentationFile", () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-instr-"));
+    // Production always passes a forward-slash root (the config hook normalizes
+    // it), so mirror that here — findInstrumentationFile now returns
+    // forward-slash paths via path.posix.join.
+    tmpDir = normalizePathSeparators(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-instr-")));
   });
 
   afterEach(() => {
@@ -106,7 +110,7 @@ describe("findInstrumentationFile", () => {
 
     const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
 
-    expect(result).toBe(path.join(tmpDir, "instrumentation.ts"));
+    expect(result).toBe(path.posix.join(tmpDir, "instrumentation.ts"));
   });
 
   it("prefers root over src/ directory (priority order)", () => {
@@ -118,7 +122,7 @@ describe("findInstrumentationFile", () => {
     const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
 
     // Root files come first in INSTRUMENTATION_FILES, so root wins
-    expect(result).toBe(path.join(tmpDir, "instrumentation.ts"));
+    expect(result).toBe(path.posix.join(tmpDir, "instrumentation.ts"));
   });
 
   it("falls back to src/ directory", () => {
@@ -127,7 +131,7 @@ describe("findInstrumentationFile", () => {
 
     const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
 
-    expect(result).toBe(path.join(tmpDir, "src", "instrumentation.ts"));
+    expect(result).toBe(path.posix.join(tmpDir, "src", "instrumentation.ts"));
   });
 
   it("returns null when no instrumentation file exists", () => {
@@ -141,7 +145,9 @@ describe("findInstrumentationClientFile", () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-instr-client-"));
+    tmpDir = normalizePathSeparators(
+      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-instr-client-")),
+    );
   });
 
   afterEach(() => {
@@ -153,7 +159,7 @@ describe("findInstrumentationClientFile", () => {
 
     const result = findInstrumentationClientFile(tmpDir, createValidFileMatcher());
 
-    expect(result).toBe(path.join(tmpDir, "instrumentation-client.ts"));
+    expect(result).toBe(path.posix.join(tmpDir, "instrumentation-client.ts"));
   });
 
   it("prefers root over src/ directory (priority order)", () => {
@@ -163,7 +169,7 @@ describe("findInstrumentationClientFile", () => {
 
     const result = findInstrumentationClientFile(tmpDir, createValidFileMatcher());
 
-    expect(result).toBe(path.join(tmpDir, "instrumentation-client.ts"));
+    expect(result).toBe(path.posix.join(tmpDir, "instrumentation-client.ts"));
   });
 
   it("falls back to src/ directory", () => {
@@ -172,7 +178,7 @@ describe("findInstrumentationClientFile", () => {
 
     const result = findInstrumentationClientFile(tmpDir, createValidFileMatcher());
 
-    expect(result).toBe(path.join(tmpDir, "src", "instrumentation-client.ts"));
+    expect(result).toBe(path.posix.join(tmpDir, "src", "instrumentation-client.ts"));
   });
 
   it("returns null when no instrumentation-client file exists", () => {
