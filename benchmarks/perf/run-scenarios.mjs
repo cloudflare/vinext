@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawn } from "node:child_process";
+import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performanceScenarios, performanceSetup, benchmarkId } from "./scenarios.mjs";
@@ -91,6 +92,7 @@ for (const scenario of performanceScenarios) {
           join(resultsRoot, `perf-profiles/${id}`),
         ]
       : [];
+    if (profile) await mkdir(join(resultsRoot, `perf-profiles/${id}`), { recursive: true });
     const command = trustedCommand(implementation.command);
     await run(
       "codspeed",

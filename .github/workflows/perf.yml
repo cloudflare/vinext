@@ -117,7 +117,7 @@ jobs:
           sudo useradd --create-home --shell /bin/bash vinext-perf
           sudo setfacl -m u:vinext-perf:x "$HOME" "$RUNNER_WORKSPACE" "$(dirname "$RUNNER_WORKSPACE")"
           sudo setfacl -R -m u:vinext-perf:rwX "$GITHUB_WORKSPACE"
-          sudo setfacl -R -d -m u:vinext-perf:rwX "$GITHUB_WORKSPACE"
+          sudo setfacl -R -d -m u:vinext-perf:rwX,u:"$USER":rwX "$GITHUB_WORKSPACE"
           echo "VINEXT_PERF_TARGET_USER=vinext-perf" >> "$GITHUB_ENV"
 
       - name: Checkout trusted performance harness
