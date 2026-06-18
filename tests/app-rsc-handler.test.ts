@@ -24,6 +24,8 @@ import type { MiddlewareModule } from "../packages/vinext/src/server/middleware-
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 
 type TestRoute = {
+  __loadPage?: unknown;
+  __loadRouteHandler?: unknown;
   isDynamic: boolean;
   page?: { default?: unknown } | null;
   pattern: string;
@@ -43,6 +45,7 @@ type DispatchMatchedRouteHandler = HandlerOptions["dispatchMatchedRouteHandler"]
 
 function createPageRoute(overrides: Partial<TestRoute> = {}): TestRoute {
   return {
+    __loadPage() {},
     isDynamic: false,
     page: { default() {} },
     pattern: "/about",
@@ -77,7 +80,10 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
     dispatchMatchedRouteHandler:
       overrides.dispatchMatchedRouteHandler ?? (async () => new Response("route", { status: 200 })),
     ensureInstrumentation: overrides.ensureInstrumentation,
-    handleProgressiveActionRequest: overrides.handleProgressiveActionRequest ?? (async () => null),
+    handleProgressiveActionRequest:
+      "handleProgressiveActionRequest" in overrides
+        ? overrides.handleProgressiveActionRequest
+        : async () => null,
     handleMetadataRouteRequest:
       overrides.handleMetadataRouteRequest ??
       (overrides.metadataRoutes
@@ -88,7 +94,10 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
               makeThenableParams,
             })
         : undefined),
-    handleServerActionRequest: overrides.handleServerActionRequest ?? (async () => null),
+    handleServerActionRequest:
+      "handleServerActionRequest" in overrides
+        ? overrides.handleServerActionRequest
+        : async () => null,
     i18nConfig: overrides.i18nConfig ?? null,
     imageConfig: overrides.imageConfig,
     isDev: overrides.isDev ?? true,
@@ -2009,6 +2018,28 @@ describe("createAppRscHandler", () => {
     expect(handleServerActionRequest).toHaveBeenCalledWith(
       expect.objectContaining({ actionId: "vinext-action" }),
     );
+  });
+
+  it("rejects stale action requests without retaining the action runtime", async () => {
+    const clearRequestContext = vi.fn();
+    const handler = createHandler({
+      clearRequestContext,
+      handleProgressiveActionRequest: undefined,
+      handleServerActionRequest: undefined,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about", {
+        method: "POST",
+        headers: { "next-action": "stale-action" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await response.text()).toBe("Server action not found.");
+    expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
   it("skips action dispatchers for ordinary page requests", async () => {

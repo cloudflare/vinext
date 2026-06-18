@@ -988,6 +988,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let resolvedReactPath: string | null = null;
   let resolvedRscPath: string | null = null;
   let resolvedRscTransformsPath: string | null = null;
+  let rscPluginModulePromise: Promise<typeof import("@vitejs/plugin-rsc")> | null = null;
   // Prefer the user's project graph so vinext shares the app's Vite/plugin
   // instances. In source/workspace development, test fixtures may not declare
   // peer deps explicitly, so fall back to vinext's own install location.
@@ -1012,6 +1013,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       );
     }
     const rscImport = import(pathToFileURL(resolvedRscPath).href);
+    rscPluginModulePromise = rscImport;
     rscPluginPromise = rscImport
       .then((mod) => {
         const rsc = mod.default;
@@ -2817,6 +2819,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
           const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
           const metaRoutes = scanMetadataFiles(appDir);
+          let hasServerActions = true;
+          if (this.environment?.config.command === "build" && rscPluginModulePromise) {
+            const { getPluginApi } = await rscPluginModulePromise;
+            const pluginApi = getPluginApi(this.environment.config);
+            if (pluginApi && !pluginApi.manager.isScanBuild) {
+              hasServerActions = Object.keys(pluginApi.manager.serverReferenceMetaMap).length > 0;
+            }
+          }
           // Check for global-error.tsx at app root
           const globalErrorPath = findFileWithExts(appDir, "global-error", fileMatcher);
           // Check for global-not-found.tsx at app root (Next.js 16+ feature)
@@ -2857,6 +2867,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
               inlineCss: nextConfig?.inlineCss,
               cacheComponents: nextConfig?.cacheComponents,
+              hasServerActions,
               i18n: nextConfig?.i18n,
               imageConfig: {
                 deviceSizes: nextConfig?.images?.deviceSizes,

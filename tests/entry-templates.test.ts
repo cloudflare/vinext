@@ -895,6 +895,22 @@ describe("App Router entry templates", () => {
     );
   });
 
+  it("generateRscEntry omits server action imports when no server references were found", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      hasServerActions: false,
+    });
+
+    expect(code).toContain('from "@vitejs/plugin-rsc/react/rsc"');
+    expect(code).not.toContain("app-server-action-execution.js");
+    expect(code).not.toContain("decodeAction,");
+    expect(code).not.toContain("decodeFormState,");
+    expect(code).not.toContain("decodeReply,");
+    expect(code).not.toContain("loadServerAction,");
+    expect(code).not.toContain("createTemporaryReferenceSet,");
+    expect(code).not.toContain("handleProgressiveActionRequest({");
+    expect(code).not.toContain("handleServerActionRequest({");
+  });
+
   it("generateRscEntry passes page-slot dynamic stale time config into App page dispatch", () => {
     // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);

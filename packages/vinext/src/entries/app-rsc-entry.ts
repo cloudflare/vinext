@@ -156,6 +156,8 @@ type AppRouterConfig = {
   inlineCss?: boolean;
   /** Enables Next.js Cache Components semantics for App Router document HTML. */
   cacheComponents?: boolean;
+  /** Whether the RSC build discovered any server references. Defaults to true. */
+  hasServerActions?: boolean;
   /** Internationalization routing config for middleware matcher locale handling. */
   i18n?: NextI18nConfig | null;
   imageConfig?: ImageConfig;
@@ -217,6 +219,7 @@ export function generateRscEntry(
   const cacheMaxMemorySize = config?.cacheMaxMemorySize;
   const inlineCss = config?.inlineCss === true;
   const cacheComponents = config?.cacheComponents === true;
+  const hasServerActions = config?.hasServerActions !== false;
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
@@ -253,12 +256,18 @@ async function __loadPrerenderPagesRoutes() {
 import ${JSON.stringify(serverGlobalsPath)};
 import {
   renderToReadableStream as _renderToReadableStream,
-  decodeAction,
+  ${
+    hasServerActions
+      ? `decodeAction,
   decodeFormState,
   decodeReply,
   loadServerAction,
-  createTemporaryReferenceSet,
-} from "@vitejs/plugin-rsc/rsc";
+  createTemporaryReferenceSet,`
+      : ""
+  }
+} from ${JSON.stringify(
+    hasServerActions ? "@vitejs/plugin-rsc/rsc" : "@vitejs/plugin-rsc/react/rsc",
+  )};
 import { createClientManifest as _createClientManifest } from "@vitejs/plugin-rsc/core/rsc";
 import { prerender as _prerender } from "@vitejs/plugin-rsc/vendor/react-server-dom/static.edge";
 import { createRscPrerenderer, createRscRenderer } from ${JSON.stringify(rscStreamHintsPath)};
@@ -296,7 +305,11 @@ ${
     : ""
 }
 const __loadAppRouteHandlerDispatch = () => import(${JSON.stringify(appRouteHandlerDispatchPath)});
-const __loadAppServerActionExecution = () => import(${JSON.stringify(appServerActionExecutionPath)});
+${
+  hasServerActions
+    ? `const __loadAppServerActionExecution = () => import(${JSON.stringify(appServerActionExecutionPath)});`
+    : ""
+}
 ${
   (metadataRoutes?.length ?? 0) > 0
     ? `const __loadMetadataRouteResponse = () => import(${JSON.stringify(metadataRouteResponsePath)});`
@@ -875,6 +888,9 @@ export default createAppRscHandler({
   },`
       : ""
   }
+  ${
+    hasServerActions
+      ? `
   async handleProgressiveActionRequest({
     actionId,
     cleanPathname,
@@ -1052,6 +1068,9 @@ export default createAppRscHandler({
       },
     });
   },
+  `
+      : ""
+  }
   i18nConfig: __i18nConfig,
   ${hasPagesDir ? `loadPrerenderPagesRoutes: __loadPrerenderPagesRoutes,` : ""}
   ${
