@@ -32,19 +32,27 @@ function targetCommand(command) {
 }
 
 function profilerCommand() {
-  return targetUser
-    ? [
-        "sudo",
-        "-E",
-        "-H",
-        "-u",
-        targetUser,
-        "--",
-        "env",
-        `PATH=/home/${targetUser}/.local/bin:${process.env.PATH}`,
-        profilerBin,
-      ]
-    : [profilerBin];
+  if (!targetUser) return [profilerBin];
+  const targetHome = `/home/${targetUser}`;
+  return [
+    "sudo",
+    "-E",
+    "-H",
+    "-u",
+    targetUser,
+    "--",
+    "env",
+    "-u",
+    "GITHUB_ENV",
+    "-u",
+    "GITHUB_PATH",
+    `HOME=${targetHome}`,
+    `CARGO_HOME=${targetHome}/.cargo`,
+    `XDG_CACHE_HOME=${targetHome}/.cache`,
+    `XDG_CONFIG_HOME=${targetHome}/.config`,
+    `PATH=${targetHome}/.cargo/bin:${targetHome}/.local/bin:${process.env.PATH}`,
+    profilerBin,
+  ];
 }
 
 function run(command, args, env, cwd = targetRoot) {
