@@ -83,7 +83,11 @@ describe("App Router Production server self-hosted next/font/google headers", ()
         const isMono = url.includes("Geist+Mono") || url.includes("Geist%20Mono");
         const family = isMono ? "Geist Mono" : "Geist";
         const gstaticUrl = `https://fonts.gstatic.com/s/${isMono ? "geistmono" : "geist"}/v1/${isMono ? "geistmono" : "geist"}-latin.woff2`;
+        // The `/* latin */` subset comment matches the real css2 response
+        // format — the build plugin derives the preload list from these
+        // comments, so omitting it would mean no preloads at all.
         const css = [
+          "/* latin */",
           "@font-face {",
           `  font-family: '${family}';`,
           "  font-style: normal;",
@@ -169,19 +173,32 @@ describe("App Router Production server self-hosted next/font/google headers", ()
     expect(html).not.toContain(".vinext/fonts");
   });
 
-  it("emits served URLs in the injected <style data-vinext-fonts> block", async () => {
-    // The injected @font-face CSS is the upstream source of truth the body
+  it("emits served URLs in the external @font-face stylesheet", async () => {
+    // The served @font-face CSS is the upstream source of truth the head
     // `<link>` tags and HTTP `Link:` header are both derived from — a
     // regression here would reproduce the bug across all three emission
-    // paths at once.
+    // paths at once. Since issue #1897, the CSS is no longer inlined into
+    // the HTML; it is served as an external cacheable stylesheet referenced
+    // by a `<link rel="stylesheet">` tag.
     const res = await fetch(`${fontBaseUrl}/`);
     const html = await res.text();
-    const styleMatch = html.match(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/);
-    expect(styleMatch).not.toBeNull();
-    const styleContent = styleMatch![1];
-    expect(styleContent).toMatch(/url\(\/_next\/static\/_vinext_fonts\/[^)]+\.woff2\)/);
-    expect(styleContent).not.toContain(FONT_FIXTURE_DIR);
-    expect(styleContent).not.toContain(".vinext/fonts");
+    const linkMatch = html.match(
+      /<link rel="stylesheet"[^>]*href="(\/_next\/static\/_vinext_fonts\/[^"]+\.css)"/,
+    );
+    expect(linkMatch).not.toBeNull();
+    const cssRes = await fetch(`${fontBaseUrl}${linkMatch![1]}`);
+    expect(cssRes.status).toBe(200);
+    expect(cssRes.headers.get("content-type")).toContain("text/css");
+    const cssContent = await cssRes.text();
+    expect(cssContent).toMatch(/url\(\/_next\/static\/_vinext_fonts\/[^)]+\.woff2\)/);
+    expect(cssContent).not.toContain(FONT_FIXTURE_DIR);
+    expect(cssContent).not.toContain(".vinext/fonts");
+    // The HTML itself must not inline any @font-face src urls.
+    const styleBlocks = [...html.matchAll(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/g)];
+    for (const [, styleContent] of styleBlocks) {
+      expect(styleContent).not.toContain("url(");
+      expect(styleContent).not.toContain(FONT_FIXTURE_DIR);
+    }
   });
 
   it("serves the cached font files copied into the client output", async () => {

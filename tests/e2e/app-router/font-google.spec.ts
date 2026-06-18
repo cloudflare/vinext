@@ -12,4 +12,15 @@ test("dev mode self-hosts Google fonts", async ({ page, request }) => {
   expect(res.status()).toBe(200);
   expect(res.headers()["content-type"]).toBe("font/woff2");
   expect((await res.body()).byteLength).toBeGreaterThan(1000);
+
+  // The @font-face rules are served as an external stylesheet (issue #1897),
+  // not inlined into the HTML — the dev middleware serves it from the cache.
+  const cssLink = html.match(
+    /<link rel="stylesheet"[^>]*href="(\/[^"]*_vinext_fonts\/[^"]+\.css)"/,
+  );
+  expect(cssLink).not.toBeNull();
+  const cssRes = await request.get(cssLink![1]);
+  expect(cssRes.status()).toBe(200);
+  expect(cssRes.headers()["content-type"]).toBe("text/css");
+  expect(await cssRes.text()).toContain("@font-face");
 });

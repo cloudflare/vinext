@@ -737,9 +737,17 @@ describe("vinext:google-fonts plugin", () => {
     expect(result).not.toBeNull();
     expect(result.code).toContain("virtual:vinext-google-fonts?");
     expect(result.code).toContain("_vinext");
-    expect(result.code).toContain("selfHostedCSS");
+    // The @font-face CSS is not embedded in the bundle — the payload
+    // carries the external stylesheet URL plus the subset-filtered
+    // preload list (issue #1897).
+    expect(result.code).toContain("selfHostedCSSUrl");
+    expect(result.code).toContain("preloadFontFiles");
     expect(result.code).toContain("adjustedFallbackCSS");
-    expect(result.code).toContain("@font-face");
+    // The downloaded @font-face blocks stay out of the bundle (only the
+    // tiny `src: local(...)` fallback face from adjustedFallbackCSS may
+    // appear inline) — unicode-range only occurs in Google's blocks.
+    expect(result.code).not.toContain("selfHostedCSS: ");
+    expect(result.code).not.toContain("unicode-range");
     expect(result.code).toContain("Inter");
     expect(result.map).toBeDefined();
 
@@ -753,6 +761,14 @@ describe("vinext:google-fonts plugin", () => {
     const files = fs.readdirSync(path.join(cacheDir, interDir!));
     expect(files).toContain("style.css");
     expect(files.some((f: string) => f.endsWith(".woff2"))).toBe(true);
+
+    // The served external stylesheet is written next to the cached files
+    // and contains the @font-face rules that used to be embedded.
+    const servedCss = files.find((f: string) => /^font\.[0-9a-f]{8}\.css$/.test(f));
+    expect(servedCss).toBeDefined();
+    const servedCssContent = fs.readFileSync(path.join(cacheDir, interDir!, servedCss!), "utf-8");
+    expect(servedCssContent).toContain("@font-face");
+    expect(servedCssContent).toContain("Inter");
 
     // Clean up
     fs.rmSync(root, { recursive: true, force: true });
@@ -959,7 +975,7 @@ describe("vinext:google-fonts plugin", () => {
       // Must not have a double-comma — that would be a JS syntax error
       expect(result.code).not.toMatch(/,\s*,/);
       // Verify the generated code is syntactically valid by checking structure
-      expect(result.code).toContain('selfHostedCSS: "');
+      expect(result.code).toContain('selfHostedCSSUrl: "');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -1075,9 +1091,8 @@ describe("vinext:google-fonts plugin", () => {
       const result = await transform.call(plugin, code, "/app/layout.tsx");
       expect(result).not.toBeNull();
       expect(result.code).toContain("virtual:vinext-google-fonts?");
-      // selfHostedCSS must have been injected — without the fix this was absent
-      expect(result.code).toContain("selfHostedCSS");
-      expect(result.code).toContain("@font-face");
+      // The font payload must have been injected — without the fix this was absent
+      expect(result.code).toContain("selfHostedCSSUrl");
       // Verify the injected object is syntactically valid (no double-comma)
       expect(result.code).not.toMatch(/,\s*,/);
     } finally {
@@ -1356,12 +1371,17 @@ describe("fetchAndCacheFont", () => {
     const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
 
-    // Verify the transformed code contains self-hosted CSS with @font-face
-    expect(result.code).toContain("selfHostedCSS");
-    expect(result.code).toContain("@font-face");
+    // Verify the transformed code carries the self-hosted payload: the
+    // external stylesheet URL and the subset-filtered preload list. The
+    // @font-face CSS itself lives in the cached `font.<hash>.css`, not in
+    // the bundle (issue #1897).
+    expect(result.code).toContain("selfHostedCSSUrl");
+    expect(result.code).toContain("/_vinext_fonts/");
     expect(result.code).toContain("Inter");
     // Should reference local file paths, not googleapis.com CDN
     expect(result.code).not.toContain("fonts.gstatic.com");
+    // Inter's latin subset was requested, so the preload list must carry
+    // at least one served .woff2 URL.
     expect(result.code).toContain(".woff2");
   }, 15000);
 

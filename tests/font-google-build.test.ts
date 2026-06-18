@@ -82,6 +82,6 @@ describe("font-google build integration", () => {
     const content = await fs.readFile(buildOutputPath, "utf-8");
     expect(content).toContain("Geist");
     expect(content).toContain("_vinext");
-    expect(content).toContain("selfHostedCSS");
+    expect(content).toContain("selfHostedCSSUrl");
   }, 120000);
 });

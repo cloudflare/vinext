@@ -15,10 +15,13 @@ import {
  * Provides a compatible shim for Next.js Google Fonts.
  *
  * Two modes:
- * 1. **Dev / CDN mode** (default): Loads fonts from Google Fonts CDN via <link> tags.
- * 2. **Self-hosted mode** (production build): The vinext:google-fonts Vite plugin
- *    fetches font CSS + .woff2 files at build time, caches them locally, and injects
- *    @font-face CSS pointing at local assets. No requests to Google at runtime.
+ * 1. **CDN mode** (fallback for dynamic options): Loads fonts from the Google
+ *    Fonts CDN via <link> tags.
+ * 2. **Self-hosted mode** (static calls, dev + production build): The
+ *    vinext:google-fonts Vite plugin fetches font CSS + .woff2 files at build
+ *    time, caches them locally, writes the @font-face CSS as an external
+ *    stylesheet, and injects its URL plus a subset-filtered preload list.
+ *    No requests to Google at runtime.
  *
  * Usage:
  *   import { Inter } from 'next/font/google';
@@ -50,6 +53,21 @@ export type FontResult = {
 };
 
 type InternalGoogleFontRuntimeOptions = {
+  /**
+   * Served URL of the external `@font-face` stylesheet written by the build
+   * plugin (`/<assetsDir>/_vinext_fonts/<family>-<hash>/font.<hash>.css`).
+   * Preferred over `selfHostedCSS`: the CSS stays out of the HTML and the
+   * bundle, and the browser/CDN can cache it (issue #1897).
+   */
+  selfHostedCSSUrl?: string;
+  /**
+   * Subset-filtered font file URLs to emit as `<link rel="preload">`.
+   * Computed at build time from the `/* subset *\/` comments in the Google
+   * Fonts CSS against the caller's `subsets` option; empty when
+   * `preload: false`.
+   */
+  preloadFontFiles?: string[];
+  /** Legacy inline @font-face CSS payload. Superseded by `selfHostedCSSUrl`. */
   selfHostedCSS?: string;
   adjustedFallbackCSS?: string;
   fontWeight?: number;
@@ -150,6 +168,7 @@ function createFontIdentity(
       normalizeStringOrBooleanOption(options.adjustFontFallback),
       normalizeStringSetOption(options.axes),
       options._vinext?.font?.selfHostedCSS ?? "",
+      options._vinext?.font?.selfHostedCSSUrl ?? "",
       options._vinext?.font?.fontWeight?.toString() ?? "",
       options._vinext?.font?.fontStyle ?? "",
     ].join("\0"),
@@ -162,10 +181,10 @@ function createFontIdentity(
  * In production this code path is dead. The build plugin
  * (`vinext:google-fonts` in `src/plugins/fonts.ts`) statically resolves
  * each font call's axis values against the bundled metadata, fetches the
- * Google Fonts CSS, and injects the resulting CSS as
- * `_vinext.font.selfHostedCSS` so the runtime never queries Google. The shim
- * only reaches this builder when the plugin's static parser bails (dynamic
- * options, eval-only shapes), which is dev-only.
+ * Google Fonts CSS, writes it as an external stylesheet, and injects its
+ * URL as `_vinext.font.selfHostedCSSUrl` so the runtime never queries
+ * Google. The shim only reaches this builder when the plugin's static
+ * parser bails (dynamic options, eval-only shapes), which is dev-only.
  *
  * The dev fallback intentionally has no metadata: shipping the 388 KB
  * `font-data.json` to the Worker bundle would dwarf the rest of the shim,
@@ -351,19 +370,27 @@ function extractFontUrlsFromCSS(css: string): string[] {
 }
 
 /**
- * Collect font file URLs from self-hosted CSS for preload link generation.
+ * Collect font file URLs for `<link rel="preload">` generation.
  * Only collects on the server (SSR). Deduplicates by href using a Set for O(1) lookups.
  */
-function collectFontPreloadsFromCSS(css: string): void {
+function collectFontPreloads(urls: readonly string[]): void {
   if (typeof document !== "undefined") return; // client-side, skip
 
-  const urls = extractFontUrlsFromCSS(css);
   for (const href of urls) {
     if (!ssrFontPreloadHrefs.has(href)) {
       ssrFontPreloadHrefs.add(href);
       ssrFontPreloads.push({ href, type: getFontMimeType(href) });
     }
   }
+}
+
+/**
+ * Collect font file URLs from self-hosted CSS for preload link generation.
+ * Legacy path for inline `selfHostedCSS` payloads — the build plugin now
+ * passes an explicit subset-filtered `preloadFontFiles` list instead.
+ */
+function collectFontPreloadsFromCSS(css: string): void {
+  collectFontPreloads(extractFontUrlsFromCSS(css));
 }
 
 /** Track injected self-hosted @font-face blocks (deduplicate) */
@@ -391,6 +418,33 @@ function injectSelfHostedCSS(css: string): void {
   style.textContent = css;
   style.setAttribute("data-vinext-font-selfhosted", "true");
   document.head.appendChild(style);
+}
+
+/**
+ * Reference the external self-hosted @font-face stylesheet written by the
+ * build plugin. On the server the URL is collected for SSR head injection
+ * (`<link rel="stylesheet">`); on the client a `<link>` tag is appended only
+ * when the SSR-rendered document doesn't already contain one.
+ */
+function injectSelfHostedStylesheet(url: string): void {
+  if (injectedFonts.has(url)) return;
+  injectedFonts.add(url);
+
+  if (typeof document === "undefined") {
+    // SSR: collect for head injection
+    if (!ssrFontUrls.includes(url)) {
+      ssrFontUrls.push(url);
+    }
+    return;
+  }
+
+  // Client: SSR already emitted the <link> in the initial HTML, so only
+  // append one for client-only loads (e.g. a font added during HMR).
+  if (document.querySelector(`link[rel="stylesheet"][href="${url}"]`)) return;
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = url;
+  document.head.appendChild(link);
 }
 
 export type FontLoader = (options?: FontLoaderOptions) => FontResult;
@@ -433,8 +487,18 @@ export function createFontLoader(family: string): FontLoader {
       google: true,
     });
 
-    if (internal?.selfHostedCSS) {
-      // Self-hosted mode: inject local @font-face CSS instead of CDN link
+    if (internal?.selfHostedCSSUrl) {
+      // Self-hosted mode: reference the external @font-face stylesheet and
+      // preload only the subset-filtered files the build plugin selected.
+      // Preload collection runs outside the stylesheet dedupe so a second
+      // loader call sharing the same stylesheet (same family/axes) but
+      // requesting different subsets still contributes its preloads.
+      injectSelfHostedStylesheet(internal.selfHostedCSSUrl);
+      if (internal.preloadFontFiles && internal.preloadFontFiles.length > 0) {
+        collectFontPreloads(internal.preloadFontFiles);
+      }
+    } else if (internal?.selfHostedCSS) {
+      // Legacy self-hosted mode: inject inline @font-face CSS
       injectSelfHostedCSS(internal.selfHostedCSS);
     } else {
       // CDN mode: inject <link> to Google Fonts

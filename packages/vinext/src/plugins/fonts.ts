@@ -9,11 +9,13 @@
  *      delete the generated ~1,900-line runtime catalog while keeping ESM import
  *      semantics intact.
  *   2. During production builds, fetches Google Fonts CSS + font files, caches
- *      them locally under `.vinext/fonts/`, and injects `_vinext.font` into
- *      statically analyzable font loader calls so fonts are served from the
- *      deployed origin rather than fonts.googleapis.com. Static calls also
- *      receive adjusted fallback CSS when Next.js-compatible fallback metrics
- *      exist for the selected Google Font.
+ *      them locally under `.vinext/fonts/`, writes the @font-face CSS as an
+ *      external `font.<hash>.css` stylesheet, and injects `_vinext.font`
+ *      (stylesheet URL + subset-filtered preload list) into statically
+ *      analyzable font loader calls so fonts are served from the deployed
+ *      origin rather than fonts.googleapis.com. Static calls also receive
+ *      adjusted fallback CSS when Next.js-compatible fallback metrics exist
+ *      for the selected Google Font.
  *
  * `createLocalFontsPlugin` — vinext:local-fonts
  *   When a source file calls localFont({ src: "./font.woff2" }) or
@@ -28,6 +30,7 @@ import type { Plugin } from "vite";
 import { parseAst } from "vite";
 import path from "node:path";
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { escapeRegExp } from "../utils/regex.js";
 import { lastSignificantChar } from "../utils/has-trailing-comma.js";
 import MagicString from "magic-string";
@@ -38,6 +41,7 @@ import {
 import { validateGoogleFontOptions } from "../build/google-fonts/validate.js";
 import { getFontAxes } from "../build/google-fonts/get-axes.js";
 import { buildGoogleFontsUrl } from "../build/google-fonts/build-url.js";
+import { findFontFilesInCss } from "../build/google-fonts/find-font-files-in-css.js";
 import { CONTENT_TYPES } from "../server/static-file-cache.js";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
 
@@ -82,17 +86,29 @@ const GOOGLE_FONT_UTILITY_EXPORTS = new Set([
  * and writes an `@font-face` CSS snippet whose `src: url(...)` references
  * the files by absolute filesystem path — convenient for disk, unusable at
  * runtime because browsers resolve relative to the origin. Before the CSS
- * is embedded in the bundle as `_vinext.font.selfHostedCSS`, the filesystem
+ * is written out as the served `font.<hash>.css` stylesheet, the filesystem
  * prefix is rewritten to this URL prefix by `_rewriteCachedFontCssToServedUrls()`,
  * and the matching `writeBundle` hook in `createGoogleFontsPlugin` copies
- * the font files into `<clientOutDir>/<assetsDir>/_vinext_fonts/` so the
- * rewritten URL actually resolves against the origin at request time.
+ * the font files and stylesheet into
+ * `<clientOutDir>/<assetsDir>/_vinext_fonts/` so the rewritten URL actually
+ * resolves against the origin at request time.
  *
  * The leading `_` keeps the namespace distinct from Vite's content-hashed
  * asset names (which are emitted flat into `<assetsDir>/`) and from any
  * user-provided public files.
  */
 const VINEXT_FONT_URL_NAMESPACE = "_vinext_fonts";
+
+/**
+ * Filename pattern for the served @font-face stylesheet written next to the
+ * cached font files (`font.<contenthash>.css`). The content hash keeps the
+ * URL stable for CDN caching while still busting when the CSS changes (e.g.
+ * Google revs a font file URL after a cache refetch). Distinct from the
+ * `style.css` intermediate, which contains absolute filesystem paths and
+ * must never be served.
+ */
+const SERVED_FONT_CSS_RE = /^font\.[0-9a-f]{8}\.css$/;
+
 const MAX_GOOGLE_FONTS_ERROR_BODY_LENGTH = 500;
 
 function formatGoogleFontsErrorBody(body: string): string {
@@ -108,12 +124,13 @@ function formatGoogleFontsErrorBody(body: string): string {
  * `@font-face { src: url(...) }` references point at the served URL the
  * plugin's `writeBundle` hook copies the font files to.
  *
- * This is called once per transform, before the CSS string is embedded in
- * the bundle as `_vinext.font.selfHostedCSS`. Every downstream consumer reads
- * from the same rewritten CSS: the injected `<style data-vinext-fonts>` block, the
- * HTML body's `<link rel="preload">` tags (via `collectFontPreloadsFromCSS`
- * in `shims/font-google-base.ts`), and the HTTP `Link:` response header
- * (via `buildAppPageFontLinkHeader` in `server/app-page-execution.ts`).
+ * This is called once per transform, before the CSS string is written out
+ * as the served `font.<hash>.css` stylesheet. Every downstream consumer
+ * reads from the same rewritten CSS: the `<link rel="stylesheet">` target
+ * itself, the HTML head's `<link rel="preload">` tags (via the
+ * `preloadFontFiles` list computed by `findFontFilesInCss`), and the HTTP
+ * `Link:` response header (via `buildAppPageFontLinkHeader` in
+ * `server/app-page-execution.ts`).
  *
  * Without this rewrite, all three emit the dev-machine filesystem path
  * (e.g. `/home/user/project/.vinext/fonts/geist-<hash>/geist-<hash>.woff2`)
@@ -429,16 +446,15 @@ async function fetchAndCacheFont(
   cssUrl: string,
   family: string,
   cacheDir: string,
-): Promise<string> {
+): Promise<{ css: string; fontDir: string }> {
   // Use a hash of the URL for the cache key
-  const { createHash } = await import("node:crypto");
   const urlHash = createHash("md5").update(cssUrl).digest("hex").slice(0, 12);
   const fontDir = path.join(cacheDir, `${family.toLowerCase().replace(/\s+/g, "-")}-${urlHash}`);
 
   // Check if already cached
   const cachedCSSPath = path.join(fontDir, "style.css");
   if (fs.existsSync(cachedCSSPath)) {
-    return fs.readFileSync(cachedCSSPath, "utf-8");
+    return { css: fs.readFileSync(cachedCSSPath, "utf-8"), fontDir };
   }
 
   // Fetch CSS from Google Fonts (woff2 user-agent gives woff2 URLs)
@@ -488,22 +504,22 @@ async function fetchAndCacheFont(
     // Rewrite every remote Google Fonts CDN URL in the cached CSS to the
     // absolute filesystem path of the locally-downloaded font file. This
     // cache file is read back by the plugin and then run through
-    // `_rewriteCachedFontCssToServedUrls()` at embed time, which replaces
-    // the absolute `cacheDir` prefix with the served URL namespace under
+    // `_rewriteCachedFontCssToServedUrls()` before being written out as the
+    // served `font.<hash>.css` stylesheet, which replaces the absolute
+    // `cacheDir` prefix with the served URL namespace under
     // `/<assetsDir>/_vinext_fonts/`. The filesystem path is only the
-    // on-disk intermediate form — it must never reach the bundle, the
-    // injected `<style data-vinext-fonts>` block, the HTML `<link
-    // rel="preload">` tags, or the HTTP `Link:` response header. An
-    // earlier version of this code claimed "Vite will resolve /@fs/ for
-    // dev, or asset for build", which was never true: the CSS is
-    // embedded as a JavaScript string literal and Vite's asset pipeline
-    // does not scan string literals. Do not resurrect that assumption.
+    // on-disk intermediate form — it must never reach the served
+    // stylesheet, the HTML `<link rel="preload">` tags, or the HTTP
+    // `Link:` response header. An earlier version of this code claimed
+    // "Vite will resolve /@fs/ for dev, or asset for build", which was
+    // never true: Vite's asset pipeline never scans this CSS. Do not
+    // resurrect that assumption.
     css = css.split(fontUrl).join(filePath.replaceAll("\\", "/"));
   }
 
   // Cache the rewritten CSS
   fs.writeFileSync(cachedCSSPath, css);
-  return css;
+  return { css, fontDir };
 }
 
 // ── Plugin factories ──────────────────────────────────────────────────────────
@@ -652,7 +668,8 @@ export function _findCallEnd(code: string, objEnd: number): number | null {
 export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: string): Plugin {
   // Vite does not bind `this` to the plugin object when calling hooks, so
   // plugin state must be held in closure variables rather than as properties.
-  const fontCache = new Map<string, string>(); // url -> local @font-face CSS
+  // url -> cached @font-face CSS (with filesystem paths) + its cache dir
+  const fontCache = new Map<string, { css: string; fontDir: string }>();
   let cacheDir = "";
 
   return {
@@ -668,8 +685,8 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
     // .vinext/fonts/ tree is served directly under the same URL prefix that
     // `_rewriteCachedFontCssToServedUrls()` embeds into the @font-face CSS
     // (`/<assetsDir>/_vinext_fonts/...`). Without this hook the rewritten
-    // URLs 404 — and once `_vinext.font.selfHostedCSS` is injected, the shim no longer
-    // emits the fonts.googleapis.com `<link>`, so a 404 here means no
+    // URLs 404 — and once `_vinext.font.selfHostedCSSUrl` is injected, the shim no
+    // longer emits the fonts.googleapis.com `<link>`, so a 404 here means no
     // glyphs render at all (no CDN fallback path).
     configureServer(server) {
       if (!cacheDir) return;
@@ -876,11 +893,11 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
           const cssUrl = buildGoogleFontsUrl(family, axes, validated.display);
 
           // Check cache
-          let localCSS = fontCache.get(cssUrl);
-          if (!localCSS) {
+          let cachedFont = fontCache.get(cssUrl);
+          if (!cachedFont) {
             try {
-              localCSS = await fetchAndCacheFont(cssUrl, family, cacheDir);
-              fontCache.set(cssUrl, localCSS);
+              cachedFont = await fetchAndCacheFont(cssUrl, family, cacheDir);
+              fontCache.set(cssUrl, cachedFont);
             } catch (err) {
               if (err instanceof GoogleFontsHttpError) {
                 // HTTP 4xx/5xx from Google means the URL is malformed or
@@ -901,7 +918,7 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
 
           // Rewrite absolute `.vinext/fonts/` filesystem paths in the cached
           // CSS to served URLs under `/<assetsDir>/_vinext_fonts/` so the
-          // embedded `_vinext.font.selfHostedCSS` string has origin-relative URLs that
+          // external stylesheet written below has origin-relative URLs that
           // the browser can actually resolve. The plugin's writeBundle hook
           // copies the referenced font files to the matching location under
           // the client output directory so the URLs serve 200s, not 404s.
@@ -914,11 +931,48 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
           // customizes `build.assetsDir` (e.g. to `"static"`) sees both
           // the CSS and the copy target move together — otherwise the
           // rewritten URLs would 404 in production.
+          const { css: localCSS, fontDir } = cachedFont;
           const servedCSS = _rewriteCachedFontCssToServedUrls(
             localCSS,
             cacheDir,
             transformAssetsDir,
           );
+
+          // Decide which font files get a `<link rel="preload">`. Next.js
+          // keeps every subset's @font-face rule in the CSS — the browser
+          // only downloads files whose unicode-range matches page content —
+          // but preloads only the files whose `/* subset */` comment is in
+          // the requested `subsets`, and nothing at all for `preload: false`
+          // (issue #1897).
+          const preloadFontFiles = findFontFilesInCss(
+            servedCSS,
+            validated.preload ? validated.subsets : undefined,
+          )
+            .filter((file) => file.preloadFontFile)
+            .map((file) => file.fontFileUrl);
+
+          // Write the served @font-face CSS as an external stylesheet next
+          // to the cached font files so the HTML can reference a cacheable
+          // `<link rel="stylesheet">` instead of inlining the full block
+          // into every response (issue #1897). In dev the configureServer
+          // middleware serves it straight from the cache dir; in build the
+          // writeBundle hook copies it into the client output alongside the
+          // font files. Stale content hashes from earlier builds are removed
+          // so the cache dir doesn't accumulate dead stylesheets.
+          const servedCssFileName = `font.${createHash("md5").update(servedCSS).digest("hex").slice(0, 8)}.css`;
+          const servedCssPath = path.join(fontDir, servedCssFileName);
+          for (const entry of fs.readdirSync(fontDir)) {
+            if (SERVED_FONT_CSS_RE.test(entry) && entry !== servedCssFileName) {
+              fs.rmSync(path.join(fontDir, entry), { force: true });
+            }
+          }
+          if (!fs.existsSync(servedCssPath)) {
+            fs.writeFileSync(servedCssPath, servedCSS);
+          }
+          const selfHostedCSSUrl = `/${transformAssetsDir || DEFAULT_ASSETS_DIR}/${VINEXT_FONT_URL_NAMESPACE}/${path
+            .relative(cacheDir, servedCssPath)
+            .split(path.sep)
+            .join("/")}`;
           const fallbackMetrics =
             validated.adjustFontFallback === false
               ? undefined
@@ -933,8 +987,14 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
           const validatedFontStyle =
             validated.styles.length === 1 ? validated.styles[0] : undefined;
 
-          // Inject the internal transform-to-runtime payload into the options object.
-          const internalFontProperties = [`selfHostedCSS: ${JSON.stringify(servedCSS)}`];
+          // Inject the internal transform-to-runtime payload into the options
+          // object. The @font-face CSS itself is NOT embedded — the runtime
+          // only needs the stylesheet URL plus the subset-filtered preload
+          // list, which keeps the server bundle and the HTML small.
+          const internalFontProperties = [
+            `selfHostedCSSUrl: ${JSON.stringify(selfHostedCSSUrl)}`,
+            `preloadFontFiles: ${JSON.stringify(preloadFontFiles)}`,
+          ];
           if (adjustedFallbackCSS) {
             internalFontProperties.push(
               `adjustedFallbackCSS: ${JSON.stringify(adjustedFallbackCSS)}`,
@@ -1085,9 +1145,10 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
         const assetsDir = this.environment.config?.build?.assetsDir ?? DEFAULT_ASSETS_DIR;
         const targetRoot = path.join(outDir, assetsDir, VINEXT_FONT_URL_NAMESPACE);
 
-        // Recursive copy of every cached font file. Skip the companion
-        // `style.css` artifact — that is only read by the build plugin
-        // itself, never served at runtime.
+        // Recursive copy of every cached font file plus the served
+        // `font.<hash>.css` stylesheets. Skip the companion `style.css`
+        // artifact — it contains absolute filesystem paths and is only read
+        // by the build plugin itself, never served at runtime.
         const stack: string[] = [cacheDir];
         while (stack.length > 0) {
           const dir = stack.pop();
@@ -1098,7 +1159,12 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
               stack.push(src);
               continue;
             }
-            if (!/\.(woff2?|ttf|otf|eot)$/i.test(entry.name)) continue;
+            if (
+              !/\.(woff2?|ttf|otf|eot)$/i.test(entry.name) &&
+              !SERVED_FONT_CSS_RE.test(entry.name)
+            ) {
+              continue;
+            }
             const relative = path.relative(cacheDir, src);
             const dest = path.join(targetRoot, relative);
             fs.mkdirSync(path.dirname(dest), { recursive: true });
