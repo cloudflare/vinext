@@ -33,6 +33,45 @@ type ExecutionContext = {
   passThroughOnException(): void;
 };
 
+async function sweepPerformanceProfiles(env: Env): Promise<void> {
+  const { results } = await env.DB.prepare(`
+    SELECT object_key
+    FROM performance_profile_objects
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM performance_measurements
+      WHERE profile_object_key = performance_profile_objects.object_key
+    )
+      AND created_at <= datetime('now', '-1 day')
+    ORDER BY created_at
+    LIMIT 100
+  `).all<{ object_key: string }>();
+  for (const { object_key: key } of results) {
+    let deleted;
+    try {
+      deleted = await env.DB.prepare(
+        "DELETE FROM performance_profile_objects WHERE object_key = ? RETURNING object_key",
+      )
+        .bind(key)
+        .first<{ object_key: string }>();
+    } catch (error) {
+      console.error("Failed to claim performance profile for sweeping", key, error);
+      continue;
+    }
+    if (!deleted) continue;
+    try {
+      await env.PERFORMANCE_PROFILES.delete(key);
+    } catch (error) {
+      await env.DB.prepare(
+        "INSERT OR IGNORE INTO performance_profile_objects (object_key) VALUES (?)",
+      )
+        .bind(key)
+        .run();
+      console.error("Failed to sweep performance profile", key, error);
+    }
+  }
+}
+
 async function safeEqual(a: string, b: string): Promise<boolean> {
   const encoder = new TextEncoder();
   const [left, right] = await Promise.all([
@@ -75,6 +114,14 @@ async function uploadPerformanceProfile(request: Request, env: Env): Promise<Res
     httpMetadata: { contentType: "application/gzip" },
     customMetadata: { benchmarkId, commitSha: commitSha.toLowerCase(), runKind },
   });
+  try {
+    await env.DB.prepare("INSERT INTO performance_profile_objects (object_key) VALUES (?)")
+      .bind(key)
+      .run();
+  } catch (error) {
+    await env.PERFORMANCE_PROFILES.delete(key);
+    throw error;
+  }
   return Response.json({ key }, { status: 201 });
 }
 
@@ -91,7 +138,24 @@ async function deletePerformanceProfile(request: Request, env: Env): Promise<Res
   if (!key?.match(/^profiles\/(?:main|pull_request)\/[0-9a-f]{40}\//i)) {
     return new Response("Invalid performance profile key", { status: 400 });
   }
-  await env.PERFORMANCE_PROFILES.delete(key);
+  const deleted = await env.DB.prepare(
+    "DELETE FROM performance_profile_objects WHERE object_key = ? RETURNING object_key",
+  )
+    .bind(key)
+    .first<{ object_key: string }>();
+  if (!deleted) {
+    return new Response("Performance profile is referenced by a committed run", { status: 409 });
+  }
+  try {
+    await env.PERFORMANCE_PROFILES.delete(key);
+  } catch (error) {
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO performance_profile_objects (object_key) VALUES (?)",
+    )
+      .bind(key)
+      .run();
+    throw error;
+  }
   return new Response(null, { status: 204 });
 }
 
@@ -136,5 +200,8 @@ export default {
     // ctx.waitUntil() is available to background cache writes and
     // other deferred work via getRequestExecutionContext().
     return handler.fetch(request, env, ctx);
+  },
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(sweepPerformanceProfiles(env));
   },
 };

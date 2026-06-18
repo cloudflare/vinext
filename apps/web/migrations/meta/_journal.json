@@ -36,6 +36,13 @@
       "when": 1781741000000,
       "tag": "0004_performance_profiles_r2",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1781777823517,
+      "tag": "0005_performance_profile_registry",
+      "breakpoints": true
     }
   ]
 }

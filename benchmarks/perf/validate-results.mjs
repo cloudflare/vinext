@@ -5,7 +5,6 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { gunzip } from "node:zlib";
-import { benchmarkId, performanceScenarios } from "./scenarios.mjs";
 
 const inputPath = resolve(process.argv[2] ?? "performance-artifact/perf-results.json");
 const artifactRoot = dirname(inputPath);
@@ -44,6 +43,26 @@ function githubApi(path) {
       env: { ...process.env, GH_TOKEN: token },
     }),
   );
+}
+
+function trustedScenarioManifest(ref) {
+  assert(isSha(ref), "Trusted benchmark manifest ref must be a complete SHA");
+  const file = githubApi(
+    `repos/${repository}/contents/benchmarks/perf/scenarios.json?ref=${encodeURIComponent(ref)}`,
+  );
+  assert(file.type === "file" && file.encoding === "base64", "Invalid benchmark manifest response");
+  const manifest = JSON.parse(Buffer.from(file.content, "base64").toString("utf8"));
+  assert(manifest && typeof manifest === "object", "Invalid benchmark manifest");
+  assert(Array.isArray(manifest.scenarios), "Benchmark manifest has no scenarios");
+  assert(
+    manifest.scenarios.length > 0 && manifest.scenarios.length <= 100,
+    "Invalid benchmark manifest scenario count",
+  );
+  return manifest.scenarios;
+}
+
+function benchmarkId(scenario, implementation) {
+  return `${implementation.id}-${scenario.id}`;
 }
 
 function tableRowCount(table, label) {
@@ -172,6 +191,10 @@ function validateProfileTables(profile, profileFile) {
       }
       let depth = stackIndex === null || stackIndex === undefined ? 0 : stackDepths.get(stackIndex);
       while (path.length > 0) {
+        assert(
+          depth + path.length <= MAX_PROFILE_STACK_DEPTH,
+          `Profile stack is too deep: ${profileFile}`,
+        );
         depth += 1;
         stackDepths.set(path.pop(), depth);
       }
@@ -280,6 +303,21 @@ assert(
   "Invalid benchmark count",
 );
 
+let trustedManifestRef;
+if (sourceEvent === "pull_request") {
+  const pullRequest = sourceRun.pull_requests?.[0];
+  assert(pullRequest, "Source workflow run is not associated with a pull request");
+  const headRepository = new URL(pullRequest.head.repo.url).pathname.replace(/^\/repos\//, "");
+  trustedManifestRef = headRepository === repository ? pullRequest.head.sha : pullRequest.base.sha;
+} else if (sourceEvent === "push") {
+  trustedManifestRef = sourceRun.head_sha;
+} else if (sourceEvent === "workflow_dispatch") {
+  trustedManifestRef = sourceRun.head_sha;
+} else {
+  throw new Error(`Unsupported source event: ${sourceEvent}`);
+}
+
+const performanceScenarios = trustedScenarioManifest(trustedManifestRef);
 const benchmarkIds = new Set();
 const expectedBenchmarks = new Map(
   performanceScenarios.flatMap((scenario) =>
@@ -423,8 +461,6 @@ if (sourceEvent === "pull_request") {
       "Main run has PR metadata",
     );
   }
-} else {
-  throw new Error(`Unsupported source event: ${sourceEvent}`);
 }
 
 const commit = githubApi(`repos/${commitRepository}/commits/${payload.run.commitSha}`);

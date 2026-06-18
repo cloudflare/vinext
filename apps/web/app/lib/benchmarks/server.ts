@@ -98,16 +98,6 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
   const db = getD1();
   const profiles = getProfilesBucket();
   const runId = `${body.run.kind}:${body.run.commitSha}`;
-  const oldProfiles = await db
-    .prepare(`
-      SELECT profile_object_key
-      FROM performance_measurements
-      WHERE run_id IN (
-        SELECT id FROM performance_runs WHERE kind = ? AND commit_sha = ?
-      ) AND profile_object_key IS NOT NULL
-    `)
-    .bind(body.run.kind, body.run.commitSha)
-    .all<{ profile_object_key: string }>();
   const profileKeys = new Map(
     body.benchmarks.flatMap((benchmark) =>
       benchmark.profileObjectKey
@@ -126,6 +116,7 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
         WHERE run_id IN (
           SELECT id FROM performance_runs WHERE kind = ? AND commit_sha = ?
         )
+        RETURNING profile_object_key
       `)
       .bind(body.run.kind, body.run.commitSha),
     db
@@ -187,34 +178,65 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
     ),
   ];
 
-  await db.batch(statements);
+  const [deletedMeasurements] = await db.batch(statements);
   const retainedKeys = new Set(profileKeys.values());
-  const obsoleteKeys = oldProfiles.results
+  const obsoleteKeys = (deletedMeasurements.results as Array<{ profile_object_key: string | null }>)
     .map((row) => row.profile_object_key)
+    .filter((key): key is string => key !== null)
     .filter((key) => !retainedKeys.has(key));
-  if (obsoleteKeys.length > 0) await profiles.delete(obsoleteKeys);
-  revalidatePath("/benchmarks");
-  revalidatePath(`/benchmarks/commit/${body.run.commitSha}`);
-  if (body.run.kind === "pull_request" && body.run.pullRequest !== null) {
-    revalidatePath(`/benchmarks/pull/${body.run.pullRequest}`);
-  } else if (body.run.kind === "main") {
-    const { results: matchingPullRequests } = await db
-      .prepare(`
-        SELECT DISTINCT pull_request, commit_sha
-        FROM performance_runs
-        WHERE kind = 'pull_request' AND base_sha = ? AND pull_request IS NOT NULL
-      `)
-      .bind(body.run.commitSha)
-      .all<{ pull_request: number; commit_sha: string }>();
-    for (const run of matchingPullRequests) {
-      revalidatePath(`/benchmarks/pull/${run.pull_request}`);
-      revalidatePath(`/benchmarks/commit/${run.commit_sha}`);
+  try {
+    for (const key of obsoleteKeys) {
+      const deleted = await db
+        .prepare(
+          "DELETE FROM performance_profile_objects WHERE object_key = ? RETURNING object_key",
+        )
+        .bind(key)
+        .first<{ object_key: string }>();
+      if (!deleted) continue;
+      try {
+        await profiles.delete(deleted.object_key);
+      } catch (error) {
+        await db
+          .prepare("INSERT OR IGNORE INTO performance_profile_objects (object_key) VALUES (?)")
+          .bind(deleted.object_key)
+          .run();
+        throw error;
+      }
     }
+  } catch (error) {
+    console.error("Failed to delete obsolete performance profiles", error);
   }
-  const comparisonData =
-    body.run.kind === "pull_request" && body.run.pullRequest !== null
-      ? await getPullComparison(String(body.run.pullRequest))
-      : null;
+  try {
+    revalidatePath("/benchmarks");
+    revalidatePath(`/benchmarks/commit/${body.run.commitSha}`);
+    if (body.run.kind === "pull_request" && body.run.pullRequest !== null) {
+      revalidatePath(`/benchmarks/pull/${body.run.pullRequest}`);
+    } else if (body.run.kind === "main") {
+      const { results: matchingPullRequests } = await db
+        .prepare(`
+          SELECT DISTINCT pull_request, commit_sha
+          FROM performance_runs
+          WHERE kind = 'pull_request' AND base_sha = ? AND pull_request IS NOT NULL
+        `)
+        .bind(body.run.commitSha)
+        .all<{ pull_request: number; commit_sha: string }>();
+      for (const run of matchingPullRequests) {
+        revalidatePath(`/benchmarks/pull/${run.pull_request}`);
+        revalidatePath(`/benchmarks/commit/${run.commit_sha}`);
+      }
+    }
+  } catch (error) {
+    console.error("Failed to revalidate performance pages", error);
+  }
+  let comparisonData = null;
+  try {
+    comparisonData =
+      body.run.kind === "pull_request" && body.run.pullRequest !== null
+        ? await getPullComparison(String(body.run.pullRequest))
+        : null;
+  } catch (error) {
+    console.error("Failed to build performance comparison response", error);
+  }
   const comparison = comparisonData
     ? {
         ...comparisonData,

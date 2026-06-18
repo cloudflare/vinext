@@ -157,6 +157,13 @@ export const performanceRuns = sqliteTable(
   }),
 );
 
+export const performanceProfileObjects = sqliteTable("performance_profile_objects", {
+  objectKey: text("object_key").primaryKey(),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`(datetime('now'))`),
+});
+
 export const performanceMeasurements = sqliteTable(
   "performance_measurements",
   {
@@ -182,7 +189,9 @@ export const performanceMeasurements = sqliteTable(
     q3Value: real("q3_value").notNull(),
     outliers: integer("outliers").notNull(),
     flameGraphJson: text("flame_graph_json"),
-    profileObjectKey: text("profile_object_key"),
+    profileObjectKey: text("profile_object_key").references(
+      () => performanceProfileObjects.objectKey,
+    ),
   },
   (table) => ({
     primaryKey: primaryKey({ columns: [table.runId, table.benchmarkId] }),
