@@ -3,10 +3,7 @@ import {
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
 } from "./app-rsc-cache-busting.js";
-import {
-  isDangerousScheme,
-  reportBlockedDangerousNavigation,
-} from "vinext/shims/url-safety";
+import { isDangerousScheme, reportBlockedDangerousNavigation } from "vinext/shims/url-safety";
 
 const MAX_RSC_REDIRECT_DEPTH = 10;
 
