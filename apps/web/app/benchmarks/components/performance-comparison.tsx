@@ -134,9 +134,13 @@ function layoutFrames(root: FlameGraphNode) {
   return frames;
 }
 
-function frameColor(depth: number) {
+function frameColor(frame: PositionedFrame) {
+  if (frame.node.category === "vinext") return "#f97316";
+  if (frame.node.category === "vite") return "#8b5cf6";
+  if (frame.node.category === "rolldown") return "#ec4899";
+  if (frame.node.category === "node") return "#22c55e";
   const colors = ["#dbeafe", "#93c5fd", "#60a5fa", "#3b82f6", "#2563eb", "#1d4ed8"];
-  return colors[Math.min(depth, colors.length - 1)];
+  return colors[Math.min(frame.depth, colors.length - 1)];
 }
 
 function FlameGraphDialog({ measurement }: { measurement: Comparison["measurements"][number] }) {
@@ -231,6 +235,13 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
         rounds, not elapsed wall time. Frames above a block are callees. Click a frame to zoom; use
         self time to find where samples actually terminate.
       </div>
+      <div className="mb-4 flex flex-wrap gap-3 text-xs text-slate-300">
+        <TraceLegend color="#f97316" label="vinext" />
+        <TraceLegend color="#8b5cf6" label="Vite" />
+        <TraceLegend color="#ec4899" label="Rolldown" />
+        <TraceLegend color="#22c55e" label="Node.js" />
+        <TraceLegend color="#60a5fa" label="Other" />
+      </div>
       {focusPath.length > 1 && (
         <div className="mb-3 flex flex-wrap items-center gap-1 text-xs text-slate-400">
           {focusPath.map((node, index) => (
@@ -300,7 +311,7 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
                   width={Math.max(frame.width - 2, 0)}
                   height={rowHeight - 4}
                   rx="5"
-                  fill={frameColor(frame.depth)}
+                  fill={frameColor(frame)}
                   stroke="#020617"
                   strokeWidth="1.25"
                 />
@@ -327,6 +338,16 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
           style={{ left: hovered.x + 6, top: hovered.y + 6 }}
         >
           <div className="font-semibold">{hovered.frame.node.name}</div>
+          {hovered.frame.node.source && (
+            <div className="mt-1 break-all font-mono text-[11px] text-orange-200">
+              {hovered.frame.node.source}
+            </div>
+          )}
+          {hovered.frame.node.category && hovered.frame.node.category !== "process" && (
+            <div className="mt-1 uppercase tracking-wide text-slate-500">
+              {hovered.frame.node.category}
+            </div>
+          )}
           <div className="mt-1 text-slate-300">
             Inclusive: {formatMs(hovered.frame.node.value)} ·{" "}
             {((hovered.frame.node.value / measurement.flameGraph.value) * 100).toFixed(1)}%
@@ -352,6 +373,9 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
             >
               <span className="min-w-0 truncate text-xs font-medium text-slate-200">
                 {displayFrameName(node.name)}
+                {node.source && (
+                  <span className="ml-1 text-slate-500">· {shortSource(node.source)}</span>
+                )}
               </span>
               <span className="shrink-0 font-mono text-xs text-orange-300">
                 {formatMs(self)} self
@@ -384,7 +408,7 @@ function hottestFrames(root: FlameGraphNode) {
 }
 
 function displayFrameName(name: string) {
-  return name.replace(/^\[process\] /, "");
+  return name;
 }
 
 function truncateFrameName(name: string, width: number) {
@@ -392,6 +416,20 @@ function truncateFrameName(name: string, width: number) {
   return displayName.length > width / 7
     ? `${displayName.slice(0, Math.max(Math.floor(width / 7) - 1, 3))}…`
     : displayName;
+}
+
+function shortSource(source: string) {
+  const parts = source.split("/");
+  return parts.slice(-3).join("/");
+}
+
+function TraceLegend({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: color }} />
+      {label}
+    </span>
+  );
 }
 
 function RunCard({ label, sha, date }: { label: string; sha: string; date: string }) {

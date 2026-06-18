@@ -21,6 +21,46 @@ function column(table, name, row) {
   return index === undefined ? undefined : table.data?.[row]?.[index];
 }
 
+function normalizeSource(source) {
+  if (!source) return null;
+  const withoutProtocol = source.replace(/^file:\/\//, "");
+  const repositoryMarker = "/work/vinext/vinext/";
+  const repositoryIndex = withoutProtocol.indexOf(repositoryMarker);
+  if (repositoryIndex >= 0) {
+    return withoutProtocol.slice(repositoryIndex + repositoryMarker.length);
+  }
+  const nodeModulesIndex = withoutProtocol.lastIndexOf("/node_modules/");
+  if (nodeModulesIndex >= 0) return withoutProtocol.slice(nodeModulesIndex + 1);
+  return withoutProtocol;
+}
+
+function frameCategory(source) {
+  if (!source) return "native";
+  if (source.startsWith("packages/vinext/") || source.includes("node_modules/vinext/")) {
+    return "vinext";
+  }
+  if (source.includes("/rolldown/") || source.includes("rolldown-")) return "rolldown";
+  if (source.includes("vite-plus-core/dist/vite/") || source.includes("node_modules/vite/")) {
+    return "vite";
+  }
+  if (source.startsWith("node:")) return "node";
+  if (source.startsWith("node_modules/")) return "dependency";
+  if (source.startsWith("benchmarks/")) return "benchmark";
+  return "application";
+}
+
+function parseFrame(rawName) {
+  const cleanedName = rawName.replace(/^JS:[+*'^~]*/, "");
+  const sourceMatch = cleanedName.match(/\s((?:file:\/\/|node:)[^\s]+)$/);
+  const source = normalizeSource(sourceMatch?.[1] ?? null);
+  const name = sourceMatch ? cleanedName.slice(0, sourceMatch.index).trim() : cleanedName;
+  return {
+    name: name || "(anonymous)",
+    source,
+    category: frameCategory(source),
+  };
+}
+
 function stackFrames(tables, stackIndex) {
   const frames = [];
   const seen = new Set();
@@ -31,7 +71,7 @@ function stackFrames(tables, stackIndex) {
     const nameIndex = column(tables.funcTable, "name", funcIndex);
     const fallbackNameIndex = column(tables.frameTable, "location", frameIndex);
     const name = tables.stringArray?.[nameIndex ?? fallbackNameIndex];
-    if (typeof name === "string" && name.length > 0) frames.push(name);
+    if (typeof name === "string" && name.length > 0) frames.push(parseFrame(name));
     stackIndex = column(tables.stackTable, "prefix", stackIndex);
   }
   return frames.reverse();
@@ -40,28 +80,50 @@ function stackFrames(tables, stackIndex) {
 function addStack(root, frames, weight) {
   root.value += weight;
   let current = root;
-  for (const name of frames) {
-    let child = current.children.get(name);
+  for (const frame of frames) {
+    const key = `${frame.category}\0${frame.name}\0${frame.source ?? ""}`;
+    let child = current.children.get(key);
     if (!child) {
-      child = { name, value: 0, children: new Map() };
-      current.children.set(name, child);
+      child = { ...frame, value: 0, children: new Map() };
+      current.children.set(key, child);
     }
     child.value += weight;
     current = child;
   }
 }
 
-function serializeTree(node, depth = 0, budget = { remaining: 1500 }) {
+function ownedSubtree(node) {
+  if (node.category === "vinext" || node.category === "vite" || node.category === "rolldown") {
+    return true;
+  }
+  return Array.from(node.children.values()).some(ownedSubtree);
+}
+
+function serializeTree(node, depth = 0, budget = { remaining: 3000 }) {
   budget.remaining -= 1;
-  if (depth >= 14 || budget.remaining <= 0) return { name: node.name, value: node.value };
+  if (depth >= 32 || budget.remaining <= 0) {
+    return {
+      name: node.name,
+      value: node.value,
+      ...(node.source ? { source: node.source } : {}),
+      ...(node.category ? { category: node.category } : {}),
+    };
+  }
   const children = Array.from(node.children.values())
-    .sort((left, right) => right.value - left.value)
-    .slice(0, depth < 2 ? 40 : 25)
+    .sort((left, right) => {
+      const ownedDifference = Number(ownedSubtree(right)) - Number(ownedSubtree(left));
+      return ownedDifference || right.value - left.value;
+    })
+    .slice(0, depth < 2 ? 40 : ownedSubtree(node) ? 40 : 20)
     .filter(() => budget.remaining > 0)
     .map((child) => serializeTree(child, depth + 1, budget));
-  return children.length > 0
-    ? { name: node.name, value: node.value, children }
-    : { name: node.name, value: node.value };
+  const serialized = {
+    name: node.name,
+    value: node.value,
+    ...(node.source ? { source: node.source } : {}),
+    ...(node.category ? { category: node.category } : {}),
+  };
+  return children.length > 0 ? { ...serialized, children } : serialized;
 }
 
 function profileToFlameGraph(profile) {
@@ -82,7 +144,11 @@ function profileToFlameGraph(profile) {
       const frames = stackFrames(tables, stackIndex);
       if (frames.length > 0) {
         const processName = thread.processName || thread.name || "unknown process";
-        addStack(root, [`[process] ${processName}`, ...frames], weight);
+        addStack(
+          root,
+          [{ name: processName, source: null, category: "process" }, ...frames],
+          weight,
+        );
       }
     }
   }

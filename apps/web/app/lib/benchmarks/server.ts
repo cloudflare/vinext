@@ -47,6 +47,8 @@ type NormalizedPerfPayload = {
 type FlameGraphNode = {
   name: string;
   value: number;
+  source?: string;
+  category?: string;
   children?: FlameGraphNode[];
 };
 
@@ -216,6 +218,8 @@ type PerformanceStatsData = {
 export type FlameGraphData = {
   name: string;
   value: number;
+  source?: string;
+  category?: string;
   children?: FlameGraphData[];
 };
 
