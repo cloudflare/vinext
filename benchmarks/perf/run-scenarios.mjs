@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performanceScenarios, performanceSetup, benchmarkId } from "./scenarios.mjs";
@@ -16,6 +16,10 @@ const rounds = Number(roundsArgument?.slice("--rounds=".length) ?? 0);
 
 function trustedCommand(command) {
   if (command[0] === "vp") return [join(targetRoot, "node_modules/.bin/vp"), ...command.slice(1)];
+  if (command[0] === "npm") {
+    const npmPath = execFileSync("which", ["npm"], { encoding: "utf8" }).trim();
+    return [npmPath, ...command.slice(1)];
+  }
   if (command[0] !== "node" || !command[1]?.startsWith("benchmarks/")) return command;
   return [command[0], join(harnessRoot, command[1]), ...command.slice(2)];
 }
