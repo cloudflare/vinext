@@ -211,6 +211,7 @@ jobs:
             for relative_path in "${paths[@]}"; do
               local path="$root/$relative_path"
               sudo mkdir -p "$path"
+              sudo chown -R "$user":"$user" "$path"
               sudo setfacl -R -m u:"$user":rwX "$path"
               sudo setfacl -R -d -m u:"$user":rwX,u:"$USER":rwX "$path"
             done
@@ -301,9 +302,14 @@ jobs:
                 ! -name app ! -name node_modules ! -name dist ! -name .next -exec rm -rf {} +
               cp -R "$VINEXT_PERF_HARNESS_ROOT/benchmarks/$project/." "$root/benchmarks/$project/"
             done
-            sudo setfacl -R -x u:"$user" "$root/benchmarks/nextjs/node_modules"
-            find "$root/benchmarks/nextjs/node_modules" -type d \
-              -exec sudo setfacl -x d:u:"$user" {} +
+            for path in \
+              "$root/packages/vinext/dist" \
+              "$root/packages/cloudflare/dist" \
+              "$root/benchmarks/nextjs/node_modules"; do
+              sudo chown -R "$USER":"$USER" "$path"
+              sudo setfacl -R -x u:"$user" "$path"
+              find "$path" -type d -exec sudo setfacl -x d:u:"$user" {} +
+            done
           done
 
       - name: Install pinned performance runner

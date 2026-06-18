@@ -66,7 +66,9 @@ describe("paired performance benchmarks", () => {
     expect(workflow).toContain('sudo setfacl -m u:"$user":wx "$path"');
     expect(workflow).not.toContain('setfacl -R -m u:vinext-perf-head:rwX "$GITHUB_WORKSPACE"');
     expect(workflow).toContain("- name: Lock benchmark inputs after setup");
-    expect(workflow).toContain('setfacl -R -x u:"$user" "$root/benchmarks/nextjs/node_modules"');
+    expect(workflow).toContain('"$root/packages/vinext/dist"');
+    expect(workflow).toContain('"$root/packages/cloudflare/dist"');
+    expect(workflow).toContain('sudo chown -R "$USER":"$USER" "$path"');
     expect(workflow).not.toContain('u:vinext-perf:rwx "$VINEXT_PERF_RESULTS_ROOT"');
     expect(runner).toContain("VINEXT_PERF_TARGET_USER: userForRoot(root)");
     expect(runner).toContain('!name.startsWith("VINEXT_PERF_")');
