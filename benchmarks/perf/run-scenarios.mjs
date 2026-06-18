@@ -15,6 +15,7 @@ const roundsArgument = process.argv.find((argument) => argument.startsWith("--ro
 const rounds = Number(roundsArgument?.slice("--rounds=".length) ?? 0);
 
 function trustedCommand(command) {
+  if (command[0] === "vp") return [join(targetRoot, "node_modules/.bin/vp"), ...command.slice(1)];
   if (command[0] !== "node" || !command[1]?.startsWith("benchmarks/")) return command;
   return [command[0], join(harnessRoot, command[1]), ...command.slice(2)];
 }
