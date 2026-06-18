@@ -115,9 +115,10 @@ describe("performance traces", () => {
     expect(result.run.commitSha).toBe(commitSha);
     expect(result.run.measuredAt).toBe("2025-04-03T10:34:56.000Z");
 
-    const graph = profileToFlameGraph(profile) as TraceNode;
+    const graph = profileToFlameGraph(profile, 5) as TraceNode;
     expect(flatten(graph).filter((node) => node.name.startsWith("frame-"))).toHaveLength(91);
     expect(maxDepth(graph)).toBe(42);
+    expect(graph.value).toBeCloseTo(10.2);
     const decodedProfile = await readGzipProfile(
       new Response(await gzipAsync(JSON.stringify(profile)), {
         headers: { "Content-Type": "application/gzip" },
@@ -150,12 +151,12 @@ describe("performance traces", () => {
 
     expect(filteredTraceGraph(graph, new Set(["vinext"]))).toEqual({
       name: "filtered samples",
-      value: 7,
+      value: 10,
       category: "process",
       children: [
         {
           name: "outer vinext",
-          value: 7,
+          value: 10,
           category: "vinext",
           children: [{ name: "inner vinext", value: 5, category: "vinext" }],
         },

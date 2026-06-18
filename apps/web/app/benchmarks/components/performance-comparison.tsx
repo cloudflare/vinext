@@ -169,7 +169,10 @@ function FlameGraphDialog({ measurement }: { measurement: Comparison["measuremen
     try {
       const response = await fetch(measurement.profileUrl);
       if (!response.ok) throw new Error(`Profile request failed (${response.status})`);
-      const graph = profileToFlameGraph(await readGzipProfile(response));
+      const graph = profileToFlameGraph(
+        await readGzipProfile(response),
+        measurement.current.rounds,
+      );
       if (!graph) throw new Error("Profile contains no samples");
       setFlameGraph(graph);
       setProfileState("loaded");
@@ -298,10 +301,9 @@ function FlameGraph({
         </div>
       </div>
       <div className="mb-4 rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-xs leading-5 text-slate-300">
-        Width is inclusive sampled thread time across benchmark rounds, not elapsed wall time. Click
-        categories to isolate one type, then add more categories to compare their call
-        relationships. Unselected frames are collapsed and the graph height follows the filtered
-        stack depth.
+        Width is inclusive sampled thread time per benchmark round, not elapsed wall time. Click
+        categories to include every stack containing that type, then add more categories to compare
+        their call relationships. Unselected frames are collapsed into the nearest selected frame.
       </div>
       <div className="mb-4 flex flex-wrap gap-2 text-xs text-slate-300">
         {TRACE_CATEGORIES.map(({ category, color, label }) => (

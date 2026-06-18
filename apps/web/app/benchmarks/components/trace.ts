@@ -36,12 +36,9 @@ function filteredTraceChildren<T extends TraceNode>(nodes: T[], filters: Set<Tra
   return nodes.flatMap((node) => {
     const children = filteredTraceChildren((node.children ?? []) as T[], filters);
     if (!filters.has(traceCategory(node))) return children;
-    const value = selfValue(node) + children.reduce((total, child) => total + child.value, 0);
-    if (value === 0) return [];
     return [
       {
         ...node,
-        value,
         children: children.length > 0 ? children : undefined,
       },
     ];

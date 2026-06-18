@@ -123,9 +123,9 @@ function serializeTree(node: MutableTraceNode): TraceNode {
   };
 }
 
-export function profileToFlameGraph(profile: SamplyProfile): TraceNode | null {
+export function profileToFlameGraph(profile: SamplyProfile, rounds = 1): TraceNode | null {
   const root: MutableTraceNode = { name: "all samples", value: 0, children: new Map() };
-  const sampleIntervalMs = Number(profile.meta?.interval ?? 1) || 1;
+  const sampleIntervalMs = (Number(profile.meta?.interval ?? 1) || 1) / Math.max(rounds, 1);
   for (const thread of profile.threads ?? []) {
     const tables = profile.shared ? { ...thread, ...profile.shared } : thread;
     if (!tables.stackTable || !tables.frameTable || !tables.funcTable || !tables.stringArray) {
