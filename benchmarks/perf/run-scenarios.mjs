@@ -14,7 +14,11 @@ const resultsRoot = process.env.VINEXT_PERF_RESULTS_ROOT ?? join(targetRoot, "be
 const direct = process.argv.includes("--direct");
 const setupOnly = process.argv.includes("--setup-only");
 const roundsArgument = process.argv.find((argument) => argument.startsWith("--rounds="));
-const rounds = Number(roundsArgument?.slice("--rounds=".length) ?? 0);
+const rounds = Number(roundsArgument?.slice("--rounds=".length) ?? 5);
+
+if (!Number.isInteger(rounds) || rounds < 1) {
+  throw new Error(`--rounds must be a positive integer, received ${roundsArgument ?? rounds}`);
+}
 
 function trustedCommand(command) {
   if (command[0] === "vp") return [join(targetRoot, "node_modules/.bin/vp"), ...command.slice(1)];
@@ -96,32 +100,28 @@ for (const scenario of performanceScenarios) {
       VINEXT_PERF_LOWER_IS_BETTER: String(scenario.lowerIsBetter),
       VINEXT_PERF_IMPLEMENTATION_ID: implementation.id,
       VINEXT_PERF_IMPLEMENTATION_LABEL: implementation.label,
-      VINEXT_PERF_PROFILE: String(profile),
+      VINEXT_PERF_PROFILE: "false",
     };
 
     console.log(`\nRunning ${scenario.suite} / ${implementation.label} / ${scenario.label}`);
-    if (direct) {
-      const directRounds = rounds > 0 ? rounds : 1;
-      for (let round = 0; round < directRounds; round++) {
-        const command = trustedCommand(implementation.command);
-        await run(command[0], command.slice(1), env);
-      }
-      continue;
-    }
-
-    const profileArguments = profile
-      ? [
-          "--walltime-profiler",
-          "samply",
-          "--profile-folder",
-          join(resultsRoot, `perf-profiles/${id}`),
-        ]
-      : [];
-    if (profile) await mkdir(join(resultsRoot, `perf-profiles/${id}`), { recursive: true });
     const command = trustedCommand(implementation.command);
+    const timingCommand = targetCommand(command);
+    const timingEnv = { ...env };
+    if (targetUser) delete timingEnv.VINEXT_PERF_TARGET_USER;
+    for (let round = 0; round < rounds; round++) {
+      await run(timingCommand[0], timingCommand.slice(1), timingEnv);
+    }
+    if (direct || !profile) continue;
+
+    await mkdir(join(resultsRoot, `perf-profiles/${id}`), { recursive: true });
     const profiler = profilerCommand();
-    const profilerEnv = { ...env };
+    const profilerEnv = {
+      ...env,
+      VINEXT_PERF_PROFILE: "true",
+      VINEXT_PERF_RECORD_SAMPLE: "false",
+    };
     if (targetUser) delete profilerEnv.VINEXT_PERF_TARGET_USER;
+    console.log(`Profiling one diagnostic round for ${id}`);
     await run(
       profiler[0],
       [
@@ -129,15 +129,18 @@ for (const scenario of performanceScenarios) {
         "exec",
         "--mode",
         "walltime",
-        ...profileArguments,
+        "--walltime-profiler",
+        "samply",
+        "--profile-folder",
+        join(resultsRoot, `perf-profiles/${id}`),
         "--name",
         id,
         "--warmup-time",
         "0s",
         "--min-rounds",
-        String(rounds > 0 ? rounds : 5),
+        "1",
         "--max-rounds",
-        String(rounds > 0 ? rounds : 10),
+        "1",
         "--max-time",
         "3m",
         "--",

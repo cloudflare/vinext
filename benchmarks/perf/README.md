@@ -60,6 +60,15 @@ VINEXT_PERF_SAMPLES="$PWD/benchmarks/results/perf-samples.jsonl" \
   node benchmarks/perf/run-scenarios.mjs
 ```
 
+CI records five unprofiled timing rounds for every benchmark. Implementations
+marked with `profile: true` then run once more under Samply solely to capture a
+diagnostic profile. The profiled value is discarded and does not contribute to
+the reported timing statistics.
+
+Pull request runs measure GitHub's synthetic merge commit so an out-of-date
+branch is benchmarked as it would land on the current base branch. Results keep
+the pull request head SHA as their identity for dashboard history and comments.
+
 CI sets `CODSPEED_SKIP_UPLOAD=true`. Results and profiles remain local to the
 GitHub runner, are normalized into the owned payload format, and are uploaded
 only to the vinext dashboard.

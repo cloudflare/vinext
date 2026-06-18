@@ -83,19 +83,23 @@ describe("performance traces", () => {
     );
     await writeFile(
       inputPath,
-      `${JSON.stringify({
-        benchmarkId,
-        scenarioId: "dev-start",
-        suite: "Dev server",
-        label: "Dev server cold start",
-        description: "Starts the development server",
-        implementationId: "vinext",
-        implementationLabel: "vinext",
-        unit: "ms",
-        lowerIsBetter: true,
-        value: 1,
-        profile: true,
-      })}\n`,
+      `${[1, 2, 3, 4, 5]
+        .map((value) =>
+          JSON.stringify({
+            benchmarkId,
+            scenarioId: "dev-start",
+            suite: "Dev server",
+            label: "Dev server cold start",
+            description: "Starts the development server",
+            implementationId: "vinext",
+            implementationLabel: "vinext",
+            unit: "ms",
+            lowerIsBetter: true,
+            value,
+            profile: false,
+          }),
+        )
+        .join("\n")}\n`,
     );
 
     await execFileAsync(
@@ -114,13 +118,21 @@ describe("performance traces", () => {
       join("profiles", benchmarkId, "samply-profile.json.gz"),
     );
     expect(result.benchmarks[0]).not.toHaveProperty("flameGraph");
+    expect(result.benchmarks[0].samples.rounds).toBe(5);
+    expect(result.benchmarks[0].samples.mean).toBe(3);
     expect(result.run.commitSha).toBe(commitSha);
     expect(result.run.measuredAt).toBe("2025-04-03T10:34:56.000Z");
 
-    const graph = profileToFlameGraph(profile, 5) as TraceNode;
+    const normalizedProfile = await readGzipProfile(
+      new Response(await readFile(join(profileDirectory, "samply-profile.json.gz")), {
+        headers: { "Content-Type": "application/gzip" },
+      }),
+    );
+    expect(normalizedProfile.meta?.vinextBenchmarkRounds).toBe(1);
+    const graph = profileToFlameGraph(normalizedProfile, 5) as TraceNode;
     expect(flatten(graph).filter((node) => node.name.startsWith("frame-"))).toHaveLength(91);
     expect(maxDepth(graph)).toBe(42);
-    expect(graph.value).toBeCloseTo(10.2);
+    expect(graph.value).toBeCloseTo(51);
     const decodedProfile = await readGzipProfile(
       new Response(await gzipAsync(JSON.stringify(profile)), {
         headers: { "Content-Type": "application/gzip" },

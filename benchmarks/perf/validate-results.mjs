@@ -328,10 +328,7 @@ if (sourceEvent === "pull_request") {
 
 let trustedManifestRef;
 if (sourceEvent === "pull_request") {
-  trustedManifestRef =
-    sourcePullRequest.head.repo.full_name === repository
-      ? sourcePullRequest.head.sha
-      : sourcePullRequest.base.sha;
+  trustedManifestRef = sourcePullRequest.base.sha;
 } else if (sourceEvent === "push") {
   trustedManifestRef = sourceRun.head_sha;
 } else if (sourceEvent === "workflow_dispatch") {

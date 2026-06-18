@@ -17,7 +17,7 @@ type ProfileThread = {
 };
 
 type SamplyProfile = {
-  meta?: { interval?: number };
+  meta?: { interval?: number; vinextBenchmarkRounds?: number };
   shared?: Pick<ProfileThread, "stackTable" | "frameTable" | "funcTable" | "stringArray">;
   threads?: ProfileThread[];
 };
@@ -125,7 +125,8 @@ function serializeTree(node: MutableTraceNode): TraceNode {
 
 export function profileToFlameGraph(profile: SamplyProfile, rounds = 1): TraceNode | null {
   const root: MutableTraceNode = { name: "all samples", value: 0, children: new Map() };
-  const sampleIntervalMs = (Number(profile.meta?.interval ?? 1) || 1) / Math.max(rounds, 1);
+  const profileRounds = Number(profile.meta?.vinextBenchmarkRounds ?? rounds) || 1;
+  const sampleIntervalMs = (Number(profile.meta?.interval ?? 1) || 1) / Math.max(profileRounds, 1);
   for (const thread of profile.threads ?? []) {
     const tables = profile.shared ? { ...thread, ...profile.shared } : thread;
     if (!tables.stackTable || !tables.frameTable || !tables.funcTable || !tables.stringArray) {
