@@ -74,6 +74,13 @@ describe("paired performance benchmarks", () => {
     expect(workflow).toContain('"$root/packages/cloudflare/dist"');
     expect(workflow).toContain('sudo chown -R "$USER":"$USER" "$path"');
     expect(workflow).toContain("benchmarks/perf/validate-profile-traces.mjs");
+    expect(workflow).toContain(
+      'cp -R .perf-harness/benchmarks/vinext "$trusted_harness/benchmarks/vinext"',
+    );
+    expect(workflow).toContain(
+      'cp -R .perf-harness/benchmarks/nextjs "$trusted_harness/benchmarks/nextjs"',
+    );
+    expect(workflow).toContain('if [ -f "$trace_validator" ]; then');
     expect(workflow).not.toContain('u:vinext-perf:rwx "$VINEXT_PERF_RESULTS_ROOT"');
     expect(runner).toContain("VINEXT_PERF_TARGET_USER: userForRoot(root)");
     expect(runner).toContain('!name.startsWith("VINEXT_PERF_")');

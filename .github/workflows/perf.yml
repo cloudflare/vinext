@@ -244,6 +244,8 @@ jobs:
           rm -rf "$trusted_harness"
           mkdir -p "$trusted_harness/benchmarks"
           cp -R .perf-harness/benchmarks/perf "$trusted_harness/benchmarks/perf"
+          cp -R .perf-harness/benchmarks/vinext "$trusted_harness/benchmarks/vinext"
+          cp -R .perf-harness/benchmarks/nextjs "$trusted_harness/benchmarks/nextjs"
           cp .perf-harness/benchmarks/generate-app.mjs "$trusted_harness/benchmarks/generate-app.mjs"
           chmod -R a-w "$trusted_harness"
           rm -rf "$VINEXT_PERF_RESULTS_ROOT"
@@ -336,9 +338,14 @@ jobs:
             "$VINEXT_PERF_RESULTS_ROOT/perf-samples.jsonl" \
             "$VINEXT_PERF_RESULTS_ROOT/perf-results.json" \
             "$VINEXT_PERF_RESULTS_ROOT/perf-profiles"
-          node "$VINEXT_PERF_HARNESS_ROOT/benchmarks/perf/validate-profile-traces.mjs" \
-            "$VINEXT_PERF_RESULTS_ROOT/perf-results.json" \
-            "$VINEXT_PERF_RESULTS_ROOT"
+          trace_validator="$VINEXT_PERF_HARNESS_ROOT/benchmarks/perf/validate-profile-traces.mjs"
+          if [ -f "$trace_validator" ]; then
+            node "$trace_validator" \
+              "$VINEXT_PERF_RESULTS_ROOT/perf-results.json" \
+              "$VINEXT_PERF_RESULTS_ROOT"
+          else
+            echo "Trusted base predates trace validation; skipping during rollout."
+          fi
           sudo chmod -R a+rX "$VINEXT_PERF_RESULTS_ROOT"
 
       - name: Upload performance artifacts
