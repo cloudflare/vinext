@@ -303,12 +303,35 @@ assert(
   "Invalid benchmark count",
 );
 
+let sourcePullRequest = null;
+if (sourceEvent === "pull_request") {
+  assert(payload.run.kind === "pull_request", "Pull request workflow produced a non-PR run");
+  assert(
+    Number.isInteger(payload.run.pullRequest) && payload.run.pullRequest > 0,
+    "Invalid PR number",
+  );
+  sourcePullRequest = githubApi(`repos/${repository}/pulls/${payload.run.pullRequest}`);
+  assert(sourcePullRequest.state === "open", "Source pull request is not open");
+  assert(
+    sourcePullRequest.head.sha === sourceRun.head_sha,
+    "Source run head SHA does not match PR",
+  );
+  assert(
+    sourcePullRequest.head.repo.full_name === sourceRun.head_repository?.full_name,
+    "Source run repository does not match PR",
+  );
+  assert(
+    sourcePullRequest.head.ref === sourceRun.head_branch,
+    "Source run branch does not match PR",
+  );
+}
+
 let trustedManifestRef;
 if (sourceEvent === "pull_request") {
-  const pullRequest = sourceRun.pull_requests?.[0];
-  assert(pullRequest, "Source workflow run is not associated with a pull request");
-  const headRepository = new URL(pullRequest.head.repo.url).pathname.replace(/^\/repos\//, "");
-  trustedManifestRef = headRepository === repository ? pullRequest.head.sha : pullRequest.base.sha;
+  trustedManifestRef =
+    sourcePullRequest.head.repo.full_name === repository
+      ? sourcePullRequest.head.sha
+      : sourcePullRequest.base.sha;
 } else if (sourceEvent === "push") {
   trustedManifestRef = sourceRun.head_sha;
 } else if (sourceEvent === "workflow_dispatch") {
@@ -410,20 +433,17 @@ for (const benchmark of payload.benchmarks) {
 
 let commitRepository = repository;
 if (sourceEvent === "pull_request") {
-  const pullRequest = sourceRun.pull_requests?.[0];
-  assert(pullRequest, "Source workflow run is not associated with a pull request");
-  commitRepository = new URL(pullRequest.head.repo.url).pathname.replace(/^\/repos\//, "");
-  assert(payload.run.kind === "pull_request", "Pull request workflow produced a non-PR run");
+  commitRepository = sourcePullRequest.head.repo.full_name;
   assert(
-    payload.run.pullRequest === pullRequest.number,
+    payload.run.pullRequest === sourcePullRequest.number,
     "Pull request number does not match workflow run",
   );
   assert(
-    payload.run.commitSha === pullRequest.head.sha,
+    payload.run.commitSha === sourcePullRequest.head.sha,
     "Pull request head SHA does not match workflow run",
   );
   assert(
-    payload.run.baseSha === pullRequest.base.sha,
+    payload.run.baseSha === sourcePullRequest.base.sha,
     "Pull request base SHA does not match workflow run",
   );
 } else if (sourceEvent === "push") {
