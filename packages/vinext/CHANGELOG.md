@@ -1,5 +1,43 @@
 # vinext
 
+## 0.1.5
+
+### Bug Fixes
+
+- **Image:** preserve unoptimized remote URLs (#2139)
+- **Image Imports:** normalize watchChange id so image cache invalidates on Windows (#2125)
+- **Transforms:** emit sourcemaps from strip-server-exports and remove-console (#2124)
+- **Middleware:** match middleware taint ids by forward-slash on Windows (#2088)
+- **Build:** normalize canonicalized module ids to forward slashes on Windows (#2089)
+- **CSS:** keep module hashes stable with url assets (#2114)
+- **Middleware:** normalize trailing slash before matching (#2112)
+
+### Performance
+
+#### Dev
+
+- skip JSX transform for compiled runtime (#2121)
+- skip typeof window folding for prebundles (#2118)
+- externalize App Router request handler (#2108)
+
+#### Misc
+
+- **App Router:** defer cache-only runtimes (#2126)
+- **App Page Cache:** reuse HTML ISR key during regeneration (#2127)
+- **App Page Cache:** reuse the ISR cache key on the stale-regeneration path (#2123)
+- **Image Imports:** hoist image-extension regex to module scope (#2122)
+- **SSR:** isolate open redirect detection (#2120)
+- **Build:** rely on plugin hook filters (#2119)
+- **App Router:** defer action and route-handler runtimes (#2079)
+- **Cache:** isolate handler and request state (#2107)
+- **Build:** filter compatibility transform hooks (#2103)
+
+### Contributors
+
+- @james-elicx
+- @shulaoda
+- @TheAlexLichter
+
 ## 0.1.4
 
 ### Bug Fixes
