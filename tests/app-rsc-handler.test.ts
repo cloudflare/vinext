@@ -82,6 +82,7 @@ function createHandler(overrides: Partial<HandlerOptions> = {}) {
             }
           : null),
     metadataRoutes: overrides.metadataRoutes ?? [],
+    middlewareFilePath: overrides.middlewareFilePath ?? null,
     middlewareModule: overrides.middlewareModule ?? null,
     publicFiles: overrides.publicFiles ?? new Set<string>(),
     registerCacheAdapters: () => {},
