@@ -3,11 +3,11 @@ import {
   buildAppPageLinkHeader,
   createAppPageFontData,
   createAppPageRscErrorTracker,
-  deferUntilStreamConsumed,
   renderAppPageHtmlResponse,
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
 } from "../packages/vinext/src/server/app-page-stream.js";
+import { deferUntilStreamConsumed } from "../packages/vinext/src/server/defer-until-stream-consumed.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({

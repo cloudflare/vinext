@@ -87,7 +87,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
 
   if (data?.adapter) {
     lines.push(`import __vinextDataAdapterFactory from ${JSON.stringify(data.adapter)};`);
-    lines.push(`import { setDataCacheHandler } from "vinext/shims/cache";`);
+    lines.push(`import { setDataCacheHandler } from "vinext/shims/cache-handler";`);
   }
   if (cdn?.adapter) {
     lines.push(`import __vinextCdnAdapterFactory from ${JSON.stringify(cdn.adapter)};`);

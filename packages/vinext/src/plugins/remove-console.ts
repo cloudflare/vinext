@@ -22,6 +22,11 @@ type BindingNode = Extract<ASTNode, { type: string }>;
 
 type RemoveConsoleConfig = boolean | { exclude: string[] };
 
+type RemoveConsoleResult = {
+  code: string;
+  map: ReturnType<MagicString["generateMap"]>;
+};
+
 // Node types that introduce a new function-style scope. Hoisted to a module-
 // level Set so the membership check in walk() is O(1) and doesn't allocate
 // per recursive call.
@@ -39,7 +44,10 @@ const SCOPE_ENTERING_TYPES = new Set([
  *
  * Returns `null` if no console calls are removed.
  */
-export function removeConsoleCalls(code: string, config: RemoveConsoleConfig): string | null {
+export function removeConsoleCalls(
+  code: string,
+  config: RemoveConsoleConfig,
+): RemoveConsoleResult | null {
   if (config === false) return null;
 
   const excluded =
@@ -300,5 +308,7 @@ export function removeConsoleCalls(code: string, config: RemoveConsoleConfig): s
   }
 
   if (!changed) return null;
-  return s.toString();
+  // Emit the MagicString sourcemap rather than dropping it: stripped calls and
+  // statements shift positions, so a null map would break client-build debugging.
+  return { code: s.toString(), map: s.generateMap({ hires: "boundary" }) };
 }

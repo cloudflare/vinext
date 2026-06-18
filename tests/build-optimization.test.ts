@@ -11,7 +11,12 @@ import path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import { createBuilder, parseAst } from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
-import { stripServerExports as _stripServerExports } from "../packages/vinext/src/plugins/strip-server-exports.js";
+import {
+  hasExportAllCandidate as _hasExportAllCandidate,
+  hasServerExportCandidate as _hasServerExportCandidate,
+  stripServerExports as _stripServerExportsImpl,
+  validatePageExports as _validatePageExports,
+} from "../packages/vinext/src/plugins/strip-server-exports.js";
 import {
   createClientManualChunks,
   clientTreeshakeConfig,
@@ -29,6 +34,11 @@ import { collectAssetTags } from "../packages/vinext/src/server/pages-asset-tags
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
+
+// `stripServerExports` returns `{ code, map }`; these tests assert on the
+// transformed source, so unwrap to the code string (null is preserved).
+const _stripServerExports = (code: string): string | null =>
+  _stripServerExportsImpl(code)?.code ?? null;
 
 // Create a clientManualChunks instance with a test shims directory.
 // The exact path doesn't matter for the node_modules-focused tests;
@@ -301,6 +311,39 @@ describe("optimizeDeps.exclude for vinext", () => {
     }
   }, 15000);
 
+  it("does not externalize the built App Router request handler from a source checkout", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const mainPlugin = vinext().find(
+      (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-rsc-handler-source-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+
+    try {
+      const devConfig = await (mainPlugin as any).config(
+        { root: tmpDir, build: {}, plugins: [] },
+        { command: "serve" },
+      );
+      expect(devConfig.environments.rsc.resolve.external).not.toContain(
+        "vinext/server/app-rsc-handler",
+      );
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
   // Regression for #1103: when the user sets `ssr.external: true`, plugin-rsc's
   // crawlFrameworkPkgs adds React to environments.ssr.optimizeDeps.include and
   // Vite pre-bundles a second React copy into deps_ssr/. Externalized callers
@@ -558,6 +601,11 @@ describe("optimizeDeps.exclude for vinext", () => {
 
       const ssrExclude = result.environments?.ssr?.optimizeDeps?.exclude ?? [];
       expect(ssrExclude).toContain("ipaddr.js");
+      expect(
+        result.environments?.ssr?.optimizeDeps?.rolldownOptions?.transform?.define?.[
+          "process.env.NODE_ENV"
+        ],
+      ).toBe(JSON.stringify("development"));
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -673,6 +721,14 @@ describe("process.env.NODE_ENV define", () => {
 
       // Should NOT override the user's explicit define
       expect(result.define?.["process.env.NODE_ENV"]).toBeUndefined();
+      expect(
+        result.optimizeDeps?.rolldownOptions?.transform?.define?.["process.env.NODE_ENV"],
+      ).toBe(JSON.stringify("staging"));
+      expect(
+        result.environments?.ssr?.optimizeDeps?.rolldownOptions?.transform?.define?.[
+          "process.env.NODE_ENV"
+        ],
+      ).toBe(JSON.stringify("staging"));
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -2414,6 +2470,59 @@ describe("vinext:async-hooks-stub", () => {
 // Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/unit/babel-plugin-next-ssg-transform.test.ts
 describe("stripServerExports", () => {
+  it("cheaply identifies modules that can contain server data exports", () => {
+    expect(
+      _hasServerExportCandidate("export const getServerSideProps = () => ({ props: {} })"),
+    ).toBe(true);
+    expect(_hasServerExportCandidate("export default function Page() {}")).toBe(false);
+  });
+
+  it("cheaply identifies export-all syntax without matching multiplication", () => {
+    expect(_hasExportAllCandidate(`export * from './other-page';`)).toBe(true);
+    expect(_hasExportAllCandidate(`export\n*\nfrom './other-page';`)).toBe(true);
+    expect(_hasExportAllCandidate(`export /* comment */ * from './other-page';`)).toBe(true);
+    expect(_hasExportAllCandidate(`export // comment\n* from './other-page';`)).toBe(true);
+    expect(_hasExportAllCandidate(`export const area = width * height;`)).toBe(false);
+  });
+
+  it("rejects export-all declarations in page modules", () => {
+    // Ported from Next.js: test/production/re-export-all-exports-from-page-disallowed/
+    // re-export-all-exports-from-page-disallowed.test.ts
+    expect(() => _stripServerExports(`export * from './other-page';`)).toThrow(
+      "Using `export * from '...'` in a page is disallowed.",
+    );
+    expect(() => _validatePageExports(`export\n*\nfrom './other-page';`)).toThrow(
+      "Using `export * from '...'` in a page is disallowed.",
+    );
+    expect(() => _validatePageExports(`export /* comment */ * from './other-page';`)).toThrow(
+      "Using `export * from '...'` in a page is disallowed.",
+    );
+  });
+
+  it("allows export-star text that is not an export-all declaration", () => {
+    expect(() =>
+      _validatePageExports(`const message = "export * from './not-code'";`),
+    ).not.toThrow();
+  });
+
+  it("rejects mixed getServerSideProps and static data exports", () => {
+    // Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
+    const message =
+      "You can not use getStaticProps or getStaticPaths with getServerSideProps. To use SSG, please remove getServerSideProps";
+    expect(() =>
+      _stripServerExports(`
+export function getStaticProps() {}
+export function getServerSideProps() {}
+`),
+    ).toThrow(message);
+    expect(() =>
+      _stripServerExports(`
+export { getServerSideProps } from './ssr';
+export { getStaticPaths } from './ssg';
+`),
+    ).toThrow(message);
+  });
+
   it("returns null when code has no server exports", () => {
     const code = `
 export default function Page({ data }) {
@@ -2440,7 +2549,19 @@ export async function getServerSideProps(ctx) {
     expect(result).not.toBeNull();
     expect(result).toContain("export default function Page");
     expect(result).not.toContain("db.query");
-    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("getServerSideProps");
+  });
+
+  it("preserves sibling declarators in exported variable declarations", () => {
+    // Ported from Next.js:
+    // crates/next-custom-transforms/tests/fixture/strip-page-exports/getStaticProps/support-multiple-export-var-decl
+    const result = _stripServerExports(`
+export const other = 0,
+  getStaticProps = async () => {};
+`);
+    expect(result).toContain("export const other = 0;");
+    expect(result).not.toContain("getStaticProps");
+    expect(() => parseAst(result!)).not.toThrow();
   });
 
   it("strips export function getStaticProps", () => {
@@ -2455,7 +2576,7 @@ export function getStaticProps() {
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export function getStaticProps()");
+    expect(result).not.toContain("getStaticProps");
     expect(result).not.toContain("revalidate: 60");
   });
 
@@ -2477,8 +2598,8 @@ export async function getStaticProps({ params }) {
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
     expect(result).not.toContain("fallback: false");
-    expect(result).toContain("export function getStaticPaths()");
-    expect(result).toContain("export function getStaticProps()");
+    expect(result).not.toContain("getStaticPaths");
+    expect(result).not.toContain("getStaticProps");
   });
 
   it("strips export const getServerSideProps = arrow function", () => {
@@ -2495,7 +2616,7 @@ export const getServerSideProps = async (ctx) => {
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export const getServerSideProps = undefined;");
+    expect(result).not.toContain("getServerSideProps");
     expect(result).not.toContain("api.example.com");
   });
 
@@ -2511,7 +2632,7 @@ export const getServerSideProps = fetchPageData;
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export const getServerSideProps = undefined;");
+    expect(result).not.toContain("getServerSideProps");
   });
 
   it("preserves the default export and non-server exports", () => {
@@ -2532,7 +2653,7 @@ export async function getServerSideProps() {
     expect(result).not.toBeNull();
     expect(result).toContain("export const config");
     expect(result).toContain("export default function Page");
-    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("getServerSideProps");
     expect(result).not.toContain("data: 'hello'");
   });
 
@@ -2554,7 +2675,7 @@ export async function getServerSideProps() {
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("getServerSideProps");
     expect(result).not.toContain("nested: { deep: true }");
   });
 
@@ -2573,7 +2694,7 @@ export const getStaticProps = function() {
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export const getStaticProps = undefined;");
+    expect(result).not.toContain("getStaticProps");
     expect(result).not.toContain("fetchData");
   });
 
@@ -2590,7 +2711,7 @@ export const getServerSideProps = async function fetchData() {
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export const getServerSideProps = undefined;");
+    expect(result).not.toContain("getServerSideProps");
     expect(result).not.toContain("db.query");
   });
 
@@ -2618,10 +2739,10 @@ export { getServerSideProps };
     // — no stub declaration is added.
     expect(result).not.toContain("export { getServerSideProps }");
     expect(result).not.toContain("export const getServerSideProps");
-    // The unused local declaration becomes dead code and is tree-shaken
-    // later. It must not be duplicated by the transform.
+    // Next.js removes the now-unreferenced local declaration in the same
+    // transform pass rather than relying on bundler tree-shaking.
     const constMatches = result!.match(/const getServerSideProps\b/g) ?? [];
-    expect(constMatches).toHaveLength(1);
+    expect(constMatches).toHaveLength(0);
     // The transformed code must be valid JS (no redeclaration).
     expect(() => parseAst(result!)).not.toThrow();
   });
@@ -2668,7 +2789,7 @@ export { getServerSideProps };
     expect(() => parseAst(result!)).not.toThrow();
   });
 
-  it("does not redeclare identifiers when both getServerSideProps and getStaticProps use named export", () => {
+  it("rejects mixed named getServerSideProps and getStaticProps exports", () => {
     const code = `
 const getServerSideProps = async () => ({ props: {} });
 const getStaticProps = async () => ({ props: {} });
@@ -2679,12 +2800,9 @@ export default function Page() {
 
 export { getServerSideProps, getStaticProps };
 `;
-    const result = _stripServerExports(code);
-    expect(result).not.toBeNull();
-    expect(result).not.toContain("export const getServerSideProps");
-    expect(result).not.toContain("export const getStaticProps");
-    expect(result).not.toContain("export {");
-    expect(() => parseAst(result!)).not.toThrow();
+    expect(() => _stripServerExports(code)).toThrow(
+      "You can not use getStaticProps or getStaticPaths with getServerSideProps. To use SSG, please remove getServerSideProps",
+    );
   });
 
   it("does not redeclare identifiers when local `let` binding is re-exported", () => {
@@ -2721,6 +2839,459 @@ export { fetchData as getServerSideProps };
     expect(() => parseAst(result!)).not.toThrow();
   });
 
+  it("preserves aliased data-export bindings still used by client code", () => {
+    // Matches Next.js next-ssg-transform: the export edge is removed, but the
+    // local binding remains when the default export still references it.
+    const code = `
+const loader = () => 'visible';
+export { loader as getServerSideProps };
+export default function Page() { return loader(); }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("const loader");
+    expect(result).toContain("return loader()");
+    expect(result).not.toContain("getServerSideProps");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("preserves aliased data-export bindings with another named export", () => {
+    const code = `
+function loader() { return 'visible'; }
+export { loader as getStaticProps, loader as helper };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("function loader()");
+    expect(result).toContain("export { loader as helper }");
+    expect(result).not.toContain("getStaticProps");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("strips server data exports re-exported from another module", () => {
+    // Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/unit/babel-plugin-next-ssg-transform.test.ts
+    const code = `
+export { getStaticPaths, loadPage as getStaticProps, default } from './server-page';
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export { default }");
+    expect(result).not.toContain("getStaticPaths");
+    expect(result).not.toContain("getStaticProps");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes a re-export statement containing only server data exports", () => {
+    const code = `
+export { getServerSideProps } from './server-props';
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("./server-props");
+    expect(result).toContain("export default function Page");
+  });
+
+  it("strips legacy server data export names", () => {
+    const code = `
+export { unstable_getServerProps, unstable_getStaticProps } from './legacy-data';
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("legacy-data");
+  });
+
+  it("sweeps imports and helpers used only by a direct server export", () => {
+    // Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/unit/babel-plugin-next-ssg-transform.test.ts
+    const code = `
+import secretDb, { shared as keepShared, serverOnly as dropServerOnly } from './db';
+
+function loadSecret() {
+  return secretDb.query(dropServerOnly);
+}
+
+export default function Page() {
+  return keepShared;
+}
+
+export async function getServerSideProps() {
+  return { props: { secret: await loadSecret() } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("shared as keepShared");
+    expect(result).not.toContain("secretDb");
+    expect(result).not.toContain("dropServerOnly");
+    expect(result).not.toContain("loadSecret");
+    expect(result).not.toContain(".query");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("sweeps recursive arrow helpers used only by a server export", () => {
+    const result = _stripServerExports(`
+const recurse = () => recurse();
+
+export function getStaticProps() {
+  recurse();
+  return { props: {} };
+}
+
+export default function Page() { return null; }
+`);
+    expect(result).not.toContain("recurse");
+    expect(result).toContain("export default function Page");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("sweeps mutually recursive arrow helpers used only by a server export", () => {
+    const result = _stripServerExports(`
+const first = () => second();
+const second = () => first();
+
+export function getStaticProps() {
+  first();
+  return { props: {} };
+}
+
+export default function Page() { return null; }
+`);
+    expect(result).not.toContain("first");
+    expect(result).not.toContain("second");
+    expect(result).toContain("export default function Page");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("sweeps dependencies of locally declared re-exported data functions", () => {
+    const code = `
+import { PRIVATE_TOKEN } from './secrets';
+
+const buildProps = () => ({ props: { token: PRIVATE_TOKEN } });
+const getServerSideProps = () => buildProps();
+
+export default function Page() { return null; }
+export { getServerSideProps };
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("PRIVATE_TOKEN");
+    expect(result).not.toContain("./secrets");
+    expect(result).not.toContain("buildProps");
+    expect(result).not.toContain("export { getServerSideProps }");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("does not treat shadowed client identifiers as live server references", () => {
+    const code = `
+import { PRIVATE_TOKEN } from './secrets';
+
+export default function Page(PRIVATE_TOKEN) {
+  return PRIVATE_TOKEN;
+}
+
+export function getServerSideProps() {
+  return { props: { token: PRIVATE_TOKEN } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("./secrets");
+    expect(result).toContain("function Page(PRIVATE_TOKEN)");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("resolves nested class and named-function-expression shadowing", () => {
+    const code = `
+import { PRIVATE_TOKEN } from './secrets';
+
+export default function Page() {
+  class PRIVATE_TOKEN {}
+  const factory = function PRIVATE_TOKEN() { return PRIVATE_TOKEN; };
+  return [PRIVATE_TOKEN, factory];
+}
+
+export function getServerSideProps() {
+  return { props: { token: PRIVATE_TOKEN } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toContain("./secrets");
+    expect(result).toContain("class PRIVATE_TOKEN");
+    expect(result).toContain("function PRIVATE_TOKEN()");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("does not over-remove bindings shadowed in loop scope", () => {
+    const code = `
+import { PRIVATE_TOKEN } from './secrets';
+
+export default function Page() {
+  for (const PRIVATE_TOKEN of ['visible']) {
+    console.log(PRIVATE_TOKEN);
+  }
+  return null;
+}
+
+export function getServerSideProps() {
+  return { props: { token: PRIVATE_TOKEN } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toContain("./secrets");
+    expect(result).toContain("const PRIVATE_TOKEN of");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("retains computed assignment-key dependencies in preserved code", () => {
+    const code = `
+import { sharedKey, serverOnly } from './data';
+const target = {};
+target[sharedKey] = 'visible';
+export default function Page() { return target; }
+export function getStaticProps() { return { props: { serverOnly } }; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("sharedKey");
+    expect(result).not.toContain("serverOnly");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes classes used only by server data functions", () => {
+    const code = `
+import secretBase from './secret-base';
+
+class SecretLoader extends secretBase {
+  load() { return 'secret'; }
+}
+
+export function getServerSideProps() {
+  return { props: { value: new SecretLoader().load() } };
+}
+
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("SecretLoader");
+    expect(result).not.toContain("secret-base");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("partially prunes object destructuring dependencies", () => {
+    // Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
+    const code = `
+import fs from 'fs';
+import other from 'other';
+
+const { readFile, readdir, access: secretAccess } = fs.promises;
+const { a, b, cat: bar, ...secretRest } = other;
+
+export async function getStaticProps() {
+  readFile;
+  readdir;
+  secretAccess;
+  b;
+  secretRest;
+  return { props: {} };
+}
+
+export default function Page() { return a + bar; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("from 'fs'");
+    expect(result).toContain("{ a, cat: bar }");
+    expect(result).not.toContain("secretRest");
+    expect(result).not.toMatch(/\bb\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("preserves computed object destructuring keys", () => {
+    const code = `
+import source from 'source';
+const key = 'visible';
+const { [key]: visible, secret } = source;
+export function getStaticProps() { return { props: { secret } }; }
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("{ [key]: visible } = source");
+    expect(result).not.toMatch(/\bsecret\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("partially prunes array destructuring dependencies", () => {
+    // Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
+    const code = `
+import fs from 'fs';
+import other from 'other';
+
+const [secretA, secretB, ...secretRest] = fs.promises;
+const [visible, secretTail] = other;
+
+export async function getStaticProps() {
+  secretA;
+  secretB;
+  secretRest;
+  secretTail;
+  return { props: {} };
+}
+
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("from 'fs'");
+    expect(result).toContain("const [visible] = other");
+    expect(result).not.toContain("secretTail");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("preserves array positions when pruning a leading binding", () => {
+    const code = `
+import source from 'source';
+const [secret, visible] = source;
+export function getStaticProps() { return { props: { secret } }; }
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("const [, visible] = source");
+    expect(result).not.toMatch(/\bsecret\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes assignments rooted in eliminated server bindings", () => {
+    const code = `
+import secret from './secret';
+
+let getServerSideProps = () => ({ props: {} });
+getServerSideProps.config = secret;
+getServerSideProps = () => ({ props: { secret } });
+
+export { getServerSideProps };
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("./secret");
+    expect(result).not.toContain(".config");
+    expect(result).not.toContain("props: { secret }");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("removes Babel-style memoized helpers used only by data exports", () => {
+    // Ported from Next.js:
+    // crates/next-custom-transforms/tests/fixture/strip-page-exports/getStaticProps/support-babel-style-memoized-function
+    const code = `
+function loadSecret() {
+  loadSecret = function () {};
+  return loadSecret.apply(this, arguments);
+}
+export function getStaticProps() {
+  loadSecret;
+  return { props: {} };
+}
+export default function Page() { return null; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toContain("loadSecret");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("retains dependencies shared with preserved exports", () => {
+    // Ported from Next.js:
+    // crates/next-custom-transforms/tests/fixture/strip-page-exports/getStaticProps/not-remove-import-used-in-other-export
+    const code = `
+import { shared, serverOnly } from 'thing';
+export function otherExport() { return shared + serverOnly; }
+export function getStaticProps() { return { props: { serverOnly } }; }
+export default function Page() { return shared; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("shared");
+    expect(result).toContain("serverOnly");
+    expect(result).toContain("otherExport");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("partially prunes array destructuring assignments", () => {
+    // Ported from Next.js:
+    // crates/next-custom-transforms/tests/fixture/strip-page-exports/getStaticProps/destructuring-assignment-array
+    const code = `
+import fs from 'fs';
+import other from 'other';
+let secretA, secretB, secretRest;
+[secretA, secretB, ...secretRest] = fs.promises;
+let visible, secretTail;
+[visible, secretTail] = other;
+
+export async function getStaticProps() {
+  secretA; secretB; secretRest; secretTail;
+  return { props: {} };
+}
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("from 'fs'");
+    expect(result).toContain("[visible] = other");
+    expect(result).not.toContain("secretTail");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("preserves array positions in destructuring assignments", () => {
+    const code = `
+import source from 'source';
+let secret, visible;
+[secret, visible] = source;
+export function getStaticProps() { return { props: { secret } }; }
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("[, visible] = source");
+    expect(result).not.toMatch(/\bsecret\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("keeps pruned object destructuring assignments parenthesized", () => {
+    const code = `
+import source from 'source';
+const key = 'visible';
+let visible, secret;
+({ [key]: visible, secret } = source);
+export function getStaticProps() { return { props: { secret } }; }
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("({ [key]: visible } = source);");
+    expect(result).not.toMatch(/\bsecret\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("preserves import attributes when pruning import specifiers", () => {
+    const code = `
+import { visible, secret } from './data.json' with { type: 'json' };
+export function getStaticProps() { return { props: { secret } }; }
+export default function Page() { return visible; }
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("import { visible } from './data.json' with { type: 'json' };");
+    expect(result).not.toMatch(/\bsecret\b/);
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
+  it("preserves export attributes when pruning re-export specifiers", () => {
+    const code = `
+export { visible, getStaticProps } from './data.json' with { type: 'json' };
+`;
+    const result = _stripServerExports(code);
+    expect(result).toContain("export { visible } from './data.json' with { type: 'json' };");
+    expect(result).not.toContain("getStaticProps");
+    expect(() => parseAst(result!)).not.toThrow();
+  });
+
   it("handles strings containing braces", () => {
     const code = `
 export default function Page({ msg }) {
@@ -2734,7 +3305,7 @@ export async function getServerSideProps() {
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("getServerSideProps");
     expect(result).not.toContain("Hello {world}");
   });
 
@@ -2753,7 +3324,7 @@ export function getServerSideProps() {
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("getServerSideProps");
     expect(result).not.toContain("pattern");
   });
 
@@ -2769,7 +3340,7 @@ export const getStaticPaths = () => [
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export const getStaticPaths = undefined;");
+    expect(result).not.toContain("getStaticPaths");
     expect(result).not.toContain("a;b");
   });
 });
@@ -2812,13 +3383,44 @@ describe("createRscFrameworkChunkOutputConfig", () => {
     const config = createRscFrameworkChunkOutputConfig(7);
     expect(config).not.toHaveProperty("codeSplitting");
     expect(config).toHaveProperty("manualChunks");
-    const manualChunks = (config as { manualChunks: (id: string) => string | undefined })
-      .manualChunks;
-    expect(manualChunks("/app/node_modules/react/index.js")).toBe("framework");
-    expect(manualChunks("/app/node_modules/react-server-dom-webpack/client.js")).toBe("framework");
+    const manualChunks = (
+      config as {
+        manualChunks: (
+          id: string,
+          meta: {
+            getModuleInfo(id: string): { importers: string[]; isEntry: boolean } | null;
+          },
+        ) => string | undefined;
+      }
+    ).manualChunks;
+    const moduleInfo = new Map([
+      ["/app/src/entry.js", { importers: [], isEntry: true }],
+      ["/app/src/middleman.js", { importers: ["/app/src/entry.js"], isEntry: false }],
+      ["/app/src/lazy.js", { importers: [], isEntry: false }],
+      [
+        "/app/node_modules/react/index.js",
+        { importers: ["/app/src/middleman.js"], isEntry: false },
+      ],
+      [
+        "/app/node_modules/react-server-dom-webpack/client.js",
+        { importers: ["/app/src/entry.js"], isEntry: false },
+      ],
+      [
+        "/app/node_modules/react-dom/server.react-server.js",
+        { importers: ["/app/src/lazy.js"], isEntry: false },
+      ],
+    ]);
+    const meta = { getModuleInfo: (id: string) => moduleInfo.get(id) ?? null };
+    expect(manualChunks("/app/node_modules/react/index.js", meta)).toBe("framework");
+    expect(manualChunks("/app/node_modules/react-server-dom-webpack/client.js", meta)).toBe(
+      "framework",
+    );
+    expect(
+      manualChunks("/app/node_modules/react-dom/server.react-server.js", meta),
+    ).toBeUndefined();
     // Non-framework node_modules and local files are left to the default algo.
-    expect(manualChunks("/app/node_modules/react-icons/lib/index.js")).toBeUndefined();
-    expect(manualChunks("/app/src/page.tsx")).toBeUndefined();
+    expect(manualChunks("/app/node_modules/react-icons/lib/index.js", meta)).toBeUndefined();
+    expect(manualChunks("/app/src/page.tsx", meta)).toBeUndefined();
   });
 
   it("returns codeSplitting for Vite 8+ (Rolldown), not the deprecated advancedChunks", () => {
@@ -2827,14 +3429,26 @@ describe("createRscFrameworkChunkOutputConfig", () => {
     expect(config).not.toHaveProperty("manualChunks");
     expect(config).toEqual({
       codeSplitting: {
-        groups: [{ name: "framework", test: RSC_FRAMEWORK_CHUNK_TEST }],
+        groups: [
+          {
+            name: "framework",
+            test: RSC_FRAMEWORK_CHUNK_TEST,
+            entriesAware: true,
+          },
+        ],
       },
     });
 
     // Vite 9+ uses the same Rolldown shape.
     expect(createRscFrameworkChunkOutputConfig(9)).toEqual({
       codeSplitting: {
-        groups: [{ name: "framework", test: RSC_FRAMEWORK_CHUNK_TEST }],
+        groups: [
+          {
+            name: "framework",
+            test: RSC_FRAMEWORK_CHUNK_TEST,
+            entriesAware: true,
+          },
+        ],
       },
     });
   });
@@ -2850,6 +3464,8 @@ describe("RSC framework package matching", () => {
     "/app/node_modules/react-server-dom-webpack/client.js",
     // pnpm-style nested path.
     "/app/node_modules/.pnpm/react@19.0.0/node_modules/react/index.js",
+    // Windows-style path used by the Vite 7 getPackageName predicate.
+    "C:\\app\\node_modules\\react-dom\\server.js",
   ];
   const notMatching = [
     "/app/node_modules/react-icons/lib/index.js",

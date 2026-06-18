@@ -1,6 +1,6 @@
 {
   "name": "vinext",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
   "license": "MIT",
   "repository": {
@@ -56,6 +56,10 @@
     "./server/app-router-entry": {
       "types": "./dist/server/app-router-entry.d.ts",
       "import": "./dist/server/app-router-entry.js"
+    },
+    "./server/app-rsc-handler": {
+      "types": "./dist/server/app-rsc-handler.d.ts",
+      "import": "./dist/server/app-rsc-handler.js"
     },
     "./config/config-matchers": {
       "types": "./dist/config/config-matchers.d.ts",

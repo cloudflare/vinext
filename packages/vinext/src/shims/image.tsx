@@ -333,7 +333,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     onLoadingComplete,
     onError,
     unoptimized: _unoptimized,
-    overrideSrc: _overrideSrc,
+    overrideSrc,
     loading,
     ...rest
   },
@@ -475,6 +475,46 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
         }
       : undefined;
 
+  if (_unoptimized === true) {
+    // Unoptimized images are fetched directly by the browser, so intentionally
+    // skip remote URL validation: there is no server-side optimizer fetch and
+    // therefore no SSRF surface. This matches Next.js behavior.
+    const renderedSrc = overrideSrc || src;
+    const sanitizedBlur = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
+    const blurStyle =
+      !blurComplete && placeholder === "blur" && sanitizedBlur
+        ? {
+            backgroundImage: `url(${sanitizedBlur})`,
+            backgroundSize: "cover",
+            backgroundRepeat: "no-repeat",
+            backgroundPosition: "center",
+          }
+        : undefined;
+    preloadImageResource({
+      shouldPreload,
+      src: renderedSrc,
+      fetchPriority: priorityFetchPriority,
+    });
+    return (
+      <img
+        ref={mergedRef}
+        src={renderedSrc}
+        alt={alt}
+        width={fill ? undefined : imgWidth}
+        height={fill ? undefined : imgHeight}
+        loading={imageLoading}
+        fetchPriority={priorityFetchPriority}
+        decoding="async"
+        className={className}
+        data-nimg={fill ? "fill" : "1"}
+        onLoad={handleLoad}
+        onError={handleError}
+        style={fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style }}
+        {...rest}
+      />
+    );
+  }
+
   // If a custom loader is provided, use basic img with loader URL
   if (loader) {
     const resolvedSrc = loader({ src, width: imgWidth ?? 0, quality: quality ?? 75 });
@@ -532,11 +572,11 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     const bg = showBlur ? `url(${sanitizedBlur})` : undefined;
 
     if (fill) {
-      const fillSizes = sizes ?? "100vw";
+      const imageSizes = sizes ?? "100vw";
       preloadImageResource({
         shouldPreload,
         src,
-        sizes: fillSizes,
+        sizes: imageSizes,
         fetchPriority: priorityFetchPriority,
       });
       return (
@@ -551,7 +591,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           loading={imageLoading}
           fetchPriority={priorityFetchPriority}
           decoding="async"
-          sizes={fillSizes}
+          sizes={imageSizes}
           className={className}
           data-nimg="fill"
           onLoad={handleLoad}
@@ -605,7 +645,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // Next.js behavior where .svg triggers unoptimized=true by default.
   const imgQuality = quality ?? 75;
   const isSvg = isSvgUrl(src);
-  const skipOptimization = _unoptimized === true || (isSvg && !__dangerouslyAllowSVG);
+  const skipOptimization = isSvg && !__dangerouslyAllowSVG;
 
   // Build srcSet for responsive local images (common breakpoints).
   // Each entry points to /_next/image with the appropriate width.
@@ -697,7 +737,7 @@ export function getImageProps(props: ImageProps): {
     onLoad: _onLoad,
     onLoadingComplete: _onLoadingComplete,
     unoptimized: _unoptimized,
-    overrideSrc: _overrideSrc,
+    overrideSrc,
     loading,
     ...rest
   } = props;
@@ -709,6 +749,37 @@ export function getImageProps(props: ImageProps): {
     blurDataURL: imgBlurDataURL,
   } = resolveImageSource({ src: srcProp, width, height, blurDataURL: blurDataURLProp });
   const shouldPreload = _preload === true || priority === true;
+
+  if (_unoptimized === true) {
+    // As in the component path, unoptimized images never reach the server-side
+    // optimizer, so remote URL validation is intentionally unnecessary.
+    const renderedSrc = overrideSrc || src;
+    const sanitizedBlurURL = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
+    const blurStyle =
+      placeholder === "blur" && sanitizedBlurURL
+        ? {
+            backgroundImage: `url(${sanitizedBlurURL})`,
+            backgroundSize: "cover",
+            backgroundRepeat: "no-repeat" as const,
+            backgroundPosition: "center" as const,
+          }
+        : undefined;
+    return {
+      props: {
+        src: renderedSrc,
+        alt,
+        width: fill ? undefined : imgWidth,
+        height: fill ? undefined : imgHeight,
+        loading: priority ? "eager" : shouldPreload ? loading : (loading ?? "lazy"),
+        fetchPriority: priority ? ("high" as const) : undefined,
+        decoding: "async" as const,
+        className,
+        "data-nimg": fill ? "fill" : "1",
+        style: fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style },
+        ...rest,
+      } as React.ImgHTMLAttributes<HTMLImageElement>,
+    };
+  }
 
   // Validate remote URLs against configured patterns
   let blockedInProd = false;
@@ -737,11 +808,7 @@ export function getImageProps(props: ImageProps): {
   // SVG sources auto-skip unless dangerouslyAllowSVG is enabled.
   const isSvg = isSvgUrl(resolvedSrc);
   const skipOpt =
-    _unoptimized === true ||
-    (isSvg && !__dangerouslyAllowSVG) ||
-    blockedInProd ||
-    !!loader ||
-    isRemoteUrl(resolvedSrc);
+    (isSvg && !__dangerouslyAllowSVG) || blockedInProd || !!loader || isRemoteUrl(resolvedSrc);
   const optimizedSrc = skipOpt
     ? resolvedSrc
     : imgWidth

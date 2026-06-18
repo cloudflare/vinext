@@ -29,7 +29,7 @@ import {
   getDataCacheHandler,
   type CacheHandlerValue,
   type IncrementalCacheValue,
-} from "./cache.js";
+} from "./cache-handler.js";
 import { getRequestExecutionContext } from "./request-context.js";
 // The edge adapter lives with the Cloudflare integration; the resolver below
 // imports it to use as the built-in default when a request-context host cache

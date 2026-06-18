@@ -9,6 +9,9 @@ import {
   VINEXT_STATIC_FILE_HEADER,
 } from "./headers.js";
 import { forbiddenResponse, notFoundResponse } from "./http-error-responses.js";
+import { isOpenRedirectShaped } from "./open-redirect.js";
+
+export { isOpenRedirectShaped } from "./open-redirect.js";
 
 /**
  * Shared request pipeline utilities.
@@ -53,48 +56,6 @@ export function guardProtocolRelativeUrl(rawPathname: string): Response | null {
     return notFoundResponse();
   }
   return null;
-}
-
-/**
- * Returns true if a request pathname looks like a protocol-relative open
- * redirect, in either literal or percent-encoded form.
- *
- * Exported for call sites that need to replicate the guard inline (Pages
- * Router worker codegen, Node production server) and for defense-in-depth
- * checks inside redirect emitters.
- *
- * A pathname is considered "open redirect shaped" when its first segment,
- * after decoding backslashes and encoded delimiters, would cause a browser
- * to resolve a `Location` containing the pathname as protocol-relative:
- *
- *   - literal   `//evil.com`
- *   - literal   `/\evil.com`             (browsers normalize `\` to `/`)
- *   - encoded   `/%5Cevil.com`           (`%5C` decodes to `\` in Location)
- *   - encoded   `/%2F/evil.com`          (`%2F` decodes to `/` → `//`)
- *   - mixed     `/%5C%2F`, `/%5C%5C`     (and other combinations)
- *
- * We explicitly do not require a valid percent sequence elsewhere in the
- * pathname — we only examine the leading bytes (up to the second real or
- * encoded delimiter) so malformed suffixes can still reach the normal
- * "400 Bad Request" decode path instead of being masked as "404".
- */
-export function isOpenRedirectShaped(rawPathname: string): boolean {
-  if (!rawPathname.startsWith("/")) return false;
-
-  // Fast path: literal `//...` or `/\...`. Browsers treat `\` as `/` in
-  // URL paths, so `/\evil.com` is equivalent to `//evil.com`.
-  const afterSlash = rawPathname.slice(1);
-  if (afterSlash.startsWith("/") || afterSlash.startsWith("\\")) return true;
-
-  // Slow path: percent-encoded leading delimiter. We only need to consider
-  // `%5C` (backslash) and `%2F` (forward slash) at position 1. Case-insensitive
-  // per RFC 3986 §2.1.
-  if (afterSlash.length >= 3 && afterSlash[0] === "%") {
-    const encoded = afterSlash.slice(0, 3).toLowerCase();
-    if (encoded === "%5c" || encoded === "%2f") return true;
-  }
-
-  return false;
 }
 
 /**

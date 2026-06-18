@@ -115,6 +115,7 @@ import {
 import { matchesRewriteSource, proxyExternalRequest } from "./config/config-matchers.js";
 import { detectPackageManager } from "./utils/project.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
+import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "./utils/virtual-module.js";
 import { ASSET_PREFIX_URL_DIR, resolveAssetsDir } from "./utils/asset-prefix.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
@@ -181,7 +182,11 @@ import {
   relativeWithinRoot,
   type BundleBackfillChunk,
 } from "./build/ssr-manifest.js";
-import { stripServerExports } from "./plugins/strip-server-exports.js";
+import {
+  hasExportAllCandidate,
+  stripServerExports,
+  validatePageExports,
+} from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
@@ -200,7 +205,12 @@ import fs from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 import { normalizePathSeparators, stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
-import { getViteMajorVersion } from "./utils/vite-version.js";
+import { escapeRegExp } from "./utils/regex.js";
+import {
+  getDepOptimizeNodeEnvOptions,
+  getViteMajorVersion,
+  serializeViteDefine,
+} from "./utils/vite-version.js";
 
 // Install the process-level peer-disconnect backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
@@ -211,6 +221,11 @@ import { getViteMajorVersion } from "./utils/vite-version.js";
 installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
+
+function getCacheDirPrefix(cacheDir: string): string {
+  const normalizedCacheDir = normalizePathSeparators(cacheDir);
+  return normalizedCacheDir.endsWith("/") ? normalizedCacheDir : `${normalizedCacheDir}/`;
+}
 
 function isInsideDirectory(dir: string, filePath: string): boolean {
   const relativePath = path.relative(dir, filePath);
@@ -308,7 +323,9 @@ function isVercelOgImport(id: string): boolean {
 
 function isVinextOgShimImporter(importer: string | undefined): boolean {
   if (!importer) return false;
-  const cleanImporter = (importer.startsWith("\0") ? importer.slice(1) : importer).split("?")[0];
+  const cleanImporter = (importer.startsWith(VIRTUAL_PREFIX) ? importer.slice(1) : importer).split(
+    "?",
+  )[0];
   const normalizedImporter = cleanImporter.replace(/\\/g, "/");
   return (
     normalizedImporter.endsWith("/shims/og.tsx") ||
@@ -520,27 +537,30 @@ function resolveTsconfigAliases(projectRoot: string): Record<string, string> {
 
 // Virtual module IDs for Pages Router production build
 const VIRTUAL_SERVER_ENTRY = "virtual:vinext-server-entry";
-const RESOLVED_SERVER_ENTRY = "\0" + VIRTUAL_SERVER_ENTRY;
+const RESOLVED_SERVER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_SERVER_ENTRY;
 const VIRTUAL_CLIENT_ENTRY = "virtual:vinext-client-entry";
-const RESOLVED_CLIENT_ENTRY = "\0" + VIRTUAL_CLIENT_ENTRY;
+const RESOLVED_CLIENT_ENTRY = VIRTUAL_PREFIX + VIRTUAL_CLIENT_ENTRY;
 
 // Virtual module IDs for App Router entries
 const VIRTUAL_RSC_ENTRY = "virtual:vinext-rsc-entry";
-const RESOLVED_RSC_ENTRY = "\0" + VIRTUAL_RSC_ENTRY;
+const RESOLVED_RSC_ENTRY = VIRTUAL_PREFIX + VIRTUAL_RSC_ENTRY;
 const VIRTUAL_APP_SSR_ENTRY = "virtual:vinext-app-ssr-entry";
-const RESOLVED_APP_SSR_ENTRY = "\0" + VIRTUAL_APP_SSR_ENTRY;
+const RESOLVED_APP_SSR_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_SSR_ENTRY;
 const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
-const RESOLVED_APP_BROWSER_ENTRY = "\0" + VIRTUAL_APP_BROWSER_ENTRY;
+const RESOLVED_APP_BROWSER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_BROWSER_ENTRY;
 const VIRTUAL_ROOT_PARAMS = "virtual:vinext-root-params";
-const RESOLVED_ROOT_PARAMS = "\0" + VIRTUAL_ROOT_PARAMS;
+const RESOLVED_ROOT_PARAMS = VIRTUAL_PREFIX + VIRTUAL_ROOT_PARAMS;
 /** Virtual module that registers config-driven cache adapters (see VinextOptions.cache). */
-const RESOLVED_CACHE_ADAPTERS = "\0" + VIRTUAL_CACHE_ADAPTERS;
+const RESOLVED_CACHE_ADAPTERS = VIRTUAL_PREFIX + VIRTUAL_CACHE_ADAPTERS;
 /** Virtual module for composed instrumentation-client bootstrap. */
 const VIRTUAL_INSTRUMENTATION_CLIENT = "private-next-instrumentation-client";
-const RESOLVED_INSTRUMENTATION_CLIENT = `\0${VIRTUAL_INSTRUMENTATION_CLIENT}.mjs`;
+const RESOLVED_INSTRUMENTATION_CLIENT = `${VIRTUAL_PREFIX}${VIRTUAL_INSTRUMENTATION_CLIENT}.mjs`;
 /** Image file extensions handled by the vinext:image-imports plugin.
  *  Shared between the Rolldown hook filter and the transform handler regex. */
 const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
+/** Matches a trailing image extension on an import path. Built once: `IMAGE_EXTS`
+ *  is constant, so there is no need to recompile this per transform invocation. */
+const IMAGE_EXT_RE = new RegExp(`\\.(${IMAGE_EXTS})$`);
 
 function createStaticImageAsset(imagePath: string): { fileName: string; source: Buffer } {
   const source = fs.readFileSync(imagePath);
@@ -559,6 +579,14 @@ function createStaticImageAsset(imagePath: string): { fileName: string; source: 
  */
 const _shimsDir = normalizePathSeparators(path.resolve(__dirname, "shims")) + "/";
 const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
+const _appRscHandlerPath = resolveShimModulePath(
+  normalizePathSeparators(path.resolve(__dirname, "server")),
+  "app-rsc-handler",
+);
+// Source checkouts resolve to TypeScript and must stay in Vite's graph so tests
+// do not execute a stale dist build. Published packages resolve to emitted JS,
+// which Node can load natively outside the RSC transform graph.
+const _canExternalizeAppRscHandler = _appRscHandlerPath.endsWith(".js");
 
 function isValidExportIdentifier(name: string): boolean {
   return /^[$A-Z_a-z][$\w]*$/.test(name);
@@ -566,7 +594,7 @@ function isValidExportIdentifier(name: string): boolean {
 
 function isVirtualEntryFacade(id: string | null | undefined, virtualId: string): boolean {
   if (!id) return false;
-  const cleanId = id.startsWith("\0") ? id.slice(1) : id;
+  const cleanId = id.startsWith(VIRTUAL_PREFIX) ? id.slice(1) : id;
   return (
     cleanId === virtualId || cleanId.endsWith("/" + virtualId) || cleanId.endsWith("\\" + virtualId)
   );
@@ -797,6 +825,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const viteMajorVersion = getViteMajorVersion();
   let root: string;
   let pagesDir: string;
+  let canonicalPagesDir: string;
   let appDir: string;
   let hasAppDir = false;
   let hasPagesDir = false;
@@ -824,20 +853,46 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // one process never preprocess `composes` deps with another build's config.
   const sassComposesLoader = createSassAwareFileSystemLoader();
 
+  // Populated from the resolved Vite config before transform filters are
+  // compiled, while keeping the filter object referenced by the plugin stable.
+  const typeofWindowIdFilter = { exclude: /(?!)/ };
+
   // Build-time layout classification manifest, captured in the RSC virtual
   // module's load hook and consumed in renderChunk to patch the generated
   // `__VINEXT_CLASS` stub with a real dispatch table.
   let rscClassificationManifest: RouteClassificationManifest | null = null;
 
-  // Resolve shim paths - works both from source (.ts) and built (.js)
-  const shimsDir = path.resolve(__dirname, "shims");
+  // Resolve shim paths - works both from source (.ts) and built (.js).
+  // Normalize to forward slashes so every downstream `path.posix.join` keeps
+  // the shim ids POSIX on Windows (matching `_shimsDir` and the canonicalized
+  // module-graph ids); raw `path.resolve` yields backslashes there.
+  const shimsDir = normalizePathSeparators(path.resolve(__dirname, "shims"));
 
   // Shared with the Layer 2 renderChunk hook below. Rolldown stores module
-  // IDs as canonicalized filesystem paths (fs.realpathSync.native), so we must
-  // canonicalize anything we hand to the classifier and anything we ask the
-  // module graph for. The shim files exist in the vinext package before plugin
-  // init, so realpath is safe to evaluate eagerly.
-  const canonicalize = (p: string): string => tryRealpathSync(p) ?? p;
+  // IDs as canonicalized filesystem paths (fs.realpathSync.native) with forward
+  // slashes, so we must canonicalize anything we hand to the classifier and
+  // anything we ask the module graph for — including the separator
+  // normalization, since realpathSync.native keeps backslashes on Windows. The
+  // shim files exist in the vinext package before plugin init, so realpath is
+  // safe to evaluate eagerly.
+  const canonicalize = (p: string): string => normalizePathSeparators(tryRealpathSync(p) ?? p);
+  const pageTransformCanonicalPaths = new Map<string, string>();
+  const canonicalizePageTransformPath = (modulePath: string): string => {
+    const cached = pageTransformCanonicalPaths.get(modulePath);
+    if (cached) return cached;
+    const canonicalPath = canonicalize(modulePath);
+    pageTransformCanonicalPaths.set(modulePath, canonicalPath);
+    return canonicalPath;
+  };
+  const isWithinPagesDirectory = (modulePath: string): boolean =>
+    modulePath === pagesDir ||
+    modulePath.startsWith(`${pagesDir}/`) ||
+    modulePath === canonicalPagesDir ||
+    modulePath.startsWith(`${canonicalPagesDir}/`);
+  const isApiPage = (canonicalId: string): boolean => {
+    const relativePath = fileMatcher.stripExtension(canonicalId.slice(canonicalPagesDir.length));
+    return relativePath === "/api" || relativePath.startsWith("/api/");
+  };
   const dynamicShimPaths: ReadonlySet<string> = new Set(
     [
       resolveShimModulePath(shimsDir, "headers"),
@@ -1102,35 +1157,41 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           {
             name: "vinext:jsx-in-js",
             enforce: "pre" as const,
-            async transform(code: string, id: string) {
-              // Only handle .js/.mjs files.
-              // TypeScript (.ts/.tsx/.jsx) files are handled by vite:oxc.
-              const cleanId = id.split("?")[0];
-              if (!/\.(m?js)$/.test(cleanId)) return;
+            transform: {
+              filter: { id: /\.m?js(?:\?.*)?$/ },
+              async handler(code: string, id: string) {
+                const cleanId = id.split("?")[0];
 
-              // Inside node_modules, restrict the JSX transform to files that
-              // carry a React directive. `@vitejs/plugin-rsc` only parses
-              // such modules (and only those failures have been observed in
-              // the wild). The cheap `includes` check avoids any work for the
-              // vast majority of `.js` files in `node_modules`.
-              if (cleanId.includes("/node_modules/")) {
-                if (!code.includes("use client") && !code.includes("use server")) {
-                  return;
-                }
-                if (!hasReactDirective(code)) {
-                  return;
-                }
-              }
+                // vinext's published runtime is already compiled by tsdown.
+                // Workspace symlinks resolve these files outside node_modules,
+                // so skip them explicitly instead of parsing the whole runtime
+                // again as possible JSX on every cold request.
+                if (isInsideDirectory(__dirname, cleanId)) return;
 
-              const result = await transformWithOxc(code, id, {
-                lang: "jsx",
-                jsx: { runtime: "automatic" as const },
-                sourcemap: true,
-              });
-              return {
-                code: result.code,
-                map: result.map,
-              };
+                // Inside node_modules, restrict the JSX transform to files that
+                // carry a React directive. `@vitejs/plugin-rsc` only parses
+                // such modules (and only those failures have been observed in
+                // the wild). The cheap `includes` check avoids any work for the
+                // vast majority of `.js` files in `node_modules`.
+                if (cleanId.includes("/node_modules/")) {
+                  if (!code.includes("use client") && !code.includes("use server")) {
+                    return;
+                  }
+                  if (!hasReactDirective(code)) {
+                    return;
+                  }
+                }
+
+                const result = await transformWithOxc(code, id, {
+                  lang: "jsx",
+                  jsx: { runtime: "automatic" as const },
+                  sourcemap: true,
+                });
+                return {
+                  code: result.code,
+                  map: result.map,
+                };
+              },
             },
           } satisfies Plugin,
         ]
@@ -1218,6 +1279,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
 
         pagesDir = path.posix.join(baseDir, "pages");
+        canonicalPagesDir = canonicalize(pagesDir);
         appDir = path.posix.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
@@ -1312,12 +1374,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
         // Merge env from next.config.js with NEXT_PUBLIC_* env vars
         const defines = getNextPublicEnvDefines();
-        if (
-          !config.define ||
-          typeof config.define !== "object" ||
-          !("process.env.NODE_ENV" in config.define)
-        ) {
-          defines["process.env.NODE_ENV"] = JSON.stringify(resolvedNodeEnv);
+        const userNodeEnvDefine = config.define?.["process.env.NODE_ENV"];
+        const hasUserNodeEnvDefine = Object.hasOwn(config.define ?? {}, "process.env.NODE_ENV");
+        const nodeEnvDefine = hasUserNodeEnvDefine
+          ? serializeViteDefine(userNodeEnvDefine)
+          : JSON.stringify(resolvedNodeEnv);
+        if (!hasUserNodeEnvDefine) {
+          defines["process.env.NODE_ENV"] = nodeEnvDefine;
         }
         for (const [key, value] of Object.entries(nextConfig.env)) {
           // Skip NODE_ENV from next.config.js env — Next.js ignores it too,
@@ -1513,96 +1576,100 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // vinext's shim instead of real Next.
         nextShimMap = Object.fromEntries(
           Object.entries({
-            "next/link": path.join(shimsDir, "link"),
-            "next/head": path.join(shimsDir, "head"),
-            "next/router": path.join(shimsDir, "router"),
-            "next/compat/router": path.join(shimsDir, "compat-router"),
-            "next/image": path.join(shimsDir, "image"),
-            "next/legacy/image": path.join(shimsDir, "legacy-image"),
-            "next/dynamic": path.join(shimsDir, "dynamic"),
-            "next/app": path.join(shimsDir, "app"),
-            "next/document": path.join(shimsDir, "document"),
-            "next/config": path.join(shimsDir, "config"),
-            "next/script": path.join(shimsDir, "script"),
-            "next/server": path.join(shimsDir, "server"),
+            "next/link": path.posix.join(shimsDir, "link"),
+            "next/head": path.posix.join(shimsDir, "head"),
+            "next/router": path.posix.join(shimsDir, "router"),
+            "next/compat/router": path.posix.join(shimsDir, "compat-router"),
+            "next/image": path.posix.join(shimsDir, "image"),
+            "next/legacy/image": path.posix.join(shimsDir, "legacy-image"),
+            "next/dynamic": path.posix.join(shimsDir, "dynamic"),
+            "next/app": path.posix.join(shimsDir, "app"),
+            "next/document": path.posix.join(shimsDir, "document"),
+            "next/config": path.posix.join(shimsDir, "config"),
+            "next/script": path.posix.join(shimsDir, "script"),
+            "next/server": path.posix.join(shimsDir, "server"),
             // "next/navigation" is NOT here — it's in _reactServerShims and
             // handled by the resolveId hook for per-environment control (#834).
-            "next/headers": path.join(shimsDir, "headers"),
-            "next/font/google": path.join(shimsDir, "font-google"),
-            "next/font/local": path.join(shimsDir, "font-local"),
-            "next/cache": path.join(shimsDir, "cache"),
-            "next/form": path.join(shimsDir, "form"),
-            "next/og": path.join(shimsDir, "og"),
-            "next/web-vitals": path.join(shimsDir, "web-vitals"),
-            "next/amp": path.join(shimsDir, "amp"),
-            "next/offline": path.join(shimsDir, "offline"),
+            "next/headers": path.posix.join(shimsDir, "headers"),
+            "next/font/google": path.posix.join(shimsDir, "font-google"),
+            "next/font/local": path.posix.join(shimsDir, "font-local"),
+            "next/cache": path.posix.join(shimsDir, "cache"),
+            "next/form": path.posix.join(shimsDir, "form"),
+            "next/og": path.posix.join(shimsDir, "og"),
+            "next/web-vitals": path.posix.join(shimsDir, "web-vitals"),
+            "next/amp": path.posix.join(shimsDir, "amp"),
+            "next/offline": path.posix.join(shimsDir, "offline"),
             // "next/error" is NOT here — it's in _reactServerShims so Server
             // Components receive Next.js's client-only throwing stub.
-            "next/constants": path.join(shimsDir, "constants"),
+            "next/constants": path.posix.join(shimsDir, "constants"),
             // Internal next/dist/* paths used by popular libraries
             // (next-intl, @clerk/nextjs, @sentry/nextjs, next-nprogress-bar, etc.)
-            "next/dist/shared/lib/app-router-context.shared-runtime": path.join(
+            "next/dist/shared/lib/app-router-context.shared-runtime": path.posix.join(
               shimsDir,
               "internal",
               "app-router-context",
             ),
-            "next/dist/shared/lib/app-router-context": path.join(
+            "next/dist/shared/lib/app-router-context": path.posix.join(
               shimsDir,
               "internal",
               "app-router-context",
             ),
-            "next/dist/shared/lib/router-context.shared-runtime": path.join(
+            "next/dist/shared/lib/router-context.shared-runtime": path.posix.join(
               shimsDir,
               "internal",
               "router-context",
             ),
-            "next/dist/shared/lib/utils": path.join(shimsDir, "internal", "utils"),
-            "next/dist/server/api-utils": path.join(shimsDir, "internal", "api-utils"),
-            "next/dist/server/web/spec-extension/cookies": path.join(
+            "next/dist/shared/lib/utils": path.posix.join(shimsDir, "internal", "utils"),
+            "next/dist/server/api-utils": path.posix.join(shimsDir, "internal", "api-utils"),
+            "next/dist/server/web/spec-extension/cookies": path.posix.join(
               shimsDir,
               "internal",
               "cookies",
             ),
-            "next/dist/compiled/@edge-runtime/cookies": path.join(shimsDir, "internal", "cookies"),
-            "next/dist/server/app-render/work-unit-async-storage.external": path.join(
+            "next/dist/compiled/@edge-runtime/cookies": path.posix.join(
+              shimsDir,
+              "internal",
+              "cookies",
+            ),
+            "next/dist/server/app-render/work-unit-async-storage.external": path.posix.join(
               shimsDir,
               "internal",
               "work-unit-async-storage",
             ),
-            "next/dist/client/components/work-unit-async-storage.external": path.join(
+            "next/dist/client/components/work-unit-async-storage.external": path.posix.join(
               shimsDir,
               "internal",
               "work-unit-async-storage",
             ),
-            "next/dist/client/components/request-async-storage.external": path.join(
+            "next/dist/client/components/request-async-storage.external": path.posix.join(
               shimsDir,
               "internal",
               "work-unit-async-storage",
             ),
-            "next/dist/client/components/request-async-storage": path.join(
+            "next/dist/client/components/request-async-storage": path.posix.join(
               shimsDir,
               "internal",
               "work-unit-async-storage",
             ),
-            "next/dist/server/request/root-params": path.join(shimsDir, "root-params"),
+            "next/dist/server/request/root-params": path.posix.join(shimsDir, "root-params"),
             // Re-export public modules for internal path imports
             // "next/dist/client/components/navigation" in _reactServerShims (#834).
-            "next/dist/server/config-shared": path.join(shimsDir, "internal", "utils"),
+            "next/dist/server/config-shared": path.posix.join(shimsDir, "internal", "utils"),
             // server-only / client-only marker packages
-            "server-only": path.join(shimsDir, "server-only"),
-            "client-only": path.join(shimsDir, "client-only"),
-            "vinext/error-boundary": path.join(shimsDir, "error-boundary"),
-            "vinext/layout-segment-context": path.join(shimsDir, "layout-segment-context"),
-            "vinext/metadata": path.join(shimsDir, "metadata"),
-            "vinext/fetch-cache": path.join(shimsDir, "fetch-cache"),
-            "vinext/cache-runtime": path.join(shimsDir, "cache-runtime"),
-            "vinext/navigation-state": path.join(shimsDir, "navigation-state"),
-            "vinext/unified-request-context": path.join(shimsDir, "unified-request-context"),
-            "vinext/pages-router-runtime": path.join(shimsDir, "pages-router-runtime"),
-            "vinext/router-state": path.join(shimsDir, "router-state"),
-            "vinext/head-state": path.join(shimsDir, "head-state"),
-            "vinext/i18n-state": path.join(shimsDir, "i18n-state"),
-            "vinext/i18n-context": path.join(shimsDir, "i18n-context"),
+            "server-only": path.posix.join(shimsDir, "server-only"),
+            "client-only": path.posix.join(shimsDir, "client-only"),
+            "vinext/error-boundary": path.posix.join(shimsDir, "error-boundary"),
+            "vinext/layout-segment-context": path.posix.join(shimsDir, "layout-segment-context"),
+            "vinext/metadata": path.posix.join(shimsDir, "metadata"),
+            "vinext/fetch-cache": path.posix.join(shimsDir, "fetch-cache"),
+            "vinext/cache-runtime": path.posix.join(shimsDir, "cache-runtime"),
+            "vinext/navigation-state": path.posix.join(shimsDir, "navigation-state"),
+            "vinext/unified-request-context": path.posix.join(shimsDir, "unified-request-context"),
+            "vinext/pages-router-runtime": path.posix.join(shimsDir, "pages-router-runtime"),
+            "vinext/router-state": path.posix.join(shimsDir, "router-state"),
+            "vinext/head-state": path.posix.join(shimsDir, "head-state"),
+            "vinext/i18n-state": path.posix.join(shimsDir, "i18n-state"),
+            "vinext/i18n-context": path.posix.join(shimsDir, "i18n-context"),
             "vinext/cache": path.resolve(__dirname, "cache"),
             "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
             "vinext/instrumentation-client": path.resolve(
@@ -2147,13 +2214,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             }
           },
         };
+        const depOptimizeNodeEnvOptions = getDepOptimizeNodeEnvOptions(
+          viteMajorVersion,
+          nodeEnvDefine,
+        );
+        // Apply the define to the default optimizer and explicitly to server
+        // environments, where Vite's keepProcessEnv default prevents replacement.
         viteConfig.optimizeDeps = {
           // @tailwindcss/oxide contains native .node bindings that Rolldown cannot process
           exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE, [
             "@tailwindcss/oxide",
           ]),
           ...(incomingInclude.length > 0 ? { include: incomingInclude } : {}),
-          rolldownOptions: { plugins: [depOptimizeAliasPlugin] },
+          ...depOptimizeNodeEnvOptions,
+          rolldownOptions: {
+            ...depOptimizeNodeEnvOptions.rolldownOptions,
+            plugins: [depOptimizeAliasPlugin],
+          },
         };
         const pagesOptimizeEntries = !hasAppDir
           ? [
@@ -2201,7 +2278,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       external:
                         userSsrExternal === true
                           ? true
-                          : ["satori", "@resvg/resvg-js", "yoga-wasm-web", ...userSsrExternal],
+                          : [
+                              "satori",
+                              "@resvg/resvg-js",
+                              "yoga-wasm-web",
+                              ...(env?.command === "serve" && _canExternalizeAppRscHandler
+                                ? ["vinext/server/app-rsc-handler"]
+                                : []),
+                              ...userSsrExternal,
+                            ],
                       // Force all node_modules through Vite's transform pipeline
                       // so non-JS imports (CSS, images) don't hit Node's native
                       // ESM loader. Matches Next.js behavior of bundling everything.
@@ -2214,6 +2299,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               optimizeDeps: {
                 exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
                 entries: optimizeEntries,
+                // plugin-rsc pre-includes server.edge, but not its vendored
+                // static.edge import, which it rewrites to this package specifier.
+                // Prebundle both so they share the large development renderer
+                // instead of transforming its raw CJS source on the first request.
+                include: [...new Set([...incomingInclude, "react-server-dom-webpack/static.edge"])],
+                ...depOptimizeNodeEnvOptions,
               },
               build: {
                 outDir: options.rscOutDir ?? "dist/server",
@@ -2268,6 +2359,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   userSsrExternal === true ? SSR_EXTERNAL_REACT_ENTRIES : [],
                 ),
                 entries: optimizeEntries,
+                ...depOptimizeNodeEnvOptions,
               },
               build: {
                 outDir: options.ssrOutDir ?? "dist/server/ssr",
@@ -2395,6 +2487,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // reload the first time a Pages Router page renders an
                 // <Image>.
                 exclude: ["ipaddr.js"],
+                ...depOptimizeNodeEnvOptions,
               },
               build: {
                 outDir: "dist/server",
@@ -2432,6 +2525,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       async configResolved(config) {
+        const cacheDirPrefix = getCacheDirPrefix(config.cacheDir);
+        typeofWindowIdFilter.exclude = new RegExp(`^${escapeRegExp(cacheDirPrefix)}`);
+
         // Provide the resolved config to the Sass-aware CSS Modules Loader so
         // it can call Vite's `preprocessCSS` when processing SCSS files
         // referenced by `composes: className from './file.module.scss'`.
@@ -2568,14 +2664,25 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // direct @vercel/og imports in metadata routes, and \0-prefixed
         // re-imports from @vitejs/plugin-rsc.
         filter: {
-          id: /(?:next\/|vinext\/shims\/|virtual:vinext-|@vercel\/og(?:\.js)?$)/,
+          id: /(?:next\/|vinext\/(?:shims\/|server\/app-rsc-handler)|virtual:vinext-|@vercel\/og(?:\.js)?$)/,
         },
         handler(id, importer) {
           // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
           // browser entry imports our virtual module using the already-resolved
           // ID (with \0 prefix). We need to re-resolve it so the client
           // environment's import-analysis can find it.
-          const cleanId = id.startsWith("\0") ? id.slice(1) : id;
+          const cleanId = id.startsWith(VIRTUAL_PREFIX) ? id.slice(1) : id;
+
+          if (cleanId === "vinext/server/app-rsc-handler") {
+            if (
+              _canExternalizeAppRscHandler &&
+              this.environment?.name === "rsc" &&
+              this.environment.config?.command === "serve"
+            ) {
+              return { id: _appRscHandlerPath, external: true };
+            }
+            return _appRscHandlerPath;
+          }
 
           if (isVercelOgImport(cleanId) && !isVinextOgShimImporter(importer)) {
             return resolveShimModulePath(_shimsDir, "og");
@@ -2872,21 +2979,29 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
-    // CSS url() asset parity with Next.js. Build-only and client-scoped: dev CSS
-    // is untouched, and server environments keep Vite's default asset handling.
+    // CSS url() asset parity with Next.js. Build-only: dev CSS is untouched.
+    // Apply the transient marker in every environment so CSS Modules receives
+    // identical source text and generates identical class names for server and
+    // client builds. Restore it in every output so server-emitted CSS also keeps
+    // distinct asset filenames and never exposes the private marker.
     {
       name: "vinext:css-url-assets-mark",
       enforce: "pre",
       apply: "build",
 
-      transform(code, id) {
-        if (this.environment?.name !== "client") return null;
-        const marked = markCssUrlAssetReferences(code, id);
-        if (marked === null) return null;
-        // No source map: the marker is transient — it's stripped before final
-        // output (generateBundle), so emitted CSS positions are unchanged, and
-        // a map over the intermediate marked text carries no useful information.
-        return { code: marked, map: null };
+      transform: {
+        filter: {
+          id: /\.(?:css|scss|sass|less|styl|stylus)(?:\?|$)/i,
+          code: "url(",
+        },
+        handler(code, id) {
+          const marked = markCssUrlAssetReferences(code, id);
+          if (marked === null) return null;
+          // No source map: the marker is transient — it's stripped before final
+          // output (generateBundle), so emitted CSS positions are unchanged, and
+          // a map over the intermediate marked text carries no useful information.
+          return { code: marked, map: null };
+        },
       },
     },
     {
@@ -2937,7 +3052,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       apply: "build",
 
       generateBundle(_options, bundle) {
-        if (this.environment?.name !== "client") return;
         restoreDedupedCssAssetReferences(bundle, (asset) => {
           this.emitFile({ type: "asset", fileName: asset.fileName, source: asset.source });
         });
@@ -3052,33 +3166,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
       },
 
-      transform(code, id) {
-        // Only transform user source files, not node_modules or virtual modules
-        if (id.includes("node_modules")) return null;
-        if (id.startsWith("\0")) return null;
-        if (!/\.(tsx?|jsx?|mjs)$/.test(id)) return null;
-
-        // Quick check: does this file reference canary APIs and import from "react"?
-        if (
-          !(code.includes("ViewTransition") || code.includes("addTransitionType")) ||
-          !/from\s+['"]react['"]/.test(code)
-        ) {
-          return null;
-        }
-
-        // Only rewrite if the import actually destructures a canary API
-        const canaryImportRegex =
-          /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/;
-        if (!canaryImportRegex.test(code)) return null;
-
-        // Rewrite all `from "react"` / `from 'react'` to use the canary shim.
-        // This is safe because the virtual module re-exports everything from
-        // react, so non-canary imports continue to work.
-        const result = code.replace(/from\s*['"]react['"]/g, 'from "virtual:vinext-react-canary"');
-        if (result !== code) {
+      transform: {
+        filter: {
+          id: {
+            include: /\.(tsx?|jsx?|mjs)$/,
+            exclude: [/node_modules/, VIRTUAL_MODULE_ID_RE],
+          },
+          code: /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/,
+        },
+        handler(code) {
+          // Rewrite all `from "react"` / `from 'react'` to use the canary shim.
+          // This is safe because the virtual module re-exports everything from
+          // react, so non-canary imports continue to work.
+          const result = code.replace(
+            /from\s*['"]react['"]/g,
+            'from "virtual:vinext-react-canary"',
+          );
           return { code: result, map: null };
-        }
-        return null;
+        },
       },
     },
     {
@@ -4133,28 +4238,29 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         };
       },
     },
-    // Match Next.js's server-only boundary for browser/client graphs. The
-    // marker is valid in App Router Server Components and middleware/server
-    // targets, but importing it from client-reachable code (including Pages
-    // Router browser bundles) must fail instead of silently resolving to the
-    // empty shim.
-    //
-    // Ported behavior from Next.js:
-    // test/development/acceptance/server-component-compiler-errors-in-pages.test.ts
-    // packages/next/src/build/webpack-config.ts (server-only/client-only layers)
+    // Next.js rejects `export * from "..."` when compiling Pages Router files
+    // for the client. API routes have no client compilation, so they are
+    // excluded here along with virtual and non-page modules.
     {
-      name: "vinext:validate-server-only-client-imports",
+      name: "vinext:validate-page-exports",
       transform: {
-        filter: { id: /\.(tsx?|jsx?|mjs)$/, code: "server-only" },
+        filter: {
+          id: { exclude: VIRTUAL_MODULE_ID_RE },
+          code: /\bexport\b[\s\S]*\*/,
+        },
         handler(code, id) {
           if (this.environment?.name !== "client") return null;
-          if (id.startsWith("\0")) return null;
-          if (getLeadingReactDirective(code) === "use server") return null;
-          if (!hasServerOnlyMarkerImport(code)) return null;
-
-          throw new Error(
-            `You're importing a module that depends on "server-only". This API is only available in Server Components in the App Router, but this module is reachable from a client bundle.`,
-          );
+          if (!hasPagesDir || !hasExportAllCandidate(code)) {
+            return null;
+          }
+          const modulePath = stripViteModuleQuery(id);
+          if (!isWithinPagesDirectory(modulePath)) return null;
+          const canonicalId = canonicalizePageTransformPath(modulePath);
+          if (!isWithinPagesDirectory(canonicalId)) return null;
+          if (!fileMatcher.isPageFile(canonicalId)) return null;
+          if (isApiPage(canonicalId)) return null;
+          validatePageExports(code);
+          return null;
         },
       },
     },
@@ -4169,22 +4275,56 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     {
       name: "vinext:strip-server-exports",
       transform: {
-        // Only match page source files, not node_modules
-        filter: { id: /\.(tsx?|jsx?|mjs)$/ },
+        filter: {
+          id: { exclude: VIRTUAL_MODULE_ID_RE },
+          code: /getServerSideProps|getStaticProps|getStaticPaths|unstable_getServerProps|unstable_getServerSideProps|unstable_getStaticProps|unstable_getStaticPaths/,
+        },
         handler(code, id) {
-          const ssr = this.environment?.name !== "client";
-          if (ssr) return null;
+          if (this.environment?.name !== "client") return null;
           if (!hasPagesDir) return null;
           // Only transform files under the pages/ directory
-          if (!id.startsWith(pagesDir)) return null;
+          const modulePath = stripViteModuleQuery(id);
+          if (!isWithinPagesDirectory(modulePath)) return null;
+          const canonicalId = canonicalizePageTransformPath(modulePath);
+          if (!isWithinPagesDirectory(canonicalId)) return null;
+          if (!fileMatcher.isPageFile(canonicalId)) return null;
           // Skip API routes, _app, _document, _error
-          const relativePath = id.slice(pagesDir.length);
-          if (relativePath.startsWith("/api/") || relativePath === "/api") return null;
-          if (/\/_(?:app|document|error)\b/.test(relativePath)) return null;
+          const relativePath = canonicalId.slice(canonicalPagesDir.length);
+          if (isApiPage(canonicalId)) return null;
+          if (/^\/(?:_app|_document|_error)(?:\.[^/]*)?$/.test(relativePath)) return null;
 
-          const result = stripServerExports(code);
-          if (!result) return null;
-          return { code: result, map: null };
+          // stripServerExports returns { code, map }; thread the map through so
+          // line shifts from removed exports stay debuggable in client builds.
+          return stripServerExports(code);
+        },
+      },
+    },
+    // Match Next.js's server-only boundary for browser/client graphs. This
+    // must run after the Pages data-export transform so a valid
+    // `export { getServerSideProps } from "./server"` boundary is removed
+    // before the browser graph resolves and validates the server module.
+    //
+    // Ported behavior from Next.js:
+    // test/development/acceptance/server-component-compiler-errors-in-pages.test.ts
+    // packages/next/src/build/webpack-config.ts (server-only/client-only layers)
+    {
+      name: "vinext:validate-server-only-client-imports",
+      transform: {
+        filter: {
+          id: {
+            include: /\.(tsx?|jsx?|mjs)$/,
+            exclude: VIRTUAL_MODULE_ID_RE,
+          },
+          code: "server-only",
+        },
+        handler(code) {
+          if (this.environment?.name !== "client") return null;
+          if (getLeadingReactDirective(code) === "use server") return null;
+          if (!hasServerOnlyMarkerImport(code)) return null;
+
+          throw new Error(
+            `You're importing a module that depends on "server-only". This API is only available in Server Components in the App Router, but this module is reachable from a client bundle.`,
+          );
         },
       },
     },
@@ -4201,21 +4341,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       apply: "build",
       transform: {
         // Only match source files, not node_modules or virtual modules
-        filter: { id: /\.(tsx?|jsx?|mjs)$/ },
-        handler(code, id) {
+        filter: {
+          id: {
+            include: /\.(tsx?|jsx?|mjs)$/,
+            exclude: /\/node_modules\//,
+          },
+          code: /\bconsole\b/,
+        },
+        handler(code) {
           const ssr = this.environment?.name !== "client";
           if (ssr) return null;
           if (!nextConfig.removeConsole) return null;
-          // Skip node_modules to avoid transform overhead on application
-          // dependencies. Next.js applies removeConsole to node_modules too
-          // (the SWC option in getBaseSWCOptions runs on every file the SWC
-          // loader processes); this is a minor divergence in exchange for
-          // faster builds.
-          if (id.includes("/node_modules/")) return null;
 
-          const result = removeConsoleCalls(code, nextConfig.removeConsole);
-          if (!result) return null;
-          return { code: result, map: null };
+          // removeConsoleCalls returns { code, map }; thread the map through so
+          // stripped console calls don't desync client-build sourcemaps.
+          return removeConsoleCalls(code, nextConfig.removeConsole);
         },
       },
     },
@@ -4226,8 +4366,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       name: "vinext:typeof-window",
       enforce: "post",
       transform: {
-        filter: { code: /typeof\s+window/ },
-        handler(code) {
+        filter: {
+          id: typeofWindowIdFilter,
+          code: /typeof\s+window/,
+        },
+        handler(code, id) {
+          const cacheDirPrefix = getCacheDirPrefix(this.environment.config.cacheDir);
+          if (normalizePathSeparators(id).startsWith(cacheDirPrefix)) {
+            return null;
+          }
           return replaceTypeofWindow(code, getTypeofWindowReplacement(this.environment));
         },
       },
@@ -4310,9 +4457,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       watchChange(id) {
-        imageImportDimCache.delete(id);
-        staticImageAssets.delete(id);
-        staticImageImportsByModule.delete(id);
+        // Rolldown reports the changed file with native separators (backslashes
+        // on Windows), but these caches are keyed by the forward-slash module id
+        // from `load`. Normalize so the invalidation hits on Windows too.
+        const key = normalizePathSeparators(id);
+        imageImportDimCache.delete(key);
+        staticImageAssets.delete(key);
+        staticImageImportsByModule.delete(key);
       },
 
       resolveId: {
@@ -4372,16 +4523,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         filter: {
           id: {
             include: /\.(tsx?|jsx?|mjs)$/,
-            exclude: /node_modules/,
+            exclude: [/node_modules/, VIRTUAL_MODULE_ID_RE],
           },
           code: new RegExp(`import\\s+\\w+\\s+from\\s+['"][^'"]+\\.(${IMAGE_EXTS})['"]`),
         },
         async handler(code, id) {
-          // Defensive guard — duplicates filter logic
-          if (id.includes("node_modules")) return null;
-          if (id.startsWith("\0")) return null;
-          if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
-
           // The `code` filter above (a regex) only decides whether to invoke
           // this handler; it can fire on text inside comments, strings, or
           // template literals. Scanning must therefore be AST-based so we only
@@ -4389,7 +4535,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // merely looks like one. Regex-based scanning generated phantom
           // variables for commented-out imports, crashing SSR with
           // `__vinext_img_url_X is not defined`.
-          const imageExtRe = new RegExp(`\\.(${IMAGE_EXTS})$`);
 
           // This plugin uses `enforce: "pre"`, so the handler runs on RAW
           // source — before the JSX/TS transform. `parseAst` defaults to plain
@@ -4431,7 +4576,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
             const importPath = importNode.source?.value;
             if (typeof importPath !== "string") continue;
-            if (!imageExtRe.test(importPath)) continue;
+            if (!IMAGE_EXT_RE.test(importPath)) continue;
 
             // Only handle a single default import (`import X from '...'`),
             // matching the original behavior. Skip named/namespace imports and
@@ -4448,7 +4593,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // which should use forward slashes. fs accepts them on Windows,
             // so existsSync still works.
             const dir = path.dirname(id);
-            const absImagePath = normalizePathSeparators(path.resolve(dir, importPath));
+            const resolvedImage = importPath.startsWith(".")
+              ? path.resolve(dir, importPath)
+              : (await this.resolve(importPath, id, { skipSelf: true }))?.id;
+            if (!resolvedImage) continue;
+            const absImagePath = normalizePathSeparators(resolvedImage.split("?", 1)[0]);
 
             if (!fs.existsSync(absImagePath)) continue;
             imageImports.add(absImagePath);
@@ -4544,19 +4693,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         filter: {
           id: {
             include: /\.(tsx?|jsx?|mjs)$/,
-            exclude: /node_modules/,
+            exclude: [/node_modules/, VIRTUAL_MODULE_ID_RE],
           },
           code: "use cache",
         },
         async handler(code, id) {
-          // Defensive guard — duplicates filter logic
-          if (id.includes("node_modules")) return null;
-          if (id.startsWith("\0")) return null;
-          if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
-          if (!code.includes("use cache")) return null;
-
           // Parse the AST first to check for actual "use cache" directives before
-          // throwing the missing-RSC error. The fast-path string check above can
+          // throwing the missing-RSC error. The code filter can
           // fire on files that contain "use cache" only in comments or string
           // literals (e.g., in error messages), not as real directives.
           const ast = parseAst(code);
@@ -5273,99 +5416,102 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // produces a single build output that runs on both runtimes.
       name: "vinext:og-font-patch",
       enforce: "pre" as const,
-      transform(code: string, id: string) {
-        if (!id.includes("@vercel/og") || !id.includes("index.edge.js")) return null;
-        let result = code;
+      transform: {
+        filter: { id: /@vercel\/og.*index\.edge\.js/ },
+        handler(code: string, id: string) {
+          let result = code;
 
-        // ── Yoga WASM: dynamic import + disk-read fallback ──────────────────────────
-        // yoga-layout's emscripten bundle sets H to a data URL containing the yoga WASM,
-        // then later calls WebAssembly.instantiate(bytes, imports), which workerd rejects.
-        // Emscripten supports a custom h2.instantiateWasm(imports, callback) escape hatch.
-        //
-        // Strategy: try dynamic import("./yoga.wasm?module") for workerd (pre-compiled
-        // module), fall back to reading the .wasm file from disk + WebAssembly.instantiate
-        // for Node.js. We read from disk rather than inlining base64 so the bundle ships
-        // exactly one physical copy of the WASM (the emitted ?module asset); the disk
-        // fallback is wired to that same file by vinext:og-assets. This mirrors the resvg
-        // handling below and keeps the dedup platform-agnostic.
-        const YOGA_DATA_URL_RE = /H = "data:application\/octet-stream;base64,([A-Za-z0-9+/]+=*)";/;
-        const yogaMatch = YOGA_DATA_URL_RE.exec(result);
-        if (yogaMatch) {
-          const yogaBase64 = yogaMatch[1];
-          const distDir = path.dirname(id);
-          const yogaWasmPath = path.join(distDir, "yoga.wasm");
-          // Write yoga.wasm to disk idempotently at transform time (Node.js side)
-          // so the ?module dynamic import can resolve it on workerd builds.
-          if (!fs.existsSync(yogaWasmPath)) {
-            fs.writeFileSync(yogaWasmPath, Buffer.from(yogaBase64, "base64"));
-          }
-          // Disable the data-URL branch so emscripten doesn't try to instantiate from bytes
-          result = result.replace(yogaMatch[0], `H = "";`);
-          // Patch the loadYoga call site to inject instantiateWasm with universal handler.
-          // WebAssembly.instantiate(Module, imports) → Instance (workerd path)
-          // WebAssembly.instantiate(bytes, imports)  → { module, instance } (Node.js path)
+          // ── Yoga WASM: dynamic import + disk-read fallback ──────────────────────────
+          // yoga-layout's emscripten bundle sets H to a data URL containing the yoga WASM,
+          // then later calls WebAssembly.instantiate(bytes, imports), which workerd rejects.
+          // Emscripten supports a custom h2.instantiateWasm(imports, callback) escape hatch.
           //
-          // Note: new URL("./yoga.wasm", import.meta.url) MUST live inside the Node.js
-          // branch (the else), never at the top level. In workerd, import.meta.url is
-          // "worker" (not a valid URL base), so new URL(..., "worker") throws TypeError.
-          // The else branch only runs on Node.js where the ?module import failed and
-          // import.meta.url is a file:// URL.
-          const YOGA_CALL = `yoga_wasm_base64_esm_default()`;
-          const YOGA_CALL_PATCHED = [
-            `yoga_wasm_base64_esm_default({ instantiateWasm: function(imports, callback) {`,
-            `  __vi_yoga_mod.then(function(mod) {`,
-            `    if (mod) {`,
-            `      WebAssembly.instantiate(mod, imports).then(function(inst) { callback(inst); });`,
-            `    } else {`,
-            `      Promise.all([import("node:fs"), import("node:url")]).then(function(mods) {`,
-            `        var p = mods[1].fileURLToPath(new URL("./yoga.wasm", import.meta.url));`,
-            `        return mods[0].promises.readFile(p).then(function(bytes) {`,
-            `          return WebAssembly.instantiate(bytes, imports).then(function(r) { callback(r.instance); });`,
-            `        });`,
-            `      });`,
-            `    }`,
-            `  });`,
-            `  return {};`,
-            `} })`,
-          ].join("\n");
-          result = result.replace(YOGA_CALL, YOGA_CALL_PATCHED);
-          // Prepend dynamic import (no static import — Node.js safe). On Node.js the
-          // ?module import fails and resolves to null, triggering the disk-read fallback.
-          const yogaPreamble = [
-            `var __vi_yoga_mod = import("./yoga.wasm?module").then(function(m) { return m.default; }).catch(function() { return null; });`,
-          ].join("\n");
-          result = yogaPreamble + "\n" + result;
-        }
+          // Strategy: try dynamic import("./yoga.wasm?module") for workerd (pre-compiled
+          // module), fall back to reading the .wasm file from disk + WebAssembly.instantiate
+          // for Node.js. We read from disk rather than inlining base64 so the bundle ships
+          // exactly one physical copy of the WASM (the emitted ?module asset); the disk
+          // fallback is wired to that same file by vinext:og-assets. This mirrors the resvg
+          // handling below and keeps the dedup platform-agnostic.
+          const YOGA_DATA_URL_RE =
+            /H = "data:application\/octet-stream;base64,([A-Za-z0-9+/]+=*)";/;
+          const yogaMatch = YOGA_DATA_URL_RE.exec(result);
+          if (yogaMatch) {
+            const yogaBase64 = yogaMatch[1];
+            const distDir = path.dirname(id);
+            const yogaWasmPath = path.join(distDir, "yoga.wasm");
+            // Write yoga.wasm to disk idempotently at transform time (Node.js side)
+            // so the ?module dynamic import can resolve it on workerd builds.
+            if (!fs.existsSync(yogaWasmPath)) {
+              fs.writeFileSync(yogaWasmPath, Buffer.from(yogaBase64, "base64"));
+            }
+            // Disable the data-URL branch so emscripten doesn't try to instantiate from bytes
+            result = result.replace(yogaMatch[0], `H = "";`);
+            // Patch the loadYoga call site to inject instantiateWasm with universal handler.
+            // WebAssembly.instantiate(Module, imports) → Instance (workerd path)
+            // WebAssembly.instantiate(bytes, imports)  → { module, instance } (Node.js path)
+            //
+            // Note: new URL("./yoga.wasm", import.meta.url) MUST live inside the Node.js
+            // branch (the else), never at the top level. In workerd, import.meta.url is
+            // "worker" (not a valid URL base), so new URL(..., "worker") throws TypeError.
+            // The else branch only runs on Node.js where the ?module import failed and
+            // import.meta.url is a file:// URL.
+            const YOGA_CALL = `yoga_wasm_base64_esm_default()`;
+            const YOGA_CALL_PATCHED = [
+              `yoga_wasm_base64_esm_default({ instantiateWasm: function(imports, callback) {`,
+              `  __vi_yoga_mod.then(function(mod) {`,
+              `    if (mod) {`,
+              `      WebAssembly.instantiate(mod, imports).then(function(inst) { callback(inst); });`,
+              `    } else {`,
+              `      Promise.all([import("node:fs"), import("node:url")]).then(function(mods) {`,
+              `        var p = mods[1].fileURLToPath(new URL("./yoga.wasm", import.meta.url));`,
+              `        return mods[0].promises.readFile(p).then(function(bytes) {`,
+              `          return WebAssembly.instantiate(bytes, imports).then(function(r) { callback(r.instance); });`,
+              `        });`,
+              `      });`,
+              `    }`,
+              `  });`,
+              `  return {};`,
+              `} })`,
+            ].join("\n");
+            result = result.replace(YOGA_CALL, YOGA_CALL_PATCHED);
+            // Prepend dynamic import (no static import — Node.js safe). On Node.js the
+            // ?module import fails and resolves to null, triggering the disk-read fallback.
+            const yogaPreamble = [
+              `var __vi_yoga_mod = import("./yoga.wasm?module").then(function(m) { return m.default; }).catch(function() { return null; });`,
+            ].join("\n");
+            result = yogaPreamble + "\n" + result;
+          }
 
-        // ── Resvg WASM: dynamic import + disk fallback ──────────────────────────────
-        // The edge entry has `import resvg_wasm from "./resvg.wasm?module"` which is a
-        // static ESM import that only works on workerd. Node.js fails because the WASM
-        // binary's emscripten imports (module "a") can't be resolved as npm packages.
-        //
-        // Strategy: replace the static import with a dynamic import for workerd, falling
-        // back to reading the .wasm file from disk + WebAssembly.compile for Node.js.
-        // Resvg WASM is ~1.3MB so we read from disk instead of inlining base64.
-        const RESVG_STATIC_IMPORT_RE =
-          /import\s+resvg_wasm\s+from\s+["']\.\/resvg\.wasm\?module["']\s*;?/;
-        const resvgMatch = RESVG_STATIC_IMPORT_RE.exec(result);
-        if (resvgMatch) {
-          // Note: new URL("./resvg.wasm", import.meta.url) MUST be inside the catch handler,
-          // not at the top level. In workerd, import.meta.url is "worker" (not a valid URL
-          // base), so new URL(..., "worker") throws TypeError at module load time.
-          // The catch block only runs on Node.js where import.meta.url is a file:// URL.
-          const resvgLoader = [
-            `var resvg_wasm = import("./resvg.wasm?module").then(function(m) { return m.default; }).catch(function() {`,
-            `  return Promise.all([import("node:fs"), import("node:url")]).then(function(mods) {`,
-            `    var p = mods[1].fileURLToPath(new URL("./resvg.wasm", import.meta.url));`,
-            `    return mods[0].promises.readFile(p).then(function(buf) { return WebAssembly.compile(buf); });`,
-            `  });`,
-            `});`,
-          ].join("\n");
-          result = result.replace(resvgMatch[0], resvgLoader);
-        }
+          // ── Resvg WASM: dynamic import + disk fallback ──────────────────────────────
+          // The edge entry has `import resvg_wasm from "./resvg.wasm?module"` which is a
+          // static ESM import that only works on workerd. Node.js fails because the WASM
+          // binary's emscripten imports (module "a") can't be resolved as npm packages.
+          //
+          // Strategy: replace the static import with a dynamic import for workerd, falling
+          // back to reading the .wasm file from disk + WebAssembly.compile for Node.js.
+          // Resvg WASM is ~1.3MB so we read from disk instead of inlining base64.
+          const RESVG_STATIC_IMPORT_RE =
+            /import\s+resvg_wasm\s+from\s+["']\.\/resvg\.wasm\?module["']\s*;?/;
+          const resvgMatch = RESVG_STATIC_IMPORT_RE.exec(result);
+          if (resvgMatch) {
+            // Note: new URL("./resvg.wasm", import.meta.url) MUST be inside the catch handler,
+            // not at the top level. In workerd, import.meta.url is "worker" (not a valid URL
+            // base), so new URL(..., "worker") throws TypeError at module load time.
+            // The catch block only runs on Node.js where import.meta.url is a file:// URL.
+            const resvgLoader = [
+              `var resvg_wasm = import("./resvg.wasm?module").then(function(m) { return m.default; }).catch(function() {`,
+              `  return Promise.all([import("node:fs"), import("node:url")]).then(function(mods) {`,
+              `    var p = mods[1].fileURLToPath(new URL("./resvg.wasm", import.meta.url));`,
+              `    return mods[0].promises.readFile(p).then(function(buf) { return WebAssembly.compile(buf); });`,
+              `  });`,
+              `});`,
+            ].join("\n");
+            result = result.replace(resvgMatch[0], resvgLoader);
+          }
 
-        if (result === code) return null;
-        return { code: result, map: null };
+          if (result === code) return null;
+          return { code: result, map: null };
+        },
       },
     },
   ];
