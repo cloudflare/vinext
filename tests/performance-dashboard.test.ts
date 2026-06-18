@@ -7,6 +7,7 @@ const cloudflareEnv = vi.hoisted<{ DB: unknown; PERFORMANCE_PROFILES: unknown }>
     delete: vi.fn(),
   },
 }));
+let claimExecution: boolean;
 
 vi.mock("cloudflare:workers", () => ({ env: cloudflareEnv }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
@@ -39,11 +40,14 @@ describe("performance dashboard uploads", () => {
 
   beforeEach(() => {
     batchedStatements = [];
+    claimExecution = true;
     cloudflareEnv.DB = {
       prepare: (sql: string) => new MockStatement(sql),
       batch: async (statements: MockStatement[]) => {
         batchedStatements = statements;
-        return statements.map(() => ({ results: [] }));
+        return statements.map((_, index) => ({
+          results: index === 0 && claimExecution ? [{}] : [],
+        }));
       },
     };
   });
@@ -64,7 +68,7 @@ describe("performance dashboard uploads", () => {
       new Request("https://vinext.dev/api/benchmarks/upload", {
         method: "POST",
         body: JSON.stringify({
-          schemaVersion: 1,
+          schemaVersion: 2,
           provider: "samply",
           instrument: "walltime",
           run: {
@@ -113,6 +117,114 @@ describe("performance dashboard uploads", () => {
     );
     expect(measurementInsert?.values.slice(19, 28)).toEqual(Object.values(baselineSamples));
     expect(measurementInsert?.values[29]).toBe(1);
+  });
+
+  it("rejects schema 2 payloads without paired baseline statistics", async () => {
+    const response = await uploadPerformanceRun(
+      new Request("https://vinext.dev/api/benchmarks/upload", {
+        method: "POST",
+        body: JSON.stringify({
+          schemaVersion: 2,
+          provider: "samply",
+          instrument: "walltime",
+          run: {
+            kind: "pull_request",
+            commitSha: "a".repeat(40),
+            baseSha: "b".repeat(40),
+            pullRequest: 42,
+            executionId: "1:1",
+            measuredAt: "2026-06-18T12:00:00.000Z",
+            repository: "cloudflare/vinext",
+          },
+          system: {},
+          benchmarks: [
+            {
+              benchmarkId: "vinext-production-build",
+              scenarioId: "production-build",
+              suite: "Build",
+              label: "Production build time",
+              description: "Build the benchmark application",
+              implementationId: "vinext",
+              implementationLabel: "vinext",
+              unit: "ms",
+              lowerIsBetter: true,
+              samples: {
+                rounds: 6,
+                mean: 90,
+                median: 91,
+                standardDeviation: 1,
+                min: 88,
+                max: 93,
+                q1: 90,
+                q3: 92,
+                outliers: 0,
+              },
+              baselineSamples: null,
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "Performance schema 2 requires paired baseline samples",
+    });
+    expect(batchedStatements).toEqual([]);
+  });
+
+  it("rejects delayed executions older than the stored run", async () => {
+    claimExecution = false;
+    const response = await uploadPerformanceRun(
+      new Request("https://vinext.dev/api/benchmarks/upload", {
+        method: "POST",
+        body: JSON.stringify({
+          schemaVersion: 1,
+          provider: "samply",
+          instrument: "walltime",
+          run: {
+            kind: "pull_request",
+            commitSha: "a".repeat(40),
+            baseSha: "b".repeat(40),
+            pullRequest: 42,
+            executionId: "199:3",
+            measuredAt: "2026-06-18T12:00:00.000Z",
+            repository: "cloudflare/vinext",
+          },
+          system: {},
+          benchmarks: [
+            {
+              benchmarkId: "vinext-production-build",
+              scenarioId: "production-build",
+              suite: "Build",
+              label: "Production build time",
+              description: "Build the benchmark application",
+              implementationId: "vinext",
+              implementationLabel: "vinext",
+              unit: "ms",
+              lowerIsBetter: true,
+              samples: {
+                rounds: 5,
+                mean: 90,
+                median: 91,
+                standardDeviation: 1,
+                min: 88,
+                max: 93,
+                q1: 90,
+                q3: 92,
+                outliers: 0,
+              },
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "Stale performance execution" });
+    expect(batchedStatements[0]?.sql).toContain("ON CONFLICT(id) DO UPDATE");
+    expect(batchedStatements[1]?.sql).toContain("WHERE run_id = ?");
+    expect(batchedStatements[2]?.sql).toContain("WHERE EXISTS");
   });
 
   it("uses historical baselines for unpaired rows in mixed PR runs", async () => {

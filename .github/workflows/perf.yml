@@ -49,6 +49,7 @@ jobs:
       VINEXT_PERF_TARGET_ROOT: ${{ github.workspace }}
       VINEXT_PERF_TRUSTED_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
       VINEXT_PERF_TRUSTED_HEAD: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      VINEXT_PERF_WORKFLOW_SHA: ${{ github.sha }}
     steps:
       - name: Validate run metadata
         run: |
@@ -64,7 +65,7 @@ jobs:
               echo "pull_request runs require a full 40-character base SHA" >&2
               exit 1
             fi
-            echo "VINEXT_PERF_BASE_ROOT=$GITHUB_WORKSPACE/.perf-base" >> "$GITHUB_ENV"
+            echo "VINEXT_PERF_BASE_ROOT=$RUNNER_TEMP/vinext-perf-base/checkout" >> "$GITHUB_ENV"
           fi
 
       - name: Checkout code under test
@@ -84,15 +85,32 @@ jobs:
             exit 1
           fi
 
+      - name: Validate dispatched workflow ref
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git fetch --no-tags origin main
+          if [ "$VINEXT_PERF_WORKFLOW_SHA" != "$(git rev-parse origin/main)" ]; then
+            echo "workflow_dispatch must use the current origin/main head" >&2
+            exit 1
+          fi
+
       - name: Checkout pull request base
         if: env.VINEXT_PERF_RUN_KIND == 'pull_request'
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: ${{ github.repository }}
           ref: ${{ env.VINEXT_PERF_BASE_SHA }}
-          path: .perf-base
+          path: .perf-base-staging
           persist-credentials: false
           fetch-depth: 1
+
+      - name: Protect pull request base checkout
+        if: env.VINEXT_PERF_RUN_KIND == 'pull_request'
+        run: |
+          rm -rf "$(dirname "$VINEXT_PERF_BASE_ROOT")"
+          mkdir -p "$(dirname "$VINEXT_PERF_BASE_ROOT")"
+          mv .perf-base-staging "$VINEXT_PERF_BASE_ROOT"
+          chmod 700 "$(dirname "$VINEXT_PERF_BASE_ROOT")"
 
       - name: Checkout trusted benchmark manifests
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -155,18 +173,46 @@ jobs:
 
       - name: Install base dependencies without lifecycle scripts
         if: env.VINEXT_PERF_RUN_KIND == 'pull_request'
-        working-directory: .perf-base
+        working-directory: ${{ env.VINEXT_PERF_BASE_ROOT }}
         env:
           npm_config_ignore_pnpmfile: "true"
         run: vp install --frozen-lockfile --ignore-scripts
 
-      - name: Create isolated benchmark user
+      - name: Create isolated benchmark users
         run: |
-          sudo useradd --create-home --shell /bin/bash vinext-perf
-          sudo setfacl -m u:vinext-perf:x "$HOME" "$RUNNER_WORKSPACE" "$(dirname "$RUNNER_WORKSPACE")"
-          sudo setfacl -R -m u:vinext-perf:rwX "$GITHUB_WORKSPACE"
-          sudo setfacl -R -d -m u:vinext-perf:rwX,u:"$USER":rwX "$GITHUB_WORKSPACE"
-          echo "VINEXT_PERF_TARGET_USER=vinext-perf" >> "$GITHUB_ENV"
+          sudo useradd --create-home --shell /bin/bash vinext-perf-head
+          sudo useradd --create-home --shell /bin/bash vinext-perf-base
+          for user in vinext-perf-head vinext-perf-base; do
+            sudo setfacl -m u:"$user":x "$HOME" "$RUNNER_WORKSPACE" "$(dirname "$RUNNER_WORKSPACE")"
+          done
+          grant_write_paths() {
+            local root="$1"
+            local user="$2"
+            local paths=(
+              packages/vinext/dist
+              packages/cloudflare/dist
+              benchmarks/vinext/dist
+              benchmarks/vinext/.vite
+              benchmarks/vinext/node_modules/.vite
+              benchmarks/nextjs/.next
+              benchmarks/nextjs/node_modules
+            )
+            for relative_path in "${paths[@]}"; do
+              local path="$root/$relative_path"
+              sudo mkdir -p "$path"
+              sudo setfacl -R -m u:"$user":rwX "$path"
+              sudo setfacl -R -d -m u:"$user":rwX,u:"$USER":rwX "$path"
+            done
+          }
+          grant_write_paths "$GITHUB_WORKSPACE" vinext-perf-head
+          if [ "$VINEXT_PERF_RUN_KIND" = "pull_request" ]; then
+            sudo chmod 700 "$(dirname "$VINEXT_PERF_BASE_ROOT")"
+            sudo setfacl -m u:vinext-perf-base:x "$(dirname "$VINEXT_PERF_BASE_ROOT")"
+            sudo setfacl -m u:vinext-perf-base:rx "$VINEXT_PERF_BASE_ROOT"
+            grant_write_paths "$VINEXT_PERF_BASE_ROOT" vinext-perf-base
+          fi
+          echo "VINEXT_PERF_HEAD_USER=vinext-perf-head" >> "$GITHUB_ENV"
+          echo "VINEXT_PERF_BASE_USER=vinext-perf-base" >> "$GITHUB_ENV"
 
       - name: Checkout trusted performance harness
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -188,11 +234,9 @@ jobs:
           rm -rf "$VINEXT_PERF_RESULTS_ROOT"
           mkdir -p "$VINEXT_PERF_RESULTS_ROOT"
           chmod 700 "$VINEXT_PERF_RESULTS_ROOT"
-          sudo setfacl -m u:vinext-perf:rwx "$VINEXT_PERF_RESULTS_ROOT"
-          sudo setfacl -d -m u:vinext-perf:rwX,u:"$USER":rwX "$VINEXT_PERF_RESULTS_ROOT"
           roots=(".")
           if [ "$VINEXT_PERF_RUN_KIND" = "pull_request" ]; then
-            roots+=(".perf-base")
+            roots+=("$VINEXT_PERF_BASE_ROOT")
           fi
           for root in "${roots[@]}"; do
             projects=(vinext)
@@ -225,6 +269,31 @@ jobs:
           fi
           VINEXT_PERF_TARGET_ROOT="$VINEXT_PERF_BASE_ROOT" \
             node "$VINEXT_PERF_HARNESS_ROOT/benchmarks/perf/run-scenarios.mjs" "${args[@]}"
+
+      - name: Lock benchmark inputs after setup
+        run: |
+          roots=(".")
+          users=(vinext-perf-head)
+          if [ "$VINEXT_PERF_RUN_KIND" = "pull_request" ]; then
+            roots+=("$VINEXT_PERF_BASE_ROOT")
+            users+=(vinext-perf-base)
+          fi
+          for index in "${!roots[@]}"; do
+            root="${roots[$index]}"
+            user="${users[$index]}"
+            projects=(vinext)
+            if [ "$VINEXT_PERF_RUN_KIND" != "pull_request" ]; then
+              projects+=(nextjs)
+            fi
+            for project in "${projects[@]}"; do
+              find "$root/benchmarks/$project" -mindepth 1 -maxdepth 1 \
+                ! -name app ! -name node_modules ! -name dist ! -name .next -exec rm -rf {} +
+              cp -R "$VINEXT_PERF_HARNESS_ROOT/benchmarks/$project/." "$root/benchmarks/$project/"
+            done
+            sudo setfacl -R -x u:"$user" "$root/benchmarks/nextjs/node_modules"
+            find "$root/benchmarks/nextjs/node_modules" -type d \
+              -exec sudo setfacl -x d:u:"$user" {} +
+          done
 
       - name: Install pinned performance runner
         run: |

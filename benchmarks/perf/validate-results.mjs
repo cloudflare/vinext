@@ -317,7 +317,10 @@ assert(sourceRun.path === ".github/workflows/perf.yml", "Unexpected source workf
 assert(sourceRun.status === "completed" && sourceRun.conclusion === "success", "Source run failed");
 assert(sourceRun.event === sourceEvent, "Source event does not match workflow run");
 assert(sourceRun.run_attempt === Number(sourceRunAttempt), "Source run attempt does not match");
-assert(payload.schemaVersion === 1, "Unsupported performance schema");
+assert(
+  payload.schemaVersion === 1 || payload.schemaVersion === 2,
+  "Unsupported performance schema",
+);
 assert(payload.provider === "samply", "Unexpected performance provider");
 assert(payload.instrument === "walltime", "Unexpected performance instrument");
 assert(payload.run?.repository === repository, "Performance repository does not match workflow");
@@ -384,6 +387,11 @@ if (sourceEvent === "pull_request") {
 } else if (sourceEvent === "push") {
   trustedManifestRef = sourceRun.head_sha;
 } else if (sourceEvent === "workflow_dispatch") {
+  const defaultBranch = githubApi(`repos/${repository}/commits/main`);
+  assert(
+    defaultBranch.sha === sourceRun.head_sha,
+    "Dispatched workflow ref is not the current default branch head",
+  );
   trustedManifestRef = sourceRun.head_sha;
 } else {
   throw new Error(`Unsupported source event: ${sourceEvent}`);
@@ -527,6 +535,12 @@ for (const benchmark of payload.benchmarks) {
       `Unexpected profile round count for ${benchmark.benchmarkId}`,
     );
   }
+}
+if (payload.schemaVersion === 2) {
+  assert(
+    payload.benchmarks.some((benchmark) => benchmark.baselineSamples),
+    "Performance schema 2 requires paired baseline samples",
+  );
 }
 
 let commitRepository = repository;

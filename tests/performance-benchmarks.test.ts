@@ -34,6 +34,71 @@ describe("paired performance benchmarks", () => {
     expect(manifestStep).not.toContain('roots+=(".perf-base")');
   });
 
+  it("keeps untrusted benchmark processes away from baselines and result files", () => {
+    const workflow = readFileSync(
+      join(import.meta.dirname, "../.github/workflows/perf.yml"),
+      "utf8",
+    );
+    const runner = readFileSync(
+      join(import.meta.dirname, "../benchmarks/perf/run-scenarios.mjs"),
+      "utf8",
+    );
+    const coldStart = readFileSync(
+      join(import.meta.dirname, "../benchmarks/perf/cold-start.mjs"),
+      "utf8",
+    );
+    const buildTime = readFileSync(
+      join(import.meta.dirname, "../benchmarks/perf/build-time.mjs"),
+      "utf8",
+    );
+
+    expect(workflow).toContain("vinext-perf-head");
+    expect(workflow).toContain("vinext-perf-base");
+    expect(workflow).toContain(
+      'echo "VINEXT_PERF_BASE_ROOT=$RUNNER_TEMP/vinext-perf-base/checkout"',
+    );
+    expect(workflow).toContain('mv .perf-base-staging "$VINEXT_PERF_BASE_ROOT"');
+    expect(workflow).toContain('chmod 700 "$(dirname "$VINEXT_PERF_BASE_ROOT")"');
+    expect(workflow).toContain("grant_write_paths()");
+    expect(workflow).toContain("packages/vinext/dist");
+    expect(workflow).toContain("benchmarks/nextjs/node_modules");
+    expect(workflow).not.toContain('setfacl -R -m u:vinext-perf-head:rwX "$GITHUB_WORKSPACE"');
+    expect(workflow).toContain("- name: Lock benchmark inputs after setup");
+    expect(workflow).toContain('setfacl -R -x u:"$user" "$root/benchmarks/nextjs/node_modules"');
+    expect(workflow).not.toContain('u:vinext-perf:rwx "$VINEXT_PERF_RESULTS_ROOT"');
+    expect(runner).toContain("VINEXT_PERF_TARGET_USER: userForRoot(root)");
+    expect(runner).toContain('!name.startsWith("VINEXT_PERF_")');
+    expect(runner).toContain('execFileSync("which", ["vp"]');
+    expect(runner).not.toContain('join(root, "node_modules/.bin/vp")');
+    expect(runner).toContain("function profilerCommand() {\n  return [profilerBin];\n}");
+    expect(runner).toContain('for (const signal of ["-STOP", "-KILL"])');
+    expect(runner).toContain('["pgrep", "-a", "-u", user]');
+    expect(runner).toContain("else await runUntrusted(");
+    expect(runner).toContain(
+      "await runUntrusted(command[0], command.slice(1), timingEnv, root, root)",
+    );
+    expect(runner).toContain("await runUntrusted(\n    profiler[0]");
+    expect(coldStart).toContain('name.startsWith("VINEXT_PERF_")');
+    expect(buildTime).toContain('name.startsWith("VINEXT_PERF_")');
+  });
+
+  it("requires dispatched workflow code to come from main", () => {
+    const workflow = readFileSync(
+      join(import.meta.dirname, "../.github/workflows/perf.yml"),
+      "utf8",
+    );
+    const validation = readFileSync(
+      join(import.meta.dirname, "../benchmarks/perf/validate-results.mjs"),
+      "utf8",
+    );
+
+    expect(workflow).toContain("- name: Validate dispatched workflow ref");
+    expect(workflow).toContain('[ "$VINEXT_PERF_WORKFLOW_SHA" != "$(git rev-parse origin/main)" ]');
+    expect(validation).toContain("`repos/${repository}/commits/main`");
+    expect(validation).toContain("defaultBranch.sha === sourceRun.head_sha");
+    expect(validation).toContain("Dispatched workflow ref is not the current default branch head");
+  });
+
   it("keeps Next.js enabled until the trusted base supports fingerprinting", () => {
     const workflow = readFileSync(
       join(import.meta.dirname, "../.github/workflows/perf.yml"),
@@ -113,6 +178,41 @@ describe("paired performance benchmarks", () => {
     expect(isNextjsBenchmarkInput("benchmarks/nextjs/app/page.tsx")).toBe(false);
   });
 
+  it("rejects symlinked bundle outputs", () => {
+    const directory = mkdtempSync(join(tmpdir(), "vinext-perf-bundle-symlink-"));
+    const outputDirectory = join(directory, "benchmarks/vinext/dist");
+    const linkedDirectory = join(directory, "linked-client");
+    mkdirSync(linkedDirectory, { recursive: true });
+    mkdirSync(outputDirectory, { recursive: true });
+    writeFileSync(join(linkedDirectory, "entry.js"), "console.log('linked')");
+    execFileSync("ln", ["-s", linkedDirectory, join(outputDirectory, "client")]);
+
+    expect(() =>
+      execFileSync(process.execPath, ["benchmarks/perf/bundle-size.mjs", "vinext"], {
+        cwd: join(import.meta.dirname, ".."),
+        env: { ...process.env, VINEXT_PERF_TARGET_ROOT: directory },
+        stdio: "pipe",
+      }),
+    ).toThrow("Bundle output may not be a symlink");
+  });
+
+  it("rejects bundle outputs beneath symlinked benchmark ancestors", () => {
+    const directory = mkdtempSync(join(tmpdir(), "vinext-perf-bundle-ancestor-"));
+    const linkedRoot = mkdtempSync(join(tmpdir(), "vinext-perf-linked-root-"));
+    mkdirSync(join(directory, "benchmarks"), { recursive: true });
+    mkdirSync(join(linkedRoot, "dist/client"), { recursive: true });
+    writeFileSync(join(linkedRoot, "dist/client/entry.js"), "console.log('linked')");
+    execFileSync("ln", ["-s", linkedRoot, join(directory, "benchmarks/vinext")]);
+
+    expect(() =>
+      execFileSync(process.execPath, ["benchmarks/perf/bundle-size.mjs", "vinext"], {
+        cwd: join(import.meta.dirname, ".."),
+        env: { ...process.env, VINEXT_PERF_TARGET_ROOT: directory },
+        stdio: "pipe",
+      }),
+    ).toThrow("Bundle output escapes the benchmark checkout");
+  });
+
   it("normalizes same-run baseline samples separately from head samples", () => {
     const directory = mkdtempSync(join(tmpdir(), "vinext-perf-"));
     const samplesPath = join(directory, "samples.jsonl");
@@ -166,6 +266,7 @@ describe("paired performance benchmarks", () => {
     );
 
     const results = JSON.parse(readFileSync(resultsPath, "utf8"));
+    expect(results.schemaVersion).toBe(2);
     expect(results.run.skippedImplementations).toEqual([]);
     expect(results.benchmarks[0].samples).toMatchObject({ rounds: 2, median: 91 });
     expect(results.benchmarks[0].baselineSamples).toMatchObject({
@@ -329,6 +430,7 @@ describe("paired performance benchmarks", () => {
 
     validatePerformancePayload(payload, "workflow_dispatch", {
       "repos/cloudflare/vinext/actions/runs/123": sourceRun("workflow_dispatch", workflowSha),
+      "repos/cloudflare/vinext/commits/main": { sha: workflowSha },
       "repos/cloudflare/vinext/pulls/42": pullRequest(headSha, baseSha),
       [`repos/cloudflare/vinext/contents/benchmarks/perf/scenarios.json?ref=${workflowSha}`]:
         githubFile(
@@ -345,6 +447,27 @@ describe("paired performance benchmarks", () => {
       [`repos/cloudflare/vinext/git/trees/${headSha}?recursive=1`]: githubTree(nextjsInputs),
       [`repos/cloudflare/vinext/commits/${headSha}`]: commit(measuredAt),
     });
+  });
+
+  it("rejects dispatched artifacts from workflow refs outside main", () => {
+    const workflowSha = "c".repeat(40);
+    const headSha = "a".repeat(40);
+    const baseSha = "b".repeat(40);
+    const measuredAt = "2026-06-18T12:00:00.000Z";
+    const payload = performancePayload({
+      headSha,
+      baseSha,
+      measuredAt,
+      benchmarks: [performanceBenchmark("vinext", true)],
+    });
+
+    expect(() =>
+      validatePerformancePayload(payload, "workflow_dispatch", {
+        "repos/cloudflare/vinext/actions/runs/123": sourceRun("workflow_dispatch", workflowSha),
+        "repos/cloudflare/vinext/commits/main": { sha: "d".repeat(40) },
+        "repos/cloudflare/vinext/pulls/42": pullRequest(headSha, baseSha),
+      }),
+    ).toThrow("Dispatched workflow ref is not the current default branch head");
   });
 
   it("validates skipped Next.js against the synthetic merge commit", () => {
@@ -543,7 +666,15 @@ function performancePayload({
   benchmarks: unknown[];
 }) {
   return {
-    schemaVersion: 1,
+    schemaVersion: benchmarks.some(
+      (benchmark) =>
+        typeof benchmark === "object" &&
+        benchmark !== null &&
+        "baselineSamples" in benchmark &&
+        benchmark.baselineSamples !== null,
+    )
+      ? 2
+      : 1,
     provider: "samply",
     instrument: "walltime",
     run: {

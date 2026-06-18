@@ -10,7 +10,8 @@ import { performanceScenarios, performanceSetup, benchmarkId } from "./scenarios
 const harnessRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const targetRoot = process.env.VINEXT_PERF_TARGET_ROOT ?? process.cwd();
 const baseRoot = process.env.VINEXT_PERF_BASE_ROOT;
-const targetUser = process.env.VINEXT_PERF_TARGET_USER;
+const headUser = process.env.VINEXT_PERF_HEAD_USER ?? process.env.VINEXT_PERF_TARGET_USER;
+const baseUser = process.env.VINEXT_PERF_BASE_USER ?? headUser;
 const profilerBin = process.env.VINEXT_PERF_PROFILER_BIN ?? "codspeed";
 const resultsRoot = process.env.VINEXT_PERF_RESULTS_ROOT ?? join(targetRoot, "benchmarks/results");
 const direct = process.argv.includes("--direct");
@@ -30,8 +31,11 @@ if (requestedRounds !== null && (!Number.isInteger(requestedRounds) || requested
   throw new Error(`--rounds must be a positive integer, received ${roundsArgument}`);
 }
 
-function trustedCommand(command, root = targetRoot) {
-  if (command[0] === "vp") return [join(root, "node_modules/.bin/vp"), ...command.slice(1)];
+function trustedCommand(command) {
+  if (command[0] === "vp") {
+    const vpPath = execFileSync("which", ["vp"], { encoding: "utf8" }).trim();
+    return [vpPath, ...command.slice(1)];
+  }
   if (command[0] === "npm") {
     const npmPath = execFileSync("which", ["npm"], { encoding: "utf8" }).trim();
     return [npmPath, ...command.slice(1)];
@@ -40,33 +44,24 @@ function trustedCommand(command, root = targetRoot) {
   return [command[0], join(harnessRoot, command[1]), ...command.slice(2)];
 }
 
-function targetCommand(command) {
-  if (!targetUser) return command;
-  return ["sudo", "-E", "-H", "-u", targetUser, "--", ...command];
+function userForRoot(root) {
+  return baseRoot && root === baseRoot ? baseUser : headUser;
+}
+
+function targetCommand(command, root = targetRoot) {
+  const user = userForRoot(root);
+  if (!user) return command;
+  return ["sudo", "-E", "-H", "-u", user, "--", ...command];
+}
+
+function targetEnvironment(environment) {
+  return Object.fromEntries(
+    Object.entries(environment).filter(([name]) => !name.startsWith("VINEXT_PERF_")),
+  );
 }
 
 function profilerCommand() {
-  if (!targetUser) return [profilerBin];
-  const targetHome = `/home/${targetUser}`;
-  return [
-    "sudo",
-    "-E",
-    "-H",
-    "-u",
-    targetUser,
-    "--",
-    "env",
-    "-u",
-    "GITHUB_ENV",
-    "-u",
-    "GITHUB_PATH",
-    `HOME=${targetHome}`,
-    `CARGO_HOME=${targetHome}/.cargo`,
-    `XDG_CACHE_HOME=${targetHome}/.cache`,
-    `XDG_CONFIG_HOME=${targetHome}/.config`,
-    `PATH=${targetHome}/.cargo/bin:${targetHome}/.local/bin:${process.env.PATH}`,
-    profilerBin,
-  ];
+  return [profilerBin];
 }
 
 function run(command, args, env, cwd = targetRoot) {
@@ -81,6 +76,34 @@ function run(command, args, env, cwd = targetRoot) {
   });
 }
 
+function cleanupTargetUser(root = targetRoot) {
+  const user = userForRoot(root);
+  if (!user) return;
+  for (const signal of ["-STOP", "-KILL"]) {
+    try {
+      execFileSync("sudo", ["pkill", signal, "-u", user], { stdio: "ignore" });
+    } catch (error) {
+      if (error?.status !== 1) throw error;
+    }
+  }
+  try {
+    const processes = execFileSync("sudo", ["pgrep", "-a", "-u", user], {
+      encoding: "utf8",
+    }).trim();
+    throw new Error(`Benchmark processes survived cleanup for ${user}:\n${processes}`);
+  } catch (error) {
+    if (error?.status !== 1) throw error;
+  }
+}
+
+async function runUntrusted(command, args, env, cwd, root) {
+  try {
+    await run(command, args, env, cwd);
+  } finally {
+    cleanupTargetUser(root);
+  }
+}
+
 if (setupOnly) {
   for (const setup of performanceSetup) {
     if (
@@ -90,14 +113,14 @@ if (setupOnly) {
     ) {
       continue;
     }
-    const command = trustedCommand(setup.command, targetRoot);
-    const executable = setup.trusted ? command : targetCommand(command);
-    await run(
-      executable[0],
-      executable.slice(1),
-      { ...process.env, VINEXT_PERF_TARGET_ROOT: targetRoot },
-      setup.cwd ? join(targetRoot, setup.cwd) : targetRoot,
-    );
+    const command = trustedCommand(setup.command);
+    const executable = setup.trusted ? command : targetCommand(command, targetRoot);
+    const environment = setup.trusted
+      ? { ...process.env, VINEXT_PERF_TARGET_ROOT: targetRoot }
+      : targetEnvironment(process.env);
+    const cwd = setup.cwd ? join(targetRoot, setup.cwd) : targetRoot;
+    if (setup.trusted) await run(executable[0], executable.slice(1), environment, cwd);
+    else await runUntrusted(executable[0], executable.slice(1), environment, cwd, targetRoot);
   }
   process.exit(0);
 }
@@ -118,31 +141,29 @@ function benchmarkEnvironment(scenario, implementation, revision, root) {
     VINEXT_PERF_IMPLEMENTATION_LABEL: implementation.label,
     VINEXT_PERF_PROFILE: "false",
     VINEXT_PERF_REVISION: revision,
+    VINEXT_PERF_TARGET_USER: userForRoot(root),
   };
 }
 
 async function runTimingSample(scenario, implementation, revision, root) {
-  const command = trustedCommand(implementation.command, root);
-  const timingCommand = targetCommand(command);
+  const command = trustedCommand(implementation.command);
   const timingEnv = benchmarkEnvironment(scenario, implementation, revision, root);
-  if (targetUser) delete timingEnv.VINEXT_PERF_TARGET_USER;
-  await run(timingCommand[0], timingCommand.slice(1), timingEnv, root);
+  await runUntrusted(command[0], command.slice(1), timingEnv, root, root);
 }
 
 async function runProfile(scenario, implementation) {
   const id = benchmarkId(scenario, implementation);
   const profileDirectory = join(resultsRoot, `perf-profiles/${id}`);
   await mkdir(profileDirectory, { recursive: true });
-  const command = trustedCommand(implementation.command, targetRoot);
+  const command = trustedCommand(implementation.command);
   const profiler = profilerCommand();
   const profilerEnv = {
     ...benchmarkEnvironment(scenario, implementation, "head", targetRoot),
     VINEXT_PERF_PROFILE: "true",
     VINEXT_PERF_RECORD_SAMPLE: "false",
   };
-  if (targetUser) delete profilerEnv.VINEXT_PERF_TARGET_USER;
   console.log(`Profiling one diagnostic round for ${id}`);
-  await run(
+  await runUntrusted(
     profiler[0],
     [
       ...profiler.slice(1),
@@ -167,6 +188,7 @@ async function runProfile(scenario, implementation) {
       ...command,
     ],
     profilerEnv,
+    targetRoot,
     targetRoot,
   );
 }

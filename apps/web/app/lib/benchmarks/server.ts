@@ -7,7 +7,7 @@ type CloudflareEnv = {
 };
 
 type NormalizedPerfPayload = {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   provider: "samply";
   instrument: "walltime";
   run: {
@@ -66,6 +66,15 @@ function getProfilesBucket() {
   return (env as CloudflareEnv).PERFORMANCE_PROFILES;
 }
 
+function executionOrder(executionId: string) {
+  const match = /^(\d+):(\d+)$/.exec(executionId);
+  if (!match) return null;
+  const runId = Number(match[1]);
+  const attempt = Number(match[2]);
+  if (!Number.isSafeInteger(runId) || !Number.isSafeInteger(attempt)) return null;
+  return [runId, attempt] as const;
+}
+
 export async function uploadPerformanceRun(request: Request): Promise<Response> {
   let body: NormalizedPerfPayload;
   try {
@@ -75,7 +84,7 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
   }
 
   if (
-    body.schemaVersion !== 1 ||
+    (body.schemaVersion !== 1 && body.schemaVersion !== 2) ||
     body.provider !== "samply" ||
     body.instrument !== "walltime" ||
     !body.run?.commitSha ||
@@ -96,6 +105,16 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
   }
 
   if (
+    body.schemaVersion === 2 &&
+    !body.benchmarks.some((benchmark) => benchmark.baselineSamples !== null)
+  ) {
+    return Response.json(
+      { error: "Performance schema 2 requires paired baseline samples" },
+      { status: 400 },
+    );
+  }
+
+  if (
     body.run.kind === "pull_request" &&
     (!body.run.baseSha ||
       body.run.pullRequest === null ||
@@ -111,6 +130,10 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
   const db = getD1();
   const profiles = getProfilesBucket();
   const runId = `${body.run.kind}:${body.run.commitSha}`;
+  const incomingExecution = executionOrder(body.run.executionId);
+  if (!incomingExecution) {
+    return Response.json({ error: "Invalid performance execution ID" }, { status: 400 });
+  }
   const profileKeys = new Map(
     body.benchmarks.flatMap((benchmark) =>
       benchmark.profileObjectKey
@@ -125,22 +148,27 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
   const statements = [
     db
       .prepare(`
-        DELETE FROM performance_measurements
-        WHERE run_id IN (
-          SELECT id FROM performance_runs WHERE kind = ? AND commit_sha = ?
-        )
-        RETURNING profile_object_key
-      `)
-      .bind(body.run.kind, body.run.commitSha),
-    db
-      .prepare("DELETE FROM performance_runs WHERE kind = ? AND commit_sha = ?")
-      .bind(body.run.kind, body.run.commitSha),
-    db
-      .prepare(`
         INSERT INTO performance_runs (
           id, kind, commit_sha, base_sha, pull_request, measured_at,
           provider, instrument, repository, system_json
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          kind = excluded.kind,
+          commit_sha = excluded.commit_sha,
+          base_sha = excluded.base_sha,
+          pull_request = excluded.pull_request,
+          measured_at = excluded.measured_at,
+          provider = excluded.provider,
+          instrument = excluded.instrument,
+          repository = excluded.repository,
+          system_json = excluded.system_json
+        WHERE json_extract(performance_runs.system_json, '$.executionRunId') IS NULL
+          OR CAST(json_extract(performance_runs.system_json, '$.executionRunId') AS INTEGER) < ?
+          OR (
+            CAST(json_extract(performance_runs.system_json, '$.executionRunId') AS INTEGER) = ?
+            AND CAST(json_extract(performance_runs.system_json, '$.executionAttempt') AS INTEGER) < ?
+          )
+        RETURNING id
       `)
       .bind(
         runId,
@@ -152,8 +180,29 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
         body.provider,
         body.instrument,
         body.run.repository,
-        JSON.stringify(body.system),
+        JSON.stringify({
+          ...body.system,
+          executionId: body.run.executionId,
+          executionRunId: incomingExecution[0],
+          executionAttempt: incomingExecution[1],
+        }),
+        incomingExecution[0],
+        incomingExecution[0],
+        incomingExecution[1],
       ),
+    db
+      .prepare(`
+        DELETE FROM performance_measurements
+        WHERE run_id = ?
+          AND EXISTS (
+            SELECT 1 FROM performance_runs
+            WHERE id = ?
+              AND CAST(json_extract(system_json, '$.executionRunId') AS INTEGER) = ?
+              AND CAST(json_extract(system_json, '$.executionAttempt') AS INTEGER) = ?
+          )
+        RETURNING profile_object_key
+      `)
+      .bind(runId, runId, incomingExecution[0], incomingExecution[1]),
     ...body.benchmarks.map((benchmark) =>
       db
         .prepare(`
@@ -168,7 +217,14 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
             paired_baseline_max_value, paired_baseline_q1_value,
             paired_baseline_q3_value, paired_baseline_outliers,
             flame_graph_json, profile_rounds, profile_object_key
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          )
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE EXISTS (
+            SELECT 1 FROM performance_runs
+            WHERE id = ?
+              AND CAST(json_extract(system_json, '$.executionRunId') AS INTEGER) = ?
+              AND CAST(json_extract(system_json, '$.executionAttempt') AS INTEGER) = ?
+          )
         `)
         .bind(
           runId,
@@ -202,11 +258,17 @@ export async function uploadPerformanceRun(request: Request): Promise<Response> 
           null,
           benchmark.profileRounds ?? null,
           profileKeys.get(benchmark.benchmarkId) ?? null,
+          runId,
+          incomingExecution[0],
+          incomingExecution[1],
         ),
     ),
   ];
 
-  const [deletedMeasurements] = await db.batch(statements);
+  const [claimedRun, deletedMeasurements] = await db.batch(statements);
+  if (claimedRun.results.length === 0) {
+    return Response.json({ error: "Stale performance execution" }, { status: 409 });
+  }
   const retainedKeys = new Set(profileKeys.values());
   const obsoleteKeys = (deletedMeasurements.results as Array<{ profile_object_key: string | null }>)
     .map((row) => row.profile_object_key)

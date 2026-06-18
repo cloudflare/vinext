@@ -109,7 +109,7 @@ async function main() {
   );
 
   const payload = {
-    schemaVersion: 1,
+    schemaVersion: benchmarks.some((benchmark) => benchmark.baselineSamples) ? 2 : 1,
     provider: "samply",
     instrument: "walltime",
     run: {
