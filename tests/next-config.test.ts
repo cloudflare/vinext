@@ -1662,6 +1662,101 @@ describe("resolveNextConfig gestureTransition", () => {
   });
 });
 
+// Ported from Next.js: test/e2e/app-dir/rsc-basic/rsc-basic-use-experimental-react.test.ts
+// https://github.com/vercel/next.js/pull/94861
+// vinext does not ship React's experimental build, so the flag is accepted for
+// config compatibility only; we replicate the assignDefaults contradiction warning.
+describe("resolveNextConfig useExperimentalReact", () => {
+  it("accepts experimental.useExperimentalReact: true without throwing", async () => {
+    await expect(
+      resolveNextConfig({ experimental: { useExperimentalReact: true } }),
+    ).resolves.toBeDefined();
+  });
+
+  it("accepts experimental.useExperimentalReact: false without throwing", async () => {
+    await expect(
+      resolveNextConfig({ experimental: { useExperimentalReact: false } }),
+    ).resolves.toBeDefined();
+  });
+
+  it("does not warn when useExperimentalReact is false and no dependent feature is set", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({ experimental: { useExperimentalReact: false } });
+
+    const warning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("useExperimentalReact"),
+    );
+    expect(warning).toBeUndefined();
+    warn.mockRestore();
+  });
+
+  it("warns when useExperimentalReact is false but taint requires the experimental channel", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: { useExperimentalReact: false, taint: true },
+    });
+
+    const warning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("useExperimentalReact"),
+    );
+    expect(warning).toBeDefined();
+    expect(warning![0]).toContain("`experimental.useExperimentalReact`");
+    expect(warning![0]).toContain("`experimental.taint`");
+    warn.mockRestore();
+  });
+
+  it("warns when useExperimentalReact is false but gestureTransition requires the experimental channel", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: { useExperimentalReact: false, gestureTransition: true },
+    });
+
+    const warning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("useExperimentalReact"),
+    );
+    expect(warning).toBeDefined();
+    expect(warning![0]).toContain("`experimental.gestureTransition`");
+    warn.mockRestore();
+  });
+
+  it("lists every dependent feature in the warning", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: {
+        useExperimentalReact: false,
+        taint: true,
+        transitionIndicator: true,
+      },
+    });
+
+    const warning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("useExperimentalReact"),
+    );
+    expect(warning).toBeDefined();
+    expect(warning![0]).toContain("`experimental.taint`");
+    expect(warning![0]).toContain("`experimental.transitionIndicator`");
+    warn.mockRestore();
+  });
+
+  it("does not warn when useExperimentalReact is true alongside taint", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      experimental: { useExperimentalReact: true, taint: true },
+    });
+
+    const warning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("useExperimentalReact"),
+    );
+    expect(warning).toBeUndefined();
+    warn.mockRestore();
+  });
+});
+
 describe("resolveNextConfig appNavFailHandling", () => {
   it("defaults experimental.appNavFailHandling to false", async () => {
     const resolved = await resolveNextConfig({});

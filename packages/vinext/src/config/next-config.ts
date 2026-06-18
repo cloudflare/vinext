@@ -317,6 +317,19 @@ export type NextConfig = {
      * values are clamped to Number.MAX_SAFE_INTEGER.
      */
     prefetchInlining?: boolean | { maxBundleSize?: number; maxSize?: number };
+    /**
+     * Opt into React's experimental release channel for the App Router without
+     * enabling a specific experimental API (such as `taint`).
+     *
+     * Opt-in only: setting it to `false` does not disable the experimental
+     * channel when another feature (`taint`, `transitionIndicator`,
+     * `gestureTransition`) requires it.
+     *
+     * Accepted for Next.js config compatibility. vinext does not ship React's
+     * experimental build, so this flag has no functional effect today.
+     * @see https://github.com/vercel/next.js/pull/94861
+     */
+    useExperimentalReact?: boolean;
     [key: string]: unknown;
   };
   /**
@@ -1775,6 +1788,26 @@ export async function resolveNextConfig(
       "[vinext] `experimental.cachedNavigations` requires `cacheComponents: true` to have any effect. " +
         "Set `cacheComponents: true` in your next.config, or remove `experimental.cachedNavigations`.",
     );
+  }
+
+  // Mirror Next.js assignDefaults: `useExperimentalReact: false` cannot disable
+  // the experimental channel when taint/transitionIndicator/gestureTransition
+  // require it (those APIs only exist in the experimental React build). Next.js
+  // warns; vinext warns too — the flag is accepted for config compatibility but
+  // has no functional effect because vinext does not ship React's experimental build.
+  // https://github.com/vercel/next.js/pull/94861 (packages/next/src/server/config.ts)
+  if (experimental?.useExperimentalReact === false) {
+    const dependents: string[] = [];
+    if (experimental?.taint) dependents.push("`experimental.taint`");
+    if (experimental?.transitionIndicator) dependents.push("`experimental.transitionIndicator`");
+    if (experimental?.gestureTransition) dependents.push("`experimental.gestureTransition`");
+    if (dependents.length > 0) {
+      console.warn(
+        `[vinext] \`experimental.useExperimentalReact\` is set to \`false\`, but ${dependents.join(", ")} ` +
+          "require React's experimental channel. Note: vinext does not ship React's experimental build, " +
+          "so `useExperimentalReact` is accepted for config compatibility but has no functional effect.",
+      );
+    }
   }
 
   // Warn about unsupported webpack usage. We preserve alias injection,
