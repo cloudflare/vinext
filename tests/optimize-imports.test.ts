@@ -16,6 +16,7 @@ import {
 } from "../packages/vinext/src/plugins/optimize-imports.js";
 import type { Plugin } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
+import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -26,9 +27,16 @@ function unwrapHook(hook: any): ((...args: any[]) => any) | undefined {
 }
 
 let testId = 0;
-/** Generate a unique fake entry path to avoid cache collisions between tests */
+/**
+ * Generate a unique fake entry path to avoid cache collisions between tests.
+ *
+ * Drive-qualified, forward-slash absolute path: production barrel entry paths
+ * are always drive-qualified on Windows (a drive-less POSIX path would be
+ * anchored to the current drive by path.resolve), and module ids use forward
+ * slashes. A drive-less fixture diverges from the source's resolution.
+ */
 function uniquePath(name: string): string {
-  return `/fake/${name}-${++testId}/entry.js`;
+  return normalizePathSeparators(path.resolve(`/fake/${name}-${++testId}/entry.js`));
 }
 
 // ── Plugin existence ─────────────────────────────────────────
@@ -105,8 +113,8 @@ describe("vinext:optimize-imports plugin", () => {
   });
 
   it("picks up optimizePackageImports from vinext({ nextConfig })", async () => {
-    const tmpDir = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inline-optimize-")),
+    const tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inline-optimize-"))),
     );
 
     fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ name: "test-app" }));
@@ -166,7 +174,7 @@ describe("vinext:optimize-imports plugin", () => {
 
       expect(result).not.toBeNull();
       expect(result!.code).toContain(
-        `import { IconFoo } from "${path.resolve(tmpDir, "node_modules", "custom-icons", "foo").split(path.sep).join("/")}"`,
+        `import { IconFoo } from "${path.posix.join(tmpDir, "node_modules", "custom-icons", "foo")}"`,
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -197,7 +205,7 @@ export * as Tooltip from "@radix-ui/react-tooltip";`;
 
   it("handles export { A, B } from 'sub-pkg'", async () => {
     const entryPath = uniquePath("named-reexport");
-    const entryDir = path.dirname(entryPath);
+    const entryDir = path.posix.dirname(entryPath);
     const barrelCode = `export { Button, buttonVariants } from "./button";
 export { Input } from "./input";`;
 
@@ -206,17 +214,17 @@ export { Input } from "./input";`;
     expect(map).not.toBeNull();
     // Relative sources are resolved to absolute paths during map building
     expect(map!.get("Button")).toEqual({
-      source: path.resolve(entryDir, "./button").split(path.sep).join("/"),
+      source: path.posix.join(entryDir, "./button"),
       isNamespace: false,
       originalName: "Button",
     });
     expect(map!.get("buttonVariants")).toEqual({
-      source: path.resolve(entryDir, "./button").split(path.sep).join("/"),
+      source: path.posix.join(entryDir, "./button"),
       isNamespace: false,
       originalName: "buttonVariants",
     });
     expect(map!.get("Input")).toEqual({
-      source: path.resolve(entryDir, "./input").split(path.sep).join("/"),
+      source: path.posix.join(entryDir, "./input"),
       isNamespace: false,
       originalName: "Input",
     });
@@ -224,14 +232,14 @@ export { Input } from "./input";`;
 
   it("handles export { default as Name } from 'sub-pkg'", async () => {
     const entryPath = uniquePath("default-reexport");
-    const entryDir = path.dirname(entryPath);
+    const entryDir = path.posix.dirname(entryPath);
     const barrelCode = `export { default as Calendar } from "./calendar";`;
 
     const map = await buildBarrelExportMap(entryPath, () => Promise.resolve(barrelCode));
 
     expect(map).not.toBeNull();
     expect(map!.get("Calendar")).toEqual({
-      source: path.resolve(entryDir, "./calendar").split(path.sep).join("/"),
+      source: path.posix.join(entryDir, "./calendar"),
       isNamespace: false,
       originalName: "default",
     });
@@ -546,7 +554,9 @@ describe("vinext:optimize-imports transform", () => {
     // Create tmp project with a fake package in node_modules.
     // The package name must be in DEFAULT_OPTIMIZE_PACKAGES (or configured via
     // next.config.js) for the plugin's buildStart to include it.
-    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
     fs.writeFileSync(
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),
@@ -607,12 +617,15 @@ describe("vinext:optimize-imports transform", () => {
     const result = await call(code, "/app/page.tsx");
     expect(result).not.toBeNull();
     // Expect absolute paths rooted at the package dir, not relative paths
-    const pkgDir = path.join(tmpDir, "node_modules", "date-fns");
+    // The plugin emits forward-slash module ids (backslashes are invalid in JS
+    // import specifiers); tmpDir is already forward-slash, so path.posix.join
+    // builds the matching absolute path.
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "date-fns");
     expect(result!.code).toContain(
-      `import { Button } from ${JSON.stringify(path.resolve(pkgDir, "button"))}`,
+      `import { Button } from ${JSON.stringify(path.posix.join(pkgDir, "button"))}`,
     );
     expect(result!.code).toContain(
-      `import { Input } from ${JSON.stringify(path.resolve(pkgDir, "input"))}`,
+      `import { Input } from ${JSON.stringify(path.posix.join(pkgDir, "input"))}`,
     );
     expect(result!.code).not.toContain(`from "date-fns"`);
     // Must NOT contain the raw relative path (that would resolve against user file)
@@ -666,7 +679,9 @@ describe("vinext:optimize-imports transform", () => {
   });
 
   it("skips transform on client environment", async () => {
-    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
     fs.writeFileSync(
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),
@@ -705,7 +720,7 @@ describe("vinext:optimize-imports transform", () => {
     expect(importLines[0]).toContain("buttonVariants");
     // Relative path must be resolved to absolute (no bare ./button)
     expect(result!.code).not.toContain(`from "./button"`);
-    const expected = path.resolve(path.join(tmpDir, "node_modules", "ramda"), "button");
+    const expected = path.posix.join(tmpDir, "node_modules", "ramda", "button");
     expect(importLines[0]).toContain(expected);
   });
 
@@ -741,7 +756,7 @@ describe("vinext:optimize-imports transform", () => {
 
     // Both must resolve relative path to absolute — no bare ./chunk
     expect(result!.code).not.toContain(`from "./chunk"`);
-    const absChunk = path.resolve(path.join(tmpDir, "node_modules", "lodash-es"), "chunk");
+    const absChunk = path.posix.join(tmpDir, "node_modules", "lodash-es", "chunk");
     // Namespace import must use `import * as` syntax
     expect(nsLine).toContain("import * as Chunk from");
     expect(nsLine).toContain(absChunk);
@@ -759,7 +774,7 @@ describe("vinext:optimize-imports transform", () => {
     const result = await call(code, "/app/page.tsx");
     expect(result).not.toBeNull();
 
-    const absCalendar = path.resolve(path.join(tmpDir, "node_modules", "rxjs"), "calendar");
+    const absCalendar = path.posix.join(tmpDir, "node_modules", "rxjs", "calendar");
     // Must emit a default import, not a named `{ default as ... }` import
     expect(result!.code).toContain(`import Calendar from ${JSON.stringify(absCalendar)}`);
     expect(result!.code).not.toContain("{ default as Calendar }");
@@ -779,7 +794,7 @@ describe("vinext:optimize-imports transform", () => {
     const result = await call(code, "/app/page.tsx");
     expect(result).not.toBeNull();
 
-    const absFoo = path.resolve(path.join(tmpDir, "node_modules", "ramda"), "foo");
+    const absFoo = path.posix.join(tmpDir, "node_modules", "ramda", "foo");
     // Must emit a default import to the sub-module, not a named import
     expect(result!.code).toContain(`import MyFoo from ${JSON.stringify(absFoo)}`);
     expect(result!.code).not.toContain(`from "ramda"`);
@@ -788,12 +803,14 @@ describe("vinext:optimize-imports transform", () => {
   });
 
   it("rewrites same-file alias exports from wildcard re-exports", async () => {
-    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
     fs.writeFileSync(
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),
     );
-    const pkgDir = path.join(tmpDir, "node_modules", "antd");
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "antd");
     fs.mkdirSync(path.join(pkgDir, "components"), { recursive: true });
     fs.writeFileSync(
       path.join(pkgDir, "package.json"),
@@ -819,7 +836,7 @@ describe("vinext:optimize-imports transform", () => {
     const result = await call(code, "/app/page.tsx");
     expect(result).not.toBeNull();
 
-    const absListbox = path.join(pkgDir, "components", "listbox.js");
+    const absListbox = path.posix.join(pkgDir, "components", "listbox.js");
     expect(result!.code).toContain(
       `import { Listbox as HeadlessListbox } from ${JSON.stringify(absListbox)}`,
     );
@@ -830,7 +847,9 @@ describe("vinext:optimize-imports transform", () => {
     // antd is in DEFAULT_OPTIMIZE_PACKAGES.
     // Barrel uses `export * from "./button"` — the plugin should recurse and resolve
     // `Button` via the sub-module.
-    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
     fs.writeFileSync(
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),
@@ -877,7 +896,9 @@ describe("vinext:optimize-imports transform", () => {
     // fall through to the cross-env fallback instead of hitting SSR's own map.
     // After the fix, each environment maintains its own registeredBarrels key so both RSC and SSR
     // independently populate their own subpkgOrigin maps.
-    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
     fs.writeFileSync(
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),
@@ -927,7 +948,9 @@ describe("vinext:optimize-imports transform", () => {
     // under "react-server" vs "import" export conditions.
     // In the RSC environment the plugin should pick the react-server entry;
     // in SSR it must use the standard import entry (SSR uses the full React runtime).
-    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    tmpDir = normalizePathSeparators(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
     fs.writeFileSync(
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),

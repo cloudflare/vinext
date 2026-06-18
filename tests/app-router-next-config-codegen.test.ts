@@ -197,7 +197,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       redirects: [{ source: "/old", destination: "/new", permanent: true }],
     });
-    expect(code).toContain("export default __createAppRscHandler({");
+    expect(code).toContain("export default createAppRscHandler({");
     expect(code).toContain("configRedirects: __configRedirects");
     expect(code).toContain("dispatchMatchedPage({");
     expect(code).toContain("    clientReuseManifest,");

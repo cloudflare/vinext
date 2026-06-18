@@ -5,8 +5,8 @@ import type { ClassificationReason } from "../build/layout-classification-types.
 import {
   _consumeRequestScopedCacheLife,
   _peekRequestScopedCacheLife,
-  type CachedAppPageValue,
-} from "vinext/shims/cache";
+} from "vinext/shims/cache-request-state";
+import type { CachedAppPageValue } from "vinext/shims/cache-handler";
 import type { RootParams } from "vinext/shims/root-params";
 import {
   consumeDynamicUsage,
@@ -37,15 +37,7 @@ import {
   setCurrentFetchSoftTags,
 } from "vinext/shims/fetch-cache";
 import { AppElementsWire, type AppOutgoingElements } from "./app-elements.js";
-import {
-  readAppPageCacheResponse,
-  readAppPageFallbackShellCacheResponse,
-} from "./app-page-cache.js";
-import {
-  rewriteAppPprFallbackShellHtmlNavigation,
-  type AppPagePprFallbackCacheShell,
-} from "./app-ppr-fallback-shell.js";
-import { warmPprFallbackShellCaches } from "./app-ppr-fallback-shell-render.js";
+import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import {
   resolveAppPageParentHttpAccessBoundary,
   resolveAppPageParentHttpAccessBoundaryModule,
@@ -72,7 +64,6 @@ import {
   consumeAppPageRenderObservationState,
   discardAppPageRenderState,
 } from "./app-page-render-observation.js";
-import { renderAppPageCacheArtifacts } from "./app-page-cache-render.js";
 import {
   mergeMiddlewareResponseHeaders,
   type AppPageMiddlewareContext,
@@ -91,7 +82,6 @@ import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
-import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import type { ISRCacheEntry } from "./isr-cache.js";
 import {
@@ -458,6 +448,7 @@ async function runAppPageRevalidationContext<
   },
   renderFn: () => Promise<TResult>,
 ): Promise<TResult> {
+  const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
   const headersContext = createStaticGenerationHeadersContext({
     draftModeSecret: options.draftModeSecret,
     dynamicConfig: options.dynamicConfig,
@@ -569,6 +560,8 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
   fallbackShells: readonly AppPagePprFallbackCacheShell[],
   currentRevalidateSeconds: number | null,
 ): Promise<Response | null> {
+  const { readAppPageFallbackShellCacheResponse } = await import("./app-page-cache.js");
+  const { rewriteAppPprFallbackShellHtmlNavigation } = await import("./app-ppr-fallback-shell.js");
   for (const fallbackShell of fallbackShells) {
     const fallbackShellResponse = await readAppPageFallbackShellCacheResponse({
       clearRequestContext: options.clearRequestContext,
@@ -679,6 +672,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   }
 
   if ((isForceStatic || isDynamicError) && !isDraftMode) {
+    const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
     setHeadersContext(
       createStaticGenerationHeadersContext({
         draftModeSecret: options.draftModeSecret,
@@ -711,6 +705,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       scriptNonce: options.scriptNonce,
     })
   ) {
+    const { readAppPageCacheResponse } = await import("./app-page-cache.js");
     const cachedPageResponse = await readAppPageCacheResponse({
       cleanPathname: options.cleanPathname,
       clearRequestContext: options.clearRequestContext,
@@ -781,6 +776,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             setNavigationContext: options.setNavigationContext,
           },
           async () => {
+            const { renderAppPageCacheArtifacts } = await import("./app-page-cache-render.js");
             const revalidatedElement = await options.buildPageElement(
               revalidationTarget.route,
               revalidationTarget.params,
@@ -987,6 +983,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     if (warmupBuildResult.response) {
       return warmupBuildResult.response;
     }
+    const { warmPprFallbackShellCaches } = await import("./app-ppr-fallback-shell-render.js");
     await warmPprFallbackShellCaches({
       element: warmupBuildResult.element,
       onError: options.createRscOnErrorHandler(options.cleanPathname, route.pattern),

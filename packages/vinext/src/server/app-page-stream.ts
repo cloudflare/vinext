@@ -5,6 +5,9 @@ import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import type { RootParams } from "vinext/shims/root-params";
+import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
+
+export { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 
 export type AppPageFontData = {
   links: string[];
@@ -257,61 +260,6 @@ export async function renderAppPageHtmlStream(
   );
 
   return normalizeAppSsrRenderResult(rawResult, options.capturedRscDataRef?.value ?? null);
-}
-
-/**
- * Wraps a stream so that `onFlush` is called when the last byte has been read
- * by the downstream consumer (i.e. when the HTTP layer finishes draining the
- * response body). This is the correct place to clear per-request context,
- * because the RSC/SSR pipeline is lazy — components execute while the stream
- * is being consumed, not when the stream handle is first obtained.
- */
-export function deferUntilStreamConsumed(
-  stream: ReadableStream<Uint8Array>,
-  onFlush: () => void,
-): ReadableStream<Uint8Array> {
-  let called = false;
-  const once = () => {
-    if (!called) {
-      called = true;
-      onFlush();
-    }
-  };
-
-  const cleanup = new TransformStream<Uint8Array, Uint8Array>({
-    flush() {
-      once();
-    },
-  });
-
-  const piped = stream.pipeThrough(cleanup);
-
-  // Wrap with a ReadableStream so we can intercept cancel() — the TransformStream
-  // Transformer interface does not expose a cancel hook in the Web Streams spec.
-  const reader = piped.getReader();
-  return new ReadableStream<Uint8Array>({
-    pull(controller) {
-      return reader.read().then(
-        ({ done, value }) => {
-          if (done) {
-            controller.close();
-          } else {
-            controller.enqueue(value);
-          }
-        },
-        (error) => {
-          once();
-          controller.error(error);
-        },
-      );
-    },
-    cancel(reason) {
-      // Stream cancelled before fully consumed (e.g. client disconnected).
-      // Still clear per-request context to avoid leaks.
-      once();
-      return reader.cancel(reason);
-    },
-  });
 }
 
 export async function renderAppPageHtmlResponse(

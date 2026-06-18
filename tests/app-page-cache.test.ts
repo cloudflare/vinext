@@ -537,6 +537,10 @@ describe("app page cache helpers", () => {
 
   it("serves stale RSC entries and regenerates only the matching RSC cache key", async () => {
     const scheduledRegenerations: Array<() => Promise<void>> = [];
+    const isrRscKey = vi.fn(
+      (pathname: string, mountedSlotsHeader?: string | null) =>
+        `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`,
+    );
     const isrSetCalls: Array<{
       key: string;
       html: string;
@@ -557,9 +561,7 @@ describe("app page cache helpers", () => {
       isrHtmlKey(pathname) {
         return "html:" + pathname;
       },
-      isrRscKey(pathname, mountedSlotsHeader) {
-        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`;
-      },
+      isrRscKey,
       async isrSet(key, data, revalidateSeconds, tags, expireSeconds) {
         isrSetCalls.push({
           key,
@@ -591,6 +593,7 @@ describe("app page cache helpers", () => {
 
     await scheduledRegenerations[0]();
 
+    expect(isrRscKey).toHaveBeenCalledOnce();
     expect(isrSetCalls).toEqual([
       {
         key: "rsc:/stale:slot:auth:/",
@@ -640,6 +643,7 @@ describe("app page cache helpers", () => {
 
   it("serves stale HTML entries and regenerates HTML plus canonical RSC cache keys", async () => {
     const scheduledRegenerations: Array<() => Promise<void>> = [];
+    const isrHtmlKey = vi.fn((pathname: string) => "html:" + pathname);
     const isrSetCalls: Array<{
       key: string;
       expireSeconds: number | undefined;
@@ -654,9 +658,7 @@ describe("app page cache helpers", () => {
       async isrGet() {
         return buildISRCacheEntry(buildCachedAppPageValue("<h1>stale</h1>"), true);
       },
-      isrHtmlKey(pathname) {
-        return "html:" + pathname;
-      },
+      isrHtmlKey,
       isrRscKey(pathname, mountedSlotsHeader) {
         return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}`;
       },
@@ -680,6 +682,7 @@ describe("app page cache helpers", () => {
 
     expect(response?.headers.get("x-vinext-cache")).toBe("STALE");
     await scheduledRegenerations[0]();
+    expect(isrHtmlKey).toHaveBeenCalledOnce();
     expect(isrSetCalls).toEqual([
       { key: "rsc:/stale-html:none", expireSeconds: 20, revalidateSeconds: 10 },
       { key: "html:/stale-html", expireSeconds: 20, revalidateSeconds: 10 },

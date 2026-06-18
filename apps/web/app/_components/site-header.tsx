@@ -2,7 +2,7 @@
 
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { buttonVariants } from "@cloudflare/kumo/components/button";
-import { GithubLogoIcon, GraphIcon } from "@phosphor-icons/react/dist/ssr";
+import { GaugeIcon, GithubLogoIcon, GraphIcon } from "@phosphor-icons/react/dist/ssr";
 import Link from "next/link";
 
 const navButton = buttonVariants({ variant: "ghost", size: "sm" });
@@ -21,6 +21,10 @@ export function SiteHeader() {
           <Link href="/compatibility" className={navButton}>
             <GraphIcon />
             Compatibility
+          </Link>
+          <Link href="/benchmarks" className={navButton}>
+            <GaugeIcon />
+            Benchmarks
           </Link>
           <a
             href="https://github.com/cloudflare/vinext"

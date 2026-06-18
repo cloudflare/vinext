@@ -3,7 +3,7 @@ import {
   _peekRequestScopedCacheLife,
   _peekUnstableCacheObservations,
   type UnstableCacheObservation,
-} from "vinext/shims/cache";
+} from "vinext/shims/cache-request-state";
 import {
   getCollectedFetchTags,
   peekCacheableFetchObservations,

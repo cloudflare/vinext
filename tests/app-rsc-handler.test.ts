@@ -1979,6 +1979,21 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  it("skips action dispatchers for ordinary page requests", async () => {
+    const handleProgressiveActionRequest = vi.fn(async () => null);
+    const handleServerActionRequest = vi.fn(async () => null);
+    const handler = createHandler({
+      handleProgressiveActionRequest,
+      handleServerActionRequest,
+    });
+
+    const response = await handler(new Request("https://example.test/docs/about"), null);
+
+    expect(response.status).toBe(200);
+    expect(handleProgressiveActionRequest).not.toHaveBeenCalled();
+    expect(handleServerActionRequest).not.toHaveBeenCalled();
+  });
+
   it("dispatches route handlers with matched params", async () => {
     const route = createPageRoute({
       isDynamic: true,
