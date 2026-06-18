@@ -34,6 +34,27 @@ describe("paired performance benchmarks", () => {
     expect(manifestStep).not.toContain('roots+=(".perf-base")');
   });
 
+  it("keeps Next.js enabled until the trusted base supports fingerprinting", () => {
+    const workflow = readFileSync(
+      join(import.meta.dirname, "../.github/workflows/perf.yml"),
+      "utf8",
+    );
+    const detectionStep = workflow.slice(
+      workflow.indexOf("- name: Detect Next.js benchmark input changes"),
+      workflow.indexOf("- name: Prepare trusted benchmark manifests"),
+    );
+    const compatibilityGuard = detectionStep.indexOf('[ ! -f "$fingerprint_script" ]');
+    const fingerprintInvocation = detectionStep.indexOf(
+      'head_fingerprint=$(node "$fingerprint_script" .)',
+    );
+
+    expect(compatibilityGuard).toBeGreaterThan(-1);
+    expect(detectionStep).toContain('grep -q "skippedImplementations" "$base_validator"');
+    expect(detectionStep).toContain("keeping Next.js for rollout compatibility");
+    expect(detectionStep).toContain("exit 0");
+    expect(fingerprintInvocation).toBeGreaterThan(compatibilityGuard);
+  });
+
   it("isolates pull request comment permissions from benchmark publishing", () => {
     const workflow = readFileSync(
       join(import.meta.dirname, "../.github/workflows/perf-publish.yml"),

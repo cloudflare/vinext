@@ -110,16 +110,17 @@ jobs:
         if: env.VINEXT_PERF_RUN_KIND == 'pull_request'
         run: |
           fingerprint_script=".perf-manifests/benchmarks/perf/nextjs-input-fingerprint.mts"
+          base_validator="$VINEXT_PERF_BASE_ROOT/benchmarks/perf/validate-results.mjs"
+          if [ ! -f "$fingerprint_script" ] || \
+            ! grep -q "skippedImplementations" "$base_validator"; then
+            echo "Base publisher does not support skipped implementations yet; keeping Next.js for rollout compatibility."
+            exit 0
+          fi
           head_fingerprint=$(node "$fingerprint_script" .)
           base_fingerprint=$(node "$fingerprint_script" "$VINEXT_PERF_BASE_ROOT")
           if [ "$head_fingerprint" = "$base_fingerprint" ]; then
-            if grep -q "skippedImplementations" \
-              "$VINEXT_PERF_BASE_ROOT/benchmarks/perf/validate-results.mjs"; then
-              echo "Next.js benchmark inputs are unchanged; skipping Next.js PR benchmarks."
-              echo "VINEXT_PERF_SKIP_IMPLEMENTATIONS=nextjs" >> "$GITHUB_ENV"
-            else
-              echo "Base publisher does not support skipped implementations yet; keeping Next.js for rollout compatibility."
-            fi
+            echo "Next.js benchmark inputs are unchanged; skipping Next.js PR benchmarks."
+            echo "VINEXT_PERF_SKIP_IMPLEMENTATIONS=nextjs" >> "$GITHUB_ENV"
           else
             if [ "$VINEXT_PERF_TRUSTED_HEAD" != "true" ]; then
               echo "Fork pull requests may not change Next.js benchmark inputs." >&2
