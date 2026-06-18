@@ -37,6 +37,19 @@ Profiling is configured per implementation. Set `profile: true` only for the
 implementation whose subprocess tree should be sampled; the current scenarios
 capture vinext traces and never profile Next.js.
 
+Set `compareBase: true` for implementations that should be measured at both the
+pull request base and head. PR CI prepares both revisions on one runner and uses
+alternating AB/BA rounds, so the reported delta is not derived from historical
+runner performance. Profiles are captured separately from the paired timing
+rounds and do not add samples to the comparison.
+
+PR runs fingerprint the complete Next.js benchmark input: its non-generated
+project files, the shared app generator, scenario definitions, and measurement
+runtime scripts, normalization, and the performance workflow. When those inputs
+are unchanged, Next.js is omitted from the PR run. When they change, Next.js is
+measured as another paired base/head implementation. Main runs continue to
+measure both frameworks.
+
 ## Running locally
 
 Prepare all configured scenarios:

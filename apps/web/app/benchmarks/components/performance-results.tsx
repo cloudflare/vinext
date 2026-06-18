@@ -155,7 +155,9 @@ export function PerformanceResultsTable({
                   {comparisonMode && (
                     <Table.Cell>
                       {change === null ? (
-                        <Badge variant="secondary">New</Badge>
+                        <Badge variant="secondary">
+                          {baselineMeasurements ? "Current only" : "New"}
+                        </Badge>
                       ) : (
                         <Badge
                           variant={neutral ? "primary" : improved ? "green" : "destructive"}

@@ -43,6 +43,20 @@
       "when": 1781777823517,
       "tag": "0005_performance_profile_registry",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1781794951760,
+      "tag": "0006_misty_tyger_tiger",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1781797183982,
+      "tag": "0007_ancient_thena",
+      "breakpoints": true
     }
   ]
 }

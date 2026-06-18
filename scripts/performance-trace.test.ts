@@ -113,6 +113,7 @@ describe("performance traces", () => {
     expect(result.benchmarks[0].profileFile).toBe(
       join("profiles", benchmarkId, "samply-profile.json.gz"),
     );
+    expect(result.benchmarks[0].profileRounds).toBe(1);
     expect(result.benchmarks[0]).not.toHaveProperty("flameGraph");
     expect(result.run.commitSha).toBe(commitSha);
     expect(result.run.measuredAt).toBe("2025-04-03T10:34:56.000Z");

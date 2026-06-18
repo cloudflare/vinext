@@ -14,8 +14,35 @@ if (results.run.kind !== "pull_request") {
 }
 
 const response = JSON.parse(await readFile(responsePath, "utf8"));
-const comparison = response.comparison;
-if (!comparison) throw new Error("Performance upload response did not include a comparison");
+const uploadedComparison = response.comparison;
+if (!uploadedComparison)
+  throw new Error("Performance upload response did not include a comparison");
+
+const resultBenchmarks = Array.isArray(results.benchmarks) ? results.benchmarks : [];
+const resultsByBenchmark = new Map(
+  resultBenchmarks.map((benchmark) => [benchmark.benchmarkId, benchmark]),
+);
+const hasPairedBaseline = resultBenchmarks.some((benchmark) => benchmark.baselineSamples);
+const comparison = {
+  ...uploadedComparison,
+  baseline: hasPairedBaseline
+    ? {
+        sha: results.run.baseSha,
+        shortSha: results.run.baseSha.slice(0, 7),
+        measuredAt: results.run.measuredAt,
+      }
+    : uploadedComparison.baseline,
+  measurements: uploadedComparison.measurements.map((measurement) => {
+    const benchmark = resultsByBenchmark.get(measurement.benchmarkId);
+    return benchmark?.baselineSamples
+      ? {
+          ...measurement,
+          baseline: benchmark.baselineSamples,
+          current: benchmark.samples,
+        }
+      : measurement;
+  }),
+};
 
 function escapeCell(value) {
   return String(value)
@@ -44,9 +71,9 @@ function measurementChange(measurement) {
   );
 }
 
-function changeCell(measurement) {
+function changeCell(measurement, hasComparisonBaseline) {
   const change = measurementChange(measurement);
-  if (change === null) return "New";
+  if (change === null) return hasComparisonBaseline ? "Current only" : "New";
   const neutral = Math.abs(change) < 1.5;
   const improved = measurement.lowerIsBetter ? change < 0 : change > 0;
   const indicator = neutral ? "⚫" : improved ? "🟢" : "🔴";
@@ -76,6 +103,18 @@ const improvements = measurements.filter((measurement) => {
   );
 }).length;
 const neutral = changes.length - regressions - improvements;
+const skippedNextjs = results.run.skippedImplementations?.includes("nextjs");
+const hasHistoricalBaseline = comparison.measurements.some(
+  (measurement) =>
+    measurement.baseline && !resultsByBenchmark.get(measurement.benchmarkId)?.baselineSamples,
+);
+const hasUnpairedMeasurement = comparison.measurements.some(
+  (measurement) => !resultsByBenchmark.get(measurement.benchmarkId)?.baselineSamples,
+);
+const hasCurrentOnlyMeasurement = comparison.measurements.some(
+  (measurement) =>
+    !measurement.baseline && !resultsByBenchmark.get(measurement.benchmarkId)?.baselineSamples,
+);
 const dashboardUrl = `https://vinext.dev/benchmarks/pull/${results.run.pullRequest}`;
 const rows = measurements.map((measurement) =>
   [
@@ -83,7 +122,7 @@ const rows = measurements.map((measurement) =>
     escapeCell(measurement.implementationLabel),
     measurement.baseline ? formatValue(measurement.baseline.median, measurement.unit) : "—",
     formatValue(measurement.current.median, measurement.unit),
-    changeCell(measurement),
+    changeCell(measurement, Boolean(comparison.baseline)),
   ].join(" | "),
 );
 
@@ -92,7 +131,15 @@ const body = [
   "## Performance benchmarks",
   "",
   comparison.baseline
-    ? `Compared \`${comparison.head.shortSha}\` against base \`${comparison.baseline.shortSha}\`.`
+    ? hasPairedBaseline
+      ? hasUnpairedMeasurement
+        ? hasHistoricalBaseline && hasCurrentOnlyMeasurement
+          ? `Compared \`${comparison.head.shortSha}\` against base \`${comparison.baseline.shortSha}\`. Paired benchmarks use alternating same-runner rounds, other benchmarks use the stored base-run baseline where available, and remaining benchmarks have no baseline.${skippedNextjs ? " Next.js was unchanged and skipped." : ""}`
+          : hasHistoricalBaseline
+            ? `Compared \`${comparison.head.shortSha}\` against base \`${comparison.baseline.shortSha}\`. Paired benchmarks use alternating same-runner rounds; unpaired benchmarks use the stored base-run baseline.${skippedNextjs ? " Next.js was unchanged and skipped." : ""}`
+            : `Compared \`${comparison.head.shortSha}\` against base \`${comparison.baseline.shortSha}\`. Paired benchmarks use alternating same-runner rounds; unpaired benchmarks have no baseline.${skippedNextjs ? " Next.js was unchanged and skipped." : ""}`
+        : `Compared \`${comparison.head.shortSha}\` against base \`${comparison.baseline.shortSha}\` using alternating same-runner rounds.${skippedNextjs ? " Next.js was unchanged and skipped." : ""}`
+      : `Compared \`${comparison.head.shortSha}\` against base \`${comparison.baseline.shortSha}\`.`
     : `Measured \`${comparison.head.shortSha}\`. No benchmark run is available for base \`${results.run.baseSha.slice(0, 7)}\`.`,
   "",
   comparison.baseline
@@ -105,7 +152,17 @@ const body = [
   "",
   `[View detailed results and traces](${dashboardUrl})`,
   "",
-  "<sub>🟢 improvement · 🔴 regression · ⚫ change below 1.5%</sub>",
+  `<sub>🟢 improvement · 🔴 regression · ⚫ change below 1.5%${
+    hasPairedBaseline
+      ? hasUnpairedMeasurement
+        ? hasHistoricalBaseline && hasCurrentOnlyMeasurement
+          ? " · mixed paired/historical/current-only results"
+          : hasHistoricalBaseline
+            ? " · mixed paired/historical baselines"
+            : " · paired/current-only results"
+        : " · paired base/head"
+      : ""
+  }</sub>`,
   "",
 ].join("\n");
 

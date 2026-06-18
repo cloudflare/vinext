@@ -73,7 +73,7 @@ export function PerformanceComparison({ comparison }: { comparison: Comparison }
           />
           {comparison.baseline && (
             <RunCard
-              label="Baseline"
+              label={comparison.baselineLabel}
               sha={comparison.baseline.shortSha}
               date={comparison.baseline.measuredAt}
             />
@@ -175,7 +175,7 @@ function FlameGraphDialog({ measurement }: { measurement: Comparison["measuremen
       if (!response.ok) throw new Error(`Profile request failed (${response.status})`);
       const graph = profileToFlameGraph(
         await readGzipProfile(response),
-        measurement.current.rounds,
+        measurement.profileRounds ?? measurement.current.rounds,
       );
       if (!graph) throw new Error("Profile contains no samples");
       setFlameGraph(graph);
@@ -616,12 +616,12 @@ function TraceFilter({
   );
 }
 
-function RunCard({ label, sha, date }: { label: string; sha: string; date: string }) {
+function RunCard({ label, sha, date }: { label: string; sha: string; date: string | null }) {
   return (
     <div className="bg-white px-6 py-4">
       <div className="text-xs uppercase tracking-wide text-gray-400">{label}</div>
       <div className="mt-1 font-mono text-sm font-semibold">{sha}</div>
-      <div className="mt-1 text-xs text-gray-500">{new Date(date).toLocaleString()}</div>
+      {date && <div className="mt-1 text-xs text-gray-500">{new Date(date).toLocaleString()}</div>}
     </div>
   );
 }

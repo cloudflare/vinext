@@ -75,19 +75,28 @@ async function main() {
   const grouped = Map.groupBy(samples, (sample) => sample.benchmarkId);
   const commitSha = process.env.VINEXT_PERF_COMMIT_SHA ?? process.env.GITHUB_SHA ?? "local";
   const benchmarks = await Promise.all(
-    Array.from(grouped, async ([benchmarkId, group]) => ({
-      benchmarkId,
-      scenarioId: group[0].scenarioId,
-      suite: group[0].suite,
-      label: group[0].label,
-      description: group[0].description,
-      implementationId: group[0].implementationId,
-      implementationLabel: group[0].implementationLabel,
-      unit: group[0].unit,
-      lowerIsBetter: group[0].lowerIsBetter,
-      samples: summarize(group.map((sample) => sample.value)),
-      profileFile: group[0].profile ? await profileFile(benchmarkId) : null,
-    })),
+    Array.from(grouped, async ([benchmarkId, group]) => {
+      const current = group.filter((sample) => sample.revision !== "base");
+      const baseline = group.filter((sample) => sample.revision === "base");
+      if (current.length === 0) throw new Error(`Missing head samples for ${benchmarkId}`);
+      const normalizedProfileFile = group[0].profile ? await profileFile(benchmarkId) : null;
+      return {
+        benchmarkId,
+        scenarioId: group[0].scenarioId,
+        suite: group[0].suite,
+        label: group[0].label,
+        description: group[0].description,
+        implementationId: group[0].implementationId,
+        implementationLabel: group[0].implementationLabel,
+        unit: group[0].unit,
+        lowerIsBetter: group[0].lowerIsBetter,
+        samples: summarize(current.map((sample) => sample.value)),
+        baselineSamples:
+          baseline.length > 0 ? summarize(baseline.map((sample) => sample.value)) : null,
+        profileFile: normalizedProfileFile,
+        profileRounds: normalizedProfileFile ? (baseline.length > 0 ? 1 : current.length) : null,
+      };
+    }),
   );
 
   const payload = {
@@ -102,6 +111,9 @@ async function main() {
       executionId: process.env.VINEXT_PERF_EXECUTION_ID || `local:${Date.now()}`,
       measuredAt: commitTimestamp(commitSha),
       repository: process.env.GITHUB_REPOSITORY ?? "cloudflare/vinext",
+      skippedImplementations: (process.env.VINEXT_PERF_SKIP_IMPLEMENTATIONS ?? "")
+        .split(",")
+        .filter(Boolean),
     },
     system: {
       platform: process.platform,
