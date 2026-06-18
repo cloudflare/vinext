@@ -131,6 +131,8 @@ type PositionedFrame = {
   depth: number;
 };
 
+const MIN_VISIBLE_FRAME_WIDTH = 0.2;
+
 function layoutFrames(root: FlameGraphNode) {
   const frames: PositionedFrame[] = [];
   const visit = (node: FlameGraphNode, x: number, width: number, depth: number) => {
@@ -138,7 +140,9 @@ function layoutFrames(root: FlameGraphNode) {
     let offset = x;
     for (const child of node.children ?? []) {
       const childWidth = width * (child.value / node.value);
-      visit(child, offset, childWidth, depth + 1);
+      if (childWidth >= MIN_VISIBLE_FRAME_WIDTH) {
+        visit(child, offset, childWidth, depth + 1);
+      }
       offset += childWidth;
     }
   };
