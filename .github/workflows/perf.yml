@@ -38,8 +38,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      VINEXT_PERF_RESULTS_ROOT: ${{ runner.temp }}/vinext-perf-results
-      VINEXT_PERF_SAMPLES: ${{ runner.temp }}/vinext-perf-results/perf-samples.jsonl
       VINEXT_PERF_RUN_KIND: ${{ github.event_name == 'pull_request' && 'pull_request' || inputs.run_kind || 'main' }}
       VINEXT_PERF_COMMIT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.commit_sha || github.sha }}
       VINEXT_PERF_PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || inputs.pull_request }}
@@ -51,6 +49,9 @@ jobs:
     steps:
       - name: Validate run metadata
         run: |
+          results_root="$RUNNER_TEMP/vinext-perf-results"
+          echo "VINEXT_PERF_RESULTS_ROOT=$results_root" >> "$GITHUB_ENV"
+          echo "VINEXT_PERF_SAMPLES=$results_root/perf-samples.jsonl" >> "$GITHUB_ENV"
           if [ "$VINEXT_PERF_RUN_KIND" = "pull_request" ]; then
             if ! [[ "$VINEXT_PERF_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
               echo "pull_request runs require a positive pull request number" >&2
