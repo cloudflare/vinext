@@ -2,6 +2,7 @@ import type {
   CSSModulesOptions,
   Plugin,
   PluginOption,
+  ResolvedConfig,
   SassPreprocessorOptions,
   UserConfig,
   ViteDevServer,
@@ -549,6 +550,8 @@ const VIRTUAL_APP_SSR_ENTRY = "virtual:vinext-app-ssr-entry";
 const RESOLVED_APP_SSR_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_SSR_ENTRY;
 const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
 const RESOLVED_APP_BROWSER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_BROWSER_ENTRY;
+const VIRTUAL_APP_CAPABILITIES = "virtual:vinext-app-capabilities";
+const RESOLVED_APP_CAPABILITIES = VIRTUAL_PREFIX + VIRTUAL_APP_CAPABILITIES;
 const VIRTUAL_ROOT_PARAMS = "virtual:vinext-root-params";
 const RESOLVED_ROOT_PARAMS = VIRTUAL_PREFIX + VIRTUAL_ROOT_PARAMS;
 /** Virtual module that registers config-driven cache adapters (see VinextOptions.cache). */
@@ -580,6 +583,10 @@ function createStaticImageAsset(imagePath: string): { fileName: string; source: 
  */
 const _shimsDir = normalizePathSeparators(path.resolve(__dirname, "shims")) + "/";
 const _fontGoogleShimPath = resolveShimModulePath(_shimsDir, "font-google");
+const _appBrowserServerActionClientPath = resolveShimModulePath(
+  normalizePathSeparators(path.resolve(__dirname, "server")),
+  "app-browser-server-action-client",
+);
 const _appRscHandlerPath = resolveShimModulePath(
   normalizePathSeparators(path.resolve(__dirname, "server")),
   "app-rsc-handler",
@@ -1030,6 +1037,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           cause,
         });
       });
+  }
+
+  async function resolveHasServerActions(
+    config: Pick<ResolvedConfig, "command" | "plugins">,
+  ): Promise<boolean> {
+    if (config.command !== "build" || !rscPluginModulePromise) return true;
+
+    const { getPluginApi } = await rscPluginModulePromise;
+    const pluginApi = getPluginApi(config);
+    if (!pluginApi || pluginApi.manager.isScanBuild) return true;
+    return Object.keys(pluginApi.manager.serverReferenceMetaMap).length > 0;
   }
 
   const reactOptions = options.react && options.react !== true ? options.react : undefined;
@@ -2750,6 +2768,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
           if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
           if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
+          if (cleanId === VIRTUAL_APP_CAPABILITIES) return RESOLVED_APP_CAPABILITIES;
           if (cleanId === "next/root-params" || cleanId === "next/root-params.js") {
             return RESOLVED_ROOT_PARAMS;
           }
@@ -2819,14 +2838,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
           const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
           const metaRoutes = scanMetadataFiles(appDir);
-          let hasServerActions = true;
-          if (this.environment?.config.command === "build" && rscPluginModulePromise) {
-            const { getPluginApi } = await rscPluginModulePromise;
-            const pluginApi = getPluginApi(this.environment.config);
-            if (pluginApi && !pluginApi.manager.isScanBuild) {
-              hasServerActions = Object.keys(pluginApi.manager.serverReferenceMetaMap).length > 0;
-            }
-          }
+          const hasServerActions = await resolveHasServerActions(this.environment.config);
           // Check for global-error.tsx at app root
           const globalErrorPath = findFileWithExts(appDir, "global-error", fileMatcher);
           // Check for global-not-found.tsx at app root (Next.js 16+ feature)
@@ -2924,6 +2936,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             pagesPrefetchRoutes,
             nextConfig.rewrites,
           );
+        }
+        if (id === RESOLVED_APP_CAPABILITIES && hasAppDir) {
+          const hasServerActions = await resolveHasServerActions(this.environment.config);
+          return `
+export const hasServerActions = ${JSON.stringify(hasServerActions)};
+export const loadServerActionClient = ${
+            hasServerActions
+              ? `() => import(${JSON.stringify(_appBrowserServerActionClientPath)})`
+              : "null"
+          };
+`;
         }
         if (id.startsWith(RESOLVED_VIRTUAL_GOOGLE_FONTS + "?")) {
           return generateGoogleFontsVirtualModule(id, _fontGoogleShimPath);
