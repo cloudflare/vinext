@@ -78,17 +78,12 @@
       "indexes": {
         "idx_compat_file_results_run": {
           "name": "idx_compat_file_results_run",
-          "columns": [
-            "run_id"
-          ],
+          "columns": ["run_id"],
           "isUnique": false
         },
         "idx_compat_file_results_kind_suite": {
           "name": "idx_compat_file_results_kind_suite",
-          "columns": [
-            "kind",
-            "suite"
-          ],
+          "columns": ["kind", "suite"],
           "isUnique": false
         }
       },
@@ -97,12 +92,8 @@
           "name": "compat_file_results_run_id_compat_runs_id_fk",
           "tableFrom": "compat_file_results",
           "tableTo": "compat_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -199,18 +190,12 @@
       "indexes": {
         "compat_runs_kind_run_key": {
           "name": "compat_runs_kind_run_key",
-          "columns": [
-            "kind",
-            "run_key"
-          ],
+          "columns": ["kind", "run_key"],
           "isUnique": true
         },
         "idx_compat_runs_kind_created": {
           "name": "idx_compat_runs_kind_created",
-          "columns": [
-            "kind",
-            "created_at"
-          ],
+          "columns": ["kind", "created_at"],
           "isUnique": false
         }
       },
@@ -247,9 +232,7 @@
       "indexes": {
         "idx_compat_suite_meta_router": {
           "name": "idx_compat_suite_meta_router",
-          "columns": [
-            "router"
-          ],
+          "columns": ["router"],
           "isUnique": false
         }
       },
@@ -414,12 +397,7 @@
       "indexes": {
         "idx_performance_measurements_dashboard": {
           "name": "idx_performance_measurements_dashboard",
-          "columns": [
-            "run_id",
-            "suite",
-            "label",
-            "implementation_label"
-          ],
+          "columns": ["run_id", "suite", "label", "implementation_label"],
           "isUnique": false
         }
       },
@@ -428,22 +406,15 @@
           "name": "performance_measurements_run_id_performance_runs_id_fk",
           "tableFrom": "performance_measurements",
           "tableTo": "performance_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
         "performance_measurements_run_id_benchmark_id_pk": {
-          "columns": [
-            "run_id",
-            "benchmark_id"
-          ],
+          "columns": ["run_id", "benchmark_id"],
           "name": "performance_measurements_run_id_benchmark_id_pk"
         }
       },
@@ -535,35 +506,24 @@
       "indexes": {
         "performance_runs_kind_commit": {
           "name": "performance_runs_kind_commit",
-          "columns": [
-            "kind",
-            "commit_sha"
-          ],
+          "columns": ["kind", "commit_sha"],
           "isUnique": true
         },
         "idx_performance_runs_pr_latest": {
           "name": "idx_performance_runs_pr_latest",
-          "columns": [
-            "pull_request",
-            "measured_at"
-          ],
+          "columns": ["pull_request", "measured_at"],
           "isUnique": false,
           "where": "\"performance_runs\".\"kind\" = 'pull_request'"
         },
         "idx_performance_runs_main_commit": {
           "name": "idx_performance_runs_main_commit",
-          "columns": [
-            "commit_sha",
-            "measured_at"
-          ],
+          "columns": ["commit_sha", "measured_at"],
           "isUnique": false,
           "where": "\"performance_runs\".\"kind\" = 'main'"
         },
         "idx_performance_runs_main_latest": {
           "name": "idx_performance_runs_main_latest",
-          "columns": [
-            "measured_at"
-          ],
+          "columns": ["measured_at"],
           "isUnique": false,
           "where": "\"performance_runs\".\"kind\" = 'main'"
         }
