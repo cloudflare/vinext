@@ -16,6 +16,17 @@ type RscFrameworkManualChunksMeta = {
   getModuleInfo(id: string): RscFrameworkModuleInfo | null;
 };
 
+const ROUTE_OWNED_CLIENT_SHIMS = new Set([
+  "dynamic-preload-chunks",
+  "form",
+  "image",
+  "layout-segment-context",
+  "link",
+  "offline",
+  "router",
+  "script",
+]);
+
 // Next.js emits CSS under `static/css/` and CSS url() dependencies (images,
 // fonts, …) under `static/media/`, both with an 8-char content hash. Mirror
 // that layout so migrated apps keep stable, Next-shaped asset URLs.
@@ -81,12 +92,10 @@ function getPackageName(id: string): string | null {
  *
  * Splits the client bundle into:
  * - "framework" — React, ReactDOM, and scheduler (loaded on every page)
- * - "vinext"    — vinext shims (router, head, link, etc.)
+ * - "vinext"    — shared vinext runtime shims
  *
- * All other vendor code is left to Rollup's default chunk-splitting
- * algorithm. Rollup automatically deduplicates shared modules into
- * common chunks based on the import graph — no manual intervention
- * needed.
+ * Route-owned client shims and all other vendor code are left to the bundler's
+ * graph-based chunking so they stay behind their client-reference boundaries.
  *
  * Why not split every npm package into its own chunk?
  * - Per-package splitting (`vendor-X`) creates 50-200+ chunks for a
@@ -103,7 +112,7 @@ function getPackageName(id: string): string | null {
  *   well: shared dependencies between routes get their own chunks,
  *   and route-specific code stays in route chunks.
  */
-export function createClientManualChunks(shimsDir: string) {
+export function createClientManualChunks(shimsDir: string, preserveRouteBoundaries = false) {
   return function clientManualChunks(id: string): string | undefined {
     // React framework — always loaded, shared across all pages.
     // Isolating React into its own chunk is the single highest-value
@@ -122,10 +131,11 @@ export function createClientManualChunks(shimsDir: string) {
       return undefined;
     }
 
-    // vinext shims — small runtime, shared across all pages.
-    // Use the absolute shims directory path to avoid matching user files
-    // that happen to have "/shims/" in their path.
     if (id.startsWith(shimsDir)) {
+      const relativeId = id.slice(shimsDir.length).split("?", 1)[0] ?? "";
+      const extensionIndex = relativeId.lastIndexOf(".");
+      const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
+      if (preserveRouteBoundaries && ROUTE_OWNED_CLIENT_SHIMS.has(shimName)) return undefined;
       return "vinext";
     }
 

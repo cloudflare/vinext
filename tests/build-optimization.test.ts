@@ -44,6 +44,7 @@ const _stripServerExports = (code: string): string | null =>
 // The exact path doesn't matter for the node_modules-focused tests;
 // shims-chunk tests would need a real path.
 const clientManualChunks = createClientManualChunks("/vinext/shims/");
+const appClientManualChunks = createClientManualChunks("/vinext/shims/", true);
 
 // The vinext config hook mutates process.env.NODE_ENV as a side effect (matching
 // Next.js behavior). Save/restore globally so tests that call config() don't
@@ -115,6 +116,19 @@ describe("clientManualChunks", () => {
   it("returns undefined for user source files", () => {
     expect(clientManualChunks("/src/components/App.tsx")).toBeUndefined();
     expect(clientManualChunks("/src/pages/index.tsx")).toBeUndefined();
+  });
+
+  it("keeps shared vinext shims in the runtime chunk", () => {
+    expect(clientManualChunks("/vinext/shims/link.js")).toBe("vinext");
+    expect(clientManualChunks("/vinext/shims/navigation.js")).toBe("vinext");
+    expect(appClientManualChunks("/vinext/shims/navigation.js")).toBe("vinext");
+  });
+
+  it("leaves App Router route-owned client shims behind their dynamic boundaries", () => {
+    expect(appClientManualChunks("/vinext/shims/link.js")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/router.ts")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/image.tsx?client")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/layout-segment-context.js")).toBeUndefined();
   });
 
   it("handles pnpm-style nested node_modules paths", () => {

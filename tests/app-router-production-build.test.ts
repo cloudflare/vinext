@@ -9,6 +9,13 @@ import { APP_FIXTURE_DIR } from "./helpers.js";
 
 type BuiltAppHandler = (request: Request) => Promise<Response | string | null | undefined>;
 
+type ClientManifestEntry = {
+  imports?: string[];
+  isEntry?: boolean;
+  name?: string;
+  src?: string;
+};
+
 function isBuiltAppHandler(value: unknown): value is BuiltAppHandler {
   return typeof value === "function";
 }
@@ -51,6 +58,38 @@ describe("App Router Production build", () => {
     // directory.
     const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
     expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
+
+    // Ported from the client-reference chunk ownership covered by Next.js:
+    // test/e2e/app-dir/client-reference-chunking/client-reference-chunking.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/client-reference-chunking/client-reference-chunking.test.ts
+    //
+    // `next/link` is a client reference used by selected routes. It must remain
+    // a lazy chunk instead of being pulled into the eager App Router bootstrap
+    // by vinext's manual chunk policy.
+    const clientManifest = JSON.parse(
+      fs.readFileSync(path.join(outDir, "client", ".vite", "manifest.json"), "utf-8"),
+    ) as Record<string, ClientManifestEntry>;
+    const browserEntryKey = Object.keys(clientManifest).find(
+      (key) => clientManifest[key]?.isEntry === true,
+    );
+    const linkEntryKey = Object.keys(clientManifest).find((key) => {
+      const entry = clientManifest[key];
+      const source = entry?.src?.replaceAll("\\", "/") ?? key.replaceAll("\\", "/");
+      return entry?.name === "link" || /\/shims\/link\.(?:js|tsx)$/.test(source);
+    });
+    expect(browserEntryKey).toBeDefined();
+    expect(linkEntryKey).toBeDefined();
+
+    const eagerKeys = new Set<string>();
+    const visitEagerImports = (key: string): void => {
+      if (eagerKeys.has(key)) return;
+      eagerKeys.add(key);
+      for (const importedKey of clientManifest[key]?.imports ?? []) {
+        visitEagerImports(importedKey);
+      }
+    };
+    if (browserEntryKey) visitEagerImports(browserEntryKey);
+    expect(linkEntryKey ? eagerKeys.has(linkEntryKey) : true).toBe(false);
 
     // RSC bundle should contain route handling code
     const rscEntry = fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8");

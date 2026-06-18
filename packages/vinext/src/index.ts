@@ -695,15 +695,25 @@ const _reactServerShims = new Map<string, string>([
 
 const clientManualChunks = createClientManualChunks(_shimsDir);
 const clientCodeSplittingConfig = createClientCodeSplittingConfig(clientManualChunks);
+const appClientManualChunks = createClientManualChunks(_shimsDir, true);
+const appClientCodeSplittingConfig = createClientCodeSplittingConfig(appClientManualChunks);
 
-function getClientOutputConfigForVite(viteMajorVersion: number, assetsDir: string) {
+function getClientOutputConfigForVite(
+  viteMajorVersion: number,
+  assetsDir: string,
+  preserveAppRouteBoundaries = false,
+) {
+  const manualChunks = preserveAppRouteBoundaries ? appClientManualChunks : clientManualChunks;
+  const codeSplitting = preserveAppRouteBoundaries
+    ? appClientCodeSplittingConfig
+    : clientCodeSplittingConfig;
   return viteMajorVersion >= 8
     ? {
         ...createClientFileNameConfig(assetsDir),
         assetFileNames: createClientAssetFileNames(assetsDir),
-        codeSplitting: clientCodeSplittingConfig,
+        codeSplitting,
       }
-    : createClientOutputConfig(clientManualChunks, assetsDir);
+    : createClientOutputConfig(manualChunks, assetsDir);
 }
 
 export type VinextOptions = {
@@ -2425,7 +2435,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions(viteMajorVersion, {
                   input: appClientInput,
-                  output: getClientOutputConfigForVite(viteMajorVersion, clientAssetsDir),
+                  output: getClientOutputConfigForVite(viteMajorVersion, clientAssetsDir, true),
                   treeshake: getClientTreeshakeConfigForVite(viteMajorVersion),
                 }),
               },
