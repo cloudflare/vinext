@@ -186,6 +186,34 @@ describe("performance traces", () => {
     });
   });
 
+  test("filters expose vinext, Vite, and Rolldown sampled frames", () => {
+    const names = [
+      "JS:vinext file:///work/vinext/vinext/packages/vinext/dist/index.js:1:1",
+      "JS:vite file:///work/vinext/vinext/node_modules/@voidzero-dev/vite-plus-core/dist/vite/node/chunks/node.js:1:1",
+      "JS:rolldown file:///work/vinext/vinext/node_modules/@voidzero-dev/vite-plus-core/dist/rolldown/shared/rolldown-build.mjs:1:1",
+    ];
+    const profile = {
+      meta: { interval: 1 },
+      threads: [
+        {
+          processName: "vinext",
+          samples: { stack: [0, 1, 2], weight: [1, 1, 1], weightType: "samples", length: 3 },
+          stackTable: { frame: [0, 1, 2], prefix: [null, null, null] },
+          frameTable: { func: [0, 1, 2] },
+          funcTable: { name: [0, 1, 2] },
+          stringArray: names,
+        },
+      ],
+    };
+    const graph = profileToFlameGraph(profile) as TraceNode;
+
+    for (const category of ["vinext", "vite", "rolldown"] as const) {
+      expect(filteredTraceGraph(graph, new Set([category]))?.children?.[0]?.category).toBe(
+        category,
+      );
+    }
+  });
+
   test("upload streams raw profiles before posting compact metadata", async () => {
     const directory = await mkdtemp(join(tmpdir(), "vinext-performance-upload-"));
     temporaryDirectories.push(directory);

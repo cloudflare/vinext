@@ -214,6 +214,7 @@ jobs:
               sudo chown -R "$user":"$user" "$path"
               sudo chmod -R u+rwX "$path"
               sudo setfacl -R -m u:"$user":rwX "$path"
+              sudo setfacl -R -m u:"$USER":rwX "$path"
               sudo setfacl -R -d -m u:"$user":rwX,u:"$USER":rwX "$path"
               sudo -u "$user" test -w "$path"
             done
@@ -335,6 +336,9 @@ jobs:
             "$VINEXT_PERF_RESULTS_ROOT/perf-samples.jsonl" \
             "$VINEXT_PERF_RESULTS_ROOT/perf-results.json" \
             "$VINEXT_PERF_RESULTS_ROOT/perf-profiles"
+          node "$VINEXT_PERF_HARNESS_ROOT/benchmarks/perf/validate-profile-traces.mjs" \
+            "$VINEXT_PERF_RESULTS_ROOT/perf-results.json" \
+            "$VINEXT_PERF_RESULTS_ROOT"
           sudo chmod -R a+rX "$VINEXT_PERF_RESULTS_ROOT"
 
       - name: Upload performance artifacts
