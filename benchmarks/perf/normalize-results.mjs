@@ -92,44 +92,10 @@ function addStack(root, frames, weight) {
   }
 }
 
-function ownedSubtree(node) {
-  if (node.category === "vinext" || node.category === "vite" || node.category === "rolldown") {
-    return true;
-  }
-  return Array.from(node.children.values()).some(ownedSubtree);
-}
-
-function serializeTree(node, depth = 0, budget = { remaining: 3000 }) {
-  budget.remaining -= 1;
-  if (depth >= 32 || budget.remaining <= 0) {
-    return {
-      name: node.name,
-      value: node.value,
-      ...(node.source ? { source: node.source } : {}),
-      ...(node.category ? { category: node.category } : {}),
-    };
-  }
-  const children = Array.from(node.children.values())
-    .sort((left, right) => {
-      const ownedDifference = Number(ownedSubtree(right)) - Number(ownedSubtree(left));
-      return ownedDifference || right.value - left.value;
-    })
-    .slice(0, depth < 2 ? 40 : ownedSubtree(node) ? 40 : 20)
-    .filter(() => budget.remaining > 0)
-    .map((child) => serializeTree(child, depth + 1, budget));
-  const serialized = {
-    name: node.name,
-    value: node.value,
-    ...(node.source ? { source: node.source } : {}),
-    ...(node.category ? { category: node.category } : {}),
-  };
-  return children.length > 0 ? { ...serialized, children } : serialized;
-}
-
-function serializeCompleteTree(node) {
+function serializeTree(node) {
   const children = Array.from(node.children.values())
     .sort((left, right) => right.value - left.value)
-    .map(serializeCompleteTree);
+    .map(serializeTree);
   const serialized = {
     name: node.name,
     value: node.value,
@@ -141,13 +107,6 @@ function serializeCompleteTree(node) {
 
 function profileToFlameGraph(profile) {
   const root = { name: "all samples", value: 0, children: new Map() };
-  const vinextRoot = {
-    name: "all vinext samples",
-    value: 0,
-    source: null,
-    category: "vinext",
-    children: new Map(),
-  };
   const sampleIntervalMs = Number(profile.meta?.interval ?? 1) || 1;
   for (const thread of profile.threads ?? []) {
     const tables = profile.shared ?? thread;
@@ -169,15 +128,11 @@ function profileToFlameGraph(profile) {
           [{ name: processName, source: null, category: "process" }, ...frames],
           weight,
         );
-        const vinextFrames = frames.filter((frame) => frame.category === "vinext");
-        if (vinextFrames.length > 0) addStack(vinextRoot, vinextFrames, weight);
       }
     }
   }
   if (root.value === 0) return null;
-  const flameGraph = serializeTree(root);
-  if (vinextRoot.value > 0) flameGraph.vinextFocus = serializeCompleteTree(vinextRoot);
-  return flameGraph;
+  return serializeTree(root);
 }
 
 async function loadFlameGraph(benchmarkId) {

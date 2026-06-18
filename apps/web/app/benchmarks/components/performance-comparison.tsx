@@ -7,9 +7,9 @@ import { Clock, Flame, MagnifyingGlassPlus, X } from "@phosphor-icons/react";
 import type { FlameGraphData, PerformanceComparisonData } from "@/app/lib/benchmarks/server";
 import { formatMs } from "./format";
 import { PerformanceResultsTable, type PerformanceMeasurement } from "./performance-results";
+import { filteredTraceGraph, selfValue, type TraceCategory } from "./trace";
 
 type FlameGraphNode = FlameGraphData;
-type TraceCategory = "vinext" | "vite" | "rolldown" | "node" | "other";
 
 const TRACE_CATEGORIES: Array<{ category: TraceCategory; color: string; label: string }> = [
   { category: "vinext", color: "#f97316", label: "vinext" },
@@ -198,9 +198,8 @@ function FlameGraphDialog({ measurement }: { measurement: Comparison["measuremen
 
 function FlameGraph({ measurement }: { measurement: Comparison["measurements"][number] }) {
   const fullGraph = measurement.flameGraph;
-  const vinextGraph = fullGraph?.vinextFocus;
   const [categoryFilters, setCategoryFilters] = useState<Set<TraceCategory> | null>(null);
-  const activeGraph = filteredTraceGraph(fullGraph, vinextGraph, categoryFilters);
+  const activeGraph = filteredTraceGraph(fullGraph, categoryFilters);
   const [focusPath, setFocusPath] = useState<FlameGraphNode[]>(activeGraph ? [activeGraph] : []);
   const [frameQuery, setFrameQuery] = useState("");
   const [hovered, setHovered] = useState<{ frame: PositionedFrame; x: number; y: number } | null>(
@@ -210,7 +209,7 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
   if (!fullGraph || !activeGraph || !root) return null;
   const frames = layoutFrames(root);
   const hotFrames = hottestFrames(root).slice(0, 12);
-  const allVinextFrames = vinextFrameSummary(vinextGraph ?? fullGraph);
+  const allVinextFrames = vinextFrameSummary(fullGraph);
   const filteredVinextFrames = allVinextFrames.filter((frame) => {
     const query = frameQuery.trim().toLowerCase();
     return !query || `${frame.name} ${frame.source ?? ""}`.toLowerCase().includes(query);
@@ -221,7 +220,7 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
 
   const toggleCategory = (category: TraceCategory) => {
     const nextFilters = nextCategoryFilters(categoryFilters, category);
-    const nextRoot = filteredTraceGraph(fullGraph, vinextGraph, nextFilters);
+    const nextRoot = filteredTraceGraph(fullGraph, nextFilters);
     if (!nextRoot) return;
     setCategoryFilters(nextFilters);
     setFocusPath([nextRoot]);
@@ -412,7 +411,7 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
           ))}
         </div>
       </div>
-      {vinextGraph && (
+      {allVinextFrames.length > 0 && (
         <div className="mt-5">
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
@@ -420,7 +419,7 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
                 All sampled vinext functions ({filteredVinextFrames.length})
               </h3>
               <p className="mt-1 text-xs text-slate-400">
-                Lossless inventory from the vinext-only call tree, sorted by inclusive samples.
+                Complete inventory from the captured call tree, sorted by inclusive samples.
               </p>
             </div>
             <input
@@ -462,13 +461,6 @@ function FlameGraph({ measurement }: { measurement: Comparison["measurements"][n
         </div>
       )}
     </div>
-  );
-}
-
-function selfValue(node: FlameGraphNode) {
-  return Math.max(
-    0,
-    node.value - (node.children ?? []).reduce((total, child) => total + child.value, 0),
   );
 }
 
@@ -523,48 +515,6 @@ function nextCategoryFilters(
     next.add(category);
   }
   return next.size === TRACE_CATEGORIES.length ? null : next;
-}
-
-function filteredTraceGraph(
-  fullGraph: FlameGraphNode | null | undefined,
-  vinextGraph: FlameGraphNode | undefined,
-  filters: Set<TraceCategory> | null,
-): FlameGraphNode | null {
-  if (!fullGraph) return null;
-  if (filters === null) return fullGraph;
-  if (filters.size === 1 && filters.has("vinext") && vinextGraph) return vinextGraph;
-
-  const children = filteredTraceChildren(fullGraph.children ?? [], filters);
-  const value = children.reduce((total, child) => total + child.value, 0);
-  return {
-    name: "filtered samples",
-    value,
-    category: "process",
-    children,
-  };
-}
-
-function filteredTraceChildren(
-  nodes: FlameGraphNode[],
-  filters: Set<TraceCategory>,
-): FlameGraphNode[] {
-  return nodes.flatMap((node) => {
-    const children = filteredTraceChildren(node.children ?? [], filters);
-    if (!filters.has(traceCategory(node))) return children;
-    return [{ ...node, children: children.length > 0 ? children : undefined }];
-  });
-}
-
-function traceCategory(node: FlameGraphNode): TraceCategory {
-  if (
-    node.category === "vinext" ||
-    node.category === "vite" ||
-    node.category === "rolldown" ||
-    node.category === "node"
-  ) {
-    return node.category;
-  }
-  return "other";
 }
 
 function displayFrameName(name: string) {

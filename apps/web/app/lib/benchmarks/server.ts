@@ -50,7 +50,6 @@ type FlameGraphNode = {
   source?: string;
   category?: string;
   children?: FlameGraphNode[];
-  vinextFocus?: FlameGraphNode;
 };
 
 function getD1() {
@@ -231,7 +230,6 @@ export type FlameGraphData = {
   source?: string;
   category?: string;
   children?: FlameGraphData[];
-  vinextFocus?: FlameGraphData;
 };
 
 type PerformanceComparisonMeasurementData = Omit<
