@@ -115,6 +115,8 @@ describe("paired performance benchmarks", () => {
     expect(coldStart).toContain("const entries = await readdir(path)");
     expect(buildTime).toContain('name.startsWith("VINEXT_PERF_")');
     expect(buildTime).toContain("const entries = await readdir(outputDirectory)");
+    expect(buildTime).toContain('const profiling = process.env.VINEXT_PERF_PROFILE === "true"');
+    expect(buildTime).toContain("detached: !profiling");
     expect(buildTime).not.toContain(
       'rm(join(projectDir, framework === "vinext" ? "dist" : ".next")',
     );

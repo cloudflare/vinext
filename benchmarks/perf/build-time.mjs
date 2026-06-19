@@ -8,6 +8,7 @@ import { reportPerformanceSample } from "./report-sample.mjs";
 const repositoryRoot = process.env.VINEXT_PERF_TARGET_ROOT ?? process.cwd();
 const benchmarkDir = join(repositoryRoot, "benchmarks");
 const targetUser = process.env.VINEXT_PERF_TARGET_USER;
+const profiling = process.env.VINEXT_PERF_PROFILE === "true";
 const framework = process.argv[2];
 const timeoutMs = Number(process.env.VINEXT_PERF_TIMEOUT_MS ?? 180_000);
 const benchmarkEnvironmentNames = Object.keys(process.env).filter((name) =>
@@ -97,7 +98,7 @@ async function main() {
   const startedAt = performance.now();
   const child = spawn(command, args, {
     cwd: projectDir,
-    detached: true,
+    detached: !profiling,
     env: targetEnvironment(),
     stdio: ["ignore", "pipe", "pipe"],
   });
