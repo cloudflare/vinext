@@ -87,10 +87,16 @@ function cleanupTargetUser(root = targetRoot) {
     }
   }
   try {
-    const processes = execFileSync("sudo", ["pgrep", "-a", "-u", user], {
+    const processes = execFileSync("sudo", ["ps", "-u", user, "-o", "pid=,stat=,args="], {
       encoding: "utf8",
-    }).trim();
-    throw new Error(`Benchmark processes survived cleanup for ${user}:\n${processes}`);
+    })
+      .trim()
+      .split("\n")
+      .filter((process) => process.trim() && !/^\s*\d+\s+\S*Z/.test(process))
+      .join("\n");
+    if (processes) {
+      throw new Error(`Benchmark processes survived cleanup for ${user}:\n${processes}`);
+    }
   } catch (error) {
     if (error?.status !== 1) throw error;
   }

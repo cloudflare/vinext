@@ -103,7 +103,8 @@ describe("paired performance benchmarks", () => {
     expect(runner).not.toContain('join(root, "node_modules/.bin/vp")');
     expect(runner).toContain("function profilerCommand() {\n  return [profilerBin];\n}");
     expect(runner).toContain('for (const signal of ["-STOP", "-KILL"])');
-    expect(runner).toContain('["pgrep", "-a", "-u", user]');
+    expect(runner).toContain('["ps", "-u", user, "-o", "pid=,stat=,args="]');
+    expect(runner).toContain("!/^\\s*\\d+\\s+\\S*Z/.test(process)");
     expect(runner).toContain("else await runUntrusted(");
     expect(runner).toContain(
       "await runUntrusted(command[0], command.slice(1), timingEnv, root, root)",
