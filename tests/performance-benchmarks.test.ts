@@ -178,12 +178,12 @@ describe("paired performance benchmarks", () => {
     );
     const commentJob = workflow.slice(workflow.indexOf("  comment:"));
 
-    expect(workflow).not.toContain("pull-requests: write");
     expect(publishJob).toContain("actions: read");
     expect(publishJob).toContain("contents: read");
     expect(publishJob).not.toContain("issues: write");
     expect(commentJob).toContain("actions: read");
-    expect(commentJob).toContain("issues: write");
+    expect(commentJob).toContain("pull-requests: write");
+    expect(commentJob).not.toContain("issues: write");
     expect(commentJob).not.toContain("secrets.");
     expect(commentJob).not.toContain("actions/checkout");
     expect(commentJob).not.toContain("performance-artifact");
