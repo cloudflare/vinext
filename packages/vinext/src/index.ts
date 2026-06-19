@@ -3124,27 +3124,30 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const fn = typeof hook === "function" ? hook : hook.handler;
         return fn.call(this, config, env);
       },
-      async transform(code, id, options) {
-        // Skip ?raw and other query imports — @mdx-js/rollup ignores the query
-        // and would compile the file as MDX instead of returning raw text.
-        if (id.includes("?")) return;
-        // Case-insensitive extension check for cross-platform compatibility
-        // (Windows/macOS case-insensitive, Linux case-sensitive)
-        if (!id.toLowerCase().endsWith(".mdx")) return;
+      transform: {
+        // Native id filter so the JS handler only runs for `.mdx` files instead
+        // of being invoked for every module in the graph just to bail. The
+        // case-insensitive `\.mdx$` include covers cross-platform extension
+        // casing; `exclude: /\?/` skips query imports like `foo.mdx?raw`
+        // (@mdx-js/rollup ignores the query and would compile them as MDX) —
+        // including the `foo.mdx?something.mdx` edge case where the id still
+        // ends in `.mdx`.
+        filter: { id: { include: /\.mdx$/i, exclude: /\?/ } },
+        async handler(code, id, options) {
+          const delegate = mdxDelegate ?? (await ensureMdxDelegate("on-demand"));
+          if (delegate?.transform) {
+            const hook = delegate.transform;
+            const transform = typeof hook === "function" ? hook : hook.handler;
+            return transform.call(this, code, id, options);
+          }
 
-        const delegate = mdxDelegate ?? (await ensureMdxDelegate("on-demand"));
-        if (delegate?.transform) {
-          const hook = delegate.transform;
-          const transform = typeof hook === "function" ? hook : hook.handler;
-          return transform.call(this, code, id, options);
-        }
-
-        if (!hasUserMdxPlugin) {
-          throw new Error(
-            `[vinext] Encountered MDX module ${id} but no MDX plugin is configured. ` +
-              `Install @mdx-js/rollup or register an MDX plugin manually.`,
-          );
-        }
+          if (!hasUserMdxPlugin) {
+            throw new Error(
+              `[vinext] Encountered MDX module ${id} but no MDX plugin is configured. ` +
+                `Install @mdx-js/rollup or register an MDX plugin manually.`,
+            );
+          }
+        },
       },
     },
     // Shim React canary/experimental APIs (ViewTransition, addTransitionType)
