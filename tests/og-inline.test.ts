@@ -387,6 +387,48 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(code).not.toContain("/assets/font-");
   });
 
+  it("inlines a scoped package through a regex capture alias in a real Vite build", async () => {
+    const workspaceRoot = path.join(tmpDir, "regex-capture-alias-build");
+    const projectRoot = path.join(workspaceRoot, "app");
+    const packagesRoot = path.join(workspaceRoot, "packages");
+    const packageDir = path.join(packagesRoot, "ui");
+    const packageFont = Buffer.alloc(20_000, "regex-capture-build-font");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(path.join(packageDir, "lib"), { recursive: true });
+    await fsp.writeFile(path.join(projectRoot, "package.json"), "{}");
+    await fsp.writeFile(path.join(projectRoot, "index.js"), 'import "@scope/ui";');
+    await fsp.writeFile(
+      path.join(packageDir, "package.json"),
+      '{"name":"@scope/ui","main":"lib/index.js"}',
+    );
+    await fsp.writeFile(
+      path.join(packageDir, "lib", "index.js"),
+      'export const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());',
+    );
+    await fsp.writeFile(path.join(packageDir, "lib", "font.ttf"), packageFont);
+
+    await build({
+      root: projectRoot,
+      logLevel: "silent",
+      resolve: {
+        alias: [{ find: /^@scope\/(.*)$/, replacement: `${packagesRoot}/$1/lib/index.js` }],
+      },
+      plugins: [createOgInlinePlugin("build", projectRoot)],
+      build: {
+        outDir: "dist",
+        rollupOptions: {
+          input: path.join(projectRoot, "index.js"),
+          output: { entryFileNames: "bundle.js" },
+        },
+      },
+    });
+    const code = await fsp.readFile(path.join(projectRoot, "dist", "bundle.js"), "utf8");
+
+    expect(code).toContain("atob(");
+    expect(code).toContain(packageFont.toString("base64"));
+    expect(code).not.toContain("/assets/font-");
+  });
+
   it("tracks a linked package through a regular-expression alias", async () => {
     const projectRoot = path.join(tmpDir, "regex-alias-app");
     const packageDir = path.join(tmpDir, "regex-alias-package");

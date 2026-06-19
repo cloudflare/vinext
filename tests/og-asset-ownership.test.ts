@@ -86,6 +86,86 @@ describe("OgAssetOwnership", () => {
     await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toBeNull();
   });
 
+  it("recognizes a resolved scoped package through a regex capture alias", async () => {
+    const projectRoot = path.join(tmpDir, "resolved-regex-app");
+    const packagesRoot = path.join(tmpDir, "resolved-regex-packages");
+    const packageRoot = path.join(packagesRoot, "ui");
+    const modulePath = path.join(packageRoot, "lib", "chunk.js");
+    await fs.mkdir(projectRoot, { recursive: true });
+    await fs.mkdir(path.dirname(modulePath), { recursive: true });
+    await fs.writeFile(path.join(packageRoot, "package.json"), '{"name":"@scope/ui"}');
+    await fs.writeFile(modulePath, "export {};");
+
+    const ownership = new OgAssetOwnership();
+    ownership.configure(projectRoot, [
+      { find: /^@scope\/(.*)$/, replacement: `${packagesRoot}/$1/lib` },
+    ]);
+    const realPackageRoot = await fs.realpath(packageRoot);
+
+    await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toEqual({
+      assetRoot: realPackageRoot,
+      moduleDir: await fs.realpath(path.dirname(modulePath)),
+    });
+  });
+
+  it("does not apply a regex capture alias to an unrelated sibling package", async () => {
+    const projectRoot = path.join(tmpDir, "resolved-regex-sibling-app");
+    const packagesRoot = path.join(tmpDir, "resolved-regex-sibling-packages");
+    const packageRoot = path.join(packagesRoot, "other");
+    const modulePath = path.join(packageRoot, "src", "chunk.js");
+    await fs.mkdir(projectRoot, { recursive: true });
+    await fs.mkdir(path.dirname(modulePath), { recursive: true });
+    await fs.writeFile(path.join(packageRoot, "package.json"), '{"name":"unrelated-package"}');
+    await fs.writeFile(modulePath, "export {};");
+
+    const ownership = new OgAssetOwnership();
+    ownership.configure(projectRoot, [
+      { find: /^@scope\/(.*)$/, replacement: `${packagesRoot}/$1/lib` },
+    ]);
+
+    await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toBeNull();
+  });
+
+  it("does not broaden a regex capture directory within the owning package", async () => {
+    const projectRoot = path.join(tmpDir, "resolved-regex-outside-app");
+    const packagesRoot = path.join(tmpDir, "resolved-regex-outside-packages");
+    const packageRoot = path.join(packagesRoot, "ui");
+    const modulePath = path.join(packageRoot, "src", "chunk.js");
+    await fs.mkdir(projectRoot, { recursive: true });
+    await fs.mkdir(path.join(packageRoot, "lib"), { recursive: true });
+    await fs.mkdir(path.dirname(modulePath), { recursive: true });
+    await fs.writeFile(path.join(packageRoot, "package.json"), '{"name":"@scope/ui"}');
+    await fs.writeFile(modulePath, "export {};");
+
+    const ownership = new OgAssetOwnership();
+    ownership.configure(projectRoot, [
+      { find: /^@scope\/(.*)$/, replacement: `${packagesRoot}/$1/lib` },
+    ]);
+
+    await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toBeNull();
+  });
+
+  it("does not broaden a regex capture file target within the owning package", async () => {
+    const projectRoot = path.join(tmpDir, "resolved-regex-file-app");
+    const packagesRoot = path.join(tmpDir, "resolved-regex-file-packages");
+    const packageRoot = path.join(packagesRoot, "ui");
+    const entryPath = path.join(packageRoot, "lib", "index.js");
+    const modulePath = path.join(packageRoot, "lib", "chunk.js");
+    await fs.mkdir(projectRoot, { recursive: true });
+    await fs.mkdir(path.dirname(modulePath), { recursive: true });
+    await fs.writeFile(path.join(packageRoot, "package.json"), '{"name":"@scope/ui"}');
+    await fs.writeFile(entryPath, "export {};");
+    await fs.writeFile(modulePath, "export {};");
+
+    const ownership = new OgAssetOwnership();
+    ownership.configure(projectRoot, [
+      { find: /^@scope\/(.*)$/, replacement: `${packagesRoot}/$1/lib/index.js` },
+    ]);
+
+    await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toBeNull();
+    await expect(ownership.resolveModuleBoundary(entryPath)).resolves.not.toBeNull();
+  });
+
   it("rejects assets outside the resolved package boundary", async () => {
     const packageRoot = path.join(tmpDir, "contained-package");
     const assetPath = path.join(packageRoot, "font.ttf");

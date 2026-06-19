@@ -380,16 +380,21 @@ export class OgAssetOwnership {
 
       const captureIndex = alias.replacement.indexOf("$");
       if (captureIndex !== -1) {
-        const staticPrefix = alias.replacement.slice(0, captureIndex);
-        const staticRoot = await this.findExistingAliasDirectory(staticPrefix);
-        if (
-          staticRoot !== null &&
-          isPathInside(packageRoot, staticRoot) &&
-          isPathInside(staticRoot, realModulePath) &&
-          (await packageOwnsAliasDirectory(packageRoot, packageName, staticRoot))
-        ) {
-          return packageRoot;
-        }
+        const packageManifestName = await readPackageName(packageRoot);
+        if (packageManifestName === null || !aliasMatches(alias.find, packageManifestName))
+          continue;
+        const aliasTarget = applyAlias(alias.find, alias.replacement, packageManifestName);
+        if (!path.isAbsolute(aliasTarget)) continue;
+        try {
+          const realAliasTarget = await realpathNative(aliasTarget);
+          const aliasTargetStat = await fs.promises.stat(realAliasTarget);
+          if (
+            (aliasTargetStat.isDirectory() && isPathInside(realAliasTarget, realModulePath)) ||
+            (aliasTargetStat.isFile() && realAliasTarget === realModulePath)
+          ) {
+            return packageRoot;
+          }
+        } catch {}
         continue;
       }
 
@@ -417,18 +422,5 @@ export class OgAssetOwnership {
     }
 
     return null;
-  }
-
-  private async findExistingAliasDirectory(staticPrefix: string): Promise<string | null> {
-    const directoryPath = staticPrefix.endsWith(path.sep)
-      ? staticPrefix.slice(0, -1)
-      : path.dirname(staticPrefix);
-    try {
-      const realPath = await realpathNative(directoryPath);
-      const stat = await fs.promises.stat(realPath);
-      return stat.isDirectory() ? realPath : null;
-    } catch {
-      return null;
-    }
   }
 }
