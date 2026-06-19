@@ -26,6 +26,18 @@ function createOgInlinePlugin(command: "serve" | "build" = "serve", root = tmpDi
   return plugin;
 }
 
+async function resolveLinkedPackage(plugin: Plugin, source: string, resolvedId: string) {
+  const resolveId = unwrapHook(plugin.resolveId);
+  await resolveId.call(
+    {
+      resolve: async () => ({ id: resolvedId }),
+    },
+    source,
+    path.join(tmpDir, "app.ts"),
+    {},
+  );
+}
+
 // ── Test fixture setup ────────────────────────────────────────
 
 let tmpDir: string;
@@ -217,9 +229,11 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
         path.join(packageDir, "package.json"),
         JSON.stringify({ name: packageName }),
       );
+      await fsp.writeFile(path.join(packageDir, "index.js"), "export {};");
       await fsp.writeFile(path.join(packageDir, "font.ttf"), packageFont);
 
       const plugin = createOgInlinePlugin("build", projectRoot);
+      await resolveLinkedPackage(plugin, packageName, path.join(packageDir, "index.js"));
       const transform = unwrapHook(plugin.transform);
       const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
       const result = await transform.call(plugin, code, path.join(packageDir, "index.js"));
@@ -248,6 +262,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
       await fsp.writeFile(path.join(packageDir, "font.ttf"), packageFont);
 
       const plugin = createOgInlinePlugin("build", projectRoot);
+      await resolveLinkedPackage(plugin, name, path.join(packageDir, "index.js"));
       const transform = unwrapHook(plugin.transform);
       const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
       const result = await transform.call(plugin, code, path.join(packageDir, "index.js"));
@@ -255,6 +270,30 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
       expect(result?.code).toContain(packageFont.toString("base64"));
     },
   );
+
+  it("inlines assets for a deep module in a renamed linked package", async () => {
+    const workspaceRoot = path.join(tmpDir, "linked-workspace-deep-renamed");
+    const projectRoot = path.join(workspaceRoot, "app");
+    const packageDir = path.join(workspaceRoot, "packages", "design-system");
+    const modulePath = path.join(packageDir, "dist", "chunk-abc.js");
+    const packageFont = Buffer.from("linked-deep-renamed-font");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(path.dirname(modulePath), { recursive: true });
+    await fsp.writeFile(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name: "ui", main: "dist/index.js" }),
+    );
+    await fsp.writeFile(modulePath, "export {};");
+    await fsp.writeFile(path.join(packageDir, "dist", "font.ttf"), packageFont);
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    await resolveLinkedPackage(plugin, "ui", modulePath);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, modulePath);
+
+    expect(result?.code).toContain(packageFont.toString("base64"));
+  });
 
   it("inlines assets through a node_modules symlink to a workspace package", async () => {
     const workspaceRoot = path.join(tmpDir, "symlinked-workspace");
@@ -351,6 +390,52 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result).toBeNull();
   });
 
+  it("does not broaden a file-symlinked dependency to a same-named ancestor package", async () => {
+    const workspaceRoot = path.join(tmpDir, "file-symlinked-same-name-ancestor");
+    const projectRoot = path.join(workspaceRoot, "app");
+    const packageDir = path.join(projectRoot, "node_modules", "og-helper");
+    const workspacePackageDir = path.join(workspaceRoot, "packages", "manifest-less");
+    const secret = Buffer.from("same-named-ancestor-secret");
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.mkdir(workspacePackageDir, { recursive: true });
+    await fsp.writeFile(path.join(workspaceRoot, "package.json"), '{"name":"og-helper"}');
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"og-helper"}');
+    await fsp.writeFile(path.join(workspacePackageDir, "index.js"), "export {};");
+    await fsp.writeFile(path.join(workspaceRoot, "secret.txt"), secret);
+    await fsp.symlink(
+      path.join(workspacePackageDir, "index.js"),
+      path.join(packageDir, "index.js"),
+    );
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("../../secret.txt", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, path.join(packageDir, "index.js"));
+
+    expect(result).toBeNull();
+  });
+
+  it("does not broaden a deep file symlink with a mismatched canonical package-relative path", async () => {
+    const workspaceRoot = path.join(tmpDir, "file-symlinked-depth-mismatch");
+    const projectRoot = path.join(workspaceRoot, "app");
+    const packageDir = path.join(projectRoot, "node_modules", "og-helper");
+    const targetDir = path.join(workspaceRoot, "pkg");
+    await fsp.mkdir(path.join(packageDir, "dist"), { recursive: true });
+    await fsp.mkdir(targetDir, { recursive: true });
+    await fsp.writeFile(path.join(workspaceRoot, "package.json"), '{"name":"og-helper"}');
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"og-helper"}');
+    await fsp.writeFile(path.join(targetDir, "index.js"), "export {};");
+    await fsp.writeFile(path.join(workspaceRoot, "secret.txt"), "depth-mismatch-secret");
+    await fsp.symlink(path.join(targetDir, "index.js"), path.join(packageDir, "dist", "index.js"));
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("../secret.txt", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, path.join(packageDir, "dist", "index.js"));
+
+    expect(result).toBeNull();
+  });
+
   it("does not broaden a manifest-less workspace module to the workspace root", async () => {
     const workspaceRoot = path.join(tmpDir, "manifest-less-workspace");
     const projectRoot = path.join(workspaceRoot, "app");
@@ -386,6 +471,26 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const transform = unwrapHook(plugin.transform);
     const code = `const data = fetch(new URL("../../secret.txt", import.meta.url)).then((res) => res.arrayBuffer());`;
     const result = await transform.call(plugin, code, path.join(workspacePackageDir, "index.js"));
+
+    expect(result).toBeNull();
+  });
+
+  it("does not authorize an external workspace ancestor with a different package name", async () => {
+    const projectRoot = path.join(tmpDir, "external-named-workspace-app");
+    const workspaceRoot = path.join(tmpDir, "og-helper");
+    const workspacePackageDir = path.join(workspaceRoot, "packages", "ui");
+    const modulePath = path.join(workspacePackageDir, "dist", "index.js");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(path.dirname(modulePath), { recursive: true });
+    await fsp.writeFile(path.join(workspaceRoot, "package.json"), '{"name":"@scope/og-helper"}');
+    await fsp.writeFile(modulePath, "export {};");
+    await fsp.writeFile(path.join(workspaceRoot, "secret.txt"), "external-named-secret");
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    await resolveLinkedPackage(plugin, "@scope/ui", modulePath);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("../../../secret.txt", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, modulePath);
 
     expect(result).toBeNull();
   });

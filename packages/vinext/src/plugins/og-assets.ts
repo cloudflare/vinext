@@ -62,8 +62,7 @@ function isPathInside(root: string, target: string): boolean {
 
 async function findPackageRoot(
   moduleDir: string,
-  expectedPackageName?: string,
-  ownedModulePath?: string,
+  expectedPackageName: string,
 ): Promise<string | null> {
   let currentDir = moduleDir;
   while (true) {
@@ -72,15 +71,7 @@ async function findPackageRoot(
       const packageJson = await fs.promises.stat(packageJsonPath);
       if (packageJson.isFile()) {
         const manifest = JSON.parse(await fs.promises.readFile(packageJsonPath, "utf8"));
-        if (expectedPackageName !== undefined) {
-          return manifest.name === expectedPackageName ? currentDir : null;
-        }
-        if (
-          ownedModulePath !== undefined &&
-          !manifestOwnsModule(currentDir, ownedModulePath, manifest)
-        )
-          return null;
-        return currentDir;
+        return manifest.name === expectedPackageName ? currentDir : null;
       }
     } catch {}
 
@@ -90,22 +81,20 @@ async function findPackageRoot(
   }
 }
 
-function manifestOwnsModule(
-  packageRoot: string,
-  modulePath: string,
-  manifest: Record<string, unknown>,
-): boolean {
-  const declaredName = typeof manifest.name === "string" ? manifest.name : null;
-  if (declaredName !== null && path.basename(packageRoot) === declaredName.split("/").at(-1)) {
-    return true;
+function getPackageNameFromSpecifier(specifier: string): string | null {
+  if (
+    specifier.startsWith(".") ||
+    specifier.startsWith("/") ||
+    specifier.startsWith("\0") ||
+    specifier.startsWith("#")
+  ) {
+    return null;
   }
-
-  for (const field of ["main", "module", "source", "browser"] as const) {
-    const entry = manifest[field];
-    if (typeof entry !== "string") continue;
-    if (path.resolve(packageRoot, entry) === modulePath) return true;
+  const segments = specifier.split("/");
+  if (specifier.startsWith("@")) {
+    return segments.length >= 2 ? `${segments[0]}/${segments[1]}` : null;
   }
-  return false;
+  return segments[0] || null;
 }
 
 function getNodeModulesPackageRoot(
@@ -165,6 +154,7 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
   // build. Dev mode skips the cache so asset edits are picked up without
   // restarting the Vite server.
   const cache = new Map<string, string>(); // absPath -> base64
+  const linkedPackageRoots = new Set<string>();
   let isBuild = false;
   let projectRoot = process.cwd();
 
@@ -181,6 +171,28 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
       if (isBuild) {
         cache.clear();
       }
+      linkedPackageRoots.clear();
+    },
+
+    async resolveId(source, importer, options) {
+      const expectedPackageName = getPackageNameFromSpecifier(source);
+      if (expectedPackageName === null) return null;
+
+      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
+      if (resolved === null || resolved.external) return null;
+
+      let realResolvedPath: string;
+      try {
+        realResolvedPath = await realpathNative(path.resolve(resolved.id.split("?")[0]));
+      } catch {
+        return null;
+      }
+      const packageRoot = await findPackageRoot(
+        path.dirname(realResolvedPath),
+        expectedPackageName,
+      );
+      if (packageRoot !== null) linkedPackageRoots.add(packageRoot);
+      return null;
     },
 
     transform: {
@@ -227,23 +239,33 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
             // canonical target is no longer inside the logical package path.
             const declaredPackageName = await readPackageName(packageRoot);
             if (declaredPackageName === null) return null;
+            const logicalModuleRelativePath = path.relative(packageRoot, modulePath);
+            if (
+              path.isAbsolute(logicalModuleRelativePath) ||
+              logicalModuleRelativePath === ".." ||
+              logicalModuleRelativePath.startsWith(`..${path.sep}`)
+            ) {
+              return null;
+            }
             const canonicalPackageRoot = await findPackageRoot(realModuleDir, declaredPackageName);
             if (canonicalPackageRoot === null) return null;
+            if (path.relative(canonicalPackageRoot, realModulePath) !== logicalModuleRelativePath) {
+              return null;
+            }
             realAssetRoot = canonicalPackageRoot;
           }
         } else if (isPathInside(realProjectRoot, realModulePath)) {
           realAssetRoot = realProjectRoot;
         } else {
-          // Modules outside both the project and node_modules are treated as
-          // linked workspace packages and confined to their nearest manifest.
-          const workspacePackageRoot = await findPackageRoot(
-            realModuleDir,
-            undefined,
-            realModulePath,
-          );
-          if (workspacePackageRoot === null) return null;
-          if (isPathInside(workspacePackageRoot, realProjectRoot)) return null;
-          realAssetRoot = workspacePackageRoot;
+          // A linked package is trusted only after resolveId observes a bare
+          // package import whose declared name matches its nearest manifest.
+          // This keeps deep modules working without treating an ancestor
+          // workspace manifest as the package that owns a manifest-less child.
+          const linkedPackageRoot = [...linkedPackageRoots]
+            .filter((root) => isPathInside(root, realModulePath))
+            .sort((a, b) => b.length - a.length)[0];
+          if (linkedPackageRoot === undefined) return null;
+          realAssetRoot = linkedPackageRoot;
         }
         const moduleDir = realModuleDir;
         let newCode = code;
