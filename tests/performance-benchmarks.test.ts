@@ -85,6 +85,9 @@ describe("paired performance benchmarks", () => {
     expect(workflow).toContain('"$root/node_modules/.vite/task-cache"');
     expect(workflow).toContain('sudo chown -R "$USER":"$USER" "$path"');
     expect(workflow).toContain("benchmarks/perf/validate-profile-traces.mjs");
+    expect(workflow).toContain("projects=(vinext nextjs)");
+    expect(workflow).not.toContain("VINEXT_PERF_SKIP_IMPLEMENTATIONS");
+    expect(workflow).not.toContain("Detect Next.js benchmark input changes");
     expect(workflow).toContain(
       "github.event.pull_request.head.repo.full_name != github.repository && github.event.pull_request.base.sha",
     );
@@ -113,6 +116,10 @@ describe("paired performance benchmarks", () => {
     );
     expect(runner).toContain("await runUntrusted(\n    profiler[0]");
     expect(coldStart).toContain('name.startsWith("VINEXT_PERF_")');
+    expect(coldStart).toContain('const profiling = process.env.VINEXT_PERF_PROFILE === "true"');
+    expect(coldStart).toContain('join(projectDir, "node_modules/vite-plus/bin/vp")');
+    expect(coldStart).toContain("detached: !profiling");
+    expect(coldStart).toContain("return targetUser && !profiling");
     expect(coldStart).toContain("await Promise.all(paths.map(clearDirectory))");
     expect(coldStart).toContain("const entries = await readdir(path)");
     expect(buildTime).toContain('name.startsWith("VINEXT_PERF_")');
@@ -146,25 +153,14 @@ describe("paired performance benchmarks", () => {
     expect(validation).toContain("Dispatched workflow ref is not the current default branch head");
   });
 
-  it("keeps Next.js enabled until the trusted base supports fingerprinting", () => {
+  it("always pairs Next.js benchmarks for pull requests", () => {
     const workflow = readFileSync(
       join(import.meta.dirname, "../.github/workflows/perf.yml"),
       "utf8",
     );
-    const detectionStep = workflow.slice(
-      workflow.indexOf("- name: Detect Next.js benchmark input changes"),
-      workflow.indexOf("- name: Prepare trusted benchmark manifests"),
-    );
-    const compatibilityGuard = detectionStep.indexOf('[ ! -f "$fingerprint_script" ]');
-    const fingerprintInvocation = detectionStep.indexOf(
-      'head_fingerprint=$(node "$fingerprint_script" .)',
-    );
-
-    expect(compatibilityGuard).toBeGreaterThan(-1);
-    expect(detectionStep).toContain('grep -q "skippedImplementations" "$base_validator"');
-    expect(detectionStep).toContain("keeping Next.js for rollout compatibility");
-    expect(detectionStep).toContain("exit 0");
-    expect(fingerprintInvocation).toBeGreaterThan(compatibilityGuard);
+    expect(workflow).toContain("projects=(vinext nextjs)");
+    expect(workflow).not.toContain("skipping Next.js PR benchmarks");
+    expect(workflow).not.toContain("--implementation=vinext");
   });
 
   it("isolates pull request comment permissions from benchmark publishing", () => {
@@ -323,7 +319,7 @@ describe("paired performance benchmarks", () => {
     expect(results.benchmarks[0].profileRounds).toBe(1);
   });
 
-  it("accepts required trace categories spread across diagnostic profiles", () => {
+  it("requires every diagnostic profile to contain filterable traces", () => {
     const directory = mkdtempSync(join(tmpdir(), "vinext-perf-traces-"));
     const resultsPath = join(directory, "results.json");
     const firstProfile = "profiles/dev/samply-profile.json.gz";
@@ -353,12 +349,13 @@ describe("paired performance benchmarks", () => {
       }),
     );
 
-    const output = execFileSync(
-      process.execPath,
-      ["benchmarks/perf/validate-profile-traces.mjs", resultsPath, directory],
-      { cwd: join(import.meta.dirname, ".."), encoding: "utf8" },
-    );
-    expect(output).toContain("Performance profiles sampled vinext, vite, rolldown frames");
+    expect(() =>
+      execFileSync(
+        process.execPath,
+        ["benchmarks/perf/validate-profile-traces.mjs", resultsPath, directory],
+        { cwd: join(import.meta.dirname, ".."), encoding: "utf8", stdio: "pipe" },
+      ),
+    ).toThrow("vinext-dev profile is missing sampled vite, rolldown frames");
   });
 
   it("reports unchanged Next.js as skipped", () => {
