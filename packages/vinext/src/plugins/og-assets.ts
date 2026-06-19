@@ -63,6 +63,7 @@ function isPathInside(root: string, target: string): boolean {
 async function findPackageRoot(
   moduleDir: string,
   expectedPackageName?: string,
+  rejectWorkspaceRoot = false,
 ): Promise<string | null> {
   let currentDir = moduleDir;
   while (true) {
@@ -70,8 +71,15 @@ async function findPackageRoot(
       const packageJsonPath = path.join(currentDir, "package.json");
       const packageJson = await fs.promises.stat(packageJsonPath);
       if (packageJson.isFile()) {
-        if (expectedPackageName === undefined) return currentDir;
         const manifest = JSON.parse(await fs.promises.readFile(packageJsonPath, "utf8"));
+        if (
+          rejectWorkspaceRoot &&
+          (manifest.workspaces !== undefined ||
+            fs.existsSync(path.join(currentDir, "pnpm-workspace.yaml")))
+        ) {
+          return null;
+        }
+        if (expectedPackageName === undefined) return currentDir;
         return manifest.name === expectedPackageName ? currentDir : null;
       }
     } catch {}
@@ -199,9 +207,9 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
             // target package, not the directory containing the symlink itself.
             // The nearest manifest is intentionally the boundary because the
             // canonical target is no longer inside the logical package path.
-            const logicalPackageName = await readPackageName(packageRoot);
-            if (logicalPackageName === null) return null;
-            const canonicalPackageRoot = await findPackageRoot(realModuleDir, logicalPackageName);
+            const declaredPackageName = await readPackageName(packageRoot);
+            if (declaredPackageName === null) return null;
+            const canonicalPackageRoot = await findPackageRoot(realModuleDir, declaredPackageName);
             if (canonicalPackageRoot === null) return null;
             realAssetRoot = canonicalPackageRoot;
           }
@@ -210,7 +218,7 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
         } else {
           // Modules outside both the project and node_modules are treated as
           // linked workspace packages and confined to their nearest manifest.
-          const workspacePackageRoot = await findPackageRoot(realModuleDir);
+          const workspacePackageRoot = await findPackageRoot(realModuleDir, undefined, true);
           if (workspacePackageRoot === null) return null;
           if (isPathInside(workspacePackageRoot, realProjectRoot)) return null;
           realAssetRoot = workspacePackageRoot;

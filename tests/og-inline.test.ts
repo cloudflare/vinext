@@ -329,9 +329,33 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const workspacePackageDir = path.join(workspaceRoot, "packages", "og-helper");
     await fsp.mkdir(projectRoot, { recursive: true });
     await fsp.mkdir(workspacePackageDir, { recursive: true });
-    await fsp.writeFile(path.join(workspaceRoot, "package.json"), '{"name":"workspace-root"}');
+    await fsp.writeFile(
+      path.join(workspaceRoot, "package.json"),
+      '{"name":"workspace-root","workspaces":["packages/*"]}',
+    );
     await fsp.writeFile(path.join(workspacePackageDir, "index.js"), "export {};");
     await fsp.writeFile(path.join(workspaceRoot, "secret.txt"), "workspace-root-secret");
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("../../secret.txt", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, path.join(workspacePackageDir, "index.js"));
+
+    expect(result).toBeNull();
+  });
+
+  it("does not broaden an external manifest-less module to its workspace root", async () => {
+    const projectRoot = path.join(tmpDir, "external-workspace-app");
+    const workspaceRoot = path.join(tmpDir, "external-workspace-owner");
+    const workspacePackageDir = path.join(workspaceRoot, "packages", "og-helper");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(workspacePackageDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(workspaceRoot, "package.json"),
+      '{"name":"workspace-root","workspaces":["packages/*"]}',
+    );
+    await fsp.writeFile(path.join(workspacePackageDir, "index.js"), "export {};");
+    await fsp.writeFile(path.join(workspaceRoot, "secret.txt"), "external-workspace-secret");
 
     const plugin = createOgInlinePlugin("build", projectRoot);
     const transform = unwrapHook(plugin.transform);
