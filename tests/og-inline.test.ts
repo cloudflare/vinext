@@ -316,7 +316,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const workspaceRoot = path.join(tmpDir, "linked-workspace-build");
     const projectRoot = path.join(workspaceRoot, "app");
     const packageDir = path.join(workspaceRoot, "packages", "design-system");
-    const packageFont = Buffer.from("linked-build-font");
+    const packageFont = Buffer.alloc(20_000, "linked-build-font");
     await fsp.mkdir(projectRoot, { recursive: true });
     await fsp.mkdir(path.join(packageDir, "dist"), { recursive: true });
     await fsp.writeFile(path.join(projectRoot, "package.json"), '{"dependencies":{"ui":"*"}}');
@@ -346,14 +346,16 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     });
     const code = await fsp.readFile(path.join(projectRoot, "dist", "bundle.js"), "utf8");
 
+    expect(code).toContain("atob(");
     expect(code).toContain(packageFont.toString("base64"));
+    expect(code).not.toContain("/assets/font-");
   });
 
   it("uses a directory alias root for subpath imports in a real Vite build", async () => {
     const workspaceRoot = path.join(tmpDir, "linked-directory-alias-build");
     const projectRoot = path.join(workspaceRoot, "app");
     const packageDir = path.join(workspaceRoot, "packages", "design-system");
-    const packageFont = Buffer.from("linked-directory-alias-font");
+    const packageFont = Buffer.alloc(20_000, "linked-directory-alias-font");
     await fsp.mkdir(projectRoot, { recursive: true });
     await fsp.mkdir(path.join(packageDir, "dist"), { recursive: true });
     await fsp.writeFile(path.join(projectRoot, "package.json"), "{}");
@@ -380,7 +382,9 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     });
     const code = await fsp.readFile(path.join(projectRoot, "dist", "bundle.js"), "utf8");
 
+    expect(code).toContain("atob(");
     expect(code).toContain(packageFont.toString("base64"));
+    expect(code).not.toContain("/assets/font-");
   });
 
   it("tracks a linked package through a regular-expression alias", async () => {

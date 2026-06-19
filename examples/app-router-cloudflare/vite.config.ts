@@ -16,7 +16,10 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      "@test/og-font": path.resolve(import.meta.dirname, "../../tests/fixtures/og-font-package"),
+      "@test/og-font": path.resolve(
+        import.meta.dirname,
+        "../../tests/fixtures/og-font-package/lib",
+      ),
     },
   },
 });

@@ -50,6 +50,42 @@ describe("OgAssetOwnership", () => {
     expect(boundary?.assetRoot).toBe(realPackageRoot);
   });
 
+  it("recognizes an external package from its resolved directory alias path", async () => {
+    const projectRoot = path.join(tmpDir, "resolved-alias-app");
+    const packageRoot = path.join(tmpDir, "resolved-alias-package");
+    const modulePath = path.join(packageRoot, "dist", "chunk.js");
+    await fs.mkdir(projectRoot, { recursive: true });
+    await fs.mkdir(path.dirname(modulePath), { recursive: true });
+    await fs.writeFile(path.join(packageRoot, "package.json"), '{"name":"@test/og-font"}');
+    await fs.writeFile(modulePath, "export {};");
+
+    const ownership = new OgAssetOwnership();
+    ownership.configure(projectRoot, [
+      { find: "@test/og-font", replacement: path.join(packageRoot, "dist") },
+    ]);
+    const realPackageRoot = await fs.realpath(packageRoot);
+
+    const boundary = await ownership.resolveModuleBoundary(modulePath);
+
+    expect(boundary?.assetRoot).toBe(realPackageRoot);
+  });
+
+  it("does not broaden a resolved alias to an external non-package directory", async () => {
+    const workspaceRoot = path.join(tmpDir, "resolved-non-package-workspace");
+    const projectRoot = path.join(workspaceRoot, "app");
+    const aliasRoot = path.join(workspaceRoot, "components");
+    const modulePath = path.join(aliasRoot, "chunk.js");
+    await fs.mkdir(projectRoot, { recursive: true });
+    await fs.mkdir(aliasRoot, { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, "package.json"), '{"name":"workspace"}');
+    await fs.writeFile(modulePath, "export {};");
+
+    const ownership = new OgAssetOwnership();
+    ownership.configure(projectRoot, [{ find: "@components", replacement: aliasRoot }]);
+
+    await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toBeNull();
+  });
+
   it("rejects assets outside the resolved package boundary", async () => {
     const packageRoot = path.join(tmpDir, "contained-package");
     const assetPath = path.join(packageRoot, "font.ttf");

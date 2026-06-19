@@ -131,12 +131,34 @@ async function packageOwnsAliasFile(
   }
 }
 
+async function packageOwnsAliasDirectory(
+  packageRoot: string,
+  packageName: string | null,
+  aliasDirectory: string,
+): Promise<boolean> {
+  if (aliasDirectory === packageRoot) return true;
+  try {
+    const manifest = JSON.parse(
+      await fs.promises.readFile(path.join(packageRoot, "package.json"), "utf8"),
+    );
+    if (packageName !== null && manifest.name === packageName) return true;
+    return ["main", "module", "source", "browser"].some(
+      (field) =>
+        typeof manifest[field] === "string" &&
+        isPathInside(aliasDirectory, path.resolve(packageRoot, manifest[field])),
+    );
+  } catch {
+    return false;
+  }
+}
+
 export class OgAssetOwnership {
   private projectRoot = process.cwd();
   private readonly linkedPackageRoots = new Set<string>();
   private readonly dependencyPackageNames = new Map<string, string>();
   private readonly stringAliasesByFirstCharacter = new Map<string, IndexedAlias[]>();
   private regularExpressionAliases: IndexedAlias[] = [];
+  private configuredAliases: IndexedAlias[] = [];
 
   configure(projectRoot: string, aliases: readonly Alias[]): void {
     this.projectRoot = path.resolve(projectRoot);
@@ -161,8 +183,10 @@ export class OgAssetOwnership {
 
     this.stringAliasesByFirstCharacter.clear();
     this.regularExpressionAliases = [];
+    this.configuredAliases = [];
     for (const [index, alias] of aliases.entries()) {
       const indexedAlias = { ...alias, index };
+      this.configuredAliases.push(indexedAlias);
       if (typeof alias.find === "string") {
         const firstCharacter = alias.find[0];
         if (firstCharacter === undefined) continue;
@@ -269,7 +293,12 @@ export class OgAssetOwnership {
     const linkedPackageRoot = [...this.linkedPackageRoots]
       .filter((root) => isPathInside(root, realModulePath))
       .sort((a, b) => b.length - a.length)[0];
-    return linkedPackageRoot === undefined ? null : { assetRoot: linkedPackageRoot, moduleDir };
+    if (linkedPackageRoot !== undefined) {
+      return { assetRoot: linkedPackageRoot, moduleDir };
+    }
+
+    const configuredAliasRoot = await this.resolveConfiguredAliasRoot(realModulePath);
+    return configuredAliasRoot === null ? null : { assetRoot: configuredAliasRoot, moduleDir };
   }
 
   async resolveContainedAsset(assetRoot: string, assetPath: string): Promise<string | null> {
@@ -335,6 +364,69 @@ export class OgAssetOwnership {
         return null;
       }
       return packageRoot;
+    } catch {
+      return null;
+    }
+  }
+
+  private async resolveConfiguredAliasRoot(realModulePath: string): Promise<string | null> {
+    const packageRoot = await findPackageRoot(path.dirname(realModulePath));
+    if (packageRoot === null || !isPathInside(packageRoot, realModulePath)) return null;
+
+    for (const alias of this.configuredAliases) {
+      if (!path.isAbsolute(alias.replacement)) continue;
+      const packageName =
+        typeof alias.find === "string" ? getPackageNameFromSpecifier(alias.find) : null;
+
+      const captureIndex = alias.replacement.indexOf("$");
+      if (captureIndex !== -1) {
+        const staticPrefix = alias.replacement.slice(0, captureIndex);
+        const staticRoot = await this.findExistingAliasDirectory(staticPrefix);
+        if (
+          staticRoot !== null &&
+          isPathInside(packageRoot, staticRoot) &&
+          isPathInside(staticRoot, realModulePath) &&
+          (await packageOwnsAliasDirectory(packageRoot, packageName, staticRoot))
+        ) {
+          return packageRoot;
+        }
+        continue;
+      }
+
+      try {
+        const realReplacement = await realpathNative(alias.replacement);
+        const replacementStat = await fs.promises.stat(realReplacement);
+        if (replacementStat.isDirectory()) {
+          if (
+            isPathInside(packageRoot, realReplacement) &&
+            isPathInside(realReplacement, realModulePath) &&
+            (await packageOwnsAliasDirectory(packageRoot, packageName, realReplacement))
+          ) {
+            return packageRoot;
+          }
+          continue;
+        }
+
+        if (
+          realReplacement === realModulePath &&
+          (await packageOwnsAliasFile(packageRoot, packageName, realReplacement))
+        ) {
+          return packageRoot;
+        }
+      } catch {}
+    }
+
+    return null;
+  }
+
+  private async findExistingAliasDirectory(staticPrefix: string): Promise<string | null> {
+    const directoryPath = staticPrefix.endsWith(path.sep)
+      ? staticPrefix.slice(0, -1)
+      : path.dirname(staticPrefix);
+    try {
+      const realPath = await realpathNative(directoryPath);
+      const stat = await fs.promises.stat(realPath);
+      return stat.isDirectory() ? realPath : null;
     } catch {
       return null;
     }

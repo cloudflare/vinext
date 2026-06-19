@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [vinext({ appDir: import.meta.dirname })],
   resolve: {
     alias: {
-      "@test/og-font": path.resolve(import.meta.dirname, "../og-font-package"),
+      "@test/og-font": path.resolve(import.meta.dirname, "../og-font-package/lib"),
     },
   },
 });
