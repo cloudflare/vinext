@@ -2812,7 +2812,10 @@ describe("Plugin config", () => {
     expect(configPlugin).toBeDefined();
 
     // Call the config hook with a minimal config
-    const result = await configPlugin.config({ root: FIXTURE_DIR, plugins: [] });
+    const result = await configPlugin.config(
+      { root: FIXTURE_DIR, plugins: [] },
+      { command: "build", mode: "production" },
+    );
 
     expect(result.resolve).toBeDefined();
     expect(result.resolve.dedupe).toBeDefined();
@@ -2827,7 +2830,10 @@ describe("Plugin config", () => {
     const configPlugin = plugins.find((p) => p.name === "vinext:config");
     expect(configPlugin).toBeDefined();
 
-    const result = await configPlugin.config({ root: FIXTURE_DIR, plugins: [] });
+    const result = await configPlugin.config(
+      { root: FIXTURE_DIR, plugins: [] },
+      { command: "build", mode: "production" },
+    );
 
     expect(result.build).toBeDefined();
     const bundlerOptions = getBuildBundlerOptions(result);
@@ -2870,7 +2876,10 @@ describe("Plugin config", () => {
     const configPlugin = plugins.find((p) => p.name === "vinext:config");
     expect(configPlugin).toBeDefined();
 
-    const result = await configPlugin.config({ root: FIXTURE_DIR, plugins: [] });
+    const result = await configPlugin.config(
+      { root: FIXTURE_DIR, plugins: [] },
+      { command: "build", mode: "production" },
+    );
 
     expect(result.build).toBeDefined();
     const bundlerOptions = getBuildBundlerOptions(result);
@@ -2946,11 +2955,14 @@ describe("Plugin config", () => {
     expect(configPlugin).toBeDefined();
 
     const userOnwarn = vi.fn();
-    const result = await configPlugin.config({
-      root: FIXTURE_DIR,
-      plugins: [],
-      build: { rollupOptions: { onwarn: userOnwarn } },
-    });
+    const result = await configPlugin.config(
+      {
+        root: FIXTURE_DIR,
+        plugins: [],
+        build: { rollupOptions: { onwarn: userOnwarn } },
+      },
+      { command: "build", mode: "production" },
+    );
 
     const bundlerOptions = getBuildBundlerOptions(result);
     const defaultHandler = vi.fn();

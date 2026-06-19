@@ -140,7 +140,10 @@ describe("renderVinextBuiltUrl", () => {
       nextConfig: () => ({ deploymentId: "dpl_123" }),
     }) as any[];
     const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
-    const config = await configPlugin.config({ root: APP_FIXTURE_DIR, plugins: [] });
+    const config = await configPlugin.config(
+      { root: APP_FIXTURE_DIR, plugins: [] },
+      { command: "build", mode: "production" },
+    );
     const renderBuiltUrl = config.experimental?.renderBuiltUrl;
 
     expect(renderBuiltUrl).toBeTypeOf("function");
