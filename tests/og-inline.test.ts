@@ -228,6 +228,34 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     },
   );
 
+  it.each([
+    ["scoped", "ui", "@scope/ui"],
+    ["renamed", "design-system", "ui"],
+  ])(
+    "inlines assets in a %s linked package with a differing directory name",
+    async (_, dir, name) => {
+      const workspaceRoot = path.join(tmpDir, `linked-workspace-${dir}`);
+      const projectRoot = path.join(workspaceRoot, "app");
+      const packageDir = path.join(workspaceRoot, "packages", dir);
+      const packageFont = Buffer.from(`linked-${name}-font`);
+      await fsp.mkdir(projectRoot, { recursive: true });
+      await fsp.mkdir(packageDir, { recursive: true });
+      await fsp.writeFile(
+        path.join(packageDir, "package.json"),
+        JSON.stringify({ name, main: "index.js" }),
+      );
+      await fsp.writeFile(path.join(packageDir, "index.js"), "export {};");
+      await fsp.writeFile(path.join(packageDir, "font.ttf"), packageFont);
+
+      const plugin = createOgInlinePlugin("build", projectRoot);
+      const transform = unwrapHook(plugin.transform);
+      const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+      const result = await transform.call(plugin, code, path.join(packageDir, "index.js"));
+
+      expect(result?.code).toContain(packageFont.toString("base64"));
+    },
+  );
+
   it("inlines assets through a node_modules symlink to a workspace package", async () => {
     const workspaceRoot = path.join(tmpDir, "symlinked-workspace");
     const projectRoot = path.join(workspaceRoot, "app");

@@ -63,7 +63,7 @@ function isPathInside(root: string, target: string): boolean {
 async function findPackageRoot(
   moduleDir: string,
   expectedPackageName?: string,
-  requirePathPackageName = false,
+  ownedModulePath?: string,
 ): Promise<string | null> {
   let currentDir = moduleDir;
   while (true) {
@@ -72,9 +72,15 @@ async function findPackageRoot(
       const packageJson = await fs.promises.stat(packageJsonPath);
       if (packageJson.isFile()) {
         const manifest = JSON.parse(await fs.promises.readFile(packageJsonPath, "utf8"));
-        if (requirePathPackageName && manifest.name !== getPathPackageName(currentDir)) return null;
-        if (expectedPackageName === undefined) return currentDir;
-        return manifest.name === expectedPackageName ? currentDir : null;
+        if (expectedPackageName !== undefined) {
+          return manifest.name === expectedPackageName ? currentDir : null;
+        }
+        if (
+          ownedModulePath !== undefined &&
+          !manifestOwnsModule(currentDir, ownedModulePath, manifest)
+        )
+          return null;
+        return currentDir;
       }
     } catch {}
 
@@ -84,10 +90,22 @@ async function findPackageRoot(
   }
 }
 
-function getPathPackageName(packageRoot: string): string {
-  const packageName = path.basename(packageRoot);
-  const scope = path.basename(path.dirname(packageRoot));
-  return scope.startsWith("@") ? `${scope}/${packageName}` : packageName;
+function manifestOwnsModule(
+  packageRoot: string,
+  modulePath: string,
+  manifest: Record<string, unknown>,
+): boolean {
+  const declaredName = typeof manifest.name === "string" ? manifest.name : null;
+  if (declaredName !== null && path.basename(packageRoot) === declaredName.split("/").at(-1)) {
+    return true;
+  }
+
+  for (const field of ["main", "module", "source", "browser"] as const) {
+    const entry = manifest[field];
+    if (typeof entry !== "string") continue;
+    if (path.resolve(packageRoot, entry) === modulePath) return true;
+  }
+  return false;
 }
 
 function getNodeModulesPackageRoot(
@@ -218,7 +236,11 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
         } else {
           // Modules outside both the project and node_modules are treated as
           // linked workspace packages and confined to their nearest manifest.
-          const workspacePackageRoot = await findPackageRoot(realModuleDir, undefined, true);
+          const workspacePackageRoot = await findPackageRoot(
+            realModuleDir,
+            undefined,
+            realModulePath,
+          );
           if (workspacePackageRoot === null) return null;
           if (isPathInside(workspacePackageRoot, realProjectRoot)) return null;
           realAssetRoot = workspacePackageRoot;
