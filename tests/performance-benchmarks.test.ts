@@ -106,7 +106,13 @@ describe("paired performance benchmarks", () => {
     );
     expect(runner).toContain("await runUntrusted(\n    profiler[0]");
     expect(coldStart).toContain('name.startsWith("VINEXT_PERF_")');
+    expect(coldStart).toContain("await Promise.all(paths.map(clearDirectory))");
+    expect(coldStart).toContain("const entries = await readdir(path)");
     expect(buildTime).toContain('name.startsWith("VINEXT_PERF_")');
+    expect(buildTime).toContain("const entries = await readdir(outputDirectory)");
+    expect(buildTime).not.toContain(
+      'rm(join(projectDir, framework === "vinext" ? "dist" : ".next")',
+    );
   });
 
   it("requires dispatched workflow code to come from main", () => {

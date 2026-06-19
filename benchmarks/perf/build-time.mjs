@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawn } from "node:child_process";
-import { rm } from "node:fs/promises";
+import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { reportPerformanceSample } from "./report-sample.mjs";
 
@@ -32,10 +32,12 @@ if (framework !== "vinext" && framework !== "nextjs") {
 const projectDir = join(benchmarkDir, framework);
 
 async function cleanBuildOutput() {
-  await rm(join(projectDir, framework === "vinext" ? "dist" : ".next"), {
-    recursive: true,
-    force: true,
-  });
+  const outputDirectory = join(projectDir, framework === "vinext" ? "dist" : ".next");
+  await mkdir(outputDirectory, { recursive: true });
+  const entries = await readdir(outputDirectory);
+  await Promise.all(
+    entries.map((entry) => rm(join(outputDirectory, entry), { recursive: true, force: true })),
+  );
 }
 
 function buildCommand() {
