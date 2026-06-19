@@ -75,8 +75,12 @@ export function TrendChart({
     return { value: v, y: scaleY(v) };
   });
 
-  // X-axis labels (show every Nth)
-  const labelStep = Math.max(1, Math.floor(numPoints / 8));
+  const xAxisTickCount = Math.min(numPoints, 8);
+  const xAxisLabelIndexes = new Set(
+    Array.from({ length: xAxisTickCount }, (_, i) =>
+      xAxisTickCount === 1 ? 0 : Math.round((i * (numPoints - 1)) / (xAxisTickCount - 1)),
+    ),
+  );
 
   return (
     <div className="relative">
@@ -105,13 +109,13 @@ export function TrendChart({
 
         {/* X-axis labels */}
         {labels.map((label, i) => {
-          if (i % labelStep !== 0 && i !== numPoints - 1) return null;
+          if (!xAxisLabelIndexes.has(i)) return null;
           return (
             <text
               key={pointKeys[i]}
               x={scaleX(i)}
               y={height - 8}
-              textAnchor="middle"
+              textAnchor={i === 0 ? "start" : i === numPoints - 1 ? "end" : "middle"}
               fontSize="10"
               fill="#9ca3af"
             >
