@@ -62,7 +62,7 @@ function isPathInside(root: string, target: string): boolean {
 
 async function findPackageRoot(
   moduleDir: string,
-  expectedPackageName: string,
+  expectedPackageName?: string,
 ): Promise<string | null> {
   let currentDir = moduleDir;
   while (true) {
@@ -71,7 +71,9 @@ async function findPackageRoot(
       const packageJson = await fs.promises.stat(packageJsonPath);
       if (packageJson.isFile()) {
         const manifest = JSON.parse(await fs.promises.readFile(packageJsonPath, "utf8"));
-        return manifest.name === expectedPackageName ? currentDir : null;
+        return expectedPackageName === undefined || manifest.name === expectedPackageName
+          ? currentDir
+          : null;
       }
     } catch {}
 
@@ -95,6 +97,34 @@ function getPackageNameFromSpecifier(specifier: string): string | null {
     return segments.length >= 2 ? `${segments[0]}/${segments[1]}` : null;
   }
   return segments[0] || null;
+}
+
+function getAliasedPackageName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const alias = value.match(/^(?:npm:|workspace:)(@[^/]+\/[^@]+|[^@]+)@/);
+  return alias?.[1] ?? null;
+}
+
+function aliasMatches(find: string | RegExp, source: string): boolean {
+  if (typeof find === "string") return source === find || source.startsWith(`${find}/`);
+  find.lastIndex = 0;
+  return find.test(source);
+}
+
+function applyAlias(find: string | RegExp, replacement: string, source: string): string {
+  if (typeof find === "string") return replacement + source.slice(find.length);
+  find.lastIndex = 0;
+  return source.replace(find, replacement);
+}
+
+function getAliasBoundaryPath(
+  find: string | RegExp,
+  replacement: string,
+  aliasTarget: string,
+): string {
+  if (typeof find === "string" || !replacement.includes("$")) return replacement;
+  const staticPrefix = replacement.slice(0, replacement.indexOf("$"));
+  return staticPrefix.endsWith(path.sep) ? staticPrefix.slice(0, -1) : path.dirname(aliasTarget);
 }
 
 function getNodeModulesPackageRoot(
@@ -155,6 +185,8 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
   // restarting the Vite server.
   const cache = new Map<string, string>(); // absPath -> base64
   const linkedPackageRoots = new Set<string>();
+  const dependencyPackageNames = new Map<string, string>();
+  let configuredAliases: readonly { find: string | RegExp; replacement: string }[] = [];
   let isBuild = false;
   let projectRoot = process.cwd();
 
@@ -165,6 +197,25 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
     configResolved(config) {
       isBuild = config.command === "build";
       projectRoot = path.resolve(config.root);
+      dependencyPackageNames.clear();
+      try {
+        const manifest = JSON.parse(
+          fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"),
+        );
+        for (const field of [
+          "dependencies",
+          "devDependencies",
+          "optionalDependencies",
+          "peerDependencies",
+        ]) {
+          const dependencies = manifest[field];
+          if (dependencies === null || typeof dependencies !== "object") continue;
+          for (const [packageName, value] of Object.entries(dependencies)) {
+            dependencyPackageNames.set(packageName, getAliasedPackageName(value) ?? packageName);
+          }
+        }
+      } catch {}
+      configuredAliases = config.resolve.alias;
     },
 
     buildStart() {
@@ -175,8 +226,11 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
     },
 
     async resolveId(source, importer, options) {
-      const expectedPackageName = getPackageNameFromSpecifier(source);
-      if (expectedPackageName === null) return null;
+      const sourcePackageName = getPackageNameFromSpecifier(source);
+      if (sourcePackageName === null) return null;
+      const configuredAlias = configuredAliases.find((alias) => aliasMatches(alias.find, source));
+      const expectedPackageName = dependencyPackageNames.get(sourcePackageName);
+      if (configuredAlias === undefined && expectedPackageName === undefined) return null;
 
       const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
       if (resolved === null || resolved.external) return null;
@@ -187,10 +241,32 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
       } catch {
         return null;
       }
-      const packageRoot = await findPackageRoot(
-        path.dirname(realResolvedPath),
-        expectedPackageName,
-      );
+      let packageRoot: string | null;
+      if (configuredAlias !== undefined) {
+        const aliasTarget = applyAlias(configuredAlias.find, configuredAlias.replacement, source);
+        if (!path.isAbsolute(aliasTarget)) return null;
+        try {
+          const boundaryPath = getAliasBoundaryPath(
+            configuredAlias.find,
+            configuredAlias.replacement,
+            aliasTarget,
+          );
+          if (!path.isAbsolute(boundaryPath)) return null;
+          const realReplacement = await realpathNative(boundaryPath);
+          const replacementStat = await fs.promises.stat(realReplacement);
+          if (replacementStat.isDirectory()) {
+            packageRoot = realReplacement;
+          } else {
+            const realAliasTarget = await realpathNative(aliasTarget);
+            packageRoot = path.dirname(realAliasTarget);
+          }
+          if (!isPathInside(packageRoot, realResolvedPath)) return null;
+        } catch {
+          return null;
+        }
+      } else {
+        packageRoot = await findPackageRoot(path.dirname(realResolvedPath), expectedPackageName);
+      }
       if (packageRoot !== null) linkedPackageRoots.add(packageRoot);
       return null;
     },

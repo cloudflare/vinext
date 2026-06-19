@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import type { Plugin } from "vite-plus";
+import { build, type Plugin } from "vite-plus";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -22,11 +22,23 @@ function createOgInlinePlugin(command: "serve" | "build" = "serve", root = tmpDi
   const plugin = plugins.find((p) => p.name === "vinext:og-inline-fetch-assets");
   if (!plugin) throw new Error("vinext:og-inline-fetch-assets plugin not found");
   const configResolved = unwrapHook(plugin.configResolved);
-  configResolved?.call(plugin, { command, root });
+  configResolved?.call(plugin, { command, root, resolve: { alias: [] } });
   return plugin;
 }
 
-async function resolveLinkedPackage(plugin: Plugin, source: string, resolvedId: string) {
+async function resolveLinkedPackage(
+  plugin: Plugin,
+  root: string,
+  source: string,
+  resolvedId: string,
+  find: string | RegExp = source,
+) {
+  const configResolved = unwrapHook(plugin.configResolved);
+  configResolved.call(plugin, {
+    command: "build",
+    root,
+    resolve: { alias: [{ find, replacement: resolvedId }] },
+  });
   const resolveId = unwrapHook(plugin.resolveId);
   await resolveId.call(
     {
@@ -233,7 +245,12 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
       await fsp.writeFile(path.join(packageDir, "font.ttf"), packageFont);
 
       const plugin = createOgInlinePlugin("build", projectRoot);
-      await resolveLinkedPackage(plugin, packageName, path.join(packageDir, "index.js"));
+      await resolveLinkedPackage(
+        plugin,
+        projectRoot,
+        packageName,
+        path.join(packageDir, "index.js"),
+      );
       const transform = unwrapHook(plugin.transform);
       const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
       const result = await transform.call(plugin, code, path.join(packageDir, "index.js"));
@@ -262,7 +279,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
       await fsp.writeFile(path.join(packageDir, "font.ttf"), packageFont);
 
       const plugin = createOgInlinePlugin("build", projectRoot);
-      await resolveLinkedPackage(plugin, name, path.join(packageDir, "index.js"));
+      await resolveLinkedPackage(plugin, projectRoot, name, path.join(packageDir, "index.js"));
       const transform = unwrapHook(plugin.transform);
       const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
       const result = await transform.call(plugin, code, path.join(packageDir, "index.js"));
@@ -287,12 +304,165 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     await fsp.writeFile(path.join(packageDir, "dist", "font.ttf"), packageFont);
 
     const plugin = createOgInlinePlugin("build", projectRoot);
-    await resolveLinkedPackage(plugin, "ui", modulePath);
+    await resolveLinkedPackage(plugin, projectRoot, "ui", modulePath);
     const transform = unwrapHook(plugin.transform);
     const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
     const result = await transform.call(plugin, code, modulePath);
 
     expect(result?.code).toContain(packageFont.toString("base64"));
+  });
+
+  it("inlines a linked package asset through a real Vite build", async () => {
+    const workspaceRoot = path.join(tmpDir, "linked-workspace-build");
+    const projectRoot = path.join(workspaceRoot, "app");
+    const packageDir = path.join(workspaceRoot, "packages", "design-system");
+    const packageFont = Buffer.from("linked-build-font");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(path.join(packageDir, "dist"), { recursive: true });
+    await fsp.writeFile(path.join(projectRoot, "package.json"), '{"dependencies":{"ui":"*"}}');
+    await fsp.writeFile(path.join(projectRoot, "index.js"), 'import "ui";');
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"@scope/design-system"}');
+    await fsp.writeFile(
+      path.join(packageDir, "dist", "index.js"),
+      'export const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());',
+    );
+    await fsp.writeFile(path.join(packageDir, "dist", "font.ttf"), packageFont);
+
+    await build({
+      root: projectRoot,
+      logLevel: "silent",
+      resolve: { alias: { ui: path.join(packageDir, "dist", "index.js") } },
+      plugins: [createOgInlinePlugin("build", projectRoot)],
+      build: {
+        outDir: "dist",
+        rollupOptions: {
+          input: path.join(projectRoot, "index.js"),
+          output: { entryFileNames: "bundle.js" },
+        },
+      },
+    });
+    const code = await fsp.readFile(path.join(projectRoot, "dist", "bundle.js"), "utf8");
+
+    expect(code).toContain(packageFont.toString("base64"));
+  });
+
+  it("uses a directory alias root for subpath imports in a real Vite build", async () => {
+    const workspaceRoot = path.join(tmpDir, "linked-directory-alias-build");
+    const projectRoot = path.join(workspaceRoot, "app");
+    const packageDir = path.join(workspaceRoot, "packages", "design-system");
+    const packageFont = Buffer.from("linked-directory-alias-font");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(path.join(packageDir, "dist"), { recursive: true });
+    await fsp.writeFile(path.join(projectRoot, "package.json"), "{}");
+    await fsp.writeFile(path.join(projectRoot, "index.js"), 'import "ui/dist/chunk.js";');
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"design-system"}');
+    await fsp.writeFile(
+      path.join(packageDir, "dist", "chunk.js"),
+      'export const data = fetch(new URL("../font.ttf", import.meta.url)).then((res) => res.arrayBuffer());',
+    );
+    await fsp.writeFile(path.join(packageDir, "font.ttf"), packageFont);
+
+    await build({
+      root: projectRoot,
+      logLevel: "silent",
+      resolve: { alias: { ui: packageDir } },
+      plugins: [createOgInlinePlugin("build", projectRoot)],
+      build: {
+        outDir: "dist",
+        rollupOptions: {
+          input: path.join(projectRoot, "index.js"),
+          output: { entryFileNames: "bundle.js" },
+        },
+      },
+    });
+    const code = await fsp.readFile(path.join(projectRoot, "dist", "bundle.js"), "utf8");
+
+    expect(code).toContain(packageFont.toString("base64"));
+  });
+
+  it("tracks a linked package through a regular-expression alias", async () => {
+    const projectRoot = path.join(tmpDir, "regex-alias-app");
+    const packageDir = path.join(tmpDir, "regex-alias-package");
+    const modulePath = path.join(packageDir, "index.js");
+    const packageFont = Buffer.from("regex-alias-font");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"design-system"}');
+    await fsp.writeFile(modulePath, "export {};");
+    await fsp.writeFile(path.join(packageDir, "font.ttf"), packageFont);
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    await resolveLinkedPackage(plugin, projectRoot, "ui/theme", modulePath, /^ui\/theme$/);
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("./font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, modulePath);
+
+    expect(result?.code).toContain(packageFont.toString("base64"));
+  });
+
+  it("tracks a linked package through a regular-expression alias capture", async () => {
+    const projectRoot = path.join(tmpDir, "regex-capture-alias-app");
+    const packageDir = path.join(tmpDir, "regex-capture-alias-package");
+    const modulePath = path.join(packageDir, "dist", "theme.js");
+    const packageFont = Buffer.from("regex-capture-alias-font");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(path.dirname(modulePath), { recursive: true });
+    await fsp.writeFile(path.join(packageDir, "package.json"), '{"name":"design-system"}');
+    await fsp.writeFile(modulePath, "export {};");
+    await fsp.writeFile(path.join(packageDir, "font.ttf"), packageFont);
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const configResolved = unwrapHook(plugin.configResolved);
+    configResolved.call(plugin, {
+      command: "build",
+      root: projectRoot,
+      resolve: { alias: [{ find: /^ui\/(.*)$/, replacement: `${packageDir}/$1` }] },
+    });
+    const resolveId = unwrapHook(plugin.resolveId);
+    await resolveId.call(
+      { resolve: async () => ({ id: modulePath }) },
+      "ui/dist/theme.js",
+      path.join(projectRoot, "app.js"),
+      {},
+    );
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("../font.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, modulePath);
+
+    expect(result?.code).toContain(packageFont.toString("base64"));
+  });
+
+  it("does not broaden an embedded regular-expression alias capture to sibling directories", async () => {
+    const projectRoot = path.join(tmpDir, "regex-embedded-alias-app");
+    const packagesDir = path.join(tmpDir, "regex-embedded-packages");
+    const packageDir = path.join(packagesDir, "theme-dark");
+    const modulePath = path.join(packageDir, "index.js");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(modulePath, "export {};");
+    await fsp.writeFile(path.join(packagesDir, "secret.txt"), "embedded-capture-secret");
+
+    const plugin = createOgInlinePlugin("build", projectRoot);
+    const configResolved = unwrapHook(plugin.configResolved);
+    configResolved.call(plugin, {
+      command: "build",
+      root: projectRoot,
+      resolve: {
+        alias: [{ find: /^theme-(.*)$/, replacement: `${packagesDir}/theme-$1/index.js` }],
+      },
+    });
+    const resolveId = unwrapHook(plugin.resolveId);
+    await resolveId.call(
+      { resolve: async () => ({ id: modulePath }) },
+      "theme-dark",
+      path.join(projectRoot, "app.js"),
+      {},
+    );
+    const transform = unwrapHook(plugin.transform);
+    const code = `const data = fetch(new URL("../secret.txt", import.meta.url)).then((res) => res.arrayBuffer());`;
+    const result = await transform.call(plugin, code, modulePath);
+
+    expect(result).toBeNull();
   });
 
   it("inlines assets through a node_modules symlink to a workspace package", async () => {
@@ -487,7 +657,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     await fsp.writeFile(path.join(workspaceRoot, "secret.txt"), "external-named-secret");
 
     const plugin = createOgInlinePlugin("build", projectRoot);
-    await resolveLinkedPackage(plugin, "@scope/ui", modulePath);
+    await resolveLinkedPackage(plugin, projectRoot, "@scope/ui", modulePath);
     const transform = unwrapHook(plugin.transform);
     const code = `const data = fetch(new URL("../../../secret.txt", import.meta.url)).then((res) => res.arrayBuffer());`;
     const result = await transform.call(plugin, code, modulePath);
