@@ -47,7 +47,7 @@ jobs:
       CODSPEED_SKIP_UPLOAD: "true"
       CODSPEED_WALLTIME_PROFILER: samply
       VINEXT_PERF_TARGET_ROOT: ${{ github.workspace }}
-      VINEXT_PERF_TRUSTED_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+      VINEXT_PERF_TRUSTED_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.event.pull_request.base.sha || github.event.pull_request.head.sha || github.sha }}
       VINEXT_PERF_TRUSTED_HEAD: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
       VINEXT_PERF_WORKFLOW_SHA: ${{ github.sha }}
     steps:

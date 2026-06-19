@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawn } from "node:child_process";
-import { rm } from "node:fs/promises";
+import { mkdir, readdir, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { reportPerformanceSample } from "./report-sample.mjs";
@@ -54,7 +54,15 @@ async function cleanFrameworkCache() {
     framework === "vinext"
       ? [join(projectDir, "node_modules/.vite"), join(projectDir, ".vite")]
       : [join(projectDir, ".next")];
-  await Promise.all(paths.map((path) => rm(path, { recursive: true, force: true })));
+  await Promise.all(paths.map(clearDirectory));
+}
+
+async function clearDirectory(path) {
+  await mkdir(path, { recursive: true });
+  const entries = await readdir(path);
+  await Promise.all(
+    entries.map((entry) => rm(join(path, entry), { recursive: true, force: true })),
+  );
 }
 
 function commandFor(port) {

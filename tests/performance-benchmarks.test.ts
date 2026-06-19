@@ -86,6 +86,10 @@ describe("paired performance benchmarks", () => {
     expect(workflow).toContain('sudo chown -R "$USER":"$USER" "$path"');
     expect(workflow).toContain("benchmarks/perf/validate-profile-traces.mjs");
     expect(workflow).toContain(
+      "github.event.pull_request.head.repo.full_name != github.repository && github.event.pull_request.base.sha",
+    );
+    expect(workflow).toContain("github.event.pull_request.head.sha || github.sha");
+    expect(workflow).toContain(
       'cp -R .perf-harness/benchmarks/vinext "$trusted_harness/benchmarks/vinext"',
     );
     expect(workflow).toContain(
@@ -99,14 +103,30 @@ describe("paired performance benchmarks", () => {
     expect(runner).not.toContain('join(root, "node_modules/.bin/vp")');
     expect(runner).toContain("function profilerCommand() {\n  return [profilerBin];\n}");
     expect(runner).toContain('for (const signal of ["-STOP", "-KILL"])');
-    expect(runner).toContain('["pgrep", "-a", "-u", user]');
+    expect(runner).toContain('["ps", "-u", user, "-o", "pid=,stat=,args="]');
+    expect(runner).toContain("!/^\\s*\\d+\\s+\\S*Z/.test(process)");
+    expect(runner).toContain("for (let attempt = 0; attempt < 20; attempt++)");
+    expect(runner).toContain("await cleanupTargetUser(root)");
     expect(runner).toContain("else await runUntrusted(");
     expect(runner).toContain(
       "await runUntrusted(command[0], command.slice(1), timingEnv, root, root)",
     );
     expect(runner).toContain("await runUntrusted(\n    profiler[0]");
     expect(coldStart).toContain('name.startsWith("VINEXT_PERF_")');
+    expect(coldStart).toContain("await Promise.all(paths.map(clearDirectory))");
+    expect(coldStart).toContain("const entries = await readdir(path)");
     expect(buildTime).toContain('name.startsWith("VINEXT_PERF_")');
+    expect(buildTime).toContain("const entries = await readdir(outputDirectory)");
+    expect(buildTime).toContain('const profiling = process.env.VINEXT_PERF_PROFILE === "true"');
+    expect(buildTime).toContain('join(projectDir, "node_modules/vite-plus/bin/vp")');
+    expect(buildTime).toContain(
+      "globalThis.process.execve(command, [command, ...args], targetEnvironment())",
+    );
+    expect(buildTime).toContain("return targetUser && !profiling");
+    expect(buildTime).toContain("detached: true");
+    expect(buildTime).not.toContain(
+      'rm(join(projectDir, framework === "vinext" ? "dist" : ".next")',
+    );
   });
 
   it("requires dispatched workflow code to come from main", () => {
@@ -158,12 +178,12 @@ describe("paired performance benchmarks", () => {
     );
     const commentJob = workflow.slice(workflow.indexOf("  comment:"));
 
-    expect(workflow).not.toContain("pull-requests: write");
     expect(publishJob).toContain("actions: read");
     expect(publishJob).toContain("contents: read");
     expect(publishJob).not.toContain("issues: write");
     expect(commentJob).toContain("actions: read");
-    expect(commentJob).toContain("issues: write");
+    expect(commentJob).toContain("pull-requests: write");
+    expect(commentJob).not.toContain("issues: write");
     expect(commentJob).not.toContain("secrets.");
     expect(commentJob).not.toContain("actions/checkout");
     expect(commentJob).not.toContain("performance-artifact");
@@ -348,6 +368,44 @@ describe("paired performance benchmarks", () => {
       median: 101,
     });
     expect(results.benchmarks[0].profileRounds).toBe(1);
+  });
+
+  it("accepts required trace categories spread across diagnostic profiles", () => {
+    const directory = mkdtempSync(join(tmpdir(), "vinext-perf-traces-"));
+    const resultsPath = join(directory, "results.json");
+    const firstProfile = "profiles/dev/samply-profile.json.gz";
+    const secondProfile = "profiles/build/samply-profile.json.gz";
+    mkdirSync(join(directory, "profiles/dev"), { recursive: true });
+    mkdirSync(join(directory, "profiles/build"), { recursive: true });
+    writeFileSync(
+      join(directory, firstProfile),
+      gzipSync(profileWithSources(["file:///repo/packages/vinext/src/index.ts"])),
+    );
+    writeFileSync(
+      join(directory, secondProfile),
+      gzipSync(
+        profileWithSources([
+          "file:///repo/node_modules/vite-plus-core/dist/vite/node/index.js",
+          "file:///repo/node_modules/rolldown/dist/index.mjs",
+        ]),
+      ),
+    );
+    writeFileSync(
+      resultsPath,
+      JSON.stringify({
+        benchmarks: [
+          { benchmarkId: "vinext-dev", profileFile: firstProfile },
+          { benchmarkId: "vinext-build", profileFile: secondProfile },
+        ],
+      }),
+    );
+
+    const output = execFileSync(
+      process.execPath,
+      ["benchmarks/perf/validate-profile-traces.mjs", resultsPath, directory],
+      { cwd: join(import.meta.dirname, ".."), encoding: "utf8" },
+    );
+    expect(output).toContain("Performance profiles sampled vinext, vite, rolldown frames");
   });
 
   it("reports unchanged Next.js as skipped", () => {
@@ -861,6 +919,23 @@ function githubFile(contents: string) {
     encoding: "base64",
     content: Buffer.from(contents).toString("base64"),
   };
+}
+
+function profileWithSources(sources: string[]) {
+  return JSON.stringify({
+    threads: [
+      {
+        stringArray: sources.map((source) => `function ${source}`),
+        funcTable: { name: sources.map((_, index) => index) },
+        frameTable: { func: sources.map((_, index) => index) },
+        stackTable: {
+          frame: sources.map((_, index) => index),
+          prefix: sources.map((_, index) => (index === 0 ? null : index - 1)),
+        },
+        samples: { stack: [sources.length - 1], length: 1 },
+      },
+    ],
+  });
 }
 
 function gitTreeEntry(path: string, sha: string) {
