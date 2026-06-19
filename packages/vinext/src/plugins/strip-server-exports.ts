@@ -27,7 +27,10 @@ const EXPORT_ALL_IN_PAGE_ERROR =
   "Using `export * from '...'` in a page is disallowed. Please use `export { default } from '...'` instead.\nRead more: https://nextjs.org/docs/messages/export-all-in-page";
 
 export function hasServerExportCandidate(code: string): boolean {
-  return [...SERVER_EXPORTS].some((name) => code.includes(name));
+  for (const name of SERVER_EXPORTS) {
+    if (code.includes(name)) return true;
+  }
+  return false;
 }
 
 export function hasExportAllCandidate(code: string): boolean {
